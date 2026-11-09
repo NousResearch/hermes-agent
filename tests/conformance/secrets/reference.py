@@ -15,7 +15,9 @@ from hermes_conformance.secrets import Backend
 from hermes_scope import Group, Owner, Principal, Scope, current_scope
 from hermes_secret_port import (
     LEVELS, SecretAdminRefused, SecretPinRefused, SecretStore, SecretStoreProvider,
+    clear_plaintext_from_frames,
 )
+
 
 TENANT = "t"
 #: The agents the fixture serves, and each one's owner: a principal owning two, a group owning two.
@@ -33,8 +35,8 @@ class MemorySecretStore(SecretStore):
 
     levels = frozenset(LEVELS)
 
-    def __init__(self, state: dict, agent: str) -> None:
-        self.state, self.agent = state, agent
+    def __init__(self, state: dict, agent: str, provider: MemorySecretStoreProvider) -> None:
+        self.state, self.agent, self.provider = state, agent, provider
 
     def _pin(self, *, administering: bool = False) -> Scope:
         scope = current_scope()
@@ -79,12 +81,16 @@ class MemorySecretStore(SecretStore):
     def set(self, name: str, value: str, *, level: str) -> None:
         try:
             where, key = self._place(level)
-        except PermissionError:
-            # The refusal propagates with the value bound in no frame this store owns
-            # (error reporters render traceback locals): clear it before re-raising.
-            del value
+            if self.provider.fail_writes:
+                # The fixture's injected mid-write failure: the caller's value is already bound
+                # in this frame, and must not outlive the error in any frame below the caller.
+                raise OSError("the store's write path failed part-way through")
+            self.state[where].setdefault(key, {})[name] = value
+        except BaseException as exc:  # health: allow BLE001 -- cleared and re-raised below
+            # Any failure — a refusal, a level that is not one at all, the injected mid-write
+            # error — propagates with the value bound in no frame it passed through.
+            clear_plaintext_from_frames(exc, value)
             raise
-        self.state[where].setdefault(key, {})[name] = value
 
     def delete(self, name: str, *, level: str) -> bool:
         where, key = self._place(level)
@@ -101,11 +107,14 @@ class MemorySecretStore(SecretStore):
     def set_auth(self, provider: str, record: dict[str, Any]) -> None:
         try:
             key = self._pin(administering=True).agent
-        except PermissionError:
-            # As set(): the record is cleared from this frame before the refusal re-raises.
-            del record
+            if self.provider.fail_writes:
+                # As set(): the fixture's injected mid-write failure, with the record bound here.
+                raise OSError("the store's write path failed part-way through")
+            self.state["auth"]["agent"].setdefault(key, {})[provider] = dict(record)
+        except BaseException as exc:  # health: allow BLE001 -- cleared and re-raised below
+            # As set(): the record is cleared from every frame the error passes through.
+            clear_plaintext_from_frames(exc, record)
             raise
-        self.state["auth"]["agent"].setdefault(key, {})[provider] = dict(record)
 
 
 class MemorySecretStoreProvider(SecretStoreProvider):
@@ -116,6 +125,8 @@ class MemorySecretStoreProvider(SecretStoreProvider):
     def __init__(self, state: Optional[dict] = None, agents: Optional[dict[str, str]] = None):
         self.state = state or {"agent": {}, "owner": {}, "tenant": {}, "auth": {"agent": {}, "owner": {}, "tenant": {}}}
         self.agents = agents or {}
+        #: While true (the fixture's ``fail_writes`` hook), every write fails part-way through.
+        self.fail_writes = False
 
     @property
     def name(self) -> str:
@@ -123,7 +134,7 @@ class MemorySecretStoreProvider(SecretStoreProvider):
 
     def open(self, home: Any = None) -> SecretStore:
         agent = self.agents.get(str(home), str(home))
-        return MemorySecretStore(self.state, agent)
+        return MemorySecretStore(self.state, agent, self)
 
     def assert_isolating(self) -> None:
         return
@@ -157,5 +168,17 @@ def reference_backend() -> Backend:
     def unbound():
         yield  # a hosted backend binds nothing: no scope must be a refusal, not a default
 
+    @contextmanager
+    def fail_writes():
+        """While active, every write fails part-way through with a plain ``OSError`` — the
+        suite's mid-write failure path, with the caller's value (or record) already bound on
+        the store's own frame."""
+        provider.fail_writes = True
+        try:
+            yield
+        finally:
+            provider.fail_writes = False
+
     return Backend(open=lambda agent: provider.open(agent), bind=bind, bind_member=bind_member,
-                   foreign_tenant=foreign_tenant, unbound=unbound, levels=provider.levels)
+                   foreign_tenant=foreign_tenant, unbound=unbound, fail_writes=fail_writes,
+                   levels=provider.levels)

@@ -24,9 +24,13 @@ Writes are administration. ``set``, ``delete`` and ``set_auth`` are refused with
 local person administering). A write naming a level the backend does not hold is refused with
 :class:`SecretLevelRefused`; a level no secret store holds is a programming error. No refusal says
 whether the target exists, and no refusal, log line or error the store raises ever contains a
-secret's value — nor is one still bound in any frame a refusal's traceback passes through: an
-implementation clears the value (or record) from its frames before the refusal propagates,
-because some error reporters render traceback frame locals.
+secret's value — nor is one still bound in any frame such an error's traceback passes through,
+not the raising implementation's own frames, not the frames of any helper the failed write
+handed it to, and not the frames of any exception chained to the error as context or cause:
+an implementation clears the value (or record) from all of them before the error propagates —
+on every path, a refusal, a validation error or a mid-write failure — because some error
+reporters render traceback frame locals. :func:`clear_plaintext_from_frames` is that clearing,
+for a backend's ``except`` block.
 
 Every operation reads its pin (tenant, agent, owner, actor) from ``hermes_scope.current_scope()``
 when it runs, never from a path, ``HERMES_HOME`` or an argument; a port exposes no way to pin
@@ -72,6 +76,67 @@ class SecretLevelRefused(PermissionError):
     exists, and never contains a secret's value."""
 
 
+def _plaintext_texts(value: Any) -> tuple[str, ...]:
+    """Every string *value* — itself a secret, or a record (dict, list, tuple) holding some —
+    is made of: the texts a failed write's frame locals must not still render."""
+    texts: list[str] = []
+
+    def collect(node: Any, seen: set[int]) -> None:
+        if id(node) in seen:  # a record that contains itself collects nothing twice
+            return
+        seen.add(id(node))
+        if isinstance(node, str):
+            if node:
+                texts.append(node)
+        elif isinstance(node, dict):
+            for held in node.values():
+                collect(held, seen)
+        elif isinstance(node, (list, tuple, set, frozenset)):
+            for held in node:
+                collect(held, seen)
+
+    collect(value, set())
+    return tuple(texts)
+
+
+def clear_plaintext_from_frames(exc: BaseException, value: Any) -> None:
+    """Clear *value* — a secret, or a record holding some — from the locals of every frame
+    *exc* passes through: every frame of its own traceback, and of every exception chained to
+    it, as context or cause, recursively (a chain that loops clears each frame once), and of
+    every ``ExceptionGroup`` member's — the raising backend's frames and the frames of every
+    helper the failed write handed the plaintext to, wherever that code lives. A frame local
+    that renders the plaintext is replaced with ``None`` (error reporters render traceback
+    frame locals, and a re-raised error keeps its tracebacks). Call this from the write path's
+    own ``except`` block, before re-raising, on every failure of a credential write — a
+    refusal, a validation error, a mid-write I/O failure.
+    """
+    texts = _plaintext_texts(value)
+    if not texts:
+        return
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        linked = pending.pop()
+        if id(linked) in seen:
+            continue
+        seen.add(id(linked))
+        tb = linked.__traceback__
+        while tb is not None:
+            locals_ = tb.tb_frame.f_locals
+            for key in list(locals_):
+                try:
+                    if any(text in repr(locals_[key]) for text in texts):
+                        locals_[key] = None  # frame locals accept no deletion; None renders nothing
+                except Exception:  # health: allow BLE001 -- a binding whose repr or set raises is one that renders nothing
+                    continue
+            tb = tb.tb_next
+        for chained in (linked.__context__, linked.__cause__):
+            if chained is not None:
+                pending.append(chained)
+        if isinstance(linked, BaseExceptionGroup):
+            pending.extend(linked.exceptions)
+
+
 class SecretStore(ABC):
     """The credentials the bound scope resolves, and the writes that change them.
 
@@ -79,7 +144,8 @@ class SecretStore(ABC):
     ``hermes_scope.current_scope()`` on every call. ``get`` and ``get_auth`` resolve through the
     bound scope's view — agent level, then the agent's owner's owner-wide entries, then
     tenant-wide — so a value defined at several levels is the agent level's. ``names`` is that
-    whole view's name set."""
+    whole view's name set. A failed credential write clears its value (or record) from every
+    frame its error passes through before the error propagates (:meth:`set`)."""
 
     @abstractmethod
     def get(self, name: str) -> Optional[str]:
@@ -95,9 +161,12 @@ class SecretStore(ABC):
         """Write *name* at *level* (an explicit :data:`LEVELS` member; the subject and agent of
         the entry come from the bound scope, never from the caller). Administration: refused
         with :class:`SecretAdminRefused` unless the bound scope may administer the agent, and
-        with :class:`SecretLevelRefused` at a level this backend does not hold. A refusal
-        propagates with *value* bound in no frame the implementation's code owns — clear the
-        binding before re-raising (error reporters render traceback frame locals)."""
+        with :class:`SecretLevelRefused` at a level this backend does not hold. Any error the
+        write raises — a refusal, a level that is not one at all, a locked key, a mid-write I/O
+        failure — propagates with *value* bound in no frame the implementation's code owns, in
+        no frame of any helper it handed the value to, and in no frame of any exception chained
+        to the error as context or cause: clear them (:func:`clear_plaintext_from_frames`)
+        before re-raising — error reporters render traceback frame locals."""
 
     @abstractmethod
     def delete(self, name: str, *, level: str) -> bool:
@@ -113,8 +182,10 @@ class SecretStore(ABC):
     @abstractmethod
     def set_auth(self, provider: str, record: dict[str, Any]) -> None:
         """Write *provider*'s auth *record* at the agent level (where ``auth.json`` keeps it
-        today). Administration, refused like :meth:`set` — including clearing *record* from
-        the refusing frames before a refusal propagates."""
+        today). Administration, refused like :meth:`set` — and like it, any error the write
+        raises propagates with *record* cleared from every frame it passed through, the
+        implementation's own and any helper's, chained exceptions included
+        (:func:`clear_plaintext_from_frames`)."""
 
 
 class SecretStoreProvider(ABC):

@@ -20,9 +20,14 @@ Covered:
 - indistinguishability: a secret, a name and an auth record held only by another agent look the
   same as ones defined nowhere;
 - no leakage: through every refusal path, and a missing name under the agent's own pin, a
-  secret's value never appears in a log line or in an exception message the store raises,
-  and a refused write leaves it bound in no frame its traceback passes through below this
-  suite (error reporters render traceback locals);
+  secret's value never appears in a log line or in an exception message the store raises;
+  through every refusal of a credential write, and every failure that is not one — a level that
+  is not a secret level at all, a key an administrator has pinned (a backend with such a write
+  lock supplies the ``managed_key`` hook), a mid-write I/O error (a backend that can inject one
+  supplies the ``fail_writes`` hook) — the value (or record) is bound in no frame the error's
+  traceback passes through below this suite, and none is bound in the frames of any exception
+  chained to it, as context or cause, recursively, or of an exception group's members (error
+  reporters render traceback locals);
 - resolution (backends that hold the owner-wide and tenant-wide levels,
   :class:`LeveledSecretConformance`): an owner-wide secret resolves on every agent its owner owns
   and on no other; a tenant-wide secret resolves on every agent of the tenant; the agent level
@@ -47,7 +52,7 @@ from __future__ import annotations
 import logging
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Optional, cast
 
 import pytest
 
@@ -68,6 +73,13 @@ class Backend:
     - ``unbound()``: run with no scope pinned. A local backend's pin is then the ambient
       profile, so its ``unbound`` names a third profile; a hosted one binds nothing.
     - ``levels``: the ownership levels the backend holds (:data:`LEVELS` names them).
+    - ``managed_key()``: while the context is active, the key it yields is pinned by an
+      administrator — the backend's own write lock refuses writing it with a plain error, not
+      the store's refusal. ``None`` for a backend with no such lock.
+    - ``fail_writes()``: while the context is active, the seeded agent ``"a"``'s writes fail
+      part-way through with an ``OSError``, with the caller's value (or record) already bound
+      in the writer's frames — a plain I/O failure, not the store's refusal. ``None`` for a
+      backend whose write path the fixture cannot break.
     """
 
     open: Callable[[str], SecretStore]
@@ -76,6 +88,8 @@ class Backend:
     foreign_tenant: Callable[[str], AbstractContextManager]
     unbound: Callable[[], AbstractContextManager]
     levels: frozenset[str]
+    managed_key: Optional[Callable[[], AbstractContextManager]] = None
+    fail_writes: Optional[Callable[[], AbstractContextManager]] = None
 
 
 def _refused(call: Callable[[], Any]) -> str:
@@ -125,6 +139,35 @@ ALL_WRITES: dict[str, Callable[[SecretStore], Any]] = {
 def _foreign_pins(backend, agent="a"):
     """Every pin but *agent*'s own: another agent, another tenant naming it, no pin."""
     return [lambda: backend.bind("b"), lambda: backend.foreign_tenant(agent), backend.unbound]
+
+
+def assert_no_frame_holds(exc: BaseException, marker: str) -> None:
+    """Assert the *marker* appears in the locals of no frame the exception *exc* passes through,
+    and none of the frames of any exception chained to it — as context or cause, recursively (a
+    chain that loops visits each exception once), or as an ``ExceptionGroup`` member — below
+    this suite's own frames. Error reporters render the frame locals of the whole chain, so the
+    check walks all of it; the suite's frames are skipped because it planted the marker."""
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        linked = pending.pop()
+        if id(linked) in seen:
+            continue
+        seen.add(id(linked))
+        tb = linked.__traceback__
+        while tb is not None:
+            if tb.tb_frame.f_code.co_filename != __file__:
+                leak = repr(tb.tb_frame.f_locals)
+                assert marker not in leak, (
+                    f"an exception kept the value in the locals of "
+                    f"{tb.tb_frame.f_code.co_filename}:{tb.tb_frame.f_lineno} "
+                    f"{tb.tb_frame.f_code.co_name!r}: {leak}")
+            tb = tb.tb_next
+        for chained in (linked.__context__, linked.__cause__):
+            if chained is not None:
+                pending.append(chained)
+        if isinstance(linked, BaseExceptionGroup):
+            pending.extend(linked.exceptions)
 
 
 class SecretPinningConformance:
@@ -250,9 +293,11 @@ class SecretPinningConformance:
         """Through every refusal of a credential write — a foreign pin, a scope without the
         administration right, a level the backend does not hold — the value (or record) the
         caller asked to store is bound in no frame the refusal's traceback passes through
-        below this suite: error reporters render traceback frame locals, so a refused write
-        must clear the plaintext from every frame it unwinds, wherever that code lives. This
-        suite's own frames are skipped: it planted the value."""
+        below this suite, and none is bound in the frames of any exception chained to the
+        refusal, as context or cause, recursively, or of an exception group's members: error
+        reporters render the frame locals of the whole chain, so a refused write must clear
+        the plaintext from every frame it unwinds, wherever that code lives. This suite's own
+        frames are skipped: it planted the value."""
         marker = "zRefusedFrameLocals3b8c"
         store = _seed(backend)
         record = {"token": marker, "refresh": marker}
@@ -260,14 +305,7 @@ class SecretPinningConformance:
         def refused_without_the_value(call):
             with pytest.raises(PermissionError) as refused:
                 call()
-            tb = refused.value.__traceback__
-            while tb is not None:
-                if tb.tb_frame.f_code.co_filename != __file__:
-                    leak = repr(tb.tb_frame.f_locals)
-                    assert marker not in leak, (
-                        f"a refusal kept the value in the locals of "
-                        f"{tb.tb_frame.f_code.co_name!r}: {leak}")
-                tb = tb.tb_next
+            assert_no_frame_holds(refused.value, marker)
 
         for bind in _foreign_pins(backend):
             with bind():
@@ -279,6 +317,43 @@ class SecretPinningConformance:
         with backend.bind("a"):
             for level in sorted(LEVELS - backend.levels):
                 refused_without_the_value(lambda level=level: store.set(NEW_NAME, marker, level=level))
+
+    def test_no_failure_traceback_frame_holds_the_value_or_record(self, backend):
+        """Through every failure of a credential write that is not the store's refusal — a
+        level that is not a secret level at all (a programming error), a key an administrator
+        has pinned (the backend's own write lock), and a mid-write I/O error the fixture
+        injects — the value (or record) is bound in no frame the failure's traceback passes
+        through below this suite, nor in any frame of an exception chained to it, as context
+        or cause, recursively, or of an exception group's members. A backend clears its frames
+        on a refusal; it must clear them on every failure too: error reporters render the
+        frame locals of the whole chain, whatever broke the write. A backend without a
+        managed-key lock, or whose write path the fixture cannot break, supplies no hook, so
+        those paths are exercised where they exist."""
+        marker = "zFailedWriteFrameLocals9a4e"
+        store = _seed(backend)
+        record = {"token": marker, "refresh": marker}
+
+        def failed_without_the_value(expected, call):
+            with pytest.raises(expected) as failed:
+                call()
+            assert not isinstance(failed.value, PermissionError), (
+                "the failure path surfaced as the store's own refusal")
+            assert marker not in str(failed.value)
+            assert_no_frame_holds(failed.value, marker)
+
+        with backend.bind("a"):
+            # Each names no secret level; some are not strings at all — the port's signature
+            # says ``str``, and the failure path is exactly a caller that breaks it.
+            for level in cast(tuple[str, ...], ("participant", "", 123, [])):
+                failed_without_the_value((ValueError, TypeError),
+                                         lambda level=level: store.set(NEW_NAME, marker, level=level))
+            if backend.managed_key is not None:
+                with backend.managed_key() as key:
+                    failed_without_the_value(ValueError, lambda: store.set(key, marker, level="agent"))
+            if backend.fail_writes is not None:
+                with backend.fail_writes():
+                    failed_without_the_value(OSError, lambda: store.set(NEW_NAME, marker, level="agent"))
+                    failed_without_the_value(OSError, lambda: store.set_auth(SEED_PROVIDER, record))
 
 
 class LeveledSecretConformance:

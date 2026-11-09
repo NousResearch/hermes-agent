@@ -520,11 +520,10 @@ class GatewayTopicThreadsMixin:
         )
 
     def _telegram_topic_auto_rename_disabled(self, source: SessionSource) -> bool:
-        """``gateway.platforms.telegram.extra.disable_topic_auto_rename``; default False (auto-rename on)."""
-        config = getattr(self, "config", None)
-        platform_cfg = config.platforms.get(source.platform) if config and getattr(config, "platforms", None) else None
-        if platform_cfg is None:
-            return False
+        """The RECEIVING bot's ``extra.disable_topic_auto_rename`` (default False: auto-rename on); under
+        multiplexing each bot owns its kill-switch, like ``dm_topic_auto_transfer``."""
+        adapter = self._delivery_adapter_for(source)
+        platform_cfg = getattr(adapter, "config", None) if adapter is not None else None
         return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("disable_topic_auto_rename"))
 
     async def _rename_telegram_topic_for_session_title(self, source: SessionSource, session_id: str, title: str) -> None:

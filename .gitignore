@@ -339,3 +339,5 @@ infografico/
 /pm/.lock.json.lock
 
 apps/desktop/.dist-build*
+
+/artifacts/

@@ -1,6 +1,6 @@
 name: which-copy
 repo: https://github.com/Hazem-Samak/hermes-which-copy
-sha: 861e81b904235ad582c9b0076d6465c0ad585c4e
+sha: f6b09e0b393e46f60082feb68fff5ffb93ace384
 description: >-
   Answers the question that silently decides everything else: which copy of a
   command is the Hermes process actually going to run? On a Mac the same tool can
@@ -50,7 +50,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/Hazem-Samak/hermes-which-copy#readme
-version: "1.2.1"
+version: "1.2.2"
 title: Which Copy
 platforms: [macos, linux]
 capabilities:

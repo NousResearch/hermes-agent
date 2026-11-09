@@ -108,3 +108,56 @@ def test_turn_is_fenced_before_submit_when_the_lease_is_taken_over_during_the_wa
     assert submits == []
     assert outcome["task"]["status"] != "settled"
     assert "fenced" in (outcome["last_error"] or "")
+
+
+def test_ambiguous_submit_recovers_the_room_when_the_keeper_renewal_lands_late(db: Path, monkeypatch):
+    """A keeper renewal committed before the turn's own renewal but cached after it must not
+    roll the cached expiry back: the ambiguous deferral would end before the row expires, the
+    next scan would renew the same generation in place, and the attempt would stay running."""
+    keeper_committed, submitted = threading.Event(), threading.Event()
+    real_renew = state.renew_lease
+
+    def renew(*args, **kwargs):
+        renewed = real_renew(*args, **kwargs)
+        if threading.current_thread().name.startswith("hosted-room-lease-") and not keeper_committed.is_set():
+            keeper_committed.set()
+            submitted.wait(5.0)  # descheduled between its commit and its cache write
+        return renewed
+
+    monkeypatch.setattr(state, "renew_lease", renew)
+
+    @contextlib.contextmanager
+    def lock_released_after_the_keeper_tick(_profile):
+        keeper_committed.wait(5.0)
+        # health: allow HX013 -- the gap between the two committed expiries IS the race window under test
+        time.sleep(0.1)  # the turn's renewal commits a later expiry than the keeper's
+        yield
+
+    class AmbiguousSubmit:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def submit(self, **_kwargs):
+            submitted.set()
+            raise RuntimeError("connection reset after send")
+
+    identity = _identity()
+    state.admit_task(db, identity, clock=time.time, payload={
+        "target_profile": PROFILE, "target_member_id": "member-ops", "prompt": "Ship it.",
+        "source_event_seq": 1})
+    runtime = HostedRoomRuntime(
+        db_path=db, rooms=[BINDING], rpc=HostedRoomServerRPC(_server([], finish_after=TTL)),
+        turn_lock=lock_released_after_the_keeper_tick, clock=time.time, lease_ttl_seconds=TTL,
+        poll_interval_seconds=0.01, active_poll_interval_seconds=0.02)
+    resolve = runtime._transport_for
+    runtime._transport_for = lambda binding, task: AmbiguousSubmit(resolve(binding, task))
+    runtime.start()
+    try:
+        _wait_for(lambda: state.get_task(db, identity)["status"] != "running" and submitted.is_set(),
+                  timeout=TTL * 8)
+    finally:
+        assert runtime.stop(timeout=5.0)
+    assert state.get_task(db, identity)["status"] == "indeterminate"

@@ -760,10 +760,26 @@ class HostedRoomRuntime:
             self.db_path, room_id=binding.room_id, gateway_id=binding.gateway_id,
             authority_epoch=binding.authority_epoch, process_generation=self.process_generation,
             ttl_seconds=self.lease_ttl_seconds, clock=self.clock)
+        lease = self._cache_lease(lease)
         with self._status_lock:
-            self._leases[binding.room_id] = lease
             self._recovered_leases = {k for k in self._recovered_leases if k[0] != binding.room_id}
         return lease
+
+    def _cache_lease(self, lease: state.DriverLease) -> state.DriverLease:
+        """Cache ``lease`` unless the cache already holds a later expiry of the same generation.
+
+        A LeaseKeeper thread and the turn's thread renew concurrently and commit in either order;
+        a stale write would let ``_mark_ambiguous`` defer to an expiry the row has outlived, and
+        the next scan would then renew that generation in place instead of recovering the room.
+        """
+        with self._status_lock:
+            known = self._leases.get(lease.room_id)
+            if (known is not None and (known.process_generation, known.lease_generation)
+                    == (lease.process_generation, lease.lease_generation)
+                    and known.expires_at >= lease.expires_at):
+                return known
+            self._leases[lease.room_id] = lease
+            return lease
 
     def _renew_lease_if_needed(
         self, lease: state.DriverLease, *, force: bool = False) -> state.DriverLease:
@@ -774,11 +790,8 @@ class HostedRoomRuntime:
             lease = known  # a LeaseKeeper renewed this generation since the caller's copy
         if not force and self.clock() < lease.expires_at - (self.lease_ttl_seconds / 2):
             return lease
-        renewed = state.renew_lease(
-            self.db_path, lease, ttl_seconds=self.lease_ttl_seconds, clock=self.clock)
-        with self._status_lock:
-            self._leases[lease.room_id] = renewed
-        return renewed
+        return self._cache_lease(state.renew_lease(
+            self.db_path, lease, ttl_seconds=self.lease_ttl_seconds, clock=self.clock))
 
     def _drop_lease(self, room_id: str) -> None:
         with self._status_lock:

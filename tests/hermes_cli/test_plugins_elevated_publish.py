@@ -31,8 +31,9 @@ def staged_plugin(tmp_path, monkeypatch):
     monkeypatch.setattr("pm.client.sync_venv",
                         lambda **kwargs: StagedPlugin(dict(kwargs["plugins"].data)).publish(project))
     writes = []
+    # True like the real writer when it wrote: that write does not propagate, so children are owed.
     monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32",
-                        lambda path, *_a, **_k: writes.append(Path(path).relative_to(target).as_posix()))
+                        lambda path, *_a, **_k: writes.append(Path(path).relative_to(target).as_posix()) or True)
     return staged, target, writes
 
 
@@ -77,3 +78,25 @@ def test_worker_grants_acl_before_cli_returns(staged_plugin, monkeypatch, tmp_pa
 
     assert (target / "plugin.yaml").is_file()
     assert sorted(writes) == [".", "pkg", "pkg/__init__.py", "plugin.yaml"]
+
+
+def test_without_pywin32_one_inheritable_grant_covers_the_published_tree(staged_plugin, monkeypatch):
+    """PM's worker runtime has no pywin32, so publication takes the icacls fallback. Its inheritable
+    ACE on the plugin root propagates to the tree, so a per-entry walk (``whoami`` + ``icacls`` per
+    file, under the install lock) is one process launch per entry too many."""
+    from hermes_cli.plugins_transaction import publish_plugin
+
+    staged, target, writes = staged_plugin
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
+
+    def no_pywin32(*_a, **_k):
+        raise ImportError("win32security")
+
+    icacls = []
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", no_pywin32)
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_icacls",
+                        lambda path, is_dir, *_a, **_k: icacls.append((Path(path).relative_to(target).as_posix(), is_dir)))
+
+    publish_plugin(staged, target, {}, {"acl-probe": {}})
+
+    assert (target / "plugin.yaml").is_file() and icacls == [(".", True)]

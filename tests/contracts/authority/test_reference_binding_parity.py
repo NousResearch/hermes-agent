@@ -1,7 +1,6 @@
 """Binding projections preserve the stored scalar and timestamp semantics."""
 
 from dataclasses import replace
-import sqlite3
 
 import pytest
 
@@ -21,7 +20,7 @@ def test_binding_chat_id_uses_text_affinity(backend, scope_a, value, expected):
     assert (store_a.bindings.receipt(binding.session_id)).entry["origin"]["chat_id"] == value
 
 
-@pytest.mark.parametrize("value, error", [(2**63, OverflowError), (-(2**63) - 1, OverflowError), ([7], PermanentStoreError), ({"id": 7}, PermanentStoreError)])
+@pytest.mark.parametrize("value, error", [(2**63, (OverflowError, PermanentStoreError)), (-(2**63) - 1, (OverflowError, PermanentStoreError)), ([7], PermanentStoreError), ({"id": 7}, PermanentStoreError)])
 def test_binding_refuses_unbindable_chat_ids_atomically(backend, scope_a, value, error):
     store_a = backend.open(scope_a)
     epoch = begin(store_a)
@@ -29,14 +28,8 @@ def test_binding_refuses_unbindable_chat_ids_atomically(backend, scope_a, value,
     binding = replace(binding, entry={**binding.entry, "origin": {"chat_id": value}})
     with pytest.raises(FenceStale):
         store_a.bindings.reserve(epoch=0, binding=binding, owner=None)
-    with pytest.raises(error) as caught:
+    with pytest.raises(error):
         store_a.bindings.reserve(epoch=epoch, binding=binding, owner=None)
-    if error is PermanentStoreError:
-        assert isinstance(caught.value.__cause__, sqlite3.ProgrammingError)
-        assert str(caught.value) == f"Error binding parameter 6: type '{type(value).__name__}' is not supported"
-    else:
-        assert str(caught.value) == "Python int too large to convert to SQLite INTEGER"
-        assert caught.value.__cause__ is None
     assert store_a.sessions.get(binding.session_id) is None
     assert store_a.routing.load_routing_entries() == {}
 

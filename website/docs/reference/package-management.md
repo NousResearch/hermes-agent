@@ -204,10 +204,11 @@ once the build is fixed. A carried extra that fails only for the moment (a
 download or a missing tool) is never dropped: the update fails before it
 publishes anything, so the next update scans the old venv again and retries
 it. An extra you request yourself still fails the install when it cannot build.
-Only a venv a pre-PM installer built counts as the old install: one with Hermes
-installed from a tree without `pm`. A developer `.venv` built by
-`pm.build_env` or `uv sync` from a PM checkout, or an empty `uv venv`, is
-never carried.
+Only a venv that holds Hermes and that PM did not build counts as the old
+install. A `.venv` that `pm.build_env` built runs PM's own Python (its
+`pyvenv.cfg` `home` is in PM's tool store), so it is never carried, and neither
+is an empty `uv venv`. Any other in-tree `venv/` or `.venv/` with Hermes
+installed is read, a developer venv built by hand with `uv` included.
 
 ### Lazy-install policy
 

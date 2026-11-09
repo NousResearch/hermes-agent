@@ -379,25 +379,43 @@ def droppable_extras(project_root: Path) -> list[str]:
 def _pre_pm_site_packages(root: Path) -> list[Path]:
     """The site-packages of the checkout's own main-era ``venv/`` or ``.venv/`` (POSIX or Windows layout).
 
-    Only a venv a main-era installer built counts. Those installers always installed the checkout
-    into it (``uv sync``, ``pip install -e``) from a tree that had no ``pm`` package. A developer's or
-    test environment built from a PM tree (``pm.build_env --out .venv``, ``uv sync``) lists ``pm``,
-    and a bare ``uv venv`` holds no Hermes at all. Neither is an install's old state: reading one
-    would union its contents into every sync of a data root with no recorded selection.
+    A venv counts when Hermes is installed in it and PM did not build it. What Hermes was installed
+    from says nothing: a pre-PM updater reinstalls the checkout into the old venv from the tree it
+    just pulled, PM included. A bare ``uv venv`` holds no Hermes, and an environment PM built
+    (``pm.build_env --out .venv``) is no install's old state: reading either would union its
+    contents into every sync of a data root with no recorded selection.
     """
-    return [tree for venv in (root / "venv", root / ".venv")
+    return [tree for venv in (root / "venv", root / ".venv") if not _built_by_pm(venv)
             for tree in (*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages")
-            if tree.is_dir() and _holds_pre_pm_hermes(tree)]
+            if tree.is_dir() and any(tree.glob("hermes_agent-*.dist-info"))]
 
 
-def _holds_pre_pm_hermes(site_packages: Path) -> bool:
-    """Is Hermes installed under ``site_packages`` from a tree without PM?"""
-    for dist in site_packages.glob("hermes_agent-*.dist-info"):
+def _built_by_pm(venv: Path) -> bool:
+    """Does ``venv`` run a Python from PM's tool store? PM builds every environment on its pinned
+    Python, which no pre-PM installer had.
+
+    ``pyvenv.cfg``'s ``home`` is that interpreter's directory inside a store entry (``bin/``, the
+    entry itself on Windows), and the store's ``facts.json`` holds a ``python`` row. An older pin's
+    entry still counts, so a test env survives the store moving to a newer Python.
+    """
+    import json
+
+    try:
+        lines = (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return False
+    home = next((value.strip() for key, _, value in (line.partition("=") for line in lines)
+                 if key.strip() == "home"), "")
+    if not home:
+        return False
+    for entry in (Path(home), *Path(home).parents):
+        if not entry.name.startswith("python-"):
+            continue
         try:
-            top_level = (dist / "top_level.txt").read_text(encoding="utf-8").split()
-        except FileNotFoundError:
-            top_level = []
-        if "pm" not in top_level:
+            packages = json.loads((entry.parent / "facts.json").read_text(encoding="utf-8-sig"))["packages"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if isinstance(packages, dict) and "python" in packages:
             return True
     return False
 

@@ -202,11 +202,34 @@ def test_a_narrow_request_on_a_tree_without_an_old_venv_records_only_the_request
     assert _recorded(legacy_tree) == ["slack"]
 
 
+@pytest.fixture(params=["venv", ".venv"])
+def reinstalled_tree(legacy_tree, request):
+    """A main-era venv that a pre-PM updater (v2026.3.12 .. v2026.5.29.2) reinstalled Hermes into with
+    ``uv pip install -e .[all]`` right after pulling a PM tree: its dist-info is the PM tree's. ``.venv``
+    is the old README's manual install (``uv venv .venv``) and uv's default name."""
+    import shutil
+
+    shutil.rmtree(legacy_tree / "venv")
+    main_era_venv(legacy_tree, "telegram", "discord", "fal_client", name=request.param,
+                  reinstalled_from_pm_tree=True)
+    return legacy_tree
+
+
+@pytest.mark.parametrize("first_sync", [_completion_bootstrap, _historical_takeover, _launch_migration,
+                                        _venv_sync_entry, _pm_update_step],
+                         ids=lambda entry: entry.__name__.strip("_"))
+def test_an_old_venv_an_old_updater_reinstalled_from_the_pulled_tree_is_carried(reinstalled_tree, tmp_path,
+                                                                                monkeypatch, first_sync):
+    first_sync(reinstalled_tree, tmp_path, monkeypatch)
+
+    assert {"all", "telegram", "discord", "fal"} <= set(_recorded(reinstalled_tree) or ()), _recorded(reinstalled_tree)
+
+
 @pytest.fixture()
 def developer_tree(legacy_tree):
     """The same checkout with no main-era venv, but the test env CONTRIBUTING.md has a contributor
-    build into it (``pm.build_env --source . --out .venv --group dev --group test``): Hermes is
-    installed from a tree with ``pm``, beside the same SDKs the main-era venv held."""
+    build into it (``pm.build_env --source . --out .venv --group dev --group test``): Hermes from a
+    PM tree on PM's pinned Python, beside the same SDKs the main-era venv held."""
     import shutil
 
     shutil.rmtree(legacy_tree / "venv")
@@ -252,6 +275,7 @@ def test_a_bare_venv_holds_no_old_install(legacy_tree):
 
     shutil.rmtree(legacy_tree / "venv")
     (legacy_tree / ".venv" / "lib" / "python3.14" / "site-packages").mkdir(parents=True)
+    (legacy_tree / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
 
     pm.sync_venv(["slack"], explicit=True)
 

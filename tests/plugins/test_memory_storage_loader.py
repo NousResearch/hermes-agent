@@ -61,6 +61,42 @@ def test_same_named_providers_in_two_profiles_each_load_their_own_code(tmp_path)
     assert (first, second, again) == ("A", "B", "A")
 
 
+def test_a_bundled_provider_that_imports_from_its_kinds_package_loads(tmp_path, monkeypatch):
+    """A bundled provider is a child of its kind's package, so a parent-relative import
+    (``from .. import``) resolves: its module keeps the ``plugins.memory_storage.`` prefix."""
+    from plugins import memory_storage
+    bundled = tmp_path / "memory_storage"
+    plugin = bundled / "bundledprobe"
+    plugin.mkdir(parents=True)
+    (plugin / "__init__.py").write_text(textwrap.dedent('''
+        from .. import MemoryStorageRefused
+
+        from hermes_memory_port import MemoryStorageProvider
+
+
+        class BundledProbe(MemoryStorageProvider):
+            @property
+            def name(self):
+                return "bundled"
+
+            def open(self, home=None):
+                raise NotImplementedError
+
+            def assert_isolating(self):
+                return
+
+
+        def register(ctx):
+            ctx.register_memory_storage(BundledProbe())
+    '''))
+    monkeypatch.setattr(memory_storage._KIND, "plugins_dir", bundled)
+    home = tmp_path / "home"
+    home.mkdir()
+    with bind_profile_scope(home, hydrate_secrets=False):
+        provider = resolve_memory_storage("bundledprobe")
+    assert provider is not None and provider.name == "bundled"
+
+
 def test_under_host_isolation_a_user_provider_is_refused_with_the_reason(tmp_path):
     home = tmp_path / "hosted"
     plugin = _install(home, "HOST", name="hostprobe", isolation="host")

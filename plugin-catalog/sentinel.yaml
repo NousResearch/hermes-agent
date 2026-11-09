@@ -1,8 +1,8 @@
 name: sentinel
 title: SENTINEL OS
 repo: https://github.com/folarihn/Sentinel
-sha: 7ab2ae78b396b2d8cd163fde143656261d46b722
-version: "0.2.1"
+sha: 525fd7a1c8a9eb99c03270c2ab57039378bc132a
+version: "0.2.2"
 description: "Local runtime policy, redacted execution history, supported-file recovery, agent preflight tools and a runaway breaker, with Telegram-ready /sentinel commands. Trusted hooks, not an OS sandbox; native approval modes apply and backups retain original bytes."
 maintainer: folarihn
 tier: community
@@ -11,11 +11,12 @@ requires_hermes: ">=0.20.0"
 platforms:
   - windows
   - linux
+  - macos
 readme: true
 screenshots:
-  - https://raw.githubusercontent.com/folarihn/Sentinel/7ab2ae78b396b2d8cd163fde143656261d46b722/docs/images/overview-desktop.jpg
-  - https://raw.githubusercontent.com/folarihn/Sentinel/7ab2ae78b396b2d8cd163fde143656261d46b722/docs/images/guard-desktop.jpg
-  - https://raw.githubusercontent.com/folarihn/Sentinel/7ab2ae78b396b2d8cd163fde143656261d46b722/docs/images/guard-mobile.jpg
+  - https://raw.githubusercontent.com/folarihn/Sentinel/525fd7a1c8a9eb99c03270c2ab57039378bc132a/docs/images/overview-desktop.jpg
+  - https://raw.githubusercontent.com/folarihn/Sentinel/525fd7a1c8a9eb99c03270c2ab57039378bc132a/docs/images/guard-desktop.jpg
+  - https://raw.githubusercontent.com/folarihn/Sentinel/525fd7a1c8a9eb99c03270c2ab57039378bc132a/docs/images/guard-mobile.jpg
 known_issues:
   - "Trusted in-process hooks, not an OS sandbox; protection depends on the plugin being enabled and loaded."
   - "Native Hermes approval modes stay authoritative; YOLO can skip approval escalation but never turns a Sentinel BLOCK into an allow."

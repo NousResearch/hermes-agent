@@ -92,6 +92,8 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
 
 def _resolve_home_dir() -> str:
     """Stable HOME for child ACP processes; the temp dir as a last resort so the child never starts HOME-less."""
+    from hermes_constants import _termux_safe_tempdir
+
     if home := os.environ.get("HOME", "").strip():
         return home
     if (expanded := os.path.expanduser("~")) and expanded != "~":
@@ -99,9 +101,9 @@ def _resolve_home_dir() -> str:
     try:
         import pwd
 
-        return pwd.getpwuid(os.getuid()).pw_dir.strip() or tempfile.gettempdir()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
+        return pwd.getpwuid(os.getuid()).pw_dir.strip() or _termux_safe_tempdir()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
     except Exception:
-        return tempfile.gettempdir()
+        return _termux_safe_tempdir()
 
 
 def _build_subprocess_env() -> dict[str, str]:

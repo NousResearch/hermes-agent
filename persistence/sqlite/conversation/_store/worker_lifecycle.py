@@ -4,6 +4,8 @@
 import json
 import time
 from persistence.core.errors import AuthorityRefusal
+from persistence.sqlite.conversation._store.core import _delete_unreferenced_system_prompts
+from persistence.sqlite.conversation._store.sessions import _inherit_parent_session_metadata, _own_profile_name
 
 
 def insert_session_row_in_transaction(
@@ -87,8 +89,3 @@ def insert_session_row_in_transaction(
     # The upsert may have just filled a compression tip's created_source (update_token_counts).
     from persistence.sqlite.conversation._store.compression import stamp_compression_ancestors
     stamp_compression_ancestors(conn, session_id)
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.core import _delete_unreferenced_system_prompts
-from persistence.sqlite.conversation._store.sessions import _inherit_parent_session_metadata, _own_profile_name

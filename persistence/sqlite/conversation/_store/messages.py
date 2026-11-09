@@ -18,6 +18,8 @@ from persistence.sqlite._schema_ddl import (
 )
 from persistence.sqlite.conversation._store.sql_common import _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _placeholders
 from functools import partial
+from persistence.sqlite.conversation._store.compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
+from persistence.sqlite.conversation._store.core import REACTIONS_METADATA_KEY, _CONTENT_JSON_PREFIX, _CONVERSATION_ROW_COLUMNS
 from persistence.sqlite.conversation._store.identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none,
     _tool_call_uids_json, _uid_list,
@@ -140,6 +142,7 @@ def _check_transcript_write_guards(holder: StoreHolder, conn, session_id: str, c
     """
     from hermes_state_errors import SessionCompressionInProgressError
     from hermes_state_errors import CompressionSessionClosedError, SessionTurnLeaseLostError
+    from persistence.sqlite.conversation._store.compression import _session_turn_lease_key_on_conn
     # NOTE (#75316 redesign): appends do NOT check compression_locks. The lock's job is to stop two
     # COMPRESSIONS colliding, not to fence ordinary transcript writes. Concurrent appends during a
     # compression are safe by construction: archive_and_compact() commits against a watermark captured
@@ -791,6 +794,9 @@ def _archive_named_rows(
     in *covered*. They take the concurrent-append path: rewind the original, insert the
     compacted transcript, then clone them so they stay live and searchable once each.
     """
+    from persistence.sqlite.conversation._store.coverage import (
+        _carried_tail_ids, _carried_tail_slots, _resolve_carried_row_ids, _tail_originals,
+    )
     active_ids = [int(row["id"]) for row in conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()]
     covered_set = set(covered)
     carried_ids = _resolve_carried_row_ids(holder, conn, session_id, carried_messages or [])
@@ -894,6 +900,11 @@ def _archive_and_compact_on_conn(
     """:meth:`archive_and_compact` on the caller's write transaction (never commits). The owner
     and the worker/canonical-mutation verbs share this one body so they cannot drift."""
     from hermes_state_errors import SessionCompressionInProgressError
+    from persistence.sqlite.conversation._store.coverage import (
+        _carried_tail_ids, _carried_tail_slots, _proved_coverage, _resolve_carried_row_ids, _uncounted_merged_rows,
+    )
+    from persistence.sqlite.conversation._store.prune_rewrite import held_row_mismatches
+    from persistence.sqlite.conversation._store.sessions import _merge_model_config_json
     if lock_holder is not None:
         lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
         if lock_row is None or lock_row["holder"] != lock_holder or float(lock_row["expires_at"]) <= time.time():
@@ -1421,6 +1432,7 @@ def resolve_resume_session_id(holder: StoreHolder, session_id: str) -> str:
     — the parent ends up with ``message_count = 0`` rows unless messages had already been flushed to it
     before compression. See #15000.
     """
+    from persistence.sqlite.conversation._store.compression import get_compression_tip
     if not session_id:
         return session_id
     try:
@@ -1686,6 +1698,8 @@ def _resume_lineage_ids(holder: StoreHolder, session_id: str) -> list[str]:
     The raw parent walker ``_session_lineage_root_to_tip`` is intentionally NOT used here: it crosses
     fork/reset boundaries and misclassifies API forks (parent ended ``branched``, no marker) as
     compression lineages. Shared with the resume guard so it counts exactly what a resume loads."""
+    from persistence.sqlite.conversation._store.compression import _is_compression_child_row
+    from persistence.sqlite.conversation._store.sessions import get_session
     if not session_id:
         return [session_id]
     session = get_session(holder, session_id)
@@ -1755,6 +1769,7 @@ def get_ancestor_display_prefix(holder: StoreHolder, session_id: str) -> list[di
 def get_conversation_root(holder: StoreHolder, session_id: str) -> str:
     """ROOT id of the lineage: the stable conversation id across compression segments and delegate
     subagents (Nous Portal usage tagging). Unchanged when there is no recorded parent."""
+    from persistence.sqlite.conversation._store.sessions import _session_lineage_root_to_tip
     chain = _session_lineage_root_to_tip(holder, session_id)
     return chain[0] if chain and chain[0] else session_id
 
@@ -1914,6 +1929,7 @@ def _is_explicit_fork_child_row(holder: StoreHolder, session: dict[str, Any], *,
 def is_explicit_fork_child(holder: StoreHolder, session_id: str) -> bool:
     """Read-only :meth:`_is_explicit_fork_child_row`; a missing row is not a fork (prompt_cache_scope keeps
     a declared conversation key from crossing the fork boundary)."""
+    from persistence.sqlite.conversation._store.sessions import get_session
     session = get_session(holder, session_id)
     return bool(session and _is_explicit_fork_child_row(holder, session))
 
@@ -1969,15 +1985,3 @@ def purge_stale_tool_call_markers(holder: StoreHolder, *, dry_run: bool = False,
     if affected_ids:
         logger.info("Permanently cleared %d stale tool-call marker row(s) in state.db (#78148)", len(affected_ids))
     return _result(affected_ids, backup_path)
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.compression import _is_compression_child_row, _session_turn_lease_key_on_conn, get_compression_tip
-from persistence.sqlite.conversation._store.core import REACTIONS_METADATA_KEY, _CONTENT_JSON_PREFIX, _CONVERSATION_ROW_COLUMNS
-from persistence.sqlite.conversation._store.coverage import (
-    _carried_tail_ids, _carried_tail_slots, _proved_coverage, _resolve_carried_row_ids, _tail_originals,
-    _uncounted_merged_rows,
-)
-from persistence.sqlite.conversation._store.compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
-from persistence.sqlite.conversation._store.prune_rewrite import held_row_mismatches
-from persistence.sqlite.conversation._store.sessions import _merge_model_config_json, _session_lineage_root_to_tip, get_session

@@ -149,11 +149,10 @@ class MCPServerHealthMixin:
                     logger.debug("MCP server '%s': skipping dynamic tool refresh; session not connected", self.name)
                     return
                 new_mcp_tools = await _core._paginate_full_list(session.list_tools, "tools", self.name)
-            # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
-            # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
-            self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in new_mcp_tools})
-            # Re-register; a raw name can become ambiguous after normalization without changing
-            # its normalized name, so also drop old entries the final registration no longer owns.
+            # Resolve the full native-plus-utility catalog before pruning stale names.
+            # Comparing against native tools alone removes unchanged resource/prompt
+            # utilities and invalidates live turns on an otherwise harmless refresh.
+            # The resolved names also exclude ambiguous/filtered registrations.
             self._tools = new_mcp_tools
             registered_names = _registration._register_server_tools(self.name, self, self._config)
             self._deregister_owned(old_tool_names - set(registered_names))

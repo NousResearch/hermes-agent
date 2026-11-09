@@ -144,6 +144,12 @@ class StreamFallbackMixin:
             result = await self._send_with_flood_retry(
                 content=chunk, reply_to=None if sent_any_chunk else anchor,
                 retry_log="Flood control on fallback send, retrying in %.1fs")
+            if result and not result.success and self._send_failure_may_have_delivered(result):
+                # This chunk may be on screen: count it, so neither it nor the whole answer is
+                # sent again; later chunks still go out and must land on their own.
+                sent_any_chunk = True
+                last_successful_chunk = chunk
+                continue
             if not result or not result.success:
                 # Partial continuation landed: do NOT set _final_response_sent (the
                 # gateway must still deliver the full answer); _already_sent only

@@ -19,6 +19,7 @@ from typing import Optional
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_db_profiles as kbp
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_swarm as ks
@@ -289,7 +290,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print()
     # Profiles on disk == assignees already addressable.
     try:
-        profiles = kb.list_profiles_on_disk()
+        profiles = kbp.list_profiles_on_disk()
     except Exception:
         profiles = []
     if profiles:
@@ -319,7 +320,7 @@ def _cmd_heartbeat(args: argparse.Namespace) -> int:
 
 def _cmd_assignees(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        data = kb.known_assignees(conn)
+        data = kbp.known_assignees(conn)
     if _json_out(args, data):
         return 0
     if not data:

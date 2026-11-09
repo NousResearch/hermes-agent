@@ -29,6 +29,8 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
+from hermes_agent.compat.paths import original_path
 BASELINE = ROOT / "scripts" / "install_root_lint_baseline.json"
 KINDS = ("root_from_file", "module_sys_path")
 FIX_HINT = ("Call hermes_cli._startup_fast.project_root_str() for the install root, and leave sys.path to"
@@ -149,7 +151,7 @@ def collect(root: Path = ROOT) -> dict[str, list[str]]:
         text = (root / rel).read_text(encoding="utf-8-sig")
         tree = ast.parse(text)
         for node in ast.walk(tree):
-            if isinstance(node, ast.expr) and (levels := climb(node)) is not None and levels >= len(rel.parts):
+            if isinstance(node, ast.expr) and (levels := climb(node)) is not None and levels >= len(original_path(rel.as_posix()).split("/")):
                 found["root_from_file"].add((rel.as_posix(), node.lineno))
         for stmt in _module_level(tree.body):
             if _edits_sys_path(stmt):
@@ -158,7 +160,7 @@ def collect(root: Path = ROOT) -> dict[str, list[str]]:
 
 
 def tally(found: dict[str, list[str]]) -> dict[str, dict[str, int]]:
-    return {kind: dict(sorted(Counter(site.rsplit(":", 1)[0] for site in found[kind]).items())) for kind in KINDS}
+    return {kind: dict(sorted(Counter(original_path(site.rsplit(":", 1)[0]) for site in found[kind]).items())) for kind in KINDS}
 
 
 def read_baseline(path: Path = BASELINE) -> dict[str, dict[str, int]]:

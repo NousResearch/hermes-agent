@@ -162,6 +162,7 @@ def test_unload_disposes_every_registration(surface):
     assert _events(home, "on_unload") == [{"event": "on_unload"}]
     assert registry.get_entry("conformance_echo", scope=manager.scope_key) is None
     assert plugins.get_plugin_command_handler("conformance-ping") is None
+    assert "conformance-cli" not in manager._cli_commands
     for registrar, registry_mod, lookup in _PROVIDERS:
         assert _provider(manager, registry_mod, lookup) is None, f"{registrar} survived unload"
     for hook in ("pre_tool_call", "post_tool_call", "transform_tool_result", "pre_command"):

@@ -19,9 +19,9 @@ from tools.environments.sandbox_scope import (
     CrossAgentHandleRefused, HostedSandboxRequired, SandboxIdentity, ScopedEnvironment, sandbox_identity,
 )
 
-A = Scope("acme", "agent-a", Principal("u1"), owner=Principal("u1"), role="owner")
-B = Scope("acme", "agent-b", Principal("u1"), owner=Principal("u1"), role="owner")
-OTHER_TENANT_A = Scope("globex", "agent-a", Principal("u1"), owner=Principal("u1"), role="owner")
+A = Scope("acme", "agent-a", Principal("u1"), owner=Principal("u1"), can_administer=True)
+B = Scope("acme", "agent-b", Principal("u1"), owner=Principal("u1"), can_administer=True)
+OTHER_TENANT_A = Scope("globex", "agent-a", Principal("u1"), owner=Principal("u1"), can_administer=True)
 
 
 @pytest.fixture

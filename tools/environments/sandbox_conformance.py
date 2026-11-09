@@ -47,7 +47,7 @@ STUB_BACKEND = "recording_sandbox"
 
 def hosted_scope_for(agent: str, *, tenant: str = "acme", user: str = "u1") -> Scope:
     principal = Principal(user)
-    return Scope(tenant, agent, principal, owner=principal, role="owner")
+    return Scope(tenant, agent, principal, owner=principal, can_administer=True)
 
 
 @dataclass(frozen=True)

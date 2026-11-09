@@ -1,0 +1,20 @@
+name: undo-send
+title: Undo Send
+repo: https://github.com/helenn-szn/undo-send
+sha: 003b38e21254f00b1017071abad9eba99bca14be
+version: "0.3.0"
+description: "Undo Send for your agent: outward-facing actions (send_message/email tools, MCP connector writes, git push, gh pr/issue create, npm publish, curl POST/PUT/PATCH/DELETE) wait in a short grace window before they run, so you can cancel them from a Desktop status-bar countdown (Undo / Send now), by replying \"undo\" in Telegram or another gateway chat, or with /unsend. On undo the agent is told the action never ran and not to retry it. Disclosure — no network calls, no credentials, no telemetry; delays matching tool calls by up to window_seconds (default 20) including unattended runs, never indefinitely; stores a one-line summary of each held action (URLs reduced to their host), timestamps and outcome in HERMES_HOME/plugin-data/undo-send/pending.db; reads inbound gateway text only to match a bare \"undo\" and acts only for senders Hermes authorizes (fails closed, so the chat reply is off under plugins.isolation: host); runs no shell commands or background processes; fails open, running the tool unchanged if undo-send errors."
+maintainer: helenn-szn
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/helenn-szn/undo-send#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_gateway_dispatch
+  provides_middleware:
+    - tool_execution
+  requires_env: []

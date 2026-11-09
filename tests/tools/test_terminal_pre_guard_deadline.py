@@ -89,3 +89,28 @@ def test_pre_execution_guard_on_the_deadline_worker_sees_the_tool_threads_interr
 
     assert seen == [True], "guard on the deadline worker was blind to the tool thread's interrupt bit"
     assert is_interrupted() is False, "the tool thread's own interrupt view must not leak past the guard"
+
+
+def test_wedged_guard_is_capped_by_the_max_even_for_a_long_command(monkeypatch, stubbed_pipeline):
+    """The guard budget is capped, not just floored: a 600s command must not hand a wedged
+    probe 600s of wall-clock (and one abandoned deadline thread) before failing closed."""
+    monkeypatch.setattr(terminal_module, "_PRE_EXEC_GUARD_MAX_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(terminal_module, "_plan_execution", lambda *_a, **_k: _plan(timeout=600))
+
+    def _wedged_probe(*_a, **_k):
+        time.sleep(1)
+
+    monkeypatch.setattr(terminal_module, "_pre_exec_block", _wedged_probe)
+
+    start = time.monotonic()
+    result = json.loads(terminal_module.terminal_tool("echo ok"))
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.5, f"guard inherited the command timeout ({elapsed:.2f}s) instead of its cap"
+    assert result["status"] == "error"
+    assert stubbed_pipeline == []
+
+
+def test_guard_default_max_stays_below_the_shortest_cron_command_deadline():
+    """Sanity on the shipped constant: the cap is a guard budget, not a rewrite of long commands."""
+    assert 30 <= terminal_module._PRE_EXEC_GUARD_MAX_TIMEOUT_S <= 120

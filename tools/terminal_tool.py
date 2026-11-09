@@ -1412,6 +1412,15 @@ def _run_foreground(
 # (module imports, git probes under load) into a refusal; the wedge it bounds lasted an hour.
 _PRE_EXEC_GUARD_MIN_TIMEOUT_S = 30
 
+# Ceiling for that same share. The guard normally returns in milliseconds, but its identity
+# probe can wedge in a kernel ``open()`` that never comes back; ``run_bounded_sync`` abandons
+# (leaks) one daemon thread per expiry, and the worker stays parked in that open forever. With
+# only a floor, a wedged probe inherits the *command's* timeout — a 600s cron command pays 600s
+# of dead wall-clock and leaks a thread each time, which is how one gateway accumulated 364
+# parked ``deadline-terminal.pre-exec-guard`` threads. The cap bounds both costs and cannot
+# shorten the command itself: ``guard_timeout`` only budgets the guard chain.
+_PRE_EXEC_GUARD_MAX_TIMEOUT_S = 90
+
 
 def _pre_exec_block(
     command: str, *, env: Any, env_type: str, cwd: str,
@@ -1542,7 +1551,10 @@ def terminal_tool(
 
             # The guard chain runs on the deadline worker; keep it answerable to /stop
             # aimed at this tool thread (a remote-backend script read polls is_interrupted()).
-            guard_timeout = max(plan.effective_timeout, _PRE_EXEC_GUARD_MIN_TIMEOUT_S)
+            guard_timeout = min(
+                max(plan.effective_timeout, _PRE_EXEC_GUARD_MIN_TIMEOUT_S),
+                _PRE_EXEC_GUARD_MAX_TIMEOUT_S,
+            )
             _acting_token = acting_for_tid.set(threading.current_thread().ident)
             try:
                 bounded_guard = run_bounded_sync(

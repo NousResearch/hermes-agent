@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from hermes_constants import get_hermes_home
+from hermes_dir_acl import unusable_dir_remedy
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import VALID_CAPABILITY_IDS
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
@@ -151,7 +152,7 @@ def scan_directory(
     try:
         children = sorted(path.iterdir())
     except OSError as exc:
-        logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
+        logger.warning("Skipping unreadable plugin directory %s: %s — to repair, %s", path, exc, unusable_dir_remedy(path))
         return manifests
     for child in children:
         if is_skipped_plugin_dir(child.name):
@@ -168,7 +169,8 @@ def scan_directory(
         except OSError as exc:
             # stat() raises (not "False") on an unsearchable directory — Windows ACLs (WinError 5) or a
             # mode-000 dir; one such plugin must not abort discovery for every other plugin (#111804).
-            logger.warning("Skipping unreadable plugin directory %s: %s", child, exc)
+            logger.warning("Skipping unreadable plugin directory %s: %s — to repair, %s", child, exc,
+                           unusable_dir_remedy(child))
             continue
         if manifest_file is not None:
             manifest = parse_manifest_file(manifest_file, child, source, prefix)

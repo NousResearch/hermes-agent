@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, NoReturn, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_dir_acl import unusable_dir_remedy
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
 # Tests patch these two on the facade; the install/remove siblings read them through it.
@@ -866,14 +867,22 @@ def _default_on(dir_path, source: str) -> bool:
     return kind == "model-provider" or (source == "bundled" and kind in _BUNDLED_DEFAULT_ON_KINDS)
 
 
-def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: int, seen: dict) -> None:
-    """Recursive directory scan matching PluginManager._scan_directory_level."""
+def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: int, seen: dict,
+                skips: Optional[list] = None) -> None:
+    """Recursive directory scan matching PluginManager._scan_directory_level.
+
+    *skips* collects ``(dir, error)`` for every directory this scan could not read. Skipping one
+    such directory keeps every other plugin listed (#111804); reporting it keeps the skip from
+    reading as "the plugin vanished" (#152247), which is what list/Desktop render from.
+    """
     if not base.is_dir():
         return
     try:
         children = sorted(base.iterdir())
     except OSError as exc:
-        logger.warning("Skipping unreadable plugin directory %s: %s", base, exc)
+        logger.warning("Skipping unreadable plugin directory %s: %s (%s)", base, exc, unusable_dir_remedy(base))
+        if skips is not None:
+            skips.append((base, str(exc)))
         return
     for d in children:
         try:
@@ -883,11 +892,13 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
         except (OSError, PluginOperationError) as exc:
             # The PM declaration reader wraps unreadable manifests for install callers;
             # listing still skips them rather than hiding every other plugin.
-            logger.warning("Skipping unreadable plugin directory %s: %s", d, exc)
+            logger.warning("Skipping unreadable plugin directory %s: %s (%s)", d, exc, unusable_dir_remedy(d))
+            if skips is not None:
+                skips.append((d, str(exc)))
             continue
         if info is None:
             if depth == 0:
-                _scan_level(d, source, set(), f"{prefix}/{d.name}" if prefix else d.name, 1, seen)
+                _scan_level(d, source, set(), f"{prefix}/{d.name}" if prefix else d.name, 1, seen, skips)
             continue
         name, version, description, key = info
         if key in seen and source == "bundled":
@@ -896,10 +907,14 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
         seen[key] = (name, version, description, src_label, d, key)
 
 
-def _discover_all_plugins() -> list:
+def _discover_all_plugins(skips: Optional[list] = None) -> list:
     """``(name, version, description, source, dir_path, key)`` for every plugin the loader sees,
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
-    displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``)."""
+    displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``).
+
+    *skips* is filled with ``(dir, error)`` for every plugin directory the scan could not read, so a
+    caller that renders rows can report the ones discovery had to leave out (#152247).
+    """
     seen: dict = {}
     # memory/, context_engine/, computer_use/, model-providers/ and config_backends/ load through dedicated
     # paths, not the PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
@@ -908,11 +923,29 @@ def _discover_all_plugins() -> list:
         (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers", "config_backends"}),
         (_plugins_dir(), "user", set()),
     ):
-        _scan_level(base, source, skip, "", 0, seen)
+        _scan_level(base, source, skip, "", 0, seen, skips)
     # Entry-point plugins are installed as Python packages, so they have no plugin directory.
     for m in discover_entrypoint_manifests():
         seen.setdefault(m.name, (m.name, m.version, m.description, "entrypoint", m.path, m.name))
     return list(seen.values())
+
+
+def unreadable_plugin_rows(skips: list) -> list[dict]:
+    """Listing rows for the plugin directories discovery could not read (#152247).
+
+    One unreadable directory must not stop discovery for the rest (#111804), but a skip nobody
+    reports reads as "the plugin is gone" — ``hermes plugins list`` and Desktop's Plugins page both
+    render a row list, so each skipped directory becomes a row that names the error and the repair.
+    ``status`` is ``unreadable`` (the only truthful value) and ``key`` stays empty, so no surface
+    offers a toggle for a plugin that cannot load. The repair rides ``description`` — the row
+    contract allows no extra fields, and every listing surface renders that caption.
+    """
+    return [{"name": Path(str(path)).name, "key": "", "version": "",
+             "description": f"{error} (to repair, {unusable_dir_remedy(path)})",
+             "source": "user", "status": "unreadable", "portable": False,
+             "install_dir": str(path), "has_desktop_half": False, "settings_schema": [],
+             "servers": []}
+            for path, error in skips]
 
 
 def _category_active_names() -> set:

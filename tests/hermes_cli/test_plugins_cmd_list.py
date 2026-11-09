@@ -44,7 +44,7 @@ def test_cmd_list_plain_compact_output(monkeypatch, capsys):
         ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup"),
         ("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus"),
     ]
-    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda *args, **kwargs: entries)
     monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"web-search-plus"})
     monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
 

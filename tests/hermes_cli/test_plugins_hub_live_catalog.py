@@ -86,7 +86,7 @@ def test_hub_rebuild_and_plugins_list_resolve_the_kill_list_once(monkeypatch, tm
     monkeypatch.setattr(_web_server_memory, "_discover_memory_provider_statuses", list)
     monkeypatch.setattr(_cfg_mod, "get_hermes_home", lambda: Path("/tmp/hermes-home"))
     monkeypatch.setattr(_cfg_mod, "load_config", lambda: {"dashboard": {"hidden_plugins": []}})
-    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: list(_PLUGIN_ROWS))
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda *args, **kwargs: list(_PLUGIN_ROWS))
     monkeypatch.setattr(plugins_cmd, "_get_current_context_engine", lambda: "compressor")
     monkeypatch.setattr(plugins_cmd, "_get_current_memory_provider", lambda: "")
     monkeypatch.setattr(plugins_cmd, "_discover_context_engines", list)

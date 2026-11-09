@@ -1676,7 +1676,8 @@ def _plugin_rows() -> list[dict]:
     out = []
     active = pc._category_active_names()
     owned_tools = _plugin_tool_ownership()
-    for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
+    skips: list = []
+    for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins(skips)):
         # Bundled backends/platforms/providers and the live memory provider run without an explicit
         # enable: _plugin_status reports the truthful default instead of "not enabled" (reads as OFF).
         status = pc._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active)
@@ -1699,6 +1700,8 @@ def _plugin_rows() -> list[dict]:
             **({"update_available": True, "update_target": target}
                if _dir_path and (target := git_updates.get(_dir_path.name)) else {}),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
+    # Directories discovery could not read are rows too, or the Plugins page reads them as uninstalled (#152247).
+    out.extend(pc.unreadable_plugin_rows(skips))
     return out
 
 

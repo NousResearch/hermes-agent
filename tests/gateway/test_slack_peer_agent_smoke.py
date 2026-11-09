@@ -109,6 +109,7 @@ def smoke_adapter():
             "require_mention": True,
             "strict_mention": True,
             "allow_bots": "mentions",
+            "allowed_bots": "B_PEER",
             "allowed_channels": "",
         },
     )
@@ -121,6 +122,8 @@ def smoke_adapter():
     adapter._running = True
     adapter.handle_message = AsyncMock()
     adapter._resolve_user_name = AsyncMock(return_value="Smoke User")
+    adapter._users_info_payload = AsyncMock(return_value={
+        "ok": True, "user": {"id": "U_HUMAN", "is_bot": False}})
     adapter._fetch_thread_context = AsyncMock(return_value="")
     adapter._fetch_thread_parent_text = AsyncMock(return_value="Parent mention")
     return adapter

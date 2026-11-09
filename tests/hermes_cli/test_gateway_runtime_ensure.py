@@ -10,14 +10,16 @@ import time
 
 import pytest
 
+import hermes_dir_acl
 from hermes_cli.gateway_runtime_service import remaining
+
+_REAL_PROCESS_IS_ELEVATED = hermes_dir_acl.process_is_elevated
 
 
 @pytest.fixture(autouse=True)
 def _non_elevated_client(monkeypatch):
     """Every start here is a normal client's. An elevated one is refused before any spawn
     (client_elevated, test_gateway_runtime_elevated_client.py), and hosted Windows runners are elevated."""
-    import hermes_dir_acl
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: False)
 
 
@@ -294,7 +296,10 @@ def test_reserved_profile_without_pid_or_control_is_never_absent(tmp_path):
 
 
 @pytest.mark.platforms("windows")
-def test_native_windows_discovery_uses_same_user_pipe(tmp_path):
+def test_native_windows_discovery_uses_same_user_pipe(tmp_path, monkeypatch):
+    # The pipe server below runs on this process's own token, so both sides of the identity check
+    # read its real elevation: a pinned non-elevated client refuses its own elevated server.
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", _REAL_PROCESS_IS_ELEVATED)
     from gateway.runtime_bootstrap_windows import NativeControlServer
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
     home = tmp_path.resolve()

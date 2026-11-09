@@ -40,7 +40,11 @@ async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, m
     runtime = {"provider": "custom", "api_key": "test-key",
                "base_url": "http://127.0.0.1:1/v1", "model": "test/model",
                "api_mode": "chat_completions"}
-    reached = []
+    reached, closed_holders, real_close = [], [], Persistence.close
+
+    def close_recording(handle):
+        closed_holders.append(raw_holder(handle))
+        real_close(handle)
 
     def fail_turn(*args, **kwargs):
         reached.append(current_execution())
@@ -50,7 +54,7 @@ async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, m
         with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime), \
              patch("run_agent.AIAgent") as agent_class, \
              patch.object(type(authority.persistence.sessions), "end", side_effect=KeyboardInterrupt) as end_session, \
-             patch.object(Persistence, "close", autospec=True, side_effect=Persistence.close) as close:
+             patch.object(Persistence, "close", autospec=True, side_effect=close_recording) as close:
             agent = agent_class.return_value
             agent.session_id = ref.session_id
             agent.run_conversation.side_effect = fail_turn
@@ -61,7 +65,7 @@ async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, m
             # The owner tuple carries the scheduler's execution id (the admission's request id), the
             # id the cron/executions ledger knows; never the admission id (df12cce832c).
             assert reached == [(authority, ref.session_id, job["id"], row["request_id"])]
-            assert raw_holder(agent_class.call_args.kwargs["session_db"]) is holder
+            assert len(closed_holders) == 1 and closed_holders[0] is holder
             end_session.assert_called_once_with(ref.session_id, "cron_incomplete_no_output")
             close.assert_called_once_with(agent_class.call_args.kwargs["session_db"])
             agent.close.assert_called_once()

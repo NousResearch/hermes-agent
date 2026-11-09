@@ -956,10 +956,30 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[st
     return paths, content_paths, entry_paths
 
 
+def _dispatch_patch(file_ops, mode, path, old_string, new_string, replace_all, patch, edits,
+                    resolved, entries):
+    if mode == "replace":
+        if not path:
+            raise ValueError("path required")
+        target = resolved.get(path) or path
+        if edits is not None:
+            if old_string or new_string:  # '' is how schema-filling models leave the other shape unused
+                raise ValueError("Use edits or old_string/new_string, one or the other")
+            return file_ops.patch_multi(target, edits)
+        if old_string is None or new_string is None:
+            raise ValueError("old_string and new_string required")
+        return file_ops.patch_replace(target, old_string, new_string, replace_all)
+    if mode == "patch":
+        if not patch:
+            raise ValueError("patch content required")
+        return file_ops.patch_v4a(_rewrite_v4a_patch_paths_for_host(patch, resolved, entries, file_ops))
+    raise ValueError(f"Unknown mode: {mode}")
+
+
 def patch_tool(mode: str = "replace", path: str | None = None, old_string: str | None = None,
                new_string: str | None = None, replace_all: bool = False, patch: str | None = None,
                task_id: str = "default", cross_profile: bool = False,
-               session_id: str | None = None) -> str:
+               session_id: str | None = None, edits: list | None = None) -> str:
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile``: same semantics as ``write_file``'s flag (mirror-guard
@@ -995,20 +1015,8 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
 
             # Hand the shell layer the RESOLVED targets so both layers agree on
             # which file is edited even when the shell's cwd differs.
-            if mode == "replace":
-                if not path:
-                    return tool_error("path required")
-                if old_string is None or new_string is None:
-                    return tool_error("old_string and new_string required")
-                _replace_target = _path_to_resolved.get(path) or path
-                result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
-            elif mode == "patch":
-                if not patch:
-                    return tool_error("patch content required")
-                result = file_ops.patch_v4a(
-                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
-            else:
-                return tool_error(f"Unknown mode: {mode}")
+            result = _dispatch_patch(file_ops, mode, path, old_string, new_string, replace_all,
+                                     patch, edits, _path_to_resolved, _path_to_entry)
 
             result_dict = result.to_dict()
             if stale_warnings:
@@ -1225,12 +1233,25 @@ PATCH_SCHEMA = {
                 "description": "Replace all occurrences instead of requiring a unique match (default: false)",
                 "default": False,
             },
+            "edits": {
+                "type": "array",
+                "description": "Several edits to this ONE file in one call, applied in order, all-or-nothing. When used, omit old_string/new_string.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "old_string": {"type": "string"},
+                        "new_string": {"type": "string"},
+                        "replace_all": {"type": "boolean"},
+                    },
+                    "required": ["old_string", "new_string"],
+                },
+            },
             # NOTE: handler still accepts `cross_profile` — see write_file's
             # NOTE (mirror-guard bypass only; unadvertised by design).
             # NOTE: handler still accepts `mode` + `patch` (V4A) from ANY
             # model — the schema just doesn't advertise them off-family.
         },
-        "required": ["path", "old_string", "new_string"],
+        "required": ["path"],
     },
 }
 
@@ -1242,7 +1263,8 @@ _PATCH_V4A_DESCRIPTION = (
     "Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. "
     "Returns a unified diff. Auto-runs syntax checks after editing.\n\n"
     "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
-    "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
+    "REQUIRED PARAMETERS: mode, path, old_string, new_string (or edits). "
+    "For several edits to one file, use edits instead of old_string/new_string; they apply in order, all-or-nothing.\n"
     "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
     "REQUIRED PARAMETERS: mode, patch."
 )
@@ -1251,7 +1273,7 @@ _PATCH_V4A_PARAMS = {
     "mode": {
         "type": "string",
         "enum": ["replace", "patch"],
-        "description": "Edit mode. 'replace' (default): requires path + old_string + new_string. 'patch': requires patch content only.",
+        "description": "Edit mode. 'replace' (default): requires path + old_string/new_string or edits. 'patch': requires patch content only.",
         "default": "replace",
     },
     "patch": {
@@ -1363,6 +1385,7 @@ def _handle_patch(args, **kw):
     return record_file_edit("patch", mode, lambda: _owned(kw.get("session_id") or tid, patch_tool,
         mode=mode, path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
+        edits=args.get("edits"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),

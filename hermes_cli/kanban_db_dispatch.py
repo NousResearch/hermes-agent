@@ -999,7 +999,11 @@ def _exit_summary_marker() -> str:
 
 def _log_noise_prefixes() -> tuple[str, ...]:
     from agent.i18n import t
-    return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
+    # The tool feed is the owner's summary of tool calls, not the worker's own words; quoting it
+    # would carry tool output (web pages, file contents) into the board diagnostic and the retry
+    # worker's context.
+    from gateway.session_managed_worker_log import TASK_LOG_TAG
+    return ("session_id:", "Query:", t("cli.chat.initializing_agent"), TASK_LOG_TAG)
 
 
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:

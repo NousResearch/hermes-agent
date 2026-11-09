@@ -42,6 +42,20 @@ def test_handles_on_one_profile_share_a_backend_and_release_on_close():
         assert third.state_meta.get("k") == "v"
 
 
+def test_a_closed_handle_refuses_use_while_another_handle_holds_the_backend():
+    scope = persistence_assembly.profile_scope(home=profile_home("alpha"))
+    first = persistence_assembly.open_persistence(scope)
+    second = persistence_assembly.open_persistence(scope)
+    first.state_meta.set("k", "v")
+    first.close()
+    with pytest.raises(RuntimeError, match="persistence handle used after close"):
+        first.state_meta.set("k", "stale")
+    with pytest.raises(RuntimeError, match="persistence handle used after close"):
+        first.ready()
+    assert second.state_meta.get("k") == "v"
+    second.close()
+
+
 def test_a_handle_is_bound_to_its_own_profile():
     alpha, beta = profile_home("alpha"), profile_home("beta")
     with persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=alpha)) as one:

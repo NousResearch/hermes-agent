@@ -891,6 +891,7 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
         return "handoff ok"
 
     runner._handle_message = AsyncMock(side_effect=fake_handle_message)
+    runner.session_store.peek_session_id.return_value = "cli-session"  # the route the handoff switched
 
     await runner._process_handoff({
         "id": "cli-session",
@@ -928,6 +929,7 @@ async def test_handoff_into_bound_dm_topic_rebinds_the_topic(tmp_path):
     runner.session_store.switch_session.side_effect = lambda key, sid, **_kw: SessionEntry(
         session_key=key, session_id=sid, created_at=datetime.now(), updated_at=datetime.now(),
         platform=Platform.TELEGRAM, chat_type="dm")
+    runner.session_store.peek_session_id.return_value = "cli-session"  # the route the handoff switched
     runner._handle_message = AsyncMock(return_value="handoff ok")
 
     await runner._process_handoff({"id": "cli-session", "title": "CLI work", "handoff_platform": "telegram"})

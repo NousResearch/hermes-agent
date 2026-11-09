@@ -1714,7 +1714,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-            existing.absorb_reply_expected(event)
+            existing.absorb_turn_input(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
             elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
@@ -1729,7 +1729,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
-            existing.absorb_reply_expected(event)
+            existing.absorb_turn_input(event)
             return
     pending_messages[session_key] = event
 
@@ -2480,7 +2480,7 @@ class BasePlatformAdapter(ABC):
             if event.media_urls:
                 existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
                 existing.extend_media(event)
-            existing.absorb_reply_expected(event)
+            existing.absorb_turn_input(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():

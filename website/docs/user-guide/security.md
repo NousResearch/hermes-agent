@@ -304,7 +304,7 @@ With `approvers` narrowed from `["*"]`, only these people can approve or deny a 
 - the user ids listed in `approvers`, using each platform's own id form (Slack `U…`, Telegram numeric id, Matrix `@user:server`);
 - the platform's admins of the chat the approval came from: `allow_admin_from` in a DM, `group_allow_admin_from` in a group (the same scopes slash commands use; a DM admin is not a group admin), from the profile whose bot received the chat.
 
-Identical commands raised at the same time by two different requesters get one prompt each, so one requester's answer never decides the other's.
+Identical commands raised at the same time by two different requesters get one prompt each, so one requester's answer never decides the other's. A turn that carries messages from two members (follow-ups merged while the agent was busy) has no single requester: its approvals go to the listed approvers and admins only.
 
 When anyone else clicks a button, adds a reaction, or sends `/approve`, `/deny` or a bare "yes", they get *Only &lt;name&gt; can answer this approval.* The command stays pending, so the requester can still answer it. Where the platform supports a private reply, only the clicker sees that note: a Slack ephemeral message, a Discord ephemeral reply, a Telegram callback alert, a Feishu toast or a Teams card response. Matrix, WhatsApp and the relay post it in the chat instead.
 

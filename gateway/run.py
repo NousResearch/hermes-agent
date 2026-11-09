@@ -3951,7 +3951,7 @@ class GatewayRunner(
             user_id=str(source.user_id) if source.user_id else "",
             user_id_alt=str(source.user_id_alt) if source.user_id_alt else "",
             user_name=str(source.user_name) if source.user_name else "",
-            actor_id=str(context.actor_user_id or ""), actor_name=str(context.actor_user_name or ""),
+            actor_id=context.actor_user_id, actor_name=context.actor_user_name,  # None: the route user
             scope_id=str(getattr(source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(source, "parent_chat_id", "") or ""),
             session_key=context.session_key,

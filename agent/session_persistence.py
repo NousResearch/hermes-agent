@@ -360,6 +360,17 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
     return batch_rows, batch_msgs
 
 
+def _flush_continues_marked_turn(session_db, session_id, mark) -> bool:
+    """Whether *session_id* carries the claimed turn *mark*'s own transcript continued by a
+    mid-turn compression: the claim stays on its session while the physical transcript moves
+    to a child of its compression lineage."""
+    try:
+        lineage = session_db.get_compression_lineage(session_id)
+    except Exception:
+        return False
+    return bool(lineage) and lineage[0] == mark.session
+
+
 def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[dict], messages: list[dict],
                     storage=None) -> None:
     """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped.
@@ -379,6 +390,12 @@ def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[di
         # profile's) is still the claimed turn whose rows route through the port.
         if session_db is None or (scope is not None and not scope.is_local):
             mark = writing_turn()
+    if (mark is not None and session_db is not None and mark.session != agent.session_id
+            and not _flush_continues_marked_turn(session_db, agent.session_id, mark)):
+        # The turn bound in this context claims another session's rows: a delegated child
+        # shares its caller's turn context but writes its OWN session's transcript, which the
+        # claim's fence never governed. It keeps the store's own append, as it always did.
+        mark = None
     if mark is not None:
         if storage is None:
             from agent.session_storage import session_storage

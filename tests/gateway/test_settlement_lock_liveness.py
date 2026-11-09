@@ -222,6 +222,40 @@ async def test_input_admitted_while_an_idle_claim_is_in_flight_still_runs(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_input_admitted_before_an_idle_claims_transaction_earns_its_own_preflight(tmp_path, monkeypatch):
+    """The claim that read an empty FIFO validated nothing, so a row landing before its own
+    write must not be claimed by that pass: the claim reports the changed head (claims
+    nothing) and the drain re-reads it, so the input still runs on its own checks."""
+    import hermes_state_runtime as rt
+    db, authority = _authority(tmp_path, monkeypatch)
+    ran, claims = [], []
+    claim = rt.claim_session_input
+
+    def racing_claim(*args, **kwargs):
+        if not claims:
+            # The row commits while the claim parks for the writer, BEFORE its transaction
+            # reads the FIFO — the ordering the empty preflight must not absorb.
+            from hermes_state_runtime import admit_session_input
+            admit_session_input(args[0], epoch=authority.epoch, principal_id='api', session_id='s',
+                                request_id='late', payload={'text': 'late'})
+        row = claim(*args, **kwargs)
+        claims.append(row)
+        return row
+    monkeypatch.setattr(rt, 'claim_session_input', racing_claim)
+
+    async def execute(owner, ref, row):
+        ran.append(row['request_id'])
+        owner.pending_results[row['admission_id']] = {'result': {'final_response': 'done'}, 'usage': {}}
+        return 'done'
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    with db:
+        authority._schedule(REF)
+        await asyncio.wait_for(authority.sessions['s'].task, 10)
+        assert ran == ['late']
+        assert claims[0] is False, 'the pass that saw the FIFO empty must not claim an unvalidated head'
+
+
+@pytest.mark.asyncio
 async def test_admission_schedules_its_drain_in_the_admitting_callers_step(tmp_path, monkeypatch):
     """The ledger write runs off-loop, but the drain is scheduled only once the caller holds its
     receipt (the step in which messaging registers its delivery waiter), as it was when admission

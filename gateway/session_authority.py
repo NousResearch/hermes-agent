@@ -25,7 +25,7 @@ from hermes_cli.observability.shared_metrics_busy import busy_row_settled
 from hermes_state_runtime import (
     STEERING, RuntimeStoreError, admit_session_input, resolve_unknown_session_input,
 )
-from hermes_state_port import ANY_HEAD, AdmissionGate, ClaimPreconditions
+from hermes_state_port import AdmissionGate, ClaimPreconditions
 
 # Capped backoff for a claim refused by transient storage (writer lock, full disk).
 _CLAIM_RETRY_MIN_S, _CLAIM_RETRY_MAX_S = 0.25, 5.0
@@ -142,12 +142,23 @@ class _OwnerAdmissionGate(AdmissionGate):
 
 
 class SessionAuthority:
-    def __init__(self, runner, *, profile_id, instance_id, db, epoch):
+    def __init__(self, runner, *, profile_id, instance_id, db, epoch, storage=None):
         self.runner = runner
         self.profile_id = profile_id
         self.instance_id = instance_id
         self.db = db
         self.epoch = epoch
+        # The session storage this authority's admission ledger runs through, chosen by the
+        # owning profile's ``sessions.storage`` (``agent.session_storage``). Resolved once here
+        # and retained (``initialize_session_authority`` resolves it off-loop first and passes
+        # it in), so no admission operation below ever re-reads the profile's config.
+        if storage is None:
+            from agent.session_storage import session_storage
+            storage = session_storage(db)
+        if storage is None:
+            raise RuntimeStoreError('storage_missing')
+        self.storage = storage
+        self._admission_port = storage.admission
         self.sessions = {}
         self.waiters = {}
         self.events = {}
@@ -269,15 +280,11 @@ class SessionAuthority:
         return guard
 
     def admission(self):
-        """The session storage this authority's admission ledger runs through, chosen by the
-        owning profile's ``sessions.storage`` (``agent.session_storage``): today's store behind
-        the port, or the provider a deployment names. Reads and claims below go through it, so
-        the store they land in follows the profile, never the ambient one."""
-        from agent.session_storage import session_storage
-        storage = session_storage(self.db)
-        if storage is None:
-            raise RuntimeStoreError('storage_missing')
-        return storage.admission
+        """The admission port this authority's FIFO ledger runs through: today's store behind
+        the port, or the provider the owning profile's ``sessions.storage`` names. Resolved
+        once when the authority was built and retained, so reads and claims below follow the
+        profile's choice, never the ambient one, with no per-operation config read."""
+        return self._admission_port
 
     def logical_owner(self, session_id):
         """The FIFO/admission identity of a route: the root of its compression lineage.
@@ -1176,10 +1183,13 @@ class SessionAuthority:
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
             # The row these checks validated, never whichever is first when the write runs: a
             # cancellation commits from a worker thread and can advance the FIFO at any point.
+            # The empty preflight keeps claiming nothing (head None, not any row): an input
+            # that lands before this write has had no preclaim checks of its own, so the
+            # claim reports the changed head and the drain re-reads and validates the row.
             row = await tracked_write(self, partial(self.admission().claim_next, epoch=self.epoch,
                                                     session_id=ref.session_id,
                                                     preconditions=ClaimPreconditions(
-                                                        head=first['admission_id'] if first is not None else ANY_HEAD,
+                                                        head=first['admission_id'] if first is not None else None,
                                                         gate=_OwnerAdmissionGate(self._admission_gate()))),
                                       then=partial(self._stamp_claim, ref, live))
             # Input scheduled while this claim's transaction ran may postdate its read: re-read
@@ -1493,7 +1503,8 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     await asyncio.to_thread(release_handed_off_receipts, db, epoch=epoch)
     from gateway.session_bot import release_superseded_bot_chat_at_boot
     await asyncio.to_thread(release_superseded_bot_chat_at_boot, db, runner.session_store)
-    authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch,
+                                storage=storage)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.
     from gateway.session_local_adoption import adopt_local_compressions

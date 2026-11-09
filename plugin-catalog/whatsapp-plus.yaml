@@ -1,0 +1,42 @@
+name: whatsapp-plus
+repo: https://github.com/amitamit10/hermes-whatsapp-plus
+subdir: whatsapp-plus
+sha: 78f3f84ca3ab3eb93b48e747945e4d96095b18e9
+description: >-
+  WhatsApp Plus extends the stock WhatsApp platform by subclassing the adapter with
+  group history, trust tiers, group approval, loop protection, outside-contact handling,
+  voice call daemon integration, and whatsapp_* tools.
+maintainer: amitamit10
+tier: community
+category: platform
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/amitamit10/hermes-whatsapp-plus#readme
+version: "2.0.0"
+readme: true
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools:
+    - whatsapp_send
+    - whatsapp_contacts
+    - whatsapp_history
+    - whatsapp_group_control
+    - whatsapp_status
+    - whatsapp_delete
+    - whatsapp_backfill
+    - whatsapp_settings
+    - whatsapp_react
+    - whatsapp_groups
+    - whatsapp_poll
+    - whatsapp_pairing
+    - whatsapp_campaign
+    - whatsapp_call_me
+    - whatsapp_call_contact
+  provides_hooks:
+    - post_llm_call
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -164,6 +164,11 @@ def _stored_names(obj: Any) -> Iterator[str]:
             slots = (slots,)
         for name in slots or ():
             if isinstance(name, str):
+                # A private name (two leading underscores, at most one trailing) is stored under
+                # the spelling its declaring class mangles it to; reading the bare name is an
+                # AttributeError and the slot's payload would silently stay writable.
+                if name.startswith("__") and not name.endswith("__"):
+                    name = "_" + klass.__name__.lstrip("_") + name
                 yield name
 
 

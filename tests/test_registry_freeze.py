@@ -254,6 +254,36 @@ def test_provider_payload_refuses_after_freeze(frozen_provider):
     assert dict(got.default_headers) == {"X-Probe": "before"}  # copies stay writable
 
 
+def test_provider_private_slot_payload_is_sealed_through_the_real_freeze(monkeypatch):
+    """A private ``__slots__`` name is stored under its mangled spelling, so the seal must read it
+    there: a profile whose payload lives in a private slot is refused like a plain-fielded one
+    after the freeze, or its nested containers stay writable for every tenant."""
+    import providers
+    from providers.base import ProviderProfile
+
+    class SlottedProvider(ProviderProfile):
+        __slots__ = ("__payload",)
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.__payload = {"key": ["original"]}
+
+        def payload(self):
+            return self.__payload
+
+    monkeypatch.setattr(registry_freeze, "_frozen", False)
+    providers.list_providers()
+    for name in ("_REGISTRY", "_ALIASES", "_SOURCES"):
+        monkeypatch.setattr(providers, name, dict(getattr(providers, name)))
+    profile = SlottedProvider(name="slotted-probe")
+    providers.register_provider(profile)
+    freeze_registries()
+    assert providers.get_provider_profile("slotted-probe") is profile
+    with pytest.raises(RegistryFrozen):
+        profile.payload()["key"].append("changed")
+    assert profile.payload() == {"key": ["original"]}
+
+
 def test_provider_tuple_payload_is_detached_and_sealed(monkeypatch):
     """Containers reached through a tuple, in a field or nested in one, are sealed and detached."""
     import providers

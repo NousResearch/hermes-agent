@@ -1,0 +1,81 @@
+name: Encoding Selfcheck
+
+# Payload-encoding gate for this repo.
+#
+# Why this exists: a runtime that reads or rewrites UTF-8 files **without an explicit
+# `encoding=`** silently depends on the launch environment's locale (cron / systemd /
+# container / IDE panel). A payload that arrives over stdio and is decoded by the
+# locale instead of by UTF-8 is worse: latin-1 -> UTF-8 double encoding shows up only
+# once the string lands in a UTF-8 store, so nothing looks wrong in the pipe.
+#
+# This gate runs the standalone self-check suite (`scripts/encoding_selfcheck/`), which
+# is vendored here so CI needs **no Python dependencies** (pure stdlib, python3 only).
+#
+# Semantics — "baseline, only ever shrinks":
+#   * `probe`  : the environment must be safe (file / payload / output faces).
+#   * `static` : findings already listed in `scripts/encoding_selfcheck/baseline.txt`
+#                are known debt and do NOT fail; anything **new** does.
+#   Without the baseline the repo would be red on day one (18 payload entry points
+#   exist today) and a permanently red gate is a gate nobody keeps.
+#
+# Refresh the baseline when the debt is actually fixed:
+#   python3 scripts/encoding_selfcheck/encoding_selfcheck.py static . \
+#       --write-baseline scripts/encoding_selfcheck/baseline.txt
+#
+# The suite is vendored from AgentSwarm `AUTO-20261110-001`; the canonical copy is
+# `scripts/encoding_selfcheck.py` in that repo. Keep the two byte-identical —
+# AgentSwarm's CI enforces that (drift guard).
+
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
+      run-mojibake:
+        description: Also scan tracked data files for mojibake (slow; off by default).
+        type: boolean
+        default: false
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  encoding-selfcheck:
+    name: Encoding payload selfcheck
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 1
+
+      - name: Show interpreter and locale
+        run: |
+          python3 -VV
+          echo "LANG=${LANG:-<unset>} LC_ALL=${LC_ALL:-<unset>} PYTHONIOENCODING=${PYTHONIOENCODING:-<unset>}"
+
+      # Face 1: the environment. Fails when this runner's locale would decode a UTF-8
+      # payload as something else, or when writing non-ASCII to stdout would raise.
+      - name: Probe runtime encoding
+        run: python3 scripts/encoding_selfcheck/encoding_selfcheck.py probe
+
+      # Face 2: the code. New unencoded read-modify-write points fail; known debt does not.
+      - name: Scan for unencoded read-modify-write points
+        run: |
+          python3 scripts/encoding_selfcheck/encoding_selfcheck.py static . \
+            --baseline scripts/encoding_selfcheck/baseline.txt \
+            --fail-on high,payload
+
+      # Face 3 (optional): existing mojibake in tracked data files.
+      - name: Scan tracked data files for mojibake
+        if: ${{ inputs.run-mojibake == true }}
+        run: |
+          python3 scripts/encoding_selfcheck/encoding_selfcheck.py mojibake . \
+            --baseline scripts/encoding_selfcheck/baseline-mojibake.txt

@@ -906,6 +906,9 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
     ):
         """CLI args win over config; ``reasoning`` is per-run only; ``resume`` restores history from SQLite."""
         self._init_display_options(verbose, compact)
+        # Gateway full is a chat-only argument view; classic CLI keeps its all mode.
+        if self.tool_progress_mode == "full":
+            self.tool_progress_mode = "all"
         self._init_model_routing(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                  checkpoints, pass_session_id, ignore_rules)
         self._init_runtime_state(resume)

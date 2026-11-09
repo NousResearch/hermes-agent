@@ -22,10 +22,10 @@ from persistence.housekeeping.maintenance import (
 )
 
 from .._backend import SQLiteStore, register_repository, translated
-from .._schema_ddl import _sql_json_extract
 from ..conversation._store.core import _delete_unreferenced_system_prompts
 from ..conversation._store.retirement import retire_prunable
 from ..conversation._store.sessions import _cwd_prefix_clause, _set_lineage_column_in_transaction
+from ..conversation._store.sql_common import _non_continuation_child_sql
 from ..conversation._store.write_guards import _guarded_ids, _write_guards_reject
 from ..gateway._routes import _sql_session_last_active
 from ._portability import SessionPortability
@@ -58,17 +58,6 @@ def _placeholders(items) -> str:
 def _escape_like(text: str) -> str:
     """Escape LIKE wildcards (``%``, ``_``) so derived text matches literally; pair with ``ESCAPE '\\'``."""
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
-    """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
-    (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
-    inherit ``model_config`` verbatim, so a marker naming another row is inherited, not a fork.
-    ``child`` is the column prefix (``""``, ``"c."``)."""
-    return "".join(
-        f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
-        for marker in ("_branched_from", "_delegate_from", "_reset_from")
-    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
 
 
 def _like(value: str) -> str:

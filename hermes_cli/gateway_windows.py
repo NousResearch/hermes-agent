@@ -514,16 +514,19 @@ def refresh_dead_launcher(home: Path, task_name: str) -> bool:
     if (interpreter is None or not interpreter.is_absolute() or interpreter.exists()
             or os.path.normcase(str(Path(configured).resolve())) != os.path.normcase(str(home.resolve()))):
         return False
-    scripts = _render_launchers(_launcher_settings(home), vbs.with_suffix(".cmd"))
-    if all(path.exists() and path.read_bytes() == content.encode(encoding) for path, content, encoding in scripts):
-        return False
-    try:
-        _write_launcher_scripts(scripts)
-    except OSError:
-        logger.warning("Could not re-render the gateway launcher %s", vbs, exc_info=True)
-        return False
-    logger.info("Re-rendered the gateway launcher %s: its interpreter %s no longer exists", vbs, interpreter)
-    return True
+    rewritten = False
+    # One file at a time: the task and the Startup entry run the .vbs, so a broken .cmd helper must not
+    # hold its repair back, and no failure here may stop discovery from querying the task.
+    for path, content, encoding in _render_launchers(_launcher_settings(home), vbs.with_suffix(".cmd")):
+        try:
+            if not path.exists() or path.read_bytes() != content.encode(encoding):
+                _write_launcher_scripts([(path, content, encoding)])
+                rewritten = True
+        except OSError:
+            logger.warning("Could not re-render the gateway launcher %s", path, exc_info=True)
+    if rewritten:
+        logger.info("Re-rendered the gateway launcher %s: its interpreter %s no longer exists", vbs, interpreter)
+    return rewritten
 
 
 def launcher_script_drift() -> list[str]:

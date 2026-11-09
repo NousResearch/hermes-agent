@@ -19,7 +19,8 @@ from pm.registry import walk
 from pm.store import current_target
 
 # npm stays beside pnpm: website/ and the sidecars are standalone npm projects.
-_ROOTS = {"python": ["uv"], "node": ["npm", "pnpm"], "all": ["npm", "pnpm", "uv"]}
+# just runs the repository's developer recipes in every job.
+_ROOTS = {"python": ["just", "uv"], "node": ["just", "npm", "pnpm"], "all": ["just", "npm", "pnpm", "uv"]}
 
 
 def parse_package_list(value: str) -> list[str]:

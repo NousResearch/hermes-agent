@@ -406,7 +406,9 @@ def cmd_install(args) -> int:
     # sync the venv in one breath, so a native build (Windows ARM64 source
     # wheels) resolved compilers and git from the host PATH. Publish every
     # tool first and put it on PATH; sync only after that.
-    tool_names = names if args.names else tool_roots(names)
+    from pm.testenv import developer_tools
+
+    tool_names = [*(names if args.names else tool_roots(names)), *developer_tools(test_environment)]
     if _install_names(tool_names, target=cross_target, verify=not trust_recorded):
         return 1
     if args.names and not cross_target:

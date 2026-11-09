@@ -51,7 +51,7 @@ def test_ci_setup_exports_python_first_and_no_installer_policy(tmp_path, monkeyp
     for name, path in files.items():
         monkeypatch.setenv(name, str(path))
     setup_toolchain.install(SimpleNamespace(toolchain="python", packages=[], home=tmp_path / "ci"))
-    assert ensured == [("uv", True)]  # ensure already walks uv's Python dependency.
+    assert ensured == [("just", True), ("uv", True)]  # ensure already walks uv's Python dependency.
     assert composed == [("python",)]
     outputs = dict(line.split("=", 1) for line in files["GITHUB_OUTPUT"].read_text(encoding="utf-8").splitlines())
     exported = dict(line.split("=", 1) for line in files["GITHUB_ENV"].read_text(encoding="utf-8").splitlines())

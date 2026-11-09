@@ -18,6 +18,13 @@ NAME = "test-environment"
 # CI lanes pass their wider provider matrix explicitly.
 DEFAULT_TEST_EXTRAS = ("all",)
 GROUPS = ("dev", "test")
+# Optional pm packages a checkout's developers run; user installs never request them.
+DEVELOPER_TOOLS = ("just",)
+
+
+def developer_tools(test_environment: str | None) -> tuple[str, ...]:
+    """The developer tools an install requests: all of them with ``--test-environment``, else none."""
+    return DEVELOPER_TOOLS if test_environment is not None else ()
 
 
 def testenv_root(project_root: Path) -> Path:

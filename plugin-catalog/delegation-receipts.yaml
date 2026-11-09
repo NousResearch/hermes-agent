@@ -1,23 +1,28 @@
 name: delegation-receipts
 repo: https://github.com/dacheah/delegation-receipts
-sha: aca1e72e26a30d2354e77ec8f907c8730d03a618
+sha: 60cf2445a45d66df8592e21adae276ac64b035d8
 description: >-
   Verify what a subagent says it did before the parent reports the work as done.
   A "receipts" delegation backend asks every child to end its reply with a receipt
   (status, the files it changed, and the one command that proves the work); when a
   child stops, the plugin resolves and hashes each claimed path, matches every claim
   against the write targets that child's own tool history records so it cannot take
-  credit for a file someone else wrote, refuses a cited command that is off an
-  allow-list, is a path rather than a bare name, launches another program, or carries
-  inline evaluation, then re-runs it argv-style with no shell, in its own process
-  group, with output and time bounded. A rejection is appended to the delegate_task
-  result the parent reads, with the failing output attached; a background child's
-  verdict arrives on the parent's next turn instead. Every check stays in a local
+  credit for a file someone else wrote, and checks the cited command against a closed
+  set of fixed check forms (pytest, uv run --no-sync pytest, cargo/go/npm/pnpm/yarn
+  test), refusing a path rather than a bare name, a launcher, or inline evaluation.
+  Host re-run is opt-in and off by default, because a hook-driven re-run bypasses
+  Hermes' dangerous-command approval and the child's terminal backend; when an
+  operator enables it, the command is re-run argv-style with no shell, in its own
+  process group, with output and time bounded. Either way a verdict reaches the
+  parent: a rejection is appended to the delegate_task result, with the failing
+  output attached when there is one; a background child's verdict arrives on the
+  parent's next turn instead. Every check stays in a local
   JSONL ledger shown by `hermes receipts`. One command per receipt, one receipt per
   child. Disclosure — the verified command is written by the
-  subagent, which is the party being checked, and runs with your privileges in the
-  agent's working directory: allow-listed executable, no shell, argv-split, 120 s
-  default timeout, filtered environment. The child's reply text and claimed paths are
+  subagent, which is the party being checked; with host re-run enabled it runs with
+  your privileges in the agent's working directory: fixed check form, no shell,
+  argv-split, 120 s default timeout, filtered environment. The child's reply text and
+  claimed paths are
   read locally and never transmitted, the ledger is local at
   <HERMES_HOME>/plugin-data/delegation-receipts/ledger.jsonl, and the plugin makes no
   network calls and holds no credentials. Verification runs on the host, so no model

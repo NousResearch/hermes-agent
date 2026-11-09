@@ -190,5 +190,17 @@ class ReferenceExtensionRegistry(ExtensionRegistry):
     def enabled_extensions(self, *, kind=None):
         scope = self._pin()
         with self.store.lock:
-            return [self._row(r) for r in self._visible_rows(scope, kind=kind)
-                    if r["enabled"] and self.store.switches.get(self._switch_key(self.agent, r))]
+            # One entry per name, resolved exactly as ``get`` resolves it, then offered when it
+            # is enabled and this agent's switch for that entry is on.
+            offered = []
+            for name in sorted({key[1] for key in self.store.entries
+                                if self._visible(scope, key[0])}):
+                row = self._resolve(scope, name)
+                if row is None or not row["enabled"]:
+                    continue
+                if kind is not None and row["kind"] != kind:
+                    continue
+                if not self.store.switches.get(self._switch_key(self.agent, row)):
+                    continue
+                offered.append(self._row(row))
+            return offered

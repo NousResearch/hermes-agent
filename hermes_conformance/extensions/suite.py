@@ -422,6 +422,27 @@ class LevelConformance:
             install(a1, name="dup")                           # the owner-wide one shadows it
             assert a1.agent_enabled("dup") is False           # a fresh entry starts switched off
 
+    def test_the_offered_list_resolves_one_entry_per_name_as_get_does(self, level):
+        """``enabled_extensions`` offers one entry per name, by the same precedence as ``get``:
+        a name at both levels — both switched on — is offered as its owner-wide entry to its
+        owner, and as its tenant-wide entry to everyone else, never as both."""
+        a1 = level.open("a1")
+        with level.bind_provisioning("a1"):
+            install(a1, name="dup", level="tenant")
+        with level.bind("a1"):
+            assert a1.set_agent_enabled("dup", True) is True  # the tenant-wide one's switch
+            install(a1, name="dup")
+            assert a1.set_agent_enabled("dup", True) is True  # the owner-wide one's switch too
+            offered = a1.enabled_extensions()
+            assert [r["level"] for r in offered] == ["owner"]
+            assert offered[0] == a1.get("dup")
+        with level.bind("b"):
+            theirs = level.open("b")
+            assert theirs.set_agent_enabled("dup", True) is True
+            offered = theirs.enabled_extensions()
+            assert [r["level"] for r in offered] == ["tenant"]
+            assert offered[0] == theirs.get("dup")
+
     def test_pinning_an_agent_never_widens_the_tenant(self, level):
         """A scope naming the same owner's OTHER agent is still a foreign pin on this one's
         registry: it is refused, and the refusal says nothing about the rows."""

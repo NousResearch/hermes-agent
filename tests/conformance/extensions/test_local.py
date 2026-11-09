@@ -84,10 +84,17 @@ class TestLocalSwitch(SwitchConformance):
     pass
 
 
+def _mutant(monkeypatch):
+    """Apply the broken backend the mutant wave names, the way the ``backend`` fixture does."""
+    from tests.conformance.extensions.mutants import apply_mutant
+    apply_mutant(monkeypatch)
+
+
 def test_every_administration_refusal_happens_before_the_file_is_loaded(tmp_path, monkeypatch):
     """A scope that may not administer is refused for every write before the registry file is
     read, so the refusal is the same for an entry the registry holds, a foreign one and a
     missing one — and nothing is read on the way."""
+    _mutant(monkeypatch)
     home = tmp_path / "a"
     home.mkdir()
     reg = LocalExtensionRegistryProvider().open(home)
@@ -106,11 +113,12 @@ def test_every_administration_refusal_happens_before_the_file_is_loaded(tmp_path
                     call()
 
 
-def test_the_local_backend_refuses_tenant_wide_entries(tmp_path):
+def test_the_local_backend_refuses_tenant_wide_entries(tmp_path, monkeypatch):
     """The registry's local exception: one tenant, one owner and one agent per file, so an
     entry has nothing to be tenant-wide over — the local backend keeps entries owner-wide, as
     the local owner's, and refuses the tenant level outright. (An entry never sits at the
     agent level by design; the per-agent switch alone is the agent's row.)"""
+    _mutant(monkeypatch)
     home = tmp_path / "a"
     home.mkdir()
     reg = LocalExtensionRegistryProvider().open(home)
@@ -120,11 +128,12 @@ def test_the_local_backend_refuses_tenant_wide_entries(tmp_path):
     assert not (home / REGISTRY_FILE).exists()  # refused before anything was written
 
 
-def test_removing_an_entry_drops_only_its_own_switch(tmp_path):
+def test_removing_an_entry_drops_only_its_own_switch(tmp_path, monkeypatch):
     """A switch row belongs to one entry — its level, owner and name — so removing an entry
     drops its own switch alone. The local install refuses tenant-wide entries, so the other
     entry this name resolves to is written the way the file records it, the shape a hosted
     store holds."""
+    _mutant(monkeypatch)
     home = tmp_path / "a"
     home.mkdir()
     reg = LocalExtensionRegistryProvider().open(home)
@@ -147,3 +156,29 @@ def test_removing_an_entry_drops_only_its_own_switch(tmp_path):
         tenant_row = reg.get("dup")
         assert tenant_row is not None and tenant_row["version"] == "tenant"
         assert reg.agent_enabled("dup") is True             # the tenant row's switch survived
+
+
+def test_the_offered_list_resolves_one_name_as_get_does(tmp_path, monkeypatch):
+    """The offered list says what ``get`` says: one entry per name, by the same precedence —
+    never both levels of one name, however both are switched on. The local install refuses
+    tenant-wide entries, so the second level of the name is written the way the file records
+    it, the shape a hosted store holds."""
+    _mutant(monkeypatch)
+    home = tmp_path / "a"
+    home.mkdir()
+    reg = LocalExtensionRegistryProvider().open(home)
+    (home / REGISTRY_FILE).write_text(json.dumps({
+        "entries": [
+            {"name": "dup", "kind": "plugin", "version": "tenant", "content_hash": "h1",
+             "manifest": {}, "scan_result": None, "enabled": True, "level": "tenant",
+             "owner": None},
+            {"name": "dup", "kind": "plugin", "version": "owner", "content_hash": "h2",
+             "manifest": {}, "scan_result": None, "enabled": True, "level": "owner",
+             "owner": {"kind": "principal", "id": LOCAL_OWNER.id}},
+        ],
+        "switches": {"tenant:dup": True}}), encoding="utf-8")
+    with bind_profile_scope(home):
+        assert reg.set_agent_enabled("dup", True) is True  # the resolved one's own switch
+        offered = reg.enabled_extensions()
+        assert [r["version"] for r in offered] == ["owner"]
+        assert offered[0] == reg.get("dup")

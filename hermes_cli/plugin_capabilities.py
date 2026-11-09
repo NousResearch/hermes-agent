@@ -47,6 +47,13 @@ _CAPABILITY_ROWS = (
     ("llm.side_question", (),
      "Ask your agent a short question after each turn. It sees the "
      "whole session, including memory, and spends your main model's tokens."),
+    ("state.detached_result", (),
+     "Write one durable detached result into a session's transcript "
+     "(a delegation delivery or a completion note); the row is recorded "
+     "once, survives compaction, and is visible to that session's agent."),
+    ("state.read", (),
+     "Read sessions, transcripts and kanban tasks of this profile "
+     "(read-only; never creates or migrates a board)."),
     ("gateway.platform_actions", ("allow_platform_actions",),
      "Act on connected chat platforms as the gateway bot "
      "(add reactions, rename threads) via ctx.platform_actions"))

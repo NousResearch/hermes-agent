@@ -63,9 +63,8 @@ jobs:
         run: just electron-runtime
 
       - name: Build the desktop app
-        working-directory: apps/desktop
         # The generator uses the runtime's Pillow + resvg-py, not a build-only venv.
-        run: pnpm run build
+        run: just desktop-build
 
       # webapp-gateway-attach.spec.ts drives the Webapp from a real browser: it needs the
       # Webapp renderer and a Chromium Playwright can launch.

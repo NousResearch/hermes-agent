@@ -1,6 +1,5 @@
 set default-list
 set shell := ["bash", "-euo", "pipefail", "-c"]
-set windows-shell := ["bash", "-euo", "pipefail", "-c"]
 
 # Provision the PM tools, Python runtime and test environment
 [group('setup')]
@@ -72,6 +71,11 @@ test-js:
 [group('dev')]
 desktop:
     pnpm --dir apps/desktop run dev
+
+# Build the desktop app from source (apps/desktop/scripts/build.mjs), as its E2E suites run it
+[group('dev')]
+desktop-build:
+    pnpm --dir apps/desktop run build
 
 # Start the TUI in watch mode
 [group('dev')]

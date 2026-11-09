@@ -18,10 +18,14 @@ so the newer cancels the older. The older run's gate then fails on
 ``cancelled`` jobs, and branch protection requires the gate of *every* check
 suite on the head SHA, so the PR stays blocked even after the surviving run
 passes. With the flag, a gate whose only non-successes are ``cancelled`` jobs
-asks the Actions API whether another run of the same workflow, event and head
-SHA is still live or succeeded. If so, that run's own gate carries the
-required verdict, and this one passes. Any failure, missing job, API error or
-lack of such a run keeps the gate failing.
+asks the Actions API whether a *newer* run (strictly greater run id) of the
+same workflow, event and head SHA is still live or succeeded. If so, that run's
+own gate carries the required verdict, and this one passes. Delegation only
+points forward, so it is acyclic: the newest cancelled run can never pass, and
+two cancelled duplicates cannot vouch for each other. Only a run's first
+attempt may delegate; a rerun (``run_attempt`` > 1) of a cancelled run fails as
+before. Any failure, missing job, API error or lack of such a run keeps the
+gate failing.
 
     echo "$NEEDS" | python3 scripts/ci/required_results.py [--release | --allow-superseded]
 """
@@ -100,16 +104,25 @@ def only_cancellations(needs: dict[str, dict[str, Any]] | None, verdict: dict[st
 
 
 def find_superseding_run(own: dict[str, Any], runs: list[dict[str, Any]]) -> int | None:
-    """Id of another live or successful run of ``own``'s workflow on its head SHA."""
+    """Id of a newer live or successful run of ``own``'s workflow on its head SHA.
+
+    Only a strictly newer run id qualifies, so delegation is acyclic and the
+    newest cancelled run always fails. A rerun of ``own`` (``run_attempt`` other
+    than 1) never delegates: the newer twin may itself have been cancelled.
+    """
+    own_id = own.get("id")
+    if not isinstance(own_id, int) or own.get("run_attempt") != 1:
+        return None
     for run in runs:
-        if run.get("id") == own.get("id"):
+        run_id = run.get("id")
+        if not isinstance(run_id, int) or run_id <= own_id:
             continue
         if any(run.get(key) != own.get(key) for key in ("workflow_id", "head_sha", "event")):
             continue
         if run.get("status") in _LIVE_STATUSES or (
             run.get("status") == "completed" and run.get("conclusion") == "success"
         ):
-            return run["id"]
+            return run_id
     return None
 
 
@@ -163,7 +176,7 @@ def main(argv: list[str] | None = None, fetch: Callable[[str], Any] = _github_ge
     parser.add_argument(
         "--allow-superseded",
         action="store_true",
-        help="Pass a gate failed only by cancelled jobs when a duplicate run of the same head SHA is live.",
+        help="Pass a gate failed only by cancelled jobs when a newer duplicate run of the same head SHA is live.",
     )
     args = parser.parse_args(argv)
     if args.release and args.allow_superseded:

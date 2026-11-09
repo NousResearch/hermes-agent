@@ -812,6 +812,14 @@ def _publish_inactive(change) -> None:
 def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool, shipped, frozen):
     """Return (enabled extras, expected stamp, package inputs) this sync must reach."""
     if repair:
+        if not fact:
+            from pm.extras import pre_pm_baseline
+
+            if len(pre_pm_baseline(package.project_root())) > 1:
+                raise InstallError(
+                    "venv", "no recorded dependency selection to repair; the old checkout venv has extras",
+                    "run `hermes pm install` to carry them into PM before using `hermes pm repair`",
+                )
         if fact and (not isinstance(fact.get("extras"), list)
                      or any(not isinstance(extra, str) for extra in fact["extras"])
                      or not isinstance(fact.get("stamp"), str) or not fact["stamp"]):

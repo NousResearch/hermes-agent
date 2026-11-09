@@ -289,3 +289,16 @@ def test_a_bare_venv_holds_no_old_install(legacy_tree):
     pm.sync_venv(["slack"], explicit=True)
 
     assert _recorded(legacy_tree) == ["slack"]
+
+def test_repair_without_a_recorded_selection_preserves_pre_pm_extras(legacy_tree):
+    """Repair cannot replace an unrecorded legacy selection with [all] and silently drop SDKs."""
+    import pm
+    from pm.package import InstallError
+    from pm.recovery import repair_dependencies
+
+    with pytest.raises(InstallError, match="no recorded dependency selection to repair"):
+        repair_dependencies(legacy_tree)
+
+    assert _recorded(legacy_tree) is None
+    pm.sync_venv(["all"], explicit=True)
+    assert {"all", "telegram", "discord", "fal"} <= set(_recorded(legacy_tree) or ())

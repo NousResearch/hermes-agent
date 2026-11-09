@@ -271,6 +271,24 @@ class TestSocketModeTeardown:
         )
 
 
+    @pytest.mark.asyncio
+    async def test_drain_stop_inbound_closes_socket_and_cannot_be_reconnected(self, adapter):
+        """The gateway drain's stop_inbound closes Socket Mode (Bolt acks before the listener runs,
+        so a post-withdrawal envelope would be lost) and nothing may reconnect it afterwards."""
+        handler = _FakeHandler()
+        task = _attach(adapter, handler)
+        adapter._socket_watchdog_interval_s = 0.01
+        adapter._ensure_socket_watchdog()
+        await asyncio.sleep(0)
+
+        await adapter.stop_inbound()
+        await adapter._restart_socket_mode("socket task stopped")
+
+        assert task.done() and handler.client.closed
+        assert adapter._handler is None and adapter._socket_mode_task is None
+        assert adapter._socket_watchdog_task is None
+
+
 class TestSocketModeRestart:
 
 

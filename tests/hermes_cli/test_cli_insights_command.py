@@ -85,7 +85,7 @@ def test_show_insights_opens_read_only(existing_store):
          patch("agent.insights.InsightsEngine", _InsightsEngineStub):
         _InsightsEngineStub.calls = []
         cli_obj._show_insights("/insights 7")
-    door.assert_called_once_with(existing_store)
+    door.assert_called_once_with(existing_store.parent)
     door.return_value.__exit__.assert_called_once()
 
 
@@ -94,7 +94,7 @@ def test_subcommand_insights_opens_read_only(existing_store):
     with patch("persistence_assembly.open_persistence_reader", door), \
          patch("agent.insights.InsightsEngine", _InsightsEngineStub):
         cmd_insights(SimpleNamespace(days=30, source=None))
-    door.assert_called_once_with(existing_store)
+    door.assert_called_once_with(existing_store.parent)
     door.return_value.__exit__.assert_called_once()
 
 

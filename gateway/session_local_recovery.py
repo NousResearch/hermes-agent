@@ -3,7 +3,6 @@ import asyncio
 import contextlib
 import json
 import logging
-from pathlib import Path
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
@@ -410,14 +409,13 @@ def reopen_local_session(authority, ref):
 
 
 def reset_local_session(store, old_entry, session_id, now, display_name):
-    from persistence_assembly import store_location
     entry = SessionEntry(old_entry.session_key, session_id, now, now,
         origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
         display_name=display_name if display_name is not None else old_entry.display_name,
         is_fresh_reset=True)
     handle = store._persistence_for_key(old_entry.session_key)
     epochs = getattr(store, '_local_authority_epochs', None) or {}
-    epoch = (epochs.get(Path(store_location(handle.scope)).resolve(), store._local_authority_epoch) if handle is not None
+    epoch = (epochs.get(handle.scope.hermes_home_key, store._local_authority_epoch) if handle is not None
              else store._local_authority_epoch)
     handle.bindings.reset_target(epoch=epoch, parent_session_id=old_entry.session_id, entry=entry.to_dict())
     store._entries[old_entry.session_key] = entry

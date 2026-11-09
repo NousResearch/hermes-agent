@@ -16,6 +16,7 @@ from tools import delegate_tool as delegate
 from tools import delegate_tool_results as results
 from tools.process_registry import process_registry
 from tests.tools.test_delegate_output_schema import _StubChild, _StubParent
+from persistence_assembly import store_location
 
 SECRET = "sk-ant-" + "syntheticdelegationcredential" * 3
 PEM = (
@@ -100,7 +101,7 @@ def test_old_durable_results_are_redacted_on_read_replay_and_failure_roster():
         "error": SECRET,
     }
     result = {"status": "failed", "summary": SECRET, "error": SECRET}
-    with closing(sqlite3.connect(ad._db_path())) as conn, conn:
+    with closing(sqlite3.connect(store_location(ad._scope()))) as conn, conn:
         conn.execute(
             "UPDATE async_delegations SET state='failed',completed_at=?,event_json=?,result_json=?",
             (time.time(), json.dumps(event), json.dumps(result)),
@@ -212,7 +213,7 @@ def test_parent_copy_honours_opt_out_while_persisted_copies_stay_forced(
     monkeypatch.setattr(process_registry, "completion_queue", target)
     ad._push_completion_event(record, {"status": "completed", "summary": SECRET}, "completed")
     assert SECRET in target.get_nowait()["summary"]
-    with closing(sqlite3.connect(ad._db_path())) as conn:
+    with closing(sqlite3.connect(store_location(ad._scope()))) as conn:
         row = conn.execute("SELECT event_json,result_json FROM async_delegations").fetchone()
     assert SECRET not in "".join(row)
 
@@ -248,6 +249,6 @@ def test_forced_copies_are_projected_from_complete_output_before_the_parent_budg
     monkeypatch.setattr(process_registry, "completion_queue", target)
     ad._push_completion_event(record, {"results": entries}, "completed")
     assert body in target.get_nowait()["results"][0]["summary"]
-    with closing(sqlite3.connect(ad._db_path())) as conn:
+    with closing(sqlite3.connect(store_location(ad._scope()))) as conn:
         row = conn.execute("SELECT event_json,result_json FROM async_delegations").fetchone()
     assert body[-43:] not in "".join(row) and SECRET not in "".join(row)

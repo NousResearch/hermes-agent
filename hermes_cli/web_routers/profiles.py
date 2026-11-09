@@ -212,6 +212,9 @@ def _read_profile_db(name: str, home, errors: Optional[list[dict[str, str]]],
     gets the missing declared tables/columns ONCE from the open helper, and only while no gateway
     owns it; an owned store is reported in ``errors`` with the restart remedy (#140315)."""
     db_path = _profile_state_db(home)
+    if db_path is None:
+        _no_store_file(name, errors)
+        return None
     if not db_path.exists():
         return None
     store = None
@@ -288,8 +291,14 @@ def _sidebar_profile_cache_clear():
         _SIDEBAR_PROFILE_CACHE.clear()
 
 
-def _profile_state_db(home) -> Path:
+def _profile_state_db(home) -> Optional[Path]:
     return store_location(profile_scope(home=Path(home)))
+
+
+def _no_store_file(name: str, errors: Optional[list[dict[str, str]]]) -> None:
+    if errors is not None:
+        errors.append({"profile": name, "error": "the sidebar reads a profile's session store file, and this "
+                                                 "profile's store has no file"})
 
 
 def _slice_has_rows(slices: dict[str, Any]) -> bool:
@@ -515,6 +524,9 @@ def get_profiles_sessions_sidebar(
             continue
         scanned.append((name, home))
         db_path = _profile_state_db(home)
+        if db_path is None:
+            _no_store_file(name, errors)
+            continue
         if not db_path.exists():
             continue
         recents_subagents = subagent_listing_scope(home, exclude_sources=recents_exclude_list or None)

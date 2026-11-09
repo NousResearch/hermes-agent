@@ -128,7 +128,7 @@ def test_groups_list_pages_the_actor_visible_rooms(tmp_path):
         def authorize_room(subject, room_id):
             if not room_id.startswith('m'):
                 raise AuthorityRefusal('permission_denied')
-        service = SimpleNamespace(db_path=db_path, authorize_room=authorize_room,
+        service = SimpleNamespace(db_path=db_path, store=db, placement='profile', authorize_room=authorize_room,
                                   runtime=SimpleNamespace(status=lambda: {'running': True}))
         authority = SimpleNamespace(db=db, hosted_room_service=service, persistence=storage_handle(tmp_path))
         actor = SimpleNamespace(subject='me')

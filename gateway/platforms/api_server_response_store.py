@@ -177,16 +177,17 @@ class ResponseStore:
             'SELECT a.admission_id, k.request_key FROM response_keys k JOIN response_admissions a '
             'ON a.request_key=k.request_key WHERE k.settled_at IS NULL').fetchall())
         from persistence import STORE_FAILURES
-        from persistence_assembly import open_persistence_reader, profile_scope, store_location
-        state_db = store_location(profile_scope(home=Path(self._db_path).parent))
-        if not pending or state_db is None or not state_db.is_file():
+        from persistence_assembly import open_persistence_reader, profile_scope, store_exists
+        scope = profile_scope(home=Path(self._db_path).parent)
+        if not pending or not store_exists(scope):
             return
         try:
-            with open_persistence_reader(state_db) as canon:
+            with open_persistence_reader(scope.profile_dir) as canon:
                 terminal = canon.admissions.terminal_ids(list(pending))
         except STORE_FAILURES:
             # Unreadable canonical store: nothing is proven terminal, so nothing is settled.
-            logger.debug('Responses identity settlement skipped: %s unreadable', state_db, exc_info=True)
+            logger.debug('Responses identity settlement skipped: the store of %s is unreadable', scope.profile_dir,
+                         exc_info=True)
             return
         from gateway.platforms.api_server_response_identity import durable_response_id
         self._conn.executemany(

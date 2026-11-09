@@ -8,6 +8,7 @@ import pytest
 
 import hermes_state_wal as state_wal
 import hermes_yaml as yaml
+from persistence_assembly import store_location
 
 
 def _write_config(monkeypatch: pytest.MonkeyPatch, tmp_path, config: object) -> None:
@@ -326,14 +327,14 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
         session_db.close()
 
     async_delegation.mark_completion_delivered("journal-mode-probe")
-    ledger_conn = sqlite3.connect(async_delegation._db_path())
+    ledger_conn = sqlite3.connect(store_location(async_delegation._scope()))
     try:
         observed["async_delegation"] = ledger_conn.execute("PRAGMA journal_mode").fetchone()[0].lower()
     finally:
         ledger_conn.close()
 
     delivery_ledger.mark_attempting("journal-mode-probe")
-    with open_persistence_reader(delivery_ledger._db_path()) as reader, raw_holder(reader)._read_ctx() as conn:
+    with open_persistence_reader(store_location(delivery_ledger._scope())) as reader, raw_holder(reader)._read_ctx() as conn:
         observed["delivery_ledger"] = conn.execute("PRAGMA journal_mode").fetchone()[0].lower()
 
     kanban_conn = kbc.connect(db_path=tmp_path / "kanban.db")

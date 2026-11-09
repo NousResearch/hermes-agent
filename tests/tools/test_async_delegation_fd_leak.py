@@ -15,10 +15,11 @@ import pytest
 from hermes_cli.sqlite_safe_read import has_live_connection
 from persistence import PermanentStoreError
 from tools import async_delegation as ad
+from persistence_assembly import profile_scope
 
 
 def _point_ledger(monkeypatch, tmp_path):
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(ad, "_scope", lambda: profile_scope(home=tmp_path))
     return ad
 
 

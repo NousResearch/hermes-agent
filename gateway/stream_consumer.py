@@ -826,7 +826,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if new_id is None or new_id == reply_to:
                 heads_delivered = False  # keep the full text intact for the gateway fallback
                 break
-            reply_to = new_id
+            # An ack-lost head has no id to thread against; it is still shown.
+            reply_to = None if new_id == "__no_edit__" else new_id
 
         if heads_delivered:
             # truncate_message suffixes multi-chunk output with " (n/n)"; the tail is the LIVE

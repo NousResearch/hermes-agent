@@ -40,6 +40,7 @@ _SKIP_PARTS = {"tests", "__pycache__", "node_modules", "dist", ".venv", "venv"}
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from hermes_agent.compat.paths import original_module, original_path
 from hermes_cli.plugin_validate_private_imports import (
     _hermes_packages,
     _imported,
@@ -136,7 +137,7 @@ def _key(site: str) -> str:
     branches that add the same target from different files add two different keys; a file that imports
     one target twice counts 2 under one key."""
     loc, target = site.split(" ", 1)
-    return f"{loc.rsplit(':', 1)[0]} {target}"
+    return f"{original_path(loc.rsplit(':', 1)[0])} {original_module(target)}"
 
 
 def tally(found: dict[str, list[str]]) -> dict[str, dict[str, int]]:

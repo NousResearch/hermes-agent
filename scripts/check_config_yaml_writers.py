@@ -29,9 +29,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
+from hermes_agent.compat.paths import current_path
 DEFAULT_TREES = ("hermes_cli", "agent", "gateway", "tui_gateway", "cron", "plugins", "tools", "cli.py", "utils.py")
 # The config writer module and the on-disk primitive it wraps.
-ALLOWED_FILES = {ROOT / "utils.py"}
+ALLOWED_FILES = {ROOT / current_path("utils.py")}
 DUMPERS = {"atomic_yaml_write", "safe_dump", "dump"}
 CONFIG_PATH_RE = re.compile(
     r"config_path|cfg_path|config\.yaml|get_config_path\(\)|_active_config_path\(\)|\blive_path\b")
@@ -95,7 +97,7 @@ def scan_file(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    targets = [ROOT / a for a in argv] or [ROOT / t for t in DEFAULT_TREES]
+    targets = [ROOT / a for a in argv] or [ROOT / current_path(t) for t in DEFAULT_TREES]
     files: list[Path] = []
     for t in targets:
         if t.is_dir():

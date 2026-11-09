@@ -549,6 +549,7 @@ class StreamTransportMixin:
         if finalize:
             self._delivery_ambiguous = True
         else:
+            self._preview_uncertain = True
             self._enter_fallback_mode(self._visible_prefix())
         self._edit_supported = False
         self._already_sent = True

@@ -166,6 +166,13 @@ class StreamFallbackMixin:
         continuation to send (the whole final when the prefix is from a *previous* segment)
         or None when the turn is settled here."""
         visible = self._visible_prefix()
+        if self._preview_uncertain and final_text.strip() and final_text == visible:
+            # The whole answer went out in a preview whose send timed out: it may already be on
+            # screen and, with no id, cannot be replaced, so any resend is a second copy.
+            self._already_sent = True
+            self._fallback_prefix = ""
+            self._mark_final_delivered(record=final_text)
+            return None
         # Telegram clients can lose (part of) a streamed preview after a failed
         # final edit, so opt-in adapters commit a fresh final send.
         if (final_text.strip() and final_text == visible

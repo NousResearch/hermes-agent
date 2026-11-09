@@ -87,3 +87,33 @@ async def test_timed_out_fresh_final_does_not_edit_the_preview_up_to_the_answer(
     assert delivered == ["Here is the", "Here is the full answer."]
     adapter.edit_message.assert_not_called()
     adapter.delete_message.assert_not_called()
+
+
+def _telegram_flagged(adapter: MagicMock) -> MagicMock:
+    """Carry the real Telegram adapter's stream-fallback flags onto the double."""
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    for flag in ("RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK", "FALLBACK_ON_FINAL_EDIT_FLOOD"):
+        setattr(adapter, flag, getattr(TelegramAdapter, flag))
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_timed_out_preview_with_no_more_text_is_not_sent_again_on_telegram():
+    """The preview already held the whole answer and its send timed out (it may be on screen, its
+    id is unknown so it cannot be replaced): finishing with nothing new settles the turn without
+    Telegram's empty-fallback resend putting a second copy beside it."""
+    delivered: list = []
+    consumer = GatewayStreamConsumer(
+        _telegram_flagged(_landing_adapter(delivered)), "chat",
+        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
+    consumer.on_delta("The whole answer.")
+    task = asyncio.create_task(consumer.run())
+    await async_wait_until(lambda: delivered, timeout=5)  # the preview send went out
+    consumer.finish()
+    await asyncio.wait_for(task, timeout=10)
+
+    assert delivered == ["The whole answer."]
+    assert consumer.final_content_delivered is True
+    assert consumer.delivered_final_matches("The whole answer.") is not False
+

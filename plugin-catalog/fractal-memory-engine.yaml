@@ -1,7 +1,7 @@
 name: fractal-memory-engine
 repo: https://github.com/pCwOrM/hermes-fractal-memory
-sha: a4d660fe4a186e4b68e063819659dbb82ba2d9c7
-version: "1.0.1"
+sha: 40fc72cc82da6d33df0c10d0262cb18f2b6d3d4f
+version: "1.0.2"
 description: >-
   Hierarchical vectorless episodic memory, procedural attractor clustering,
   and O(1) complex coordinate anchoring for Hermes Agent. Eliminates external

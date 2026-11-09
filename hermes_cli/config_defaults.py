@@ -213,10 +213,9 @@ DEFAULT_CONFIG = {
         # clarify-tool reply; then it unblocks with "[user did not respond within Xm]". 0 or less =
         # unlimited. Resolved by tools/clarify_gateway.py::resolve_clarify_timeout (a legacy
         # top-level ``clarify.timeout`` still wins when explicitly set).
-        # 1h because users step away and a shorter value evicted the entry mid-think so a later
-        # button tap hit a dead entry. Tradeoff: a higher value holds the gateway's running-agent
-        # guard longer for a genuinely abandoned prompt — lower it to free the guard sooner. See #32762.
-        "clarify_timeout": 3600,
+        # 90s: an unanswered question must not hold the turn (and the chat) for long. A user who
+        # writes anything instead of answering cancels the question at once and their message runs.
+        "clarify_timeout": 90,
         # "Still working" status interval (seconds); 0 = off. Lower = faster feedback, more noise;
         # 180 catches spinning weak-model runs before users /restart.
         "gateway_notify_interval": 180,
@@ -744,13 +743,11 @@ DEFAULT_CONFIG = {
         # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
         "vision": _aux(120, download_timeout=30),
-        # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
-        # are ignored. Compression: raise timeout for local models. no_progress_timeout:
-        # seconds a streamed call goes without a substantive chunk before it fails fast into
-        # retry/fallback; None = built-in 60s default. Independent of "timeout" (the overall request
-        # budget) — raising "timeout" alone does not widen this window. See #108104.
+        # web_extract, session_search, skills_hub: no aux LLM any more, leftover blocks are ignored.
+        # Compression: raise timeout for local models. no_progress_timeout: seconds a streamed call
+        # goes without a substantive chunk before it fails fast into retry/fallback; None = built-in
+        # 60s default. Independent of "timeout" (the overall request budget). See #108104.
         "compression": _aux(120, no_progress_timeout=None),
-        "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
         # delegation.provider pins. "auto" + "" = main agent's model. api_mode forces transport:
@@ -775,12 +772,12 @@ DEFAULT_CONFIG = {
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),
         "voice_chat": {**_aux(120), "reasoning_effort": "none"},  # agent/voice_turn_route.py; off = lowest valid
-        # Kanban: triage_specifier expands a Triage one-liner into a spec (cheap model OK);
-        # kanban_decomposer emits a JSON graph of child tasks (more tokens).
+        # Kanban: triage_specifier expands a Triage one-liner into a spec; kanban_decomposer a JSON graph.
         "triage_specifier": _aux(120),
         "kanban_decomposer": _aux(180),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
         "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
+        "group_router": _aux(20),        # Group Chat routing "auto": who answers; fast/cheap model OK
         # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
         # of skills); route cheaper via `hermes model` → auxiliary → Curator.
         "curator": _aux(600),
@@ -862,9 +859,9 @@ DEFAULT_CONFIG = {
         # Also clear terminal scrollback on classic-CLI full redraw/resize recovery; enable when a
         # terminal/tmux stack stamps stale prompt chrome into scrollback.
         "cli_rebuild_scrollback_on_redraw": False,
-        # Print a one-line summary of resolved modal prompts (approval/clarify) to scrollback.
-        "persist_prompts": True,
+        "persist_prompts": True,  # one-line scrollback summary of resolved approval/clarify prompts
         "inline_diffs": True,     # inline diff previews for write_file/patch/skill_manage
+        "inline_images": "auto",  # CLI/TUI transcript images (attachments, tool results): auto|kitty|iterm|unicode|off
         # Append a one-line advisory to the final response when a write_file/patch failed this turn
         # and was never superseded by a successful write to the same path (catches "half the
         # parallel patches failed, model claims success").
@@ -1155,7 +1152,7 @@ DEFAULT_CONFIG = {
         "cloud_trim_keep_ms": 300,  # how much of each pause survives (natural pacing)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3, turbo
-            "language": "",  # auto-detect; set "en", "es", ... to force
+            "language": "",  # blank = inherit stt.language; set "en", "es", ... to force
             "initial_prompt": "",
             # Anti-hallucination (faster-whisper decodes junk from silence). vad: Silero filter
             # (false = raw audio, for music/ambient). A segment is dropped only if no_speech_prob
@@ -1168,27 +1165,27 @@ DEFAULT_CONFIG = {
         },
         "groq": {
             "model": "whisper-large-v3-turbo",  # whisper-large-v3-turbo, whisper-large-v3
-            "language": "",  # auto-detect; set "en", "es", ... to force
+            "language": "",  # blank = inherit stt.language; set "en", "es", ... to force
         },
         "openai": {
             # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
             "model": "whisper-1",
             "streaming_model": "gpt-live-transcribe",  # stt.streaming; the one model with mid-utterance deltas
-            "language": "",  # auto-detect; set "en", "es", ... to force
+            "language": "",  # blank = inherit stt.language; set "en", "es", ... to force
             "timeout": 60,  # seconds; allow self-hosted backends time to cold-start
             "max_retries": 1,  # OpenAI SDK transport retries
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
-            "language": "",  # auto-detect; set "en", "es", ... to force
+            "language": "",  # blank = inherit stt.language; set "en", "es", ... to force
         },
         "xai": {
             "model": "",  # "" = STT_XAI_MODEL or grok-voice-transcribe-2.0; or grok-voice-transcribe-1.0
-            "language": "",  # auto-detect; set "en", "es", ... to force
+            "language": "",  # blank = inherit stt.language; set "en", "es", ... to force
         },
         "elevenlabs": {
             "model_id": "scribe_v2",  # scribe_v2, scribe_v1
-            "language_code": "",  # auto-detect; set "eng", "spa", ... to force
+            "language_code": "",  # blank = inherit stt.language; set "eng", "spa", ... to force
             "tag_audio_events": False,
             "diarize": False,
         },
@@ -1357,9 +1354,9 @@ DEFAULT_CONFIG = {
         "child_timeout_seconds": 0,
         # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none" (empty = inherit)
         "reasoning_effort": "",
-        # Max parallel children per batch AND max concurrent background delegation units; async
-        # dispatches beyond it run synchronously. Floor 1, no ceiling.
+        # Max parallel children per batch AND concurrent background units (async beyond it runs sync). Floor 1.
         "max_concurrent_children": 10,
+        "prefix_stagger_seconds": 0,  # max s siblings wait for the 1st child's 1st chunk (not a stagger); 0 = off
         # Background fan-outs return as ONE message when the whole call finishes. true = each task
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
         "independent_completions": False,
@@ -1507,9 +1504,6 @@ DEFAULT_CONFIG = {
             "keep": 2,  # retain last N regular snapshots
         },
     },
-    # Honcho memory plugin (plugin catalog) — ~/.honcho/config.json is the source of truth (apiKey,
-    # workspace, peerName, sessions, enabled); the plugin reads hermes-specific overrides from here.
-    "honcho": {},
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York"). Empty = server-local time.
     "timezone": "",
 
@@ -1672,12 +1666,12 @@ DEFAULT_CONFIG = {
         # After this many consecutive guardian DENYs in a session, the deny message escalates to a
         # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
         "denial_breaker_threshold": 3,
-        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo
-        # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
-        # --force*".
+        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo / mode=off.
+        # Quote in YAML when starting with * or containing {}/!/: e.g. "git push --force*".
         "deny": [],
-        # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
-        # so the next message re-sends full input). "Always Approve" → false.
+        # Who may answer a chat exec approval: ["*"] any admitted member; [] the requester + platform admins (+ listed ids).
+        "approvers": ["*"],
+        # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache). "Always Approve" → false.
         "mcp_reload_confirm": True,
         # /clear, /new, /reset, /undo confirm before discarding state (Approve Once / Always Approve
         # / Cancel via tools.slash_confirm; native buttons on Telegram/ Discord/Slack). "Always
@@ -1707,11 +1701,11 @@ DEFAULT_CONFIG = {
         # abandoned. 0 = no deadline (load inline). Max 600.
         "load_timeout_seconds": 10,
         # Read-only plugin update-check cadence, hours (gateway tick; 0 disables). Applying stays
-        # explicit: `hermes plugins update <name>`, or auto_apply below (git-class plugins only,
-        # scan-gated by that same pipeline).
+        # explicit: `hermes plugins update <name>`, or auto_apply below (catalog and tracked git
+        # plugins, scan-gated by that same pipeline).
         "auto_update_check_hours": 24,
-        # Opt-in unattended apply for the cadence check. Git-row plugins ONLY; every apply runs the
-        # same security scan / consent pipeline as the manual update command.
+        # Opt-in unattended apply (`hermes plugins auto-update on`, Desktop's Plugins tab): catalog +
+        # tracked git plugins, same scan/consent pipeline as the manual update (never a widened pin).
         "auto_apply": False,
         # Where third-party Python plugins run. in_process: imported into Hermes (default).
         # host: one plugin-host process per profile runs them and they reach Hermes only through
@@ -2124,8 +2118,8 @@ DEFAULT_CONFIG = {
         "loop_watchdog_max_strikes": 3,
         # Allow all users without allowlists (security opt-in).
         "allow_all_users": False,
-        # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.
-        "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600},
+        # Bot-to-bot loop guard: max_events per window before a cooldown; max_hops bot messages per exchange.
+        "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600, "max_hops": 4, "bot_replies_expect_reply": False},
         # Startup-liveness watchdog: stdlib-only daemon thread armed at process entry that
         # hard-exits 75 if the loop isn't live within the deadline. Armed before config loads, so
         # run_gateway() bridges these to HERMES_STARTUP_WATCHDOG / HERMES_STARTUP_WATCHDOG_TIMEOUT_S
@@ -2289,13 +2283,8 @@ DEFAULT_CONFIG = {
         # legacy index is detected (a later layout change gets a rebuild notice without a size estimate);
         # require = the same notices worded as REQUIRED (tooling may gate on it); off = none.
         "fts_optimize_notice": "advise",
-        # CJK-bigram search index (messages_fts_cjk). When the extension is built
-        # (native/fts5_cjk/build.sh → ~/.hermes/lib/libfts5_cjk.so), 1-2 char CJK terms get exact
-        # index matches instead of LIKE scans. True = use when present (inert otherwise); False =
-        # never load/serve it. Bridged to HERMES_CJK_FTS.
-        "cjk_fts": True,
         # Slow session-search threshold (ms): searches at/above it log one INFO line with the
-        # routing path (fts_cjk / fts5 / trigram / like_scan). 0 logs every search. Bridged to
+        # routing path (fts5 / trigram / like_scan). 0 logs every search. Bridged to
         # HERMES_SEARCH_SLOW_MS.
         "search_slow_ms": 1000,
         # Transcript guards (a runaway 100k+ row session can exhaust memory when materialized at
@@ -2708,7 +2697,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 52,  # Config schema version - bump this when adding new required fields
+    "_config_version": 53,  # Config schema version - bump this when adding new required fields
 }
 
 

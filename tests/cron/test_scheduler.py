@@ -1256,8 +1256,7 @@ class TestRunJobModelResolution:
     def test_config_model_alias_key_resolves(self, tmp_path, monkeypatch):
         """A ``model: {model: ...}`` alias key resolves like the CLI sibling.
 
-        ``hermes_cli/oneshot.py``, ``fallback_cmd.py`` and ``prompt_size.py``
-        all accept ``model.model`` as an alias for ``model.default``. The cron
+        ``fallback_cmd.py`` and ``prompt_size.py`` both accept ``model.model`` as an alias for ``model.default``. The cron
         resolver mirrors that so a config that works in the CLI also works in
         cron.
         """

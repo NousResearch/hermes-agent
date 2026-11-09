@@ -134,7 +134,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: just js-install-tests
 
       - name: Start screen recording
         uses: ./.github/actions/e2e-screen-record
@@ -256,7 +256,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: just js-install-tests
 
       - name: Start screen recording
         uses: ./.github/actions/e2e-screen-record

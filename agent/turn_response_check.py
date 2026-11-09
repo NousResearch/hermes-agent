@@ -160,7 +160,7 @@ def check_api_response(
             active_system_prompt=active_system_prompt, conversation_history=conversation_history,
             api_call_count=api_call_count, effective_task_id=effective_task_id, turn_id=turn_id,
             api_request_id=api_request_id, api_start_time=api_start_time, retry_count=retry_count,
-            max_retries=max_retries,
+            max_retries=max_retries, current_turn_user_idx=current_turn_user_idx,
         )
         thinking_spinner = None
         active_system_prompt = _rv.active_system_prompt
@@ -245,9 +245,8 @@ def retry_invalid_response(
     else jittered backoff that preserves a pending redirect."""
     from agent.conversation_loop import _arm_fallback_restart
     from agent.retry_utils import jittered_backoff
-    from agent.turn_recovery import (
-        classify_codex_soft_failure, describe_invalid_response, interruptible_backoff_sleep,
-    )
+    from agent.turn_recovery import describe_invalid_response, interruptible_backoff_sleep
+    from agent.turn_recovery_codex import classify_codex_soft_failure
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> InvalidResponseVerdict:
         return InvalidResponseVerdict(
@@ -286,6 +285,8 @@ def retry_invalid_response(
     if agent._fallback_index < len(agent._fallback_chain):
         agent._buffer_diagnostic_status("⚠️ Empty/malformed response — switching to fallback...")
     if agent._try_activate_fallback():
+        # The buffered status above is dropped once the fallback answers: log the trigger (#152101).
+        logger.warning("%sInvalid API response (%s) — switched to fallback", agent.log_prefix, ", ".join(error_details))
         active_system_prompt = _arm_fallback_restart(
             agent, api_messages, active_system_prompt, _retry)
         retry_count = 0

@@ -38,6 +38,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from hermes_agent.compat.finder import Finder as _CompatFinder
+from hermes_agent.compat.moves import MOVES as _COMPAT_MOVES
+
+# In-repo code must use current module names; an old name fails here instead of being aliased.
+sys.meta_path.insert(0, _CompatFinder(_COMPAT_MOVES, strict=True))
+
 # Every test file runs in its own process, and in a checkout without an install stamp
 # get_version_info() shells out to git 7 times (~0.55 s per process in a large local
 # clone; a whole local suite run spent ~48 CPU-minutes there). Seed the shape a shallow
@@ -1106,30 +1112,31 @@ def _remove_relocated_basetemp(config) -> None:
 def _processes_with_hermes_home_under(roots) -> list[int]:
     """PIDs (never this process) whose environment names a ``HERMES_HOME`` inside one of *roots*.
 
-    Linux only (``/proc/<pid>/environ``; unreadable entries are another user's and skipped).
-    Elsewhere the scan is empty: a test-spawned daemon there is the per-test guard's problem.
+    POSIX (psutil's exec-time environment; another user's processes are unreadable and skipped).
+    Windows is out of scope: no leak observed there, and SIGTERM there is TerminateProcess.
     """
-    if not sys.platform.startswith("linux") or not os.path.isdir("/proc"):
+    if os.name != "posix":
         return []
+    import psutil
+
     resolved = [Path(r).resolve() for r in roots if r]
+    me = os.getpid()
     found = []
-    for entry in os.scandir("/proc"):
-        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+    for proc in psutil.process_iter():
+        if proc.pid == me:
             continue
         try:
-            with open(f"/proc/{entry.name}/environ", "rb") as handle:
-                environ = handle.read().split(b"\0")
-        except OSError:
+            home = proc.environ().get("HERMES_HOME")
+        except (psutil.Error, OSError):
             continue
-        home = next((item[12:] for item in environ if item.startswith(b"HERMES_HOME=")), None)
         if not home:
             continue
         try:
-            path = Path(os.fsdecode(home)).resolve()
+            path = Path(home).resolve()
         except (OSError, ValueError):
             continue
         if any(path == root or path.is_relative_to(root) for root in resolved):
-            found.append(int(entry.name))
+            found.append(proc.pid)
     return found
 
 

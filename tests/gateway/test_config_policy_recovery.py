@@ -314,10 +314,11 @@ def test_a_changed_fallback_secret_removes_that_fallback(tmp_path, monkeypatch, 
     assert any('fallback' in r.getMessage() and 'removed' in r.getMessage() for r in caplog.records)
 
 
-def test_a_changed_auxiliary_secret_returns_that_task_to_the_primary_route(tmp_path, monkeypatch, caplog):
-    """A frozen ``auxiliary.compression`` key rotated in config.yaml used to be dropped while the
-    auxiliary client read live YAML and sent the ROTATED key. The task's override now leaves the
-    session's effective policy: compression runs on the session's primary route with its own key."""
+def test_a_changed_auxiliary_secret_reaches_the_next_side_task_call(tmp_path, monkeypatch, caplog):
+    """A side task follows its profile: an ``auxiliary.compression`` key rotated in config.yaml is the key
+    the next turn's compression sends, to the endpoint config.yaml now pairs it with. The session's main
+    route is untouched. (Earlier, a changed side-task key returned the task to the main route;
+    that kept a retired or rotated side-task setting from ever reaching an existing chat.)"""
     from agent.auxiliary_client import get_text_auxiliary_client, reset_runtime_main, set_runtime_main
     from gateway.session_policy import policy_scope
     from tests.fakes.fake_llm_provider import FakeLLMServer
@@ -339,17 +340,16 @@ def test_a_changed_auxiliary_secret_returns_that_task_to_the_primary_route(tmp_p
                     client.chat.completions.create(model=model, messages=[{'role': 'user', 'content': 'hi'}])
                 finally:
                     reset_runtime_main(token)
-        compress()  # unchanged: the frozen auxiliary route serves with its frozen key
+                return runtime
+        compress()
         assert [r['auth'] for r in aux.requests] == ['Bearer sk-original-aux']
 
         cfg['auxiliary']['compression']['api_key'] = 'sk-rotated-aux'
         config_path.write_text(json.dumps(cfg))
-        compress()
-        sent = [r['auth'] for r in main.requests + aux.requests]
-        assert not any('sk-rotated-aux' in a for a in sent), sent
-        assert len(aux.requests) == 1  # nothing more reached the auxiliary endpoint
-        assert main.requests[-1]['auth'] == 'Bearer sk-main-route'
-    assert any('auxiliary' in r.getMessage() and 'primary route' in r.getMessage() for r in caplog.records)
+        runtime = compress()
+        assert [r['auth'] for r in aux.requests] == ['Bearer sk-original-aux', 'Bearer sk-rotated-aux']
+        assert main.requests == []
+        assert runtime['api_key'] == 'sk-main-route'
 
 
 @pytest.mark.parametrize('phase', ['warm', 'cold'])

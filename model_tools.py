@@ -444,9 +444,14 @@ _VAULT_INPUT_TOOL_HINT = "the browser's input tool"
 def _rewrite_browser_vault(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """Name the concrete input tool for typing the login identifier (`fill_input` inside browser_exec code).
     Resolved here because the two live in different toolsets."""
-    if "browser_exec" not in available:
+    preview = "drive_preview" in available
+    if "browser_exec" in available:
+        concrete = "`fill_input` inside browser_exec" + (
+            " (or drive_preview action=type on the in-app browser)" if preview else "")
+    elif preview:
+        concrete = "drive_preview action=type"
+    else:
         return td
-    concrete = "`fill_input` inside browser_exec"
     fn = td["function"]
     return _fn_def({**fn, "description": fn.get("description", "").replace(_VAULT_INPUT_TOOL_HINT, concrete)})
 
@@ -463,7 +468,10 @@ def _rewrite_input_tool_for_vault(td: dict[str, Any], available: set) -> Optiona
     if "browser_vault" not in available:
         return td
     fn = td["function"]
-    return _fn_def({**fn, "description": fn.get("description", "") + _VAULT_NO_PASSWORD_NOTE})
+    note = _VAULT_NO_PASSWORD_NOTE
+    if fn["name"] == "drive_preview":
+        note += " For this in-app page pass target=preview (the default when no managed browser page is open)."
+    return _fn_def({**fn, "description": fn.get("description", "") + note})
 
 
 def _compose_rewriters(*fns):
@@ -483,6 +491,7 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_cdp": _rewrite_browser_cdp,
     "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_browser_exec_vision, _rewrite_input_tool_for_vault),
     "browser_vault": _rewrite_browser_vault,
+    "drive_preview": _rewrite_input_tool_for_vault,
     "delegate_task": _rewrite_delegate_task,
 }
 
@@ -660,6 +669,7 @@ class _CallIds:
     tool_call_id: Optional[str] = None
     turn_id: Optional[str] = None
     api_request_id: Optional[str] = None
+    conversation_id: Optional[str] = None  # compression-stable root (agent.prompt_cache_scope.conversation_id)
 
     def hook_kwargs(self) -> dict[str, str]:
         """Same fields with None -> "" (hook/middleware wire contract)."""
@@ -689,7 +699,7 @@ def _emit_post_tool_call_hook(
     task_id: Optional[str] = None, session_id: Optional[str] = None, tool_call_id: Optional[str] = None,
     turn_id: Optional[str] = None, api_request_id: Optional[str] = None, duration_ms: int = 0,
     status: Optional[str] = None, error_type: Optional[str] = None, error_message: Optional[str] = None,
-    middleware_trace: Optional[list[dict[str, Any]]] = None,
+    middleware_trace: Optional[list[dict[str, Any]]] = None, conversation_id: Optional[str] = None,
 ) -> None:
     """Emit the ``post_tool_call`` observer hook; gated on has_hook, and ok/error
     fields are derived from the result only past that gate when status is None."""
@@ -703,7 +713,7 @@ def _emit_post_tool_call_hook(
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
         invoke_hook(
             "post_tool_call", tool_name=function_name, args=function_args, result=result,
-            **_CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id).hook_kwargs(),
+            **_CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id).hook_kwargs(),
             duration_ms=duration_ms, status=status, error_type=error_type, error_message=error_message,
             middleware_trace=list(middleware_trace or []),
         )
@@ -837,7 +847,8 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
                   *, user_task: Optional[str], enabled_tools: Optional[list[str]], skip_tool_execution_middleware: bool) -> Any:
     """Run the registry handler (through tool-execution middleware unless skipped)
     with the approval observability context bound for the duration."""
-    dispatch_kwargs: dict[str, Any] = {"task_id": ids.task_id, "session_id": ids.session_id}
+    dispatch_kwargs: dict[str, Any] = {
+        "task_id": ids.task_id, "session_id": ids.session_id, "conversation_id": ids.conversation_id}
     if function_name == "execute_code":
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.
@@ -890,6 +901,7 @@ def handle_function_call(
     skip_pre_tool_call_hook: bool = False, skip_tool_request_middleware: bool = False,
     skip_tool_execution_middleware: bool = False, tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
     enabled_toolsets: Optional[list[str]] = None, disabled_toolsets: Optional[list[str]] = None,
+    conversation_id: Optional[str] = None,
 ) -> str:
     """Route a tool call through hooks/middleware to the registry; returns a JSON string.
 
@@ -904,7 +916,7 @@ def handle_function_call(
         function_args = {}
     trace = list(tool_request_middleware_trace or [])
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
-    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
+    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id)
     start = time.monotonic()
 
     def _emit(result: Any, **extra: Any) -> Any:

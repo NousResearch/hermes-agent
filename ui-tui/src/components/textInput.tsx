@@ -2,7 +2,7 @@ import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
-import { setInputSelection } from '../app/inputSelectionStore.js'
+import { setInputSelection, takeInputCursor } from '../app/inputSelectionStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
@@ -770,7 +770,17 @@ function useFwdDelete(active: boolean) {
 
 type InputHandler = (inp: string, k: Key, event: InputEvent) => void
 
-type PasteResult = { cursor: number; value: string } | null
+interface PasteInsert {
+  cursor: number
+  /**
+   * Re-place the insertion on the owner's live value, which can be ahead of
+   * this input's; null when it no longer belongs there. Commit the result at once.
+   */
+  land?: (view: { caret: number; value: string }) => PasteInsert | null
+  value: string
+}
+
+type PasteResult = PasteInsert | null
 
 const isPasteResultPromise = (
   value: PasteResult | Promise<PasteResult> | null | undefined
@@ -823,6 +833,8 @@ export function TextInput({
   const emittedValueRef = useRef<string | null>(null)
   const keyBurstTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editVersionRef = useRef(0)
+  // Commits of async paste results, so one paste landing does not read as an edit to another.
+  const pasteLandingsRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingParentValue = useRef<string | null>(null)
   const localRenderTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -962,9 +974,10 @@ export function TextInput({
     }
 
     pendingParentValue.current = null
-    setCur(value.length)
+    const at = takeInputCursor(value) ?? value.length
+    setCur(at)
     setSel(null)
-    curRef.current = value.length
+    curRef.current = at
     selRef.current = null
     vRef.current = value
     lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
@@ -1044,6 +1057,7 @@ export function TextInput({
           commit(vRef.current.slice(0, current.start) + vRef.current.slice(current.end), current.start)
         })
       },
+      cursor: curRef.current,
       end: selected?.end ?? curRef.current,
       start: selected?.start ?? curRef.current,
       value: vRef.current
@@ -1217,7 +1231,10 @@ export function TextInput({
   }
 
   const emitPaste = (e: PasteEvent) => {
+    // Typed keys still waiting on their frame flush belong before the paste.
+    flushKeyBurst()
     const startVersion = editVersionRef.current
+    const startLandings = pasteLandingsRef.current
     const h = cbPaste.current?.(e)
 
     if (isPasteResultPromise(h)) {
@@ -1225,9 +1242,19 @@ export function TextInput({
 
       void h
         .then(result => {
-          if (result && editVersionRef.current === startVersion) {
-            commit(result.value, result.cursor)
-          } else if (result && fallbackText && PRINTABLE.test(fallbackText)) {
+          if (!result) {
+            return
+          }
+
+          // Only other pastes landing since: this one still belongs in the draft.
+          if (editVersionRef.current - startVersion === pasteLandingsRef.current - startLandings) {
+            const landed = result.land ? result.land({ caret: curRef.current, value: vRef.current }) : result
+
+            if (landed) {
+              pasteLandingsRef.current += 1
+              commit(landed.value, landed.cursor)
+            }
+          } else if (fallbackText && PRINTABLE.test(fallbackText)) {
             // User typed while async paste was in-flight — fall back to raw text insert
             // so the pasted content is not silently lost.
             const cur = curRef.current
@@ -1865,9 +1892,7 @@ interface TextInputProps {
   mask?: string
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void
-  onPaste?: (
-    e: PasteEvent
-  ) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
+  onPaste?: (e: PasteEvent) => PasteInsert | Promise<PasteResult> | null
   onSubmit?: (v: string) => void
   placeholder?: string
   /** Hex color for placeholder text (theme muted); SGR dim when omitted. */
@@ -1912,7 +1937,7 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
-  (key.ctrl && (input === 'r' || input === 't')) ||
+  (key.ctrl && (input === 'p' || input === 'r' || input === 't')) ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

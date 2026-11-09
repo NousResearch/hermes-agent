@@ -411,18 +411,31 @@ class TestWinPtyBridgeIO:
 
 
     @pytest.mark.asyncio
-    async def test_paste_to_a_program_that_is_not_reading_lands_at_once(self):
+    async def test_paste_to_a_program_that_is_not_reading_lands_at_once(self, tmp_path):
         """ConPTY buffers input whether or not the child reads it, so a host shell's
         paste lands at once and the job keeps running; only a wedged ConPTY can miss
-        the write deadline, which is why Windows writes keep one."""
-        script = "import time; time.sleep(1.5); print('SURVI' + 'VED', flush=True)"
+        the write deadline, which is why Windows writes keep one.
+
+        The child never reads stdin until the write has returned (it waits for a file
+        the test creates afterwards), so a write that waited for the child to read could
+        only end at the bridge's own deadline, which returns False. How long conhost
+        takes to take in 1 MiB is not under test: it is CPU-bound and stretches on a
+        loaded runner, so the outer bound only catches a hang."""
+        released = tmp_path / "released"
+        script = (
+            "import os, time\n"
+            f"while not os.path.exists({str(released)!r}): time.sleep(0.05)\n"
+            "print('SURVI' + 'VED', flush=True)\n"
+        )
         bridge = WinPtyBridge.spawn([sys.executable, "-c", script])
         try:
             paste = b"".join(b"%05d %s\r" % (n, b"x" * 57) for n in range(16384))  # 1 MiB
-            assert await asyncio.wait_for(bridge.write(paste, timeout=None), timeout=2.0) is True
+            assert await asyncio.wait_for(bridge.write(paste, timeout=None), timeout=30.0) is True
+            released.touch()
             output = await asyncio.to_thread(_read_until, bridge, b"SURVIVED", 15.0)
             assert b"SURVIVED" in output
         finally:
+            released.touch()
             bridge.close()
 
     def test_idle_read_returns_within_its_timeout(self):

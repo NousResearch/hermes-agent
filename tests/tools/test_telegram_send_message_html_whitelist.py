@@ -107,3 +107,12 @@ def test_tag_shown_only_as_markdown_code_keeps_the_markdown_branch(
 
     assert (parse_mode, has_html) == ("MarkdownV2", False)
     assert formatted.startswith("*Note*") and "**" not in formatted
+
+
+def test_a_quoted_gt_inside_an_attribute_does_not_break_the_tag(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from plugins.platforms.telegram.standalone import _telegram_format
+
+    _install_telegram_mock(monkeypatch, MagicMock())
+    markup = '<a href="https://x.y/?q=a>b">link</a> and <b>bold</b>'
+    assert _telegram_format(markup) == (markup, "HTML", True)

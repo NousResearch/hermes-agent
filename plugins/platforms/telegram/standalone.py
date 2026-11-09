@@ -265,8 +265,10 @@ _TELEGRAM_HTML_TAGS = ("b", "strong", "i", "em", "u", "ins", "s", "strike", "del
                        "code", "pre", "blockquote", "tg-spoiler", "span", "tg-emoji")
 # Opening tag (optionally with attributes) or closing tag. The name must end at ``>`` or
 # whitespace, so ``<b>`` never matches ``<body>``; longest-first keeps the alternation readable.
+# Quoted attribute values may hold ``>`` (``href="a>b"``): the tag ends at the first unquoted one.
 _TELEGRAM_HTML_TAG_ALT = "|".join(sorted(_TELEGRAM_HTML_TAGS, key=len, reverse=True))
-_TELEGRAM_HTML_TAG_RE = re.compile(rf"</?(?:{_TELEGRAM_HTML_TAG_ALT})(?:\s[^>]*)?>", re.IGNORECASE)
+_TELEGRAM_HTML_TAG_RE = re.compile(
+    rf"""</?(?:{_TELEGRAM_HTML_TAG_ALT})(?:\s(?:[^>"']++|"[^"]*+"|'[^']*+')*+)?>""", re.IGNORECASE)
 
 
 def _telegram_album_paths(media_files, force_document, caption):

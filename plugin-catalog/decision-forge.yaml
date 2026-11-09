@@ -1,0 +1,37 @@
+name: decision-forge
+title: Decision Forge
+repo: https://github.com/mintymac/decision-forge
+sha: "d9aa33d261092db0cd4837e5d1ceed45273404e8"
+description: >-
+  Cognitive-ergonomic decision briefs and response-format router for Hermes Agent.
+  Routes non-trivial responses across six research-grounded formats (Update, Choice,
+  Triage, Experiment, Roadmap, People + direct bypass), lints decision hygiene
+  (flagging fake urgency, uncalibrated confidence scores, and missing reversal
+  conditions), compiles interactive ::preview HTML panels with data-hermes-send
+  controls and plain-text fallbacks, bundles the decision-forge skill, and adds
+  the interactive Decision Forge Field Guide and Handoff Composer to Hermes Desktop.
+  Disclosure — makes no external network calls; stores compiled brief metadata locally
+  in <HERMES_HOME>/plugins/decision-forge/state/briefs.jsonl and writes compiled HTML
+  panels only to the caller-supplied output_path; no telemetry, background daemons,
+  credential reads, or self-updating code.
+maintainer: mintymac
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/mintymac/decision-forge#readme
+version: "1.0.0"
+readme: true
+image: https://raw.githubusercontent.com/mintymac/decision-forge/d9aa33d261092db0cd4837e5d1ceed45273404e8/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mintymac/decision-forge/d9aa33d261092db0cd4837e5d1ceed45273404e8/assets/v04-1440.png
+  - https://raw.githubusercontent.com/mintymac/decision-forge/d9aa33d261092db0cd4837e5d1ceed45273404e8/assets/people.png
+  - https://raw.githubusercontent.com/mintymac/decision-forge/d9aa33d261092db0cd4837e5d1ceed45273404e8/assets/v04-768.png
+  - https://raw.githubusercontent.com/mintymac/decision-forge/d9aa33d261092db0cd4837e5d1ceed45273404e8/assets/v04-375.png
+platforms: []
+capabilities:
+  provides_tools:
+    - decision_route
+    - decision_brief
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

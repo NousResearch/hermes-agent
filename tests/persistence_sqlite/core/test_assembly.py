@@ -12,6 +12,7 @@ from hermes_constants import get_hermes_home, hermes_home_key
 from persistence import ProfileScope, StorageHealth, StorageProbe, StorageState, StoreUnavailable
 from persistence.sqlite import _registry
 from tests.persistence_sqlite.conftest import profile_home
+from tests.fixtures.storage_holder import raw_holder
 
 
 def test_profile_scope_resolves_a_named_profile_and_a_pinned_home():
@@ -31,7 +32,7 @@ def test_handles_on_one_profile_share_a_backend_and_release_on_close():
     second = persistence_assembly.open_persistence(ProfileScope(profile_dir=home, name="other-label"))
     assert first.scope == second.scope and persistence_assembly._shared[scope.hermes_home_key][1] == 2
     first.state_meta.set("k", "v")
-    assert first.holder() is second.holder()
+    assert raw_holder(first) is raw_holder(second)
     first.close()
     first.close()
     assert _registry.stats()["live_generations"] == 1
@@ -56,13 +57,26 @@ def test_a_closed_handle_refuses_use_while_another_handle_holds_the_backend():
     second.close()
 
 
+def test_a_handle_forwards_only_the_storage_interface():
+    handle = persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=profile_home("alpha")))
+    handle.ready()
+    assert handle.state_meta.get("k") is None and handle.capabilities is not None
+    for name in ("holder", "store_path", "executor"):
+        with pytest.raises(AttributeError):
+            getattr(handle, name)
+    handle.close()
+    assert getattr(handle, "holder", None) is None
+    with pytest.raises(RuntimeError, match="persistence handle used after close"):
+        handle.state_meta.get("k")
+
+
 def test_a_handle_is_bound_to_its_own_profile():
     alpha, beta = profile_home("alpha"), profile_home("beta")
     with persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=alpha)) as one:
         with persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=beta)) as two:
             one.state_meta.set("k", "alpha")
             assert two.state_meta.get("k") is None
-            assert one.holder() is not two.holder()
+            assert raw_holder(one) is not raw_holder(two)
 
 
 def test_awaitable_form_through_the_handle():
@@ -227,7 +241,7 @@ def test_live_stores_lends_every_open_store_and_pins_it_for_the_block():
     with persistence_assembly.live_stores() as stores:
         assert sorted(store.scope.name for store in stores) == ["alpha", "beta"]
         lent = {store.scope.name: store for store in stores}
-        assert lent["alpha"].holder() is one.holder()
+        assert raw_holder(lent["alpha"]) is raw_holder(one)
         assert lent["alpha"].search.retry_deferred_search_recovery() is False
         # The last owner releases inside the block: the lent handle still reads through the pinned store.
         one.close()
@@ -236,8 +250,8 @@ def test_live_stores_lends_every_open_store_and_pins_it_for_the_block():
     assert _registry.stats()["live_generations"] == 1
     with persistence_assembly.live_stores() as stores:
         assert [store.scope.name for store in stores] == ["beta"]
-        holder = stores[0].holder()
-    assert holder is two.holder() and _registry.stats()["total_refcounts"] == 1
+        holder = raw_holder(stores[0])
+    assert holder is raw_holder(two) and _registry.stats()["total_refcounts"] == 1
     two.close()
     with persistence_assembly.live_stores() as stores:
         assert stores == []

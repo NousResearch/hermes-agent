@@ -259,7 +259,8 @@ def _select_files(
             "error: --files and --files-from are mutually exclusive", file=sys.stderr
         )
         sys.exit(2)
-    if args.require_paths and not (args.paths_positional or args.files or args.files_from):
+    named = args.paths_positional or args.files or args.files_from or args.paths != ":".join(_DEFAULT_ROOTS)
+    if args.require_paths and not named:
         print("error: name a test path (scripts/run_tests.sh with no path runs the full suite)",
               file=sys.stderr)
         sys.exit(2)

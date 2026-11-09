@@ -675,22 +675,12 @@ class GatewayTurnPersistenceMixin:
 
     async def _ledger_uncertain_streamed_final(self, event, session_key, response, adapter) -> None:
         """A stream send of this answer timed out after the request left and was counted as shown: on
-        screen or lost, the wire cannot tell. Sending it again now would be a silent second copy; leaving
-        it as a failed delivery-ledger row lets the timed redelivery send it once more WITH the
-        may-be-a-duplicate marker, so a lost send is not silence. That is what ``send_final_ledgered``
+        screen or lost, the wire cannot tell. Sending it again now would be a silent second copy; the
+        adapter ledgers it as a failed row instead, so the timed redelivery sends it once more WITH the
+        may-be-a-duplicate marker and a lost send is not silence. That is what ``send_final_ledgered``
         gives a timed-out final on a non-streaming platform."""
-        from gateway.platforms.base import SendResult
-        text = (await adapter._extract_response_content(
-            response, event, session_key, is_ephemeral_response=False)).text_content
-        delivery_adapter = adapter._final_delivery_adapter(event.source)
-        obligation_id = text and await adapter._record_delivery_obligation(
-            event, session_key, text, delivery_adapter, False)
-        if obligation_id:
-            logger.warning("Streamed final for session %s may not have landed; the delivery ledger "
-                           "redelivers it with the duplicate marker", session_key)
-            await adapter._finalize_delivery_obligation(
-                obligation_id, SendResult(success=False, error="Timed out: the streamed send may not have landed"),
-                event, delivery_adapter)
+        await adapter.ledger_attempted_final(
+            event, session_key, response, error="Timed out: the streamed send may not have landed")
 
     async def _hmwa_deliver_turn_response(
         self, event, source, session_entry, session_key, run_generation,

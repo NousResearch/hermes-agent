@@ -36,6 +36,7 @@ import argparse
 import json
 import os
 import sys
+import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
@@ -126,6 +127,10 @@ def find_superseding_run(own: dict[str, Any], runs: list[dict[str, Any]]) -> int
     return None
 
 
+_RUNS_PER_PAGE = 100
+_MAX_RUN_PAGES = 10
+
+
 def _github_get(path: str) -> Any:
     api = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
     request = urllib.request.Request(f"{api}/{path.lstrip('/')}")
@@ -138,14 +143,26 @@ def _github_get(path: str) -> Any:
 
 
 def superseding_run_id(fetch: Callable[[str], Any] = _github_get) -> int | None:
-    """Look up this run (GITHUB_REPOSITORY/GITHUB_RUN_ID) and its duplicates."""
+    """Look up this run (GITHUB_REPOSITORY/GITHUB_RUN_ID) and its duplicates.
+
+    Runs are filtered server-side to this head SHA and event and read page by
+    page (at most ``_MAX_RUN_PAGES``) until a successor qualifies or they end.
+    """
     repo = os.environ["GITHUB_REPOSITORY"]
     own = fetch(f"repos/{repo}/actions/runs/{int(os.environ['GITHUB_RUN_ID'])}")
-    listing = fetch(
-        f"repos/{repo}/actions/workflows/{int(own['workflow_id'])}/runs"
-        f"?head_sha={own['head_sha']}&per_page=100"
-    )
-    return find_superseding_run(own, listing.get("workflow_runs") or [])
+    base = f"repos/{repo}/actions/workflows/{int(own['workflow_id'])}/runs"
+    for page in range(1, _MAX_RUN_PAGES + 1):
+        query = urllib.parse.urlencode({
+            "head_sha": own["head_sha"], "event": own["event"],
+            "per_page": _RUNS_PER_PAGE, "page": page,
+        })
+        runs = fetch(f"{base}?{query}").get("workflow_runs") or []
+        found = find_superseding_run(own, runs)
+        if found is not None:
+            return found
+        if len(runs) < _RUNS_PER_PAGE:
+            break
+    return None
 
 
 def compact_results(needs: dict[str, dict[str, Any]] | None) -> dict[str, str]:

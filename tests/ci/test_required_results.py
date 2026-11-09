@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "required_results.py"
@@ -106,15 +107,22 @@ _CANCELLED_DETECT = {"detect": {"result": "cancelled", "outputs": {}}, "tests": 
 
 
 def _fake_fetch(runs, own=_OWN):
+    """Serve the runs API: filter by head_sha/event and paginate like GitHub."""
     calls = []
+    listing = [own, *runs]
 
     def fetch(path):
         calls.append(path)
         if path == f"repos/o/r/actions/runs/{own['id']}":
             return own
-        if path == "repos/o/r/actions/workflows/7/runs?head_sha=abc&per_page=100":
-            return {"workflow_runs": [own, *runs]}
-        raise AssertionError(path)
+        route, _, query = path.partition("?")
+        assert route == "repos/o/r/actions/workflows/7/runs", path
+        params = dict(urllib.parse.parse_qsl(query))
+        matching = [run for run in listing if run.get("workflow_id") == 7
+                    and all(run.get(k) == params[k] for k in ("head_sha", "event"))]
+        size, page = int(params["per_page"]), int(params["page"])
+        return {"total_count": len(matching),
+                "workflow_runs": matching[(page - 1) * size:page * size]}
     return fetch, calls
 
 
@@ -172,6 +180,43 @@ def test_delegation_only_points_forward_from_a_first_attempt(monkeypatch, capsys
                           run_id=own["id"])
     assert code == 1
     assert "::error::1 job(s) failed: detect" in out
+
+
+def _cancelled_twins(count, first_id=10):
+    return [_dup(id=first_id + i, status="completed", conclusion="cancelled") for i in range(count)]
+
+
+def test_successor_on_a_later_page_is_found(monkeypatch, capsys):
+    fetch, calls = _fake_fetch([*_cancelled_twins(150), _dup(id=500)])
+    code, out = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--allow-superseded"], fetch)
+    assert code == 0
+    assert "run 500 on the same head SHA" in out
+    pages = [dict(urllib.parse.parse_qsl(c.partition("?")[2])) for c in calls[1:]]
+    assert [p["page"] for p in pages] == ["1", "2"]
+    assert all(p["event"] == "pull_request" and p["head_sha"] == "abc" for p in pages)
+
+
+@pytest.mark.parametrize("twins,pages", [(150, 2), (98, 1), (2000, 10)])
+def test_exhausted_pages_without_successor_fail(monkeypatch, capsys, twins, pages):
+    # 2000 cancelled twins: the live run lies past the page bound and is never read.
+    fetch, calls = _fake_fetch([*_cancelled_twins(twins), _dup(id=5000)] if twins == 2000
+                               else _cancelled_twins(twins))
+    code, out = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--allow-superseded"], fetch)
+    assert code == 1
+    assert "::error::1 job(s) failed: detect" in out
+    assert len(calls) == 1 + pages
+
+
+def test_api_error_on_a_later_page_fails_closed(monkeypatch, capsys):
+    serve, _ = _fake_fetch([*_cancelled_twins(150), _dup(id=500)])
+
+    def fetch(path):
+        if "page=2" in path:
+            raise OSError("api down")
+        return serve(path)
+    code, out = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--allow-superseded"], fetch)
+    assert code == 1
+    assert "keeping the failure" in out
 
 
 def test_two_cancelled_duplicates_cannot_vouch_for_each_other(monkeypatch, capsys):

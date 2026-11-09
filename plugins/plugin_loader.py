@@ -320,7 +320,10 @@ class NamedProviderKind:
         subclass). ``load_plugin_module`` refuses a user module under host isolation as well."""
         name = provider_dir.name
         namespace = None if self._is_bundled(provider_dir) else self._user_namespace(provider_dir)
-        module_name = f"{self.plugins_dir.name}.{name}" if namespace is None else f"{namespace}.{name}"
+        # A bundled provider is a child of its kind's package: ``plugins.<kind>.<name>``, so its
+        # parent-relative imports (``from .. import``) resolve against the kind's package.
+        module_name = (f"plugins.{self.plugins_dir.name}.{name}" if namespace is None
+                       else f"{namespace}.{name}")
         if namespace is not None:
             register_synthetic_package(self.user_namespace, [])
         mod = load_plugin_module(

@@ -1084,6 +1084,50 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
             respawn_cwd = ""
             respawn_env_overlay = {}
 
+    # #127089: a respawn watcher spawned from inside a Windows Job Object inherits
+    # that job. When CREATE_BREAKAWAY_FROM_JOB is denied, the old fallback kept
+    # the respawned gateway in the job that the updater/desktop tears down. Task
+    # Scheduler starts outside any job, so delegate there; on failure fail closed
+    # (never silently fall back to the in-job watcher). The env escape hatch is for
+    # tests and operators that deliberately exercise the legacy watcher.
+    if sys.platform == "win32" and os.environ.get("HERMES_GATEWAY_DISABLE_JOB_HANDOFF") != "1":
+        try:
+            from hermes_cli._subprocess_compat import process_is_in_job
+            _in_job = process_is_in_job()
+        except Exception:
+            _in_job = False
+        if _in_job:
+            try:
+                from hermes_cli.gateway_windows import _spawn_gateway_via_transient_task
+                _host_flag = _restart_argv_is_host_gateway(run_argv) if host is None else host
+                _handoff_env = _host_gateway_watcher_env() if _host_flag else None
+                if _spawn_gateway_via_transient_task(
+                    old_pid,
+                    list(run_argv),
+                    respawn_cwd=respawn_cwd,
+                    respawn_env_overlay=dict(respawn_env_overlay),
+                    watcher_env=_handoff_env,
+                ):
+                    # Accepted submission; survival is proven by the caller's liveness poll.
+                    return True
+            except Exception as exc:
+                logger.warning(
+                    "transient Task Scheduler restart handoff failed; refusing in-job respawn "
+                    "(#127089): %s", exc,
+                )
+                try:
+                    from hermes_constants import get_hermes_home
+                    _log_path = Path(get_hermes_home()) / "logs" / "gateway-stdio.log"
+                    _log_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(_log_path, "ab") as _fh:
+                        _fh.write(
+                            f"transient Task Scheduler restart handoff failed ({exc}); "
+                            "refusing in-job respawn (#127089)\n".encode("utf-8", errors="replace")
+                        )
+                except Exception:
+                    pass
+            return False
+
     # cwd/env overlay are embedded as JSON literals in the watcher source (no extra argv plumbing).
     watcher = textwrap.dedent(
         """

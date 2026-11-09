@@ -9,18 +9,19 @@
 #   - workflow_dispatch mode=pull_request: open/update a sync PR
 #   - workflow_dispatch mode=push_to_main: push directly when clean
 #
-# Required repo secret (GITHUB_TOKEN cannot update workflow files):
+# Required repo secret only when a sync updates `.github/workflows/*`
+# (GITHUB_TOKEN cannot update workflow files):
 #   UPSTREAM_SYNC_TOKEN — PAT (classic or fine-grained) with:
 #     - contents: read/write
 #     - workflows: read/write   ← required whenever upstream touches
 #       `.github/workflows/*`; without it the push is rejected with
 #       "refusing to allow a GitHub App to create or update workflow"
-#     - pull-requests: read/write (optional but preferred so `gh pr`
-#       runs as the PAT; otherwise the job falls back to GITHUB_TOKEN
-#       for PR create/edit)
 #   Classic PAT: `repo` + `workflow` scopes.
-#   Fine-grained: Contents + Workflows (Read and write) on this fork;
-#   add Pull requests (Read and write) when possible.
+#   Fine-grained: Contents + Workflows (Read and write) on this fork.
+# Checkout, fetch, and pull-request API calls always use the workflow
+# GITHUB_TOKEN. A rejected or stale PAT must not fail checkout. Push
+# tries the PAT when it is set, then falls back to GITHUB_TOKEN on
+# authentication failure so a clean non-workflow merge still lands.
 
 name: Sync upstream
 
@@ -60,16 +61,17 @@ jobs:
       UPSTREAM_REPO: NousResearch/hermes-agent
       UPSTREAM_BRANCH: main
       SYNC_BRANCH: sync/upstream-main
-      # Prefer a dedicated PAT so opened PRs still run CI and so workflow
-      # file updates from upstream can be pushed. Fall back to GITHUB_TOKEN.
-      GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+      # gh and the GitHub API use the workflow token. The PAT is only
+      # offered to git push, and only when GitHub accepts it.
+      GH_TOKEN: ${{ github.token }}
       HAS_SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN != '' }}
     steps:
       - name: Checkout fork
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          token: ${{ github.token }}
+          persist-credentials: false
 
       - name: Configure git identity
         run: |
@@ -77,10 +79,16 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Fetch upstream
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
         run: |
           git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" 2>/dev/null \
             || git remote set-url upstream "https://github.com/${UPSTREAM_REPO}.git"
-          git fetch --no-tags origin "${{ github.event.repository.default_branch }}"
+          AUTH=$(printf 'x-access-token:%s' "${CHECKOUT_TOKEN}" | base64 -w0)
+          echo "::add-mask::${AUTH}"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraheader" \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${AUTH}" \
+            git fetch --no-tags origin "${{ github.event.repository.default_branch }}"
           git fetch --no-tags upstream "${UPSTREAM_BRANCH}"
 
       - name: Measure drift
@@ -158,11 +166,54 @@ jobs:
       - name: Push sync branch
         id: push
         if: steps.drift.outputs.behind != '0' && (steps.merge.outputs.clean == 'true' || steps.merge.outputs.conflict_pr == 'true')
+        env:
+          SYNC_PUSH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          CHECKOUT_TOKEN: ${{ github.token }}
         run: |
+          mask_basic_auth() {
+            local auth
+            auth=$(printf 'x-access-token:%s' "$1" | base64 -w0)
+            echo "::add-mask::${auth}"
+            BASIC_AUTH="$auth"
+          }
+          auth_failed() {
+            printf '%s\n' "$1" | grep -Eqi 'authentication failed|invalid username or token|could not read Username|HTTP Basic: Access denied|401'
+          }
+          push_with_basic() {
+            local auth="$1"
+            shift
+            GIT_CONFIG_COUNT=1 \
+              GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraheader" \
+              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}" \
+              "$@"
+          }
+
+          PAT_AUTH=""
+          if [ -n "${SYNC_PUSH_TOKEN}" ]; then
+            mask_basic_auth "${SYNC_PUSH_TOKEN}"
+            PAT_AUTH="$BASIC_AUTH"
+          fi
+          mask_basic_auth "${CHECKOUT_TOKEN}"
+          GITHUB_AUTH="$BASIC_AUTH"
+
+          CREDENTIAL="github"
           set +e
-          PUSH_OUT=$(git push -u origin "${SYNC_BRANCH}" --force-with-lease 2>&1)
-          PUSH_STATUS=$?
+          if [ -n "${PAT_AUTH}" ]; then
+            PUSH_OUT=$(push_with_basic "${PAT_AUTH}" git push -u origin "${SYNC_BRANCH}" --force-with-lease 2>&1)
+            PUSH_STATUS=$?
+            if [ "${PUSH_STATUS}" -eq 0 ]; then
+              CREDENTIAL="pat"
+            elif auth_failed "${PUSH_OUT}"; then
+              echo "UPSTREAM_SYNC_TOKEN was rejected. Retrying the sync-branch push with the workflow token."
+              PUSH_OUT=$(push_with_basic "${GITHUB_AUTH}" git push -u origin "${SYNC_BRANCH}" --force-with-lease 2>&1)
+              PUSH_STATUS=$?
+            fi
+          else
+            PUSH_OUT=$(push_with_basic "${GITHUB_AUTH}" git push -u origin "${SYNC_BRANCH}" --force-with-lease 2>&1)
+            PUSH_STATUS=$?
+          fi
           set -e
+          echo "credential=${CREDENTIAL}" >> "$GITHUB_OUTPUT"
           printf '%s\n' "${PUSH_OUT}"
 
           if [ "${PUSH_STATUS}" -eq 0 ]; then
@@ -199,10 +250,23 @@ jobs:
             github.event_name == 'schedule'
             || (github.event_name == 'workflow_dispatch' && inputs.mode == 'push_to_main')
           )
+        env:
+          SYNC_PUSH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          CHECKOUT_TOKEN: ${{ github.token }}
         run: |
           DEFAULT_BRANCH="${{ steps.drift.outputs.default_branch }}"
+          if [ "${{ steps.push.outputs.credential }}" = "pat" ]; then
+            TOKEN="${SYNC_PUSH_TOKEN}"
+          else
+            TOKEN="${CHECKOUT_TOKEN}"
+          fi
+          AUTH=$(printf 'x-access-token:%s' "${TOKEN}" | base64 -w0)
+          echo "::add-mask::${AUTH}"
           set +e
-          PUSH_OUT=$(git push origin "${SYNC_BRANCH}:${DEFAULT_BRANCH}" 2>&1)
+          PUSH_OUT=$(GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraheader" \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${AUTH}" \
+            git push origin "${SYNC_BRANCH}:${DEFAULT_BRANCH}" 2>&1)
           PUSH_STATUS=$?
           set -e
           printf '%s\n' "${PUSH_OUT}"

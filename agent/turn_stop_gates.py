@@ -140,8 +140,12 @@ def apply_stop_gates(
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
 ) -> StopGateVerdict:
-    """Run verify-on-stop → pre_verify hook → kanban stop guard, in that order. Nudges
-    are user-role rows appended only after the assistant answer row, so role alternation
+    """Run late LSP checks → verify-on-stop → pre_verify hook → kanban stop guard.
+    Return a verdict flagging Kanban handoff failure when its nudges are exhausted
+    without a matched successful terminal result. Otherwise, accept the answer or
+    request continuation with the candidate saved as a budget-exhaustion fallback.
+
+    Nudges are user-role rows appended only after the assistant answer row, so role alternation
     holds. Hook lookups are imported lazily from their origin modules (tests patch them
     there)."""
 

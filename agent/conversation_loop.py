@@ -1021,6 +1021,14 @@ _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
 def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[list[str]] = None) -> str:
+    """Return a recovery prompt for a network stub or output-limit truncation.
+
+    For a partial network stub, nonempty ``dropped_tools`` selects instructions
+    to split oversized arguments, naming at most the first three tools. Other
+    partial stubs receive the standard network recovery prompt. Output-limit
+    prompts require a terminal handoff for dispatcher-owned Kanban workers and
+    direct answer continuation for other sessions.
+    """
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
         return (

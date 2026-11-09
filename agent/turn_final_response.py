@@ -112,10 +112,10 @@ def finish_text_response(
     _pending_verification_response: Any, _pending_verification_response_previewed: Any,
     effective_task_id: Any,
 ) -> FinalResponseVerdict:
-    """Finish (or defer) a text-only assistant response in the original guard order. Every
-    continuation path sets ``final_response = None`` so an acknowledgment never suppresses
-    iteration-limit summarization; the final message is appended and flushed only after the
-    stop gates accept it."""
+    """Finish or defer a text-only response; continuations clear ``final_response`` so
+    acknowledgments cannot suppress iteration-limit summaries. Append and flush only after stop gates pass.
+    Exhausted Kanban handoff nudges clean up and persist, returning a failed, incomplete ``loop_error``
+    result without appending the final message. Errors from cleanup or persistence propagate."""
     from agent.conversation_loop import (
         _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
     )

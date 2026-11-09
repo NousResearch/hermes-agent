@@ -50,7 +50,10 @@ def _tool_call_name(tc: Any) -> str:
 
 
 def _is_tool_error_content(content: Any) -> bool:
-    """True if tool message content indicates an error/rejection."""
+    """Recognize a truthy ``error`` or ``ok=False`` in a dict or JSON object,
+    or text starting with "error:" or "error " (case-insensitive).
+    Malformed JSON and unrecognized content return False.
+    """
     if not content:
         return False
     if isinstance(content, dict):
@@ -72,7 +75,10 @@ def _is_tool_error_content(content: Any) -> bool:
 
 
 def _tool_call_args(tc: Any) -> dict[str, Any]:
-    """Parse tool call arguments dictionary."""
+    """Return arguments from a dict or object tool call, decoding JSON strings.
+
+    Invalid JSON and values that are not dictionaries return an empty dict.
+    """
     if isinstance(tc, dict):
         fn = tc.get("function")
         raw = fn.get("arguments", {}) if isinstance(fn, dict) else tc.get("arguments", {})
@@ -130,7 +136,13 @@ def session_called_kanban_terminal(
     """True only for a matched, successful terminal-tool response for the owned task.
 
     A merely proposed tool call, an orphan tool result, a mismatched response ID,
-    or a failed response cannot satisfy the lifecycle handoff.
+    or a failed response cannot satisfy the lifecycle handoff. Calls and results
+    must match by both call ID and tool name.
+
+    A falsey ``task_id`` defaults to the dispatcher-owned task. When a task is
+    known, explicit foreign task IDs in arguments or results are rejected;
+    missing task IDs are accepted. With no task identity, matching is unrestricted
+    by task. This checks the transcript, not the board state.
     """
     expected_task = (task_id or owned_kanban_task() or "").strip()
     calls: dict[str, tuple[str, str]] = {}
@@ -176,8 +188,13 @@ def build_kanban_stop_nudge(
     max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
     task_id: Optional[str] = None,
 ) -> Optional[str]:
-    """Synthetic follow-up when a kanban worker exits without a terminal tool; ``None`` when
-    the guard should not fire (not a kanban worker, already completed/blocked, budget exhausted)."""
+    """Return a synthetic follow-up for a worker without a verified terminal handoff.
+
+    Return ``None`` when the guard is disabled, ``attempts >= max_attempts``,
+    or the transcript contains a matched successful terminal result. ``attempts``
+    counts nudges already issued; this function does not increment it.
+    A falsey ``task_id`` defaults to ``HERMES_KANBAN_TASK``.
+    """
     tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
     if (
         not kanban_stop_nudge_enabled()
@@ -214,14 +231,12 @@ def kanban_handoff_exhausted(
     max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
     task_id: Optional[str] = None,
 ) -> bool:
-    """True when the stop gate has already nudged ``max_attempts`` times and this worker still
-    made no terminal board call.
+    """Return whether a worker has exhausted nudges without a verified terminal handoff.
 
-    This is the boundary where a prose-only exit must NOT be accepted as a clean completion:
-    the worker's narrative answer is a protocol violation the dispatcher would otherwise have to
-    book, so the caller fails the turn honestly (non-zero exit) instead of letting the card stay
-    ``running`` behind a clean ``rc=0``. ``False`` when this is not a dispatcher-owned worker,
-    when the worker already made a terminal call, or when nudges remain.
+    True requires an enabled guard, ``attempts >= max_attempts`` (nudges already
+    issued), and no matched successful terminal result in ``messages``.
+    A falsey ``task_id`` defaults to the dispatcher-owned task.
+    The caller must fail the turn on True; this predicate does not change the board.
     """
     return (
         kanban_stop_nudge_enabled()

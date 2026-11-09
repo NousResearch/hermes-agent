@@ -1,22 +1,22 @@
 name: hermes-sysadmin
 title: Hermes Sysadmin · Active Directory
 repo: https://github.com/kdegeek/hermessysadmin
-sha: 854206b7b803d90f59c356e4e1c43e0b6cc99a79
+sha: bf972526ae24cd5bcb1441a2f91882e030c2cab5
 description: "Windows and Active Directory RMM for Hermes Agent and Hermes Desktop: users, groups and lockouts, Group Policy, RDP, Windows Server Backup, a desktop fleet and 231 vetted PowerShell scripts, all behind tiered approvals with a preview before every change, protected objects and a local audit log. Disclosure — runs PowerShell on the Hermes machine (local transport on a domain-joined Windows host, optionally as a configured account via runas /netonly) or over WinRM to one configured jump host, and from there talks to your domain controllers and the computers you target (AD, SMB, RPC, WinRM). Reads the account password only through Hermes secret scope. While the dashboard is open a background collector in the gateway refreshes read-only snapshots; scheduled monitoring adds a Hermes cron job only when you turn it on. Writes a local SQLite audit log with passwords redacted. Never reads .env or any other credential store; the opt-in monitoring cron script gets the password only if the user lists SYSADMIN_WINRM_PASSWORD in terminal.env_passthrough. No telemetry and no other network calls; the raw PowerShell tool is off by default."
 maintainer: kdegeek
 tier: community
 category: desktop
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/kdegeek/hermessysadmin#readme
-version: "0.2.1"
-image: https://raw.githubusercontent.com/kdegeek/hermessysadmin/854206b7b803d90f59c356e4e1c43e0b6cc99a79/assets/banner.png
+version: "0.2.2"
+image: https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/854206b7b803d90f59c356e4e1c43e0b6cc99a79/docs/screenshots/overview.png
-  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/854206b7b803d90f59c356e4e1c43e0b6cc99a79/docs/screenshots/preview.png
-  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/854206b7b803d90f59c356e4e1c43e0b6cc99a79/docs/screenshots/fleet-remote.png
-  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/854206b7b803d90f59c356e4e1c43e0b6cc99a79/docs/screenshots/catalog.png
-  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/854206b7b803d90f59c356e4e1c43e0b6cc99a79/docs/screenshots/ask-hermes.png
-  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/854206b7b803d90f59c356e4e1c43e0b6cc99a79/docs/screenshots/gpo.png
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/overview.png
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/preview.png
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/fleet-remote.png
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/catalog.png
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/ask-hermes.png
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/gpo.png
 readme: true
 capabilities:
   provides_tools:

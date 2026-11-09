@@ -247,8 +247,10 @@ CASES: list[Case] = [
          profiles=_profile_work),
     Case("aux_bare_custom_never_reaches_env_openai_base_url",
          [Leg(Q, ("named",), {"named": 1}, "named")], _aux_bare_custom),
-    Case("aux_title_endpoint_separate_from_main",
-         [Leg(Q, ("main", "aux"), {"main": 1, "aux": 1}, "main")], _aux_title_endpoint),
+    # A one-shot sends no title call (#151820), so a pinned title endpoint must see nothing; the
+    # title call's own routing is covered by the TUI matrix below.
+    Case("oneshot_sends_no_title_call_to_aux_endpoint",
+         [Leg(Q, ("main",), {"main": 1}, "main")], _aux_title_endpoint),
     Case("delegation_endpoint_child_routed",
          [Leg(Q, ("main", "deleg"), {"main": 2, "deleg": 1}, "main")], _delegation_endpoint),
     Case("delegation_named_provider_child_routed",

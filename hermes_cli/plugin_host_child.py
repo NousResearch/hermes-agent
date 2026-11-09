@@ -478,12 +478,15 @@ def _import_base(ref: str) -> type:
 def _provider_base(value: Any) -> Optional[type]:
     """The provider ABC (``HOST_OBJECT_BASES``) ``value`` implements. Only an already-imported base
     can match: a plugin object subclassing it imported it."""
+    from hermes_agent.compat.finder import current_name
+    from hermes_agent.compat.moves import MOVES
     from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
     for ref in HOST_OBJECT_BASES.values():
         module, attr = ref.split(":")
-        base = getattr(sys.modules.get(module), attr, None)
-        if isinstance(base, type) and isinstance(value, base):
-            return base
+        for name in (module, current_name(module, MOVES)):
+            base = getattr(sys.modules.get(name), attr, None)
+            if isinstance(base, type) and isinstance(value, base):
+                return base
     return None
 
 

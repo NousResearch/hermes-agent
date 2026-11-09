@@ -217,13 +217,20 @@ def reset_session_vars() -> None:
     _runtime_cwd("clear_session_cwd")
 
 
-def get_session_env(name: str, default: str = "") -> str:
-    """Read a session var by legacy ``HERMES_SESSION_*`` name; drop-in for os.getenv.  The
-    ContextVar wins if ever set here (even to ``""``); else ``os.environ``; else *default*."""
+def _bound_session_value(name: str) -> Any:
+    """The value of *name*'s ContextVar as this turn sees it, ``_UNSET`` if never bound here. The one
+    reader for in-process lookups and child-process env alike, so a script and an approval agree on
+    who asked."""
     if name in _ACTOR_VAR_NAMES and getattr(_SESSION_TURN_EVENT.get(), "user_id", None) == "":
         return ""  # another sender's input joined the running turn: it has no single actor any more
     var = _VAR_MAP.get(name)
-    if var is not None and (value := var.get()) is not _UNSET:
+    return _UNSET if var is None else var.get()
+
+
+def get_session_env(name: str, default: str = "") -> str:
+    """Read a session var by legacy ``HERMES_SESSION_*`` name; drop-in for os.getenv.  The
+    ContextVar wins if ever set here (even to ``""``); else ``os.environ``; else *default*."""
+    if (value := _bound_session_value(name)) is not _UNSET:
         return value
     return os.getenv(name, default)
 

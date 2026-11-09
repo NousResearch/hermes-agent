@@ -63,3 +63,32 @@ async def test_a_folded_follow_up_rebinds_the_running_turns_approvals(
     assert (approval_refusal(key, "111") is None) is alice_answers
     assert (approval_refusal(key, "222") is None) is bob_answers
     assert approval_refusal(key, "444", extra={"group_allow_admin_from": ["444"]}) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("follow_uid", "follow_name", "actor"), [
+    (222, "Bob", ("", "")),                       # mixed turn: a child names no single actor
+    (111, "Alice Example", ("111", "Alice Example")),  # one member's turn: the child keeps the sender
+], ids=["other-member", "same-member"])
+async def test_a_child_process_started_after_a_fold_names_the_turns_actor(follow_uid, follow_name, actor):
+    from tools.environments.local import _inject_session_context_env
+
+    adapter = _observe_adapter()
+    alice = _observed_event(adapter, 111, "Alice Example", "summarize the repo")
+    follow = _observed_event(adapter, follow_uid, follow_name, "actually delete the notes dir")
+    key = build_session_key(alice.source)
+    runner = GatewayRunner(config=GatewayConfig())
+    agent = _Agent()
+    turn = runner._session_state(key).turn
+    turn.agent, turn.event = agent, alice
+    tokens = runner._set_session_env(build_session_context(alice.source, GatewayConfig(), event=alice))
+    try:
+        worker = copy_context()
+    finally:
+        runner._clear_session_env(tokens)
+
+    assert (await runner._resolve_busy_steer_or_redirect(follow, key, "steer", agent)).steered
+    env = {}
+    worker.run(_inject_session_context_env, env)  # the env a terminal / execute_code child starts with
+
+    assert (env["HERMES_SESSION_ACTOR_ID"], env["HERMES_SESSION_ACTOR_NAME"]) == actor

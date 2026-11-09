@@ -39,6 +39,7 @@ import { api } from "@/lib/api";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
+import { isSubmitEnter } from "@/lib/ime";
 
 const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -493,7 +494,7 @@ export default function FilesPage() {
               value={folderName}
               onChange={(event) => setFolderName(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter") void createDirectory();
+                if (isSubmitEnter(event)) void createDirectory();
               }}
               placeholder="Folder name"
               disabled={creating}

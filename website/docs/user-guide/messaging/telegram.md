@@ -1100,7 +1100,7 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 
 - **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. Hermes uses this for two distinct features: operator-curated [Private Chat Topics](#private-chat-topics-bot-api-94) (config-driven, fixed topic list) and user-driven [Multi-session DM mode](#multi-session-dm-mode-topic) (activated by `/topic`, unlimited user-created topics).
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
-- **Bot API 9.5 (Mar 2026): Native streaming via `sendMessageDraft`.** Hermes supports Telegram's native streaming-draft API as an opt-in transport for private chats. The default remains the legacy `editMessageText` path because draft previews can visibly collapse and re-render on some Telegram clients.
+- **Bot API 9.5 (Mar 2026): Native streaming via `sendMessageDraft`.** Hermes uses Telegram's native streaming-draft API for private chats under the default `auto` transport (groups and group forum topics always use the `editMessageText` path; private-chat topics try drafts too and fall back to edits if Telegram rejects them). If the draft preview visibly collapses and re-renders on your Telegram client, set `transport: edit` (see below).
 
 ### Streaming transport (`gateway.streaming.transport`)
 
@@ -1109,7 +1109,7 @@ When streaming is enabled (`gateway.streaming.enabled: true`), Hermes picks one 
 | Value | Behaviour |
 |---|---|
 | `auto` (default) | Native draft streaming on supported chats (currently Telegram DMs); legacy edit-based path otherwise. Falls back gracefully if a draft frame fails. |
-| `draft` | Force native drafts. Logs a downgrade and falls back to edit if the chat doesn't support drafts (e.g. groups/topics). |
+| `draft` | Force native drafts. Logs a downgrade and falls back to edit if the chat doesn't support drafts (e.g. groups and group forum topics). |
 | `edit` | Legacy progressive `editMessageText` polling for every chat type. |
 | `off` | Disable streaming entirely (final reply only, no progressive updates). |
 
@@ -1122,11 +1122,11 @@ gateway:
     transport: auto    # auto | draft | edit | off
 ```
 
-**What you'll see in DMs with `edit` (default)** — the gateway sends a normal preview message and progressively updates it via `editMessageText`, avoiding Telegram's draft-preview collapse/rollback effect.
+**What you'll see in DMs with `auto` (default) or `draft`** — Telegram shows an animated draft preview that updates token-by-token. When the reply finishes, it's delivered as a regular message and the draft preview clears naturally on the client. Drafts have no message id, so the final answer is what stays in your chat history.
 
-**What you'll see in DMs with `auto` or `draft`** — Telegram shows an animated draft preview that updates token-by-token. When the reply finishes, it's delivered as a regular message and the draft preview clears naturally on the client. Drafts have no message id, so the final answer is what stays in your chat history.
+**What you'll see in DMs with `edit`** — the gateway sends a normal preview message and progressively updates it via `editMessageText`. Pick this if your client shows the draft preview collapsing or flickering while it grows.
 
-**What about groups, supergroups, forum topics?** Telegram restricts `sendMessageDraft` to private chats (DMs). The gateway transparently falls back to the edit-based path for everything else — same UX as before.
+**What about groups, supergroups and group forum topics?** Telegram restricts `sendMessageDraft` to private chats (DMs). The gateway transparently falls back to the edit-based path for those — same UX as before. Topics inside a private chat count as DMs: they try drafts and fall back to edits if Telegram rejects them.
 
 **What if a draft frame fails?** Any failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt.
 
@@ -1169,7 +1169,7 @@ gateway:
         disable_link_previews: true
 ```
 
-When enabled, Hermes attaches Telegram's `LinkPreviewOptions(is_disabled=True)` to every outgoing message and falls back to the legacy `disable_web_page_preview` parameter on older `python-telegram-bot` versions.
+When enabled, Hermes attaches Telegram's `LinkPreviewOptions(is_disabled=True)` to every outgoing message, including the streaming preview edits and the final edit of a streamed reply (edits that resolve a button prompt, such as an approval card, don't carry it yet), and falls back to the legacy `disable_web_page_preview` parameter on older `python-telegram-bot` versions.
 
 **Long replies and flood control.** A reply longer than Telegram's 4,096-character limit is sent as numbered parts (`(1/3)`, `(2/3)`, …). Sends to one chat are delivered one reply at a time, so a scheduled report and a DM answer landing together cannot interleave their parts, and a file upload cannot land between two parts of the text it accompanies. If Telegram's flood control refuses a part mid-way, Hermes resumes from the refused part once the penalty passes instead of re-sending the parts already on screen, and while a chat is inside a known penalty window further sends to it fail closed locally (no extra requests that would lengthen the penalty). A penalty longer than the gateway's inline wait cap is handed to the delivery ledger, which redelivers the reply with a "part of it may already have arrived above" note.
 

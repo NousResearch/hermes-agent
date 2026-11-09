@@ -15,7 +15,7 @@ import pytest
 
 pytest.importorskip("telegram")
 from telegram import InlineQuery, Message, PhotoSize, Sticker, Update
-from telegram.ext import ApplicationHandlerStop, ConversationHandler, Defaults, MessageHandler, TypeHandler, filters
+from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler, Defaults, MessageHandler, TypeHandler, filters
 from telegram.request import BaseRequest
 
 from gateway.config import PlatformConfig
@@ -182,6 +182,9 @@ async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, ki
             assert [event.text for event in delivered] == ["hello", "changed", "hello"]
             assert observer.await_count == 2
         if mode == "retention":
+            async def native_serve(unused, context):
+                return None  # plugin-owned: bare update ids are accepted, so they receipt
+            app.add_handler(TypeHandler(Update, native_serve))
             now = time.time()
             with monkeypatch.context() as clock:
                 clock.setattr(time, "time", lambda: now + 6.5 * 60 * 60)
@@ -428,6 +431,49 @@ async def _check_error_cancel_before_entry(monkeypatch, adapter, app, delivered)
     await app.process_update(update(app.bot))
     await asyncio.gather(*adapter._pending_text_batch_tasks.values())
     assert len(delivered) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stop_preserves_pending_claim_release(monkeypatch):
+    entered, release, ptb_stopped = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    tasks, callback_errors = [], []
+    loop = asyncio.get_running_loop()
+    previous_error_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: callback_errors.append(context))
+    try:
+        async with connected(monkeypatch) as (adapter, app, _delivered):
+            async def notify(incoming, context):
+                tasks.append(asyncio.current_task())
+                entered.set()
+                await release.wait()
+
+            app.add_error_handler(notify, block=False)
+            monkeypatch.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
+            await app.process_update(update(app.bot))
+            await entered.wait()
+
+            async def completed_ptb_stop(self):
+                # Isolate the adapter-owned completion wait from PTB's earlier task wait.
+                ptb_stopped.set()
+
+            with monkeypatch.context() as stopped:
+                stopped.setattr(Application, "stop", completed_ptb_stop)
+                stop = asyncio.create_task(app.stop())
+                await ptb_stopped.wait()
+                stop.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await stop
+                assert not tasks[0].done()
+                callbacks_finished = loop.create_future()
+                tasks[0].add_done_callback(lambda _: callbacks_finished.set_result(None))
+                release.set()
+                await callbacks_finished
+                assert not callback_errors
+                assert not adapter._inflight_update_ids
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        loop.set_exception_handler(previous_error_handler)
 
 
 async def _check_native_error_callback(monkeypatch, adapter, app, stage, failure):
@@ -822,9 +868,11 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
         order.append(f"end {name}")
 
     chat = SimpleNamespace(effective_chat=SimpleNamespace(id=1))
-    tasks = []
+    tasks, coroutines = [], []
     for name in "ABC":
-        tasks.append(asyncio.create_task(processor.process_update(chat, handler(name))))
+        coroutine = handler(name)
+        coroutines.append(coroutine)
+        tasks.append(asyncio.create_task(processor.process_update(chat, coroutine)))
         await asyncio.sleep(0.01)
     tasks[1].cancel()
     await asyncio.sleep(0.01)
@@ -832,6 +880,7 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
     results = await asyncio.gather(*tasks, return_exceptions=True)
     assert results[0] is None and results[2] is None
     assert order == ["start A", "end A", "start C", "end C"]  # C waits for A even after B is cancelled
+    assert all(coroutine.cr_frame is None for coroutine in coroutines)  # B never entered: closed, not leaked
 
 
 @pytest.mark.asyncio
@@ -886,3 +935,56 @@ async def test_slow_update_does_not_block_other_chats(monkeypatch):
         assert next(e.source.chat_id for e in delivered) == "43"
         same_chat = "\n".join(e.text for e in delivered if e.source.chat_id == "42")
         assert same_chat == "hello\nsecond"
+
+
+@pytest.mark.asyncio
+async def test_unserved_update_not_receipted_and_logs_field_names(monkeypatch, caplog):
+    """#141570: an update that no group-0 handler serves (e.g. a dice message) must not be
+    receipted by the group-99 observer's return — the receipt would suppress redelivery of
+    an update nobody served, silently. Instead one INFO line names the update id and the
+    field names only (never values), and a redelivery dispatches again."""
+    import logging as stdlib_logging
+
+    dice_payload = {
+        "update_id": 77,
+        "message": {
+            "message_id": 473, "date": 1800000000,
+            "chat": {"id": 42, "type": "private"},
+            "from": {"id": 88, "is_bot": False, "first_name": "Human"},
+            "dice": {"emoji": "🎲", "value": 4},
+        },
+    }
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        caplog.set_level(stdlib_logging.INFO, logger="plugins.platforms.telegram.update_admission")
+        dice = Update.de_json(dice_payload, app.bot)
+        await app.process_update(dice)
+        assert not delivered  # no core handler serves a dice message
+        assert f"{app.bot.id}:77" not in adapter._seen_update_ids  # not receipted
+        records = [r for r in caplog.records if "matched no core handler" in r.message]
+        assert len(records) == 1
+        text = records[0].getMessage()
+        assert "Update 77" in text
+        assert "message(chat,date,dice,from,message_id)" in text  # field names only
+        assert "🎲" not in text and "473" not in text and "88" not in text  # never values
+        # No receipt: a redelivery of the same id dispatches again instead of being dropped.
+        await app.process_update(dice)
+        records = [r for r in caplog.records if "matched no core handler" in r.message]
+        assert len(records) == 2
+
+
+@pytest.mark.asyncio
+async def test_core_refusal_still_receipts_and_failure_is_not_reported_unserved(monkeypatch, caplog):
+    """#141570 only takes completion away from observers: a group-0 core handler that returns
+    early (a blocked sender) served the update, so it keeps its receipt; a failed preparation
+    stays unreceipted without being reported as unserved."""
+    import logging as stdlib_logging
+
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        caplog.set_level(stdlib_logging.INFO, logger="plugins.platforms.telegram.update_admission")
+        await app.process_update(update(app.bot, 20, user=99))
+        assert not delivered
+        assert f"{app.bot.id}:20" in adapter._seen_update_ids
+        monkeypatch.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
+        await app.process_update(update(app.bot, 21))
+        assert f"{app.bot.id}:21" not in adapter._seen_update_ids
+        assert not [r for r in caplog.records if "matched no core handler" in r.message]

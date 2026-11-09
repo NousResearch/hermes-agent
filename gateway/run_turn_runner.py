@@ -747,6 +747,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     raise RuntimeError("send_exec_approval: loop unavailable")
                 outcome = _approval_send_outcome(fut, timeout=15)
                 if outcome == "sent":
+                    # Delivery receipt (#138133): an acked card was the one silent outcome. The destination is the
+                    # REQUESTED one: an adapter's stale-thread fallback may land it elsewhere (logged there). Never the command text.
+                    logger.info("Exec approval card delivered (message_id=%s, request_id=%s, session=%s, requested_chat=%s, requested_thread=%s)",
+                                getattr(fut.result(timeout=0), "message_id", None), approval_data.get("request_id"),
+                                ctx.session_key, ctx._status_chat_id, (ctx._status_thread_metadata or {}).get("thread_id"))
                     # Without this, a card whose timer runs out keeps live buttons and nobody
                     # learns the command did NOT run (only the TUI registered a settle hook).
                     register_timeout_notice(
@@ -807,7 +812,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
             if fut is not None:
-                fut.result(timeout=15)
+                res = fut.result(timeout=15)
+                # Text-lane receipt (#138133): a card failure lands here, and a failed fallback was silent too.
+                logger.log(logging.INFO if getattr(res, "success", False) else logging.WARNING,
+                           "Exec approval text prompt send (success=%s, message_id=%s, error=%s, request_id=%s, session=%s)",
+                           getattr(res, "success", None), getattr(res, "message_id", None), getattr(res, "error", None),
+                           approval_data.get("request_id"), ctx.session_key)
                 # No card to edit on the text path: the prompt has no buttons to drop and carries
                 # the /approve instructions, so the timeout notice is posted as a new message.
                 register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)

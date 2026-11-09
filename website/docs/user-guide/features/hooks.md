@@ -472,11 +472,13 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_interim_message` | Observer | Dispatched when a mid-loop assistant message is surfaced before the final answer (streaming or non-streaming); return ignored. | `text`, `already_streamed`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full interim assistant text. |
 | `transform_api_error_classification` | Transform | On each failed provider attempt, at the top of the built-in classifier; all callbacks run, then the first dict with a valid `reason` wins (run-all-then-pick-first), and skipped valid results log a runtime warning. Python plugins only. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` and `error_body` may contain raw provider/user data. |
 | `on_session_start` | Observer | First turn of a new session; return ignored. | `session_id`, `model`, `platform` | Identifiers and routing metadata only. |
+| `on_session_open` | Observer | Once each time a client creates or opens a local session (CLI, TUI, Desktop, ACP, kanban/A2A workers), in the gateway under the session's profile, before its first turn; never for messaging chats. Timeout-bounded; return ignored. | `session_id`, `platform`, `reason` (`create` or `resume`) | Session identifiers only. |
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_delete` | Observer | After a session delete or deliberate archive commits (CLI, TUI, Desktop/dashboard, gateway API, sweeps, prune); return ignored. | `session_id`, `reason`, `profile`, optional `deleted_ids` (full set when more than one row went), `sessions_dir` | Session identifiers only; no message content. |
 | `post_compaction` | Observer | Once per committed compaction, on every path: automatic and manual compaction in the agent loop (CLI, TUI, Desktop, gateway hygiene, overflow recovery), the gateway's `/compress` (`session.mutate compress`), Codex app-server compactions, micro-compaction and proactive tool-result pruning. Not fired for attempts that changed nothing (aborted, blocked, refused). Timeout-bounded; return ignored. | `session_id`, `old_session_id`, `kind`, `reason`, `before_tokens`, `after_tokens`, `messages_removed` | Identifiers and counts only. |
+| `post_curator_run` | Observer | After a curator pass wrote its per-run report (`logs/curator/<run>/run.json` + `REPORT.md`), in the process that ran the pass. Return ignored. | `run_dir`, `run_json_path`, `report_md_path`, `dry_run` | Local filesystem paths; the report names skills. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
@@ -956,6 +958,38 @@ def register(ctx):
 
 ---
 
+### `on_session_open`
+
+Fires when a client **creates or opens** a local session: a new chat in `hermes`, the TUI or Desktop, or `hermes --resume` / the session picker reopening a stored one. Use it to get ready for a conversation before the model sees it, for example a memory plugin pre-loading recent context or a status bar showing the session as open. Distinct from [`on_session_start`](#on_session_start), which fires during the first agent turn and never on a reopen.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, platform: str, reason: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | The session that opened |
+| `platform` | `str` | The surface that created it: `cli`, `tui`, `desktop`, `acp`, ... |
+| `reason` | `str` | `create` while the session has no messages yet (a new chat), `resume` once it has a conversation (a stored chat being reopened) |
+
+**Fires:** In the gateway (`gateway/session_open.py`), when a client connection attaches to a local session it was not already attached to. Once per open: a client re-reading a session it already has open, or reconnecting after a dropped socket, does not fire it again. Two clients opening the same session fire it twice. It runs in the profile that owns the session, so on a gateway serving several profiles each profile's plugins see only their own sessions. The callback runs on its own thread: opening the session never waits for it, but the session's next turn does, for up to 5 s or `plugins.hook_callback_timeout` if that is longer; past that the turn proceeds and the callback keeps running. While a callback for a session is still running, further opens of that session wait behind it as a single call: they fire once when it ends, with the latest open's details. `--safe-mode` / `--ignore-user-config` sessions fire nothing. Messaging chats (Telegram, Discord, ...) do not fire it: their first message starts the session, so use `on_session_start` there.
+
+**Return value:** Ignored.
+
+**Example — pre-load memory before the first turn:**
+
+```python
+def warm(session_id, platform, reason, **kwargs):
+    _cache[session_id] = load_recent_notes(limit=20)
+
+def register(ctx):
+    ctx.register_hook("on_session_open", warm)
+```
+
+---
+
 ### `on_session_end`
 
 Fires at the **very end** of every `run_conversation()` call, regardless of outcome. Also fires from the CLI's exit handler if the agent was mid-turn when the user quit.
@@ -1150,6 +1184,27 @@ def my_callback(session_id: str, kind: str, reason: str, **kwargs):
 **Return value:** Ignored. A callback that raises is logged and skipped; the compaction is already committed and is unaffected. Callbacks are bounded by `plugins.hook_callback_timeout`.
 
 **Use cases:** Re-inject session context after compaction, refresh an external index, count compactions.
+
+### `post_curator_run`
+
+Fires once after a curator pass has written its per-run report directory, so a plugin or shell hook can react to what the curator changed (route new skills to another profile, override an archival, write an audit log) instead of polling `logs/curator/`.
+
+**Callback signature:**
+
+```python
+def my_callback(run_dir: str, run_json_path: str, report_md_path: str, dry_run: bool, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `run_dir` | `str` | The run's report directory under the profile's `logs/curator/`. |
+| `run_json_path` | `str` | `run.json`, the machine-readable record (added, archived, consolidated, pruned, state transitions, cron rewrites). |
+| `report_md_path` | `str` | `REPORT.md`, the human-readable report. |
+| `dry_run` | `bool` | `True` for a preview (`hermes curator run --dry-run`): the report lists what WOULD change and nothing was archived or rewritten. Check it before acting on the report. |
+
+**Fires:** in the process that ran the pass (the gateway's scheduled curator tick, or `hermes curator run`), under that profile, after both files are written. A pass whose report directory could not be created fires nothing.
+
+**Return value:** Ignored. A callback that raises is logged and skipped; the curator pass is unaffected.
 
 ### `agent_loop_stopped`
 

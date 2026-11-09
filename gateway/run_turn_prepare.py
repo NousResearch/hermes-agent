@@ -410,6 +410,18 @@ class GatewayTurnPrepareMixin:
             if canonical_session_id and canonical_session_id != bound_session_id:
                 bound_session_id = canonical_session_id
         if bound_session_id and bound_session_id != session_entry.session_id:
+            # A binding whose sessions row is gone (deleted with foreign_keys OFF, so ON DELETE CASCADE
+            # never fired) is stale, not a resume target: switching onto it lets the next peer refresh
+            # re-create the row and the topic silently re-adopts an old transcript (#139283).
+            if self._session_db is not None and not await self._session_db.get_session(bound_session_id):
+                logger.warning("Telegram topic binding for %s points at session %s with no sessions row; "
+                               "keeping the current session and rebinding", session_key, bound_session_id)
+                try:  # CAS on the stale id: a /new that rebound the topic during the await wins
+                    await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry,
+                                            expected_session_id=stored_session_id)
+                except Exception:
+                    logger.debug("Failed to record Telegram topic binding", exc_info=True)
+                return session_entry
             # Route through SessionStore so the key → id mapping persists and the previous lane
             # session ends cleanly (in-place mutation split-brained the JSON index). The two DB
             # awaits above are a window for /new or /resume to move the route; the CAS on the

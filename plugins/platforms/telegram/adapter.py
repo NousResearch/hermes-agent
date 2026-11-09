@@ -524,6 +524,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
 
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
+    allow_from_covers_groups = True  # allow_from is global (DMs + groups); group_allow_from adds group-only users
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     RICH_MESSAGE_MAX_CHARS = 32768  # Bot API 10.1 rich cap; above it use legacy chunking
     _SPLIT_THRESHOLD = 4000  # chunk near this length ⇒ a client-side split continuation is almost certain
@@ -961,21 +962,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if not user_id:
             return True
         authorized: Optional[bool] = None
-        # Adapter-level allow_from (DMs) / group_allow_from (groups) are the sole authority if set.
-        adapter_allow_from = self.config.extra.get(
-            "group_allow_from" if (source.chat_type or "") in ("group", "forum", "channel") else "allow_from")
-        if adapter_allow_from is not None:
-            allowed = _coerce_allow_set(adapter_allow_from)
-            authorized = user_id in allowed or "*" in allowed
+        # allow_from (everywhere) / group_allow_from (groups) GRANT; a miss defers to the runner's union (#68716).
+        is_group = (source.chat_type or "") in ("group", "forum", "channel")
+        lists = [self.config.extra.get(key) for key in (("allow_from", "group_allow_from") if is_group else ("allow_from",))]
+        adapter_allow_from = None if all(v is None for v in lists) else set().union(*map(_coerce_allow_set, lists))
+        if adapter_allow_from is not None and {user_id, "*"} & adapter_allow_from:
+            return True
         # Instance-level override only (tests): the class method _is_callback_user_authorized is for
         # inline buttons and must not become a user-id-only shortcut for real messages.
-        if authorized is None:
-            callback_auth = self.__dict__.get("_is_callback_user_authorized")
-            if callable(callback_auth):
-                with contextlib.suppress(Exception):
-                    authorized = bool(callback_auth(
-                        user_id, chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id,
-                        user_name=source.user_name))
+        callback_auth = self.__dict__.get("_is_callback_user_authorized")
+        if callable(callback_auth):
+            with contextlib.suppress(Exception):
+                authorized = bool(callback_auth(
+                    user_id, chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id,
+                    user_name=source.user_name))
         if authorized is None:
             # Runner's full auth chain; prefer the set_authorization_check callback (survives multiplex
             # handler wrapping, unlike bound-handler __self__).
@@ -983,7 +983,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             has_callback = getattr(self, "_authorization_check", None) is not None
             if has_callback or auth_fn is not None:
                 # No allowlist → unknown DMs must reach pairing, not be default-denied here.
-                if not self._telegram_auth_env_configured():
+                if adapter_allow_from is None and not self._telegram_auth_env_configured():
                     return True
                 decision = self._is_sender_authorized(
                     user_id, chat_type=source.chat_type, chat_id=source.chat_id, is_bot=source.is_bot,
@@ -997,7 +997,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                         logger.debug("[Telegram] Falling back to env-only auth for user %s", user_id, exc_info=True)
         if authorized is None:
             authorized = self._env_allowlist_decision(user_id)
-            if authorized is None:
+            if authorized is None and adapter_allow_from is None:
                 return True
         if authorized:
             return True
@@ -3818,8 +3818,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         return result
 
     async def _edit_text(self, chat_id: str, message_id: str, text: str, parse_mode: Any = None) -> None:
-        """``editMessageText`` with normalized ids; ``parse_mode=None`` sends plain text."""
-        kwargs: dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "message_id": int(message_id), "text": text}
+        """``editMessageText`` (normalized ids, ``disable_link_previews`` honoured); ``parse_mode=None`` = plain."""
+        kwargs: dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "message_id": int(message_id), "text": text, **self._link_preview_kwargs()}
         if parse_mode is not None:
             kwargs["parse_mode"] = parse_mode
         await _await_with_thread_deadline(

@@ -41,6 +41,9 @@ def test_clean_root_passes(tmp_path):
     "import persistence.sqlite\n",
     "import persistence.sqlite.gateway as backend\n",
     "from persistence import sqlite\n",
+    "from persistence import core, sqlite\n",
+    "from persistence import  sqlite\n",
+    "from persistence import (\n    core,\n    sqlite,\n    conversation,\n)\n",
     "def load():\n    from persistence.sqlite.gateway import hosted_room_attachments\n",
     "import importlib\nbackend = importlib.import_module('persistence.sqlite.gateway')\n",
 ])

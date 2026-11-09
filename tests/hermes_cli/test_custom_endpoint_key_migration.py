@@ -1,4 +1,4 @@
-"""Regression tests for the v53 custom-endpoint credential migration."""
+"""Regression tests for the v54 custom-endpoint credential migration."""
 
 import hermes_yaml as yaml
 import pytest

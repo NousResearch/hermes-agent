@@ -214,10 +214,7 @@ def test_make_run_env_keeps_passthrough_db_password(monkeypatch):
         clear_env_passthrough()
 
 
-@pytest.mark.skipif(
-    os.environ.get("CI") == "true" and not os.path.isfile("/bin/bash"),
-    reason="Requires bash; CI sandbox may strip it.",
-)
+@pytest.mark.platforms("posix")
 def test_local_environment_e2e_profile_password_denial_and_passthrough(
     tmp_path, monkeypatch
 ):

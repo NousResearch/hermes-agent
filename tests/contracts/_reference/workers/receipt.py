@@ -22,6 +22,7 @@ from persistence.workers.vocabulary import CHILD_SEPARATOR, RECEIPT_PAYLOAD_MAX_
 
 from .._authority import _AUTHORITY_KEY, Staged, authority_state, session_runtime
 from ..authority.admissions_rows import _bound_id
+from ..conversation.sessions import _now
 
 __all__ = ["WRITE_FAILPOINT", "Step", "apply", "assignment", "compact_terminal_receipts", "staged_scope"]
 
@@ -227,12 +228,10 @@ def _compact(authority: dict[str, Any], execution_id: str) -> None:
 
 def _end_child_row(authority: Mapping[str, Any], tables: dict[str, Any], execution_id: str) -> None:
     """The execution's session row ends ``agent_close`` unless it already ended."""
-    import time
-
     worker = authority["workers"].get(execution_id)
     row = tables.get("sessions", {}).get(worker["session_id"]) if worker is not None else None
     if row is not None and row["ended_at"] is None:
-        row["ended_at"] = time.time()
+        row["ended_at"] = _now()
         row["end_reason"] = "agent_close"
 
 

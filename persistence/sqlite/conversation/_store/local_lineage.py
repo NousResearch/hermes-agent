@@ -4,6 +4,7 @@
 import json
 from persistence.core.errors import AuthorityRefusal
 from persistence.core.canonical import canonical_json as _json
+from persistence.sqlite.conversation._store.local import POLICY_PREFIX
 import itertools
 
 
@@ -81,7 +82,3 @@ def advance_local_target(conn, parent_session_id, child_session_id, *, entry=Non
             raise
         raise AuthorityRefusal('storage_unavailable') from exc
     _commit_local_target(conn, receipt, candidate)
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.local import POLICY_PREFIX

@@ -7,6 +7,9 @@ from typing import Any, Optional
 from session_rules.turns import MESSAGE_UID, message_uid_or_none
 from persistence.sqlite.conversation._store.sql_common import _id_chunks, _placeholders
 from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.messages import (
+    _decode_content, _encode_content, _loaded_view_content, _row_identity, _serialized_message_row,
+)
 from persistence.sqlite.conversation._store.messages_sql import _parse_tool_calls
 from persistence.sqlite.conversation._store.rules import DB_ROW_SNAPSHOT, coerce_epoch
 
@@ -484,9 +487,3 @@ def _tail_originals(covered_active: list[int], tail_count: int, merged_away: set
         if need <= width or width >= len(covered_active):
             return window
         width = need
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import (
-    _decode_content, _encode_content, _loaded_view_content, _row_identity, _serialized_message_row,
-)

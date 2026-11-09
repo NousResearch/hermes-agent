@@ -10,7 +10,10 @@ from persistence.sqlite._schema import (
 )
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema_ddl import _COMPRESSION_CHILD_SQL
+from persistence.sqlite.conversation._store.compression import _compression_tip_on, get_compression_tip
+from persistence.sqlite.conversation._store.core import CANONICAL_BOT_CHAT_TITLE, MAX_TITLE_LENGTH, _session_row_dict
 from persistence.sqlite.conversation._store.rules import _sanitize_surrogates
+from persistence.sqlite.conversation._store.sessions import _EMPTY_SESSION_WHERE, _LINEAGE_CTE_SQL, get_session
 from persistence.sqlite.conversation._store.sql_common import (
     _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL, _non_continuation_child_sql, escape_like as _escape_like,
 )
@@ -264,9 +267,3 @@ def resolve_session_by_title(holder: StoreHolder, title: str) -> Optional[str]:
 def get_next_title_in_lineage(holder: StoreHolder, base_title: str) -> str:
     """Next title in a lineage ("my session" -> "my session #2")."""
     return holder._read_retrying_ioerr(lambda conn: next_title_in_lineage(conn, base_title))
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.core import CANONICAL_BOT_CHAT_TITLE, MAX_TITLE_LENGTH, _session_row_dict
-from persistence.sqlite.conversation._store.compression import _compression_tip_on, get_compression_tip
-from persistence.sqlite.conversation._store.sessions import _EMPTY_SESSION_WHERE, _LINEAGE_CTE_SQL, get_session

@@ -10,6 +10,7 @@ from session_rules.turns import (
 )
 from persistence.sqlite.conversation._store.sql_common import _id_chunks, _placeholders
 from persistence.sqlite.conversation._store.identity import _fill_missing_tool_call_uids, _restore_row_identity
+from persistence.sqlite.conversation._store.messages import _loaded_view_content
 from persistence.sqlite.conversation._store.messages_sql import _MESSAGE_WRITE_COLUMNS
 from persistence.sqlite.conversation._store.rules import CANONICAL_ROW, DB_ROW_SNAPSHOT, RESTORED_FROM_STORE
 
@@ -386,7 +387,3 @@ def _active_message_row(conn: sqlite3.Connection, session_id: str, row_id: int, 
         ),
     ).fetchall()
     return clones[0] if len(clones) == 1 else row
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import _loaded_view_content

@@ -138,6 +138,7 @@ HOSTED_ENTRY: tuple[str, ...] = (
     "tools.checkpoint_maintenance",
     "tools.checkpoint_manager",
     "tools.env_probe",
+    "tools.hosted_tool_policy",
     "tools.mcp_oauth",
     "tools.mcp_tool_discovery",
     "tools.terminal_scope",

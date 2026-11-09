@@ -62,12 +62,13 @@ class _PerAgentTracker(dict):
 
 
 _read_tracker_lock = threading.Lock()
-_read_tracker: dict = _PerAgentTracker()
+# Keyed per hosted agent by ``_PerAgentTracker``: two agents never share an entry.
+_read_tracker: dict = _PerAgentTracker()  # health: allow HX015 -- keys carry the bound agent's sandbox key
 
 # Consecutive patch failures per (task_id, resolved_path); escalates the hint
 # when the model keeps failing the same file. Reset on a successful patch.
 _patch_failure_lock = threading.Lock()
-_patch_failure_tracker: dict = _PerAgentTracker()  # {task_id: {resolved_path: count}}
+_patch_failure_tracker: dict = _PerAgentTracker()  # health: allow HX015 -- keys carry the bound agent's sandbox key; {task_id: {resolved_path: count}}
 _PATCH_FAILURE_PATHS_CAP = 64
 
 # Only the most recent reads matter for dedup, loop detection and external-edit

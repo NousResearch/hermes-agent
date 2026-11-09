@@ -23,9 +23,9 @@ Exit 0 = every entry passed, 1 = at least one failed (one ``::error file=<entry>
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -63,15 +63,23 @@ def _substituted(output: bytes) -> str:
     return os.fsdecode(output.replace(b"\0", b"")).rstrip("\n")
 
 
+_FIELDS = ("REPO", "SHA", "SUBDIR", "BAD")
+
+
 def _read_fields(entry: str) -> dict[str, str]:
-    failed = {"BAD": "catalog entry parser failed"}
+    """The entry's clone source from the isolated field reader; any malformed answer rejects it."""
+    failed = dict.fromkeys(_FIELDS, "") | {"BAD": "catalog entry parser failed"}
     parsed = _run(["python3", "-I", str(_FIELDS_SCRIPT), entry], stdout=subprocess.PIPE)
     if parsed.returncode != 0:
         return failed
     try:
-        return dict(token.split("=", 1) for token in shlex.split(os.fsdecode(parsed.stdout)))
+        fields = json.loads(parsed.stdout)
     except ValueError:
         return failed
+    if not isinstance(fields, dict) or set(fields) != set(_FIELDS) \
+            or not all(isinstance(value, str) for value in fields.values()):
+        return failed
+    return fields
 
 
 def is_confined(path: str, root: str) -> bool:

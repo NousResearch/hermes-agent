@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Read the PR-controlled clone source of one catalog entry and print it as shell assignments.
+"""Read the PR-controlled clone source of one catalog entry and print it as one JSON object.
 
-Prints ``REPO=``, ``SHA=``, ``SUBDIR=`` and ``BAD=``, each ``shlex.quote``d. These fields are
+Prints ``{"REPO": ..., "SHA": ..., "SUBDIR": ..., "BAD": ...}``, every value a string. These fields are
 PR-controlled, so the entry is rejected here (non-empty ``BAD``) before anything uses them: the
 clone must be remote-only and the subdir a plain relative path, or the pinned sha ends up
 validating files outside the pinned commit. Run it with ``python3 -I``: cwd is the PR tree, and
@@ -14,8 +14,8 @@ parser's imports. ruamel.yaml comes from installed packages.
 from __future__ import annotations
 
 import argparse
+import json
 import re
-import shlex
 import sys
 
 from ruamel.yaml import YAML
@@ -71,8 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Print a catalog entry's clone source.")
     parser.add_argument("entry")
     args = parser.parse_args(argv)
-    for name, value in source_fields(_load(args.entry)).items():
-        print(f"{name}={shlex.quote(value)}")
+    print(json.dumps(source_fields(_load(args.entry))))
     return 0
 
 

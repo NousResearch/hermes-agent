@@ -12,7 +12,10 @@ to be updated" when the lock is stale. Only the second is the contributor's to f
 unreachable registry says so instead of sending them to ``hermes pm lock`` with nothing to
 regenerate. Writes the ``uv-lockfile`` review status (scripts/ci/review_status.py).
 
-Exit codes: 0 = in sync, 1 = stale lockfile or registry unreachable.
+An attempt that outlives ``CHECK_TIMEOUT`` is stopped, its partial log is still printed, and it
+reports a timeout without retrying: three more such attempts would outlive the job.
+
+Exit codes: 0 = in sync, 1 = stale lockfile, registry unreachable, or timed out.
 """
 
 from __future__ import annotations
@@ -77,6 +80,12 @@ UNREACHABLE_STATUS = action_required(
     "This is an infrastructure failure, not a stale lockfile.",
     "Re-run the failed job. No change to `uv.lock` is needed.",
 )
+TIMEOUT_STATUS = action_required(
+    "uv.lock check", "uv.lock check timed out",
+    f"`{CHECK_TEXT}` ran longer than {CHECK_TIMEOUT}s and was stopped. "
+    "This is an infrastructure failure, not a stale lockfile.",
+    "Re-run the failed job. No change to `uv.lock` is needed.",
+)
 STALE_STATUS = action_required(
     "uv.lock check", "uv.lock out of sync", "uv.lock is out of sync with pyproject.toml.",
     "Run `hermes pm lock` locally and commit the result. If on a PR, sync with main first:\n"
@@ -85,44 +94,59 @@ STALE_STATUS = action_required(
 )
 
 
-def run_check(log: Path) -> bool:
-    """One attempt; the combined output goes to ``log`` and then to stdout."""
+IN_SYNC, STALE, UNREACHABLE, TIMED_OUT = "in-sync", "stale", "unreachable", "timed-out"
+
+
+def run_check(log: Path, timeout: float = CHECK_TIMEOUT) -> int | None:
+    """One attempt's exit code, or None when it timed out; the output goes to ``log``, then stdout."""
     with log.open("wb") as fh:
-        returncode = subprocess.run(CHECK_COMMAND, stdout=fh, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL, timeout=CHECK_TIMEOUT,
-                                    check=False).returncode
+        try:
+            returncode = subprocess.run(CHECK_COMMAND, stdout=fh, stderr=subprocess.STDOUT,
+                                        stdin=subprocess.DEVNULL, timeout=timeout,
+                                        check=False).returncode
+        except subprocess.TimeoutExpired:
+            returncode = None
     sys.stdout.flush()
     sys.stdout.buffer.write(log.read_bytes())
     sys.stdout.flush()
-    return returncode == 0
+    return returncode
 
 
-def verify(log: Path, sleep: Callable[[float], None] = time.sleep) -> tuple[bool, bool]:
-    """Return ``(in_sync, registry_unreachable)`` after up to three attempts."""
+def verify(log: Path, sleep: Callable[[float], None] = time.sleep,
+           timeout: float = CHECK_TIMEOUT) -> str:
+    """IN_SYNC, STALE, UNREACHABLE or TIMED_OUT after up to three attempts."""
     for attempt in range(1, ATTEMPTS + 1):
-        if run_check(log):
-            return True, False
+        returncode = run_check(log, timeout)
+        if returncode is None:
+            return TIMED_OUT
+        if returncode == 0:
+            return IN_SYNC
         if not REGISTRY_UNREACHABLE.search(log.read_text(encoding="utf-8-sig", errors="replace")):
             # Deterministic failure (a real desync): retrying prints the same error twice more.
-            return False, False
+            return STALE
         if attempt == ATTEMPTS:
             break
         delay = RETRY_DELAYS[attempt - 1]
         print(f"::warning::{CHECK_TEXT} could not reach the registry (attempt {attempt}); "
               f"retrying in {delay}s", flush=True)
         sleep(delay)
-    return False, True
+    return UNREACHABLE
 
 
 def main() -> int:
     runner_temp = Path(os.environ["RUNNER_TEMP"])
-    in_sync, unreachable = verify(runner_temp / "lock-check.log")
-    if unreachable:
+    verdict = verify(runner_temp / "lock-check.log")
+    if verdict == TIMED_OUT:
+        print(f"::error title=uv.lock check timed out::Stopped after {CHECK_TIMEOUT}s — "
+              "infrastructure failure, not a stale lockfile. Re-run the job.")
+        publish(TIMEOUT_STATUS, ARTIFACT)
+        return 1
+    if verdict == UNREACHABLE:
         print("::error title=uv.lock check could not reach PyPI::Registry unreachable after 3 "
               "attempts — infrastructure failure, not a stale lockfile. Re-run the job.")
         publish(UNREACHABLE_STATUS, ARTIFACT)
         return 1
-    if not in_sync:
+    if verdict == STALE:
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
             fh.write(STALE_SUMMARY)
         print("::error title=uv.lock out of sync::Run `hermes pm lock` locally and commit the "

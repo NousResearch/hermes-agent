@@ -181,6 +181,7 @@ case "$plan" in
   o*) echo "Resolved 300 packages"; exit 0;;
   s*) echo "error: The lockfile at uv.lock needs to be updated"; exit 1;;
   n*) echo "error: Request failed after 3 retries"; exit 2;;
+  h*) echo "Resolving dependencies"; exec sleep 30;;
 esac
 """
 
@@ -210,19 +211,22 @@ def test_uv_lock_verdict_and_review_status(repo, step, tmp_path, plan, code, tit
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("plan,in_sync,unreachable,sleeps", [
-    ("no", True, False, [5]),
-    ("ns", False, False, [5]),
-    ("nnn", False, True, [5, 15]),
+@pytest.mark.parametrize("plan,verdict,sleeps", [
+    ("no", "in-sync", [5]),
+    ("ns", "stale", [5]),
+    ("nnn", "unreachable", [5, 15]),
+    ("nh", "timed-out", [5]),
 ])
-def test_uv_lock_retries_only_registry_failures(tmp_path, monkeypatch, capsys, plan, in_sync,
-                                                unreachable, sleeps):
+def test_uv_lock_retries_only_registry_failures(tmp_path, monkeypatch, capsys, plan, verdict, sleeps):
     sys.path.insert(0, str(SCRIPTS.parents[1]))
     from scripts.ci import verify_uv_lock
 
     for key, value in _fake_check(tmp_path, plan).items():
         monkeypatch.setenv(key, value)
     slept: list[float] = []
-    assert verify_uv_lock.verify(tmp_path / "log", sleep=slept.append) == (in_sync, unreachable)
+    assert verify_uv_lock.verify(tmp_path / "log", sleep=slept.append, timeout=2) == verdict
     assert slept == sleeps
-    assert capsys.readouterr().out.count("::warning::") == len(sleeps)
+    out = capsys.readouterr().out
+    assert out.count("::warning::") == len(sleeps)
+    if verdict == "timed-out":
+        assert "Resolving dependencies" in out  # the stopped attempt's log is still shown

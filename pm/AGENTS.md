@@ -15,7 +15,8 @@ PM owns Hermes Python dependency changes. Use `pm.sync_venv(['extra'], explicit=
 for declared runtime extras, `hermes pm install` for setup/sync, and `hermes pm repair`
 for damaged dependencies. Do not mutate Hermes environments with raw pip or uv.
 Developer-only tools (`just`) are optional packages in `pm.testenv.DEVELOPER_TOOLS`: the
-`--test-environment` install provisions those the lockfile pins; a user install never does.
+`--test-environment` install provisions those the lockfile pins; a user install or desktop bundle
+never does.
 Use `pm.build_environment` for fresh build outputs and `pm.ensure_environment` for
 isolated tool environments. Callers receive an interpreter or tool path, not uv.
 Nix's declarative uv2nix builds and unrelated user projects remain independently owned.

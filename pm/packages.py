@@ -1062,7 +1062,7 @@ class Ripgrep(BinaryPackage):
 
 @register
 class Just(BinaryPackage):
-    """The developer command runner. Activation and setup-pm install it; user installs never do."""
+    """The developer command runner. Activation installs it; user installs and desktop bundles never do."""
 
     name = "just"
     optional = True

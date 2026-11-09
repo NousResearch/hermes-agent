@@ -61,3 +61,32 @@ def test_every_locked_just_artifact_is_the_url_fetch_url_builds():
     assert locked
     for target, urls in locked.items():
         assert urls == package.fetch_urls(version, target), target
+
+
+def test_a_desktop_bundle_never_stages_just():
+    from scripts.bundles import native
+
+    assert "just" in Lockfile(lockfile_path()).names()
+    assert "just" not in native._bundle_package_names()
+
+
+def _fake_binary(tmp_path, name: str = "just"):
+    """A file whose header no architecture check can read, and that exits 1 when run."""
+    entry = tmp_path / "entry"
+    entry.mkdir()
+    binary = entry / name
+    binary.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    binary.chmod(0o755)
+    return entry
+
+
+def test_termux_just_is_checked_by_file_evidence_and_never_run(tmp_path, monkeypatch):
+    # On Termux the static musl just is checked from its file only; running it is
+    # left to the device. The probe would fail (the fake exits 1) if it ran.
+    import pm.packages
+
+    monkeypatch.setattr(pm.packages, "current_target", lambda: "linux-arm64-bionic")
+    entry = _fake_binary(tmp_path)
+    assert get_package("just").verify(entry, "linux-arm64-bionic") == ""
+    assert get_package("just").verify(tmp_path / "missing", "linux-arm64-bionic") != ""
+

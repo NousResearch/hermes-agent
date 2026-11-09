@@ -839,3 +839,60 @@ class TestSlackReactionAuthorizationGate:
         assert "U_RANDO" in runner.auth_checked
         assert runner.handled == []
         adapter.handle_message.assert_not_called()
+
+
+# ===========================================================================
+# Approval delegation: the delegated-admin identity gate
+# ===========================================================================
+class TestApprovalDelegationGate:
+    """A delegated approval card may only be resolved by the configured admin,
+    from the chat the card was sent to — and an unauthorized click must not
+    consume the state the real admin still needs (pop-after-validate)."""
+
+    def _adapter(self):
+        adapter = _make_adapter()
+        # The general interactive-authorization gate is upstream's; this class
+        # tests the delegation gate that runs after it.
+        adapter._is_interactive_user_authorized = lambda *a, **k: True
+        adapter._approval_resolved["1.2"] = False
+        adapter._approval_admin["1.2"] = ("C1", "U_ADMIN")
+        adapter._team_clients["T1"].chat_update = AsyncMock()
+        return adapter
+
+    @staticmethod
+    def _body(user_id="U_ADMIN", channel="C1"):
+        return {
+            "message": {"ts": "1.2", "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": "rm -rf /"}},
+            ]},
+            "channel": {"id": channel},
+            "user": {"name": "someone", "id": user_id},
+            "team": {"id": "T1"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_configured_admin_click_resolves(self):
+        adapter = self._adapter()
+        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+        with patch("tools.approval.resolve_gateway_approval_card", return_value=1) as resolve:
+            await adapter._handle_approval_action(AsyncMock(), self._body(), action)
+        resolve.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_non_admin_in_admin_chat_cannot_resolve(self):
+        adapter = self._adapter()
+        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+        with patch("tools.approval.resolve_gateway_approval_card", return_value=1) as resolve:
+            await adapter._handle_approval_action(AsyncMock(), self._body("U_EVE"), action)
+        resolve.assert_not_called()
+        # pop-after-validate: the real admin can still click afterwards
+        assert adapter._approval_admin.get("1.2") == ("C1", "U_ADMIN")
+        assert adapter._approval_resolved.get("1.2") is False
+
+    @pytest.mark.asyncio
+    async def test_click_from_another_chat_cannot_resolve(self):
+        adapter = self._adapter()
+        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+        with patch("tools.approval.resolve_gateway_approval_card", return_value=1) as resolve:
+            await adapter._handle_approval_action(AsyncMock(), self._body("U_ADMIN", "C_OTHER"), action)
+        resolve.assert_not_called()

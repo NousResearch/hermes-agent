@@ -62,7 +62,7 @@ class TestVerdicts:
         out = capsys.readouterr().out
         assert rc == 3
         assert "hardline-deny" in out
-        assert "system shutdown/reboot" in out
+        assert "system reboot" in out
 
     def test_dangerous_command_asks_with_exit_2(self, isolated_approvals, capsys):
         rc = at.approvals_test_command(_args(["rm", "-rf", "~/project/build"]))

@@ -291,6 +291,95 @@ def _get_approval_config() -> dict:
         return {}
 
 
+_POWER_KEYS = ("allow_reboot", "allow_shutdown", "reboot_without_approval", "shutdown_without_approval")
+_warned_ignored_power_keys = False
+# Fixed path, deliberately NOT managed_scope.get_managed_dir(): that honours HERMES_MANAGED_DIR, which
+# a user-owned .env (loaded into os.environ at start and on reload) can set. Module-level for tests.
+_POWER_MANAGED_CONFIG = "/etc/hermes/config.yaml"
+_POWER_MANAGED_OWNER_UID = 0
+
+
+def _root_owned_power_approvals() -> dict:
+    """``approvals`` block of ``_POWER_MANAGED_CONFIG``, or ``{}`` unless the file AND its directory
+    are owned by ``_POWER_MANAGED_OWNER_UID`` (root), are not symlinks, and are not group/other
+    writable. Any other state means the agent's user might have written it."""
+    import stat
+    if not hasattr(os, "getuid"):
+        return {}  # no POSIX ownership model to check: fail closed
+    path = _POWER_MANAGED_CONFIG
+    for p in (os.path.dirname(path), path):
+        try:
+            st = os.lstat(p)
+        except FileNotFoundError:
+            return {}
+        if (stat.S_ISLNK(st.st_mode) or st.st_uid != _POWER_MANAGED_OWNER_UID
+                or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            logger.warning("Ignoring %s for host power keys: not a root-owned, non-writable %s",
+                           p, "file" if p == path else "directory")
+            return {}
+    from utils import fast_safe_load
+    with open(path, encoding="utf-8-sig") as f:
+        data = fast_safe_load(f.read()) or {}
+    approvals = data.get("approvals") if isinstance(data, dict) else None
+    return approvals if isinstance(approvals, dict) else {}
+
+
+def _get_power_approval_config() -> dict:
+    """The ``approvals`` block of the root-owned ``/etc/hermes/config.yaml`` only, never the user's
+    ``config.yaml`` and never a ``HERMES_MANAGED_DIR`` override.
+
+    The four power keys decide whether host reboot/shutdown leave the hardline floor. The agent's
+    terminal runs as the same user that owns ``~/.hermes/config.yaml`` and ``~/.hermes/.env``, so any
+    value read from there (or from a directory an env var there points to) is one the agent could
+    have written itself, by more routes than a command filter can list. Fails closed: missing file,
+    wrong ownership/permissions, or any read/parse error means every power key is false."""
+    global _warned_ignored_power_keys
+    try:
+        managed = _root_owned_power_approvals()
+    except Exception:  # fail-closed boundary: any error -> every power key false
+        logger.warning("Failed to load managed approval config; power opt-ins off", exc_info=True)
+        managed = {}
+    if not _warned_ignored_power_keys:
+        user = _get_approval_config()
+        ignored = [k for k in _POWER_KEYS if k in user and k not in managed and is_truthy_value(user.get(k))]
+        if ignored:
+            _warned_ignored_power_keys = True
+            logger.warning(
+                "approvals.%s in the user config.yaml is ignored: host reboot/shutdown keys are read only "
+                "from the managed config (/etc/hermes/config.yaml; keep it root-owned).",
+                ", approvals.".join(ignored))
+    return managed
+
+
+def _get_hardline_opt_ins() -> frozenset:
+    """Opt-in hardline categories enabled in the MANAGED config: ``"reboot"`` when
+    ``approvals.allow_reboot`` and ``"shutdown"`` when ``approvals.allow_shutdown`` is true (both
+    default false). An enabled category leaves the unconditional floor but still needs a live human
+    approval every time. See :func:`_get_power_approval_config` for why the user config is ignored."""
+    cfg = _get_power_approval_config()
+    enabled = set()
+    if is_truthy_value(cfg.get("allow_reboot", False)):
+        enabled.add("reboot")
+    if is_truthy_value(cfg.get("allow_shutdown", False)):
+        enabled.add("shutdown")
+    return frozenset(enabled)
+
+
+def _get_power_no_approval_categories() -> frozenset:
+    """Power categories allowed to run WITHOUT a prompt in interactive sessions: ``"reboot"`` only when
+    BOTH ``approvals.allow_reboot`` and ``approvals.reboot_without_approval`` are true, ``"shutdown"``
+    only when BOTH ``approvals.allow_shutdown`` and ``approvals.shutdown_without_approval`` are true
+    (all default false), read from the MANAGED config only. ``<cat>_without_approval`` alone has no
+    effect: the category stays hardline."""
+    cfg = _get_power_approval_config()
+    enabled = set()
+    for category in ("reboot", "shutdown"):
+        if (is_truthy_value(cfg.get(f"allow_{category}", False))
+                and is_truthy_value(cfg.get(f"{category}_without_approval", False))):
+            enabled.add(category)
+    return frozenset(enabled)
+
+
 def _get_approval_mode() -> str:
     """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config)."""
     try:

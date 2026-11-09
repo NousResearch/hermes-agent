@@ -6,7 +6,8 @@ order the runtime guard (``check_all_command_guards``) applies them:
 
 1. container-skip gate (isolated backends bypass all guards), 2. hardline blocklist (never
 bypassable, fires before yolo/off), 3. sudo-stdin guard (unconditional), 4. user ``approvals.deny``
-rules (fire before yolo/off), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
+rules (fire before yolo/off), 4b. opted-in reboot/shutdown (human prompt every time, or no prompt in
+interactive sessions when ``approvals.<cat>_without_approval`` is also on), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
 ``command_allowlist``, 7. dangerous-pattern detection (would prompt).
 """
 
@@ -33,7 +34,7 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     de-obfuscated forms the detectors actually evaluated).
     """
     from tools import approval
-    from tools import approval_context, approval_detection, approval_floors
+    from tools import approval_context, approval_detection, approval_detection_power, approval_floors
     # Sync config-persisted "always" patterns so the allowlist check below sees what the runtime
     # would see (load is read-only).
     try:
@@ -67,12 +68,17 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
         )
 
     # 2. Hardline blocklist — never bypassable, even under yolo.
-    is_hardline, hardline_desc = approval_detection.detect_hardline_command(command)
+    #    approvals.allow_reboot / allow_shutdown lift only those categories, exactly as at runtime.
+    is_hardline, hardline_desc = approval_detection.detect_hardline_command(
+        command, approval_context._get_hardline_opt_ins())
     if is_hardline:
+        setting = approval_detection_power.hardline_opt_in_setting(hardline_desc)
         return result(
             "hardline-deny", rule=hardline_desc,
             detail="matches the hardline blocklist (never bypassable, "
-                   "blocked even under --yolo / approvals.mode=off)",
+                   "blocked even under --yolo / approvals.mode=off)"
+                   + (f"; opt in with {setting}: true in the root-owned "
+                      "/etc/hermes/config.yaml" if setting else ""),
         )
 
     # 3. Sudo stdin guard — unconditional, like the hardline floor.
@@ -87,6 +93,27 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
             "user-deny", rule=deny_pattern,
             detail="matches a user-defined approvals.deny rule in "
                    "config.yaml (blocked even under --yolo / mode=off)",
+        )
+
+    # 4b. Opted-in host reboot/shutdown (passed the floor above): human-only gate, evaluated before
+    #     yolo / mode=off / allowlist / smart, exactly as at runtime.
+    power_desc = approval_detection.detect_power_state_command(command)
+    if power_desc is not None:
+        categories = approval_detection.detect_power_state_categories(command)
+        if categories and categories <= approval_context._get_power_no_approval_categories():
+            settings = " + ".join(
+                approval_detection_power.HARDLINE_NO_APPROVAL_SETTINGS[c] for c in sorted(categories))
+            return result(
+                "allow", rule=power_desc,
+                detail=f"opted-in host power command: runs without approval ({settings}) in "
+                       "interactive sessions; still denied in cron, -q and unattended sessions "
+                       "with no one present",
+            )
+        return result(
+            "ask-approval", rule=power_desc,
+            detail="opted-in host power command: requires human approval every time "
+                   "(smart/allowlist/yolo cannot approve); denied in cron, -q and unattended "
+                   "sessions with no one to ask",
         )
 
     # 5. Yolo / approvals.mode=off bypass.

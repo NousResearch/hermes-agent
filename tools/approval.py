@@ -30,8 +30,9 @@ from tools.approval_context import (
 )
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys, detect_dangerous_command,
-    detect_hardline_command,
+    detect_hardline_command, detect_power_state_categories, detect_power_state_command,
 )
+from tools.approval_detection_power import HARDLINE_NO_APPROVAL_SETTINGS
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _matching_permanent_allowlist_entry, _match_user_deny_rule, _sudo_stdin_block_result,
     _user_deny_block_result,
@@ -601,10 +602,15 @@ def _gateway_notify_cb(session_key: str):
 
 def _pending_result(spec, session_key: str, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
-                    smart_denied: bool) -> dict:
+                    smart_denied: bool, human_only: bool = False) -> dict:
     """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
     ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
-    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``."""
+    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``.
+    A ``human_only`` command is never queued: a later ``/approve`` would grant it without a prompt
+    for this exact command in front of a person, so it is blocked now instead."""
+    if human_only:
+        return _blocked(_HUMAN_ONLY_NO_SURFACE.format(description=description),
+                        pattern_key=pattern_key, description=description)
     pending = {"command": command, "pattern_key": pattern_key}
     if spec.pending_keys:
         pending["pattern_keys"] = pattern_keys
@@ -876,23 +882,28 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None) -> dict:
+                    is_ask: bool, smart: bool = False, pending_body=None, human_only: bool = False) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
     owner override reduces every surface to once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
     actually asked, so a smart APPROVE never pays for redacting a large script.
+
+    ``human_only`` (opted-in host reboot/shutdown): no guardian step, every surface offers
+    once/deny only, nothing persists, and a context with no live prompt surface is DENIED rather
+    than parked as a pending approval — the answer must come from a person, every time.
     """
     from agent.redact import redact_approval_display
 
     smart_denied = False
-    if smart:
+    if smart:  # never set for human_only (the caller passes no smart flag)
         result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
                                            session_key, human_present=is_cli or is_gateway or is_ask)
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
-    allow_permanent = not smart_denied
+    once_only = smart_denied or human_only
+    allow_permanent = not once_only
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -905,8 +916,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                        outcome=outcome, noun=spec.noun, **extra)
 
     def grant(choice: str) -> dict:
-        # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
-        if not smart_denied:
+        # A smart-DENY owner override or a human-only approval is always one operation, even if an
+        # older client returns "session" or "always".
+        if not once_only:
             _persist_choice(session_key, choice, pattern_keys)
         if spec.user_approved:
             return _user_approved(session_key, description)
@@ -915,7 +927,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     if spec.transport:
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
-            session_key=session_key, allow_session=not smart_denied, allow_permanent=allow_permanent,
+            session_key=session_key, allow_session=not once_only, allow_permanent=allow_permanent,
             surface=approval_context.gateway_approval_surface() if (is_gateway or is_ask) else "cli",
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
@@ -941,8 +953,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
-                "allow_session": not smart_denied,
+                "allow_permanent": not once_only,
+                "allow_session": not once_only,
             }
             if smart_denied:
                 data["smart_denied"] = True
@@ -980,7 +992,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 display_command, display_description = command, description
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
-                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied, human_only=human_only,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
@@ -992,7 +1004,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
     choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
-                                       smart_denied=smart_denied, approval_callback=approval_callback)
+                                       allow_session=not once_only, smart_denied=smart_denied,
+                                       approval_callback=approval_callback)
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")
@@ -1120,6 +1133,66 @@ def _run_approval_gate(
     )
 
 
+# --- Human-only gate: opted-in host reboot / shutdown ---------------------------------------------------------------
+# approvals.allow_reboot / allow_shutdown lift a power-state category off the hardline floor so a PERSON can approve
+# it. They never widen into automatic approval: the gate runs right after the floor, before yolo / approvals.mode=off,
+# the permanent command_allowlist, session approvals and the smart guardian, and resolves a chained command
+# (`sync; reboot`) through this stricter path as a whole.
+# Second level: approvals.reboot_without_approval / shutdown_without_approval (each needs its allow_* too) let an
+# INTERACTIVE session run that category with no prompt; a command touching both categories needs both. Contexts with
+# nobody present (cron, -q, unattended platforms, headless) still deny: there is no third "unattended" setting on
+# purpose, so a scheduled job or webhook payload can never power-cycle the host on its own. yolo / mode=off change
+# nothing here: the command runs unprompted only when the without_approval level is on.
+
+_HUMAN_ONLY_NO_SURFACE = (
+    "BLOCKED: {description} requires a live human approval every time (approvals.allow_reboot / "
+    "allow_shutdown), but no interactive prompt surface is available to ask one. Do NOT retry, rephrase, "
+    "or attempt the same outcome another way; ask the user to run it themselves or approve it from an "
+    "interactive session."
+)
+
+
+def _power_command_gate(command: str, approval_callback=None) -> dict | None:
+    """Decision for a host reboot/shutdown command that passed the floor (its category is opted in),
+    else ``None``. With nobody present (cron, -q, unattended platforms, headless runs) it is DENIED,
+    whatever the settings. In an interactive session it runs WITHOUT a prompt only when every category
+    it touches has ``approvals.<cat>_without_approval`` (plus ``allow_<cat>``) on; otherwise a live human
+    is asked every time: smart mode, allowlists, session/"always" approvals, yolo / mode=off and
+    unattended approve-modes cannot approve it."""
+    if not approval_context._get_hardline_opt_ins():
+        return None  # no category opted in: any power command was already hard-blocked by the floor
+    description = detect_power_state_command(command)
+    if description is None:
+        return None
+    approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
+    if not is_cli and not is_gateway and not is_ask:
+        contexts = _unattended_contexts()
+        why = contexts[0].clause if contexts else "no interactive user or approval gateway is present"
+        logger.warning("Human-only power command denied (%s): %s (command: %s)", why, description, command[:200])
+        return _blocked(
+            f"BLOCKED: {description} requires a live human approval every time "
+            f"(approvals.allow_reboot / allow_shutdown), but {why}. No approval mode, allowlist or "
+            "unattended setting can approve it. Do NOT retry, rephrase, or attempt the same outcome "
+            "another way; ask the user to run it themselves.",
+            pattern_key=description, description=description)
+    categories = detect_power_state_categories(command)
+    # "Interactive" = a person can see this session right now: the CLI, a gateway chat, or an ask-mode
+    # client with a registered notifier. A bare HERMES_EXEC_ASK with no notifier is not a person.
+    someone_present = is_cli or is_gateway or (is_ask and _gateway_notify_cb(get_current_session_key()) is not None)
+    if (someone_present and categories
+            and categories <= approval_context._get_power_no_approval_categories()):
+        settings = ", ".join(HARDLINE_NO_APPROVAL_SETTINGS[c] for c in sorted(categories))
+        logger.warning("Power command running WITHOUT approval (%s): %s (command: %s)",
+                       settings, description, command[:200])
+        return {"approved": True, "message": None, "description": description, "power_no_approval": True}
+    return _human_decision(
+        _COMMAND_GATE, command=command, description=description,
+        pattern_key=description, pattern_keys=[description],
+        session_key=get_current_session_key(), approval_callback=approval_callback,
+        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, human_only=True,
+    )
+
+
 def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
     """True when the backend is isolated enough to skip dangerous-command prompts. Docker is the
     exception once host paths are bind-mounted: ``rm -rf /workspace`` then reaches host files."""
@@ -1158,7 +1231,9 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     can run, #58748)."""
     from agent.runtime_self_protection import command_deletes_runtime
 
-    is_hardline, hardline_desc = detect_hardline_command(command)
+    # approvals.allow_reboot / allow_shutdown lift ONLY those categories off the floor; the command
+    # then meets the human-only gate (_power_command_gate), never an automatic approval.
+    is_hardline, hardline_desc = detect_hardline_command(command, approval_context._get_hardline_opt_ins())
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc, command)
@@ -1185,6 +1260,9 @@ def check_dangerous_command(command: str, env_type: str,
     blocked = _floor_block(command)
     if blocked is not None:
         return blocked
+    power = _power_command_gate(command, approval_callback)
+    if power is not None:
+        return power
     if _yolo_active() or approval_context._get_approval_mode() == "off":
         return _approved()
     if _command_matches_permanent_allowlist(command):
@@ -1252,6 +1330,9 @@ def check_all_command_guards(command: str, env_type: str,
     prepared = consume_prepared_guard(command, env_type, has_host_access)
     if prepared is not None:
         return prepared
+    power = _power_command_gate(command, approval_callback)
+    if power is not None:
+        return power
 
     approval_mode = approval_context._get_approval_mode()
     if _yolo_active() or approval_mode == "off":

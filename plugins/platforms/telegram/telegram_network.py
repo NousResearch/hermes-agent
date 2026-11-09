@@ -349,8 +349,9 @@ async def _query_doh_provider(client: httpx.AsyncClient, provider: dict) -> list
 
 async def discover_fallback_ips() -> list[str]:
     """Resolve api.telegram.org via Google + Cloudflare DoH; unique A records, in order. IPs matching the
-    system resolver are deliberately KEPT (often the most reliable path). Falls back to
-    ``SEED_FALLBACK_IPS`` only when DoH yields nothing usable.
+    system resolver are deliberately KEPT (often the most reliable path); ``SEED_FALLBACK_IPS`` always
+    form the tail, so a one-record DoH answer cannot make one edge the fallback path's single point of
+    failure (the adapter discovers once per connect, so a dead lone IP would strand polling).
 
     IPs that match the local system resolver are kept rather than excluded: in many networks the system-DNS
     IP is the most reliable path to api.telegram.org and a transient primary-path failure should be retried
@@ -374,8 +375,9 @@ async def discover_fallback_ips() -> list[str]:
     doh_ips = [ip for r in results if isinstance(r, list) for ip in r]
     validated = _normalize_fallback_ips(list(dict.fromkeys(doh_ips)))  # dedupe, keep order
     if validated:
-        logger.debug("Discovered Telegram fallback IPs via DoH: %s", ", ".join(validated))
-        return validated
+        fallback_ips = list(dict.fromkeys([*validated, *SEED_FALLBACK_IPS]))
+        logger.debug("Discovered Telegram fallback IPs via DoH; effective fallback pool: %s", ", ".join(fallback_ips))
+        return fallback_ips
     logger.info(
         "DoH discovery yielded no usable IPs (system DNS: %s); using seed fallback IPs %s",
         ", ".join(system_ips) or "unknown", ", ".join(SEED_FALLBACK_IPS))

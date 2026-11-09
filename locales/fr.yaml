@@ -554,8 +554,6 @@ gateway:
          /help, /usage. Les prompts normaux vont dans un topic.
       4. /new dans un topic réinitialise uniquement la session de ce topic.
       5. /topic <id> dans un topic y restaure une ancienne session.
-    system_topic_name: "Système"
-    system_topic_intro: "Topic système pour les commandes et l'état d'Hermes."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Impossible de déterminer l'ID du chat."
     mode_not_enabled: "Le mode topic multi-session n'est pas activé pour ce chat."
@@ -719,6 +717,7 @@ gateway:
     action_deny: "Refuser"
     deadline: "Sans réponse de votre part dans {window}, elle ne sera PAS exécutée."
     not_requester: "Seul {requester} peut répondre à cette demande d'approbation."
+    not_requester_admins_only: "Seul un administrateur ou un approbateur listé peut répondre à cette demande d'approbation."
     text_choice_once: "Répondez `{prefix}approve` pour l'exécuter une fois"
     text_choice_session: "`{prefix}approve session` pour autoriser ce motif jusqu'à la fin de cette session"
     text_choice_always: "`{prefix}approve always` pour l'autoriser définitivement"

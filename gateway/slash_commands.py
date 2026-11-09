@@ -1199,7 +1199,7 @@ class GatewaySlashCommandsMixin(
             from gateway.approval_actor import answerable_request_ids, refusal_text
             from gateway.slash_access import policy_for_runner_source
             ids, requester = answerable_request_ids(
-                session_key, event.source.user_id, resolve_all=resolve_all,
+                session_key, event.sender_id(), resolve_all=resolve_all,
                 admin_ids=policy_for_runner_source(self, event.source).admin_user_ids)
             return (session_key, refusal_text(requester), []) if requester else (session_key, None, ids)
         if session_key in self._pending_approvals:

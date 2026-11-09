@@ -20,26 +20,28 @@ from __future__ import annotations
 from typing import Any, Iterable, Optional
 
 
+# Refusal "name" of an entry with no requester recorded; ``refusal_text`` words it as admins-only.
+_NO_REQUESTER = "\0no-requester"
+
+
 def may_answer(authority: dict, actor_id: Any, admin_ids: Iterable[str] = (), extra: Any = None) -> bool:
     """Whether *actor_id* may answer the approval whose recorded ``authority`` this is: the requester,
-    a listed approver, or an admin. A native surface passes its platform ``extra`` and gets the admins
-    of the approval's own chat scope (DM or group, ``slash_access.policy_for_chat_type``), the same
-    scope ``/approve`` and relay answers read from ``admin_ids``. An entry with no requester recorded
-    is never refused."""
+    a listed approver, or an admin. Admins come from ONE source, never a union: a native surface's
+    platform ``extra`` gives the admins of the approval's own chat scope (DM or group,
+    ``slash_access.policy_for_chat_type``), the same scope ``/approve`` and relay answers pass as
+    ``admin_ids``. With ``approvers`` narrowed, an entry with no requester recorded (a turn merged
+    from two senders) is answered by approvers and admins only, never by anyone."""
     from gateway.slash_access import _coerce_id_list, policy_for_chat_type
 
     actor = str(actor_id or "").strip()
     requester = str(authority.get("requester_id") or "")
-    if not requester or actor == requester:
-        return True
     approvers = _coerce_id_list(authority.get("approvers"))
-    if "*" in approvers:
+    if "*" in approvers or (requester and actor == requester):
         return True
     if not actor:
         return False
-    admins = {str(a) for a in admin_ids}
-    if extra is not None:
-        admins |= policy_for_chat_type(extra, authority.get("chat_type")).admin_user_ids
+    admins = ({str(a) for a in admin_ids} if extra is None
+              else policy_for_chat_type(extra, authority.get("chat_type")).admin_user_ids)
     return actor in approvers or actor in admins
 
 
@@ -59,8 +61,7 @@ def answerable_request_ids(session_key: str, actor_id: Any, *, admin_ids: Iterab
     answer them: ``(request_ids, None)``, or ``([], requester_name)`` for the first selected one
     they may not. Only the selected entries are checked, so another requester's queued approval
     never blocks this one. Resolving the returned ids (not "the oldest" again) keeps a refused
-    entry that became the oldest in between from being answered unchecked. An entry with no
-    requester recorded is never refused."""
+    entry that became the oldest in between from being answered unchecked."""
     from tools.approval import list_gateway_approval_authority
 
     pending = list_gateway_approval_authority(session_key)
@@ -70,7 +71,7 @@ def answerable_request_ids(session_key: str, actor_id: Any, *, admin_ids: Iterab
         pending = pending[:1]
     for entry in pending:
         if not may_answer(entry, actor_id, admin_ids, extra):
-            return [], str(entry.get("requester_name") or entry.get("requester_id"))
+            return [], str(entry.get("requester_name") or entry.get("requester_id") or _NO_REQUESTER)
     return [str(p.get("request_id")) for p in pending], None
 
 
@@ -87,4 +88,6 @@ def approval_refusal(session_key: str, actor_id: Any, *, admin_ids: Iterable[str
 def refusal_text(requester: str) -> str:
     from agent.i18n import t
 
+    if requester == _NO_REQUESTER:
+        return t("gateway.exec_approval.not_requester_admins_only")
     return t("gateway.exec_approval.not_requester", requester=requester)

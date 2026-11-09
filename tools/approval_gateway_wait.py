@@ -37,9 +37,10 @@ class _ApprovalEntry:
         # here in the turn's profile scope (the click callbacks that check it run off-turn). Kept off
         # ``data`` so the prompt and replay payloads sent to clients stay exactly what was raised.
         approvers = _ctx._get_approval_config().get("approvers")
-        # ``chat_type`` picks the admin scope (DM or group) every surface checks against.
-        self.authority = {"requester_id": _ctx._session_env("HERMES_SESSION_USER_ID"),
-                          "requester_name": _ctx._session_env("HERMES_SESSION_USER_NAME"),
+        # ``chat_type`` picks the admin scope (DM or group) every surface checks against. The requester is
+        # the turn's ACTOR (who asked): USER_ID is the route, empty in a shared observed group.
+        self.authority = {"requester_id": _ctx._session_env("HERMES_SESSION_ACTOR_ID"),
+                          "requester_name": _ctx._session_env("HERMES_SESSION_ACTOR_NAME"),
                           "chat_type": _ctx._session_env("HERMES_SESSION_CHAT_TYPE"),
                           "approvers": ["*"] if approvers is None else approvers}
         self.acknowledged = False

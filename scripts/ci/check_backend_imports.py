@@ -8,8 +8,9 @@ into the backend they test.
 
 Flags, in every Python file outside ``persistence/``, ``persistence_assembly.py`` and any
 ``tests`` directory: ``import persistence.sqlite...``, ``from persistence.sqlite... import``,
-``from persistence import sqlite`` and ``importlib.import_module("persistence.sqlite...")`` (or
-``__import__``) with a literal name. A name built at run time is not caught.
+``from persistence import sqlite`` (alone or among other names, in any layout) and
+``importlib.import_module("persistence.sqlite...")`` (or ``__import__``) with a literal name.
+A name built at run time is not caught.
 
 ``_ALLOWED`` maps a file to the reason it may import the backend. An entry whose file is gone
 is reported so it can be dropped.
@@ -83,7 +84,7 @@ def find_backend_imports(root: Path) -> list[tuple[str, int]]:
                 source = path.read_text(encoding="utf-8-sig")
             except (OSError, UnicodeDecodeError):
                 continue
-            if _BACKEND not in source and "import sqlite" not in source:
+            if "sqlite" not in source:
                 continue
             offenders.extend((rel, line) for line in backend_import_lines(source))
     return offenders

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReviewFile } from '@/global'
 import { I18nProvider } from '@/i18n'
-import { $composerCommandsCatalogs, rememberComposerCommandsCatalog } from '@/lib/desktop-slash-commands'
+import { $composerCommandsCatalogs, rememberComposerCommandsCatalog } from '@/lib/review-prompt-buttons'
 import { $reviewFiles, $reviewScopeTarget } from '@/store/review'
 
 import { ReviewPromptButtons } from './prompt-buttons'

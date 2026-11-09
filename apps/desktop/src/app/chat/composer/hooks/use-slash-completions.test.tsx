@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
+import { $composerCommandsCatalogs } from '@/lib/review-prompt-buttons'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 
 import { isSkillItem } from '../composer-utils'
@@ -93,6 +94,22 @@ describe('useSlashCompletions', () => {
     await act(async () => invalidateSlashCompletions())
     await completions(api, '')
     expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  // The warm-up is the usual writer of the Review pane's catalog; when it fails,
+  // the first successful `/` fetch must fill it instead of leaving the buttons gone.
+  it('publishes a catalog recovered by the `/` fetch after a failed warm-up', async () => {
+    $composerCommandsCatalogs.set({})
+    const request = vi.fn().mockRejectedValueOnce(new Error('warm-up blip')).mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway)
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(Object.values($composerCommandsCatalogs.get()).filter(Boolean)).toHaveLength(0)
+
+    await completions(api, '')
+    expect(Object.values($composerCommandsCatalogs.get()).filter(Boolean)).toHaveLength(1)
   })
 
   // A draft has no session yet, so the backend would otherwise scan the LAUNCH

@@ -5,7 +5,7 @@ import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { $composerCommandsCatalogs, reviewPromptButtons } from '@/lib/desktop-slash-commands'
+import { $composerCommandsCatalogs, reviewPromptButtons } from '@/lib/review-prompt-buttons'
 import { notifyError } from '@/store/notifications'
 import { $reviewFiles, $reviewScopeTarget } from '@/store/review'
 

@@ -1,5 +1,3 @@
-import { map } from 'nanostores'
-
 import { translateNow } from '@/i18n/runtime'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
@@ -480,35 +478,12 @@ export function rememberDesktopCommandsCatalog(catalog: CommandsCatalogLike | un
   rememberedCatalog = catalog
 }
 
-/** Each composer's OWN catalog, keyed by composer target (`main`, `tile:<id>`):
- *  the scope (profile, session) that composer's chat runs in. Panes acting on
- *  one chat (the Review pane's prompt buttons) read their target's entry, so a
- *  catalog another profile's tile fetched later never relabels or reroutes them. */
-export const $composerCommandsCatalogs = map<Record<string, CommandsCatalogLike | undefined>>({})
+/** True when the desktop itself handles `/name` (a local or registry spec, or an alias of one):
+ *  submitting such a name runs that action, never a same-named saved prompt. */
+export function isDesktopOwnedCommand(command: string): boolean {
+  const name = normalizeCommand(command)
 
-export function rememberComposerCommandsCatalog(target: string, catalog: CommandsCatalogLike | undefined): void {
-  $composerCommandsCatalogs.setKey(target, catalog)
-}
-
-export interface ReviewPromptButton {
-  command: string
-  label: string
-}
-
-/** `type: prompt` quick commands marked `review_button` in config.yaml, sorted by label. A name the
- *  desktop handles itself (`/new`, `/help`, any local or registry spec) is skipped: submitting it
- *  would run that action, not the saved prompt the button names. */
-export function reviewPromptButtons(catalog: CommandsCatalogLike | undefined): ReviewPromptButton[] {
-  return Object.entries(catalog?.commands ?? {})
-    .flatMap(([command, meta]) => {
-      const label = meta?.review_button?.trim()
-      const name = normalizeCommand(command)
-
-      return label && !SPEC_BY_NAME.has(ALIAS_TO_CANONICAL.get(name) ?? name)
-        ? [{ command: command.startsWith('/') ? command : `/${command}`, label }]
-        : []
-    })
-    .sort((a, b) => a.label.localeCompare(b.label))
+  return SPEC_BY_NAME.has(ALIAS_TO_CANONICAL.get(name) ?? name)
 }
 
 function liveCatalog(): CommandsCatalogLike | undefined {

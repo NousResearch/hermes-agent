@@ -15,9 +15,9 @@ import {
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestionWithOptions,
   rankSkillCommands,
-  rememberComposerCommandsCatalog,
   slashCompletionGroup
 } from '@/lib/desktop-slash-commands'
+import { rememberComposerCommandsCatalog } from '@/lib/review-prompt-buttons'
 import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { onboardingChatStore } from '@/store/onboarding-session'
@@ -132,6 +132,17 @@ export function useSlashCompletions(options: {
     }
   }, [gateway, epoch, keysFor, sessionParams, target])
 
+  // A `/` fetch that succeeds after a failed warm-up also feeds this composer's
+  // Review pane buttons, unless the composer moved to another scope meanwhile.
+  const publishCatalog = useCallback(
+    (catalogKey: string, catalog: CommandsCatalogLike) => {
+      if (keysFor().catalogKey === catalogKey) {
+        rememberComposerCommandsCatalog(target, catalog)
+      }
+    },
+    [keysFor, target]
+  )
+
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
       if (!gateway) {
@@ -208,6 +219,8 @@ export function useSlashCompletions(options: {
               requestCompletion<CommandsCatalogLike>(gateway, owner, 'commands.catalog', sessionParams)
             )
           )
+
+          publishCatalog(catalogKey, catalog)
 
           // Prefer the categorized layout so the popover renders section headers
           // (Session, Tools & Skills, ...). Fall back to the flat list when the
@@ -320,7 +333,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin, keysFor, sessionParams]
+    [gateway, skinThemes, activeSkin, keysFor, sessionParams, publishCatalog]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {

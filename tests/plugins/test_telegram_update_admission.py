@@ -24,6 +24,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_context
 from gateway.session_context import get_session_env
+from tests.waiting import async_wait_until
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.update_admission import DEFAULT_MAX_CONCURRENT_UPDATES, PerChatUpdateProcessor
@@ -1059,20 +1060,23 @@ async def test_core_refusal_still_receipts_and_failure_is_not_reported_unserved(
 
 
 @pytest.mark.asyncio
-async def test_adopted_threadless_opener_is_not_overtaken_by_threaded_follow_up():
+async def test_adopted_threadless_opener_is_not_overtaken_by_threaded_follow_up(monkeypatch):
     """Android sends a new DM topic's opener thread-less (the adapter adopts it into the topic):
     a later explicitly-threaded message must queue behind it even while the opener is slow."""
     from datetime import UTC, datetime
 
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "7")
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="111:offline-test"))
     sent = datetime(2026, 11, 9, tzinfo=UTC)
     chat = SimpleNamespace(id=42, type="private")
     user = SimpleNamespace(id=7, is_bot=False)
+    ids = iter(range(500, 600))
 
     def update(thread_id, **fields):
         return SimpleNamespace(effective_chat=chat, effective_message=SimpleNamespace(
-            chat=chat, from_user=user, date=sent, message_thread_id=thread_id, **fields))
+            chat=chat, from_user=user, date=sent, message_thread_id=thread_id, message_id=next(ids), **fields))
 
-    processor, order, gate = PerChatUpdateProcessor(32), [], asyncio.Event()
+    processor, order, gate = PerChatUpdateProcessor(32, adopt=adapter._admit_topic_follow), [], asyncio.Event()
 
     async def handler(name, slow=False):
         order.append(f"start {name}")
@@ -1081,7 +1085,8 @@ async def test_adopted_threadless_opener_is_not_overtaken_by_threaded_follow_up(
         order.append(f"end {name}")
 
     await processor.process_update(update(600, forum_topic_created=object(), is_topic_message=True), handler("created"))
-    opener = asyncio.create_task(processor.process_update(update(None), handler("opener", slow=True)))
+    opener_update = update(None)
+    opener = asyncio.create_task(processor.process_update(opener_update, handler("opener", slow=True)))
     while order[-1:] != ["start opener"]:
         await asyncio.sleep(0)
     follow = asyncio.create_task(processor.process_update(update(600, is_topic_message=True), handler("follow")))
@@ -1091,3 +1096,51 @@ async def test_adopted_threadless_opener_is_not_overtaken_by_threaded_follow_up(
     gate.set()
     await asyncio.gather(opener, follow)
     assert order[-2:] == ["start follow", "end follow"]
+    # The handler reads the decision admission made, although the threaded follow-up ended the follow.
+    assert adapter._adopt_created_topic_thread(opener_update.effective_message, "dm", None) == "600"
+
+
+@pytest.mark.asyncio
+async def test_root_message_after_threaded_follow_up_stays_root_while_creation_waits(monkeypatch):
+    """A slow root DM update holds the chat lane, so the topic-creation service message waits behind
+    it while the first explicitly threaded message runs on its own lane. That threaded message ends
+    the creation's follow; a later thread-less root message must not adopt the topic once the
+    creation's handler finally runs."""
+    gate = asyncio.Event()
+    sender = {"id": 88, "is_bot": False, "first_name": "Human"}
+
+    def message(bot, uid, sent, *, thread=None, created=False, text="hello"):
+        body = {"message_id": 500 + uid, "date": 1800000000 + sent, "from": sender,
+                "chat": {"id": 42, "type": "private"}}
+        if thread is not None:
+            body.update(message_thread_id=thread, is_topic_message=True)
+        body.update({"forum_topic_created": {"name": "New", "icon_color": 0}} if created else {"text": text})
+        return Update.de_json({"update_id": uid, "message": body}, bot)
+
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        async def park_slow_root(update, context):
+            if update.update_id == 10:
+                await gate.wait()
+
+        app.add_handler(TypeHandler(Update, park_slow_root), group=-1)
+
+        async def flushed(count):
+            await async_wait_until(lambda: len(delivered) + len(adapter._pending_text_batch_tasks) >= count,
+                                   what=f"{count} events to reach batching")
+            await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+            return len(delivered) >= count
+
+        app.update_queue.put_nowait(message(app.bot, 10, 0, text="slow root"))
+        await async_wait_until(lambda: f"{app.bot.id}:10" in adapter._inflight_update_ids, what="u10 parked")
+        app.update_queue.put_nowait(message(app.bot, 11, 1, thread=600, created=True))
+        app.update_queue.put_nowait(message(app.bot, 12, 2, thread=600, text="in the topic"))
+        assert await flushed(1)
+        assert [e.source.thread_id for e in delivered] == ["600"]
+        gate.set()
+        assert await flushed(2)
+        await async_wait_until(lambda: not adapter._inflight_update_ids, what="the creation to be handled")
+
+        app.update_queue.put_nowait(message(app.bot, 13, 3, text="back at the root"))
+        assert await flushed(3)
+        assert delivered[-1].text == "back at the root"
+        assert delivered[-1].source.thread_id is None

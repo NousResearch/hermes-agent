@@ -2,10 +2,12 @@
 
 No handler opens a connection or invokes a self-committing SessionDB method.
 """
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 import json
 from functools import partial
 import math
+import threading
 import time
 
 from hermes_state_runtime import RuntimeStoreError, _text
@@ -368,13 +370,55 @@ def worker_receipt_assignment(conn, execution_id, session_id, generation, sequen
     return _worker_assignment(conn, execution_id, session_id, generation)
 
 
+_CLAIM_ORIGIN_CACHE_MAX = 1024
+
+
 def worker_claim_origin(db, params):
-    """Keep the producer claim bound to its original identity after physical rotation."""
+    """Keep the producer claim bound to its original identity after physical rotation.
+
+    The origin is the parent named by the execution's FIRST receipt (by sequence) that carries a
+    ``worker_assignment`` (its first ``compression.publish``), else the request's session.
+
+    Every worker RPC asks this. Scanning all of the execution's receipts each time parsed every
+    full-transcript read receipt a running execution keeps until it finishes, so the cost grew with
+    the run; on a cold page cache one call took 12 s (py-spy on the live gateway, 2026-11-09).
+
+    The answer is remembered per execution, exactly: receipts are append-only in sequence order
+    (``mutate_worker_execution`` inserts only ``last_sequence + 1``), and the one rewrite, terminal
+    compaction, never touches an assignment receipt. So a found origin is final, and a miss only has
+    to look at receipts newer than the last one already scanned.
+    """
+    execution_id = params['execution_id']
+    cache, lock = db.__dict__.setdefault('_worker_claim_origin_cache', (OrderedDict(), threading.Lock()))
+    with lock:
+        saved = cache.get(execution_id)
+        if saved is not None:
+            cache.move_to_end(execution_id)
+    if saved is not None and saved[1] is not None:
+        return saved[1]
+    after = saved[0] if saved is not None else 0
     with db._read_ctx() as conn:
-        row = conn.execute("SELECT result_json FROM worker_receipts WHERE execution_id=? "
+        # Bound the scan by the newest receipt read FIRST: a receipt committed after that read has a
+        # higher sequence, so recording "scanned through `upto`" can never skip one.
+        newest = conn.execute('SELECT max(sequence) FROM worker_receipts WHERE execution_id=?',
+                              (execution_id,)).fetchone()
+        upto = (newest[0] if newest else 0) or 0
+        row = conn.execute("SELECT result_json FROM worker_receipts WHERE execution_id=? AND sequence>? AND sequence<=? "
                            "AND json_extract(result_json,'$.worker_assignment.parent') IS NOT NULL ORDER BY sequence LIMIT 1",
-                           (params['execution_id'],)).fetchone()
-    return json.loads(row[0])['worker_assignment']['parent'] if row else params['session_id']
+                           (execution_id, after, upto)).fetchone()
+        # An uncommitted answer must never outlive its transaction.
+        cacheable = not getattr(conn, 'in_transaction', False)
+    origin = json.loads(row[0])['worker_assignment']['parent'] if row else None
+    if cacheable:
+        with lock:
+            current = cache.get(execution_id)
+            # Never let a slower concurrent caller overwrite a found origin or a longer scan.
+            if current is None or (current[1] is None and current[0] <= upto):
+                cache[execution_id] = (upto, origin)
+                cache.move_to_end(execution_id)
+                while len(cache) > _CLAIM_ORIGIN_CACHE_MAX:
+                    cache.popitem(last=False)
+    return origin if origin is not None else params['session_id']
 
 
 def worker_retry_target(db, params):

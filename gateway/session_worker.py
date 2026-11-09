@@ -101,7 +101,10 @@ async def worker_request(connection, ref, params, *, operation):
     extra = {'register': {'kind'}, 'adopt': set(), 'persist': {'epoch', 'sequence', 'operation', 'payload'}}[operation]
     if set(params) != _SCOPE | extra:
         raise RuntimeStoreError('invalid_params')
-    claim = _claim(connection, ref, params, require_live=operation == 'register')
+    # _claim and _verify are blocking (a psutil process-table probe and state.db reads): run them off the
+    # event loop. On it, one slow claim froze the whole gateway, chat and every other worker's receipt
+    # included, for up to 12 s (py-spy, 2026-11-09).
+    claim = await asyncio.to_thread(_claim, connection, ref, params, require_live=operation == 'register')
     authority = connection.authority
     if operation == 'register':
         authority._require_admission_open()
@@ -116,7 +119,7 @@ async def worker_request(connection, ref, params, *, operation):
             **scope, kind='compute', adoption_secret=claim, require_idle=True)
     if 'worker:adopt' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    _verify(connection, ref, params, claim)
+    await asyncio.to_thread(_verify, connection, ref, params, claim)
     if operation == 'adopt':
         return await asyncio.to_thread(adopt_worker_execution, authority.db, epoch=authority.epoch,
                                        **scope, adoption_secret=claim)

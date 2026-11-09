@@ -237,6 +237,108 @@ class NoopPluginContext:
     register_tool = register_hook = register_cli_command = register_memory_provider = _noop
 
 
+class _NamedProviderCollector(NoopPluginContext):
+    """Fake plugin context that captures one provider-kind ``register_<method>(provider)`` call."""
+
+    def __init__(self, register_method: str) -> None:
+        self.provider = None
+        setattr(self, register_method, self._capture)
+
+    def _capture(self, provider):
+        self.provider = provider
+
+
+class NamedProviderKind:
+    """Discovery for one provider plugin kind, addressed by explicit name: bundled
+    ``plugins/<kind_dir>/<name>/`` then user ``$HERMES_HOME/plugins/<name>/`` (bundled wins on
+    collision). The named storage kinds share this shape (``plugins/session_storage``,
+    ``plugins/memory_storage``); the local backend of each kind is core, never discovered here.
+
+    Providers load in-process only: under ``plugins.isolation: host`` a user provider is refused
+    (the *refused* exception class, with the reason) rather than returned as a host proxy, whose
+    port objects would be opaque and whose calls would not carry the caller's scope. A user
+    provider's module is named after its canonical directory, so same-named providers in two
+    profiles (and their sibling modules) never share a module or its import-time state.
+
+    ``base_cls`` and ``refused`` are callables so this module never imports a port module at load
+    time (it is imported while config/auth still load)."""
+
+    def __init__(self, *, kind_dir: str, base_cls: Callable[[], type], register_method: str,
+                 markers: tuple[str, ...], kind: str, noun: str, refused: Callable[[], type],
+                 logger: logging.Logger):
+        self.plugins_dir = _PLUGINS_ROOT / kind_dir
+        self.user_namespace = f"_hermes_user_{kind_dir}"
+        self._base_cls = base_cls
+        self._register_method = register_method
+        self._markers = tuple(markers)
+        self._kind = kind
+        self._noun = noun
+        self._refused = refused
+        self.logger = logger
+
+    def is_provider_dir(self, path: Path) -> bool:
+        """Cheap text heuristic: ``__init__.py`` mentions the kind's contract."""
+        init_file = path / "__init__.py"
+        if not init_file.exists():
+            return False
+        try:
+            source = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
+        except OSError:
+            return False
+        return any(marker in source for marker in self._markers)
+
+    def find_provider_dir(self, name: str) -> Optional[Path]:
+        """Resolve a provider name to its directory (bundled first, then user-installed)."""
+        bundled = self.plugins_dir / name
+        if bundled.is_dir() and (bundled / "__init__.py").exists():
+            return bundled
+        user_dir = user_plugins_dir()
+        user = user_dir / name if user_dir else None
+        return user if user and user.is_dir() and self.is_provider_dir(user) else None
+
+    def load(self, name: str) -> Optional[Any]:
+        """Load a provider instance by name; ``None`` if not found or it fails to load. Raises
+        the kind's refused exception for a user provider under ``plugins.isolation: host``."""
+        provider_dir = self.find_provider_dir(name)
+        if not provider_dir:
+            self.logger.debug("%s '%s' not found in bundled or user plugins", self._kind, name)
+            return None
+        if not self._is_bundled(provider_dir):
+            from hermes_cli.plugin_isolation import in_process_import_refusal
+            refusal = in_process_import_refusal(f"{self._kind.lower()} {name!r}")
+            if refusal:
+                self.logger.error("%s", refusal)
+                raise self._refused()(refusal)
+        return load_named(name, provider_dir, self._load_from_dir, kind=self._kind, noun=self._noun,
+                          logger=self.logger)
+
+    def _is_bundled(self, provider_dir: Path) -> bool:
+        return provider_dir.parent == self.plugins_dir
+
+    def _load_from_dir(self, provider_dir: Path) -> Optional[Any]:
+        """Import a provider module in-process and extract its provider (``register(ctx)`` or a
+        subclass). ``load_plugin_module`` refuses a user module under host isolation as well."""
+        name = provider_dir.name
+        namespace = None if self._is_bundled(provider_dir) else self._user_namespace(provider_dir)
+        module_name = f"{self.plugins_dir.name}.{name}" if namespace is None else f"{namespace}.{name}"
+        if namespace is not None:
+            register_synthetic_package(self.user_namespace, [])
+        mod = load_plugin_module(
+            module_name, provider_dir, parents=("plugins", f"plugins.{self.plugins_dir.name}"),
+            logger=self.logger, synthetic_namespace=namespace)
+        return mod and instance_from_module(
+            mod, collector=_NamedProviderCollector(self._register_method), collected_attr="provider",
+            base_cls=self._base_cls(), name=name, logger=self.logger)
+
+    def _user_namespace(self, provider_dir: Path) -> str:
+        """The synthetic package a user provider loads under: one per canonical provider
+        directory, so profile A's ``<name>`` and profile B's ``<name>`` are different modules
+        (a directory alias of the same profile resolves to the same one)."""
+        import hashlib
+        digest = hashlib.sha256(str(provider_dir.resolve()).encode("utf-8", "surrogatepass")).hexdigest()[:16]
+        return f"{self.user_namespace}.p{digest}"
+
+
 def instance_from_module(mod: Any, *, collector: Any, collected_attr: str, base_cls: type, name: str,
                          logger: logging.Logger) -> Optional[Any]:
     """Extract the provider instance: ``register(ctx)`` first, then any ``base_cls`` subclass."""

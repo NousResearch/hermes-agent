@@ -180,6 +180,7 @@ import {
   withTransientRetries
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
+import { resetRemovedGlobalRoute, switchPrimary } from './connection-primary-route'
 import {
   backendScopeKey,
   backendScopePrefix,
@@ -201,7 +202,6 @@ import {
   reuseMatchingPrimarySshBackend,
   setConnectionLaunchMode,
   setLastUsedConnection,
-  setPrimaryConnection,
   type SharedRegistryProfileScope,
   shouldDeferLocalEnumeration,
   shouldRetrySshInventory,
@@ -210,7 +210,7 @@ import {
 } from './connection-registry'
 import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
-import { forgetRemovedGlobalRoute, registerGlobalRoute, removeSavedConnection } from './connection-registry-remove'
+import { registerGlobalRoute, removeSavedConnection } from './connection-registry-remove'
 import { buildRemoteBlock } from './connection-remote-block'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
@@ -8450,18 +8450,14 @@ function readDesktopConnectionsRegistry(): any {
 
 // connection.json's app-global route outranks the list's primary at boot, so a
 // gateway removed from the list (by the Webapp, or by a build that left the route
-// behind) must leave connection.json too, or Desktop keeps dialing it.
-function forgetDesktopGlobalRouteIfRemoved() {
-  try {
-    // Strict: an unreadable store must not read as "every gateway was removed".
-    forgetRemovedGlobalRoute(gatewayConnectionsStore.readStrict(), {
-      readConfig: readDesktopConnectionConfig,
-      writeConfig: writeDesktopConnectionConfig,
-      log: rememberLog
-    })
-  } catch (error) {
-    rememberLog(`[connections] could not reset a removed gateway's route: ${(error as Error).message}`)
-  }
+// behind) must leave connection.json too, or Desktop keeps dialing it. The same
+// doors serve a primary switch back to This device (connection-primary-route).
+const connectionRouteIo = {
+  readConfig: readDesktopConnectionConfig,
+  writeConfig: writeDesktopConnectionConfig,
+  readRegistry: () => gatewayConnectionsStore.readStrict(),
+  writeRegistry: writeDesktopConnectionsRegistry,
+  log: rememberLog
 }
 
 function writeDesktopConnectionsRegistry(registry) {
@@ -14437,8 +14433,7 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
 })
 ipcMain.handle('hermes:connections:set-primary', async (_event, id) => {
   assertCanMutateManagedPrimaryRouting()
-  const registry = setPrimaryConnection(readDesktopConnectionsRegistry(), String(id || ''))
-  writeDesktopConnectionsRegistry(registry)
+  const registry = await switchPrimary(String(id || ''), connectionRouteIo)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
@@ -16828,7 +16823,7 @@ registerMachineUiPreferences(HERMES_HOME)
 gatewayConnectionsStore.watch({
   onRegistry: (changes, { after, before }) => {
     if (changes.some(change => change.reason === 'removed')) {
-      forgetDesktopGlobalRouteIfRemoved()
+      resetRemovedGlobalRoute(gatewayConnectionsStore.readStrict(), connectionRouteIo)
     }
 
     for (const change of changes) {
@@ -17605,7 +17600,7 @@ app.whenReady().then(() => {
   // connection resolution.
   migrateLegacyEncryptedSecretsOnce()
   // After the store's one-time import: drop a stale route to a removed gateway.
-  forgetDesktopGlobalRouteIfRemoved()
+  resetRemovedGlobalRoute(gatewayConnectionsStore.readStrict(), connectionRouteIo)
 
   // Expose the renderer's accessibility tree to the OS (#118271, Windows
   // twin #92607): dictation tools that insert text through the accessibility

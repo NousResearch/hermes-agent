@@ -108,8 +108,6 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only config-readers
 
-      # Profiles are created only through hermes_cli.profile_provision.provision_profile, so the CLI,
-      # dashboard and Desktop/TUI build the same profile from the same request.
       - name: Forbid profile creation outside the provisioning entry point
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only profile-create-entry

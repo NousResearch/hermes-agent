@@ -59,8 +59,6 @@ def _best_effort(fn) -> bool:
 
 
 def _hermes_home_scope(path):
-    """``path``'s full runtime scope (home + secrets + terminal) for the block; see
-    ``launch_profile_policy.profile_config_scope``."""
     from tui_gateway.launch_profile_policy import profile_config_scope
     return profile_config_scope(path, launch_home=_launch_home())
 

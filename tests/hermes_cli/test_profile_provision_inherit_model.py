@@ -1,11 +1,3 @@
-"""A new profile inherits the launch profile's model together with the custom gateway backing it.
-
-``inherit_launch_model`` pins the launch ``model`` into the new profile through the same
-validated path as ``/api/model/set``, and that validation runs inside the new profile's home. A
-launch model on a custom ``providers:`` gateway is therefore only valid once the gateway
-definition is already in the profile — writing it after the pin never ran (#101885 / #94071).
-"""
-
 from __future__ import annotations
 
 from pathlib import Path

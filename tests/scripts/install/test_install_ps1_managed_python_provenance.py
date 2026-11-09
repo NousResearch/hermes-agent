@@ -29,6 +29,7 @@ def test_python_stage_delegates_to_pin_without_touching_existing_env(tmp_path, s
     (package / "cli.py").write_text(
         "import json, os, pathlib, sys\n"
         "assert not pathlib.Path(os.environ['UV_BUSY']).exists()\n"
+        "assert os.environ.get('UV_PYTHON_PREFERENCE') == 'only-managed', 'the lookup must restore the caller preference'\n"
         "pathlib.Path(os.environ['PM_LOG']).write_text(json.dumps(sys.argv[1:]))\n"
         "sys.exit(int(os.environ['PROBE_EXIT']))\n", encoding="utf-8",
     )
@@ -47,7 +48,11 @@ function uv {
         ConvertTo-Json -Compress -InputObject @($args) | Add-Content -Encoding UTF8 $Log
         switch ($args[1]) {
             'install' { }
-            'find' { Write-Output $env:BOOTSTRAP_PYTHON }
+            'find' {
+                # Real uv reads UV_PYTHON_PREFERENCE as --python-preference and rejects it beside --managed-python.
+                if ($env:UV_PYTHON_PREFERENCE) { throw 'the argument `--managed-python` cannot be used with `--python-preference`' }
+                Write-Output $env:BOOTSTRAP_PYTHON
+            }
             default { throw 'PM must not be a child of the bootstrap uv' }
         }
         $global:LASTEXITCODE = 0
@@ -64,7 +69,8 @@ exit $LASTEXITCODE
 ''', encoding="utf-8-sig")
     # uv python find returns the distribution interpreter, not a venv launcher.
     env = dict(os.environ, PROBE_STAGE=stage, PROBE_EXIT=str(exit_code), BOOTSTRAP_PYTHON=sys._base_executable,
-               PM_LOG=str(pm_log), UV_BUSY=str(tmp_path / "uv-busy"), PATHEXT=".COM;.EXE;.BAT;.CMD")
+               PM_LOG=str(pm_log), UV_BUSY=str(tmp_path / "uv-busy"), PATHEXT=".COM;.EXE;.BAT;.CMD",
+               UV_PYTHON_PREFERENCE="only-managed")
     env.pop("PYTHONPATH", None)
     env.pop("PROBE_SKIP_BROWSER", None)
     if skip_browser:

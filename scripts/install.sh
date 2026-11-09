@@ -1007,11 +1007,17 @@ bootstrap_python() {
     # PM's bootstrap parent. Prefer the existing managed Python, then a host
     # Python of the same supported minor before attempting a download (#10778).
     # This interpreter only boots PM; PM still owns the exact runtime pin.
-    if ! boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py" 2>/dev/null)" \
+    # uv reads UV_PYTHON_PREFERENCE as `--python-preference` and rejects it
+    # beside `--managed-python`, which already says only-managed: hide the
+    # caller's copy for the lookup, or it silently falls to the --system rung.
+    find_managed_python() {
+        (unset UV_PYTHON_PREFERENCE; UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$1")
+    }
+    if ! boot_py="$(find_managed_python "$_py" 2>/dev/null)" \
         && ! boot_py="$("$UV_CMD" python find --system --no-project "$_py" 2>/dev/null)"; then
         run_logged "Downloading Python $_py" "$UV_CMD" python install --no-bin --no-registry "$_py" \
             || fail "bootstrap Python installation failed" python_install_failed
-        boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed" python_install_failed
+        boot_py="$(find_managed_python "$_py")" || fail "bootstrap Python lookup failed" python_install_failed
     fi
     boot_py="${boot_py%$'\r'}"
     [ -x "$boot_py" ] && "$boot_py" --version >/dev/null 2>&1 || fail "bootstrap Python is not executable: $boot_py" python_install_failed

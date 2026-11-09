@@ -1326,11 +1326,20 @@ function Get-BootstrapPython {
     # A bare version lets uv pick emulated x86_64 on Windows-on-ARM.
     $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
     $pyRequest = "cpython-$pyVersion-windows-$pyArch-none"
-    $bootPy = (Invoke-Native -Utf8Output { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
-    if ($LASTEXITCODE -or -not $bootPy) {
-        Invoke-Logged "Downloading Python $pyVersion" { & $uv python install --no-bin --no-registry $pyRequest }
-        if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" python_install_failed }
-        $bootPy = (Invoke-Native -Utf8Output { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
+    # uv reads UV_PYTHON_PREFERENCE as `--python-preference` and rejects it beside
+    # `--managed-python`, which already says only-managed: hide the caller's copy
+    # for the lookup, or it silently reads as "not installed" and downloads.
+    $callerPythonPreference = $env:UV_PYTHON_PREFERENCE
+    try {
+        $env:UV_PYTHON_PREFERENCE = $null
+        $bootPy = (Invoke-Native -Utf8Output { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
+        if ($LASTEXITCODE -or -not $bootPy) {
+            Invoke-Logged "Downloading Python $pyVersion" { & $uv python install --no-bin --no-registry $pyRequest }
+            if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" python_install_failed }
+            $bootPy = (Invoke-Native -Utf8Output { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
+        }
+    } finally {
+        $env:UV_PYTHON_PREFERENCE = $callerPythonPreference
     }
     if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" python_install_failed }
     $script:BootstrapPython = $bootPy.Trim()

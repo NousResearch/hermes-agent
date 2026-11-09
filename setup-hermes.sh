@@ -171,7 +171,10 @@ if [ "$os" = win32 ]; then
                   *) py_request="cpython-$py_version-windows-x86_64-none" ;; esac
 fi
 "$uv" python install --no-bin --no-registry "$py_request"
-boot_py="$("$uv" python find --managed-python "$py_request")"
+# uv reads UV_PYTHON_PREFERENCE as `--python-preference` and rejects it beside
+# `--managed-python`, which already says only-managed. Hide the caller's copy
+# for this lookup only; PM strips UV_* for its own children anyway.
+boot_py="$(unset UV_PYTHON_PREFERENCE; "$uv" python find --managed-python "$py_request")"
 boot_py="${boot_py%$'\r'}"
 # Activation trusts the recorded tool digest; a direct setup re-checks it
 # (setup-hermes.ps1 draws the same line).

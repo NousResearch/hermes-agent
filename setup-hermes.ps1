@@ -89,11 +89,17 @@ try {
     # Like scripts/install.ps1, decode uv's UTF-8 path independently of the
     # caller's console code page. Keep this scope local: install.ps1 must also
     # work as a standalone download before a checkout (and shared files) exists.
+    # uv reads UV_PYTHON_PREFERENCE as `--python-preference` and rejects it beside
+    # `--managed-python`, which already says only-managed. Hide the caller's copy
+    # for this lookup only; PM strips UV_* for its own children anyway.
     $previousNativeOutputEncoding = [Console]::OutputEncoding
+    $callerPythonPreference = $env:UV_PYTHON_PREFERENCE
     try {
         [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        $env:UV_PYTHON_PREFERENCE = $null
         $bootPy = (& $uv python find --managed-python $pyRequest) -join "`n"
     } finally {
+        $env:UV_PYTHON_PREFERENCE = $callerPythonPreference
         [Console]::OutputEncoding = $previousNativeOutputEncoding
     }
     if ($LASTEXITCODE -ne 0 -or -not $bootPy) { throw 'bootstrap Python lookup failed' }

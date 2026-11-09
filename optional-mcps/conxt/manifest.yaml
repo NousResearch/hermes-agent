@@ -1,0 +1,58 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: conxt
+description: One memory across your AI tools. Look up past decisions, rules and project context, and save new ones.
+source: https://conxt.dev/connect-ide#hermes
+
+# Conxt hosts a remote MCP server over Streamable HTTP with native OAuth 2.1
+# (RFC 9728 protected-resource metadata, Dynamic Client Registration, PKCE).
+# An unauthenticated request gets a 401 naming the metadata, so Hermes's MCP
+# client starts the browser sign-in on first connect. Nothing runs locally.
+transport:
+  type: http
+  url: https://mcp.conxt.dev/mcp/
+
+auth:
+  type: oauth
+
+tools:
+  # Reading memory, saving to the user's own memory, and proposing a team
+  # memory (which has no effect until a person approves it in Conxt). Editing
+  # and retracting a memory stay off until the user selects them in
+  # `hermes mcp configure conxt`. Approving team memory is refused for
+  # signed-in apps on the server, whatever is enabled here.
+  default_enabled:
+    - get_context
+    - resolve_context
+    - search_memory
+    - search_decisions
+    - get_full_context
+    - get_memories
+    - get_pinned
+    - recall_as_of
+    - list_agent_memories
+    - list_my_teams
+    - get_team_memories
+    - add_memory
+    - propose_memory
+
+suggest:
+  keywords:
+    - conxt
+    - what did we decide
+  hosts:
+    - conxt.dev
+
+post_install: |
+  On first connection, Hermes opens a browser to sign in to Conxt and approve
+  access. Your memory stays on conxt.dev; nothing is stored on this machine.
+
+  By default this entry enables reading and searching your memory, saving new
+  memories, and proposing team memories, which take effect only after a person
+  on the team approves them in Conxt. Editing and retracting memories stay off
+  until you select them with:
+    hermes mcp configure conxt
+
+  See what each tool read, or disconnect it, at https://conxt.dev/dashboard.

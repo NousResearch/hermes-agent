@@ -131,3 +131,15 @@ def test_view_delivered_whole_with_a_guardrail_warning_keeps_its_entry(home, mon
 
     assert "Step for skill-a" in rows["again_skill-a"] and "Tool loop warning" in rows["again_skill-a"]
     assert STUB_MARKER in rows["third_skill-a"]
+
+
+def test_dedup_stub_row_does_not_release_the_entry_it_points_at(home, monkeypatch):
+    # The stub is never the recorded result, so a release keyed on the stub's own call would drop the
+    # entry and the third view would serve the whole skill again.
+    _write_skill(home, "small-skill", 900)
+
+    rows = _run(home, monkeypatch, *(_views(view, "small-skill") for view in ("first", "again", "third")))
+
+    assert "Step for small-skill" in rows["first_small-skill"]
+    for view in ("again_small-skill", "third_small-skill"):
+        assert STUB_MARKER in rows[view] and "Step for small-skill" not in rows[view]

@@ -673,6 +673,25 @@ class GatewayTurnPersistenceMixin:
                                              generation=run_generation)
         return delivered
 
+    async def _ledger_uncertain_streamed_final(self, event, session_key, response, adapter) -> None:
+        """A stream send of this answer timed out after the request left and was counted as shown: on
+        screen or lost, the wire cannot tell. Sending it again now would be a silent second copy; leaving
+        it as a failed delivery-ledger row lets the timed redelivery send it once more WITH the
+        may-be-a-duplicate marker, so a lost send is not silence. That is what ``send_final_ledgered``
+        gives a timed-out final on a non-streaming platform."""
+        from gateway.platforms.base import SendResult
+        text = (await adapter._extract_response_content(
+            response, event, session_key, is_ephemeral_response=False)).text_content
+        delivery_adapter = adapter._final_delivery_adapter(event.source)
+        obligation_id = text and await adapter._record_delivery_obligation(
+            event, session_key, text, delivery_adapter, False)
+        if obligation_id:
+            logger.warning("Streamed final for session %s may not have landed; the delivery ledger "
+                           "redelivers it with the duplicate marker", session_key)
+            await adapter._finalize_delivery_obligation(
+                obligation_id, SendResult(success=False, error="Timed out: the streamed send may not have landed"),
+                event, delivery_adapter)
+
     async def _hmwa_deliver_turn_response(
         self, event, source, session_entry, session_key, run_generation,
         agent_result, agent_messages, response, _footer_line, _intentional_silence,
@@ -703,6 +722,8 @@ class GatewayTurnPersistenceMixin:
             # would upload every file a second time.
             if response and adapter and not agent_result.get("media_already_delivered"):
                 await self._deliver_media_from_response(response, event, adapter)
+            if response and adapter and agent_result.get("delivery_uncertain"):
+                await self._ledger_uncertain_streamed_final(event, session_key, response, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter and not _intentional_silence:
                 try:

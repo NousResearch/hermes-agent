@@ -254,15 +254,21 @@ class StreamFallbackMixin:
         cap and reports the messages after the timed-out one as ``unattempted_chunks``: only those
         are sent now (the one in flight may already show); when they cannot be, the send is NOT
         fully shown and the caller treats it as undelivered (a repeated head beats a lost tail)."""
+        shown = False
         while self._send_failure_may_have_delivered(result):
             raw = getattr(result, "raw_response", None)
             if not (isinstance(raw, dict) and raw.get("unattempted_chunks")):
-                return True
+                shown = True
+                break
             result = await self.adapter._resume_partial_send(
                 self.chat_id, result, reply_to=None, metadata=self._metadata_for_send(final=True))
             if result is None or getattr(result, "success", False):
-                return result is not None
-        return False
+                shown = result is not None
+                break
+        # Counted as shown on a guess: the gateway leaves the answer to the delivery ledger's marked
+        # redelivery, so a send that never landed is not silence (``delivery_uncertain``).
+        self._delivery_uncertain = self._delivery_uncertain or shown
+        return shown
 
     async def _send_with_flood_retry(self, *, content: str, retry_log: str, reply_to=None):
         """adapter.send(final metadata) with ONE bounded flood retry; returns the last

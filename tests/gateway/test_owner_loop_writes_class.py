@@ -168,7 +168,7 @@ CASES = [
     ('acp-detach', 'gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_detach),
     ('create-title-hidden', 'gateway.session_local_title', 'title_new_session', _create_titled_hidden),
     ('native-register', 'gateway.session.SessionStore', 'get_or_create_session', _native_register),
-    ('initialize-epoch', 'gateway.session_authority', 'begin_runtime_epoch', _initialize),
+    ('initialize-epoch', 'hermes_state_runtime', 'begin_runtime_epoch', _initialize),
     ('initialize-compression-adoption', 'hermes_state_local_lineage', 'adopt_untracked_compression',
      _initialize_adoption),
     ('first-read-compression-adoption', 'hermes_state_local_lineage', 'adopt_untracked_compression',

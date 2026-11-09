@@ -96,6 +96,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             # The home that admitted a stopping attempt still answers for it; so does every home
             # a turn from before attempt homes were recorded may have been admitted at.
             target_home = claimed
+        if target_home is None and operation == 'execute':
+            # A queued turn at an unserved home cannot run here -- the same verdict the local
+            # admission path gives when ``_resolve_member_transport`` finds no home. Settling it is
+            # what lets the member's queue move on; a NEW submit still hard-denies, and a home that
+            # comes back somewhere else is a moved binding, not a stale task.
+            raise stale_hosted_task('the member home is no longer served')
         if target_home is None or claimed != str(target_home):
             raise RuntimeStoreError('permission_denied')
         result = {'owner': owner, 'target_home': str(target_home)}

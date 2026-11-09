@@ -212,3 +212,31 @@ def test_a_queued_turn_whose_room_task_is_gone_reads_stale_not_denied(hosted_own
         service.check_admission(ref, stale)
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         service.check_admission(ref, {**row, 'payload': {'text': 'changed'}})
+
+
+def test_a_remote_execute_at_an_unserved_home_reads_stale_not_denied(hosted_owner, monkeypatch):
+    """Across owner sockets the target asks ``attest``, not ``check_admission``: an unserved member home
+    has to answer the same ``stale_hosted_task`` verdict, or the target's queued head pauses under
+    ``permission_denied`` on every drain and the member's FIFO never moves. A new submit and a home that
+    comes back somewhere else stay hard denials -- the second is a moved binding, not a dead attempt."""
+    import pytest
+    from dataclasses import asdict
+    authority, _, _, _ = hosted_owner
+    service, _, identity, _ = _queued_member_turn(hosted_owner, monkeypatch, 'unserved', 'pending ask')
+    selector = {'room_id': 'room', 'member_id': 'one', 'profile': 'default'}
+    params = {'_target_home': str(authority.profile_id), 'task': asdict(identity), 'execution_generation': 1}
+
+    monkeypatch.setattr(service, 'profile_homes', dict)  # the member's bot is no longer served here
+    with pytest.raises(RuntimeStoreError) as unserved:
+        service.attest(selector, 'execute', params)
+    assert unserved.value.reason == 'stale_hosted_task'
+
+    with pytest.raises(RuntimeStoreError) as new_submit:
+        service.attest(selector, 'submit', params)
+    assert new_submit.value.reason == 'permission_denied'
+
+    moved = Path(authority.profile_id).parent / 'moved-home'
+    monkeypatch.setattr(service, 'profile_homes', lambda: {'default': moved})
+    with pytest.raises(RuntimeStoreError) as rebinding:
+        service.attest(selector, 'execute', params)
+    assert rebinding.value.reason == 'permission_denied'

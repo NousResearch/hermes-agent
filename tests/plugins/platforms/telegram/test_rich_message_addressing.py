@@ -13,7 +13,8 @@ from tests.gateway.test_telegram_group_gating import _group_message, _make_adapt
 
 def _rich(*paragraphs):
     msg = _group_message(None)
-    msg.api_kwargs = {"rich_message": {"blocks": [{"type": "paragraph", "text": p} for p in paragraphs]}}
+    blocks = [p if isinstance(p, dict) else {"type": "paragraph", "text": p} for p in paragraphs]
+    msg.api_kwargs = {"rich_message": {"blocks": blocks}}
     return msg
 
 
@@ -50,6 +51,11 @@ def _trigger_text(extra, msg):
     (_reply_expected, {"require_mention": False}, _plain("anyone around?"), _rich("anyone around?", "p2"), None),
     (_trigger_text, {"require_mention": True},
      _plain(_BOTH, ("mention", "@hermes_bot"), ("mention", "@ops_bot")), _rich(_BOTH), _BOTH),
+    # Leading code is content, as in plain text: the later foreign handle is not the addressee.
+    (_gate, {"require_mention": False}, _plain("x @other_bot please explain", ("code", "x"), ("mention", "@other_bot")),
+     _rich([{"type": "code", "text": "x"}, " @other_bot please explain"]), True),
+    (_gate, {"require_mention": False}, _plain("ls\n@other_bot run it", ("pre", "ls"), ("mention", "@other_bot")),
+     _rich({"type": "pre", "text": "ls"}, "@other_bot run it"), True),
     # The opposite side: a rich message addressed to us is still answered, and our sole handle is still stripped.
     (_gate, {"require_mention": True}, _plain("@hermes_bot deploy", ("mention", "@hermes_bot")),
      _rich("@hermes_bot deploy", "p2"), True),

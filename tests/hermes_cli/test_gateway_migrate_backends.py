@@ -184,6 +184,7 @@ def test_installed_enabled_unit_that_is_not_running_is_reported_once(host, no_wr
         ("hermes-dashboard.service", False, "enabled", "/srv/hermes")]
 
 
+@pytest.mark.platforms("linux")  # "detached" needs a non-launchd init as ppid 1
 def test_s6_docker_desktop_and_detached_shapes(host, no_writes, monkeypatch):
     host.proc(4300, ["s6-supervise", "/run/service/dashboard"], ppid=1)
     host.proc(4301, _argv("dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"), ppid=4300)
@@ -240,6 +241,44 @@ def test_launchd_job_with_plist_path_and_nix_store_plist(host, launch_agents, no
     assert (nix.supervisor, nix.running) == ("nix-launchd", False)
 
 
+@pytest.fixture
+def nix_launcher_agent(tmp_path):
+    """A Home Manager ``backend.waitFor`` agent: ProgramArguments is the launcher script alone."""
+    label = "org.nix-community.home.hermes-backend"
+    with open(tmp_path / f"{label}.plist", "wb") as f:
+        plistlib.dump({"Label": label, "ProgramArguments": ["/nix/store/abc-hermes-backend-launch"],
+                       "EnvironmentVariables": {"HERMES_HOME": "/Users/u/.hermes"}}, f)
+    return tmp_path, label
+
+
+@pytest.mark.parametrize("live_pid", [4701, None])
+def test_nix_wait_for_launcher_job_is_reported_with_its_plist_home(host, nix_launcher_agent, no_writes,
+                                                                     monkeypatch, live_pid):
+    agents, label = nix_launcher_agent
+    monkeypatch.setattr(main_dashboard, "_launchd_plist_dirs", lambda: [("agent", agents)])
+    monkeypatch.setattr(gmb, "_nix_managed", lambda p: p == str(agents / f"{label}.plist"))
+    monkeypatch.setattr("hermes_cli.gateway._launchd_print_service_pid",
+                        lambda domain, lbl: (lbl == label, live_pid))
+    if live_pid:  # the launcher `exec`s hermes, so launchd's live PID is the backend itself
+        host.proc(live_pid, ["/nix/store/x-hermes/bin/hermes", "serve", "--host", "mac.local"], ppid=1)
+
+    (item,) = gmb.collect_backends()
+
+    assert (item.supervisor, item.unit, item.pid, item.hermes_home) == (
+        "nix-launchd", label, live_pid, "/Users/u/.hermes")
+
+
+@pytest.mark.platforms("macos")
+def test_parent_launchd_is_not_reported_as_detached_on_macos(host, tmp_path, no_writes, monkeypatch):
+    """launchd is every orphan's parent on macOS, and a plist that wraps hermes (``sh -c``) is not matched."""
+    monkeypatch.setattr(main_dashboard, "_launchd_plist_dirs", lambda: [("agent", tmp_path)])
+    host.proc(4801, _argv("dashboard", "--port", "9119"), ppid=1)
+
+    (item,) = gmb.collect_backends()
+
+    assert item.supervisor == "unknown" and "launchd plist" in item.would
+
+
 def test_home_ownership_is_reported_against_this_hermes_home(host, no_writes, monkeypatch):
     host.proc(4501, _argv("dashboard", "--port", "9119"), ppid=1)
     host.proc(4502, _argv("serve", "--port", "9120"), ppid=1)
@@ -251,6 +290,7 @@ def test_home_ownership_is_reported_against_this_hermes_home(host, no_writes, mo
     assert (items[4501].this_home, items[4502].this_home) == (True, False)
 
 
+@pytest.mark.platforms("linux")  # "detached" needs a non-launchd init as ppid 1
 def test_cli_json_mode_exits_zero_and_never_applies(host, no_writes, capsys):
     host.proc(4601, _argv("dashboard", "--port", "9119"), ppid=1)
 

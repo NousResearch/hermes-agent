@@ -1,6 +1,6 @@
 name: shopmate
 repo: https://github.com/DaveTech2/Shopmate
-sha: 980c027a9d59ef69cc79d9851985ae17ca3cfec0
+sha: 0f7eb1cafbeb2719b73126358735951539929470
 title: Shopmate
 description: >-
   Personal shopper agent: finds products with live Google Shopping prices and photos (SerpAPI, or a
@@ -17,7 +17,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/DaveTech2/Shopmate#readme
-version: "0.4.0"
+version: "0.4.1"
 capabilities:
   provides_tools:
     - shop_categories

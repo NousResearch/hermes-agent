@@ -67,14 +67,14 @@ def new_emails() -> list[str]:
 
 
 def is_mapped(email: str) -> bool:
-    if any(s in email for s in SKIP_SUBSTRINGS):
-        return True
-    if ID_NOREPLY_RE.search(email):
-        return True
-    # Re-read the directory each call: ``--fix`` adds files mid-run.
+    # Re-read the directory each call: ``--fix`` adds files mid-run. Explicit
+    # mappings are checked before exemptions, so noreply/bot shortcuts cannot
+    # hide conflicting raw identities from the release resolver.
     author_map = {**LEGACY_AUTHOR_MAP,
                   **_load_contributor_dir(REPO_ROOT / "contributors" / "emails")}
-    return login_for_email(email, author_map) is not None
+    if login_for_email(email, author_map) is not None:
+        return True
+    return any(s in email for s in SKIP_SUBSTRINGS) or bool(ID_NOREPLY_RE.search(email))
 
 
 def gh_json(*args: str):

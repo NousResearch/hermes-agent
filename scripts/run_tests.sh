@@ -25,7 +25,7 @@
 #   scripts/run_tests.sh tests/foo.py -- --tb=long  # explicit '--' still works
 #
 # Bare pytest flags (anything starting with '-' that isn't one of this
-# runner's own options: -j/--jobs, --paths, --slice, --file-timeout, etc.)
+# runner's own options: -j/--jobs, --paths, --slice, --file-timeout, --scratch-root, etc.)
 # are forwarded to each per-file pytest invocation automatically — no '--'
 # separator required. The explicit '--' form still works and stacks with
 # bare flags. Positional path arguments override the default discovery

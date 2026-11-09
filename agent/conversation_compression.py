@@ -126,13 +126,9 @@ COMPRESSION_REFUSED_WOULD_GROW_WARNING = ("⚠️ Compression refused: the gener
 
 # FAILURE-CLASS notice — a deliberate carve-out from routine-compression silence (#16775 class): the context
 # is over the compression threshold but compression is blocked (summary-LLM cooldown / anti-thrash breaker),
-# so the session will keep growing until the hard provider token limit kills it.
-# This MUST stay visible in single-user chat gateways, where /new or /compress
-# is actionable. Multi-user destinations intentionally suppress only complete
-# instances of this template in gateway.run; do not add it to
-# ROUTINE_COMPRESSION_STATUS_SAMPLES or the general gateway noise regex
-# (_TELEGRAM_NOISY_STATUS_RE). The DM/raw visibility and group exception are
-# pinned in tests/gateway/test_telegram_noise_filter.py.
+# so the session will keep growing until the hard provider token limit kills it. DMs keep it (the owner can act);
+# shared chats drop it in gateway/run_status_filter.py (#101003). Never add it to the noise regex
+# (_TELEGRAM_NOISY_STATUS_RE) or ROUTINE_COMPRESSION_STATUS_SAMPLES; tests/gateway/test_run_status_filter.py pins it.
 CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
     "⚠ Context is over the compression threshold (~{tokens:,} tokens >= {threshold:,}) "
     "but compression is currently blocked ({reason}). The model may stop responding. Run /new to start a fresh "

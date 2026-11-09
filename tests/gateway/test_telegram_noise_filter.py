@@ -62,11 +62,10 @@ NOISY_STATUS_MESSAGES = [
     COMPRESSION_REFUSED_WOULD_GROW_WARNING,
 ]
 
-# Messages that must remain outside the general compression-noise regex:
+# Messages that must NEVER be swallowed by the compression-noise filter:
 # deliberate carve-outs from routine-compression silence — manual /compress
-# feedback and abort/failure notices remain visible on every chat surface;
-# the blocked-overflow template remains visible in DMs/raw surfaces and has a
-# separate destination-aware multi-user exception below.
+# feedback (manual_compression_feedback.py headlines) and abort/failure
+# notices that require user action.
 VISIBLE_COMPRESSION_MESSAGES = [
     "Compressed: 30 → 12 messages",
     "Compression aborted: 30 messages preserved",
@@ -96,10 +95,11 @@ VISIBLE_COMPRESSION_MESSAGES = [
         "the lock check failed — try again shortly."
     ),
     # Blocked-overflow warning (#62625/#62708): the context is over the
-    # compression threshold but compression is blocked. It remains outside the
-    # general noise regex so DMs/raw surfaces retain actionable feedback; the
-    # destination-aware filter below suppresses exact instances in multi-user
-    # chats. Formatted from the SAME template the emit site uses.
+    # compression threshold but compression is blocked (summary-LLM cooldown
+    # or the anti-thrash breaker). FAILURE-CLASS — must reach a DM so the
+    # owner can /new or /compress before the session dies at the hard token
+    # limit; shared chats drop it (#101003, tests/gateway/test_run_status_filter.py).
+    # Formatted from the SAME template the emit site uses.
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
         tokens=85_000, threshold=72_000, reason="cooldown:30"
     ),
@@ -181,143 +181,10 @@ def test_manual_compress_feedback_and_failure_notices_stay_visible(platform, mes
 
     These are the deliberate carve-outs from routine-compression silence
     (#16775 failures, manual_compression_feedback.py) — widening the noise
-    regex must not start eating them.
+    regex must not start eating them. Pinned in a DM: the blocked-overflow
+    warning is DM-only since #101003.
     """
-    assert _prepare_gateway_status_message(platform, "warn", message) == message
-
-
-@pytest.mark.parametrize(
-    "chat_type", ["group", "forum", "channel", "supergroup", "thread"]
-)
-def test_blocked_overflow_warning_is_suppressed_in_multi_user_chats(chat_type):
-    warning = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
-        tokens=85_000, threshold=72_000, reason="cooldown:30"
-    )
-    assert (
-        _prepare_gateway_status_message(
-            Platform.TELEGRAM, "warn", warning, chat_type=chat_type
-        )
-        is None
-    )
-
-
-@pytest.mark.parametrize("chat_type", ["group", "dm"])
-def test_blocked_overflow_warning_through_production_callback(chat_type):
-    import asyncio
-    from types import SimpleNamespace
-
-    from gateway.run_turn_runner import TurnRunner
-
-    warning = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
-        tokens=85_000, threshold=72_000, reason="cooldown:30"
-    )
-    delivered = []
-
-    class Transport:
-        async def send(self, chat_id, text, metadata=None):
-            delivered.append((chat_id, text, metadata))
-
-    async def exercise():
-        loop = asyncio.get_running_loop()
-        ctx = SimpleNamespace(
-            source=SimpleNamespace(platform=Platform.TELEGRAM, chat_type=chat_type),
-            _status_adapter=Transport(),
-            _status_chat_id="destination",
-            _status_thread_metadata={"thread_id": "topic"},
-            _run_still_current=lambda: True,
-            _loop_for_step=loop,
-            _cleanup_progress=False,
-        )
-        runner = TurnRunner(None, ctx)
-
-        def emit():
-            runner._status_callback_sync("warn", warning)
-            # Drain the real thread-to-loop scheduler before inspecting delivery.
-            asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(timeout=5)
-
-        await asyncio.to_thread(emit)
-
-    asyncio.run(exercise())
-    assert delivered == (
-        [] if chat_type == "group" else
-        [("destination", warning, {"thread_id": "topic"})]
-    )
-
-
-def test_blocked_overflow_warning_stays_visible_in_dm_and_raw_surfaces():
-    warning = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
-        tokens=85_000, threshold=72_000, reason="ineffective"
-    )
-    assert (
-        _prepare_gateway_status_message(
-            Platform.TELEGRAM, "warn", warning, chat_type="dm"
-        )
-        == warning
-    )
-    for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
-        assert (
-            _prepare_gateway_status_message(
-                platform, "warn", warning, chat_type="group"
-            )
-            == warning
-        )
-
-
-@pytest.mark.parametrize("affix", ["prefix ", " extra", "\nextra", "\n"])
-def test_similar_blocked_overflow_text_is_not_suppressed(affix):
-    warning = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
-        tokens=85_000, threshold=72_000, reason="cooldown:30"
-    )
-    message = affix + warning if affix == "prefix " else warning + affix
-    assert (
-        _prepare_gateway_status_message(
-            Platform.TELEGRAM, "warn", message, chat_type="group"
-        )
-        == message.strip()
-    )
-
-
-@pytest.mark.parametrize(
-    "reason",
-    ["structural_backoff:295", "plugin(reason)", "line one\nline two", "x" * 257],
-)
-def test_blocked_overflow_match_accepts_full_emitted_reason_domain(reason):
-    warning = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
-        tokens=85_000, threshold=72_000, reason=reason
-    )
-    assert (
-        _prepare_gateway_status_message(
-            Platform.TELEGRAM, "warn", warning, chat_type="group"
-        )
-        is None
-    )
-
-
-@pytest.mark.parametrize("tokens", ["1,,2", "07,200", "８５,０００", "1000"])
-def test_malformed_token_counts_are_not_suppressed(tokens):
-    warning = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
-        tokens=85_000, threshold=72_000, reason="cooldown:30"
-    ).replace("85,000", tokens)
-    assert (
-        _prepare_gateway_status_message(
-            Platform.TELEGRAM, "warn", warning, chat_type="group"
-        )
-        == warning
-    )
-
-
-def test_credential_shaped_reason_is_suppressed_before_redaction():
-    warning = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
-        tokens=85_000,
-        threshold=72_000,
-        reason="plugin credential sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
-    )
-    assert (
-        _prepare_gateway_status_message(
-            Platform.TELEGRAM, "warn", warning, chat_type="group"
-        )
-        is None
-    )
+    assert _prepare_gateway_status_message(platform, "warn", message, "dm") == message
 
 
 @pytest.mark.parametrize("platform", ["slack", "matrix"])

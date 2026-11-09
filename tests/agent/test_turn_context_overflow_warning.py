@@ -256,13 +256,13 @@ class TestWarningSurvivesNoiseFilter:
         )
 
 
-    def test_warning_delivered_on_chat_platform(self):
-        """End-to-end through the fail-closed gateway status preparer."""
+    def test_warning_delivered_in_chat_platform_dm(self):
+        """End-to-end through the fail-closed gateway status preparer: a DM keeps it (#101003)."""
         from gateway.config import Platform
         from gateway.run import _prepare_gateway_status_message
 
         message = self._emitted_warning("cooldown:30")
         assert (
-            _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message)
+            _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message, "dm")
             == message
         )

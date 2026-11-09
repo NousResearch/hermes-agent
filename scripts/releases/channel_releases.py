@@ -444,6 +444,18 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     log(f"Writing {pointer} and promoting the {channel} feeds")
     # The head already names the previous release after the first bundled one: replace it
     # under its current ETag, since a create-only write refuses an existing object.
+    # A rejected older canary must not replace the pointer protecting the live
+    # canary's archive from pruning. Feed/head monotonicity checks run too late.
+    if policy == "canary-release":
+        live = publisher._read(name)
+        if live is not None and live[0]["head"] is not None:
+            live_build = live[0]["head"]["buildId"]
+            if live_build != request["buildId"]:
+                from hermes_cli.update_channel import published_canary_timestamp
+                previous = published_canary_timestamp(publisher.request(live_build)["releaseTag"])
+                candidate = published_canary_timestamp(payload_tag)
+                if previous is None or candidate is None or candidate <= previous:
+                    raise ChannelError("Stale canary publication cannot overwrite the live retention pointer")
     head = publisher.store.get(pointer)
     publisher._write(pointer, accepted, head[1] if head else None)
     if publisher.reader.read_bytes(pointer) != canonical_json(accepted):

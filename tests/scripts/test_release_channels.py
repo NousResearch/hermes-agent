@@ -739,6 +739,7 @@ def test_a_canary_advances_its_own_head_from_its_accepted_candidate_only(tmp_pat
         with pytest.raises(ChannelError, match="stale"):
             channel_releases.publish_release("canary-release", env, tmp_path / "stale")
         assert pub.reader.resolve("canary").manifest["request"]["releaseTag"] == second["tag"]
+        assert json.loads(objects["releases/canary/release-candidates.json"]) == second["accepted"]
 
 
 def test_protected_transaction_refuses_custom_workflow_and_unpublished_release(monkeypatch):

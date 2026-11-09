@@ -56,7 +56,7 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
             "stale PID record or stop the owning profile explicitly.",
             existing_pid, _get_process_hermes_home())
         # The stamp must be ON DISK before this process exits: every CLI exit path funnels
-        # through _exit_after_graceful_shutdown(), whose os._exit() never flushes the queued
+        # through exit_after_graceful_shutdown(), whose os._exit() never flushes the queued
         # runtime-status writer. A fire-and-forget stamp can die in the queue, the supervisor
         # retries into the same stale record, and the loop this refusal exists to break keeps
         # going (#135392). Bounded wait: a stalled disk delays the exit by at most 5 s, it
@@ -733,6 +733,17 @@ def _start_gateway_early_environment_probe() -> None:
         logger.debug("early environment probe did not start", exc_info=True)
 
 
+def control_only_host_available() -> bool:
+    """Never attach to or rescan a serving host while starting recovery mode."""
+    from gateway.host_attach import host_gateway
+
+    owner = host_gateway()
+    if owner is None:
+        return True
+    print(f"Cannot start a control-only gateway while a host gateway is running: {owner.describe()}")
+    return False
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
                         verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False,
                         control_only: bool = False) -> bool:
@@ -795,9 +806,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Multiplex-only: the ONE host gateway decides first. Attach to it, make it serve this profile,
     # replace it (--replace) or refuse — before anything below binds a port or claims a PID file.
-    _host_decision = await _host_attach_or_none(replace, force)
-    if _host_decision is not None:
-        return _host_decision
+    if control_only:
+        if not control_only_host_available():
+            return False
+    else:
+        _host_decision = await _host_attach_or_none(replace, force)
+        if _host_decision is not None:
+            return _host_decision
 
     # Duplicate-instance guard scoped to HERMES_HOME (the host record is absent or unusable here).
     from gateway.status import get_running_pid

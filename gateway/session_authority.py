@@ -1527,7 +1527,8 @@ def _settle_deferred_control_only_resolution_boundaries(db):
             row = conn.execute(
                 'SELECT * FROM session_admissions WHERE admission_id=?', (admission_id,),
             ).fetchone()
-            if row is None or row['status'] != 'terminal' or row['outcome'] != 'interrupted':
+            if (row is None or row['status'] != 'terminal' or row['outcome'] != 'interrupted'
+                    or marker['value'] != row['target_session_id']):
                 raise RuntimeStoreError('invalid_control_only_resolution_boundary')
             from gateway.session_results import close_discarded_turn
             close_discarded_turn(db, conn, _row(row))

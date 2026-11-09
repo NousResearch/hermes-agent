@@ -4,6 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 import gateway.run as gateway_run
+from gateway.run_exit import exit_after_graceful_shutdown
 
 
 class _ExitCalled(Exception):
@@ -84,7 +85,7 @@ def test_exit_backstop_releases_pid_file_and_runtime_lock(monkeypatch):
     monkeypatch.setattr(gateway_run.sys, "stderr", SimpleNamespace(flush=Mock()))
 
     with pytest.raises(_ExitCalled) as exc_info:
-        gateway_run._exit_after_graceful_shutdown(78)
+        exit_after_graceful_shutdown(78)
 
     assert exc_info.value.code == 78
     remove_pid.assert_called_once_with()

@@ -6,6 +6,8 @@ import atexit
 import json
 import sys
 
+import pytest
+
 
 def test_control_only_run_preserves_exit_diagnostics_and_serving_run_appends_them(tmp_path, monkeypatch):
     from hermes_cli import gateway
@@ -46,6 +48,7 @@ def test_control_only_run_preserves_exit_diagnostics_and_serving_run_appends_the
         item for item in prior_atexit_callbacks if item[0] is process_metrics.stamp_exit
     ]
     monkeypatch.setattr(gateway, "_guard_official_docker_root_gateway", lambda: None)
+    monkeypatch.setattr("gateway.host_attach.host_gateway", lambda: None)
     monkeypatch.setattr(gateway, "_attach_to_host_gateway_or_guard", lambda **kwargs: None)
     monkeypatch.setattr(gateway, "_guard_supervised_gateway_conflict", lambda **kwargs: None)
     monkeypatch.setattr(gateway, "_guard_existing_gateway_process_conflict", lambda **kwargs: None)
@@ -164,6 +167,7 @@ def test_control_only_run_and_later_serving_run_preserve_explicit_control_only_u
     unit_path.write_text(custom_unit, encoding="utf-8")
     systemctl_calls = []
     monkeypatch.setattr(gateway, "_guard_official_docker_root_gateway", lambda: None)
+    monkeypatch.setattr("gateway.host_attach.host_gateway", lambda: None)
     monkeypatch.setattr(gateway, "_attach_to_host_gateway_or_guard", lambda **kwargs: None)
     monkeypatch.setattr(gateway, "_guard_supervised_gateway_conflict", lambda **kwargs: None)
     monkeypatch.setattr(gateway, "_guard_existing_gateway_process_conflict", lambda **kwargs: None)
@@ -201,3 +205,36 @@ def test_startup_watchdog_fast_path_skips_control_only_command():
 
     assert argv_is_gateway_run(["-p", "default", "gateway", "run"])
     assert not argv_is_gateway_run(["-p", "default", "gateway", "run", "--control-only"])
+
+
+def test_control_only_refuses_live_host_before_attach_or_rescan(monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli import gateway
+
+    owner = SimpleNamespace(describe=lambda: "live serving host")
+    monkeypatch.setattr("gateway.host_attach.host_gateway", lambda: owner)
+    monkeypatch.setattr(gateway, "_guard_official_docker_root_gateway", lambda: None)
+    monkeypatch.setattr(gateway, "_attach_to_host_gateway_or_guard",
+                        lambda **kwargs: pytest.fail("control-only must not attach or rescan"))
+    monkeypatch.setattr(gateway, "_guard_supervised_gateway_conflict",
+                        lambda **kwargs: pytest.fail("control-only must refuse before startup"))
+    with pytest.raises(SystemExit) as exc:
+        gateway.run_gateway(control_only=True)
+    assert exc.value.code == 1
+
+
+@pytest.mark.asyncio
+async def test_control_only_bootstrap_refuses_host_without_attach(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from gateway import run_bootstrap
+    from gateway.config import GatewayConfig
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.host_attach.host_gateway",
+                        lambda: SimpleNamespace(describe=lambda: "live serving host"))
+    monkeypatch.setattr("gateway.run._host_attach_or_none",
+                        lambda *args: pytest.fail("control-only must not attach or rescan"))
+    monkeypatch.setattr(run_bootstrap, "_start_gateway_reserve_profiles",
+                        lambda *args: pytest.fail("control-only must refuse before reserving"))
+    monkeypatch.setattr("gateway.code_skew.record_boot_fingerprint", lambda: None)
+    assert await run_bootstrap.start_gateway(config=GatewayConfig(), control_only=True) is False

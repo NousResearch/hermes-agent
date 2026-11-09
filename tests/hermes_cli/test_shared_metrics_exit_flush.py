@@ -1,6 +1,6 @@
 """Graceful ``os._exit`` paths run the shared-metrics exit flush their skipped atexit hook would have run.
 
-The gateway (SIGTERM, update restart, idle exit all funnel through ``_exit_after_graceful_shutdown``),
+The gateway (SIGTERM, update restart, idle exit all funnel through ``exit_after_graceful_shutdown``),
 the compute host, a SIGTERMed kanban worker and an orphaned slash worker leave via ``os._exit``, so a
 session still open at the stop never wrote its summary rows to the opt-in local store. The flush is
 bounded, creates nothing when collection is off, and runs every profile's runtime under that profile's
@@ -99,6 +99,7 @@ def _wait_for(home: Path, metric: str) -> None:
 
 def test_graceful_gateway_exit_writes_the_open_sessions_summary(metrics_home, monkeypatch):
     import gateway.run as gateway_run
+    from gateway.run_exit import exit_after_graceful_shutdown
 
     home, _ = metrics_home
     _finished_task_in_open_session()
@@ -107,7 +108,7 @@ def test_graceful_gateway_exit_writes_the_open_sessions_summary(metrics_home, mo
 
     monkeypatch.setattr(gateway_run.os, "_exit", _fake_exit)
     with pytest.raises(_Exited):
-        gateway_run._exit_after_graceful_shutdown(1)
+        exit_after_graceful_shutdown(1)
 
     assert "hermes.session.count" in _metric_names(home)
 
@@ -172,6 +173,7 @@ def test_orphaned_slash_worker_writes_the_open_sessions_summary(metrics_home, mo
 
 def test_graceful_exit_with_collection_off_creates_no_store(metrics_home, monkeypatch):
     import gateway.run as gateway_run
+    from gateway.run_exit import exit_after_graceful_shutdown
 
     home, policy = metrics_home
     policy["on"] = False
@@ -179,7 +181,7 @@ def test_graceful_exit_with_collection_off_creates_no_store(metrics_home, monkey
 
     monkeypatch.setattr(gateway_run.os, "_exit", _fake_exit)
     with pytest.raises(_Exited):
-        gateway_run._exit_after_graceful_shutdown(0)
+        exit_after_graceful_shutdown(0)
 
     assert not (home / "telemetry").exists()
 
@@ -196,6 +198,7 @@ def test_exit_flush_applies_each_profiles_own_consent(tmp_path, monkeypatch):
     keeps it off (no consent window opened on its store), and one that turned collection off after
     its turn gets no exit rows; both rulings are that profile's own, not the launch profile's."""
     import gateway.run as gateway_run
+    from gateway.run_exit import exit_after_graceful_shutdown
 
     _require_native_relay()
     launch, send_off, revoked = (tmp_path / name for name in ("launch", "send-off", "revoked"))
@@ -226,7 +229,7 @@ def test_exit_flush_applies_each_profiles_own_consent(tmp_path, monkeypatch):
 
         monkeypatch.setattr(gateway_run.os, "_exit", _fake_exit)
         with pytest.raises(_Exited):
-            gateway_run._exit_after_graceful_shutdown(0)
+            exit_after_graceful_shutdown(0)
 
         assert "hermes.session.count" in _metric_names(send_off)  # its own consent still flushes it
         assert _open_consent_windows(send_off) == []
@@ -241,6 +244,7 @@ def test_a_wedged_exit_flush_is_bounded_and_runs_after_the_clean_exit_stamp(metr
     leaves within the flush bound, and the clean-exit sentinel is already written, so a supervisor
     killing the process during the flush never records a graceful stop as an unclean death."""
     import gateway.run as gateway_run
+    from gateway.run_exit import exit_after_graceful_shutdown
     from agent import relay_tools
     from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
@@ -272,7 +276,7 @@ def test_a_wedged_exit_flush_is_bounded_and_runs_after_the_clean_exit_stamp(metr
     started = time.monotonic()
     try:
         with pytest.raises(_Exited):
-            gateway_run._exit_after_graceful_shutdown(0)
+            exit_after_graceful_shutdown(0)
     finally:
         release.set()
 
@@ -293,6 +297,7 @@ def test_graceful_exit_drains_the_root_profiles_deferred_host_count(tmp_path, mo
     was deferred in memory; the graceful exit still writes it there (and only there) once the store
     frees, instead of losing it to ``os._exit``."""
     import gateway.run as gateway_run
+    from gateway.run_exit import exit_after_graceful_shutdown
     from hermes_cli.observability import shared_metrics_engagement as engagement
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
 
@@ -316,7 +321,7 @@ def test_graceful_exit_drains_the_root_profiles_deferred_host_count(tmp_path, mo
 
     monkeypatch.setattr(gateway_run.os, "_exit", _fake_exit)
     with pytest.raises(_Exited):
-        gateway_run._exit_after_graceful_shutdown(0)
+        exit_after_graceful_shutdown(0)
 
     root_state = wait_until(lambda: _engagement_state(root), what="the root's deferred host count")
     assert root_state["owner"] is True and len(root_state["profiles"]) == 1

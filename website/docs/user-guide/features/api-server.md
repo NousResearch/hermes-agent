@@ -646,6 +646,14 @@ gateway is later started, it writes the interrupted-turn transcript boundary bef
 queued admission. To serve turns again, stop this process and start a normal gateway after the external
 supervisor has cleared its gate.
 
+Deleting a resolved session retires its deferred transcript boundary in the same
+transaction as its terminal admission; a later serving boot does not recreate the
+deleted session. Conflicting or orphaned boundary evidence still blocks startup.
+Control-only processes cannot attach to a serving host or be promoted by
+`gateway restart` (including `--all`). Installed non-serving or unrecognized
+service definitions are excluded before an update pauses services.
+
+
 The mode is a process lifetime choice and the API server must already be enabled with a valid
 `API_SERVER_KEY`. Normal API-server authentication, run ownership, profile scope, admission ID, and
 execution-generation checks remain in force. The command is compatible with the official Docker

@@ -1,8 +1,10 @@
 """HTTP run owners can acknowledge an exact unknown API admission after restart."""
 import asyncio
 import json
+import sqlite3
 from contextlib import suppress
 from contextvars import ContextVar
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +17,10 @@ from gateway.session import SessionStore
 from gateway.session_authority import initialize_session_authority
 from gateway.session_api import restore_api_session
 from hermes_state import SessionDB
-from hermes_state_runtime import claim_session_input, list_session_admissions
+from hermes_state_runtime import (
+    RuntimeStoreError, cancel_session_input, claim_session_input, list_session_admissions,
+    resolve_unknown_session_input,
+)
 
 
 _OWNER = ContextVar("test_api_unknown_owner", default="owner")
@@ -290,6 +295,89 @@ async def test_control_only_denies_turn_ingress_and_resolves_unknown_without_run
         assert serving_transcript[-1][0] == "assistant"
         assert "turn did not complete" in serving_transcript[-1][1]
         assert marker_count == 0
+    finally:
+        await _close_fixture(client, adapters, store, tasks)
+
+
+@pytest.mark.asyncio
+async def test_deleted_control_only_resolution_survives_serving_restart(tmp_path, monkeypatch):
+    client, adapters, store, owner, unknown, follower, executed, tasks = (
+        await _restarted_api_runs(tmp_path, monkeypatch, control_only_restart=True)
+    )
+    try:
+        path = "/v1/runs/" + unknown["request_id"] + "/resolve-unknown"
+        body = {"admission_id": unknown["admission_id"],
+                "execution_generation": unknown["generation"]}
+        response = await client.post(path, headers=_AUTH_HEADERS, json=body)
+        assert response.status == 200
+        receipt = await response.json()
+        assert receipt["outcome"] == "interrupted"
+        cancel_session_input(owner.db, epoch=owner.epoch, admission_id=follower["admission_id"])
+        marker = "control_only_resolution_boundary:" + unknown["admission_id"]
+
+        # A failure after retirement must roll back both the tombstone and its boundary removal.
+        owner.db._execute_write(lambda c: c.execute(
+            "CREATE TRIGGER deny_admission_delete BEFORE DELETE ON session_admissions "
+            "BEGIN SELECT RAISE(ABORT, 'delete failed'); END"))
+        with pytest.raises(sqlite3.IntegrityError, match="delete failed"):
+            owner.db.delete_session("api-session")
+        with owner.db._read_ctx() as conn:
+            assert conn.execute("SELECT value FROM state_meta WHERE key=?", (marker,)).fetchone()[0] == "api-session"
+        assert owner.db.get_session("api-session") is not None
+        owner.db._execute_write(lambda c: c.execute("DROP TRIGGER deny_admission_delete"))
+        assert owner.db.delete_session("api-session")
+        replay = resolve_unknown_session_input(
+            owner.db, epoch=owner.epoch, admission_id=unknown["admission_id"],
+            generation=unknown["generation"],
+        )
+        assert {"run_id": unknown["request_id"], **asdict(owner._receipt(replay))} == receipt
+
+        owner.runner.control_only = False
+        serving = await initialize_session_authority(
+            owner.runner, profile_id="default", instance_id="api-owner-3"
+        )
+        assert owner.db.get_session("api-session") is None
+        assert owner.db.get_messages("api-session") == []
+        replay = resolve_unknown_session_input(
+            owner.db, epoch=serving.epoch, admission_id=unknown["admission_id"],
+            generation=unknown["generation"],
+        )
+        assert {"run_id": unknown["request_id"], **asdict(serving._receipt(replay))} == receipt
+        assert executed == []
+    finally:
+        await _close_fixture(client, adapters, store, tasks)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", ["wrong_scope", "wrong_scope_retired", "orphan"])
+async def test_invalid_deferred_boundary_fails_closed(tmp_path, monkeypatch, corruption):
+    client, adapters, store, owner, unknown, _follower, _executed, tasks = (
+        await _restarted_api_runs(tmp_path, monkeypatch, control_only_restart=True)
+    )
+    try:
+        path = "/v1/runs/" + unknown["request_id"] + "/resolve-unknown"
+        response = await client.post(path, headers=_AUTH_HEADERS, json={
+            "admission_id": unknown["admission_id"],
+            "execution_generation": unknown["generation"],
+        })
+        assert response.status == 200
+        marker = "control_only_resolution_boundary:" + unknown["admission_id"]
+        if corruption.startswith("wrong_scope"):
+            owner.db._execute_write(lambda c: c.execute(
+                "UPDATE state_meta SET value=? WHERE key=?", ("another-session", marker)))
+            if corruption == "wrong_scope_retired":
+                cancel_session_input(owner.db, epoch=owner.epoch, admission_id=_follower["admission_id"])
+                assert owner.db.delete_session("api-session")
+                with owner.db._read_ctx() as conn:
+                    assert conn.execute("SELECT value FROM state_meta WHERE key=?", (marker,)).fetchone()[0] == "another-session"
+        else:
+            owner.db._execute_write(lambda c: c.execute(
+                "UPDATE state_meta SET key=? WHERE key=?", (marker + "-missing", marker)))
+        owner.runner.control_only = False
+        with pytest.raises(RuntimeStoreError, match="invalid_control_only_resolution_boundary"):
+            await initialize_session_authority(
+                owner.runner, profile_id="default", instance_id="api-owner-3"
+            )
     finally:
         await _close_fixture(client, adapters, store, tasks)
 

@@ -156,6 +156,26 @@ def test_control_only_container_command_suppresses_every_s6_gateway_autostart(tm
     assert not any(action.folded_into_root for action in actions)
 
 
+def test_control_only_parser_and_container_detection_agree():
+    import argparse
+
+    from hermes_cli._startup_fast import argv_is_gateway_run
+    from hermes_cli.container_boot import _is_control_only_gateway_request
+    from hermes_cli.subcommands.gateway import build_gateway_parser
+
+    parser = argparse.ArgumentParser()
+    build_gateway_parser(parser.add_subparsers(), cmd_gateway=lambda args: None,
+                         cmd_proxy=lambda args: None, cmd_gateway_enroll=lambda args: None)
+    argv = ["gateway", "run", "--control-only"]
+    assert parser.parse_args(argv).control_only
+    assert _is_control_only_gateway_request(["hermes", *argv])
+    assert not argv_is_gateway_run(argv)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["gateway", "run", "--control"])
+    assert not parser.parse_args(["gateway", "run"]).control_only
+    assert argv_is_gateway_run(["gateway", "run"])
+
+
 @pytest.mark.parametrize("config_value,env_value", [
     pytest.param("false", None, id="config-false"),
     pytest.param("true", "false", id="env-false-overrides-config"),

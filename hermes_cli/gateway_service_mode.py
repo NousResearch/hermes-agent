@@ -19,8 +19,8 @@ def _valid_profile_operand(value: str) -> bool:
     return PROFILE_ID_RE.fullmatch(value.strip().casefold()) is not None
 
 
-def _command_mode(argv: list[str]) -> str:
-    """Return ``control_only``, ``serving`` or ``unknown`` for a launcher argv."""
+def _command_mode(argv: list[str], *, live: bool = False) -> str:
+    """Classify a persisted launcher, or a live command using the actual run parser."""
     if not argv:
         return "unknown"
     from hermes_cli.gateway_runtime_service_identity import _launch_module, _launchd_command
@@ -62,7 +62,11 @@ def _command_mode(argv: list[str]) -> str:
         else:
             filtered.append(token)
         index += 1
-    if profiles > 1 or filtered[:2] != ["gateway", "run"]:
+    if profiles > 1:
+        return "unknown"
+    if live:
+        return _live_run_mode(filtered)
+    if filtered[:2] != ["gateway", "run"]:
         return "unknown"
     options = filtered[2:]
     if "--control-only" in options:
@@ -74,6 +78,36 @@ def _command_mode(argv: list[str]) -> str:
     if all(item in {"--quiet", "--external-supervisor", "--replace"} for item in options):
         return "serving"
     return "unknown"
+
+
+def _live_run_mode(argv: list[str]) -> str:
+    """Parse the live CLI's complete grammar without broadening service definitions."""
+    import argparse
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.subcommands.gateway import build_gateway_parser
+
+    if any(arg in {"-h", "--help"} for arg in argv):
+        return "unknown"
+    parser, subparsers, _ = build_top_level_parser()
+    build_gateway_parser(subparsers, cmd_gateway=None, cmd_proxy=None, cmd_gateway_enroll=None)
+    gateway_parser = subparsers.choices["gateway"]
+    gateway_subparsers = next(action for action in gateway_parser._actions
+                              if isinstance(action, argparse._SubParsersAction))
+    run_parser = gateway_subparsers.choices["run"]
+
+    def invalid(message):
+        raise ValueError(message)
+
+    parser.error = gateway_parser.error = run_parser.error = invalid
+    try:
+        parsed = parser.parse_args(argv)
+    except (ValueError, SystemExit):
+        return "unknown"
+    if getattr(parsed, "gateway_command", None) != "run":
+        return "unknown"
+    if parsed.control_only and (parsed.replace or parsed.force):
+        return "unknown"
+    return "control_only" if parsed.control_only else "serving"
 
 
 def launchd_definition_mode(path: Path) -> str:

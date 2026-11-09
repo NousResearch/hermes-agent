@@ -94,11 +94,55 @@ def test_handback_failure_never_takes_ownership(restart_calls, sigusr1_returns, 
     assert not restart_calls["stopped"] and not restart_calls["started"]
 
 
-def test_plain_manual_gateway_still_uses_stop_and_run(restart_calls, monkeypatch):
-    monkeypatch.setattr(gw, "_capture_gateway_argv", lambda pid: ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run"])
+@pytest.mark.parametrize("options", [[], ["-v"], ["-vv", "-q"], ["--no-supervise", "--idle-exit"]])
+def test_plain_manual_gateway_still_uses_stop_and_run(restart_calls, monkeypatch, options):
+    monkeypatch.setattr(gw, "_capture_gateway_argv",
+                        lambda pid: ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run", *options])
     _run_restart()
     assert restart_calls["sigusr1"] is None, "no supervisor marker: the detached fallback is the restart"
     assert restart_calls["started"], "a plain manually-run gateway must still be restarted in-process"
+
+
+def test_manual_restart_accepts_global_and_gateway_options(restart_calls, monkeypatch):
+    monkeypatch.setattr(gw, "_capture_gateway_argv", lambda pid: [
+        "/usr/bin/python", "-m", "hermes_cli.main", "--accept-hooks", "-p", "default",
+        "gateway", "--accept-hooks", "run", "-v", "-q",
+    ])
+    _run_restart()
+    assert restart_calls["stopped"] and restart_calls["started"]
+
+
+@pytest.mark.parametrize("argv", [
+    ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run", "--control-only"],
+    None,
+    ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run", "--control"],
+])
+def test_manual_nonserving_or_unknown_restart_refuses_before_reaping_or_stopping(
+    restart_calls, monkeypatch, argv
+):
+    monkeypatch.setattr(gw, "_capture_gateway_argv", lambda pid: argv)
+    monkeypatch.setattr(gw, "_reap_unsupervised_gateway_orphans",
+                        lambda: pytest.fail("refusal must precede orphan reaping"))
+    with pytest.raises(SystemExit) as exc:
+        _run_restart()
+    assert exc.value.code == 1
+    assert not restart_calls["stopped"] and not restart_calls["started"]
+
+
+@pytest.mark.parametrize("owner_present", [False, True])
+def test_restart_all_refuses_manual_control_gateway_before_dispatch_or_stop(restart_calls, monkeypatch, owner_present):
+    monkeypatch.setattr(gw, "_capture_gateway_argv",
+                        lambda pid: ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run", "--control-only"])
+    monkeypatch.setattr(gw, "_host_multiplexer_for_all_verb",
+                        lambda: SimpleNamespace(pid=4321) if owner_present else None)
+    monkeypatch.setattr(gw, "find_gateway_pids", lambda **kwargs: [4321])
+    monkeypatch.setattr(gw, "_dispatch_all_via_service_manager_if_s6",
+                        lambda *args: pytest.fail("must refuse before supervisor dispatch"))
+    monkeypatch.setattr(gw, "_restart_all", lambda *args: pytest.fail("must refuse before stop/start"))
+    with pytest.raises(SystemExit) as exc:
+        gw._cmd_restart(SimpleNamespace(system=False, all=True, force=False))
+    assert exc.value.code == 1
+    assert not restart_calls["stopped"] and not restart_calls["started"]
 
 
 @pytest.mark.parametrize("cgroup, hints", [

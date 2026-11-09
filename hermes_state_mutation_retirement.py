@@ -1,7 +1,10 @@
 """Durable deletion fences outside prunable transcript rows."""
 import json
 import time
-from hermes_state_runtime import RuntimeStoreError, admission_fingerprint, mutation_receipt_key, _json, _text
+from hermes_state_runtime import (
+    RuntimeStoreError, admission_fingerprint, mutation_receipt_key, _CONTROL_ONLY_RESOLUTION_BOUNDARY_PREFIX,
+    _json, _text,
+)
 
 # This store's own retired session (its profile is the store's). Written as ``own`` since the
 # shared routing index also carries other profiles' fences; a marker without ``own`` predates
@@ -114,6 +117,10 @@ def retire_terminal_receipts(conn, session_ids):
             row['lineage_json'] = '[]'
             row['retired_at'] = time.time()
             _compact_result(conn, row['admission_id'])
+            # Only the boundary for this admission and session is discharged by deletion.
+            # A mismatched marker is evidence of corruption and must still fail closed at boot.
+            conn.execute('DELETE FROM state_meta WHERE key=? AND value=?',
+                         (_CONTROL_ONLY_RESOLUTION_BOUNDARY_PREFIX + row['admission_id'], sid))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                          (ADMISSION_PREFIX + row['admission_id'], _json(row)))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',

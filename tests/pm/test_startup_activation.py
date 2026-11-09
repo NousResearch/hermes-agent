@@ -93,7 +93,7 @@ def test_startup_uses_one_verdict(checked_store, monkeypatch, capsys, caplog, su
             return True
 
         monkeypatch.setattr(run, "start_gateway", started)
-        monkeypatch.setattr(run, "_exit_after_graceful_shutdown", lambda code: None)
+        monkeypatch.setattr("gateway.run_exit.exit_after_graceful_shutdown", lambda code: None)
         monkeypatch.setattr("hermes_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda _root: None)
         monkeypatch.setattr(sys, "argv", ["gateway"])
         start = run.main

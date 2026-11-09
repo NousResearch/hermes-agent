@@ -53,7 +53,7 @@ def test_each_start_checks_pm_once_before_dispatch(surface, tmp_path, monkeypatc
             return True
 
         monkeypatch.setattr(gr, "start_gateway", start)
-        monkeypatch.setattr(gr, "_exit_after_graceful_shutdown", lambda code: None)
+        monkeypatch.setattr("gateway.run_exit.exit_after_graceful_shutdown", lambda code: None)
         monkeypatch.setattr(sys, "argv", ["gateway"])
         run = gr.main
     else:

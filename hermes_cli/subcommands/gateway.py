@@ -68,7 +68,7 @@ def build_gateway_parser(
         dest="gateway_command", parser_class=_GatewayCommandParser)
 
     gateway_run = gateway_subparsers.add_parser(
-        "run", help="Run gateway in foreground (recommended for WSL and Docker)"
+        "run", help="Run gateway in foreground (recommended for WSL and Docker)", allow_abbrev=False
     )
     gateway_run.add_argument(
         "--control-only", action="store_true",

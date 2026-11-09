@@ -4517,7 +4517,12 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     idle_exit: a client auto-started this unsupervised gateway, so it exits once idle
     (``gateway.unmanaged_idle_exit_seconds``)."""
     _guard_official_docker_root_gateway()
-    _attach_to_host_gateway_or_guard(force=force, replace=replace)
+    if control_only:
+        from gateway.run_bootstrap import control_only_host_available
+        if not control_only_host_available():
+            raise SystemExit(1)
+    else:
+        _attach_to_host_gateway_or_guard(force=force, replace=replace)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -5421,6 +5426,29 @@ def _cmd_restart(args):
         _guard_named_profile_under_multiplexer(force=force)
     from hermes_cli.gateway_lifecycle_guards import refuse_while_sessions_live
     refuse_while_sessions_live("restart", args)
+
+    # Both manual restart paths replace the owner with a serving process. Check every
+    # target before s6 dispatch, orphan reaping, service stops, or signals.
+    kind = _installed_service_kind_for(is_windows)
+    service_configured = kind is not None and (kind != "windows" or _gw_windows().is_installed())
+    if not service_configured:
+        from gateway.status import get_running_pid
+        from hermes_cli.gateway_service_mode import _command_mode
+        from hermes_cli.gateway_supervised_restart import gateway_declares_external_supervisor
+        if restart_all:
+            owner = _host_multiplexer_for_all_verb()
+            pids = {owner.pid} if owner is not None else set(find_gateway_pids(all_profiles=True))
+            if owner is None and (pid := get_running_pid()):
+                pids.add(pid)
+        else:
+            pid = get_running_pid()
+            pids = {pid} if pid else set()
+        for pid in pids:
+            if not restart_all and gateway_declares_external_supervisor(pid):
+                continue
+            if _command_mode(_capture_gateway_argv(pid) or [], live=True) != "serving":
+                print_error("Cannot restart a control-only or unrecognized manual gateway as serving.")
+                sys.exit(1)
     if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
         return
     if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
@@ -5428,6 +5456,7 @@ def _cmd_restart(args):
     if restart_all:
         _restart_all(system, getattr(args, "detach", False))
         return
+
 
     # Reap orphans only past the refusal guards above (#125394): the Desktop backend used to reap
     # before spawning this command, so a refused restart still cost the profile its gateway. From
@@ -5439,8 +5468,6 @@ def _cmd_restart(args):
         logger.debug("orphan reap before gateway restart failed: %s", exc)
 
     # The Windows restart path handles both registered installs and detached restarts.
-    kind = _installed_service_kind_for(is_windows)
-    service_configured = kind is not None and (kind != "windows" or _gw_windows().is_installed())
     if kind is not None:
         swallow = (RuntimeError, OSError) if kind == "windows" else ()
         try:

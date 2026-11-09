@@ -19,6 +19,69 @@ import pytest
 
 from tests.hermes_cli.test_update_pause_record import _child, _reap_children
 
+
+def _capture_pause_entries(monkeypatch, pause):
+    from gateway import status
+    from hermes_cli import update_pause_record as record
+
+    captured = []
+    monkeypatch.setattr(pause, "_left_running", lambda units, jobs: (units, jobs, []))
+    monkeypatch.setattr(pause, "_discover_bare", lambda pids: ([], []))
+    monkeypatch.setattr(pause, "_stop_gateways", lambda token, entries: captured.extend(entries))
+    monkeypatch.setattr(status, "get_process_start_time", lambda pid: 123)
+    monkeypatch.setattr(record, "identity", lambda pid: {"ct": "ct:123"})
+    monkeypatch.setattr(record, "record_pause", lambda *args: None)
+    monkeypatch.setattr(record, "mark_stop_requested", lambda *args, **kwargs: None)
+    monkeypatch.setattr(record, "sync", lambda token: None)
+    pause._pause(pause._empty_token())
+    return captured
+
+
+@pytest.mark.platforms("linux")
+def test_pause_excludes_nonserving_systemd_before_drain(monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli import gateway, update_cmd_fleet as fleet, update_cmd_posix_pause as pause
+
+    names = ["hermes-gateway-serving.service", "hermes-gateway-control.service", "hermes-gateway-custom.service"]
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "_ensure_user_systemd_env", lambda: None)
+    monkeypatch.setattr(fleet, "_systemd_gateway_unit_listings",
+                        lambda: [("user", ["systemctl", "--user"], SimpleNamespace(stdout="listing"))])
+    monkeypatch.setattr(fleet, "_for_each_systemd_gateway_unit",
+                        lambda listing, *, process_unit, on_unit_timeout: [process_unit(n) for n in names])
+    monkeypatch.setattr(fleet, "_unit_main_pid", lambda scope, name: names.index(name) + 101)
+    monkeypatch.setattr(fleet, "_systemd_unit_owned_by_update", lambda scope, name: True)
+    def systemctl(args, **kwargs):
+        name = args[args.index("show") + 1]
+        suffix = {"hermes-gateway-serving.service": "--replace",
+                  "hermes-gateway-control.service": "--control-only",
+                  "hermes-gateway-custom.service": "--custom"}[name]
+        value = f"{{ path=/usr/bin/hermes ; argv[]=/usr/bin/hermes gateway run {suffix} ; ignore_errors=no ; }}"
+        return SimpleNamespace(returncode=0, stdout=value)
+    monkeypatch.setattr(fleet, "_systemctl", systemctl)
+    monkeypatch.setattr(pause, "_unit_cgroup", lambda *args: "/safe")
+    monkeypatch.setattr(pause, "_home_of", lambda pid: None)
+    monkeypatch.setattr(pause, "_discover_launchd", list)
+    assert [entry["unit"] for entry in _capture_pause_entries(monkeypatch, pause)] == [names[0]]
+
+
+@pytest.mark.platforms("macos")
+def test_pause_excludes_nonserving_launchd_before_drain(tmp_path, monkeypatch):
+    from hermes_cli import gateway, update_cmd_posix_pause as pause, update_fleet_scope
+
+    labels = ["ai.hermes.gateway.serving", "ai.hermes.gateway.control", "ai.hermes.gateway.custom"]
+    for label, suffix in zip(labels, ("--replace", "--control-only", "--custom")):
+        (tmp_path / f"{label}.plist").write_bytes(plistlib.dumps(
+            {"ProgramArguments": ["/usr/bin/hermes", "gateway", "run", suffix]}))
+    monkeypatch.setattr(gateway, "launchd_gateway_labels_for_install", lambda: labels)
+    monkeypatch.setattr(gateway, "legacy_launchd_labels_for_install", lambda **kwargs: [])
+    monkeypatch.setattr(gateway, "_locate_launchd_gateway_service", lambda label: ("gui/501", labels.index(label) + 101))
+    monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: tmp_path / "base.plist")
+    monkeypatch.setattr(update_fleet_scope, "launchd_label_foreign_home", lambda label: None)
+    monkeypatch.setattr(pause, "_home_of", lambda pid: None)
+    monkeypatch.setattr(pause, "_discover_systemd", list)
+    assert [entry["label"] for entry in _capture_pause_entries(monkeypatch, pause)] == [labels[0]]
+
 _UNIT = {"kind": "systemd", "scope": "user", "unit": "hermes-gateway-p2probe.service", "pid": 4242}
 
 

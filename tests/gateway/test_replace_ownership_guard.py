@@ -430,6 +430,7 @@ import asyncio, sys, time
 sys.path.insert(0, r"@@REPO@@")
 
 import gateway.run as gateway_run
+from gateway.run_exit import exit_after_graceful_shutdown
 import gateway.status as status
 
 # A stale record nothing can prove belongs to this home.
@@ -451,7 +452,7 @@ except SystemExit as exc:
     result = exc.code
 print(f"start_gateway -> {result!r}", file=sys.stderr)
 # The real CLI exit path (gateway/run.py main()): False -> exit 1 -> os._exit.
-gateway_run._exit_after_graceful_shutdown(0 if result is True else (1 if result is False else 2))
+exit_after_graceful_shutdown(0 if result is True else (1 if result is False else 2))
 '''
 
 

@@ -129,6 +129,8 @@ def _discover_systemd() -> list[dict]:
         _for_each_systemd_gateway_unit, _systemd_gateway_unit_listings, _systemd_unit_owned_by_update,
         _unit_main_pid,
     )
+    from hermes_cli.gateway_service_mode import systemd_execstart_property_mode
+    from hermes_cli.update_cmd_fleet import _systemctl
     if not supports_systemd_services():
         return []
     with suppress(Exception):
@@ -145,6 +147,9 @@ def _discover_systemd() -> list[dict]:
             pid = _unit_main_pid(scope_cmd, name)
             if pid <= 0 or pid in seen_pids or not _systemd_unit_owned_by_update(scope_cmd, name):
                 continue
+            effective = _systemctl(scope_cmd + ["show", name, "--property=ExecStart", "--value"], timeout=5)
+            if effective.returncode != 0 or systemd_execstart_property_mode(effective.stdout or "") != "serving":
+                continue
             seen_pids.add(pid)  # a legacy per-profile unit sharing the multiplexer's PID is one process
             units.append({"kind": "systemd", "scope": scope, "unit": name, "pid": pid,
                           "cgroup": _unit_cgroup(scope_cmd, name), "home": _home_of(pid)})
@@ -159,6 +164,7 @@ def _discover_launchd() -> list[dict]:
         _locate_launchd_gateway_service, get_launchd_plist_path, launchd_gateway_labels_for_install,
         legacy_launchd_labels_for_install,
     )
+    from hermes_cli.gateway_service_mode import launchd_definition_mode
     from hermes_cli.update_fleet_scope import launchd_label_foreign_home
     derived = launchd_gateway_labels_for_install()
     jobs = []
@@ -169,6 +175,8 @@ def _discover_launchd() -> list[dict]:
         if domain is None or not pid or pid <= 0:
             continue
         plist = get_launchd_plist_path().with_name(f"{label}.plist")
+        if launchd_definition_mode(plist) != "serving":
+            continue
         jobs.append({"kind": "launchd", "label": label, "domain": domain, "plist": str(plist), "pid": int(pid),
                      "home": _home_of(int(pid))})
     return jobs

@@ -342,6 +342,14 @@ Options:
 | `--control-only` | On `run`: start an authenticated control-only gateway for API run status and exact unknown-run resolution. This process never serves turns; requires the API server to be enabled and cannot be combined with `--replace` or `--force`. See [API Server → Control-only recovery process](../user-guide/features/api-server.md#control-only-recovery-process). |
 | `--external-supervisor` | On `run`: declare that a wrapper-provided process manager owns the foreground gateway. Use this when `sudo`, `env -i`, or another wrapper strips launchd/systemd's native environment marker. In-chat restarts and updates exit back to that manager instead of spawning a detached replacement. |
 
+`gateway run` requires complete option names (`--control` is not an abbreviation
+for `--control-only`). Manual control-only or unrecognized gateway processes
+cannot be restarted into serving mode, including through `restart --all`; stop
+the recovery process explicitly and pass the supervisor gate before serving.
+Updater pause/resume excludes service definitions that are not verified serving
+launchers.
+
+
 `--external-supervisor` is a restart-policy contract: an in-chat restart,
 `hermes gateway restart`, or service-restart update exits with status `75`
 (the CLI then waits for the supervisor's fresh PID instead of running a

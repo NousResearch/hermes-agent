@@ -50,8 +50,10 @@ def _run_native_windows_gateway_start_diag(
 
         fake_run = types.ModuleType("gateway.run")
         fake_run.start_gateway = start_gateway
-        fake_run._exit_after_graceful_shutdown = lambda code: None
         sys.modules["gateway.run"] = fake_run
+        fake_exit = types.ModuleType("gateway.run_exit")
+        fake_exit.exit_after_graceful_shutdown = lambda code, **kwargs: None
+        sys.modules["gateway.run_exit"] = fake_exit
 
         gateway_cli._guard_official_docker_root_gateway = lambda: None
         gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None
@@ -165,8 +167,10 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
 
         fake_run = types.ModuleType("gateway.run")
         fake_run.start_gateway = start_gateway
-        setattr(fake_run, "_exit_after_graceful_shutdown", sys.exit)
         sys.modules["gateway.run"] = fake_run
+        fake_exit = types.ModuleType("gateway.run_exit")
+        fake_exit.exit_after_graceful_shutdown = lambda code, **kwargs: sys.exit(code)
+        sys.modules["gateway.run_exit"] = fake_exit
 
         gateway_cli._guard_official_docker_root_gateway = lambda: None
         gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None

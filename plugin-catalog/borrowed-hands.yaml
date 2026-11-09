@@ -1,0 +1,31 @@
+name: borrowed-hands
+title: Borrowed Hands
+repo: https://github.com/alext8900/borrowed-hands
+sha: ae6dd410551d9e57118ada9230f42b0d673bbd34
+subdir: borrowed-hands
+version: "0.1.0"
+description: "Lend your Mac's Xcode to a cloud Hermes. Hermes finds your paired Mac, compiles the Xcode project you granted (macOS arm64 or generic iOS Simulator, compile only) at an exact commit on a bh/* branch, and gets structured compiler diagnostics back: ask \"Build my demo project on my Mac\". Needs the separate Borrowed Hands Mac helper (Python source in the same repository) on an Apple silicon Mac with Xcode; the Mac connects out to Hermes and decides what may build. Disclosure: when enabled, the plugin runs a WebSocket listener and an owner-notice thread inside the gateway, keeps a server signing key and a SQLite job database in its plugin data, and makes one outbound call of its own, an anonymous HTTPS read of the granted public repository's branch list (public addresses only, no credentials). The Mac helper runs as a LaunchAgent and installs a hidden build user, a root-owned dispatcher and a sudo rule limited to six exact dispatcher commands; builds run sandboxed with no network. No telemetry, no self-update."
+maintainer: alext8900
+tier: community
+category: tools
+docs_url: https://github.com/alext8900/borrowed-hands/blob/main/docs/QUICKSTART.md
+requires_hermes: ">=0.22.7"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "hands_screen_capture is registered but unavailable: no helper executor in this version."
+  - "iOS Simulator support is compile-only: no boot, install, UI or tests."
+  - "Public HTTPS repositories and bh/* commits only; private repositories and remote Swift packages are unsupported."
+  - "Builds report wipe_ok=false for protected per-user state; complete persistent-state removal is not established."
+capabilities:
+  provides_tools:
+    - hands_find
+    - hands_system_info
+    - hands_xcode_build
+    - hands_job
+    - hands_screen_capture
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

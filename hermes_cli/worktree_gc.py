@@ -99,32 +99,53 @@ def _tree_size_mb(path: Path, timeout: int = 30) -> Optional[int]:
 
 
 def _dirty_split(path: str) -> tuple[bool, list[str]]:
-    """(has_tracked_modifications, untracked_paths) — tracked = real work, untracked = archivable."""
+    """(has_tracked_modifications, untracked_paths) — tracked = real work, untracked = archivable.
+
+    ``-z`` so every path comes back byte-exact: without it git C-quotes names with spaces,
+    quotes or non-ASCII (``"sp ace.txt"``), the archive step then looks for the quoted
+    spelling, and the real file is deleted with the tree unsaved."""
     try:
-        result = _git(["status", "--porcelain", "--untracked-files=normal"], cwd=path, timeout=10)
+        result = _git(["status", "--porcelain", "-z", "--untracked-files=normal"], cwd=path, timeout=10)
         if result.returncode != 0:
             return True, []  # fail safe: treat as real work
-        lines = [line for line in result.stdout.splitlines() if line.strip()]
-        untracked = [line[3:].strip() for line in lines if line.startswith("??")]
-        if len(untracked) == len(lines):
+        fields = result.stdout.split("\0")
+        entries: list[str] = []
+        i = 0
+        while i < len(fields):
+            entry = fields[i]
+            i += 1
+            if not entry.strip():
+                continue
+            entries.append(entry)
+            if entry[:1] in ("R", "C") or entry[1:2] in ("R", "C"):
+                i += 1  # a rename/copy carries its source path as the next field
+        untracked = [entry[3:] for entry in entries if entry.startswith("??")]
+        if len(untracked) == len(entries):
             from hermes_cli.worktree_retention import hidden_index_edits
             if hidden_index_edits(path):  # skip-worktree / assume-unchanged edits
                 return True, []
-        return len(untracked) != len(lines), untracked
+        return len(untracked) != len(entries), untracked
     except Exception:
         return True, []
 
 
 def _archive_untracked(tree: Path, untracked: list[str]) -> Optional[Path]:
-    """Copy untracked files out of a doomed tree; None on any failure (caller must then keep)."""
+    """Copy untracked files out of a doomed tree; None on any failure (caller must then keep).
+
+    Every listed path must be saved: one that cannot be found is a failure, not a skip, since
+    the removal that follows would delete whatever git listed under that name. A symlink is
+    the one entry not copied (removing it loses only the link)."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
     from hermes_constants import get_hermes_home
     dest = get_hermes_home() / "archive" / "worktree-prune" / f"{tree.name}-{stamp}"
     try:
         for rel in untracked:
             src = tree / rel
-            if not src.exists() or src.is_symlink():
+            if src.is_symlink():
                 continue
+            if not src.exists():
+                logger.warning("Untracked path %r listed by git is missing from %s; keeping the tree", rel, tree)
+                return None
             (dest / rel).parent.mkdir(parents=True, exist_ok=True)
             if src.is_dir():
                 shutil.copytree(src, dest / rel, dirs_exist_ok=True)
@@ -334,31 +355,120 @@ def audit_worktree(repo_root: str, path: str) -> Optional[TreeRecord]:
     return record
 
 
+def main_checkout(repo_root: str) -> str:
+    """The repo's MAIN checkout (first ``git worktree list`` entry) for any checkout of it, so
+    a command run from inside ``.worktrees/a`` resolves sibling names against the real root."""
+    result = _git(["worktree", "list", "--porcelain"], cwd=repo_root, timeout=10)
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            if line.startswith("worktree "):
+                return line[len("worktree "):].strip()
+    return repo_root
+
+
+def resolve_tree_target(repo_root: str, tree: str) -> tuple[str, str]:
+    """``(main_checkout, absolute tree path)`` for a ``remove`` argument: a bare name is a
+    directory under the MAIN checkout's ``.worktrees/``; a path is made absolute against the
+    caller's cwd before any git call runs elsewhere."""
+    main = main_checkout(repo_root)
+    tree = str(tree or "").strip()
+    is_path = os.path.isabs(tree) or os.sep in tree or (os.altsep and os.altsep in tree)
+    path = os.path.abspath(tree) if is_path else os.path.join(main, ".worktrees", tree)
+    return main, path
+
+
+def _keep_kind(record: TreeRecord) -> str:
+    if "kanban" in record.reason:
+        return "kanban"
+    if "in use" in record.reason:
+        return "in-use"
+    return "policy"
+
+
 def reclaim_worktree(repo_root: str, path: str) -> dict:
     """Remove ONE linked worktree when the policy allows, with a structured verdict for a UI.
 
     Never forces past the policy: a tree with tracked changes or unique commits stays, and the
-    reply says why. ``branch_deleted`` is True only when the branch went with the tree (a
-    pushed open-PR lane keeps its branch). This is the single-tree door the Desktop session
-    action and ``hermes worktree remove`` use, so every surface reaps by the same rules.
+    reply says why. A tree some live process works in (cwd or open fd, the check ``prune``
+    applies) stays too. ``outcome`` is the typed per-tree result (``removed``, ``kept``,
+    ``in-use``, ``kanban``, ``archive-failed``, ``remove-failed``, ``unknown``) and
+    ``forceable`` is True only for a plain policy keep — never when the untracked-file archive
+    failed or something still uses the tree. ``branch_deleted`` is True only when the branch
+    went with the tree (a pushed open-PR lane keeps its branch). This is the single-tree door
+    the Desktop session action and ``hermes worktree remove`` use, so every surface reaps by
+    the same rules.
     """
+    repo_root = main_checkout(repo_root)
     record = audit_worktree(repo_root, path)
     if record is None:
-        return {"removed": False, "branch": "", "branch_deleted": False,
-                "verdict": "unknown", "reason": "not a linked worktree of this repository", "actions": []}
-    actions = reclaim_worktrees(repo_root, records=[record])
-    removed = any(a.startswith("removed ") for a in actions)
+        return {"removed": False, "branch": "", "branch_deleted": False, "outcome": "unknown",
+                "forceable": False, "verdict": "unknown",
+                "reason": "not a linked worktree of this repository", "actions": []}
+    if record.verdict in _REAP_VERDICTS:
+        from hermes_cli.worktree_ops import release_lsp_clients
+        from hermes_cli.worktree_sweep import live_process_pids
+        release_lsp_clients(record.path)  # this process's own language servers are not "use"
+        pids = live_process_pids([record.path], exclude=(os.getpid(),)).get(record.path)
+        if pids:
+            record.verdict, record.untracked = "keep", []
+            record.reason = f"in use by a running process (pid {', '.join(map(str, sorted(pids)[:5]))})"
+    if record.verdict not in _REAP_VERDICTS:
+        outcome = _keep_kind(record)
+        return {"removed": False, "branch": record.branch, "branch_deleted": False,
+                "outcome": "kept" if outcome == "policy" else outcome,
+                "forceable": outcome == "policy", "verdict": record.verdict,
+                "reason": record.reason, "actions": []}
+    outcome, branch_deleted, actions = _reclaim_one(repo_root, record)
+    reason = record.reason
+    if outcome == "archive-failed":
+        reason = "could not archive its untracked files, so nothing was deleted"
+    elif outcome == "remove-failed":
+        reason = actions[-1] if actions else "git worktree remove failed"
+    with contextlib.suppress(Exception):
+        _git(["worktree", "prune"], cwd=repo_root, timeout=15)
     return {
-        "removed": removed,
+        "removed": outcome == "removed",
         "branch": record.branch,
-        "branch_deleted": any(a.endswith(f"(branch {record.branch} deleted)") for a in actions),
+        "branch_deleted": branch_deleted,
+        "outcome": outcome,
+        "forceable": False,
         "verdict": record.verdict,
-        "reason": record.reason,
+        "reason": reason,
         "actions": actions,
     }
 
 
 _REAP_VERDICTS = {"reap", "reap-archive", "reap-keep-branch"}
+
+
+def _reclaim_one(repo_root: str, record: TreeRecord) -> tuple[str, bool, list[str]]:
+    """Archive then remove one reap-verdict tree: ``(outcome, branch_deleted, action lines)``.
+    ``outcome`` is ``removed`` | ``archive-failed`` | ``remove-failed`` — typed, so callers
+    never infer the result from the display text."""
+    actions: list[str] = []
+    entry = Path(record.path)
+    if record.untracked:
+        archive = _archive_untracked(entry, record.untracked)
+        if archive is None:
+            return "archive-failed", False, [f"kept {record.name} (archive of untracked files failed)"]
+        actions.append(f"archived {len(record.untracked)} untracked file(s) → {archive}")
+
+    # Dead-pid locks must be unlocked or `remove --force` refuses.
+    with contextlib.suppress(Exception):
+        _git(["worktree", "unlock", record.path], cwd=repo_root, timeout=10)
+    try:
+        remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
+        if remove_result.returncode != 0:
+            return "remove-failed", False, [*actions, f"failed to remove {record.name}: {remove_result.stderr.strip()}"]
+        if record.verdict == "reap-keep-branch":
+            return "removed", False, [*actions, f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)"]
+        if record.branch and record.branch not in _PROTECTED_BRANCHES:
+            deleted = _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10).returncode == 0
+            return "removed", deleted, [
+                *actions, f"removed {record.name} (branch {record.branch} {'deleted' if deleted else 'kept'})"]
+        return "removed", False, [*actions, f"removed {record.name}"]
+    except Exception as exc:  # health: allow BLE001 -- moved verbatim from reclaim_worktrees' loop; a failed removal is reported, never raised mid-sweep
+        return "remove-failed", False, [*actions, f"failed to remove {record.name}: {exc}"]
 
 
 def reclaim_worktrees(
@@ -376,32 +486,7 @@ def reclaim_worktrees(
             actions.append(f"would remove {record.name} ({record.reason})")
             continue
 
-        entry = Path(record.path)
-        if record.untracked:
-            archive = _archive_untracked(entry, record.untracked)
-            if archive is None:
-                actions.append(f"kept {record.name} (archive of untracked files failed)")
-                continue
-            actions.append(f"archived {len(record.untracked)} untracked file(s) → {archive}")
-
-        # Dead-pid locks must be unlocked or `remove --force` refuses.
-        with contextlib.suppress(Exception):
-            _git(["worktree", "unlock", record.path], cwd=repo_root, timeout=10)
-        try:
-            remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
-            if remove_result.returncode != 0:
-                actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
-                continue
-            if record.verdict == "reap-keep-branch":
-                actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
-                continue
-            if record.branch and record.branch not in _PROTECTED_BRANCHES:
-                deleted = _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10).returncode == 0
-                actions.append(f"removed {record.name} (branch {record.branch} {'deleted' if deleted else 'kept'})")
-                continue
-            actions.append(f"removed {record.name}")
-        except Exception as exc:
-            actions.append(f"failed to remove {record.name}: {exc}")
+        actions += _reclaim_one(repo_root, record)[2]
 
     if not dry_run:
         with contextlib.suppress(Exception):

@@ -660,7 +660,10 @@ declare global {
       }) => Promise<PreviewSigninsResult>
       // P2-7: the per-profile imported-sign-ins record + cookie jar live in Electron main (userData),
       // so the renderer's local profile rename/delete flow signals main to move/clear them.
-      migratePreviewSigninsForProfile?: (request: { oldProfile: string; newProfile: string }) => Promise<{ ok: boolean }>
+      migratePreviewSigninsForProfile?: (request: {
+        oldProfile: string
+        newProfile: string
+      }) => Promise<{ ok: boolean }>
       dropPreviewSigninsForProfile?: (request: { profile: string }) => Promise<{ ok: boolean }>
       setActiveConnectionRoute?: (
         route: {
@@ -1761,6 +1764,12 @@ export interface HermesWorktreeReclaim {
   removed: boolean
   branch: string
   branchDeleted: boolean
+  // Typed per-tree result. `kept` = a policy keep (real work) — the only case
+  // `forceable` is true. `in-use`, `kanban`, `archive-failed` (the untracked
+  // files could not be saved, so nothing was deleted) and `remove-failed` must
+  // never be offered a force removal.
+  outcome: 'archive-failed' | 'in-use' | 'kanban' | 'kept' | 'remove-failed' | 'removed' | 'unknown'
+  forceable: boolean
   verdict: 'keep' | 'reap-archive' | 'reap-keep-branch' | 'reap' | 'unknown'
   reason: string
   actions: string[]

@@ -7,7 +7,8 @@ import {
   liveSessionProjectId,
   NO_PROJECT_ID,
   projectOwnerBySessionId,
-  type SidebarProjectTree
+  type SidebarProjectTree,
+  type SidebarSessionGroup
 } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch, HermesWorktreeReclaim } from '@/global'
 import { getHermesConfig, hermesApi, type HermesGateway, type SessionInfo } from '@/hermes'
@@ -1657,8 +1658,41 @@ export async function reclaimWorktreePath(
 ): Promise<HermesWorktreeReclaim> {
   try {
     return await reclaimWorktree(repoPath, worktreePath, owner)
+  } catch (err) {
+    if (!isMissingRestEndpoint(err)) {
+      throw err
+    }
+
+    // A backend from before the reclaim route: keep main's plain, never-forced
+    // `git worktree remove` (git itself refuses a tree with changes or untracked
+    // files), and offer force only for those refusals, as main did.
+    return await legacyWorktreeRemove(repoPath, worktreePath, owner)
   } finally {
     bumpWorktrees()
+  }
+}
+
+async function legacyWorktreeRemove(
+  repoPath: string,
+  worktreePath: string,
+  owner?: GitOwnerRoute
+): Promise<HermesWorktreeReclaim> {
+  const base = { actions: [], branch: '', branchDeleted: false, verdict: 'unknown' as const }
+
+  try {
+    await removeWorktreePath(repoPath, worktreePath, { force: false }, owner)
+
+    return { ...base, forceable: false, outcome: 'removed', reason: '', removed: true }
+  } catch (err) {
+    const reason = String((err as Error)?.message ?? err)
+
+    return {
+      ...base,
+      forceable: /force|modified|untracked|dirty|contains/i.test(reason),
+      outcome: 'kept',
+      reason,
+      removed: false
+    }
   }
 }
 
@@ -1669,21 +1703,41 @@ export interface WorktreeLane {
   owner?: GitOwnerRoute
 }
 
+// A linked-worktree lane's path when it covers `target` (never the main
+// checkout, the kanban bucket or a plain folder's heuristic lane).
+function reclaimableLanePath(group: SidebarSessionGroup, target: string): string {
+  const path = (group.path || '').trim()
+
+  return path && !group.isMain && !group.isKanban && group.isGit !== false && isUnderPath(path, target) ? path : ''
+}
+
 // The linked-worktree lane whose path is `cwd` (or contains it), with its repo
 // and owning gateway, for session verbs that act on the tree the session ran
 // in. Null for a main checkout, the kanban bucket, a plain folder, or a cwd no
 // lane covers — none of those is a tree a session may reclaim.
-export function worktreeLaneForCwd(cwd: string): null | WorktreeLane {
+//
+// `connectionId` is the clicked row's owner (`connection_id`; empty = the
+// active gateway). Only lanes on THAT gateway match: a remote chat and a local
+// worktree can share a path string, and a path-only match would send the
+// reclaim to the other machine's tree.
+export function worktreeLaneForCwd(cwd: string, connectionId?: null | string): null | WorktreeLane {
   const target = (cwd || '').trim()
 
   if (!target) {
     return null
   }
 
+  const active = activeGatewayConnectionId() || ''
+  const rowOwner = (connectionId || '').trim() || active
+
   let best: null | WorktreeLane = null
   let bestLen = -1
 
   for (const project of $projectTree.get()) {
+    if ((project.connectionId || active) !== rowOwner) {
+      continue
+    }
+
     const owner = project.connectionId
       ? { connectionId: project.connectionId, profile: project.profile || 'default' }
       : undefined
@@ -1694,13 +1748,11 @@ export function worktreeLaneForCwd(cwd: string): null | WorktreeLane {
       }
 
       for (const group of repo.groups) {
-        const path = (group.path || '').trim()
+        const path = reclaimableLanePath(group, target)
 
-        if (path && !group.isMain && !group.isKanban && group.isGit !== false && isUnderPath(path, target)) {
-          if (path.length > bestLen) {
-            bestLen = path.length
-            best = { label: group.label, owner, repoPath: repo.path, worktreePath: path }
-          }
+        if (path && path.length > bestLen) {
+          bestLen = path.length
+          best = { label: group.label, owner, repoPath: repo.path, worktreePath: path }
         }
       }
     }

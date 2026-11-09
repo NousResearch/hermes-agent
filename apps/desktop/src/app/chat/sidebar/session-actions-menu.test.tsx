@@ -87,7 +87,9 @@ const reclaimWorktreePath = vi.fn(() =>
   Promise.resolve({ actions: [], branch: 'fix-login', branchDeleted: true, reason: '', removed: true, verdict: 'reap' })
 )
 
-const worktreeLaneForCwd = vi.fn((): null | { label: string; repoPath: string; worktreePath: string } => null)
+const worktreeLaneForCwd = vi.fn(
+  (_cwd: string, _owner?: null | string): null | { label: string; repoPath: string; worktreePath: string } => null
+)
 
 vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
@@ -96,7 +98,7 @@ vi.mock('@/store/projects', () => ({
   projectRootCwd: vi.fn(() => ''),
   reclaimWorktreePath: (...args: unknown[]) => reclaimWorktreePath(...(args as [])),
   refreshProjectTree: vi.fn(() => Promise.resolve()),
-  worktreeLaneForCwd: (cwd: string) => worktreeLaneForCwd(cwd)
+  worktreeLaneForCwd: (cwd: string, owner?: null | string) => worktreeLaneForCwd(cwd, owner)
 }))
 vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
@@ -114,6 +116,11 @@ vi.mock('@/store/session', () => ({
 vi.mock('@/store/session-color', () => ({
   $sessionColorOverrides: atom<Record<string, string>>({}),
   setSessionColorOverride: vi.fn()
+}))
+const waitForSessionRemoval = vi.fn((_id: string) => Promise.resolve(true))
+
+vi.mock('@/store/session-removal', () => ({
+  waitForSessionRemoval: (id: string) => waitForSessionRemoval(id)
 }))
 vi.mock('@/store/session-states', () => ({
   $sessionStates: atom<Record<string, unknown>>({}),
@@ -369,6 +376,7 @@ describe('SessionActionsMenu', () => {
   // would be offering to delete the repo.
   it('offers Archive & remove worktree only for a worktree session, and archives plus reclaims on select', async () => {
     const onArchive = vi.fn()
+    reclaimWorktreePath.mockClear()
 
     const open = (trigger: HTMLElement) => {
       fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
@@ -391,19 +399,50 @@ describe('SessionActionsMenu', () => {
     expect(screen.queryByRole('menuitem', { name: /remove worktree/i })).toBeNull()
     first.unmount()
 
-    worktreeLaneForCwd.mockReturnValue({ label: 'fix-login', repoPath: '/repos/app', worktreePath: '/repos/app/.worktrees/fix-login' })
-    render(
-      <SessionActionsMenu onArchive={onArchive} sessionId="s1" title="My session">
-        <button aria-label="Session actions" type="button">
-          ⋮
-        </button>
-      </SessionActionsMenu>
-    )
-    open(screen.getByRole('button', { name: 'Session actions' }))
-    fireEvent.click(await screen.findByRole('menuitem', { name: /archive & remove worktree/i }))
+    worktreeLaneForCwd.mockReturnValue({
+      label: 'fix-login',
+      repoPath: '/repos/app',
+      worktreePath: '/repos/app/.worktrees/fix-login'
+    })
 
+    const pick = async () => {
+      const view = render(
+        <SessionActionsMenu
+          connectionId="studio"
+          cwd="/repos/app/.worktrees/fix-login"
+          onArchive={onArchive}
+          sessionId="s1"
+          title="My session"
+        >
+          <button aria-label="Session actions" type="button">
+            ⋮
+          </button>
+        </SessionActionsMenu>
+      )
+
+      open(screen.getByRole('button', { name: 'Session actions' }))
+      fireEvent.click(await screen.findByRole('menuitem', { name: /archive & remove worktree/i }))
+
+      return view
+    }
+
+    // The row's own cwd + owner pick the lane (not the capped recents list).
+    const second = await pick()
     await waitFor(() => expect(onArchive).toHaveBeenCalledTimes(1))
-    expect(reclaimWorktreePath).toHaveBeenCalledWith('/repos/app', '/repos/app/.worktrees/fix-login', undefined)
+    expect(waitForSessionRemoval).toHaveBeenCalledWith('s1')
+    expect(worktreeLaneForCwd).toHaveBeenCalledWith('/repos/app/.worktrees/fix-login', 'studio')
+    await waitFor(() =>
+      expect(reclaimWorktreePath).toHaveBeenCalledWith('/repos/app', '/repos/app/.worktrees/fix-login', undefined)
+    )
+    second.unmount()
+
+    // A refused or failed archive restores the row: its tree must still exist.
+    reclaimWorktreePath.mockClear()
+    waitForSessionRemoval.mockResolvedValueOnce(false)
+    await pick()
+    await waitFor(() => expect(onArchive).toHaveBeenCalledTimes(2))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(reclaimWorktreePath).not.toHaveBeenCalled()
   })
 
   // A canonical Bot Chat tab must not offer Rename: the write can never reach

@@ -206,12 +206,13 @@ function RepoFlatSection({
         if (result.branchDeleted) {
           notify({ durationMs: 4_000, kind: 'success', message: s.row.worktreeRemovedBranchDeleted(result.branch) })
         }
-      } else if (/in use/i.test(result.reason)) {
-        // A running session owns it: force would yank the tree from under
-        // it, so this one is an error, not a prompt.
-        notifyError(new Error(result.reason), s.projects.removeWorktreeFailed)
-      } else {
+      } else if (result.forceable === true) {
         setForceTarget({ group, reason: result.reason })
+      } else {
+        // In use, another lifecycle's, or the untracked-file archive failed:
+        // force would delete what the policy refused to, so this is an
+        // error, never a prompt.
+        notifyError(new Error(result.reason), s.projects.removeWorktreeFailed)
       }
     } catch (err) {
       notifyError(err, s.projects.removeWorktreeFailed)

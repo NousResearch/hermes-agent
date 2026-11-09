@@ -218,6 +218,41 @@ class TestReclaimOne:
         assert "uncommitted" in kept["reason"] and dirty.exists()
         assert _git(["rev-parse", "--verify", dirty_branch], repo)
 
+    def test_tree_a_live_process_works_in_is_kept_unforceable(self, repo):
+        """The live-process check ``prune`` applies: a clean merged tree a running process
+        uses (cwd here, no git lock) stays, and the verdict never offers force."""
+        import subprocess
+        import sys
+        tree, _ = _add_worktree(repo, "hermes-busy")
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=str(tree))
+        try:
+            kept = worktree_gc.reclaim_worktree(str(repo), str(tree))
+        finally:
+            proc.kill()
+            proc.wait()
+        assert kept["removed"] is False and tree.exists()
+        assert kept["outcome"] == "in-use" and kept["forceable"] is False
+
+    def test_untracked_file_git_quotes_is_archived_by_its_real_name(self, repo, tmp_path, monkeypatch):
+        """``git status`` C-quotes names with spaces/quotes/non-ASCII; reading without ``-z``
+        archived only the plain file and the force removal deleted the quoted one unsaved."""
+        home = tmp_path / "hh"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        tree, _ = _add_worktree(repo, "hermes-quoted")
+        (tree / "plain.txt").write_text("a\n")
+        (tree / "sp ace \u00fc.txt").write_text("b\n")
+        result = worktree_gc.reclaim_worktree(str(repo), str(tree))
+        saved = {p.name for p in (home / "archive" / "worktree-prune").rglob("*.txt")}
+        assert saved == {"plain.txt", "sp ace \u00fc.txt"}
+        assert result["removed"] is True and result["outcome"] == "removed"
+
+        tree2, _ = _add_worktree(repo, "hermes-unsaveable")
+        (tree2 / "scratch.txt").write_text("c\n")
+        monkeypatch.setattr(worktree_gc, "_archive_untracked", lambda *_a: None)
+        failed = worktree_gc.reclaim_worktree(str(repo), str(tree2))
+        assert failed["removed"] is False and tree2.exists() and (tree2 / "scratch.txt").exists()
+        assert failed["outcome"] == "archive-failed" and failed["forceable"] is False
+
     def test_main_checkout_and_foreign_dirs_are_refused(self, repo, tmp_path):
         stranger = tmp_path / "stranger"
         stranger.mkdir()

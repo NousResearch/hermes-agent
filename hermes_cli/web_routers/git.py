@@ -7,6 +7,7 @@ wrappers (git/gh can block).
 """
 
 import asyncio
+import contextvars
 import shutil
 import time
 from functools import partial
@@ -36,10 +37,16 @@ router = APIRouter()
 
 
 async def _git_op(fn, *args):
-    """Run a (blocking) git op off the event loop; map a failed mutation to 400."""
+    """Run a (blocking) git op off the event loop; map a failed mutation to 400.
+
+    ``run_in_executor`` does not carry contextvars into the worker, so the request's profile
+    binding (a secondary profile's native ticket sets the task-local home override) would be
+    lost and the op would write that profile's archive/registry/cache under the launch home.
+    Run the op inside a copy of the request's context instead."""
     loop = asyncio.get_running_loop()
+    context = contextvars.copy_context()
     try:
-        return await loop.run_in_executor(None, fn, *args)
+        return await loop.run_in_executor(None, context.run, fn, *args)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc) or "git operation failed")
 

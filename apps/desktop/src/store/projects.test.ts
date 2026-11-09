@@ -31,6 +31,7 @@ import {
   pickProjectFolders,
   projectIdForCwd,
   projectNameForCwd,
+  reclaimWorktreePath,
   refreshProjects,
   refreshProjectTree,
   resolveNewSessionCwd,
@@ -72,7 +73,8 @@ vi.mock('@/store/gateway', () => ({
 
 vi.mock('@/lib/desktop-git', async importOriginal => ({
   ...((await importOriginal()) as Record<string, unknown>),
-  desktopGit: vi.fn()
+  desktopGit: vi.fn(),
+  reclaimWorktree: vi.fn()
 }))
 
 vi.mock('@/hermes', () => ({
@@ -445,6 +447,46 @@ describe('worktreeLaneForCwd (archive & remove worktree)', () => {
     expect(worktreeLaneForCwd('/repos/app/notes')).toBeNull()
     expect(worktreeLaneForCwd('/elsewhere')).toBeNull()
     expect(worktreeLaneForCwd('')).toBeNull()
+
+    // Owner-scoped: the fixture's project is the active (local) gateway's. A remote chat
+    // whose cwd spells the same path must not reclaim the local tree.
+    expect(worktreeLaneForCwd('/repos/app/.worktrees/fix-login', 'studio')).toBeNull()
+    expect(worktreeLaneForCwd('/repos/app/.worktrees/fix-login', '')?.worktreePath).toBe(
+      '/repos/app/.worktrees/fix-login'
+    )
+    const local = $projectTree.get()[0]
+    $projectTree.set([{ ...local, connectionId: 'studio', id: 'p_studio', profile: 'work' }])
+    expect(worktreeLaneForCwd('/repos/app/.worktrees/fix-login', 'studio')?.owner).toEqual({
+      connectionId: 'studio',
+      profile: 'work'
+    })
+    expect(worktreeLaneForCwd('/repos/app/.worktrees/fix-login')).toBeNull()
+  })
+})
+
+describe('reclaimWorktreePath on a backend without the reclaim route', () => {
+  it("falls back to main's plain git worktree remove, offering force only for git's refusals", async () => {
+    vi.mocked(git.reclaimWorktree).mockRejectedValue(
+      new Error('404: {"detail":"No such API endpoint: /api/git/worktree/reclaim"}')
+    )
+    const worktreeRemove = vi.fn().mockResolvedValueOnce(undefined)
+    desktopGit.mockReturnValue({ worktreeRemove } as never)
+
+    const gone = await reclaimWorktreePath('/repos/app', '/repos/app/.worktrees/fix')
+    expect(worktreeRemove).toHaveBeenCalledWith('/repos/app', '/repos/app/.worktrees/fix', { force: false })
+    expect(gone).toMatchObject({ forceable: false, outcome: 'removed', removed: true })
+
+    worktreeRemove.mockRejectedValueOnce(
+      new Error("fatal: '/repos/app/.worktrees/fix' contains modified or untracked files, use --force to delete it")
+    )
+    const kept = await reclaimWorktreePath('/repos/app', '/repos/app/.worktrees/fix')
+    expect(kept).toMatchObject({ forceable: true, outcome: 'kept', removed: false })
+
+    // A transient failure of the new route is not a capability verdict.
+    worktreeRemove.mockClear()
+    vi.mocked(git.reclaimWorktree).mockRejectedValue(new Error('request timed out'))
+    await expect(reclaimWorktreePath('/repos/app', '/repos/app/.worktrees/fix')).rejects.toThrow('timed out')
+    expect(worktreeRemove).not.toHaveBeenCalled()
   })
 })
 

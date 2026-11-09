@@ -69,9 +69,12 @@ def worktree_remove(repo_root: str, rest: str) -> None:
     name = rest.strip()
     if not name:
         return print(f"  {_t('worktree.remove_usage')}")
-    path = name if os.path.isabs(name) or os.sep in name else os.path.join(repo_root, ".worktrees", name)
+    repo_root, path = worktree_gc.resolve_tree_target(repo_root, name)
+    target = os.path.realpath(path)
     active = _cli._active_worktree
-    if active and os.path.realpath(str(active.get("path") or "")) == os.path.realpath(path):
+    own = [os.path.realpath(str(active.get("path") or ""))] if active else []
+    own.append(os.path.realpath(os.getcwd()))  # also this process's cwd when no tree is "active"
+    if any(p == target or p.startswith(target + os.sep) for p in own):
         return print(f"  {_t('worktree.remove_own_tree')}")
     result = worktree_gc.reclaim_worktree(repo_root, path)
     _pr(*(f"  {line}" for line in result["actions"]))

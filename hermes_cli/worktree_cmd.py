@@ -180,11 +180,10 @@ def _restore(_worktree_gc, repo_root: str, args) -> int:
 
 
 def _remove(worktree_gc, repo_root: str, args) -> int:
-    """One tree, same policy as ``prune``: a bare name resolves under ``.worktrees/``. Exit 1
+    """One tree, same policy as ``prune``: a bare name resolves under the MAIN checkout's
+    ``.worktrees/`` (also when run from inside a sibling tree). Exit 1
     when the tree stays (with its reason) so scripts can tell "kept" from "gone"."""
-    import os
-    tree = str(getattr(args, "tree", "") or "")
-    path = tree if os.path.isabs(tree) or os.sep in tree else os.path.join(repo_root, ".worktrees", tree)
+    repo_root, path = worktree_gc.resolve_tree_target(repo_root, str(getattr(args, "tree", "") or ""))
     result = worktree_gc.reclaim_worktree(repo_root, path)
     if getattr(args, "json", False):
         print(json.dumps({"repo": repo_root, "path": path, **result}, indent=2))

@@ -404,7 +404,13 @@ def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[di
             from agent.session_storage import session_storage
             storage = session_storage(session_db)
         if storage is not None:
-            storage.sessions.append_turn(agent.session_id, batch_rows)
+            # The turn's durable lease rides through the port, unchanged: the backend's own
+            # lease-checked write still refuses a lease replaced under the claimed turn and
+            # renews one it still holds.
+            storage.sessions.append_turn(
+                agent.session_id, batch_rows,
+                turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
+                turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0)
             sync_flushed_message_markers(batch_msgs, batch_rows)
             _db_flush_store_uids(agent).update(
                 uid for msg in batch_msgs if (uid := message_uid_or_none(msg)) is not None)

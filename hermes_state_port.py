@@ -77,13 +77,16 @@ class SessionStore(ABC):
         count written. Inside a claimed turn of this store the turn's fence still applies."""
 
     @abstractmethod
-    def append_turn(self, session_id: str, messages: list[dict[str, Any]]) -> int:
+    def append_turn(self, session_id: str, messages: list[dict[str, Any]], *,
+                    turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0) -> int:
         """Append the running turn's *messages* in one transaction, fenced by its claim. Refused
         (``TurnFenceRequiredError``) when no claimed turn of *session_id*, or of a session it is a
         compression continuation of, is bound on this store; the continuation is the originating
         claim's alone — once *session_id*, or any session between it and the claimed one, has had
         a claim of its own (running or settled), the claim it descends from can no longer write
-        it."""
+        it. A caller holding the session's durable turn lease names it
+        (``turn_lease_holder``): the write checks it lost nothing and renews it (by
+        *turn_lease_ttl_seconds*) in the same transaction, exactly as the store's own append does."""
 
     @abstractmethod
     def read_conversation(self, session_id: str, *, include_row_ids: bool = False) -> list[dict[str, Any]]:

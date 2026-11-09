@@ -102,7 +102,7 @@ class LocalSessionStore(_Pinned, SessionStore):
         self._pin()
         return self.db.append_messages_batch(session_id, messages)
 
-    def append_turn(self, session_id, messages):
+    def append_turn(self, session_id, messages, *, turn_lease_holder=None, turn_lease_ttl_seconds=300.0):
         self._pin()
         from hermes_state_errors import TurnFenceRequiredError
         from hermes_state_fence import store_turn
@@ -111,7 +111,10 @@ class LocalSessionStore(_Pinned, SessionStore):
             raise TurnFenceRequiredError(
                 f"a turn write to session {session_id!r} needs that session's claimed turn bound")
         if session_id == mark.session:
-            return self.db.append_messages_batch(session_id, messages)
+            # The durable turn lease rides into the store's own append, unchanged: the write
+            # checks the lease it was given and renews it inside its transaction.
+            return self.db.append_messages_batch(session_id, messages, turn_lease_holder=turn_lease_holder,
+                                                 turn_lease_ttl_seconds=turn_lease_ttl_seconds)
 
         # A mid-turn compression moves the turn's transcript to a child; the claim stays on its
         # session, and the continuation is that claim's alone. Both checks run inside the write's
@@ -135,7 +138,9 @@ class LocalSessionStore(_Pinned, SessionStore):
                 raise TurnFenceRequiredError(
                     f"session {claimed[0]!r} has its own claimed turn; the claim it continues "
                     f"cannot write {session_id!r}")
-            return self.db._append_messages_in_transaction(conn, session_id, messages)
+            return self.db._append_messages_in_transaction(conn, session_id, messages,
+                                                            turn_lease_holder=turn_lease_holder,
+                                                            turn_lease_ttl_seconds=turn_lease_ttl_seconds)
 
         return self.db._execute_transcript_write(append_continuation, messages,
                                                  patience_s=self.db._TRANSCRIPT_WRITE_PATIENCE_S)

@@ -70,7 +70,7 @@ function mountRestore() {
   return navigate
 }
 
-it('restores a remembered plugin page whose route registers after the session list arrived', () => {
+it('restores the remembered CHAT, not a plugin page — contributed pages are overlays now', () => {
   setRememberedRoute('/html-gallery', 'default')
   setRememberedSessionId('sess-1', 'default')
   $diskPluginsScanPending.set(true)
@@ -90,8 +90,9 @@ it('restores a remembered plugin page whose route registers after the session li
 
   act(() => $diskPluginsScanPending.set(false))
 
-  expect(navigate).toHaveBeenCalledWith('/html-gallery', { replace: true })
-  expect(getRememberedRoute('default')).toBe('/html-gallery')
+  // A contributed page opens as an overlay card, so it is not a destination
+  // worth booting back into: the remembered chat is what returns.
+  expect(navigate).toHaveBeenCalledWith('/sess-1', { replace: true })
   dispose()
 })
 

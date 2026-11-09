@@ -35,6 +35,7 @@ import { TipHost } from '@/components/tips'
 import { UpdateHoldOverlay } from '@/components/update-hold-overlay'
 import { emitGatewayEvent } from '@/contrib/events'
 import { translateNow } from '@/i18n'
+import { PageOverlayHost } from './page-overlay-host'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
@@ -186,9 +187,9 @@ import {
   usePublishRestartPreviewServer
 } from './wiring-effects'
 
-// Overlay views the controller mounts over the shell — lazy, load on demand.
-// The workspace-route full-page views (skills/messaging/artifacts) are the
-// ChatRoutesSurface's and live in ./surfaces.
+// Dedicated overlay views stay lazy and load on demand. Page destinations
+// (Capabilities, Messaging, Artifacts, and contributed routes) mount in
+// PageOverlayHost instead.
 const AgentsView = lazy(async () => ({ default: (await import('../agents')).AgentsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('../command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('../cron')).CronView }))
@@ -379,6 +380,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     agentsOpen,
     chatOpen,
     closeOverlayToPreviousRoute,
+    pageOverlayPath,
+    pageOverlayView,
     commandCenterInitialSection,
     commandCenterOpen,
     cronOpen,
@@ -1259,9 +1262,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           } as CSSProperties
         }
       >
-        {/* HUD and the popped-out Browser have no titlebar to hang these off —
-            the clusters are `fixed`, so without this they'd float over the
-            surface as orphaned buttons. */}
+        {/* Fixed titlebar clusters are only valid in windows with a titlebar. */}
         {!isHudWindow() && !isBrowserWindow() && (
           <TitlebarControls
             leftTools={leftTitlebarTools}
@@ -1301,9 +1302,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           requestGateway={requestGateway}
         />
       )}
-      {/* One host for every free-tier sign-in entry point (Settings › Billing,
-          the statusbar chip, the first-launch intro). It owns the flow; the
-          entry points only record the intent. */}
+      {/* Centralized owner for sign-in requests from every entry point. */}
       {!isAuxiliaryWindow() && <FreeTierSignInDialog onSelectModel={selectModel} />}
       <ModelPickerOverlay
         gateway={gateway || undefined}
@@ -1350,6 +1349,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           />
         </Suspense>
       )}
+
+      <PageOverlayHost onClose={closeOverlayToPreviousRoute} path={pageOverlayPath} view={pageOverlayView} />
 
       {currentView === 'session-import' && (
         <SessionImportView

@@ -94,3 +94,17 @@ def test_participant_less_row_still_fails_closed_for_a_per_user_caller(db):
     caller = SessionSource(platform=_observed_command_source(111).platform, chat_id="-100",
                            chat_type="group", user_id="222")
     assert asyncio.run(_runner(db)._resume_target_allowed(caller, "legacy_row")) is False
+
+
+def test_live_observe_session_stored_before_the_shared_flag_still_resumes_for_members(db):
+    """An observe group's live session whose origin predates ``shared_session`` (no participant, no
+    flag) stays the group's session for every observed member; a per-user caller is still refused."""
+    legacy = SessionSource(platform=_observed_command_source(111).platform, chat_id="-100", chat_type="group")
+    db.create_session("legacy_live", "telegram", user_id=None, chat_id="-100", chat_type="group",
+                      session_key="agent:main:telegram:group:-100", origin_json=json.dumps(legacy.to_dict()))
+    runner = _runner(db)
+    runner._gateway_session_origin_for_id = lambda _sid: legacy
+    for member in (111, 222):
+        assert asyncio.run(runner._resume_target_allowed(_observed_command_source(member), "legacy_live")) is True
+    per_user = SessionSource(platform=legacy.platform, chat_id="-100", chat_type="group", user_id="222")
+    assert asyncio.run(runner._resume_target_allowed(per_user, "legacy_live")) is False

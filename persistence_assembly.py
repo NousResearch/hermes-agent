@@ -13,6 +13,7 @@ Only this module names a backend package: callers branch on ``capabilities``, ne
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 import threading
@@ -22,6 +23,7 @@ from typing import Any, Callable, Iterator, Mapping, Optional
 
 from persistence import ProfileScope, StorageHealth
 from persistence.core.admin import PHYSICAL_ADMIN, AdminUnsupported, ProfileRepairAdmin, StoreAdmin
+from persistence.core.backend import PersistenceStore
 
 __all__ = [
     "Persistence",
@@ -40,6 +42,9 @@ __all__ = [
 
 _KNOWN_PROVIDERS = ("sqlite",)
 
+# The names a handle forwards to its bound store: the storage interface's attributes and the eager open.
+_FORWARDED = frozenset(inspect.get_annotations(PersistenceStore)) | {"ready"}
+
 _cache_lock = threading.Lock()
 # hermes_home_key -> [shared backend (None until a handle's first use), open handles]
 _shared: dict[str, list[Any]] = {}
@@ -49,6 +54,7 @@ class Persistence:
     """A caller's handle on one profile's store. ``scope`` and ``read_only`` (True for a reader's handle) are known at
     open; ``capabilities``, ``aio``, ``ready`` and every repository attribute are the bound store's, bound on the
     first access to any of them. ``close`` releases this handle's reference once; any of them read after it raises.
+    A name ``PersistenceStore`` does not declare, other than ``ready``, raises ``AttributeError``, open or closed.
     A repository, ``aio`` view or bound method taken before ``close`` belongs to the backend, not to this handle, and
     must not outlive it: the check runs on attribute lookup only. Once the backend's last handle closes, such a view
     refuses too."""
@@ -62,15 +68,18 @@ class Persistence:
         self._lock = threading.Lock()
 
     def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
+        if name not in _FORWARDED:
             raise AttributeError(name)
+        return getattr(self._bound_store(), name)
+
+    def _bound_store(self) -> Any:
+        """The bound store, bound now if this is the first use; raises after ``close``."""
         with self._lock:
             if self._release is None:
                 raise RuntimeError("persistence handle used after close")
             if self._store is None:
                 self._store = self._bind()
-            store = self._store
-        return getattr(store, name)
+            return self._store
 
     def close(self) -> None:
         with self._lock:

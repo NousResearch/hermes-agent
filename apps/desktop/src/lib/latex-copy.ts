@@ -88,7 +88,10 @@ export function selectionTextWithLatex(container: HTMLElement, selection: Select
     const source = texSource(display)
 
     if (source) {
-      display.replaceWith(document.createTextNode(`$$ ${source} $$`))
+      // Display math is block content even when the renderer emits it as a
+      // <span> between paragraphs: keep it on its own lines so the closing
+      // `$$` is never glued to the next text.
+      display.replaceWith(document.createTextNode(`\n\n$$ ${source} $$\n\n`))
     }
   }
 

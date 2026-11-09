@@ -40,6 +40,23 @@ describe('selectionTextWithLatex', () => {
     container.remove()
   })
 
+  // The chat renderer emits display math as a <span class="katex-display">
+  // SIBLING of the surrounding paragraphs, not inside a block element. The
+  // copied source must still stand on its own lines, or the closing `$$` is
+  // glued to the next paragraph (`$$After`).
+  it('keeps display KaTeX on its own block between paragraphs', () => {
+    const container = document.createElement('div')
+    container.innerHTML =
+      '<p>Before</p><span class="katex-display"><span class="katex"><span class="katex-mathml"><math><semantics><annotation encoding="application/x-tex">\\int_0^T f(t)\\,dt</annotation></semantics></math></span><span class="katex-html">visual</span></span></span><p>After</p>'
+    document.body.append(container)
+
+    const paragraphs = container.querySelectorAll('p')
+    const selection = select(container, paragraphs[0].firstChild!, paragraphs[1].firstChild!)
+
+    expect(selectionTextWithLatex(container, selection)).toBe('Before\n\n$$ \\int_0^T f(t)\\,dt $$\n\nAfter')
+    container.remove()
+  })
+
   // Prose, code and currency have no KaTeX to restore, so the serializer must
   // decline and leave Chromium's native copy in charge.
   it('declines selections that contain no rendered math', () => {

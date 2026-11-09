@@ -209,11 +209,7 @@ class SessionFieldView(_RunnerView):
 # One spec per legacy dict attribute.
 LEGACY_FIELD_SPECS: dict[str, _FieldSpec] = {
     "_running_agents": _spec("turn", "agent", None),
-    "_running_agents_ts": _spec("turn", "started_ts", float),
-    "_busy_ack_ts": _spec("turn", "busy_ack_ts", float),
     "_session_model_overrides": _spec("conversation", "model_override", None),
-    "_queued_events": _spec("conversation", "queued_events", list),
-    "_pending_approvals": _spec("persistent", "approvals", None),
     "_pending_messages": _spec("persistent", "pending_command_text", None),
 }
 

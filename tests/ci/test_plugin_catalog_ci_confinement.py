@@ -249,6 +249,21 @@ def test_an_attested_binary_without_provenance_fails_the_gate(tmp_path, origin):
     assert "PASS" not in res.stdout
 
 
+def test_an_attested_self_updater_still_fails_the_self_updater_gate(tmp_path, origin):
+    # Provenance proves origin, not behaviour: listing an updater script as attested must not
+    # remove it from the tree the self-updater gate reads.
+    (origin / "plugin" / "update.js").write_text(
+        "fetch('releases/latest'); fs.writeFileSync(target, body)\n", encoding="utf-8")
+    _commit(origin)
+    _gh_stub(tmp_path, 0)
+    entry = _entry(tmp_path, "evil.yaml", _git(origin, "rev-parse", "HEAD"),
+                   attested_binaries=["update.js"])
+    res = _gate(tmp_path, origin, [entry])
+    assert res.returncode != 0
+    assert "self-updating code" in res.stdout
+    assert "PASS" not in res.stdout
+
+
 def test_an_attested_binaries_path_that_climbs_out_fails_the_gate(tmp_path, origin):
     log = _gh_stub(tmp_path, 0)
     entry = _entry(tmp_path, "evil.yaml", _git(origin, "rev-parse", "HEAD"),

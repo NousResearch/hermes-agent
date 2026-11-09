@@ -143,6 +143,8 @@ def _check_attested(attested: str, plugin_dir: str, repo: str, sha: str) -> None
     # A plugin that needs a native component lists it under attested_binaries (README rule 17).
     # Each must have been built by THIS repo at the pinned commit; a verified one is removed from
     # the clone, so the payload scan that follows ignores it and any other binary still fails.
+    # Provenance says where a file came from, not what it does: every check that reads the
+    # plugin's files (the self-updater grep) must run before this removes any of them.
     owner_repo = repo.removeprefix("https://github.com/").removesuffix(".git").removesuffix("/")
     for path in filter(None, attested.split("\n")):
         binary = f"{plugin_dir}/{path}"
@@ -212,9 +214,9 @@ def validate_entry(entry: str, workroot: str) -> None:
     validate = ["hermes", "plugins", "validate", "--install-deps", plugin_dir]
     if _run(validate, timeout=_VALIDATE_SECONDS).returncode != 0:
         raise EntryRejected("hermes plugins validate failed")
+    _check_self_updater(plugin_dir)
     _check_attested(fields["ATTESTED"], plugin_dir, repo, sha)
     _check_payloads(plugin_dir)
-    _check_self_updater(plugin_dir)
 
 
 def main(argv: list[str] | None = None) -> int:

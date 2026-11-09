@@ -6,7 +6,7 @@
 # core override, desktop surface inside the SDK). No self-updating code (rule 3).
 name: second-hands
 repo: https://github.com/zaxcoraider/hermes-second-hands
-sha: "2abf78a04c569383e97a3d607404312a37836ecb"
+sha: "b9cd7437726b8452ea697d226174fdaf8597ea03"
 description: >-
   Hands-on task coach: a live camera pane in Hermes Desktop watches your hands
   step by step and says STOP (on screen, out loud, in chat) before a costly or
@@ -26,13 +26,13 @@ requires_hermes: ">=0.23.0"
 version: "0.1.0"
 docs_url: https://github.com/zaxcoraider/hermes-second-hands
 title: "Second Hands"
-image: https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/2abf78a04c569383e97a3d607404312a37836ecb/docs/banner.png
+image: https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/2abf78a04c569383e97a3d607404312a37836ecb/docs/pane-stop.png
-  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/2abf78a04c569383e97a3d607404312a37836ecb/docs/chat-card.png
-  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/2abf78a04c569383e97a3d607404312a37836ecb/docs/alert-lithium.png
-  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/2abf78a04c569383e97a3d607404312a37836ecb/docs/report.png
-  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/2abf78a04c569383e97a3d607404312a37836ecb/docs/chat-card-done.png
+  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/pane-stop.png
+  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/chat-card.png
+  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/alert-lithium.png
+  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/report.png
+  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/chat-card-done.png
 platforms: []
 capabilities:
   provides_tools:

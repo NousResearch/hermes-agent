@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
 
-# "No SessionDB pinned" sentinel: lets the resolvers tell "resolve from the active scope" from a
-# deliberate ``store._db = x`` (a SessionDB whose file the handles open, or None for the JSONL fallback).
+# "Nothing pinned" sentinel: lets the resolvers tell "resolve from the active scope" from a deliberate
+# ``store._db = x`` (a store handle the readers use as is, or None for the JSONL fallback).
 _DB_UNPINNED = object()
 
 # Self-documenting sentinel written first into sessions.json; "_" keys are skipped on load.
@@ -143,10 +143,10 @@ class SessionPersistenceMixin:
 
     @property
     def _db(self):
-        """The SessionDB pinned with ``store._db = x``, else None. A pin holds for every later read: the
-        handles open the pinned store's file (tests install one, or disable storage with ``store._db =
-        None``); unpinned it is None, and readers resolve the scope's handle per call so a multiplexed
-        profile's writes reach its own store."""
+        """The store pinned with ``store._db = x``, else None. A pin holds for every later read (tests install
+        one, or disable storage with ``store._db = None``): the readers use a pinned store handle as is, and any
+        other pin gives them no handle; unpinned it is None, and readers resolve the scope's handle per call so a
+        multiplexed profile's writes reach its own store."""
         pinned = self._pinned_db()
         return None if pinned is _DB_UNPINNED else pinned
 

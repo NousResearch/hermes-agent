@@ -13,7 +13,8 @@ from hermes_cli.kanban_db_connect import connect
 
 @pytest.fixture
 def github(tmp_path, monkeypatch):
-    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": []}
+    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": [],
+             "no_required": False, "check_error": False, "hosted_runs": None}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -22,20 +23,26 @@ def github(tmp_path, monkeypatch):
             if self.path == "/graphql":
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
-                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": (
+                        [] if state["no_required"] else [
+                            {"context": "required", "app": {"databaseId": 1}}])}}}}}}
             elif "/rules/branches/" in self.path:
                 value = [[]]
             elif "/check-runs" in self.path:
+                if state["check_error"]:
+                    self.send_error(503)
+                    return
                 run = {"id": 42, "name": "required", "head_sha": sha,
                        "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
                        "html_url": "https://github.com/acme/repo/actions/runs/42"}
                 if state.get("stale"):
                     run["head_sha"] = "b" * 40
-                runs = [] if state.get("missing") else [run]
-                value = [{"total_count": 100 + len(runs), "check_runs": [
-                    {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
-                    for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
+                runs = state["hosted_runs"]
+                if runs is None:
+                    current = [] if state.get("missing") else [run]
+                    runs = [{**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
+                            for i in range(100)] + current
+                value = [{"total_count": len(runs), "check_runs": runs}]
                 if state.get("race"):
                     state["race"]()
                 if state.get("head_change"):
@@ -230,3 +237,53 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+@pytest.mark.platforms("linux")
+def test_pr_completion_accepts_green_hosted_ci_without_required_checks(github):
+    github["no_required"] = True
+    github["hosted_runs"] = [
+        {"id": 100+i, "name": name, "head_sha": github["head"], "app": {"id": 1},
+         "status": "completed", "conclusion": "success",
+         "html_url": f"https://github.com/acme/repo/actions/runs/{100+i}"}
+        for i, name in enumerate(("build", "test", "release", "integration"))
+    ]
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
+        assert kb.complete_task(conn, tid, result="done", metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0])
+        assert receipt["ok"] is True and receipt["required"] == []
+        assert {check["name"] for check in receipt["checks"]} == {"build", "test", "release", "integration"}
+
+@pytest.mark.platforms("linux")
+def test_no_required_checks_distinguishes_lookup_error_from_empty_ci(github):
+    github["no_required"] = True
+    github["check_error"] = True
+    with connect() as conn:
+        tid = kb.create_task(conn, title="lookup error", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done", metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0])
+        assert receipt["classification"] == "infra"
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("case,expected", [("failure","failure"),("pending","pending"),("stale","stale"),("missing","missing")])
+def test_no_required_checks_rejects_bad_or_absent_hosted_ci(github, case, expected):
+    github["no_required"] = True
+    if case == "missing":
+        github["hosted_runs"] = []
+    else:
+        github["hosted_runs"] = [{"id":101,"name":"build",
+            "head_sha":"b"*40 if case == "stale" else github["head"],"app":{"id":1},
+            "status":"in_progress" if case == "pending" else "completed",
+            "conclusion":"failure" if case == "failure" else None if case == "pending" else "success",
+            "html_url":"https://github.com/acme/repo/actions/runs/101"}]
+    with connect() as conn:
+        tid = kb.create_task(conn, title=case, completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done", metadata={"published_pr":"https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0])
+        assert receipt["classification"] == expected

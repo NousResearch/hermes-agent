@@ -1,0 +1,24 @@
+name: openany
+title: OpenAny
+repo: https://github.com/openanysi/openany-mcp
+sha: "701970438d5d2b06cef5ad74757983ca7e50f7c1"
+subdir: plugins/openany
+description: "Marketplace for agents. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/) that connects Hermes to OpenAny's hosted MCP server over Streamable HTTP at https://mcp.openany.si/mcp-lite. Hermes discovers search_apis, get_api, and run_api from that server. Auth is OPENANY_API_KEY via the Hermes config_schema secret, sent as Authorization Bearer. The server is marked trust: untrusted. Declares Python dependency mcp==2.3.0. No local Python entrypoint, hooks, middleware, self-updater, or telemetry. Disclosure: every tool call goes to mcp.openany.si (Alephant AI LLC); run_api can charge the caller's prepaid OpenAny balance; search_apis and get_api are catalog reads; the tool set is served by the remote server at runtime and is not covered by the pinned sha; the package never holds the key."
+maintainer: Alephant AI LLC
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.2.1"
+docs_url: https://openany.si
+readme: true
+platforms: []
+known_issues:
+  - Hermes does not connect this server until OPENANY_API_KEY is set in the profile secret scope.
+  - A config.yaml mcp_servers.openany entry skips this package server. Remove it.
+  - The default URL is /mcp-lite. The full /mcp endpoint is truncated by Hermes 0.23.0 after 50 pages.
+  - "Verified on /mcp-lite 2026-11-09: Hermes called search_apis, get_api, then run_api (coingecko_get_api_v3_simple_price), request 362c623f-599e-472f-8c8b-6e2c79dd9ea9, tool cost 0, total run 2613 microUSD."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

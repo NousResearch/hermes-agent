@@ -151,8 +151,16 @@ class GatewaySessionCommandsMixin:
         if _old_agent is None:
             return
         try:
+            # The teardown fires the memory-provider lifecycle hooks (``flush_pending`` ->
+            # ``on_session_end`` -> ``shutdown``), which read the caller profile from the
+            # context at call time. The reset path runs on the main loop with no scope
+            # installed, so under multiplexing ``on_session_end`` failed closed and the old
+            # session's transcript was never extracted (#151672). ``_run_release_in_profile_scope``
+            # enters the OWNING profile's scope from ``session_key``, exactly like the
+            # shutdown path (run_shutdown) and cache eviction.
             await asyncio.wait_for(
-                self._run_housekeeping_in_executor(self._cleanup_agent_resources, _old_agent),
+                self._run_housekeeping_in_executor(
+                    self._run_release_in_profile_scope, self._cleanup_agent_resources, (_old_agent,), session_key),
                 timeout=_RESET_CLEANUP_TIMEOUT_S)
         except TimeoutError:
             logger.warning(

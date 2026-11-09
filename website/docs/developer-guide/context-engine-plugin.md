@@ -92,12 +92,12 @@ These have sensible defaults in the ABC. Override as needed:
 | `on_session_start(session_id, **kwargs)` | No-op | You need to load persisted state (DAG, DB) |
 | `on_session_end(session_id, messages)` | No-op | You need to flush state, close connections |
 | `on_session_reset()` | Resets token counters | You have per-session state to clear |
-| `update_model(model, context_length, ...)` | Updates context_length + threshold | You need to recalculate budgets on model switch |
+| `update_model(model, context_length, ...)` | Updates context_length + threshold | You need to recalculate budgets on model switch or a live context-window edit |
 | `get_tool_schemas()` | Returns `[]` | Your engine provides agent-callable tools (e.g., `lcm_grep`) |
 | `handle_tool_call(name, args, **kwargs)` | Returns error JSON | You implement tool handlers |
 | `should_compress_preflight(messages)` | Returns `False` | You can do a cheap pre-API-call estimate |
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
-| `select_context(request_messages, *, conversation_messages, incoming_message, budget_tokens)` | Returns `None` (no-op) | You select/route which context enters **this** request (retrieval, topic routing) — see below |
+| `select_context(request_messages, *, conversation_messages, incoming_message, budget_tokens, progress=None, cancelled=None)` | Returns `None` (no-op) | You select/route which context enters **this** request (retrieval, topic routing) — see below |
 | `on_turn_complete(messages, usage=None, **kwargs)` | No-op | You ingest/index/observe the finished turn — see below |
 | `clone_for_agent()` | `copy.deepcopy(self)` | Your engine holds uncopyable state (locks, SQLite/DB connections) — see [Via general plugin system](#via-general-plugin-system) |
 
@@ -110,7 +110,8 @@ engine no longer has to force `should_compress()` to `True` and abuse
 
 ```python
 def select_context(self, request_messages, *, conversation_messages=None,
-                   incoming_message=None, budget_tokens=0):
+                   incoming_message=None, budget_tokens=0,
+                   progress=None, cancelled=None):
     """Choose/replace the context for THIS request, before dispatch.
 
     Return a new message list to use for this one provider call (retrieval,
@@ -130,10 +131,70 @@ def on_turn_complete(self, messages, usage=None, **kwargs):
 
 Contract:
 
-- **No-op by default, fail-open.** Both default to `return None`. A missing hook, an exception, or an invalid return value leaves the request untouched — so a failing engine is never worse than not installing one. The host also identity-checks for the inherited ABC default and skips it entirely, so non-implementing engines (including the built-in compressor) pay no per-request work at all.
+- **No-op by default; ordinary errors fail open.** Both hooks default to `return None`. A missing selection hook, an ordinary exception, or an invalid return value leaves the request untouched. Preparation failures that must stop dispatch use `ContextEngineError`, and cancellation uses `KeyboardInterrupt`; neither falls back to the original request (see below). The host identity-checks for the inherited ABC default and skips it entirely, so non-implementing engines (including the built-in compressor) pay no per-request work at all.
 - **`select_context()` is request-only.** The returned list replaces the messages for a single provider call; persisted history is never written. Returning `None`, `[]`, a non-list, or a list containing non-dicts all fall open to the unmodified request.
 - **Ordering / cache stability.** The hook runs **before** prompt cache-control and every request sanitizer, so (a) a replacement still passes the same validation as any request, and (b) the no-op default leaves the request byte-identical — prompt-cache behaviour is unchanged for non-implementing engines. An engine that replaces the list changes only its own cache prefix. Evaluated per provider request (re-runs on retries).
 - **`on_turn_complete()`** is post-turn observation only; treat `messages` as read-only. **Coverage is best-effort:** it fires from the standard turn-finalization seam. Some abnormal early-return paths in the loop (e.g. a content-policy block or a provider terminal failure) persist and return without routing through finalization, so they do not currently emit this hook — treat it as a best-effort observation for completed turns, not a guaranteed callback for every early exit. Unifying all terminal paths behind one finalization seam is a separate follow-up.
+
+### Preparation progress, interruption, and failures
+
+Selection may need to prepare an index or retrieve context before the provider can run.
+The host offers two optional callbacks:
+
+- **`progress(description: str) -> None`** uses the host's real activity tracker,
+  when available (`None` otherwise). Call it after meaningful work has completed,
+  such as committing a batch of indexed messages. Do not call it for idle polling,
+  repeated status text, or heartbeat timers: those would hide a stalled preparation
+  from the watchdog. Merely receiving either callback does not report activity.
+- **`cancelled() -> bool`** reads the live interrupt flag, not a snapshot taken
+  before selection. Check it during preparation and bounded waits. When it becomes
+  true, raise `KeyboardInterrupt` or a subclass; do not return `None` or raise an
+  ordinary exception, because those permit dispatch with the original history.
+  A host-requested cancellation goes through normal interrupted-turn finalization
+  without a provider call. A `KeyboardInterrupt` with no host interrupt request
+  propagates to the caller.
+
+Import **`ContextEngineError` from `agent.context_engine`** when a failed or timed-out
+preparation makes the unselected request unsafe to send. It subclasses `RuntimeError`,
+but unlike other exceptions from `select_context()`, it stops the turn before provider
+dispatch. The host runs normal finalization and returns `failed=True`,
+`completed=False`, `turn_exit_reason="context_engine_error"`, and a user-visible
+`error`/`final_response`. Give the exception an actionable message describing the
+cause and how to recover. The engine owns preparation deadlines and cancellation
+checks; the host does not add background preparation or synthetic keepalives.
+The result uses the existing local `host_error` failure classification. Error detail
+stays in the response and failure display metadata; persisted history closes with the
+standard display-only failed-turn boundary rather than treating that detail as model output.
+
+Context-engine tools may also raise `KeyboardInterrupt` when a preparation wait is
+cancelled. The tool dispatcher supplies matching cancellation results for the pending
+calls, and the turn finalizes as interrupted instead of abandoning the tool-call sequence.
+
+**Backward compatibility:** engines do not have to accept either callback. The host
+inspects `select_context()` and passes only supported keyword parameters (or all of
+them for `**kwargs`), so both older documented signatures and request-only engines
+remain usable. If the callable's signature cannot be inspected, the host keeps the
+legacy metadata keywords and omits the new callbacks. Engines must tolerate callbacks
+being `None` when called by another host or directly. Engines requiring fail-closed
+preparation must require a Hermes version providing `ContextEngineError`; returning
+an invalid value or using an ordinary exception still intentionally fails open.
+`on_turn_complete()` remains best-effort and fail-open.
+
+### Live configuration and model-window updates
+
+Desktop/TUI live reload applies host controls such as `compression.enabled`, native
+compaction settings, and idle-compaction timing to every engine. Built-in compressor
+policy (`compression.threshold`, `threshold_tokens`, tail protection, pruning,
+target ratio, and per-model thresholds) is applied only to `ContextCompressor`
+instances. A plugin owns its policy; it need not implement private compressor fields
+or methods and those settings are not copied onto it.
+
+A change to the active route's `model.context_length` calls a plugin's public
+`update_model(model, context_length, base_url, api_key, provider, api_mode)` with the
+**existing** model and route. Recompute request/selection budgets there even when the
+model name is unchanged. Removing the pin re-infers the window for that same active
+route. Pins remain scoped to the configured default route, so a session switched to
+another model/provider/endpoint does not inherit an unrelated window.
 
 ### Stable message identity: `message_uid`
 
@@ -335,23 +396,24 @@ The `compression` config block (`compression.threshold`, `compression.protect_la
 
 ## Testing
 
-```python
-from agent.context_engine import ContextEngine
+Exercise the consumer: provider requests, returned turn state, preserved history, and
+engine policy after live configuration changes. A test that only checks a class name,
+private helper call, copied keyword, or log wording does not protect these contracts.
 
-def test_engine_satisfies_abc():
-    engine = YourEngine(context_length=200000)
-    assert isinstance(engine, ContextEngine)
-    assert engine.name == "your-name"
-
-def test_compress_returns_valid_messages():
-    engine = YourEngine(context_length=200000)
-    msgs = [{"role": "user", "content": "hello"}]
-    result = engine.compress(msgs)
-    assert isinstance(result, list)
-    assert all("role" in m for m in result)
+```sh
+scripts/run_tests.sh \
+  tests/agent/test_context_engine_host_callbacks.py \
+  tests/tui_gateway/test_context_engine_plugin_live_reload.py
 ```
 
-See `tests/agent/test_context_engine.py` for the full ABC contract test suite.
+The host tests use a real `AIAgent`, isolated `SessionDB`, and a scripted loopback HTTP
+provider. They cover request-only selection, optional/opaque hook signatures, observable
+activity updates, fail-closed preparation errors, cancellation while selection is blocked,
+and complete tool-call/result pairing. No real provider credentials are needed.
+
+The live-reload tests observe third-party compression decisions and context-window
+transitions; existing built-in compressor tests retain the separate compatibility checks.
+See `tests/agent/test_context_engine.py` for the broader ABC contract suite.
 
 ## Thread safety
 

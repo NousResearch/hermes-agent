@@ -11,7 +11,7 @@ should_compress() / compress() -> on_session_end() at real session boundaries on
 import copy
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.compression_marker import elide_middle
 from agent.redact import redact_sensitive_text
@@ -43,6 +43,10 @@ def automatic_compaction_status_message(engine: Any, *, phase: str, default_mess
     if message is None:
         return None
     return str(message).strip() or None
+
+
+class ContextEngineError(RuntimeError):
+    """Preparation failed: stop this turn rather than reuse unselected history."""
 
 
 class ContextEngine(ABC):
@@ -121,6 +125,7 @@ class ContextEngine(ABC):
     def select_context(
         self, request_messages: list[dict[str, Any]], *, conversation_messages: list[dict[str, Any]] | None = None,
         incoming_message: dict[str, Any] | None = None, budget_tokens: int = 0,
+        progress: Callable[[str], None] | None = None, cancelled: Callable[[], bool] | None = None,
     ) -> list[dict[str, Any]]:
         """Optionally *select* (replace) the context for THIS request, pre-generation.
 
@@ -137,6 +142,15 @@ class ContextEngine(ABC):
         (system prompt + history + ephemeral prefill); ``conversation_messages`` is the
         persisted history for reference only (do not mutate); ``budget_tokens`` is the
         model's context length or 0 if unknown.
+
+        ``progress(description)`` reports real committed work to the host's activity
+        tracker (when available), never polling or synthetic heartbeat ticks.
+        ``cancelled()`` reads the live interrupt flag. Engines should check it during
+        waits and raise ``KeyboardInterrupt`` or a subclass to cancel.
+        Raise ``ContextEngineError`` when preparation fails and the original request
+        must not be sent; it ends the turn with a user-visible error. Other exceptions
+        and invalid return values retain the legacy fail-open behavior.
+        Both callbacks are optional; the host filters keywords for older engines.
         """
         return None
 
@@ -234,7 +248,7 @@ class ContextEngine(ABC):
         self, model: str, context_length: int, base_url: str = "", api_key: str = "",
         provider: str = "", api_mode: str = "",
     ) -> None:
-        """Model switch / fallback: recompute threshold_tokens (override for more).
+        """Model switch / fallback or live context-window edit: recompute threshold_tokens.
 
         Per-model threshold override (longest substring match), else the raw config
         percent — snapshotted ONCE so repeated switches fall back to the configured

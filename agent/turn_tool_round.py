@@ -44,6 +44,7 @@ class ToolRoundVerdict:
     truncated_tool_call_retries: Any
     current_turn_user_idx: Any
     result: Optional[dict[str, Any]] = None
+    interrupted: bool = False
 
 
 def run_tool_round(
@@ -52,6 +53,7 @@ def run_tool_round(
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
     truncated_tool_call_retries: Any, current_turn_user_idx: Any,
+    interrupted: bool = False,
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
@@ -65,7 +67,7 @@ def run_tool_round(
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
             truncated_tool_call_retries=truncated_tool_call_retries,
-            current_turn_user_idx=current_turn_user_idx, result=result,
+            current_turn_user_idx=current_turn_user_idx, result=result, interrupted=interrupted,
         )
 
     if not agent.quiet_mode:
@@ -168,7 +170,10 @@ def run_tool_round(
     from agent.prepared_compaction import maybe_prepare
     maybe_prepare(agent, messages, origin="tool-batch")
 
-    agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    if not _execute_tools(agent, assistant_message, messages, effective_task_id, api_call_count):
+        interrupted = True
+        _turn_exit_reason = "interrupted_during_tool_call"
+        return _verdict("break")
     from hermes_cli.observability.shared_metrics_harness import finish_tool_round
 
     finish_tool_round(agent)
@@ -236,6 +241,17 @@ def run_tool_round(
     # the gateway kills the session before the next activity touch fires (#69559, #69131).
     agent._touch_activity(f"tool results posted, continuing iteration #{api_call_count}")
     return _verdict("continue")
+
+
+def _execute_tools(agent, assistant_message, messages, effective_task_id, api_call_count) -> bool:
+    """Let the existing dispatcher pair cancelled calls before normal turn finalization."""
+    try:
+        agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    except KeyboardInterrupt:
+        if not agent._interrupt_requested:
+            raise
+        return False
+    return True
 
 
 def stage_tool_call_message(

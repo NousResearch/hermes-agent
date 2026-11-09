@@ -389,7 +389,7 @@ def test_a_fold_ignores_a_non_dict_uid_map_on_either_turn():
 def test_a_select_context_selection_is_stripped_before_the_provider():
     """The request copy is stripped BEFORE ``select_context``; an engine that hands back the
     ``conversation_messages`` clones must not put the ids back on the wire."""
-    from agent.conversation_loop import _apply_context_engine_selection
+    from agent.turn_request_assembly import _apply_context_engine_selection
     from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
     class _Selecting(_CapturingEngine):

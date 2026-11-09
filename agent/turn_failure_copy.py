@@ -145,6 +145,7 @@ _EXIT_REASON_FAILURES: tuple[tuple[str, str, bool, bool], ...] = (
     ("repeated_outer_errors", "loop_error", True, True),
     ("error_near_max_iterations", "loop_error", True, True),
     ("context_compression_timeout", "context_overflow", False, True),
+    ("context_engine_error", "host_error", True, True),
     ("context_compression_exhausted", "context_overflow", False, True),
     ("ollama_runtime_context_too_small", "context_overflow", False, True),
     # Advisory: the loop ends these as an incomplete (not failed) turn with an explainer.

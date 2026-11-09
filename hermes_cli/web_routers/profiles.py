@@ -746,21 +746,20 @@ async def create_profile_endpoint(body: ProfileCreate):
     explicit_source = (body.clone_from or "").strip()
     if explicit_source:
         # Clone config/skills/SOUL (or full state when clone_all) from the named source.
-        clone, clone_from, clone_config = True, explicit_source, not body.clone_all
+        clone_from, clone_config = explicit_source, not body.clone_all
     elif body.clone_all:
         # Historical dashboard behavior: clone-all with no explicit source copies default.
-        clone, clone_from, clone_config = True, "default", False
+        clone_from, clone_config = "default", False
     else:
-        clone = body.clone_from_default
-        clone_from = "default" if clone else None
-        clone_config = clone
+        clone_from = "default" if body.clone_from_default else None
+        clone_config = body.clone_from_default
     from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
     provider = (body.provider or "").strip()
     model = (body.model or "").strip()
     request = ProfileCreateRequest(
         name=body.name, clone_from=clone_from, clone_all=body.clone_all, clone_config=clone_config,
         no_skills=body.no_skills, description=body.description, clone_channels=body.clone_channels,
-        soul=body.soul, seed_skills=not clone,
+        soul=body.soul,
         model=model, provider=provider, model_validate_in=get_process_hermes_home(),
         mcp_servers=tuple(body.mcp_servers), keep_skills=tuple(body.keep_skills))
     with _profile_errors("POST /api/profiles failed", not_found=(),

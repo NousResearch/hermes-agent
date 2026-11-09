@@ -38,7 +38,7 @@ class ProfileCreateRequest:
     provider: str = ""
     model_validate_in: Optional[Path] = None  # home whose catalog vouches for the pick (default: the profile)
     mcp_servers: tuple = ()
-    keep_skills: tuple = ()            # non-empty: disable every installed skill not listed
+    keep_skills: tuple[str, ...] = ()            # non-empty: disable every installed skill not listed
     # None = seed only when fresh.
     seed_skills: Optional[bool] = None
 
@@ -171,7 +171,10 @@ def write_profile_model(profile_dir: Path, provider: str, model: str, validate_i
                          base_url: str = "") -> None:
     """Write a validated main-model assignment into ``profile_dir``'s config.yaml (same shape as
     ``POST /api/model/set``). ``validate_in`` is the home whose catalog validates the pick (default
-    ``profile_dir``). ``base_url`` binds a bare ``custom``/``local`` pick; other providers ignore it."""
+    ``profile_dir``); profile create passes the dashboard's home, because the picker offered that catalog
+    and a just-created profile has no credentials yet. Both spans bind a secret scope: without one
+    ``switch_model``'s key probe fails closed and reports the provider unconnected (#114676).
+    ``base_url`` binds a bare ``custom``/``local`` pick; other providers ignore it."""
     from hermes_cli.config import load_config, save_config
     from hermes_cli.config_backend import refusing_locked_omissions
     from hermes_cli.web_server_config import (
@@ -207,7 +210,9 @@ def write_profile_mcp_servers(profile_dir: Path, servers) -> int:
                 name, entry, bearer_token = _normalize_mcp_server_create(server)
             except ValueError as exc:
                 display_name = (server.name or "").strip() or "<unnamed>"
-                logger.warning("Profile-create: skipping MCP server '%s': %s", display_name, exc)
+                # The dashboard's logger: hermes_logging routes it to gui.log / `hermes logs --component gui`.
+                logging.getLogger("hermes_cli.web_server").warning(
+                    "Profile-create: skipping MCP server '%s': %s", display_name, exc)
                 continue
             if bearer_token is not None:
                 entry["headers"] = _save_bearer_auth_token(name, bearer_token)
@@ -219,11 +224,6 @@ def write_profile_mcp_servers(profile_dir: Path, servers) -> int:
             cfg.pop("mcp_servers", None)
             save_config(cfg)
     return written
-
-
-def _profile_scope(path: Path):
-    from tui_gateway.launch_profile_policy import profile_config_scope
-    return profile_config_scope(path)
 
 
 def _try(fn: Callable[[], Any], default: Any) -> Any:
@@ -244,23 +244,23 @@ def _mirror_secret(path: Path, launch_home: Path, name: str, wanted) -> bool:
     return True
 
 
-def _env_has_content(env_path: Path) -> bool:
-    lines = env_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-    return any(s and not s.startswith("#") for s in map(str.strip, lines))
-
-
 def _env_over_stub(src: Path, dst: Path) -> bool:
-    return _env_has_content(src) and not _try(lambda: _env_has_content(dst), False)
+    """Mirror .env only over the seeded comment-only stub, never over a clone's own secrets."""
+    from agent.secret_scope import load_env_file
+    return bool(load_env_file(src)) and not load_env_file(dst)
 
 
 def _mirror_voice_sections(path: Path) -> bool:
     from hermes_cli.config import read_user_config_raw, save_config
     from hermes_cli.web_server_profiles import _CONFIG_MUTATION_LOCK
+    from tui_gateway.launch_profile_policy import profile_config_scope
+    # RAW reads: the launch side keeps its ${VAR} refs (never its secrets), and load_config() on the
+    # profile side would merge DEFAULT_CONFIG so every section would look present.
     launch_raw = read_user_config_raw()
     sections = {k: launch_raw[k] for k in ("stt", "tts", "voice") if launch_raw.get(k)}
     if not sections:
         return False
-    with _profile_scope(path), _CONFIG_MUTATION_LOCK:
+    with profile_config_scope(path), _CONFIG_MUTATION_LOCK:
         profile_raw = read_user_config_raw() or {}
         missing = {k: v for k, v in sections.items() if k not in profile_raw}
         if missing:
@@ -268,28 +268,31 @@ def _mirror_voice_sections(path: Path) -> bool:
     return bool(missing)
 
 
-
 def inherit_launch_model(path: Path) -> bool:
     """Pin the launch model.provider/default into ``path`` unless its model section already has both."""
     from hermes_cli.config import load_config_readonly, read_user_config_raw, save_config
     from hermes_cli.web_server_profiles import _CONFIG_MUTATION_LOCK
     from hermes_cli.profile_model_seed import launch_model_seed, merge_endpoint_seed
-    with _profile_scope(path):
+    from tui_gateway.launch_profile_policy import profile_config_scope
+    with profile_config_scope(path):
         dst_model = (read_user_config_raw() or {}).get("model") or {}
     if dst_model.get("provider") and dst_model.get("default"):
         return False
     model_cfg = (load_config_readonly() or {}).get("model") or {}
     if not (model_cfg.get("provider") and model_cfg.get("default")):
         return False
+    # The endpoint seed goes in BEFORE the pin: the pin validates inside the new profile, which rejects a
+    # provider it has no definition for (#101885).
     seed = launch_model_seed(read_user_config_raw())
     if seed.get("providers") or seed.get("custom_providers"):
-        with _profile_scope(path), _CONFIG_MUTATION_LOCK:
+        with profile_config_scope(path), _CONFIG_MUTATION_LOCK:
             save_config(merge_endpoint_seed(read_user_config_raw(), seed))
+    # Validation needs the expanded base_url; the profile then gets back the launch file's ${VAR} spelling.
     write_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]),
                          base_url=str(model_cfg.get("base_url") or ""))
     raw_url = ((read_user_config_raw() or {}).get("model") or {}).get("base_url")
     if isinstance(raw_url, str) and "${" in raw_url:
-        with _profile_scope(path), _CONFIG_MUTATION_LOCK:
+        with profile_config_scope(path), _CONFIG_MUTATION_LOCK:
             cfg = read_user_config_raw() or {}
             if isinstance(cfg.get("model"), dict) and cfg["model"].get("base_url") == model_cfg.get("base_url"):
                 cfg["model"]["base_url"] = raw_url
@@ -305,14 +308,16 @@ def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_aut
     launch_home = get_hermes_home()
     mirrored["env"] = _try(lambda: _mirror_secret(path, launch_home, ".env", _env_over_stub), False)
     if mirrored["env"] and not clone_channels:
+        # Keep provider/tool keys; the launch bot's tokens would make the new bot collide with it.
         def _strip_channels():
             from hermes_cli.profile_channels import strip_channel_env_file
             strip_channel_env_file(path / ".env")
         _try(_strip_channels, None)
-    if not share_auth:
+    if not share_auth:  # a copied auth.json forks token state: a refresh in either store strands the other
         mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
                                                        lambda src, dst: not dst.exists()), False)
         if mirrored["auth"]:
+            # Single-use OAuth grants stay in the root store; the profile reads them via the pool fallback.
             def _strip_grants():
                 from hermes_cli.auth import strip_cloned_single_use_oauth_grants
                 strip_cloned_single_use_oauth_grants(path)

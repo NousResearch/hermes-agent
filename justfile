@@ -202,3 +202,9 @@ ruff +files:
 [positional-arguments]
 eslint +files:
     pnpm exec eslint "$@"
+
+# Rewrite imports and string targets for a move commit (libcst comes from a side environment)
+[group('move')]
+[positional-arguments]
+move-rewrite *args:
+    scripts/hermes-python -m scripts.ci.python_packages libcst==1.9.0 -- scripts/move/rewrite_imports.py "$@"

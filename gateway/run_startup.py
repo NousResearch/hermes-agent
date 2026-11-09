@@ -22,6 +22,7 @@ from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.relay.obligation_replay import relay_obligation_adapter, relay_platform_ready, send_relay_obligation
 from gateway.session import SessionSource, build_session_key
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
@@ -383,9 +384,12 @@ class GatewayStartupMixin:
             _profile_adapters = getattr(self, "_profile_adapters", None) or {}
             _pval = lambda p: getattr(p, "value", str(p))
             _deliverable_targets = {(_pval(p), "default") for p in self.adapters}
+            _relay_targets = {p.value for p in Platform if relay_obligation_adapter(self, p) is not None}
+            _deliverable_targets.update((p, "default") for p in _relay_targets)
             # Legacy rows (no adapter_profile) are unambiguous only without multiplexing; else fail closed.
             if not _profile_adapters:
                 _deliverable_targets.update((_pval(p), None) for p in self.adapters)
+                _deliverable_targets.update((p, None) for p in _relay_targets)
             for _profile, _adapters in _profile_adapters.items():
                 _deliverable_targets.update((_pval(p), _profile) for p in _adapters)
             claimed = await asyncio.to_thread(
@@ -470,7 +474,7 @@ class GatewayStartupMixin:
         for row in await asyncio.to_thread(pending_retries):
             self._schedule_flood_redelivery(row["platform"], profile=row["profile"])
 
-    async def _redeliver_claimed_obligations(self, claimed: list) -> int:
+    async def _redeliver_claimed_obligations(self, claimed: list, *, relay_adapter=None) -> int:
         """Redeliver final responses for claimed rows (network half of the split): runs inside the
         bounded boot-send task, so a flood-limited send can be abandoned by the restore gate without
         reopening the turn-replay window. Returns the redelivered count."""
@@ -487,7 +491,7 @@ class GatewayStartupMixin:
                 # Adopted at boot inside its flood wait: its resume flag is cleared with the others, and
                 # the timer armed below sends it once the platform's deadline has passed.
                 continue
-            adapter = await self._obligation_adapter(row)
+            adapter = await self._obligation_adapter(row, relay_adapter=relay_adapter)
             if adapter is None:
                 continue
             content = row["content"]
@@ -495,7 +499,10 @@ class GatewayStartupMixin:
                 content = row.get("marker", RECOVERED_MARKER) + content
             metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
             try:
-                result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
+                if getattr(adapter, "platform", None) is Platform.RELAY and row["platform"] != "relay":
+                    result = await send_relay_obligation(self, adapter, row, content, metadata)
+                else:
+                    result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
             except Exception as send_err:
                 logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
                 result = None
@@ -517,7 +524,7 @@ class GatewayStartupMixin:
             await self._arm_flood_timers_for_waiting_rows()
         return redelivered
 
-    async def _obligation_adapter(self, row: dict):
+    async def _obligation_adapter(self, row: dict, *, relay_adapter=None):
         """Resolve the adapter for a claimed ledger row, or None when it cannot be delivered now."""
         try:
             platform = Platform(row["platform"])
@@ -529,20 +536,30 @@ class GatewayStartupMixin:
         else:
             # Startup rows preserve the historical default-adapter route.
             adapter = self.adapters.get(platform)
+        if adapter is None:
+            adapter = relay_obligation_adapter(self, platform, row.get("profile"))
+        if relay_adapter is not None and adapter is not relay_adapter:
+            adapter = None
+        relay_unready = (
+            getattr(adapter, "platform", None) is Platform.RELAY and platform is not Platform.RELAY
+            and not relay_platform_ready(adapter, platform)
+        )
         # A claim (runtime or boot) whose adapter vanished before dispatch was never sent: release it
         # without spending an attempt so the reconnect sweep, which only takes 'failed' rows, delivers it
         # instead of it waiting 'attempting' for the next restart.
         # Only a flood row keeps its error (the platform's wait must be honoured); any other row
         # becomes reconnect-only, or the redelivery timer would claim and release it until the
         # adapter is back.
-        if adapter is None:
+        if adapter is None or relay_unready:
             from gateway.delivery_ledger import is_flood_error
 
             last_error = row.get("last_error")
+            reconnect_error = "relay transport not connected" if relay_unready else "send_path_degraded"
             await self._release_runtime_claim_quiet(
                 row["obligation_id"], "failed to release undispatched runtime obligation %s",
-                error=last_error if is_flood_error(last_error) else "send_path_degraded",
+                error=last_error if is_flood_error(last_error) else reconnect_error,
             )
+            return None
         return adapter
 
     async def _redeliver_pending_obligations(self) -> int:
@@ -551,7 +568,7 @@ class GatewayStartupMixin:
         return await self._redeliver_claimed_obligations(await self._claim_pending_obligations())
 
     async def _redeliver_failed_obligations_for_platform(
-        self, platform: Platform, *, profile: Optional[str] = None,
+        self, platform: Platform, *, profile: Optional[str] = None, relay_adapter=None,
     ) -> int:
         """Replay one adapter identity's transient failures after reconnect: the startup sweep cannot
         claim live-owner rows, so ``send_path_degraded`` responses would otherwise stay failed until
@@ -560,7 +577,8 @@ class GatewayStartupMixin:
             from gateway.delivery_ledger import ledger_enabled, sweep_failed_for_runtime
             if not await asyncio.to_thread(ledger_enabled):
                 return 0
-            claimed = await asyncio.to_thread(sweep_failed_for_runtime, platform.value, profile=profile)
+            claimed = await asyncio.to_thread(sweep_failed_for_runtime, platform.value, profile=profile,
+                                              relay_reconnected=relay_adapter is not None)
         except Exception:
             logger.debug(
                 "runtime delivery ledger sweep failed after %s reconnect", platform.value, exc_info=True,
@@ -577,7 +595,7 @@ class GatewayStartupMixin:
                     row["obligation_id"], "failed to release runtime delivery claim %s",
                     error=row.get("last_error") or "send_path_degraded",
                 )
-        return await self._redeliver_claimed_obligations(sendable)
+        return await self._redeliver_claimed_obligations(sendable, relay_adapter=relay_adapter)
 
     def _resume_pending_candidates(self, platform=None) -> Optional[list]:
         """Snapshot resume-pending entries (optionally scoped to ``platform``); None when

@@ -392,6 +392,7 @@ class WebSocketRelayTransport:
         self._ws: Any = None
         self._reader: Optional[asyncio.Task[None]] = None
         self._inbound: Optional[InboundHandler] = None
+        self._on_platform_ready: Optional[Callable[[str], None]] = None
         self._inbound_acks: set[asyncio.Task[None]] = set()  # ACKs of off-reader admissions
         self._interrupt_inbound_handler: Any = None
         self._passthrough_handler: Any = None
@@ -574,6 +575,13 @@ class WebSocketRelayTransport:
 
     def set_inbound_handler(self, handler: InboundHandler) -> None:
         self._inbound = handler
+
+    def set_platform_ready_handler(self, handler: Callable[[str], None]) -> None:
+        """Notify once per acknowledged platform on each connection."""
+        self._on_platform_ready = handler
+
+    def is_platform_ready(self, platform: str) -> bool:
+        return not self._closing and self._ws is not None and platform in self._descriptors_by_platform
 
     def set_interrupt_inbound_handler(self, handler: Any) -> None:
         """Register the callback for connector->gateway interrupt_inbound frames."""
@@ -956,6 +964,8 @@ class WebSocketRelayTransport:
 
     async def _on_descriptor(self, frame: dict[str, Any]) -> None:
         descriptor = CapabilityDescriptor.from_json(json.dumps(frame.get("descriptor", {})))
+        platform = descriptor.platform
+        newly_ready = self._bot_id_for(platform) is not None and platform not in self._descriptors_by_platform
         # One descriptor per hello'd identity, keyed by platform for per-chat caps.
         if descriptor.platform:
             self._descriptors_by_platform[descriptor.platform] = descriptor
@@ -965,6 +975,11 @@ class WebSocketRelayTransport:
             self._descriptor = descriptor
         # Upgrade auth passed at least once: a LATER 4401 is a revocation.
         self._handshake_succeeded = True
+        if newly_ready and self._on_platform_ready is not None and not self._closing:
+            try:
+                self._on_platform_ready(platform)
+            except Exception:
+                logger.exception("relay platform-ready handler failed for %s", platform)
         if self._descriptor_ready is not None and not self._descriptor_ready.done():
             self._descriptor_ready.set_result(descriptor)
 

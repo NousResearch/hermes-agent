@@ -447,7 +447,8 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
 
 
 def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
-                             profile: Optional[str] = None) -> list[dict[str, Any]]:
+                             profile: Optional[str] = None,
+                             relay_reconnected: bool = False) -> list[dict[str, Any]]:
     """Claim this process's failed rows that are due for another send, for one adapter.
 
     ``profile`` scopes multiplexed gateways to the bot identity that owned the failed send (``None`` =
@@ -476,6 +477,10 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
             if adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started:
                 continue
             due = retry_not_before(updated_at, last_error, attempts)
+            if relay_reconnected and last_error == "relay transport not connected":
+                # This error was returned before any frame went out. The new
+                # handshake is the recovery signal, even inside the backoff.
+                due = now
             if due is None:
                 continue
             owner_guard = (now, oid, owner_pid, owner_started_at)

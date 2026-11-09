@@ -4,7 +4,7 @@
 # at this exact commit against a fresh clone.
 name: privacy-shield
 repo: https://github.com/MOTHR/hermes-security-suite
-sha: 8c4c7d794161adaf34ee391eaa1ab79dadcd5295
+sha: 968f7e4db238b1a5ac5125b25d52cd222ea4f6c6
 subdir: "privacy-shield"
 description: "Privacy-Shield — tokenizes personal data (PII) in LLM output before sending it to cloud providers, with encrypted AES-256-GCM mapping and whitelisted restore. Modes: off / audit / restore. Configurable via Desktop-Controls or YAML."
 maintainer: MOTHR

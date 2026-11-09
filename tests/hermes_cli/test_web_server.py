@@ -4801,7 +4801,7 @@ class TestDashboardPluginManifestExtensions:
 # monkeypatch that hook.
 # ---------------------------------------------------------------------------
 
-from hermes_cli import main_tui_launch
+from hermes_cli import main as _main_mod, main_tui_launch
 
 
 skip_on_windows = pytest.mark.skipif(
@@ -4835,8 +4835,8 @@ class TestPtyWebSocket:
         return f"/api/pty?{urlencode(q)}"
 
 
-    def test_tui_python_command_uses_child_path(self, tmp_path):
-        """Bare Python commands are resolved from the TUI child's PATH."""
+    def test_tui_python_env_is_this_process_not_the_shell(self, tmp_path):
+        """A dev shell's interpreter and tree never reach the TUI's gateway child."""
 
         command = f"hermes-review-python{Path(sys.executable).suffix}"
         bin_dir = tmp_path / "bin"
@@ -4846,14 +4846,14 @@ class TestPtyWebSocket:
         # the venv (tmpfs /tmp vs disk home) where hard links raise EXDEV.
         shutil.copy2(sys.executable, executable)
         env = {
-            "HERMES_CWD": str(tmp_path),
-            "HERMES_PYTHON": command,
+            "HERMES_CWD": str(tmp_path), "HERMES_PYTHON_SRC_ROOT": str(tmp_path),
+            "HERMES_PYTHON": str(executable),
             "PATH": str(bin_dir),
         }
 
         main_tui_launch._apply_tui_python_env(env)
 
-        assert env["HERMES_PYTHON"] == command
+        assert (env["HERMES_PYTHON"], env["HERMES_PYTHON_SRC_ROOT"]) == (sys.executable, str(_main_mod.PROJECT_ROOT))
 
 
     def test_unavailable_platform_closes_with_message(self, monkeypatch):

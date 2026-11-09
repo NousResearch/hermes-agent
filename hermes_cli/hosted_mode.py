@@ -99,6 +99,17 @@ def is_hosted() -> bool:
     return cached
 
 
+def hosted_verdict_frozen() -> Optional[bool]:
+    """The frozen boot verdict — ``True``/``False`` once this process's kind is decided,
+    ``None`` before the first :func:`is_hosted` call resolves it. Readers that must never
+    trigger (or re-enter) a config read — the bundled-plugins root among them — consult this
+    instead of :func:`is_hosted`: until the boot's first read decides the process they keep
+    the local behaviour, and a hosted verdict freezes before the preflight lets any plugin
+    code load."""
+    verdict = _VERDICT.get("hosted")
+    return verdict if isinstance(verdict, bool) else None
+
+
 # --------------------------------------------------------------------------------------------------
 # The boot refusals. Each names one condition and its fix; the boot stops at the first one.
 
@@ -258,9 +269,14 @@ def _refuse_uncurated_inprocess_code(config: Mapping[str, Any]) -> None:
                 "disabled via config" in gate.error or "not enabled in config" in gate.error
                 or gate.error == IN_BOTH_LISTS):
             continue  # config never runs it
-        # An entry point has no directory to judge: it is a package the operator installed into
-        # the image's environment. Everything else answers the one rule.
-        refusal = hosted_inprocess_refusal(None if manifest.source == "entrypoint" else manifest.path)
+        # The one rule answers entry points and directories alike: an entry point's module is
+        # judged by where its file resolves to, without importing it — never by the
+        # distribution's metadata alone.
+        if manifest.source == "entrypoint":
+            refusal = hosted_inprocess_refusal(
+                None, module=str(manifest.path or "").partition(":")[0].strip())
+        else:
+            refusal = hosted_inprocess_refusal(manifest.path)
         if refusal:
             refusals.append(f"plugin {manifest.name!r} would load in this process: {refusal}")
     if refusals:

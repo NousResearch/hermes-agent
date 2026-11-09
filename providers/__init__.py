@@ -621,19 +621,19 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     """Import a single plugin directory so it self-registers.
 
     ``source`` is "bundled" or "user"; it is recorded per registered profile (``_SOURCES``).
+    In a hosted process the one provenance rule judges EVERY source alike, before import: the
+    bundled label is not provenance either — a symlink planted in the bundled tree whose
+    realpath leaves it is refused exactly like a home directory.
     """
     if not (plugin_dir / "__init__.py").exists():
         return
+    from plugins.plugin_loader import hosted_inprocess_refusal
+    refusal = hosted_inprocess_refusal(plugin_dir)
+    if refusal:
+        logger.error("Provider plugin %s: %s", plugin_dir.name, refusal)
+        _note_load_result(plugin_dir, RuntimeError(refusal))
+        return
     if source != "bundled":
-        from plugins.plugin_loader import hosted_inprocess_refusal
-        refusal = hosted_inprocess_refusal(plugin_dir)
-        if refusal:
-            # The one hosted provenance rule: nothing under the deployment home loads
-            # in-process, whatever its install record says. A hosted deployment's
-            # providers ship bundled with Hermes or as installed packages (entry points).
-            logger.error("Provider plugin %s: %s", plugin_dir.name, refusal)
-            _note_load_result(plugin_dir, RuntimeError(refusal))
-            return
         from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
         if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
             _import_hosted_plugin_dir(plugin_dir, source, _user_module_name(plugin_dir, home_key))
@@ -860,17 +860,25 @@ def bundled_profiles() -> list[ProviderProfile]:
     """Every bundled provider profile, one per name (the last registration wins, in discovery
     order), WITHOUT config and without touching the registry: each bundled plugin is executed into
     a private module whose registrations are collected. For descriptive catalogs, which must not
-    depend on config or on discovery having run."""
+    depend on config or on discovery having run. A hosted process answers the one provenance
+    rule for each child first: a symlink planted in the bundled tree whose realpath leaves it is
+    refused, never executed, exactly as provider discovery refuses it."""
     from agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():  # a safe worker loads no plugin code, bundled included (as list_providers)
         return []
+    from plugins.plugin_loader import hosted_inprocess_refusal
+
     collected: list[ProviderProfile] = []
     token = _COLLECT.set(collected)
     try:
         for child in sorted(_BUNDLED_PLUGINS_DIR.iterdir()) if _BUNDLED_PLUGINS_DIR.is_dir() else ():
             init = child / "__init__.py"
             if not child.is_dir() or child.name.startswith(("_", ".")) or not init.exists():
+                continue
+            refusal = hosted_inprocess_refusal(child)
+            if refusal:
+                logger.error("Provider plugin %s: %s", child.name, refusal)
                 continue
             name = f"_hermes_provider_catalog_{child.name.replace('-', '_')}"
             spec = importlib.util.spec_from_file_location(name, init, submodule_search_locations=[str(child)])

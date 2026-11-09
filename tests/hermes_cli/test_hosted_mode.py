@@ -9,8 +9,11 @@ and a hosted scope in which the legacy profile setters and ``bind_profile_scope`
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
+import site
+import sys
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
@@ -495,6 +498,78 @@ def test_a_symlink_in_the_bundled_dir_is_not_a_bundled_plugin(clean_hosted, tmp_
     _write_config(config)
     with pytest.raises(HostedBootRefused, match="impostor"):
         boot(env={"PATH": "/usr/bin"})
+
+
+def test_an_entry_point_whose_module_resolves_into_the_home_refuses_hosted_boot(clean_hosted, tmp_path):
+    """A distribution planted where the process discovers entry points — its metadata in the
+    home, discovered through a ``.pth``-added path — passes on its metadata alone no longer:
+    the preflight judges the file the entry point's module resolves to, WITHOUT importing it,
+    and refuses before the home's code can run."""
+    home = tmp_path / "home"
+    src = home / "src"
+    src.mkdir(parents=True)
+    marker = home / "executed"
+    (src / "rv3_home_entry.py").write_text(
+        f'from pathlib import Path\nPath({str(marker)!r}).write_text("home code ran")\n\n\ndef register(ctx):\n    pass\n',
+        encoding="utf-8")
+    site_dir = tmp_path / "image-site-packages"
+    site_dir.mkdir()
+    dist = src / "rv3_home_entry-1.0.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text("Name: rv3-home-entry\nVersion: 1.0\n", encoding="utf-8")
+    (dist / "entry_points.txt").write_text(
+        "[hermes_agent.plugins]\nrv3-home-entry = rv3_home_entry:register\n", encoding="utf-8")
+    (site_dir / "rv3.pth").write_text(f"{src}\n", encoding="utf-8")
+    before_path = sys.path[:]
+    try:
+        site.addsitedir(str(site_dir))
+        importlib.invalidate_caches()
+        config = _clean_hosted_config() | {"plugins": {"enabled": ["stub-sandbox", "rv3-home-entry"]}}
+        _write_config(config)
+        with pytest.raises(HostedBootRefused, match="rv3-home-entry"):
+            boot(config=config, env={"PATH": "/usr/bin"})
+        assert not marker.exists()  # the home's code never ran
+    finally:
+        sys.path[:] = before_path
+        sys.modules.pop("rv3_home_entry", None)
+        importlib.invalidate_caches()
+
+
+def test_an_entry_point_of_a_package_in_the_images_environment_loads_after_the_boot(clean_hosted, tmp_path, monkeypatch):
+    """The same preflight, image side: an installed package's entry point — its module resolves
+    inside this interpreter's own site-packages, where the image's packages are installed —
+    passes the boot's provenance check and loads in the hosted process, exactly as before."""
+    import sysconfig
+
+    site_dir = tmp_path / "image-site-packages"
+    site_dir.mkdir()
+    marker = tmp_path / "executed"
+    (site_dir / "rv3_image_entry.py").write_text(
+        f'from pathlib import Path\nPath({str(marker)!r}).write_text("image code ran")\n\n\ndef register(ctx):\n    pass\n',
+        encoding="utf-8")
+    dist = site_dir / "rv3_image_entry-1.0.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text("Name: rv3-image-entry\nVersion: 1.0\n", encoding="utf-8")
+    (dist / "entry_points.txt").write_text(
+        "[hermes_agent.plugins]\nrv3-image-entry = rv3_image_entry:register\n", encoding="utf-8")
+    real_get_paths = sysconfig.get_paths
+    monkeypatch.setattr(sysconfig, "get_paths", lambda *a, **k: {
+        **real_get_paths(), "purelib": str(site_dir), "platlib": str(site_dir)})
+    before_path = sys.path[:]
+    try:
+        site.addsitedir(str(site_dir))
+        importlib.invalidate_caches()
+        config = _clean_hosted_config() | {"plugins": {"enabled": ["stub-sandbox", "rv3-image-entry"]}}
+        _write_config(config)
+        boot(config=config, env={"PATH": "/usr/bin"})  # the boot's provenance check passes it
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins(force=True)  # the fixture's boot already ran discovery once
+        assert marker.read_text(encoding="utf-8") == "image code ran"  # discovery loaded it
+    finally:
+        sys.path[:] = before_path
+        sys.modules.pop("rv3_image_entry", None)
+        importlib.invalidate_caches()
 
 
 def test_no_identity_verifier_refuses_hosted_boot(clean_hosted):

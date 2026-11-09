@@ -68,15 +68,9 @@ from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
 )
-
-
-def get_bundled_plugins_dir() -> Path:
-    """Bundled ``plugins/`` dir: ``HERMES_BUNDLED_PLUGINS`` (Nix wrapper / packaged installs, read-only
-    store paths) first, else the in-repo path."""
-    env_override = os.getenv("HERMES_BUNDLED_PLUGINS")
-    if env_override:
-        return Path(env_override)
-    return Path(__file__).resolve().parent.parent / "plugins"
+# The bundled tree lives in a topical sibling (the facade is over its file-size cap); the
+# re-export keeps ``hermes_cli.plugins.get_bundled_plugins_dir`` the one import seam.
+from hermes_cli.plugins_bundled import get_bundled_plugins_dir
 
 
 class PluginToolOverrideError(PermissionError):

@@ -114,3 +114,48 @@ def test_bundled_providers_still_load_in_a_hosted_process(hermes_home, monkeypat
     from providers import get_provider_profile
 
     assert get_provider_profile("openrouter") is not None
+
+
+def test_a_symlink_planted_in_the_bundled_provider_tree_is_refused_in_a_hosted_process(
+        hermes_home, monkeypatch, caplog):
+    """The bundled label is not provenance either: a symlink in the tree bundled with Hermes
+    whose realpath leaves that tree — targeting the deployment home — is refused by the same
+    one rule as a home directory, before import, whichever bundled executor reaches it
+    (provider discovery and the descriptive catalog alike). Its code never runs."""
+    from hermes_cli import hosted_mode
+    import hermes_cli.plugins as plugins_mod
+    import providers
+
+    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+    home_plugin = hermes_home / "plugins" / "model-providers" / "symlinked-home-provider"
+    home_plugin.mkdir(parents=True)
+    marker = hermes_home / "executed"
+    (home_plugin / "__init__.py").write_text(
+        f'from pathlib import Path\nPath({str(marker)!r}).write_text("home code ran", encoding="utf-8")\n'
+        + _PROFILE_SOURCE.format(name="symlinked-home-provider"),
+        encoding="utf-8")
+    # The image's bundled tree, isolated for the test (planting the symlink in the checkout's
+    # own tree would race every parallel test process that discovers providers).
+    image_root = hermes_home / "image-tree" / "plugins"
+    bundled = image_root / "model-providers"
+    bundled.mkdir(parents=True)
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: image_root)
+    monkeypatch.setattr(providers, "_BUNDLED_PLUGINS_DIR", bundled)
+    link = bundled / "rv3-symlink-probe"
+    link.symlink_to(home_plugin, target_is_directory=True)
+    module_name = f"plugins.model_providers.{link.name.replace('-', '_')}"
+    catalog_name = f"_hermes_provider_catalog_{link.name.replace('-', '_')}"
+    try:
+        with caplog.at_level("ERROR"):
+            providers._import_plugin_dir(link, "bundled")
+        assert not marker.exists()  # the home's code never ran
+        assert module_name not in sys.modules
+        assert "deployment image" in caplog.text
+        # the descriptive-catalog executor answers the same rule
+        assert not [p for p in providers.bundled_profiles() if p.name == "symlinked-home-provider"]
+        assert not marker.exists()
+        assert catalog_name not in sys.modules
+    finally:
+        link.unlink(missing_ok=True)
+        sys.modules.pop(module_name, None)
+        sys.modules.pop(catalog_name, None)

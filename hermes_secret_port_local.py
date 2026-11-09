@@ -65,8 +65,12 @@ class LocalSecretStore(SecretStore):
 
     def _require_agent_level(self, level: str) -> None:
         if level not in LEVELS:
-            raise ValueError(f"not a secret level: {level!r}")
+            # The caller's text never rides in a port-authored message and never survives in
+            # a frame this refusal's traceback keeps: the valid levels are all the error names.
+            del level
+            raise ValueError("not a secret level; the secret levels are 'agent', 'owner' and 'tenant'")
         if level != "agent":
+            del level
             raise SecretLevelRefused("the local secret store holds the agent level only")
 
     def _resolved(self) -> dict[str, str]:
@@ -90,6 +94,8 @@ class LocalSecretStore(SecretStore):
             # Every check and validation that can fail — the pin, the level, today's write
             # lock — runs before the value is bound in any frame below this one: each keeps
             # the message this port wrote for it, and no frame it unwound ever held the value.
+            # The level is caller-supplied text that can alias the value, so it leaves this
+            # frame before any error does too.
             self._pin(administering=True)
             self._require_agent_level(level)
             from hermes_cli.config import require_env_writable
@@ -103,6 +109,7 @@ class LocalSecretStore(SecretStore):
             except BaseException as exc:  # health: allow BLE001 -- the fresh error below is all that survives
                 failure = fresh_write_error(exc)
         del value
+        del level
         if refusal is not None:
             raise refusal
         if failure is not None:
@@ -121,10 +128,21 @@ class LocalSecretStore(SecretStore):
         save_env_value(name, value)
 
     def delete(self, name: str, *, level: str) -> bool:
-        self._pin(administering=True)
-        self._require_agent_level(level)
-        from hermes_cli.config import remove_env_value, require_env_writable
-        require_env_writable(name, "remove")
+        # As set: the level is caller-supplied text that can alias a value, so it leaves this
+        # frame before any error does, and the port's own refusal keeps the message the port
+        # wrote for it.
+        refusal = None
+        try:
+            self._pin(administering=True)
+            self._require_agent_level(level)
+            from hermes_cli.config import require_env_writable
+            require_env_writable(name, "remove")
+        except BaseException as exc:  # health: allow BLE001 -- re-raised below
+            refusal = exc
+        del level
+        if refusal is not None:
+            raise refusal
+        from hermes_cli.config import remove_env_value
         return remove_env_value(name)
 
     def get_auth(self, provider: str) -> Optional[dict[str, Any]]:

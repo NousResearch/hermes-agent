@@ -891,3 +891,29 @@ def test_rich_message_filter_leaves_media_messages_to_the_media_handler():
     assert rich_filter.filter(SimpleNamespace(text=None, effective_attachment=None, api_kwargs=rich)) is True
     assert rich_filter.filter(SimpleNamespace(text=None, photo=photo, effective_attachment=photo,
                                               api_kwargs=rich)) is False
+
+
+def test_rich_message_text_keeps_tables_details_math_links_and_custom_emoji():
+    """Bot API 10.1 block and span types whose content is not under ``text``/``items``/``blocks`` still reach
+    the agent: table rows, a details summary, math, a hidden link's URL (inlined like a ``text_link``) and a
+    custom emoji's alternative text. The mention scan (``skip_code``) does not see the inlined URL."""
+    from plugins.platforms.telegram.telegram_entities import rich_message_text
+
+    blocks = [
+        {"type": "table", "cells": [[{"text": "Model"}, {"text": "Price"}], [{"text": "HD103UJ"}, {"text": "20 EUR"}]]},
+        {"type": "details", "summary": "Specs", "blocks": [{"type": "paragraph", "text": "1TB"}]},
+        {"type": "mathematical_expression", "expression": "E=mc^2"},
+        {"type": "paragraph", "text": [
+            "ad ", {"type": "url", "text": "here", "url": "https://example.com/?u=@hermes_bot"}, " ",
+            {"type": "url", "text": "https://example.com/a", "url": "https://example.com/a"}, " ",
+            {"type": "mathematical_expression", "expression": "x^2"}, " ",
+            {"type": "custom_emoji", "custom_emoji_id": "5", "alternative_text": "\U0001F44D"}]},
+    ]
+    msg = SimpleNamespace(api_kwargs={"rich_message": {"blocks": blocks}})
+
+    assert rich_message_text(msg) == (
+        "Model | Price\nHD103UJ | 20 EUR\nSpecs\n1TB\nE=mc^2\n"
+        "ad here (https://example.com/?u=@hermes_bot) https://example.com/a x^2 \U0001F44D")
+    assert "@hermes_bot" not in rich_message_text(msg, skip_code=True)
+    malformed = [{"type": "list", "items": 5}, {"type": "table", "cells": 5}, {"type": "paragraph", "text": "ok"}]
+    assert rich_message_text(SimpleNamespace(api_kwargs={"rich_message": {"blocks": malformed}})) == "ok"

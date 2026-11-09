@@ -112,17 +112,17 @@ docs-check: docs-generate docs-check-generated docs-check-links docs-lint-diagra
 # Fail when the committed skill docs differ from the generator's output
 [group('docs')]
 docs-check-generated:
-    scripts/ci/check_generated_skill_docs.sh
+    website/scripts/check_generated_skill_docs.sh
 
 # Fail on cross-page links that break on GitHub or on the site
 [group('docs')]
 docs-check-links:
     scripts/hermes-python website/scripts/check_doc_links.py
 
-# Lint docs for ASCII box diagrams (needs ascii-guard on PATH)
+# Lint docs for ASCII box diagrams (pm installs the pinned ascii-guard on first run)
 [group('docs')]
 docs-lint-diagrams:
-    npm run lint:diagrams --prefix website
+    scripts/hermes-python -m scripts.ci.python_packages ascii-guard==2.3.0 ruamel.yaml==0.18.17 -- -m ascii_guard.cli lint --exclude-code-blocks website/docs
 
 # Stage pinned bionic pm packages and their runtime libraries into a Termux payload
 [group('dev')]

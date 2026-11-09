@@ -1056,3 +1056,38 @@ async def test_core_refusal_still_receipts_and_failure_is_not_reported_unserved(
         await app.process_update(update(app.bot, 21))
         assert f"{app.bot.id}:21" not in adapter._seen_update_ids
         assert not [r for r in caplog.records if "matched no core handler" in r.message]
+
+
+@pytest.mark.asyncio
+async def test_adopted_threadless_opener_is_not_overtaken_by_threaded_follow_up():
+    """Android sends a new DM topic's opener thread-less (the adapter adopts it into the topic):
+    a later explicitly-threaded message must queue behind it even while the opener is slow."""
+    from datetime import UTC, datetime
+
+    sent = datetime(2026, 11, 9, tzinfo=UTC)
+    chat = SimpleNamespace(id=42, type="private")
+    user = SimpleNamespace(id=7, is_bot=False)
+
+    def update(thread_id, **fields):
+        return SimpleNamespace(effective_chat=chat, effective_message=SimpleNamespace(
+            chat=chat, from_user=user, date=sent, message_thread_id=thread_id, **fields))
+
+    processor, order, gate = PerChatUpdateProcessor(32), [], asyncio.Event()
+
+    async def handler(name, slow=False):
+        order.append(f"start {name}")
+        if slow:
+            await gate.wait()
+        order.append(f"end {name}")
+
+    await processor.process_update(update(600, forum_topic_created=object(), is_topic_message=True), handler("created"))
+    opener = asyncio.create_task(processor.process_update(update(None), handler("opener", slow=True)))
+    while order[-1:] != ["start opener"]:
+        await asyncio.sleep(0)
+    follow = asyncio.create_task(processor.process_update(update(600, is_topic_message=True), handler("follow")))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert order[-1] == "start opener"
+    gate.set()
+    await asyncio.gather(opener, follow)
+    assert order[-2:] == ["start follow", "end follow"]

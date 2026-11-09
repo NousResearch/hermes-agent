@@ -21,7 +21,7 @@ logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
 
 class TelegramTopicRoutingMixin:
-    """Topic-creation bookkeeping for ``TelegramAdapter`` (relies on its ``_chat_type_str``/``_chat_id_str``)."""
+    """Topic-creation bookkeeping and topic gates for ``TelegramAdapter`` (relies on its ``_chat_type_str``/``_chat_id_str``)."""
 
     # A thread-less message from the creator adopts the new topic while it was SENT within this many
     # seconds of the creation or of the previous adopted message (the client sends the opener
@@ -100,6 +100,36 @@ class TelegramTopicRoutingMixin:
         logger.info("[%s] Thread-less message %s adopted by new Telegram topic %s (chat=%s)",
                     self.name, getattr(message, "message_id", "?"), created_thread_id, key[0])
         return created_thread_id
+
+    def _topic_gates_pass(self, thread_id, *, warn_non_numeric: bool, message: Any = None) -> Optional[bool]:
+        """``allowed_topics`` / ``ignored_threads`` gates; False = blocked, None = undecided."""
+        allowed_topics = self._telegram_allowed_topics()
+        if allowed_topics and self._topic_id_or_general(thread_id) not in allowed_topics:
+            self._log_topic_gate_drop(message, thread_id, "allowed_topics", sorted(allowed_topics))
+            return False
+        if thread_id is not None:
+            try:
+                if int(thread_id) in self._telegram_ignored_threads():
+                    return False
+            except (TypeError, ValueError):
+                if not warn_non_numeric:
+                    return False
+                logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
+        return None
+
+    def _log_topic_gate_drop(self, message: Any, thread_id: Any, gate: str, allowed: list) -> None:
+        """One INFO line per (chat, topic) the first time ``allowed_topics`` drops it: the drop is
+        otherwise silent, and a topic the operator meant to allow looks like a dead gateway (#52635).
+        A missing ``message_thread_id`` is the General topic ``1``."""
+        logged = self.__dict__.setdefault("_topic_gate_drops_logged", set())
+        key = (self._chat_id_str(message), self._topic_id_or_general(thread_id))
+        if key in logged:
+            return
+        if len(logged) >= self._NEW_TOPIC_OPENER_MAX_PENDING:
+            logged.clear()
+        logged.add(key)
+        logger.info("[%s] Ignoring messages in chat %s topic %s: not in %s %s (a message without "
+                    "message_thread_id counts as the General topic 1)", self.name, key[0], key[1], gate, allowed)
 
     def _text_batch_key(self, event: Any) -> str:
         """Session-scoped batching key; topic recovery first so DM-topic batches coalesce on the recovered lane."""

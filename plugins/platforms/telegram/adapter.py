@@ -5689,21 +5689,6 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
         from plugins.platforms.telegram.telegram_addressing import clean_bot_trigger_text
         return clean_bot_trigger_text(text, self._current_bot_username())
 
-    def _topic_gates_pass(self, thread_id, *, warn_non_numeric: bool) -> Optional[bool]:
-        """``allowed_topics`` / ``ignored_threads`` gates; False = blocked, None = undecided."""
-        allowed_topics = self._telegram_allowed_topics()
-        if allowed_topics and self._topic_id_or_general(thread_id) not in allowed_topics:
-            return False
-        if thread_id is not None:
-            try:
-                if int(thread_id) in self._telegram_ignored_threads():
-                    return False
-            except (TypeError, ValueError):
-                if not warn_non_numeric:
-                    return False
-                logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
-        return None
-
     def _bot_sender_suppressed(self, message: Message) -> bool:
         """True when ``bots_require_mention`` vetoes this other-bot message: another bot must
         explicitly @mention us, its quote-replies and plain chatter do not count (two bots
@@ -5718,7 +5703,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
         """Return True when a group message should be stored but not dispatched."""
         if self._is_own_message(message) or not self._telegram_observe_unmentioned_group_messages() or not self._is_group_chat(message):
             return False
-        if self._topic_gates_pass(getattr(message, "message_thread_id", None), warn_non_numeric=False) is False:
+        if self._topic_gates_pass(getattr(message, "message_thread_id", None), warn_non_numeric=False, message=message) is False:
             return False
         chat_id_str = self._chat_id_str(message)
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message, log_skip=False):
@@ -5948,7 +5933,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
         if not self._is_group_chat(message):
             return True
         thread_id = self._effective_message_thread_id(message)
-        if self._topic_gates_pass(thread_id, warn_non_numeric=True) is False:
+        if self._topic_gates_pass(thread_id, warn_non_numeric=True, message=message) is False:
             return False
         chat_id_str = self._chat_id_str(message)
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):

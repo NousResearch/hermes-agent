@@ -605,7 +605,7 @@ export const deOverrides = {
       'composer.voice': 'Sprachkonversation starten / stoppen',
       'composer.reasoningUp': 'Reasoning-Stufe erhöhen',
       'composer.reasoningDown': 'Reasoning-Stufe senken',
-      'view.toggleSidebar': 'Session-Sidebar umschalten',
+      'view.toggleSidebar': 'Linke Seitenleiste umschalten',
       'view.cycleSidebarGrouping': 'Session-Gruppierung wechseln',
       'view.toggleRightSidebar': 'Dateibrowser umschalten',
       'view.toggleReview': 'Review-Bereich umschalten',

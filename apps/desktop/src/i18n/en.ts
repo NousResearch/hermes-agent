@@ -599,7 +599,7 @@ export const en: Translations = {
       'composer.dictate': 'Start / stop dictation',
       'composer.reasoningUp': 'Reasoning level up',
       'composer.reasoningDown': 'Reasoning level down',
-      'view.toggleSidebar': 'Toggle sessions sidebar',
+      'view.toggleSidebar': 'Toggle left sidebar',
       'view.cycleSidebarGrouping': 'Cycle session grouping',
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.toggleReview': 'Toggle review pane',

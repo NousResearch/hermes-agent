@@ -1164,8 +1164,8 @@ export function layoutHasRootSide(side: TreeSide): boolean {
 
 /**
  * Un-dismiss + re-adopt every registered pane whose placement maps to `side`
- * (the same semantic mapping as `rootChildSide`: 'left' panes ⇔ ⌘B, everything
- * else non-main ⇔ ⌘J). Dismissal records for core chrome panes only exist as
+ * (the same semantic mapping as `rootChildSide`: 'left' panes are sidebar-owned,
+ * everything else non-main is files-owned). Dismissal records for core chrome panes only exist as
  * legacy state (they all register closers now), but they must not strand the
  * pane where only a layout reset can recover it.
  */

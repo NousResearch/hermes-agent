@@ -1,7 +1,7 @@
 name: borrowed-hands
 title: Borrowed Hands
 repo: https://github.com/alext8900/borrowed-hands
-sha: ae6dd410551d9e57118ada9230f42b0d673bbd34
+sha: 5a09950d4531b2736ecfce451c171b10723c1129
 subdir: borrowed-hands
 version: "0.1.0"
 description: "Lend your Mac's Xcode to a cloud Hermes. Hermes finds your paired Mac, compiles the Xcode project you granted (macOS arm64 or generic iOS Simulator, compile only) at an exact commit on a bh/* branch, and gets structured compiler diagnostics back: ask \"Build my demo project on my Mac\". Needs the separate Borrowed Hands Mac helper (Python source in the same repository) on an Apple silicon Mac with Xcode; the Mac connects out to Hermes and decides what may build. Disclosure: when enabled, the plugin runs a WebSocket listener and an owner-notice thread inside the gateway, keeps a server signing key and a SQLite job database in its plugin data, and makes one outbound call of its own, an anonymous HTTPS read of the granted public repository's branch list (public addresses only, no credentials). The Mac helper runs as a LaunchAgent and installs a hidden build user, a root-owned dispatcher and a sudo rule limited to six exact dispatcher commands; builds run sandboxed with no network. No telemetry, no self-update."

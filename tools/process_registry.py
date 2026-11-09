@@ -559,7 +559,7 @@ class ProcessSession:
     exited_at: float = 0.0                      # time.time() of the FIRST move to finished (0 = unknown)
     exit_code: Optional[int] = None             # None while running
     completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
-    termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
+    termination_source: str = ""                # process.kill|kill_all|backend_lost|env_closed|failed_start
     output_buffer: str = ""                     # Rolling tail (last max_output_chars)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # Recovered from checkpoint (no pipe)

@@ -62,9 +62,21 @@ def _cleanup_env(env: Any, *, force_remove: Optional[bool] = None) -> None:
         env.terminate()
 
 
+def _settle_env_processes(env: Any) -> None:
+    """Settle background processes polled through *env* as lost before it is closed: their
+    pollers can no longer reach them and would otherwise poll a closed environment forever."""
+    from tools.process_registry import process_registry
+    from tools.process_registry_env_scope import settle_env_closed
+    with _quiet("settling processes of a closing environment failed"):
+        settled = settle_env_closed(process_registry, env)
+        if settled:
+            logger.info("Marked %d background process(es) lost: their environment is closing", settled)
+
+
 def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s", stop_idle: bool = False) -> None:
     """``_cleanup_env`` (or, with *stop_idle*, the backend's ``stop_idle``) plus outcome logging.
     A 404/"not found" error means the sandbox is already gone — logged at info."""
+    _settle_env_processes(env)
     try:
         if stop_idle:
             env.stop_idle()
@@ -140,15 +152,14 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     )
     current_time = time.time()
 
-    # Sandboxes with active background processes stay alive (refresh activity).
+    # Sandboxes with active background processes stay alive (refresh activity). Match the
+    # environment key or object, never the spawning owner id: the key is ``session:<id>``,
+    # a workspace digest or ``default``, while ``owner_task_id`` is the raw task id.
     try:
         from tools.process_registry import process_registry
+        from tools.process_registry_env_scope import has_running_in_env
         for task_id in list(_last_activity.keys()):
-            # A workspace container is keyed by its digest, not the spawning task id: also keep it
-            # while any process it hosts is still running (stopping it would kill that process).
-            if process_registry.has_active_processes(task_id) or (
-                    _is_workspace_key(task_id)
-                    and process_registry._any_running(lambda s, key=task_id: s.task_id == key)):
+            if has_running_in_env(process_registry, task_id, _active_environments.get(task_id)):
                 _last_activity[task_id] = current_time
     except ImportError:
         pass
@@ -329,5 +340,6 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
             if env is not None:
                 evicted.append(env)
     for env in evicted:
+        _settle_env_processes(env)
         with _quiet("cleanup of degraded environment failed"):
             env.cleanup()

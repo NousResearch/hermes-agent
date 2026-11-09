@@ -370,6 +370,13 @@ export const ru: Translations = {
     authRequired: "Требуется аутентификация",
     authRequiredHint: "Выполните эту команду для аутентификации:",
     updateGit: "Git pull",
+    updateAll: "Обновить все",
+    updatingAll: "Обновление плагинов…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Обновлено ${updated}, требуют проверки ${needsReview}, с ошибкой ${failed}`,
+    autoUpdate: "Автообновление",
+    autoUpdateDesc: (hours: number) =>
+      `Автоматически применять обновления плагинов при проверке шлюзом (каждые ${hours} ч). Обновлённый код загружается в новых сессиях.`,
     versionBadge: "Версия",
     showInSidebar: "Показывать в боковой панели",
     hideFromSidebar: "Скрыть из боковой панели",

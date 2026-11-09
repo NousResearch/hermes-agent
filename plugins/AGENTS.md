@@ -22,7 +22,10 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
   `hermes_cli/memory_provider_migration.py` for homes still configured for them. Host-side code a
   catalog provider still relies on (the `honcho_host_block` config storage kind, profile clone /
   rename / update-sync hooks) resolves the provider's modules through
-  `plugins.memory.import_provider_module`, never a `plugins.memory.<name>` import. New
+  `plugins.memory.import_provider_module`, never a `plugins.memory.<name>` import. Generic seams
+  supersede that code (it is removed once the catalog provider implements them): a provider owns its profile setup through `MemoryProvider.on_profile_created` /
+  `on_profile_renamed` and its dashboard config file through `storage=STORAGE_PROVIDER` +
+  `read_config_fields` / `write_config_fields`; new provider-specific host code is refused. New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **Other features that leave core** (Home Assistant platform + toolset, Oct 2026 →

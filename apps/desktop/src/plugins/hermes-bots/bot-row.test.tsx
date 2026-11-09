@@ -49,6 +49,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 
 vi.mock('./canonical-chat', () => ({
   ensureBotMetadata,
+  ensureBotProfile: vi.fn(async (bot: unknown) => bot),
   notifyBotOpenFailure: vi.fn(),
   openBotCanonicalChat: vi.fn(),
   prepareBotSource: vi.fn(),

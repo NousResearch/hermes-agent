@@ -81,6 +81,13 @@ const FALSEY_MOUSE = new Set(['0', 'false', 'no', 'off'])
 const TRUTHY_MOUSE_ALL = new Set(['1', 'true', 'yes', 'on', 'all', 'full', 'any'])
 const hasOwn = (obj: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(obj, key)
 
+// `display.inline_images`: YAML 1.1 reads a bare `off` as false; the quoted string means the same.
+export const inlineImagesEnabled = (raw: unknown): boolean =>
+  raw !== false &&
+  String(raw ?? '')
+    .trim()
+    .toLowerCase() !== 'off'
+
 // `display.mouse_tracking` accepts boolean (`true` ⇒ all modes, `false` ⇒ off)
 // for back-compat, plus the string presets `off|wheel|buttons|all` (aliases:
 // `on`/`full`/`any`/`1`/`true`/... → `all`; `0`/`false`/`no`/`off` → `off`).
@@ -350,6 +357,7 @@ export const applyDisplay = (
     focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
+    inlineImages: inlineImagesEnabled(d.inline_images),
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),

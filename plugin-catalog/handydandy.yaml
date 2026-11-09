@@ -1,0 +1,24 @@
+name: handydandy
+repo: https://github.com/percyhendrux123-prog/hermes-handydandy
+sha: 7cc035707f18590db3957fbcc73e3e4064bc8f38
+version: "0.3.0"
+description: "Session-size notices and structured handoffs. After each turn it checks the estimated input tokens and message count Hermes reports; when a limit is reached it either adds one notice to the reply (advise, the default) or asks the agent, on your next message, to finish your request and write a HANDOFF-*.md file that you open yourself in a new session. No extra model calls, and it never starts a session on its own. Disclosure — writes state.json, state.lock, events.log and short-lived atomic-save temp files under <HERMES_HOME>/plugin-data/handydandy/ (profile and session ids, paths, thresholds and error details; no conversation text); asks the agent to write handoff files to handoff_dir (default <HERMES_HOME>/handoffs/), which may hold work details from the conversation; optionally appends one row per completed handoff to a session_log_csv the owner sets (off by default). Reads its own state, the first byte and modification time of recorded handoff files, plugin settings via ctx.get_config, and HANDYDANDY_<KEY> and HERMES_HOME environment variables. No network calls, no shell commands, no background processes, no stored credentials, no telemetry; it does not auto-approve tools or change safety settings."
+maintainer: percyhendrux123-prog
+tier: community
+category: general
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/percyhendrux123-prog/hermes-handydandy/blob/7cc035707f18590db3957fbcc73e3e4064bc8f38/README.md
+readme: true
+platforms: [macos, linux]
+known_issues:
+  - "Handoff mode is an instruction to the agent, not a guarantee; the instruction repeats each turn until a readable, non-empty handoff file newer than the notice is observed."
+  - "The percentage-of-context check is off unless the owner sets context_limit to the model's context window; the plugin does not look up model metadata."
+  - "The state file keeps the 200 most recent session records, so a much older session can be warned again."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - transform_llm_output
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -25,6 +25,10 @@ KIND_JSON = "json"
 # Storage backends understood by web_server (see its read/write dispatch).
 STORAGE_FLAT_JSON = "flat_json"
 STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
+# The provider's read_config_fields / write_config_fields own the file layout
+# (agent.memory_provider.MemoryProvider); loading them loads the provider itself (in the plugin
+# host when ``plugins.isolation`` is ``host``), and its writer also receives submitted secrets.
+STORAGE_PROVIDER = "provider"
 
 
 @dataclass(frozen=True)

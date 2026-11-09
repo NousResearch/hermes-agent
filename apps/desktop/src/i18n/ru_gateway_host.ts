@@ -30,6 +30,13 @@ export const ruGatewayHost: GatewayHostTranslations = {
     restartFailedBecause: reason => `Не удалось перезапустить шлюз: ${reason}`,
     startTimedOut: 'Шлюз не открыл веб-приложение за 90 секунд.',
     stopTimedOut: 'Шлюз не перестал открывать веб-приложение за 90 секунд.',
+    startStages: {
+      preparing: 'Готовим веб-приложение. Сборка может занять несколько минут.',
+      building: 'Собираем веб-приложение. Это может занять несколько минут.',
+      registering: 'Настраиваем вход через Nous для этого адреса.',
+      restarting: 'Перезапускаем шлюз, чтобы открыть веб-приложение.'
+    },
+    startElapsed: time => `Прошло: ${time}`,
     start: 'Запустить',
     stop: 'Остановить',
     restartGateway: 'Перезапустить шлюз',

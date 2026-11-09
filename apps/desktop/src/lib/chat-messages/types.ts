@@ -55,6 +55,10 @@ export type ChatMessage = {
   interim?: boolean
   /** The user stopped this reply before it finished; its text is partial. */
   interrupted?: boolean
+  /** A projected queued prompt (`user-queued-…`) whose own turn has started:
+   *  `message.start` arrived after it was drawn. It is now that turn's user
+   *  row, not a prompt still waiting for a later turn. */
+  queuedTurnStarted?: boolean
   /** Locally recovered output not yet represented by a durable completed reply. */
   recovered?: boolean
   /** Whether hydration reached a final assistant source row, rather than a tool round. */

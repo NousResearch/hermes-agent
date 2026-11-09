@@ -507,6 +507,14 @@ def _invalidate_live_plugin_catalog_caches() -> None:
             invalidate_live_cache_for_home(profile_home)
 
 
+def _report_catalog_plugin_updates() -> None:
+    from hermes_cli.backup import _sibling_profile_homes
+    from hermes_cli.plugins_auto_update import report_catalog_updates_after_hermes_update
+    from hermes_cli.update_cmd import get_hermes_home
+    home = get_hermes_home()
+    report_catalog_updates_after_hermes_update(home, _sibling_profile_homes(home))
+
+
 def _print_bundled_skills_sync_report() -> None:
     """Run ``sync_skills`` (copies new, updates changed, respects user deletions) and print its summary."""
     from tools.skills_sync import sync_skills
@@ -1043,6 +1051,10 @@ def _run_post_update_maintenance(
     # rest of the cache TTL (#119340).
     with _best_effort('Live plugin catalog cache invalidation failed: %s'):
         _invalidate_live_plugin_catalog_caches()
+    # New catalog pins are not applied by this update: name them per profile and re-arm each
+    # profile's plugin check so an opted-in (plugins.auto_apply) gateway applies them next tick.
+    with _best_effort('Plugin catalog update notice failed: %s'):
+        _report_catalog_plugin_updates()
 
     with _best_effort('Skills sync during update failed: %s'):
         print()

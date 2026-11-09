@@ -1120,7 +1120,7 @@ the host gateway with `gateway.standalone: true` (see
 ### Docker / Hermes Cloud (s6-supervised container)
 
 Inside the official image every profile has an s6 slot
-(`/run/service/gateway-<profile>`). The container's boot registers every *named*
+(`/run/hermes-service/gateway-<profile>`). The container's boot registers every *named*
 slot down and folds its autostart intent into the root slot, so a fresh boot
 already multiplexes. An **in-place** update no longer needs a container restart
 to converge either: `hermes gateway migrate --multiplex` (and the hook `hermes

@@ -1,4 +1,4 @@
-"""The green run commits the Store build held; publication tries to switch it to Immediate."""
+"""The green run leaves an uncommitted Immediate Store draft; publication commits it."""
 import json
 
 import pytest
@@ -53,17 +53,21 @@ def _names(cli):
     return cli.names()
 
 
-def test_submit_commits_the_upload_held_so_certification_starts_before_the_gate():
+def test_submit_leaves_an_uncommitted_immediate_draft_for_the_publication_pass():
     from scripts.releases.store import submit
 
     cli = _Cli()
-    submit("verified/Store-1.2.3.msixbundle", product_id="9NTEST", run=cli)
+    result = submit("verified/Store-1.2.3.msixbundle", product_id="9NTEST", run=cli)
     names = cli.names()
     upload = names.index("msstore publish verified/Store-1.2.3.msixbundle --appId 9NTEST --noCommit")
     update = next(i for i, n in enumerate(names) if n.startswith("msstore submission update 9NTEST "))
-    assert upload < update < names.index("msstore submission publish 9NTEST") == len(names) - 1
+    assert upload < update == len(names) - 1
+    # Committing held would need Publish now by hand: the API refuses to change a committed
+    # submission (409 InvalidState), so only the publication pass commits.
+    assert "msstore submission publish 9NTEST" not in names
+    assert result["committed"] is False
     # The CLI's own spelling is kept, so update does not get two publish-mode keys.
-    assert cli.updated["TargetPublishMode"] == "Manual" and "targetPublishMode" not in cli.updated
+    assert cli.updated["TargetPublishMode"] == "Immediate" and "targetPublishMode" not in cli.updated
 
 
 @pytest.mark.parametrize("status", ["PendingCommit", "CommitFailed", "CertificationFailed",
@@ -117,9 +121,9 @@ def test_submit_replaces_an_abandoned_claims_held_submission(status):
     assert checked == [prior_claim]
     assert names.index("msstore submission delete 9NTEST --no-confirm") < names.index(
         "msstore publish verified/Store-next.msixbundle --appId 9NTEST --noCommit")
-    assert names[-1] == "msstore submission publish 9NTEST"
-    assert cli.updated["TargetPublishMode"] == "Manual"
-    # Bind the new upload before committing so its own abandonment can be recovered.
+    assert names[-1].startswith("msstore submission update 9NTEST ")
+    assert cli.updated["TargetPublishMode"] == "Immediate"
+    # Bind the new upload before the publication pass commits it.
     assert json.loads(cli.updated["NotesForCertification"])["claimTag"] == next_claim
     assert "notesForCertification" not in cli.updated
 
@@ -213,6 +217,44 @@ def test_release_switches_this_releases_held_submission_to_immediate(status):
     assert api.mode == "Immediate" and api.commits == 1
     put, commit = api.writes()
     assert put["method"] == "PUT" and commit["url"].endswith("/commit")
+
+
+def test_release_commits_this_releases_draft_so_it_goes_live_once_certified():
+    # A committed submission refuses update (v0.22.7: 409 InvalidState); the draft does not.
+    api = _Api("PendingCommit", refuse_committed=True)
+    assert _release(api) == "immediate"
+    assert api.mode == "Immediate" and api.commits == 1
+    put, commit = api.writes()
+    assert put["method"] == "PUT" and commit["url"].endswith("/commit")
+
+
+def test_hold_commits_the_draft_manual_and_says_publish_now(capsys):
+    from scripts.releases.store import release_from_env
+
+    api = _Api("PendingCommit")
+    env = {"MS_STORE_PRODUCT_ID": "9NTEST", "MS_STORE_TENANT_ID": "T", "MS_STORE_CLIENT_ID": "C",
+           "MS_STORE_CLIENT_SECRET": "S", "MS_STORE_HOLD": "true"}
+    manifest = {"files": [{"path": STORE_FILE}]}
+    assert release_from_env(env, manifest, run=api) == "held"
+    assert api.mode == "Manual" and api.commits == 1
+    assert "Publish now" in capsys.readouterr().out
+    # A rerun neither commits again nor flips the held build to Immediate.
+    assert release_from_env(env, manifest, run=api) == "held"
+    assert api.mode == "Manual" and api.commits == 1
+
+
+def test_hold_on_a_committed_auto_publish_build_does_not_say_publish_now(capsys):
+    from scripts.releases.store import release
+
+    # MS_STORE_HOLD set after the build was committed Immediate: the API refuses the switch,
+    # and the build still goes live by itself, so Publish now would be wrong advice.
+    api = _Api("Certification", refuse_committed=True)
+    api.mode = "Immediate"
+    assert release(product_id="9NTEST", store_file=STORE_FILE, tenant_id="T", client_id="C",
+                   client_secret="S", hold=True, run=api) == "already-immediate"
+    out = capsys.readouterr().out
+    assert "goes live by itself" in out and "Publish now" not in out
+    assert api.mode == "Immediate" and api.commits == 0
 
 
 @pytest.mark.parametrize("refusal", ["update", "commit"])

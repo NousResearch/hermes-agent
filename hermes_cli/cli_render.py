@@ -521,7 +521,9 @@ def _record_output_history(text: str, *, force: bool = False) -> None:
         _cli()._OUTPUT_HISTORY.extend(lines)
 
 
-_ANSI_SEQUENCE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+# prompt_toolkit's zero-width ``\001…\002`` brackets first: a crop that split one would leak its
+# escape to the ANSI parser (which quantizes an inline image's id color) or as text.
+_ANSI_SEQUENCE_RE = re.compile(r"\001[^\002]*\002|\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 
 
 def _ansi_drop_cells(line: str, cells: int) -> str:
@@ -638,15 +640,24 @@ def _output_history_rows(limit: int, columns: int, painted: bool):
     return total
 
 
-def _pt_print_ansi(text: str) -> None:
+def _ansi_with_raw(text: str, raw: str = ""):
+    """``ANSI(text)``, then *raw* as one zero-width fragment prompt_toolkit writes verbatim."""
+    from cli import _PT_ANSI
+    if not raw:
+        return _PT_ANSI(text)
+    from prompt_toolkit.formatted_text import to_formatted_text
+    return [*to_formatted_text(_PT_ANSI(text)), ("[ZeroWidthEscape]", raw)]
+
+
+def _pt_print_ansi(text: str, raw: str = "") -> None:
     """``_pt_print(ANSI(text))``, falling back to ``print`` when stdout is not a real console."""
-    from cli import _PT_ANSI, _pt_print
+    from cli import _pt_print
     try:
-        _pt_print(_PT_ANSI(text))
+        _pt_print(_ansi_with_raw(text, raw))
     except Exception:
         # NoConsoleScreenBufferError (Windows) / OSError when stdout is e.g. a worker log file.
         with suppress(Exception):
-            print(text)
+            print(text + raw)
 
 
 _HELD_PAINTS: list | None = None
@@ -733,13 +744,17 @@ def _paint_held(seq: int, paint, app=None) -> bool:
         return True
 
 
-def _cprint(text: str):
+def _cprint(text: str, *, raw: str = ""):
     """Print ANSI text through prompt_toolkit's renderer (patch_stdout swallows raw ANSI).
 
     From a background thread while an Application runs, a direct print races the input
     redraw and gets buried, so those are painted on the app's loop via ``call_soon_threadsafe``.
+
+    *raw* is an escape sequence written verbatim right after *text* (an inline image's
+    transmit): never parsed as ANSI, counted as zero cells, and kept out of the output
+    history, so a resize replay repaints *text* alone and never crops or re-sends it.
     """
-    from cli import _PT_ANSI, _output_history_recording, _pt_print, _pt_print_ansi, _record_output_history
+    from cli import _output_history_recording, _pt_print, _pt_print_ansi, _record_output_history
     recording = _output_history_recording()
     seq = next(_PAINT_SEQ)
 
@@ -751,8 +766,8 @@ def _cprint(text: str):
                 _record_output_history(text, force=True)
             paint()
         return _paint
-    paint_pt = _painted(lambda: _pt_print(_PT_ANSI(text)))
-    paint_fallback = _painted(lambda: _pt_print_ansi(text))
+    paint_pt = _painted(lambda: _pt_print(_ansi_with_raw(text, raw)))
+    paint_fallback = _painted(lambda: _pt_print_ansi(text, raw))
 
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
@@ -793,7 +808,7 @@ def _cprint(text: str):
         from prompt_toolkit.formatted_text import to_formatted_text
         from prompt_toolkit.renderer import print_formatted_text as _paint_formatted_text
         from prompt_toolkit.styles import Style
-        _paint_formatted_text(app.output, to_formatted_text(_PT_ANSI(text)) + [("", "\n")], Style([]))
+        _paint_formatted_text(app.output, to_formatted_text(_ansi_with_raw(text, raw)) + [("", "\n")], Style([]))
     paint_now = _painted(_print_now)
 
     def _schedule():

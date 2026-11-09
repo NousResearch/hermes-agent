@@ -162,10 +162,18 @@ export default defineConfig({
     },
   },
   server: {
+    // Everything the dev page loads is same-origin. Vite's default CORS
+    // grants every localhost port, which would let another local page read
+    // the session token hermesDevToken() injects into index.html.
+    cors: false,
     proxy: {
       "/api": {
         target: BACKEND,
         ws: true,
+        // No changeOrigin or Origin rewrite: the backend admits a WebSocket
+        // whose Origin names the Host it was sent to, and the dev page's own
+        // upgrades arrive that way however BACKEND is reached (port forwards
+        // included). The backend trusts no fixed dev port.
       },
       // Same host as `hermes dashboard` must serve these; Vite has no
       // dashboard-plugins/* files, so without this, plugin scripts 404

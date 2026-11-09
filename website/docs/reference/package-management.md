@@ -145,7 +145,29 @@ PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
-prepared environment inputs. The generated workspace and extended lock remain
+prepared environment inputs. Plugin snapshots keep a plugin's runtime dependencies
+and the optional extras this install selects (or the plugin's own requirements name);
+its `dependency-groups`, legacy uv development dependencies and unselected extras
+(`dev`, `test`) are left out, together with the `tool.uv.sources` entries scoped to
+them, because PM never installs them yet uv would still
+resolve them against core's pins. The original plugin metadata and core development
+pins are unchanged; genuine runtime conflicts still refuse admission. A plugin with no
+build backend gets a unique `hermes-plugin-…` name in its snapshot, and its references to
+its own extras (`myplugin[runtime]`) are renamed with it. Hermes itself always comes from
+the checkout: a plugin requirement naming `hermes-agent` (a runtime dependency in
+`pyproject.toml` or `plugin.yaml`, or an extra this install selects, such as
+`hermes-agent[web]>=0.20`) is satisfied by it, whatever its version specifier says. PM
+therefore checks that specifier itself against the running Hermes version (the one
+`requires_hermes` reads), with standard PEP 440 comparison and the requirement's environment
+marker; a requirement in an unselected extra or one whose marker is false on this machine is
+not checked, and with no known version (`unknown`) nothing is. A plugin that excludes the
+running version is treated like one whose `requires_hermes` does: enabling or installing it is
+refused, and one already enabled is left out of the environment and skipped at load, with its
+config untouched, until Hermes reaches a version it accepts. The two checks compare differently:
+`requires_hermes` compares only `major.minor.patch` (pre/post-release suffixes are dropped, and a
+clause it cannot parse passes), while a `hermes-agent` requirement is compared as any Python
+requirement would be (`>=0.27.0.post1` excludes 0.27.0). Either one can keep a plugin out.
+The generated workspace and extended lock remain
 outside shipped source. The workspace is solved only for the platform and
 architecture of the interpreter it installs into, so a plugin dependency with no
 wheels for another platform (onnxruntime or torch on Android) does not block it;
@@ -170,6 +192,18 @@ plugin updates can change the selected plugin's files. A wrapper with no Python
 dependency declaration does not join the shared environment. Its external
 sidecar remains separately owned. See the
 [plugin guide](../developer-guide/plugins/index.md).
+
+The first PM generation that replaces a pre-PM `venv/` or `.venv` also carries
+the extras that venv held (Matrix, FAL, ...), so features that worked keep
+working. Those extras are carried, not requested: if one no longer builds (a
+native package such as Matrix's `python-olm` whose compiler or CMake is
+missing), the update installs everything else, prints which extra it left out,
+and records that beside the install's dependency state, so a later scan of the
+old venv does not carry it again. `hermes pm install --extra NAME` adds it back
+once the build is fixed. A carried extra that fails only for the moment (a
+download or a missing tool) is never dropped: the update fails before it
+publishes anything, so the next update scans the old venv again and retries
+it. An extra you request yourself still fails the install when it cannot build.
 
 ### Lazy-install policy
 
@@ -237,6 +271,14 @@ interpreter's sysconfig still points at its supplier's temporary LLVM directory.
 This applies to source and bundle builds alike. Explicit `AR` and `CC` values
 remain authoritative; PM does not change the toolchain of a caller-supplied
 interpreter such as Nix Python. No `CC` default is needed for the current pin.
+
+The pinned Linux Python records `clang`/`clang++` as `CC`/`CXX` and the same
+temporary `llvm-ar` as `AR`. When a recorded compiler is not on `PATH` but its
+GCC equivalent is (`gcc`/`g++`, as on stock Debian, Ubuntu and WSL), PM points
+`CC`/`CXX` and the matching `LDSHARED`/`LDCXXSHARED` at it, keeping flags such
+as `-pthread`, and defaults `AR` to the host's `ar`. A `CC`, `CXX`, `LDSHARED`,
+`LDCXXSHARED` or `AR` you set yourself wins. With no compiler at all, a source
+build fails with a hint to install one (`sudo apt install build-essential`).
 
 Clone the repository and select your branch before preparing dependencies:
 
@@ -538,6 +580,7 @@ hermes pm install chromium
 |---|---|
 | `pm install [names...]` | Install named packages. With no names, provision required tools plus Python, put those tools on PATH, and then sync the `all` extra. A bare install also installs the default optional tools (`chromium`, the browser Hermes launches, and `cua-driver`); a failed download of these prints a warning and does not fail the install. Naming a package you declined earlier undoes that choice. |
 | `pm install --without NAME` | Do a bare install without the default optional package `NAME` (`chromium` or `cua-driver`), and record that choice. Later bare installs and `hermes update` also leave it out. The installers' `--skip-browser` / `-SkipBrowser` and `--skip-computer-use` / `-SkipComputerUse` (`--without cua-driver`) use this. The browser opt-out passes the legacy name `--without agent-browser`, which every PM release accepts and this one reads as `chromium`; a choice recorded under that name still skips `chromium`. |
+| `pm install --without EXTRA` | Drop a recorded Python extra that `[all]` does not include (for example `matrix`, which a migration from a pre-PM venv carries forward when that venv held its packages). The bare install's sync builds a generation without it, and the choice is recorded beside the install's dependency state: `hermes update`, the pre-PM venv scan, the update's install of configured platforms' extras, and a lazy install at first use never add it back. Packages another recorded extra also pulls in (a recorded `messaging` includes Slack, Telegram and Discord) stay until that extra goes too. `pm install --extra EXTRA` opts back in. Extras inside `[all]` (`web`, `mcp`, ...) are refused, since every sync selects them. |
 | `pm install --tools-only` | Install that tool closure and put it on PATH, then stop. The venv sync does not run. |
 | `pm env [names...]` | Print installed packages' PM-contributed environment values as JSON. It does not install missing packages, though a cold Hermes launch may prepare its own Python runtime first. |
 | `pm doctor` | Check installed tool identities, files, and digests against the lock, and look for corrupt entries in PM's uv cache. `--repair` removes those entries so they are fetched again. |

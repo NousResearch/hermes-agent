@@ -123,6 +123,48 @@ def archive_inputs(args) -> None:
     stage_inputs(pins, archive=Archive(*r2.credentials()), store=Store(args.home.resolve() / "tools"))
 
 
+# IO_REPARSE_TAG_LX_SYMLINK: a WSL-style symlink, which Python cannot open.
+_LX_SYMLINK = 0xA000001D
+
+
+def restore_cygwin_symlinks(root: Path) -> int:
+    """Rewrite the WSL symlinks a cache restore left in the PM store as Cygwin ones.
+
+    Git for Windows ships symlinks such as etc/mtab as Cygwin system files (a
+    ``!<symlink>`` file with the SYSTEM attribute), and PM's digest covers those
+    bytes. @actions/cache restores the store with Git's MSYS tar under
+    MSYS=winsymlinks:nativestrict, which writes a symlink to a non-Windows target
+    as a WSL reparse point instead. Python cannot open that, so the digest check
+    failed and every Windows job re-extracted Git (~21s on arm64). Recreate each
+    one with Git's own ln under winsymlinks:sys. PM still verifies the entry, so a
+    link that comes back different only costs the re-extraction it used to.
+    """
+    if os.name != "nt" or not root.is_dir():
+        return 0
+    import shutil
+    import subprocess
+
+    readlink, ln = shutil.which("readlink"), shutil.which("ln")
+    if not (readlink and ln):
+        return 0
+    env = dict(os.environ, MSYS="winsymlinks:sys")
+    repaired = 0
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            try:
+                if os.lstat(path).st_reparse_tag != _LX_SYMLINK:
+                    continue
+                target = subprocess.run([readlink, path], env=env, capture_output=True,
+                                        text=True, check=True, timeout=30).stdout.rstrip("\n")
+                os.remove(path)
+                subprocess.run([ln, "-s", target, path], env=env, check=True, timeout=30)
+                repaired += 1
+            except (OSError, subprocess.SubprocessError):
+                continue
+    return repaired
+
+
 def install(args) -> None:
     import subprocess
 
@@ -136,6 +178,9 @@ def install(args) -> None:
     from pm.registry import get_package
 
     names = packages(args.toolchain, args.packages)
+    repaired = restore_cygwin_symlinks(store_root())
+    if repaired:
+        print(f"Restored {repaired} Cygwin symlink(s) in the cached PM store")
     for name in _ROOTS[args.toolchain] + args.packages:
         ensure(name, explicit=True, progress=_live_progress(name))
     facts = Facts(facts_path())

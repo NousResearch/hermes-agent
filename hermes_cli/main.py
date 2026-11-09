@@ -90,6 +90,9 @@ def _exit_after_oneshot(rc: object) -> None:
             stream.flush()
         except Exception:
             pass
+    from hermes_cli.cpu_profile import write_cpu_profile
+
+    write_cpu_profile()  # atexit never runs past os._exit
     try:
         logging.shutdown()
     except Exception:
@@ -816,6 +819,7 @@ from hermes_cli.main_dashboard import (
     _install_hangup_protection,
     _is_electron_packaged_web_dist,
     _maybe_setup_dashboard_auth_interactively,
+    _dashboard_validate_serve_args,
     _read_ssh_session_token_file,
     _report_dashboard_status,
     _resolve_dashboard_web_dist,
@@ -2494,33 +2498,6 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
         sys.exit(1 if result["failed"] else 0)
 
 
-def _dashboard_validate_serve_args(args, headless_backend, token_file):
-    """Headless-serve argument checks -> ssh_owner_nonce (or None)."""
-    # `hermes serve` is headless/non-interactive: fail closed on a corrupt
-    # config.yaml instead of silently starting on defaults where provider
-    # auto-detection can adopt unnamed .env credentials (issue #81952).
-    # Same policy + escape hatch as _guard_noninteractive_user_config.
-    if headless_backend:
-        from hermes_cli.config import (
-            InvalidUserConfigError,
-            require_parseable_user_config,
-        )
-
-        try:
-            require_parseable_user_config(
-                ignore_user_config=bool(getattr(args, "ignore_user_config", False))
-            )
-        except InvalidUserConfigError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            raise SystemExit(2) from exc
-    ssh_owner_nonce = getattr(args, "ssh_owner_nonce", None)
-    if ssh_owner_nonce and not re.fullmatch(r"[0-9a-f]{16}", ssh_owner_nonce):
-        raise SystemExit("--ssh-owner-nonce must be 16 lowercase hex characters")
-    if token_file and not headless_backend:
-        raise SystemExit("--ssh-session-token-file is only valid with hermes serve")
-    return ssh_owner_nonce
-
-
 def _dashboard_sanitize_desktop_env(headless_backend) -> None:
     """Strip Desktop-inherited env that hijacks a standalone launch.
 
@@ -3025,6 +3002,13 @@ def _run_oneshot_from_args(args) -> None:
     sys.exit(launch_gateway_chat(args))
 
 
+def _enable_cpu_profile(args) -> None:
+    """Honour ``--cpu-profile`` right after a launch path parses argv, before it branches."""
+    from hermes_cli.cpu_profile import enable_cpu_profile_from_args
+
+    enable_cpu_profile_from_args(args)
+
+
 def _light_chat_parser():
     """Top-level + chat parser only (no subcommand tree); chat dispatches to cmd_chat."""
     from hermes_cli._parser import build_top_level_parser
@@ -3118,6 +3102,7 @@ def _try_fast_chat_launch() -> bool:
     if getattr(args, "command", None) not in {None, "chat"}:
         return False
 
+    _enable_cpu_profile(args)
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
     _prepare_agent_startup(args)
@@ -3158,6 +3143,7 @@ def _try_termux_fast_cli_launch() -> bool:
 
     parser = _light_chat_parser()
     args = parser.parse_args(_coalesce_session_name_args(argv))
+    _enable_cpu_profile(args)  # before any branch: the interactive one defers agent startup
 
     if getattr(args, "version", False):
         _print_version_info(check_updates=True)
@@ -3216,6 +3202,7 @@ def _try_termux_fast_tui_launch() -> bool:
     if not _resolve_use_tui(args):
         return False
 
+    _enable_cpu_profile(args)
     cmd_chat(args)
     return True
 
@@ -3517,6 +3504,7 @@ def main():
         sys.exit(1)  # unreachable: execvp replaces the process or raises
 
     args = _parse_cli_args(parser, subparsers, sys.argv[1:])
+    _enable_cpu_profile(args)
 
     if args.version:
         cmd_version(args)

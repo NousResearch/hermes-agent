@@ -209,6 +209,10 @@ export interface GroupChat {
   holdDetection?: boolean
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
+  /** 'desktop': created with members on two or more connections, so this
+   *  Desktop drives it for good; a later membership edit never hands it to a
+   *  gateway. Absent on older records, which fall back to membership. */
+  engine?: 'desktop'
   /** Room-entry ids consumed while a member was held, replayed into that
    *  member's next visible turn. Keyed by the durable member key. */
   heldMessages?: Record<string, string[]>

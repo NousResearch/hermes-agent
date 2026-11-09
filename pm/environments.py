@@ -299,7 +299,8 @@ def committed_venv(project_root: Path) -> Path | None:
 
     Unlike ``selected_venv`` this never answers with the in-tree ``venv``/``.venv``: that tree
     predates PM and is built for whichever interpreter created it, so loading it from PM's store
-    Python mixes ABIs (compiled modules vanish) and PM deletes it once a generation is committed.
+    Python mixes ABIs (compiled modules vanish). PM never deletes it: ``legacy_selection`` reads its
+    site-packages again whenever this install has no dependency facts.
     """
     return _recorded_venv(project_root) or payload_venv(project_root)
 

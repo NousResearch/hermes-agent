@@ -616,7 +616,12 @@ class GatewayBusySessionMixin:
         return None if getattr(event, "internal", False) else event.message_id
 
     async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
-        """Send a busy-path reply anchored to the event (thread metadata included)."""
+        """Send a busy-path reply anchored to the event (thread metadata included). Never to a bot:
+        an ack, redirect or drain notice is a new inbound message for its turn loop (#137027)."""
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        if not automatic_notices_allowed(event.source):
+            logger.debug("Busy-path notice suppressed for bot-authored message in %s", event.source.chat_id)
+            return
         reply_anchor = self._reply_anchor_for_event(event)
         await adapter._send_with_retry(
             chat_id=event.source.chat_id, content=content,
@@ -950,7 +955,7 @@ class GatewayBusySessionMixin:
             )
             return True  # handled (silently dropped); do not fall through
         # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
-        if not self._admit_bot_message_for_source(event.source):
+        if not (self._admit_bot_message_for_source(event.source) and self._admit_bot_chain(event)):
             return True
         event._bot_loop_admitted = True
 
@@ -1073,8 +1078,9 @@ class GatewayBusySessionMixin:
         if (sink := active_sink()) is not None:
             sink.notices.append(text)  # a local slash.exec: the ack rides the client's directive
             return
+        from gateway.bot_peer_notices import automatic_notices_allowed
         try:
-            adapter = self._delivery_adapter_for(source)
+            adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
             if adapter:
                 await adapter.send(
                     str(source.chat_id), text, metadata=self._thread_metadata_for_source(source)

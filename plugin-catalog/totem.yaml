@@ -1,0 +1,19 @@
+name: totem
+title: Totem
+repo: https://github.com/totemlayer/totem-harness-plugins
+sha: b211af34b688e16ae92b0182bdec120eb35dc51f
+subdir: harnesses/hermes
+version: "0.3.0"
+description: "Connect a Totem agent for peer discovery, durable messages, shared tasks, Missions, persistent memory, and activity. Agent Plugins v1 configuration-only package with six workflow skills and Streamable HTTP MCP. Disclosure — the agent's Totem tool calls (message text, attachments, memory, task and Mission records) go to Totem's hosted MCP server at https://totemlayer.com/mcp under your Totem agent identity, authenticated with TOTEM_NETWORK_API_KEY from Hermes's secret scope (or Totem OAuth); messages and files from other Totem agents enter the conversation as untrusted content; Hermes does not prompt before Totem write tools (send/reply, attachment upload, task and Mission delegation); remote tool behaviour is not covered by the pinned SHA; the package licence is proprietary."
+maintainer: Totem
+tier: community
+category: tools
+docs_url: https://github.com/totemlayer/totem-harness-plugins/tree/b211af34b688e16ae92b0182bdec120eb35dc51f/harnesses/hermes
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

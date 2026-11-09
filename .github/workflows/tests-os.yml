@@ -128,6 +128,15 @@ jobs:
           test-environment: 'true'
           prune-python-cache: true
 
+      - name: Warm PowerShell's module analysis cache
+        # Every PowerShell child a test spawns reads this cache (run_tests.sh forwards
+        # PSModuleAnalysisCachePath); cold, each launch costs ~22s on arm64. Started
+        # from cmd: a PowerShell step's own shell would pay the cold analysis too.
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        shell: cmd
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\ci\warm_powershell_module_cache.ps1
+
       - name: Run ${{ matrix.marker }} tests
         # scripts/run_tests.sh — the canonical runner, same as every other
         # lane: per-file subprocess isolation (run_tests_parallel.py). It

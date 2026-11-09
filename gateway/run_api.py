@@ -426,7 +426,10 @@ class GatewayRuntimeAPI:
         scope['app'] = self.web_app
         ws = WebSocket(scope, receive, send)
         ticket, reason = _gateway_ws_ticket_from_subprotocol(ws)
-        if reason == 'none' or ws.headers.get('origin'):
+        # Native grants are loopback-only, so a remote ticket is the Webapp's (the mobile app sends no
+        # Origin, #147361). Origin is client-controlled, so this reaches no gate an Origin could not.
+        native_peer = bool(ws.client) and ws.client.host in {'127.0.0.1', '::1'}
+        if reason == 'none' or ws.headers.get('origin') or (reason == 'ok' and not native_peer):
             if draining_socket:
                 # Let a Webapp tab's ticket reach its normal upgrade gate during restart wait: only a
                 # surface that mints browser tickets redeems one there (elsewhere the loopback gate
@@ -441,8 +444,7 @@ class GatewayRuntimeAPI:
             return await self.app(scope, receive, send)
         if (reason != 'ok' or not _embedded_chat_enabled()
                 or ws_host_origin_reason(ws, state) is not None or ws_client_reason(ws, state) is not None
-                or ws.headers.get('origin')
-                or not ws.client or ws.client.host not in {'127.0.0.1', '::1'}):
+                or ws.headers.get('origin') or not native_peer):
             await ws.close(code=4403)
             return
         operator = True

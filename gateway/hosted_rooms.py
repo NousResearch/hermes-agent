@@ -50,11 +50,12 @@ _CONTROL_EVENT_KINDS = frozenset({"authority.claimed", "authority.lost", "room.d
 _EVENT_KINDS_BY_ACTOR = {
     "user": frozenset({"message.user"}), "member": frozenset({"message.member"}),
     "gateway": frozenset({
-        "member.unavailable", "room.activity", "room.stop_requested", "turn.deferred", "turn.reassigned",
+        "member.unavailable", "room.activity", "room.assignment", "room.continued", "room.routed", "room.stop_requested",
+        "turn.deferred", "turn.reassigned",
         "turn.cancelled", "turn.failed", "turn.settled", "turn.started"}),
     "system": frozenset({
-        "authority.claimed", "authority.lost", "room.created", "room.disbanded", "room.members_changed", "room.renamed"
-    })}
+        "authority.claimed", "authority.lost", "room.context_set", "room.created", "room.disbanded",
+        "room.members_changed", "room.renamed"})}
 _OPTIONAL_ACTOR_FIELDS = (
     ("display_name", MAX_ACTOR_LABEL_CHARS), ("profile", MAX_ACTOR_ID_CHARS), ("connection_id", MAX_ACTOR_ID_CHARS))
 _ACTOR_FIELDS = frozenset({"kind", "id", *(field for field, _ in _OPTIONAL_ACTOR_FIELDS)})
@@ -376,6 +377,9 @@ def _migrate_legacy_columns(conn: sqlite3.Connection) -> None:
         conn.execute(_EVENT_BYTES_BACKFILL.format(where="1"))
 
 
+_KIND_INDEX = "idx_hosted_room_events_kind"
+
+
 def _initialize_schema(conn: sqlite3.Connection) -> None:
     for statement in _SCHEMA_DDL:
         conn.execute(statement)
@@ -386,6 +390,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_RETIRE_FROM_ROOMS.format(where="disbanded_at IS NOT NULL"))
     _migrate_remote_run_schema(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hosted_room_events_cursor ON hosted_room_events(room_id, seq)")
+    # Latest-event-of-a-kind reads (room purpose/notes) seek here instead of walking the room's history.
+    conn.execute(f"CREATE INDEX IF NOT EXISTS {_KIND_INDEX} ON hosted_room_events(room_id, kind, seq)")
     if not _schema_is_current(conn):
         raise HostedRoomError("hosted room schema migration did not complete")
 
@@ -398,7 +404,8 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
         and (table != "hosted_room_remote_runs" or _remote_run_schema_current(conn, columns))
         for (table, required), columns in zip(_REQUIRED_COLUMNS, actual, strict=True)) and conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_cursor'"
-    ).fetchone() is not None
+    ).fetchone() is not None and conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (_KIND_INDEX,)).fetchone() is not None
 
 
 def default_db_path() -> Path:
@@ -959,7 +966,9 @@ def append_event(
     expected_latest_seq: int | None = None, control_reserve: bool = False) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically; repeating an ``event_id``
     with identical content returns the original, different content fails closed. ``control_reserve`` lets a
-    bounded gateway notice use the control headroom, so a room whose log is full can still say why."""
+    bounded gateway notice use the control headroom, so a room whose log is full can still say why.
+    ``payload`` may be a function of the write-locked connection returning the payload, for one derived
+    from current room state: no concurrent append can land between that read and this write."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
     if expected_latest_seq is not None:
@@ -971,11 +980,12 @@ def append_event(
     if normalized_actor["kind"] == "gateway" and normalized_actor["id"] != authority_gateway_id:
         raise HostedRoomError("gateway actor.id must match authority_gateway_id")
     authority_epoch = _require_positive_int(authority_epoch, "authority_epoch")
-    if not isinstance(payload, dict):
-        raise HostedRoomError("payload must be an object")
-    payload_json = _payload_json(payload)
+    resolve = payload if callable(payload) else lambda _conn: payload
     now = _now(now)
     with _transaction(db_path, immediate=True) as conn:
+        if not isinstance(resolved := resolve(conn), dict):
+            raise HostedRoomError("payload must be an object")
+        payload_json = _payload_json(resolved)
         existing = _load_event(conn, room_id, event_id)
         if existing is not None:
             if _event_content(existing) != (kind, actor_json, authority_epoch, payload_json):

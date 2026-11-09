@@ -248,6 +248,10 @@ class HostedRoomAuthorityRPC:
                   'task_id': current[1].task_id if current else None,
                   'execution_generation': current[2] if current else None,
                   'status': current[0]['status'] if current else 'idle'}
+        live = self.authority.sessions.get(self.ref.session_id)
+        if current is not None and current[0]['status'] == 'started' and live is not None:
+            # The member's current tool and last frame, for the room's "scout · terminal · 7s".
+            result.update(live.event_stream.progress_for(current[0]['generation']))
         snapshot = await self.authority.attach(self.principal, self.ref, history=False)  # prompts only
         if snapshot.prompts:
             prompt = next((p for p in snapshot.prompts if p.get('kind') == 'approval'), None)

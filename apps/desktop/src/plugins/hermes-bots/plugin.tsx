@@ -66,6 +66,7 @@ import {
   sweepGroupChatMembersForRemovedConnection,
   updateGroupChat
 } from './group-chat'
+import { stickyGroupEngine } from './group-engine'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
@@ -297,6 +298,7 @@ export default {
                     room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+                  ...stickyGroupEngine(room),
                   image: typeof room.image === 'string' && room.image ? room.image : null,
                   rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
                   pinned: Boolean(room.pinned),

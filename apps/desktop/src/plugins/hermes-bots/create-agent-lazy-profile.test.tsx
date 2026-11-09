@@ -163,8 +163,11 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
+  // Radix's focus scope dispatches its unmount event from a 0 ms timer; let it fire
+  // here, or it lands in the next test file's jsdom window and throws there.
+  await new Promise(resolve => setTimeout(resolve, 0))
 })
 
 describe('materializing the draft profile', () => {

@@ -189,7 +189,7 @@ _LONG_HANDLERS = frozenset({
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
     "pet.cells", "pet.gallery", "pet.generate", "pet.hatch", "pet.info", "pet.select", "pet.thumb",
-    "learning.frames", "plugins.manage", "plugins.catalog.lookup", "reload.mcp", "mcp.servers.test",
+    "image.render", "learning.frames", "plugins.manage", "plugins.catalog.lookup", "reload.mcp", "mcp.servers.test",
     "mcp.servers.oauth.start",
     "process.list", "profiles.configure", "profiles.create", "profiles.describe", "profiles.get_asset",
     "profiles.list", "profiles.set_asset", "bot_relay.roster.sync", "bot_relay.outbox.drain",

@@ -1,0 +1,30 @@
+name: ascii-worlds
+repo: https://github.com/dudicslevente/hermes-ascii-worlds
+sha: e5be8d2cc6602c67e296c60993557a7bdb02e71d
+title: ASCII Worlds
+description: >-
+  Koi and jellyfish drawn live in text glyphs for Hermes Desktop. Choose how many and
+  their colours in Settings -> Plugins -> ASCII Worlds, and optionally let them swim
+  across the whole window. Desktop-only (desktop/plugin.js inside the plugin SDK
+  surface); no agent tools, hooks, middleware, env vars or network access.
+maintainer: dudicslevente
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/dudicslevente/hermes-ascii-worlds#readme
+version: "1.1.0"
+image: https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/e5be8d2cc6602c67e296c60993557a7bdb02e71d/docs/images/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/e5be8d2cc6602c67e296c60993557a7bdb02e71d/docs/images/koi-whole-window-1.jpg
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/e5be8d2cc6602c67e296c60993557a7bdb02e71d/docs/images/jellyfish-whole-window-1.jpg
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/e5be8d2cc6602c67e296c60993557a7bdb02e71d/docs/images/settings-background.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/e5be8d2cc6602c67e296c60993557a7bdb02e71d/docs/images/settings-scene.png
+platforms: []
+known_issues:
+  - Hand-tested on Hermes Desktop 0.22.6 on macOS only; Windows and Linux are untested.
+  - Fine glyph density at full speed, especially with several jellyfish, uses noticeable CPU. Battery saver and a bolder density turn the cost down.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

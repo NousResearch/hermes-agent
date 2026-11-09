@@ -191,6 +191,9 @@ export interface ClientSessionState {
   /** `turn_id` of the newest message.start (tui_gateway/stream_segments.py): a
    *  re-sent start of the same turn is not a new occurrence. */
   streamTurnId?: null | string
+  /** Newest row on screen when that message.start arrived: rows above it are
+   *  earlier turns, even when an interim seal left them marked `interim`. */
+  turnAnchorId?: null | string
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean

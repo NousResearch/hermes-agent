@@ -70,6 +70,15 @@ jobs:
             web/node_modules
           key: node-modules-scripts-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-npm${{ steps.node.outputs.npm-version }}-${{ hashFiles('package-lock.json') }}
 
+      # Vitest records each file's duration and result under
+      # node_modules/.vite/vitest and orders the next run from it, longest first.
+      # The run that misses the cache writes it before the post step saves the
+      # tree, so every hit until the next lockfile change replays that one run's
+      # order: the slowest jsdom suites all start cold together and starve the
+      # rest past their 15s timeout. Drop it so each run orders from scratch.
+      - name: Drop vitest run history from the restored tree
+        run: rm -rf node_modules/.vite/vitest apps/*/node_modules/.vite/vitest ui-tui/node_modules/.vite/vitest ui-tui/packages/*/node_modules/.vite/vitest tests-js/node_modules/.vite/vitest web/node_modules/.vite/vitest
+
       - uses: ./.github/actions/retry
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
         with:

@@ -84,6 +84,10 @@ _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (
 # pickers hide them (INTERNAL_LISTING_SOURCES).
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
 # ``tool`` and ``oneshot`` stay stored under their own labels so pickers can hide them.
+# Creation labels of the owner's own chats: the only LOCAL routes that carry OpenAI Daybreak (agent.daybreak),
+# the approved account's own access (no third-party or downstream use). Not ``tool`` (third-party
+# integrations), ``acp`` (editor clients), or the ``bot_room`` / ``a2a`` policies hosted rooms and peers stage.
+DAYBREAK_LABELS = frozenset({'cli', 'tui', 'gui', 'oneshot'})
 # Every other creation label is rewritten to ``source='local'`` on peer refresh.
 _KEEP_STORED_LABEL = frozenset({'tool', 'oneshot'})
 STORED_AS_LOCAL = frozenset(SURFACES) - _KEEP_STORED_LABEL
@@ -1134,9 +1138,10 @@ def policy_scope(policy, *, authority=None):
     try:
         from agent.auxiliary_task_config import session_auxiliary_scope
         from gateway.session_local_mcp import editor_mcp_scope
-        # Auxiliary tasks read the session's frozen section, never live config.yaml (a rotated key there).
-        auxiliary = policy.config(authority).get('auxiliary') if authority is not None else None
-        aux_scope = session_auxiliary_scope(auxiliary) if authority is not None else contextlib.nullcontext()
+        # Side tasks follow the profile's config.yaml, as every other side-task reader does; a bypass
+        # session never reads the profile: its side tasks use its own saved section (code defaults only).
+        aux_scope = (session_auxiliary_scope(policy.config(authority, secrets=False).get('auxiliary'))
+                     if policy.ignore_user_config else contextlib.nullcontext())
         with (editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope,
               policy.client_env_scope()):
             yield

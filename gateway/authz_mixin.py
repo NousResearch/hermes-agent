@@ -704,6 +704,31 @@ class GatewayAuthorizationMixin:
             )
         return allowed
 
+    def _admit_bot_chain(self, event) -> bool:
+        """The chain rules for one admitted inbound message (``BotLoopGuard.chain_admit``), read under the
+        transport profile like the budget. A human message resets its conversation's chain; a bot message
+        past ``max_hops``, a repeat of the same ask, or a bot answering the reply this bot just gave it
+        starts no turn (#137027)."""
+        from gateway.session_ingress import executing_admission
+        source = event.source
+        is_bot = bool(getattr(source, "is_bot", False))
+        # A committed admission re-enters the handler to execute; ingress already judged that message.
+        if executing_admission.get() or getattr(event, "internal", False) or (
+                not is_bot and not self._bot_loop_guard_instance().tracking_chains):
+            return True
+        allowed, state = self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().chain_admit(
+            self._bot_loop_guard_conversation(source), str(source.user_id or ""), str(event.text or ""), is_bot=is_bot))
+        if not allowed:
+            logger.info("Bot loop guard ended a bot exchange in %s chat %s (%s from %s; gateway.bot_loop_guard).",
+                        source.platform.value if source.platform else "", source.chat_id, state, source.user_id)
+        return allowed
+
+    def _note_bot_reply(self, source) -> None:
+        """This turn's reply to a bot peer went out: its next message answers an answer."""
+        if getattr(source, "is_bot", False):
+            self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().note_reply(
+                self._bot_loop_guard_conversation(source), str(source.user_id or "")))
+
     def _is_user_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool = True) -> bool:
         """Whether a user may use the bot.
 

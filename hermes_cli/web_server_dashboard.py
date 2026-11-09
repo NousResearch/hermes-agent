@@ -11,7 +11,7 @@ import threading
 import time
 from contextlib import contextmanager
 import hermes_yaml as yaml
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocketException
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette import status
@@ -936,16 +936,24 @@ class PluginApiWebSocketGate:
     A Desktop's native grant is the exception: it names the profile the socket acts for, so it is
     redeemed here, once (:func:`_native_ws_scope`), and consent is checked in that profile. A
     secondary profile's socket to a plugin its own host serves is answered here too (PLG-3).
+
+    First it runs the core sockets' Host/Origin/peer gate (``_ws_request_is_allowed``, 4403), which
+    HTTP middleware never applies to an upgrade. Here it covers every plugin socket, whatever form
+    declares it: a router dependency reaches ``@router.websocket`` routes only.
     """
 
     def __init__(self, app) -> None:
         self.app = app
 
     async def __call__(self, scope, receive, send) -> None:
+        from hermes_cli.web_server_chat import _ws_request_is_allowed
         from hermes_cli.web_server_plugin_profiles import plugin_request_scope, refuse_secondary_plugin_socket
         name = _plugin_api_name(scope) if scope["type"] == "websocket" else ""
         if not name:
             await self.app(scope, receive, send)
+            return
+        if not _ws_request_is_allowed(WebSocket(scope, receive, send)):
+            await send({"type": "websocket.close", "code": 4403})
             return
         with _native_ws_scope(scope) as admitted, plugin_request_scope(scope):
             if admitted and not await _plugin_api_request_refused(name):

@@ -24,6 +24,8 @@ import { noSkillsInstalled } from '../../userMessages.js'
 import { canonicalTools } from '../canonicalSessionCommands.js'
 import type { SlashCommand } from '../types.js'
 
+import { runPluginsUpdateAll } from './pluginsUpdateAll.js'
+
 interface SkillInfo {
   category?: string
   description?: string
@@ -776,6 +778,10 @@ export const opsCommands: SlashCommand[] = [
       // text slash worker so it stays at parity with `hermes plugins`.
       if (!arg.trim()) {
         return patchOverlayState({ pluginsHub: true })
+      }
+
+      if (arg.trim() === 'update') {
+        return runPluginsUpdateAll(ctx)
       }
 
       ctx.gateway.gw

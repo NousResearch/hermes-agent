@@ -381,7 +381,7 @@ class GatewayVoiceMixin:
         # an MP3 and then fail delivery with "Couldn't deliver the audio
         # attachment." — the peer sees the failure instead of the text reply the
         # agent already produced (#90103). Keep /voice scoped to human platforms.
-        if getattr(event.source.platform, "value", None) == "a2a":
+        if getattr(event.source.platform, "value", None) in ("a2a", "email"):
             return False
         # A local session's speech plays in its own client: LocalSessionAdapter has no audio delivery,
         # so an owner-side synthesis would be a paid provider call nobody hears.

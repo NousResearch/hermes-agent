@@ -42,14 +42,15 @@ def _schema_for_local_validation(node: Any) -> Any:
 
 
 def _schema_has_external_ref(node: Any) -> bool:
-    """True when *node* contains a non-local ``$ref`` — local validation must never turn a
-    tool call into an implicit network/file fetch (fail open)."""
+    """True when *node* contains a non-local ``$ref`` or ``$dynamicRef``: resolving it would
+    be an implicit network/file fetch. tool_call then skips local validation (fail open);
+    delegate_task rejects the output_schema."""
     if isinstance(node, list):
         return any(_schema_has_external_ref(item) for item in node)
     if not isinstance(node, dict):
         return False
-    ref = node.get("$ref")
-    return (isinstance(ref, str) and not ref.startswith("#")) or any(
+    refs = (node.get("$ref"), node.get("$dynamicRef"))
+    return any(isinstance(ref, str) and not ref.startswith("#") for ref in refs) or any(
         _schema_has_external_ref(value) for key, value in node.items()
         if key not in _SCHEMA_LITERAL_KEYS)
 

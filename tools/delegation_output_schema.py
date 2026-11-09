@@ -39,6 +39,11 @@ def coerce_output_schema(raw: Any) -> tuple[Optional[dict[str, Any]], Optional[s
         logger.debug("jsonschema unavailable; skipping output_schema meta-validation")
     except Exception as exc:
         return None, f"output_schema is not a valid JSON Schema: {exc}"
+    from tools.tool_search_validation import _schema_has_external_ref
+    if _schema_has_external_ref(raw):
+        return None, ('output_schema must be self-contained: every "$ref"/"$dynamicRef" has to be a local '
+                      '"#..." reference. Put shared definitions under "$defs" and reference them as '
+                      '"#/$defs/<name>".')
     return raw, None
 
 
@@ -95,11 +100,24 @@ def validate_output(text: str, schema: dict[str, Any]) -> tuple[bool, list[str]]
         return False, [f"Response is not valid JSON: {exc}"]
     try:
         from jsonschema.validators import validator_for  # type: ignore[import-untyped]
+        from referencing import Registry  # type: ignore[import-untyped]
+        from referencing.exceptions import Unresolvable  # type: ignore[import-untyped]
     except ImportError:
-        logger.debug("jsonschema unavailable; accepting parsed JSON without validation")
+        logger.debug("jsonschema/referencing unavailable; accepting parsed JSON without validation")
         return True, []
-    validator = validator_for(schema)(schema)
-    errors = sorted(validator.iter_errors(parsed), key=lambda e: list(e.absolute_path))
+    # Without an explicit registry jsonschema fetches any non-local ref with urllib
+    # (http(s), file://); an empty one only resolves refs inside the schema.
+    validator = validator_for(schema)(schema, registry=Registry())
+    # A broken schema (dangling ref, ref to a non-schema value) must not raise: the caller would
+    # replace the child's finished answer with an error entry. Name the ref, not str(exc):
+    # referencing's message embeds the whole schema, and the retry turn must not re-paste it.
+    try:
+        errors = sorted(validator.iter_errors(parsed), key=lambda e: list(e.absolute_path))
+    except Unresolvable as exc:
+        return False, [f"output_schema has an unresolvable reference: {exc.ref}"]
+    except Exception as exc:  # health: allow BLE001 -- any failure here is the model-written schema's
+        logger.warning("output_schema could not be applied to a child's answer", exc_info=True)
+        return False, [f"output_schema could not be applied: {type(exc).__name__}: {str(exc)[:200]}"]
     rendered = [  # bound error volume for the retry prompt
         "$" + "".join(f"[{p}]" if isinstance(p, int) else f".{p}" for p in err.absolute_path) + f": {err.message}"
         for err in errors[:10]]

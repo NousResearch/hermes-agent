@@ -193,3 +193,22 @@ def test_chat_completions_gateway_is_warmed_on_the_five_minute_schedule(priced):
     assert sent["messages"] == request["messages"] and sent["extra_body"] == request["extra_body"]
     assert sent["extra_headers"]["X-OpenRouter-Cache"] == "false"  # a response-cache hit refreshes nothing
     assert pcw.warm_ttl_seconds(_agent(_cache_ttl="1h")) == 3600  # native Anthropic keeps its tier
+
+
+def test_config_file_turns_warming_on_and_slow_responses_refresh_sooner(priced, tmp_path, monkeypatch):
+    """The setting is read from the profile's config.yaml, and a response that took 200 s to
+    finish refreshes 200 s sooner: the entry's lifetime started when the request was sent."""
+    import time as _time
+
+    import hermes_yaml as yaml
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"prompt_caching": {"cache_warming": "streaming"}}))
+    agent = _agent()
+    del agent._cache_warming_mode
+    assert pcw.cache_warming_mode(agent) == "streaming"
+    warmer = pcw.get_prompt_cache_warmer(agent)
+    sent = _time.time() - 200
+    assert warmer.start(_request(), _RESPONSE, sent_at=sent) is None
+    assert warmer._run.next_warm_at == pytest.approx(sent + pcw.cache_warming_delay_s(300))
+    warmer.cancel("done")
+    assert warmer.start(_request(), _RESPONSE, sent_at=_time.time() - 400) == "cache entry already expired"

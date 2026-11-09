@@ -183,6 +183,7 @@ class _Run:
     is_current: Callable[[], bool]
     started_at: float
     api_mode: str = "anthropic_messages"
+    anchor_at: float = 0.0
     phase: str = "streaming"
     next_warm_at: float = 0.0
     refresh_deadline_at: float = 0.0
@@ -199,6 +200,8 @@ class PromptCacheWarmer:
 
     def __init__(self, agent: Any):
         self.agent = agent
+        # Guards ``_run`` ownership: the timer thread and the loop both replace or stop it.
+        self._lock = threading.RLock()
         self._run: Optional[_Run] = None
         self._inactive_reason = "waiting for first request"
         self._last_decision: Optional[CacheWarmingDecision] = None
@@ -225,7 +228,7 @@ class PromptCacheWarmer:
         }
 
     # -- lifecycle ------------------------------------------------------------------------------
-    def start(self, api_kwargs: dict[str, Any], response: Any) -> Optional[str]:
+    def start(self, api_kwargs: dict[str, Any], response: Any, *, sent_at: Optional[float] = None) -> Optional[str]:
         """Arm a refresh for the request that just produced ``response``. Returns the reason
         nothing was armed, ``None`` when a timer is scheduled."""
         self._clear_run()
@@ -284,9 +287,13 @@ class PromptCacheWarmer:
             prompt_tokens=prompt_tokens, ttl_s=ttl_s, delay_s=delay_s, is_current=_is_current,
             started_at=time.time(), api_mode=api_mode,
         )
-        self._run = run
-        self._schedule(run)
-        return None if self._run is run else self._inactive_reason
+        # The entry's lifetime runs from when the provider served the request, not from when
+        # the (possibly long) response finished: the first refresh is due that much sooner.
+        run.anchor_at = sent_at if sent_at is not None else run.started_at
+        with self._lock:
+            self._run = run
+            self._schedule(run)
+            return None if self._run is run else self._inactive_reason
 
     def on_turn_settled(self) -> None:
         """The turn finished: ``streaming`` mode stops; ``idle`` mode keeps warming for up to
@@ -307,7 +314,8 @@ class PromptCacheWarmer:
 
     # -- internals ------------------------------------------------------------------------------
     def _clear_run(self) -> None:
-        run, self._run = self._run, None
+        with self._lock:
+            run, self._run = self._run, None
         if run is None:
             return
         with run.lock:
@@ -316,18 +324,24 @@ class PromptCacheWarmer:
                 run.timer = None
 
     def _stop(self, reason: str) -> str:
-        self._clear_run()
-        self._inactive_reason = reason
+        with self._lock:
+            self._clear_run()
+            self._inactive_reason = reason
         return reason
 
     def _stop_if_current(self, run: _Run, reason: str) -> None:
         """Timer-thread stop: never cancels a newer run the loop armed during the warm call."""
-        if self._run is run:
-            self._stop(reason)
+        with self._lock:
+            if self._run is run:
+                self._stop(reason)
 
     def _schedule(self, run: _Run) -> None:
         now = time.time()
-        run.next_warm_at = now + run.delay_s
+        run.next_warm_at = (run.anchor_at or now) + run.delay_s
+        run.anchor_at = 0.0  # later refreshes count from the refresh itself
+        if run.next_warm_at - run.delay_s + run.ttl_s <= now:
+            self._stop("cache entry already expired")
+            return
         # A timer can fire late after sleep or a blocked interpreter. Keep half of the planned
         # pre-expiry margin for that: a late refresh is a full-price write, not a warm.
         run.refresh_deadline_at = run.next_warm_at + (run.ttl_s - run.delay_s) / 2
@@ -348,21 +362,22 @@ class PromptCacheWarmer:
         timer.start()
 
     def _validate(self, run: _Run) -> bool:
-        if self._run is not run:
-            return False
-        if self.mode == "off":
-            self._stop("cache warming disabled")
-            return False
-        if self.mode == "streaming" and run.phase == "idle":
-            self._stop("agent run settled")
-            return False
-        if not run.is_current():
-            self._stop("conversation context changed")
-            return False
-        if time.time() > run.refresh_deadline_at:
-            self._stop("cache refresh deadline missed")
-            return False
-        return True
+        with self._lock:  # check ownership and stop in one step: never cancel a newer run
+            if self._run is not run:
+                return False
+            reason = None
+            if self.mode == "off":
+                reason = "cache warming disabled"
+            elif self.mode == "streaming" and run.phase == "idle":
+                reason = "agent run settled"
+            elif not run.is_current():
+                reason = "conversation context changed"
+            elif time.time() > run.refresh_deadline_at:
+                reason = "cache refresh deadline missed"
+            if reason is not None:
+                self._stop(reason)
+                return False
+            return True
 
     def _refresh(self, run: _Run) -> None:
         with run.lock:
@@ -376,6 +391,7 @@ class PromptCacheWarmer:
                                   else "cache economics unavailable")
             return
         run.refreshing = True
+        sent_at = time.time()
         try:
             message = self._send(run)
         except Exception as exc:  # health: allow BLE001 -- warming must never disturb the live turn; logged
@@ -386,8 +402,10 @@ class PromptCacheWarmer:
             run.refreshing = False
         run.warm_count += 1
         self._record(run, message, decision)
-        if self._run is run:
-            self._schedule(run)
+        with self._lock:
+            if self._run is run:
+                run.anchor_at = sent_at
+                self._schedule(run)
 
     def _send(self, run: _Run) -> Any:
         client = run.client
@@ -513,14 +531,17 @@ def get_prompt_cache_warmer(agent: Any) -> PromptCacheWarmer:
     return warmer
 
 
-def start_prompt_cache_warming(agent: Any, api_kwargs: Any, response: Any) -> None:
-    """Called once per successful provider response with the request that produced it."""
+def start_prompt_cache_warming(
+    agent: Any, api_kwargs: Any, response: Any, *, sent_at: Optional[float] = None,
+) -> None:
+    """Called once per successful provider response with the request that produced it;
+    ``sent_at`` is when that request went out (the cache entry's lifetime starts there)."""
     if cache_warming_mode(agent) == "off":
         return
     if not isinstance(api_kwargs, dict):
         return
     try:
-        get_prompt_cache_warmer(agent).start(api_kwargs, response)
+        get_prompt_cache_warmer(agent).start(api_kwargs, response, sent_at=sent_at)
     except Exception:
         logger.debug("prompt cache warming did not arm", exc_info=True)
 

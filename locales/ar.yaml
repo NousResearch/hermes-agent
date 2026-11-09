@@ -820,6 +820,7 @@ gateway:
     info_context: "◆ السياق: {tokens} رمزًا ({source})"
     info_acting_model: "◆ النموذج الفعلي (المحاسَب عليه في هذا التشغيل): {provider}:{model}"
     info_endpoint: "◆ نقطة النهاية: {url}"
+    editor_mcp_unavailable: "⚠️ الأدوات التي أتاحها محرّرك لهذه المحادثة (خوادم MCP الخاصة به) غير متصلة، لذا يُنفَّذ هذا الرد بدونها. أعد فتح هذه المحادثة من محرّرك لإعادة توصيلها."
   proxy:
     requires_aiohttp: "⚠️ يتطلب وضع وكيل الشبكة (proxy) حزمة aiohttp. شغّل: {hint}"
     url_missing: "⚠️ لم يُضبط عنوان وكيل الشبكة (proxy) (GATEWAY_PROXY_URL أو gateway.proxy_url)"

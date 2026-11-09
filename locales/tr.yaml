@@ -820,6 +820,7 @@ gateway:
     info_context: "◆ Bağlam: {tokens} token ({source})"
     info_acting_model: "◆ Etkin model (çalıştırma için faturalandırılan): {provider}:{model}"
     info_endpoint: "◆ Uç nokta: {url}"
+    editor_mcp_unavailable: "⚠️ Düzenleyicinin bu sohbete verdiği araçlar (MCP sunucuları) bağlı değil, bu yüzden bu yanıt onlar olmadan çalışıyor. Yeniden bağlamak için bu sohbeti düzenleyicinden tekrar aç."
   proxy:
     requires_aiohttp: "⚠️ Proxy modu aiohttp gerektirir. Çalıştırın: {hint}"
     url_missing: "⚠️ Proxy URL'si yapılandırılmamış (GATEWAY_PROXY_URL veya gateway.proxy_url)"

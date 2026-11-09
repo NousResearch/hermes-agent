@@ -820,6 +820,7 @@ gateway:
     info_context: "◆ Контекст: {tokens} токенів ({source})"
     info_acting_model: "◆ Робоча модель (оплачується за цей запуск): {provider}:{model}"
     info_endpoint: "◆ Кінцева точка: {url}"
+    editor_mcp_unavailable: "⚠️ Інструменти, які ваш редактор надав цьому чату (його MCP-сервери), не під’єднані, тому ця відповідь виконується без них. Відкрийте цей чат знову з редактора, щоб під’єднати їх знову."
   proxy:
     requires_aiohttp: "⚠️ Режим проксі потребує aiohttp. Виконайте: {hint}"
     url_missing: "⚠️ URL проксі не налаштовано (GATEWAY_PROXY_URL або gateway.proxy_url)"

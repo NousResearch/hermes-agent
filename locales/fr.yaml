@@ -967,6 +967,7 @@ gateway:
     info_context: "◆ Contexte : {tokens} tokens ({source})"
     info_acting_model: "◆ Modèle actif (facturé pour l'exécution) : {provider}:{model}"
     info_endpoint: "◆ Endpoint : {url}"
+    editor_mcp_unavailable: "⚠️ Les outils que votre éditeur a fournis à cette conversation (ses serveurs MCP) ne sont pas connectés ; cette réponse s'exécute donc sans eux. Rouvrez cette conversation depuis votre éditeur pour les reconnecter."
   proxy:
     requires_aiohttp: "⚠️ Le mode proxy nécessite aiohttp. Exécutez : {hint}"
     url_missing: "⚠️ URL du proxy non configurée (GATEWAY_PROXY_URL ou gateway.proxy_url)"

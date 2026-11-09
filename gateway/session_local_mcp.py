@@ -3,6 +3,8 @@
 Only a fingerprint and the selected schema manifest are durable. Editors must
 resupply the exact transport specification after owner restart, including argv:
 credentials are not reliably distinguishable from ordinary command arguments.
+Until one does (an owner restart, a turn from another client), executions run
+without the editor's servers and the committed manifest stays as it is.
 A different specification is a ``session.mutate editor_mcp`` (control capability,
 revision/generation fenced, idle only), never an implicit swap on attach.
 
@@ -13,6 +15,7 @@ Inside an execution it never changes.
 """
 import asyncio
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 import hashlib
 import hmac
@@ -28,6 +31,8 @@ logger = logging.getLogger(__name__)
 PRIVATE_KEY = ('editor_mcp',)
 _HELD_LOCK = threading.Lock()
 _RELIST_TIMEOUT = 5  # seconds an admission start waits on a held server's tools/list
+# Set for an execution whose session froze editor servers this owner does not hold (editor_mcp_scope).
+_DETACHED = ContextVar('editor_mcp_detached', default=False)
 
 
 def _json(value):
@@ -420,7 +425,7 @@ async def _refreeze(authority, ref):
     data = json.loads(policy.editor_mcp_json)
     servers = authority._local_editor_mcp.get(data['scope'])
     if servers is None:
-        return  # the execution reports launch_credentials_unavailable
+        return  # the execution runs without them (editor_mcp_scope)
 
     def probe():
         names = _frozen_names(data, servers)
@@ -463,6 +468,8 @@ async def prepare_branch_editor(authority, ref, servers, gate):
     """``(prepared, servers)`` for a fork of an editor session: the child's selection under its OWN
     scope, from the fork's list or else a copy of the parent's borrowed servers. The child never
     shares the parent's scope or connections. ``(None, None)`` when no editor servers are involved.
+    While the parent's editor has not resupplied them, the parent runs without them and the child
+    starts with none; an editor that opens the child binds its own (``editor_mcp``).
 
     Discovery starts every server, so *gate* (the branch's prepare-only fences: receipt, revision,
     generation, idle) runs first; an exact retry's durable receipt comes back as ``prepared``."""
@@ -477,9 +484,7 @@ async def prepare_branch_editor(authority, ref, servers, gate):
     if servers is None:
         if not parent.editor_mcp_json:
             return None, None
-        servers = getattr(authority, '_local_editor_mcp', {}).get(json.loads(parent.editor_mcp_json)['scope'])
-        if servers is None:
-            raise RuntimeStoreError('launch_credentials_unavailable')
+        servers = getattr(authority, '_local_editor_mcp', {}).get(json.loads(parent.editor_mcp_json)['scope'], [])
         servers = json.loads(_json(servers))
     elif parent.source != 'acp':
         raise RuntimeStoreError('invalid_params')
@@ -504,9 +509,28 @@ def editor_mcp_scope(authority, policy):
     data = json.loads(policy.editor_mcp_json)
     servers = getattr(authority, '_local_editor_mcp', {}).get(data['scope'])
     if servers is None:
-        raise RuntimeStoreError('launch_credentials_unavailable')
+        # Only the editor holds the specification and resupplies it when it reopens the chat. Until
+        # then the execution runs outside the session's tool scope, where its frozen editor toolsets
+        # resolve to no tools, and the committed manifest stays for the editor's next attach.
+        token = _DETACHED.set(True)
+        try:
+            yield
+        finally:
+            _DETACHED.reset(token)
+        return
     with _borrowed(authority, data['scope'], servers, _frozen_names(data, servers), policy.cwd) as (schemas, _):
         if schemas != data['schemas']:
             # Drift is re-frozen by the drain before a claim; inside an execution the manifest never changes.
             raise RuntimeStoreError('acp_mcp_schema_changed')
         yield
+
+
+def detached_editor_notice():
+    """The notice for an execution that runs without its editor's MCP servers (``editor_mcp_scope``),
+    or None: the turn says so, so a missing editor tool is not mistaken for a failure."""
+    if not _DETACHED.get():
+        return None
+    from agent.credits_tracker import AgentNotice
+    from agent.i18n import t
+    return AgentNotice(text=t('gateway.session.editor_mcp_unavailable'), level='warn', kind='ttl',
+                       ttl_ms=10_000, key='editor_mcp.unavailable', id='editor_mcp.unavailable')

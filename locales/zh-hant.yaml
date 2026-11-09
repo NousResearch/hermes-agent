@@ -820,6 +820,7 @@ gateway:
     info_context: "◆ 上下文：{tokens} tokens（{source}）"
     info_acting_model: "◆ 實際執行模型（本次執行的計費對象）：{provider}:{model}"
     info_endpoint: "◆ 端點：{url}"
+    editor_mcp_unavailable: "⚠️ 你的編輯器提供給此聊天的工具（其 MCP 伺服器）未連線，因此這次回覆會在沒有這些工具的情況下執行。請從你的編輯器重新開啟此聊天以重新連線。"
   proxy:
     requires_aiohttp: "⚠️ Proxy 模式需要 aiohttp。請執行：{hint}"
     url_missing: "⚠️ 尚未設定 Proxy URL（GATEWAY_PROXY_URL 或 gateway.proxy_url）"

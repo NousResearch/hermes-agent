@@ -24,7 +24,8 @@ import {
   type PluginStorage,
   type PluginTranslate,
   queryClient,
-  useValue
+  useValue,
+  windowScopedKey
 } from '@hermes/plugin-sdk'
 
 // Native completion notification.
@@ -307,10 +308,23 @@ export function bindApi(
   // lib/connection-scoped: byte-identical storage for single-backend users, and
   // the slug picked before per-connection keys existed survives the upgrade).
   // Remotes are suffixed by registry id.
+  //
+  // windowScopedKey wraps the result: Tim (and anyone running several
+  // Kanban boards at once) opens each board in its own peer window via
+  // File > New Window, and expects quit/relaunch to bring each window back
+  // on ITS OWN board, not whichever board's selection last won the race to
+  // write the shared localStorage key (Electron partitions localStorage by
+  // origin, not by BrowserWindow — the same root cause as t_7690aaea's
+  // tiles/layout bug). A peer's windowId is stable across quit/relaunch
+  // (BUILD-STABLE-WINDOW-ID in electron/window-session-state.ts), so once a
+  // window is reopened with its saved windowId its board-slug key resolves
+  // back to the same scoped entry. The main window carries no windowId and
+  // so is intentionally left on the bare/legacy key.
   const slugStorageKey = () => {
     const scope = kanbanConnectionScope()
+    const base = scope === LOCAL_SCOPE ? BOARD_SLUG_KEY : `${BOARD_SLUG_KEY}.${scope}`
 
-    return scope === LOCAL_SCOPE ? BOARD_SLUG_KEY : `${BOARD_SLUG_KEY}.${scope}`
+    return windowScopedKey(base)
   }
 
   $boardSlug.set(storage.get(slugStorageKey(), ''))

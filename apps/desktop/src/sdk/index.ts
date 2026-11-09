@@ -2023,6 +2023,14 @@ export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } fr
  *  contribution, not a `host.sidebar` verb, so it is attributed and dropped
  *  on disable. */
 export { SIDEBAR_NAV_PREFS_AREA, type SidebarNavPrefsContribution } from '@/store/sidebar-nav'
+/** Namespace a persisted storage key by the CURRENT window's own instance id
+ *  — a "File > New Window" peer gets a key unique to it; the main window (and
+ *  a peer with no/malformed id) gets `key` back UNCHANGED, so a pre-fix
+ *  single-window install's saved state round-trips exactly as before. Use
+ *  for any plugin storage key that describes ONE window's own UI state
+ *  (e.g. the kanban plugin's selected-board slug); never for a global/shared
+ *  preference, which must stay on the bare key so every window agrees. */
+export { windowScopedKey } from '@/store/windows'
 /** Live accent override — set a hex and the ACTIVE theme repaints with its
  *  accent family re-seeded from it (see `retintTheme`); `null` restores the
  *  authored palette. Deliberately not persisted: it is an authoring knob, not

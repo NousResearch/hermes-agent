@@ -18,7 +18,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
     host: { ...doors, state: { connectionId }, activeConnectionId: () => connectionId.get() },
     useValue: vi.fn(),
     usePluginI18n: vi.fn(),
-    captureGatewayFileDownload: vi.fn()
+    captureGatewayFileDownload: vi.fn(),
+    windowScopedKey: (key: string) => key
   }
 })
 

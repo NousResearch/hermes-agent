@@ -1,0 +1,29 @@
+name: hermes-teamops
+repo: "https://github.com/agentworker33-droid/hermes-teamops"
+sha: "538ff2507a95f8dada2e7422c4cd20704b71f75a"
+subdir: teamops
+title: "TeamOps — build and run your agent team"
+description: "One plugin for the full lifecycle of a multi-agent Hermes team. Deploy a whole team from a blueprint (profiles, SOULs, skills, crons, shared kanban, mesh edges) with `hermes teams deploy`, verify it with Deploy Guard (preflight/smoke/rollback), watch fleet status and the mesh map, catch silent cron gaps (Cron911) and dead models (Model Guard), get a daily standup digest, and broadcast decisions across teams (mesh sync). Includes the Agent Factory lane (Spec-Architect to Script-Builder to Validator) so you can generate custom blueprints from a one-line spec and deploy them with the same verified pipeline. 10 tools plus the hermes teams CLI. Local-first: everything runs against your own HERMES_HOME; nothing leaves the machine."
+maintainer: "Dalton Wyant / AutomatedAgents"
+tier: community
+category: automation
+requires_hermes: ">=0.21.4"
+docs_url: "https://github.com/agentworker33-droid/hermes-teamops#readme"
+image: ""
+screenshots: []
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - blueprint_list
+    - team_deploy
+    - team_verify
+    - team_rollback
+    - team_factory
+    - team_status
+    - cron_scan
+    - model_scan
+    - team_standup
+    - mesh_sync
+  provides_hooks: []
+  provides_middleware: []

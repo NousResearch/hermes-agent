@@ -369,7 +369,7 @@ class StreamTransportMixin:
                     # A failed send disabled edits: a preview sent now could never be updated and
                     # would stay on screen truncated next to the final reply. Send only the final.
                     return False
-                return await self._first_send(text, finalize=finalize)
+                return await self._first_send(text, finalize=finalize, raw_text=pre_fence_text)
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final
             return await self._edit_existing(text, finalize=finalize, is_turn_final=is_turn_final)
@@ -453,8 +453,10 @@ class StreamTransportMixin:
         # send must still fire so the user gets a real message.
         return True if await self._send_draft_frame(frame_text) else None
 
-    async def _first_send(self, text: str, *, finalize: bool) -> bool:
-        """First send, threaded to the user's message (correct topic/thread)."""
+    async def _first_send(self, text: str, *, finalize: bool, raw_text: Optional[str] = None,
+                          ) -> bool:
+        """First send, threaded to the user's message (correct topic/thread). ``raw_text`` is
+        ``text`` before display-only fence closing."""
         if getattr(self, "_egress_declined", False):
             # The connector refused this destination earlier in the run (see
             # _send_draft_frame). This is where every fallback path converges,
@@ -471,12 +473,12 @@ class StreamTransportMixin:
         except Exception as exc:
             logger.error("Stream first send error: %s", exc, exc_info=True)
             if self._send_failure_may_have_delivered(exc):
-                return self._hold_ambiguous_first_send(text, finalize=finalize)
+                return self._hold_ambiguous_first_send(text, raw_text, finalize=finalize)
             self._edit_supported = False
             return False
         if not result.success:
             if self._send_failure_may_have_delivered(result):
-                return self._hold_ambiguous_first_send(text, finalize=finalize)
+                return self._hold_ambiguous_first_send(text, raw_text, finalize=finalize)
             self._edit_supported = False
             return False
         self._already_sent = True
@@ -538,7 +540,8 @@ class StreamTransportMixin:
         self._flood_strikes = 0
         return True
 
-    def _hold_ambiguous_first_send(self, text: str, *, finalize: bool) -> bool:
+    def _hold_ambiguous_first_send(self, text: str, raw_text: Optional[str], *, finalize: bool,
+                                   ) -> bool:
         """A first send failed in a way that may still have landed: count ``text`` as shown and
         never open a second message with it. A preview leaves only its unseen tail for got_done;
         a final is the turn's delivery, and ``_delivery_ambiguous`` keeps the gateway's normal
@@ -550,7 +553,12 @@ class StreamTransportMixin:
             self._delivery_ambiguous = True
         else:
             self._preview_uncertain = True
-            self._enter_fallback_mode(self._visible_prefix())
+            # The seen prefix is the RAW stream: a fence closed only for display is not in the
+            # final, so a prefix carrying it never matches and the whole answer would go again.
+            raw = raw_text if raw_text is not None else text
+            if self.cfg.cursor and raw.endswith(self.cfg.cursor):
+                raw = raw[: -len(self.cfg.cursor)]
+            self._enter_fallback_mode(raw)
         self._edit_supported = False
         self._already_sent = True
         # Sentinel so a later finalize does not call _first_send again.

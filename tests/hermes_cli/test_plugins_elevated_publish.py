@@ -53,3 +53,22 @@ def test_an_unelevated_publication_touches_no_acl(staged_plugin, monkeypatch):
     publish_plugin(staged, target, {}, {"acl-probe": {}})
 
     assert (target / "plugin.yaml").is_file() and writes == []
+
+def test_worker_grants_acl_before_cli_returns(staged_plugin, monkeypatch, tmp_path):
+    """A killed caller cannot strand committed plugin code before it runs post-sync cleanup."""
+    from pm.publication import StagedPlugin
+
+    staged, target, writes = staged_plugin
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
+    project = tmp_path / "project"
+    project.mkdir()
+
+    # Exercise the real PM publication seam without ever resuming publish_plugin().
+    # Recovery retains this new tree if the worker committed it before the caller died.
+    StagedPlugin({
+        "staged": str(staged), "target": str(target), "target_digest": None,
+        "old_metadata": {}, "new_metadata": {"acl-probe": {"revision": "new"}},
+    }).publish(project)
+
+    assert (target / "plugin.yaml").is_file()
+    assert sorted(writes) == [".", "pkg", "pkg/__init__.py", "plugin.yaml"]

@@ -68,10 +68,6 @@ import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
-import { ViewControls } from "@/components/ViewControls";
-import { PhoneViewPreview } from "@/components/PhoneViewPreview";
-import { usePhoneView } from "@/hooks/usePhoneView";
-import { isPhonePreviewMode } from "@/lib/phone-view";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
@@ -382,8 +378,6 @@ export default function App() {
   const { manifests, loading: pluginsLoading } = usePlugins(profile);
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const { phoneView, togglePhoneView, closePhoneView } = usePhoneView();
-  const showViewControls = !isPhonePreviewMode();
   const closeMobile = useCallback(() => setMobileOpen(false), []);
 
   const [collapsed, setCollapsed] = useState(() => {
@@ -561,11 +555,6 @@ export default function App() {
         <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
           {t.app.brand}
         </Typography>
-        {showViewControls ? (
-          <div className="ml-auto">
-            <ViewControls phoneView={phoneView} onTogglePhoneView={togglePhoneView} />
-          </div>
-        ) : null}
       </header>
 
       {mobileOpen && (
@@ -841,9 +830,6 @@ export default function App() {
       </div>
 
       <PluginSlot name="overlay" />
-      {phoneView && showViewControls ? (
-        <PhoneViewPreview onClose={closePhoneView} />
-      ) : null}
     </div>
   );
 }

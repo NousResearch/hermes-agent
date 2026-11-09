@@ -111,14 +111,6 @@ export interface Translations {
     navigation: string;
     openDocumentation: string;
     openNavigation: string;
-    viewControls: {
-      controls: string;
-      fullscreen: string;
-      exitFullscreen: string;
-      phoneView: string;
-      phonePreview: string;
-      closePhoneView: string;
-    };
     pluginNavSection: string;
     sessionsActiveCount: string;
     statusOverview: string;

@@ -4,9 +4,6 @@ import { PageHeaderContext } from "./page-header-context";
 import { resolvePageTitle } from "@/lib/resolve-page-title";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
-import { ViewControls } from "@/components/ViewControls";
-import { usePhoneView } from "@/hooks/usePhoneView";
-import { isPhonePreviewMode } from "@/lib/phone-view";
 
 export function PageHeaderProvider({
   children,
@@ -17,8 +14,6 @@ export function PageHeaderProvider({
 }) {
   const { pathname } = useLocation();
   const { t } = useI18n();
-  const { phoneView, togglePhoneView } = usePhoneView();
-  const showViewControls = !isPhonePreviewMode();
   const [titleOverride, setTitleOverride] = useState<string | null>(null);
   const [afterTitle, setAfterTitle] = useState<ReactNode>(null);
   const [end, setEnd] = useState<ReactNode>(null);
@@ -120,10 +115,6 @@ export function PageHeaderProvider({
                 )}
               >
                 {end}
-              </div>
-            ) : showViewControls ? (
-              <div className="flex min-w-0 justify-end py-1">
-                <ViewControls phoneView={phoneView} onTogglePhoneView={togglePhoneView} />
               </div>
             ) : null}
           </div>

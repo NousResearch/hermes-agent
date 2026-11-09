@@ -1,0 +1,84 @@
+"""A streamed send that timed out after the request left may already be in the chat.
+
+The adapter reports it as a non-retryable timeout (the rule ``_send_with_retry`` uses to refuse a
+resend). The stream consumer must count that text as shown: sending it again, or editing a preview
+up to it, puts a second copy of the answer in front of the user.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from tests.waiting import async_wait_until
+
+_TIMED_OUT = SimpleNamespace(success=False, message_id=None, error="Timed out", retryable=False)
+
+
+def _landing_adapter(delivered: list, *, fail_first: bool = True) -> MagicMock:
+    """Every send reaches the chat; the first one reports a post-write timeout."""
+    async def send(**kw):
+        delivered.append(kw["content"])
+        if fail_first and len(delivered) == 1:
+            return _TIMED_OUT
+        return SimpleNamespace(success=True, message_id=f"m{len(delivered)}")
+
+    adapter = MagicMock()
+    adapter.REQUIRES_EDIT_FINALIZE = False
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    adapter.send = AsyncMock(side_effect=send)
+    adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+    adapter.delete_message = AsyncMock(return_value=True)
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["short_final", "streamed_preview"])
+async def test_timed_out_stream_send_is_shown_once_and_nothing_is_lost(shape):
+    """A short answer whose only send times out goes out once and counts as the turn's delivery
+    (the gateway's normal final send stays suppressed). A timed-out preview is followed by its
+    unseen tail only, never by a second full copy."""
+    delivered: list = []
+    consumer = GatewayStreamConsumer(
+        _landing_adapter(delivered), "chat",
+        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
+    if shape == "short_final":
+        consumer.on_delta("Short answer.")
+        consumer.finish()
+        await asyncio.wait_for(consumer.run(), timeout=10)
+        assert delivered == ["Short answer."]
+        final = "Short answer."
+    else:
+        consumer.on_delta("first part ")
+        task = asyncio.create_task(consumer.run())
+        await async_wait_until(lambda: delivered, timeout=5)  # the preview send went out
+        consumer.on_delta("second part.")
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=10)
+        assert delivered == ["first part ", "second part."]
+        final = "first part second part."
+
+    assert consumer.final_content_delivered is True
+    assert consumer.delivered_final_matches(final) is not False
+
+
+@pytest.mark.asyncio
+async def test_timed_out_fresh_final_does_not_edit_the_preview_up_to_the_answer():
+    """Preview shown, then the fresh-final send times out (it may be on screen): the preview must
+    not be edited into a second full copy, and nothing is sent a third time."""
+    delivered: list = []
+    adapter = _landing_adapter(delivered, fail_first=False)
+    consumer = GatewayStreamConsumer(adapter, "chat", StreamConsumerConfig(edit_interval=0.01))
+    await consumer._send_or_edit("Here is the")
+    adapter.send.side_effect = lambda **kw: delivered.append(kw["content"]) or _TIMED_OUT
+    adapter.prefers_fresh_final_streaming = MagicMock(return_value=True)
+
+    assert await consumer._send_or_edit("Here is the full answer.", finalize=True) is True
+
+    assert delivered == ["Here is the", "Here is the full answer."]
+    adapter.edit_message.assert_not_called()
+    adapter.delete_message.assert_not_called()

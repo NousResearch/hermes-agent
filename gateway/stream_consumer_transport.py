@@ -287,11 +287,18 @@ class StreamTransportMixin:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
             return False
         if not getattr(result, "success", False):
-            return False
+            if not self._send_failure_may_have_delivered(result):
+                return False
+            # The fresh final may be on screen with no id: editing the preview up to the same
+            # text would show the answer twice. Keep the preview (no id to clean up against).
+            logger.warning("Fresh-final send may have landed; not re-delivering it by edit")
+            self._edit_supported = False
+            self._delivery_ambiguous = is_turn_final
+            stale_ids, result = (), None
         new_message_id = getattr(result, "message_id", None)
-        # Best-effort preview cleanup; never delete the message just sent.
-        await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
-        self._preview_message_ids = set()
+        if stale_ids:  # best-effort preview cleanup; never delete the message just sent
+            await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
+            self._preview_message_ids = set()
         self._adopt_message_id(new_message_id)
         self._already_sent = True
         self._last_sent_text = text
@@ -462,17 +469,15 @@ class StreamTransportMixin:
                 chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
                 metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
         except Exception as exc:
-            logger.error("Stream first send error: %s", exc)
+            logger.error("Stream first send error: %s", exc, exc_info=True)
             if self._send_failure_may_have_delivered(exc):
-                self._hold_ambiguous_first_send(text)
-            else:
-                self._edit_supported = False
+                return self._hold_ambiguous_first_send(text, finalize=finalize)
+            self._edit_supported = False
             return False
         if not result.success:
             if self._send_failure_may_have_delivered(result):
-                self._hold_ambiguous_first_send(text)
-            else:
-                self._edit_supported = False
+                return self._hold_ambiguous_first_send(text, finalize=finalize)
+            self._edit_supported = False
             return False
         self._already_sent = True
         self._last_sent_text = text
@@ -533,19 +538,23 @@ class StreamTransportMixin:
         self._flood_strikes = 0
         return True
 
-    def _hold_ambiguous_first_send(self, text: str) -> None:
-        """A first send failed in a way that may still have landed.
-
-        Do not open a second message. ``_delivery_ambiguous`` is what keeps
-        the gateway from sending that text again.
-        """
+    def _hold_ambiguous_first_send(self, text: str, *, finalize: bool) -> bool:
+        """A first send failed in a way that may still have landed: count ``text`` as shown and
+        never open a second message with it. A preview leaves only its unseen tail for got_done;
+        a final is the turn's delivery, and ``_delivery_ambiguous`` keeps the gateway's normal
+        final send from repeating it."""
+        logger.warning("Stream send may have landed (timed out after the request left); "
+                       "treating it as shown instead of sending it again")
+        self._last_sent_text = text
+        if finalize:
+            self._delivery_ambiguous = True
+        else:
+            self._enter_fallback_mode(self._visible_prefix())
         self._edit_supported = False
         self._already_sent = True
-        self._delivery_ambiguous = True
-        self._final_response_sent = True
-        self._last_sent_text = text
         # Sentinel so a later finalize does not call _first_send again.
         self._message_id = "__no_edit__"
+        return True
 
     def _enter_fallback_mode(self, prefix: str) -> None:
         """Edits are over for this stream: send only the missing tail at got_done."""

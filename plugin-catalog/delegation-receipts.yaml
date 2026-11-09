@@ -1,6 +1,6 @@
 name: delegation-receipts
 repo: https://github.com/dacheah/delegation-receipts
-sha: ac52f37a8e1e8d75da35340bd09c5914d90571ac
+sha: aca1e72e26a30d2354e77ec8f907c8730d03a618
 description: >-
   Verify what a subagent says it did before the parent reports the work as done.
   A "receipts" delegation backend asks every child to end its reply with a receipt
@@ -26,7 +26,7 @@ maintainer: dacheah
 tier: community
 category: tools
 docs_url: https://github.com/dacheah/delegation-receipts#readme
-version: "0.2.0"
+version: "0.3.0"
 platforms: []
 capabilities:
   provides_tools: []

@@ -22,23 +22,37 @@ _PROMPT = (
     "exchange, write the single most likely next message from the USER.\n\n"
     "Rules:\n"
     "- Write as the user, in their voice and language, under 15 words.\n"
-    "- It must be a natural follow-up request, e.g. 'run the full suite and diff against the baseline'.\n"
-    "- Reply NONE if the task looks finished, or the assistant asked the user a question.\n"
+    "- If the assistant asked a question or made an offer ('Want me to...?', 'Tell me if you want "
+    "X'), answer it with the user's most likely short reply, e.g. 'yes, go ahead' or "
+    "'yes, brief the worker'.\n"
+    "- If the assistant asked the user to do something and report back ('tell me when it's "
+    "done'), write 'done' or a similarly short report.\n"
+    "- Otherwise write the natural next request, e.g. 'run the full suite and diff against the "
+    "baseline'.\n"
+    "- Never suggest thanks, acknowledgements, 'got it', 'sounds good', or waiting/passive "
+    "messages; reply NONE instead.\n"
+    "- Reply NONE only when nothing useful and plausible fits.\n"
     "- Never describe, explain or refer to 'the user' or 'the assistant'; if you can't write the "
     "message itself, reply NONE.\n"
     "- Output only the message: no quotes, no labels, no explanation."
 )
 
+# A rambling answer is a model slip (usually the assistant's voice), better shown as nothing.
+MAX_SUGGESTION_WORDS = 20
+MAX_SUGGESTION_CHARS = 120  # covers languages written without spaces
+
 _QUOTE_PAIRS = {'"': '"', "'": "'", "`": "`", "“": "”", "‘": "’"}
 
 
 def clean_suggestion(raw: Any) -> Optional[str]:
-    """First non-empty line, quotes stripped; ``None`` for NONE or empty output."""
+    """First non-empty line, quotes stripped; ``None`` for NONE, empty or over-long output."""
     text = flatten_message_text(raw)
     line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
     while len(line) >= 2 and _QUOTE_PAIRS.get(line[0]) == line[-1]:
         line = line[1:-1].strip()
     if not line or line.rstrip(".").upper() == "NONE":
+        return None
+    if len(line.split()) > MAX_SUGGESTION_WORDS or len(line) > MAX_SUGGESTION_CHARS:
         return None
     return line
 

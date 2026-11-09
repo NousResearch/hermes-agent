@@ -44,6 +44,23 @@ def test_multiline_output_keeps_first_nonempty_line():
     assert _suggest("\n\nrun the full suite\nthen diff against the baseline")[0] == "run the full suite"
 
 
+@pytest.mark.parametrize("n,kept", [(20, True), (21, False)])
+def test_output_over_the_word_limit_shows_nothing(n, kept):
+    text = " ".join(["word"] * n)
+    assert nps.clean_suggestion(text) == (text if kept else None)
+
+
+def test_rambling_first_line_is_dropped_not_truncated():
+    rambling = "Nothing appears yet. I'll try a couple of turns, then tell you what I see after that happens and whether it is working as intended"
+    assert nps.clean_suggestion(f'"{rambling}"\nrun it') is None
+
+
+@pytest.mark.parametrize("n,kept", [(120, True), (121, False)])
+def test_output_over_the_char_limit_shows_nothing(n, kept):
+    text = "あ" * n  # no spaces, so the word cap cannot catch it
+    assert nps.clean_suggestion(text) == (text if kept else None)
+
+
 def test_input_is_clipped_to_the_tail():
     _, m = _suggest("x", user="u" * 50_000, assistant="a" * 50_000)
     sent = "".join(msg["content"] for msg in m.call_args.kwargs["messages"])

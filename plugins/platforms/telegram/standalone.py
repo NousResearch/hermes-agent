@@ -14,6 +14,7 @@ import re
 from types import SimpleNamespace
 
 from agent.redact import redact_sensitive_text
+from plugins.platforms.telegram.telegram_markdown import _MD_CODE_RE
 from plugins.platforms.telegram.telegram_send_errors import SAME_REQUEST_ATTEMPTS, is_entity_parse_error
 from pm import install_hint
 
@@ -281,8 +282,6 @@ def _telegram_album_paths(media_files, force_document, caption):
     return [os.path.abspath(path) for path, _ in media_files] if ok else []
 
 
-# Markdown code (fenced or inline): a tag shown as code is an example, not markup to render.
-_MARKDOWN_CODE_RE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
 # Telegram rejects the whole message on one stray ``<`` / ``>`` / ``&`` outside a supported tag.
 _HTML_ENTITY_RE = re.compile(r"&(?:#\d+|#x[0-9a-fA-F]+|[a-zA-Z]+);")
 
@@ -307,7 +306,8 @@ def _telegram_format(message):
     is sent as HTML (any other markup escaped); otherwise Markdown -> MarkdownV2 via the adapter's
     ``format_message``."""
     from telegram.constants import ParseMode
-    if _TELEGRAM_HTML_TAG_RE.search(_MARKDOWN_CODE_RE.sub("", message)):
+    # A tag shown as Markdown code (any backtick width, as the MarkdownV2 path reads it) is an example.
+    if _TELEGRAM_HTML_TAG_RE.search(_MD_CODE_RE.sub("", message)):
         return _escape_non_telegram_markup(message), ParseMode.HTML, True
     mdv2 = _telegram_mdv2(message)
     return (message if mdv2 is None else mdv2), ParseMode.MARKDOWN_V2, False  # None: send as-is

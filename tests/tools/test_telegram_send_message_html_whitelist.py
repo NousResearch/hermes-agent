@@ -98,12 +98,13 @@ def test_html_send_escapes_markup_telegram_does_not_support(
     assert bot.send_message.await_args.kwargs["text"] == sent
 
 
+@pytest.mark.parametrize("code", ["`<b>x</b>`", "``<b>x</b>``", "`` a ` <b>x</b> ``"])
 def test_tag_shown_only_as_markdown_code_keeps_the_markdown_branch(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch: pytest.MonkeyPatch, code: str) -> None:
     from plugins.platforms.telegram.standalone import _telegram_format
 
     _install_telegram_mock(monkeypatch, MagicMock())
-    formatted, parse_mode, has_html = _telegram_format("**Note**: example `<b>x</b>` here")
+    formatted, parse_mode, has_html = _telegram_format(f"**Note**: example {code} here")
 
     assert (parse_mode, has_html) == ("MarkdownV2", False)
     assert formatted.startswith("*Note*") and "**" not in formatted

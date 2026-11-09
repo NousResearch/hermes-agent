@@ -61,7 +61,8 @@ test('prepared inputs are path-bound and reject changed or missing bytes without
   assert.throws(() => prepared.readPackagingInputs(manifest, inputs.source, 'linux-x64'), /run preparation again/i)
 })
 
-test('an unpacked build prepares from the lock-pinned install with every release host unreachable', async () => {
+// Windows dir preparation still acquires the signing kit (winCodeSign), so only POSIX skips every download.
+test.runIf(process.platform !== 'win32')('an unpacked build prepares from the lock-pinned install with every release host unreachable', async () => {
   const source = path.resolve(import.meta.dirname, '../../..')
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'prepared-dir-offline-'))
   roots.push(root)

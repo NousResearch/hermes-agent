@@ -68,6 +68,12 @@ export const LOCALE_OPTIONS = [
     name: LOCALE_ENDONYMS.es,
     englishName: 'Spanish',
     configValue: 'es'
+  },
+  {
+    id: 'tr',
+    name: 'Türkçe',
+    englishName: 'Turkish',
+    configValue: 'tr'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: BundledLocale; name: string }[]
 
@@ -131,6 +137,10 @@ export function languageOptions(): LanguageOption[] {
 }
 
 const LOCALE_ALIASES: Record<string, BundledLocale> = {
+  tr: 'tr',
+  'tr-tr': 'tr',
+  tr_tr: 'tr',
+  turkish: 'tr',
   en: 'en',
   'en-us': 'en',
   en_us: 'en',

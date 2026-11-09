@@ -1,4 +1,4 @@
-import { NEW_SESSION_TITLE } from '@/lib/chat-runtime'
+import { useI18n } from '@/i18n'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $draftTitles, draftTitleIn } from '@/store/composer'
 
@@ -21,5 +21,7 @@ export interface SessionDraftTitleProps {
  * reads the same as one never typed into.
  */
 export function SessionDraftTitle({ scope }: SessionDraftTitleProps) {
-  return useStoreSelector($draftTitles, titles => draftTitleIn(titles, scope)) || NEW_SESSION_TITLE
+  const { t } = useI18n()
+
+  return useStoreSelector($draftTitles, titles => draftTitleIn(titles, scope)) || t.sidebar.nav['new-session']
 }

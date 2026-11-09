@@ -8,6 +8,7 @@ tier: community
 category: models
 requires_hermes: ">=0.22.0"
 version: "0.1.2"
+image: https://raw.githubusercontent.com/jimmy77733/coffee-vram/1f759650aeb74b2eda236f6ae4d6c3c266876c09/assets/cover.jpg
 capabilities:
   provides_tools: [vram_status]
   provides_hooks: [post_api_request, api_request_error]

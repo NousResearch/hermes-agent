@@ -183,21 +183,28 @@ class GatewayTopicThreadsMixin:
         back to the old session (#58850); the topic is then renamed to the session it now holds."""
         if not await asyncio.to_thread(self._is_telegram_topic_lane, source):
             return
-        await asyncio.to_thread(self._bind_telegram_topic_if_route_holds, source, session_entry, reason=reason)
-        if title:
-            await self._rename_telegram_topic_for_session_title(source, session_entry.session_id, title)
+        # Per topic, one switch's bind + rename finishes before the next starts: an older /resume
+        # parked in its rename would otherwise land its title after a newer switch renamed the topic.
+        from gateway.session_authority import keyed_turn
+        locks = self.__dict__.setdefault("_topic_switch_locks", {})
+        async with keyed_turn(locks, (str(source.chat_id), str(source.thread_id))):
+            holds = await asyncio.to_thread(self._bind_telegram_topic_if_route_holds, source, session_entry,
+                                            reason=reason)
+            if title and holds:
+                await self._rename_telegram_topic_for_session_title(source, session_entry.session_id, title)
 
-    def _bind_telegram_topic_if_route_holds(self, source: SessionSource, session_entry, *, reason: str) -> None:
+    def _bind_telegram_topic_if_route_holds(self, source: SessionSource, session_entry, *, reason: str) -> bool:
         """Bind only while the route still names ``session_entry``: commands dispatch concurrently, and
         an older /resume that resumes after a newer one switched and bound must not restore its own
         session. One lock spans check + write, so the newer switch (which happens before its own
-        guarded write) always writes last."""
+        guarded write) always writes last. False = superseded (nothing written)."""
         with _TOPIC_SWITCH_BIND_LOCK:
             if self.session_store.peek_session_id(session_entry.session_key) != session_entry.session_id:
                 logger.info("Topic binding for %s not moved to %s (%s): the route switched again since",
                             session_entry.session_key, session_entry.session_id, reason)
-                return
+                return False
             self._sync_telegram_topic_binding(source, session_entry, reason=reason)
+            return True
 
     async def _telegram_topic_switch_conflict(self, source: SessionSource, target_session_id: str) -> Optional[str]:
         """Refusal text when ``target_session_id`` is bound to ANOTHER topic: a session links to one

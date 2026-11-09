@@ -15,6 +15,7 @@ import pytest
 from gateway.session import SessionEntry, build_session_key
 from hermes_state import SessionDB
 from tests.gateway.test_telegram_topic_mode import _make_event, _make_runner, _make_source
+from tests.waiting import async_wait_until
 
 CHAT = "208214988"
 THREAD = "17585"
@@ -159,3 +160,37 @@ async def test_older_resume_finishing_last_does_not_undo_newer_switch(tmp_path):
     await older
 
     assert _bound_session(db) == "newer"
+
+
+@pytest.mark.asyncio
+async def test_older_resume_parked_in_its_rename_does_not_land_its_title_last(tmp_path):
+    """/resume A binds and is parked inside its topic rename while /resume B switches: B's rename
+    must land after A's, so the topic ends named for B, the session it is bound to."""
+    db, runner = _bound_topic(tmp_path, "older", "newer")
+    db.set_session_title("older", "Older Work")
+    db.set_session_title("newer", "Newer Work")
+    adapter = runner.adapters[next(iter(runner.adapters))]
+    a_renaming, release_a, landed = asyncio.Event(), asyncio.Event(), []
+
+    async def rename(*, chat_id, thread_id, name):
+        if not a_renaming.is_set():
+            a_renaming.set()
+            await release_a.wait()
+        landed.append(name)
+
+    adapter.rename_dm_topic = AsyncMock(side_effect=rename)
+    older = asyncio.create_task(runner._handle_resume_command(_make_event("/resume Older Work", thread_id=THREAD)))
+    await a_renaming.wait()
+    runner.async_session_store.get_or_create_session.return_value = _entry(
+        build_session_key(_make_source(thread_id=THREAD)), "older")
+    newer = asyncio.create_task(runner._handle_resume_command(_make_event("/resume Newer Work", thread_id=THREAD)))
+    topic = (CHAT, THREAD)
+    # B has either renamed already (no per-topic ordering) or is queued behind A's switch.
+    await async_wait_until(
+        lambda: landed or runner.__dict__.get("_topic_switch_locks", {}).get(topic, [None, 0])[1] == 2,
+        what="the newer /resume to rename or queue behind the older one")
+    release_a.set()
+    await asyncio.gather(older, newer)
+
+    assert _bound_session(db) == "newer"
+    assert landed[-1] == "Newer Work"

@@ -311,3 +311,38 @@ async def test_real_ptb_stop_cleanup_cannot_heal_recovery_generation():
             await app.updater.stop()
         await _cancel_task(adapter._polling_progress_verifier_task)
         await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_network_recovery_stop_skips_read_receipt_without_refetch_warning(caplog):
+    """The skipped read receipt must not make PTB warn that fetched updates may be fetched again:
+    the same Updater resumes from its offset (#131783)."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="123456:test-token"))
+    polling_request = _GetUpdatesRequest()
+    polling_request.initial_conflict_sent = polling_request.replacement_enabled = True
+    app = (
+        tg_adapter.Application.builder()
+        .token("123456:test-token")
+        .request(_GeneralRequest())
+        .get_updates_request(adapter._instrument_polling_request(polling_request))
+        .build()
+    )
+    adapter._app = app
+    await app.initialize()
+    try:
+        await adapter._start_polling_once(app, drop_pending_updates=False, error_callback=lambda _e: None)
+        await asyncio.wait_for(adapter._polling_progress_event.wait(), timeout=2)
+        polling_request.block.set()
+        with caplog.at_level("WARNING", logger="telegram.ext.Updater"):
+            assert await adapter._stop_updater_or_go_fatal(
+                app, "network-recovery", skip_read_receipt_cleanup=True
+            )
+        assert polling_request.cleanup_calls == 0
+        assert not app.updater.running
+        assert not [r for r in caplog.records if r.name == "telegram.ext.Updater"]
+    finally:
+        polling_request.block.set()
+        if app.updater.running:
+            await app.updater.stop()
+        await _cancel_task(adapter._polling_progress_verifier_task)
+        await app.shutdown()

@@ -13,9 +13,7 @@ import pytest
 def resolve_git():
     from hermes_cli import plugins_cmd as pc
 
-    pc._resolve_git_executable.cache_clear()
-    yield pc._resolve_git_executable
-    pc._resolve_git_executable.cache_clear()
+    return pc._resolve_git_executable
 
 
 def _stub_executable(path: Path, body: str = "") -> Path:
@@ -45,6 +43,24 @@ def test_plugin_git_prefers_pm_pinned_git_over_path(resolve_git, tmp_path, monke
     assert Path(shutil.which("git") or "") == path_git
 
     assert Path(resolve_git() or "") == (pinned if pm_has_git else path_git)
+
+
+def test_plugin_git_rechecks_pm_after_pin_is_installed(resolve_git, tmp_path, monkeypatch):
+    """An existing gateway must use a PM git installed after its first plugin lookup.
+
+    A process previously using a PATH git must not keep it after pm repair makes
+    the pinned git available; callers should not need a gateway restart.
+    """
+    suffix = ".exe" if os.name == "nt" else ""
+    path_git = _stub_executable(tmp_path / "user-bin" / f"git{suffix}")
+    pinned = _stub_executable(tmp_path / "tools" / "git-2.53.0+3-win32-x64" / "cmd" / f"git{suffix}")
+    monkeypatch.setenv("PATH", str(path_git.parent))
+
+    _pm_reports_git(monkeypatch, None)
+    assert Path(resolve_git() or "") == path_git
+
+    _pm_reports_git(monkeypatch, pinned)
+    assert Path(resolve_git() or "") == pinned
 
 
 @pytest.mark.platforms("posix")

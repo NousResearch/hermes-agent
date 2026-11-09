@@ -60,7 +60,6 @@ _MAX_CLONE_TIMEOUT_SECONDS = 3600
 _CLONE_TIMEOUT_HINT = "On a slow connection, raise plugins.clone_timeout_seconds in config.yaml."
 
 
-@functools.lru_cache(maxsize=1)
 def _resolve_git_executable() -> Optional[str]:
     """The git plugin operations run: PM's pinned git, then PATH, then the usual install dirs
     (``PATH`` may be minimal)."""

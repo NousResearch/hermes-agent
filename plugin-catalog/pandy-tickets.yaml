@@ -1,6 +1,6 @@
 name: pandy-tickets
 repo: https://github.com/Pandy-Cloud/pandy-tickets-public
-sha: 2d5d18782a27e88b2c081b91018428fa1876eaa2
+sha: 11c12b895ded8e8e55cbc057bc932c05f6618fe4
 title: Pandy Tickets
 description: "Find events in Guatemala and draft new events through Pandy Tickets' official MCP server (Streamable HTTP at https://tickets.pandy.cloud/mcp, no sign-in, no keys). Public event search, checkout links, and event creation tools. Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure: hosted-only connector with no local code; every tool call goes to tickets.pandy.cloud. The public tools (search-events, get-event, get-checkout-link) require no authentication. draft-event creates a draft that the organizer must claim and publish; the agent never publishes events or processes payments. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
 maintainer: Pandy Cloud

@@ -3,11 +3,11 @@
 Publication moves a tree staged under a ``tempfile`` directory into ``plugins/``. Python 3.13+ gives
 that directory a protected DACL whose only user-reachable entry is OWNER RIGHTS, and an elevated
 process's default owner is Administrators, so the user's normal token got WinError 5 on the plugin
-and discovery skipped it with only a log line. Elevation is the host fact the code reads; only the
-native ACL writer is replaced, to record what an elevated grant touched (the effect itself is
+and discovery skipped it with only a log line. Elevation is the host fact the code reads. ``sync_venv``
+runs only the real PM publication move (``StagedPlugin.publish``), without a dependency build, and
+the native ACL writer is replaced to record what an elevated grant touched (the effect itself is
 proved on Windows by ``test_hermes_dir_acl_windows.py``).
 """
-import shutil
 from pathlib import Path
 
 import pytest
@@ -24,8 +24,12 @@ def staged_plugin(tmp_path, monkeypatch):
     (staged / "pkg" / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
     target.parent.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("pm.client.sync_venv", lambda **kwargs: shutil.move(kwargs["plugins"].data["staged"],
-                                                                             kwargs["plugins"].data["target"]))
+    from pm.publication import StagedPlugin
+
+    project = tmp_path / "pm-project"
+    project.mkdir()
+    monkeypatch.setattr("pm.client.sync_venv",
+                        lambda **kwargs: StagedPlugin(dict(kwargs["plugins"].data)).publish(project))
     writes = []
     monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32",
                         lambda path, *_a, **_k: writes.append(Path(path).relative_to(target).as_posix()))
@@ -53,6 +57,7 @@ def test_an_unelevated_publication_touches_no_acl(staged_plugin, monkeypatch):
     publish_plugin(staged, target, {}, {"acl-probe": {}})
 
     assert (target / "plugin.yaml").is_file() and writes == []
+
 
 def test_worker_grants_acl_before_cli_returns(staged_plugin, monkeypatch, tmp_path):
     """A killed caller cannot strand committed plugin code before it runs post-sync cleanup."""

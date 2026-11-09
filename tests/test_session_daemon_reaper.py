@@ -16,6 +16,38 @@ from tests import conftest as suite_conftest
 from tests.waiting import wait_until
 
 
+@pytest.mark.platforms("posix")
+def test_process_scan_continues_after_wrapped_permission_denial(tmp_path, monkeypatch):
+    import psutil
+
+    def denied_environ():
+        raise SystemError("proc_environ returned a result with an exception set") from PermissionError(13, "denied")
+
+    denied = SimpleNamespace(pid=-1, environ=denied_environ)
+    owned = SimpleNamespace(pid=-2, environ=lambda: {"HERMES_HOME": str(tmp_path / "session")})
+    outside = SimpleNamespace(pid=-3, environ=lambda: {"HERMES_HOME": str(tmp_path.parent / "other")})
+    monkeypatch.setattr(psutil, "process_iter", lambda: iter((denied, owned, outside)))
+
+    assert suite_conftest._processes_with_hermes_home_under([tmp_path]) == [owned.pid]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("cause", [None, ValueError("invalid process data")])
+def test_process_scan_propagates_unrelated_system_errors(tmp_path, monkeypatch, cause):
+    import psutil
+
+    error = SystemError("unexpected process inspection failure")
+
+    def broken_environ():
+        raise error from cause
+
+    monkeypatch.setattr(psutil, "process_iter", lambda: iter((SimpleNamespace(pid=-1, environ=broken_environ),)))
+
+    with pytest.raises(SystemError) as caught:
+        suite_conftest._processes_with_hermes_home_under([tmp_path])
+    assert caught.value is error
+
+
 def _detached(env_home, marker):
     code = "import time\nwhile True: time.sleep(0.2)\n"
     env = {**os.environ, "HERMES_HOME": str(env_home), "LIVE_REAP_MARKER": marker}

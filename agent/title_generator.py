@@ -354,8 +354,21 @@ def derive_title(user_message: str, title_preview: str | None = None) -> Optiona
     return line or None
 
 
+_TITLE_QUOTES = "\"'“”‘’「」『』"
+# Terminal punctuation a model appends when it writes a sentence instead of a title. The prompt asks
+# for none, and only the ASCII set was stripped — so a title in a language that punctuates with the
+# full-width forms kept its stop and read as a truncated sentence in the sidebar (#141969 sibling).
+_TITLE_TRAILING_PUNCT = ".!,;:。！？，、；：…"
+# ``Title:`` as a label, in the languages the title prompt can be answered in. The prompt forbids the
+# prefix and only the ASCII spelling was stripped, so ``标题：修复登录`` was stored with the label.
+_TITLE_PREFIX_RE = re.compile(
+    r"^\s*(?:title|titel|título|titre|titolo|заголовок|タイトル|제목|标题|標題)\s*[:：]\s*",
+    re.IGNORECASE,
+)
+
+
 def _strip_title_prefix(text: str) -> str:
-    return text[6:].strip() if text.lower().startswith("title:") else text
+    return _TITLE_PREFIX_RE.sub("", text, count=1)
 
 
 def _first_line(text: str) -> str:
@@ -427,7 +440,13 @@ def _title_from_reasoning(message: Any) -> str:
 
 def _clean_title(text: str) -> Optional[str]:
     """Normalize a model-produced title, or None when nothing usable remains."""
-    title = _strip_title_prefix(" ".join((text or "").split()).strip("\"'").strip()).rstrip(".!,;:")
+    title = " ".join((text or "").split())
+    # Two passes: a quoted, labelled title hides its label under the quotes — ``“标题：修复登录”`` only
+    # exposes ``标题：`` once the quotes are gone, and ``标题：“修复登录”。`` only exposes its stop once
+    # the label is. One pass leaves whichever layer the other was covering.
+    for _ in range(2):
+        title = _strip_title_prefix(title).strip(_TITLE_QUOTES).strip()
+        title = title.rstrip(_TITLE_TRAILING_PUNCT).strip()
     if len(title) > 80:
         title = title[:77].rstrip() + "..."
     return title or None

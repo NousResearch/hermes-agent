@@ -898,3 +898,63 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+class TestCleanTitleLocalizedPunctuation:
+    """Regression: the trailing-punctuation strip and the ``Title:`` prefix strip were ASCII-only.
+
+    The title prompt forbids trailing punctuation and a ``Title:`` prefix, and ``_clean_title`` strips
+    both — but ``str.rstrip(".!,;:")`` leaves ``。！？，；：`` alone and ``lower().startswith("title:")``
+    never matches ``标题：``. A CJK model that punctuates its title the way its language punctuates, or
+    labels it the way its language labels, therefore had that markup persisted into the sidebar name.
+    """
+
+    @pytest.mark.parametrize(("raw", "expected"), [
+        # Full-width stops a CJK model appends when it writes a sentence instead of a title.
+        ("修复移动端登录按钮。", "修复移动端登录按钮"),
+        ("排查微信发送限流！", "排查微信发送限流"),
+        ("为什么登录失败？", "为什么登录失败"),
+        ("重启网关，恢复推送；", "重启网关，恢复推送"),
+        ("补上超时重试…", "补上超时重试"),
+        # The label in the language the model answered in (the prompt's own ban, localized).
+        ("标题：修复会话标题", "修复会话标题"),
+        ("標題：修復會話標題", "修復會話標題"),
+        ("タイトル：修正", "修正"),
+        ("제목: 세션 제목 수정", "세션 제목 수정"),
+        ("Titel: X", "X"),
+        ("TÍTULO: arreglar el login", "arreglar el login"),
+        # Label + quotes + stop together: each layer hides the one under it, so one pass is not enough.
+        ("标题：“修复会话标题。”", "修复会话标题"),
+        ("Title: \"Fix login button.\"", "Fix login button"),
+        # The label is the inner layer here: only the second pass sees it once the quotes are gone.
+        ("“标题：修复会话标题”", "修复会话标题"),
+        ("「Titel: X」", "X"),
+    ])
+    def test_strips_localized_trailing_punctuation_and_prefix(self, raw, expected):
+        from agent.title_generator import _clean_title
+
+        assert _clean_title(raw) == expected
+
+    @pytest.mark.parametrize("title", [
+        # Interior punctuation is topic, not markup: a colon separates the symptom from the cause and
+        # a quoted name is part of the name. Only the ends are normalized.
+        "登录后白屏：cookie 未写入",
+        "修复登录按钮，“白屏”问题",
+        "(WIP) Fix build",
+        "部署 searxng 搜索服务",
+        "[RFC] 会话标题截断",
+        "Investigate the title resolver bug",
+    ])
+    def test_keeps_interior_punctuation_and_leading_brackets(self, title):
+        from agent.title_generator import _clean_title
+
+        assert _clean_title(title) == title
+
+    def test_generate_title_strips_localized_punctuation_end_to_end(self):
+        """The full model path, not just the helper: a CJK answer-shaped-punctuated reply is stored clean."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"title": "标题：修复移动端登录按钮。"}'
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("登录按钮坏了，帮我修一下", "answer") == "修复移动端登录按钮"
+

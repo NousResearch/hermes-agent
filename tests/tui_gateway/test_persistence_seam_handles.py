@@ -59,10 +59,10 @@ def test_dedicated_handle_opens_nothing_until_used_and_releases(launch, tmp_path
     handle.ready()
     assert (other / "state.db").exists()  # the check above would see an open
     server._release_persistence(handle)
-    handle.ready()  # the dedicated store keeps its own reference
-    store.close()
     with pytest.raises(RuntimeError):
-        handle.ready()
+        handle.ready()  # the released reference refuses use
+    store.ready()  # the dedicated store keeps its own reference
+    store.close()
     assert server._persistence_beside(None) is None
     assert server._persistence_beside(types.SimpleNamespace()) is None
     assert server._persistence_beside(types.SimpleNamespace(db_path=other / "state.db")) is None

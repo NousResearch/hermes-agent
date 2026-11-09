@@ -137,7 +137,93 @@ def policy_for_chat_type(extra: Any, chat_type: Any) -> SlashAccessPolicy:
     return dm_policy if dm_policy.enabled and not group_policy.enabled else group_policy
 
 
-__all__ = ["SlashAccessPolicy", "policy_for_chat_type", "policy_for_source", "policy_from_extra"]
+_CAP_DENIAL_MESSAGE = "This command is not enabled in this channel."
+
+
+def channel_command_denial(gateway_config: Any, source: Any, canonical_cmd: str) -> Optional[str]:
+    """Return a channel-cap denial, if an exact (platform, chat ID) rule applies.
+
+    The cap is deliberately restrictive: it never grants around ``allow_admin_from`` or
+    ``group_allow_admin_from``. Only authenticated transport IDs are used; display names,
+    usernames, threads, and wildcard selectors are not authority.
+
+    Not-configured vs malformed is a deliberate line. No key, the empty default, or a YAML key
+    with nothing under it means "no caps anywhere" and every chat keeps prior behavior — a typo
+    must not lock every channel out of slash commands, and the admin tiers still gate them. A
+    platform rule that exists but is malformed, a matched rule that is malformed, a source whose
+    platform cannot be resolved while caps exist, or a listed chat with no source chat ID fails
+    closed.
+    """
+    rules = getattr(gateway_config, "channel_command_access", None)
+    if rules is None or rules == {}:
+        return None
+    if not isinstance(rules, dict):
+        return _CAP_DENIAL_MESSAGE
+
+    platform = getattr(source, "platform", None)
+    platform_name = getattr(platform, "value", None)
+    if not isinstance(platform_name, str):
+        return _CAP_DENIAL_MESSAGE  # caps exist but this source cannot be matched to any of them
+    if platform_name not in rules:
+        return None  # platform not opted in: prior behavior
+    platform_rules = rules[platform_name]
+    if not isinstance(platform_rules, dict):
+        return _CAP_DENIAL_MESSAGE
+
+    chat_id = getattr(source, "chat_id", None)
+    if not isinstance(chat_id, str) or not chat_id:
+        return _CAP_DENIAL_MESSAGE
+    if chat_id not in platform_rules:
+        return None  # chat not opted in: prior behavior
+
+    rule = platform_rules[chat_id]
+    default_message = _CAP_DENIAL_MESSAGE
+    if not isinstance(rule, dict):
+        return default_message
+    deny_message = rule.get("deny_message", default_message)
+    if not isinstance(deny_message, str) or not deny_message.strip():
+        deny_message = default_message
+    raw_commands = rule.get("allowed_slash_commands")
+    if not isinstance(raw_commands, list) or any(
+        not isinstance(item, str) or not item.strip() for item in raw_commands
+    ):
+        return deny_message
+    allowed = {item.strip().lstrip("/").lower().replace("_", "-") for item in raw_commands}
+    command = str(canonical_cmd or "").strip().lstrip("/").lower().replace("_", "-")
+    return None if command and command in allowed else deny_message
+
+
+def channel_command_denial_for_runner_source(runner: Any, source: Any, canonical_cmd: str) -> Optional[str]:
+    """Resolve channel caps from the bot-owning profile in a multiplexed gateway."""
+    config = getattr(runner, "config", None)
+    if not getattr(config, "multiplex_profiles", False) or source is None:
+        return channel_command_denial(config, source, canonical_cmd)
+    from gateway.session_identity import identity_of
+
+    identity = identity_of(source)
+    owner = identity.transport_profile if identity is not None else getattr(source, "profile", None)
+    primary = getattr(runner, "_primary_profile_name", None) or "default"
+    if owner and owner != primary:
+        config = (getattr(runner, "_profile_configs", None) or {}).get(owner)
+        if config is None:
+            # Same failure upstream #121705 pinned: a served profile whose config is not cached
+            # may not inherit the launch profile's policy. But the cap has nothing to read here,
+            # and inventing a denial would replace the canonical fail-closed text that
+            # ``policy_for_runner_source`` returns (``_FAIL_CLOSED_POLICY``: everything denied
+            # except the ``_ALWAYS_ALLOWED_FOR_USERS`` read-only floor). Defer to it: the cap adds
+            # no grant and strips no allowance it cannot actually see.
+            return None
+    return channel_command_denial(config, source, canonical_cmd)
+
+
+__all__ = [
+    "SlashAccessPolicy",
+    "channel_command_denial",
+    "channel_command_denial_for_runner_source",
+    "policy_for_chat_type",
+    "policy_for_source",
+    "policy_from_extra",
+]
 
 
 

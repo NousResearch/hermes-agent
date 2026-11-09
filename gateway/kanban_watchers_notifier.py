@@ -193,13 +193,14 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     user_id = sub.get("user_id") or None
     chat_type = _chat_type_of(sub, metadata)
     thread_like = bool(thread) or chat_type in _THREAD_CHAT_TYPES
-    # The anchor a channel route may stand in for. A thread-shaped row whose chat IS the conversation
-    # it lives in (a DM, a channel) carries its own parent — ``chat`` — so only a route that really
-    # names that chat may claim it; standing the ROUTE's chat in instead let any channel route on the
-    # platform match itself and refuse a DM thread the default profile owns (#151520). A row whose
-    # chat_id is the thread's own id has no knowable parent, so the ordered gate keeps its historical
-    # assumption and an earlier channel route is never skipped (#110919).
-    hosted_parent = chat if thread_like and chat_type not in _THREAD_CHAT_TYPES else None
+    # The anchor a channel route may stand in for. Only a KNOWN non-thread ``chat_type`` proves
+    # ``chat`` is the conversation a thread lives in: a DM or a channel carries its own parent, so
+    # only a route that really names that chat may claim it — standing the ROUTE's chat in instead
+    # let any channel route on the platform match itself and refuse a DM thread the default profile
+    # owns (#151520). An untyped legacy row (pre ``chat_type``) may instead store the thread's own id
+    # in ``chat_id``, so it has no knowable parent and the ordered gate keeps its historical
+    # assumption: an earlier channel route is never skipped (#110919).
+    hosted_parent = chat if thread_like and chat_type and chat_type not in _THREAD_CHAT_TYPES else None
     # Preserve canonical route order, including equal-specificity ties. An older
     # row missing an anchor must not skip a potentially winning route. Reuse the
     # route's matcher (including platform-specific identity aliases), not a second

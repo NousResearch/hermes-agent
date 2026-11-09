@@ -144,3 +144,24 @@ async def test_timed_out_preview_inside_open_code_block_sends_only_the_unseen_co
 
     assert delivered[1:] == ([expected] if expected else []), delivered
     assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_timed_out_continuation_is_not_followed_by_the_whole_answer_again():
+    """The preview and the tail sent after it both time out after landing: each went out once and
+    the turn counts as delivered, so the gateway's normal final send does not repeat it all."""
+    delivered: list = []
+    adapter = _telegram_flagged(_landing_adapter(delivered))
+    adapter.send.side_effect = lambda **kw: delivered.append(kw["content"]) or _TIMED_OUT
+    consumer = GatewayStreamConsumer(
+        adapter, "chat", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
+    consumer.on_delta("first part ")
+    task = asyncio.create_task(consumer.run())
+    await async_wait_until(lambda: delivered, timeout=5)
+    consumer.on_delta("second part.")
+    consumer.finish()
+    await asyncio.wait_for(task, timeout=10)
+
+    assert delivered == ["first part ", "second part."]
+    assert consumer.final_content_delivered is True
+    assert consumer.delivered_final_matches("first part second part.") is not False

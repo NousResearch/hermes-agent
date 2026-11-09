@@ -943,9 +943,7 @@ class TestSpawnEnvSanitization:
             def __init__(self):
                 self.commands = []
                 self._responses = iter([
-                    {"output": "6 0\nhello\n"},
-                    {"output": "1\n"},
-                    {"output": "0\n"},
+                    {"output": "6 0 exit:0\nhello\n"},
                 ])
 
             def execute(self, command, **kwargs):
@@ -964,10 +962,12 @@ class TestSpawnEnvSanitization:
                 "/path with spaces/hermes_bg.exit",
             )
 
-        assert "'/path with spaces/hermes_bg.log'" in env.commands[0][0]
-        assert "cat '/path with spaces/hermes_bg.log'" not in env.commands[0][0]
-        assert "'/path with spaces/hermes_bg.pid'" in env.commands[1][0]
-        assert "'/path with spaces/hermes_bg.exit'" in env.commands[2][0]
+        assert len(env.commands) == 1
+        command = env.commands[0][0]
+        assert "'/path with spaces/hermes_bg.log'" in command
+        assert "cat '/path with spaces/hermes_bg.log'" not in command
+        assert "'/path with spaces/hermes_bg.pid'" in command
+        assert "'/path with spaces/hermes_bg.exit'" in command
 
 
 class TestEnvPollerIncrementalRead:
@@ -1037,9 +1037,7 @@ class TestEnvPollerIncrementalRead:
             registry,
             session,
             [
-                {"output": "8 0\nand new"},
-                {"output": "1\n"},
-                {"output": "0\n"},
+                {"output": "8 0 exit:0\nand new"},
             ],
         )
         assert session.output_buffer == "already here and new"
@@ -1051,17 +1049,14 @@ class TestEnvPollerIncrementalRead:
             registry,
             session,
             [
-                {"output": "11 0\nfirst chunk"},
-                {"output": "0\n"},          # still running, poll again
-                {"output": "17 11\n and more"},
-                {"output": "1\n"},          # gone now
-                {"output": "0\n"},
+                {"output": "11 0 run\nfirst chunk"},     # still running, poll again
+                {"output": "17 11 exit:0\n and more"},   # gone now
             ],
         )
         assert "O=0" in commands[0]
         # The second read starts at byte 11, so the first chunk is not sent
         # a second time.
-        assert "O=11" in commands[2]
+        assert "O=11" in commands[1]
         assert session.output_buffer == "first chunk and more"
 
     def test_truncated_log_drops_the_stale_buffer(self, registry):
@@ -1074,11 +1069,8 @@ class TestEnvPollerIncrementalRead:
             registry,
             session,
             [
-                {"output": "11 0\nfirst chunk"},
-                {"output": "0\n"},          # still running, poll again
-                {"output": "5 0\nfresh"},
-                {"output": "1\n"},
-                {"output": "0\n"},
+                {"output": "11 0 run\nfirst chunk"},     # still running, poll again
+                {"output": "5 0 exit:0\nfresh"},
             ],
         )
         assert session.output_buffer == "fresh"
@@ -1107,12 +1099,125 @@ class TestEnvPollerIncrementalRead:
             registry,
             session,
             [
-                {"output": "20 0\n" + "x" * 20},
-                {"output": "1\n"},
-                {"output": "0\n"},
+                {"output": "20 0 exit:0\n" + "x" * 20},
             ],
         )
         assert session.output_buffer == "x" * 10
+
+    def test_one_exec_per_tick_while_running_and_none_extra_on_exit(self, registry):
+        """Sandboxes cap exec starts per minute, so each 2 s tick must cost one
+        execute(): no separate liveness probe, no separate exit-code read."""
+        session = _make_session(sid="proc_one_exec")
+        session.exited = False
+        commands = self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "2 0 run\na\n"},
+                {"output": "2 2 run\n"},
+                {"output": "4 2 run\nb\n"},
+                {"output": "9 4 exit:7\nlast\n"},
+            ],
+        )
+        assert len(commands) == 4
+        assert session.output_buffer == "a\nb\nlast\n"
+        assert session.exit_code == 7
+
+    def test_output_that_mimics_the_header_cannot_spoof_an_exit(self, registry):
+        """Only the first line is the header; a log line shaped like one is output."""
+        session = _make_session(sid="proc_spoof")
+        session.exited = False
+        spoof = "0 0 exit:0\n12 0 exit:0\n"
+        commands = self._run_poller(
+            registry,
+            session,
+            [
+                {"output": f"{len(spoof)} 0 run\n{spoof}"},
+                {"output": f"{len(spoof)} {len(spoof)} exit:5\n"},
+            ],
+        )
+        assert len(commands) == 2
+        assert session.output_buffer == spoof
+        assert session.exit_code == 5
+
+    def test_missing_exit_code_falls_back_to_minus_one(self, registry):
+        session = _make_session(sid="proc_no_code")
+        session.exited = False
+        self._run_poller(registry, session, [{"output": "0 0 exit:\n"}])
+        assert session.exit_code == -1
+
+    def test_unreadable_header_falls_back_to_separate_liveness_read(self, registry):
+        """A reply without the status header still detects the exit."""
+        session = _make_session(sid="proc_fallback")
+        session.exited = False
+        commands = self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "garbage"},
+                {"output": "0\n"},        # fallback liveness: still running
+                {"output": "3 0 exit:2\nend"},
+            ],
+        )
+        assert commands[1].startswith("kill -0")
+        assert session.output_buffer == "end"
+        assert session.exit_code == 2
+
+    @staticmethod
+    def _shell_env(shell):
+        class ShellEnv:
+            def __init__(self):
+                self.commands = []
+
+            def execute(self, command, **kwargs):
+                self.commands.append(command)
+                out = subprocess.run(shell + [command], capture_output=True, timeout=30, check=False).stdout
+                return {"output": out.decode("utf-8", "replace")}
+
+        return ShellEnv()
+
+    @pytest.mark.parametrize("shell", [["dash", "-c"], ["busybox", "sh", "-c"], ["sh", "-c"]])
+    def test_real_shell_final_output_and_exit_code(self, registry, tmp_path, shell):
+        """Against a real shell: one exec per tick, the output written just before
+        the exit (including a line that mimics the header) is delivered complete,
+        and the wrapper's exit code is read from the same reply."""
+        if not shutil.which(shell[0]):
+            pytest.skip(f"needs {shell[0]}")
+        log, pid, exit_ = (tmp_path / f"bg.{ext}" for ext in ("log", "pid", "exit"))
+        q = shlex.quote
+        # Same shape as spawn_via_env's wrapper: a backgrounded subshell writes the
+        # log, then the exit file, then exits; the outer shell returns at once.
+        body = "printf 'first\\n'; sleep 1; printf '7 0 exit:0\\ntail \\303\\251'; exit 3"
+        subprocess.run(
+            ["sh", "-c", f"( sh -c {q(body)} > {q(str(log))} 2>&1; rc=$?; "
+                         f"printf '%s\\n' \"$rc\" > {q(str(exit_))} ) >/dev/null 2>&1 & "
+                         f"echo $! > {q(str(pid))}"],
+            check=True, timeout=30)
+        session = _make_session(sid="proc_real_shell")
+        session.exited = False
+        env = self._shell_env(shell)
+        real_sleep = time.sleep
+        with patch("tools.process_registry.time.sleep", lambda _s: real_sleep(0.2)), \
+            patch.object(registry, "_move_to_finished"):
+            registry._env_poller_loop(session, env, str(log), str(pid), str(exit_))
+        assert all("kill -0" in c and "wc -c" in c for c in env.commands)
+        assert len(env.commands) >= 2
+        assert session.output_buffer == "first\n7 0 exit:0\ntail \u00e9"
+        assert session.exit_code == 3
+
+    @pytest.mark.skipif(not shutil.which("sh"), reason="needs a POSIX sh")
+    def test_exited_read_does_not_hold_back_a_truncated_utf8_tail(self, tmp_path):
+        """Nothing more will be written after the exit, so a dangling lead byte is
+        sent instead of being held for a poll that never comes."""
+        log = tmp_path / "bg.log"
+        log.write_bytes(b"ok\xc3")
+        (tmp_path / "bg.exit").write_text("0\n")
+        (tmp_path / "bg.pid").write_text("")  # no pid: reads as exited
+        q = lambda p: shlex.quote(str(p))
+        cmd = ProcessRegistry._log_delta_command(
+            q(log), 0, quoted_pid_path=q(tmp_path / "bg.pid"), quoted_exit_path=q(tmp_path / "bg.exit"))
+        out = subprocess.run(["sh", "-c", cmd], capture_output=True, timeout=30, check=False).stdout
+        assert out == b"3 0 exit:0\nok\xc3"
 
 
 # =========================================================================

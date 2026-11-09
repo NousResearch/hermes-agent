@@ -194,3 +194,38 @@ async def test_older_resume_parked_in_its_rename_does_not_land_its_title_last(tm
 
     assert _bound_session(db) == "newer"
     assert landed[-1] == "Newer Work"
+
+
+@pytest.mark.asyncio
+async def test_message_while_newer_resume_waits_on_older_rename_keeps_newer_session(tmp_path):
+    """/resume A is parked in its remote topic rename when /resume B switches the route; a normal
+    message's binding heal in that window must not see B's route with A's binding and switch the
+    topic back to A. Both commands reply success, so the topic ends on B: route, binding and title."""
+    db, runner = _bound_topic(tmp_path, "older", "newer")
+    db.set_session_title("older", "Older Work")
+    db.set_session_title("newer", "Newer Work")
+    adapter = runner.adapters[next(iter(runner.adapters))]
+    a_renaming, release_a, landed = asyncio.Event(), asyncio.Event(), []
+
+    async def rename(*, chat_id, thread_id, name):
+        if name == "Older Work":
+            a_renaming.set()
+            await release_a.wait()
+        landed.append(name)
+
+    adapter.rename_dm_topic = AsyncMock(side_effect=rename)
+    older = asyncio.create_task(runner._handle_resume_command(_make_event("/resume Older Work", thread_id=THREAD)))
+    await asyncio.wait_for(a_renaming.wait(), 10)
+    newer = asyncio.create_task(runner._handle_resume_command(_make_event("/resume Newer Work", thread_id=THREAD)))
+    key = build_session_key(_make_source(thread_id=THREAD))
+    await async_wait_until(lambda: runner.session_store.peek_session_id(key) == "newer"
+                           and runner.__dict__.get("_topic_switch_locks", {}).get((CHAT, THREAD), [None, 0])[1] == 2,
+                           what="the newer /resume to switch and queue behind the older rename")
+
+    await runner._hmwa_heal_telegram_topic_binding(_make_source(thread_id=THREAD), _entry(key, "newer"), key)
+    release_a.set()
+    await asyncio.gather(older, newer)
+
+    assert runner.session_store.peek_session_id(key) == "newer"
+    assert _bound_session(db) == "newer"
+    assert landed[-1] == "Newer Work"

@@ -8,7 +8,12 @@ level instead of refusing it; ``local_refusal_leaks_the_value`` and
 ``local_logs_the_value_on_a_refusal`` publish the value on the write refusal path, and
 ``local_refusal_keeps_the_value_in_frame_locals`` / ``reference_refusal_keeps_the_value_in_frame_locals``
 leave it bound in a frame the refusal propagates through, where a traceback-locals renderer
-reads it. Against the
+reads it. The same leak, one frame of the whole exception chain deeper:
+``local_refusal_keeps_the_value_in_a_chained_frame`` re-raises the refusal clean but leaves the
+value in the frames of a failure chained to it as context, ``local_managed_key_refusal_keeps_the_value``
+keeps it on the write lock's plain refusal of an administrator-pinned key, and
+``local_write_failure_keeps_the_value_in_the_writer_frames`` keeps it in the writer's own frames
+on a mid-write I/O error. Against the
 leveled reference backend: ``reference_reads_ignore_tenant`` drops the tenant half of the pin,
 ``reference_writes_skip_the_administration_check`` drops the administration check,
 ``reference_owner_wide_resolves_everywhere`` resolves another owner's entries,
@@ -136,6 +141,68 @@ def local_refusal_keeps_the_value_in_frame_locals(monkeypatch):
 
     monkeypatch.setattr(LocalSecretStore, "set", set)
     monkeypatch.setattr(LocalSecretStore, "set_auth", set_auth)
+
+
+def local_refusal_keeps_the_value_in_a_chained_frame(monkeypatch):
+    """The write refusal is re-raised clean from its own frames, but an inner failure chained
+    to it as its context still holds the caller's value in its frames — only a check that
+    walks the whole exception chain, not just the refusal's own traceback, catches it."""
+    from hermes_secret_port_local import LocalSecretStore
+    original = LocalSecretStore.set
+
+    def _fail_holding_the_value(value):
+        raise ValueError("an inner failure that still holds the refused value")
+
+    def set(self, name, value, *, level):
+        try:
+            return original(self, name, value, level=level)
+        except PermissionError as refusal:
+            try:
+                _fail_holding_the_value(value)
+            except ValueError:
+                del value
+                raise refusal
+    monkeypatch.setattr(LocalSecretStore, "set", set)
+
+
+def local_managed_key_refusal_keeps_the_value(monkeypatch):
+    """The write path clears the caller's value only from the store's own refusals: the
+    write lock's plain refusal of an administrator-pinned key propagates with the value
+    still bound in the backend's own frame."""
+    from hermes_cli.config import require_env_writable, save_env_value
+    from hermes_secret_port_local import LocalSecretStore
+
+    def set(self, name, value, *, level):
+        try:
+            self._pin(administering=True)
+            self._require_agent_level(level)
+        except PermissionError:
+            del value
+            raise
+        require_env_writable(name, "set")
+        save_env_value(name, value)
+
+    monkeypatch.setattr(LocalSecretStore, "set", set)
+
+
+def local_write_failure_keeps_the_value_in_the_writer_frames(monkeypatch):
+    """A mid-write I/O failure clears the caller's value from the backend's own frame but not
+    from the frames of the writers it called — the traceback still renders the plaintext from
+    the writer's locals."""
+    from hermes_cli.config import require_env_writable, save_env_value
+    from hermes_secret_port_local import LocalSecretStore
+
+    def set(self, name, value, *, level):
+        try:
+            self._pin(administering=True)
+            self._require_agent_level(level)
+            require_env_writable(name, "set")
+            save_env_value(name, value)
+        except BaseException:  # health: allow BLE001 -- re-raised below
+            del value
+            raise
+
+    monkeypatch.setattr(LocalSecretStore, "set", set)
 
 
 def reference_reads_ignore_tenant(monkeypatch):
@@ -284,6 +351,15 @@ MUTANTS = {
     "local_refusal_keeps_the_value_in_frame_locals": (
         local_refusal_keeps_the_value_in_frame_locals,
         _local("test_no_refusal_traceback_frame_holds_the_value_or_record")),
+    "local_refusal_keeps_the_value_in_a_chained_frame": (
+        local_refusal_keeps_the_value_in_a_chained_frame,
+        _local("test_no_refusal_traceback_frame_holds_the_value_or_record")),
+    "local_managed_key_refusal_keeps_the_value": (
+        local_managed_key_refusal_keeps_the_value,
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record")),
+    "local_write_failure_keeps_the_value_in_the_writer_frames": (
+        local_write_failure_keeps_the_value_in_the_writer_frames,
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record")),
     "reference_reads_ignore_tenant": (
         reference_reads_ignore_tenant,
         _reference("TestReferencePinning::test_every_read_is_refused_for_any_pin_but_its_agents[get]")),

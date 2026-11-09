@@ -8,6 +8,7 @@ invariants it does NOT cover applies here too (``hermes_conformance.secrets.suit
 """
 
 import json
+import os
 from contextlib import contextmanager
 
 import pytest
@@ -18,6 +19,10 @@ from hermes_cli.auth import _load_auth_store
 from hermes_conformance.secrets import Backend, SecretPinningConformance
 from hermes_scope import LOCAL_OWNER, Group, Principal, Scope
 from hermes_secret_port_local import LocalSecretStoreProvider
+
+#: The key the managed-key hook pins, as an administrator would (the managed ``.env`` defines
+#: it, so the write lock refuses changing it).
+PINNED_KEY = "ZZ_ADMINISTRATOR_PINNED_KEY"
 
 
 def local_backend(tmp_path, monkeypatch):
@@ -41,9 +46,48 @@ def local_backend(tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(homes["unpinned"]))
         yield
 
+    @contextmanager
+    def managed_key():
+        """While active, :data:`PINNED_KEY` is defined by the managed ``.env`` (the
+        administrator's scope the write lock already honors), so writing it is refused with a
+        plain ``ValueError`` — not the store's pin refusal."""
+        managed = tmp_path / "managed"
+        managed.mkdir(exist_ok=True)
+        (managed / ".env").write_text(f"{PINNED_KEY}=set-by-the-administrator\n", encoding="utf-8")
+        previous = os.environ.get("HERMES_MANAGED_DIR")
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+        try:
+            yield PINNED_KEY
+        finally:
+            if previous is None:
+                monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+            else:
+                monkeypatch.setenv("HERMES_MANAGED_DIR", previous)
+
+    @contextmanager
+    def fail_writes():
+        """While active, the seeded agent's ``.env`` and ``auth.json`` are unreadable
+        directories, so today's writers fail part-way through the write — after the caller's
+        value (or record) is bound on their frames — with a plain ``OSError``."""
+        broken = []
+        for filename in (".env", "auth.json"):
+            path = homes["a"] / filename
+            if path.is_dir():
+                path.rmdir()
+            elif path.exists():
+                path.unlink()
+            path.mkdir()
+            broken.append(path)
+        try:
+            yield
+        finally:
+            for path in broken:
+                path.rmdir()
+
     backend = Backend(open=lambda agent: provider.open(homes[agent]),
                       bind=lambda agent: bind_profile_scope(homes[agent]),
                       bind_member=bind_member, foreign_tenant=foreign_tenant, unbound=unbound,
+                      managed_key=managed_key, fail_writes=fail_writes,
                       levels=provider.levels)
     return backend, homes, provider
 

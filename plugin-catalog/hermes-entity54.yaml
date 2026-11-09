@@ -1,0 +1,37 @@
+name: hermes-entity54
+title: HERMES ENTITY54
+repo: https://github.com/AGENTROPOLIS-CITY-OF-AGENTS/AGENTROPOLIS-HERMES-ENTITY-54
+sha: aa0360cceb96b5dc0ee66abf14c7e3e4b2a542d1
+subdir: ""
+description: "Role-based authorization for Hermes Agent: OWNER, ADMIN, USER, GUEST roles, default-deny, per-tool and per-bot scoping, tamper-evident receipts, governed Linear issue creation, and versioned policy sync. Disclosure — the plugin is a local MCP server (Node.js, stdio) that reads its operator keys only from the Hermes profile environment (ENTITY54_POLICY_KEY, ENTITY54_PSEUDONYM_KEY, ENTITY54_PRINCIPAL_ID, ENTITY54_BOT_ID); keys are never in the repo and never leave the profile. It writes receipts and sanitized events to the profile data directory only. Linear issue creation calls the Linear API only after authorization, and only with approved arguments; denied requests never reach Linear. A mock Linear transport exists for demos and tests and is labelled mock in every receipt. No telemetry. No self-updating code."
+maintainer: AGENTROPOLIS
+tier: community
+category: tools
+version: "0.1.0"
+docs_url: https://github.com/AGENTROPOLIS-CITY-OF-AGENTS/AGENTROPOLIS-HERMES-ENTITY-54
+platforms: []
+capabilities:
+  provides_tools:
+  - entity54_authorize
+  - entity54_linear_create_issue
+  - entity54_policy_export
+  - entity54_policy_import
+  - entity54_policy_activate
+  - entity54_receipts_verify
+  - entity54_events_list
+  - entity54_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - ENTITY54_DATA_DIR
+  - ENTITY54_PRINCIPAL_ID
+  - ENTITY54_BOT_ID
+  - ENTITY54_POLICY_KEY
+  - ENTITY54_PSEUDONYM_KEY
+  - ENTITY54_EVENTS_ENABLED
+  - ENTITY54_LINEAR_TRANSPORT
+  - LINEAR_API_KEY
+known_issues:
+- "Requires Node 22+ and a Hermes Agent install that supports Agent Plugins 1.0.0."
+- "After install, run npm ci --omit=dev once inside the installed plugin directory (server/) to install the MCP server dependency."
+- "Live Linear transport needs a LINEAR_API_KEY; without it Linear calls fail closed as not configured. A mock transport is available for demos and tests."

@@ -309,6 +309,12 @@ class _SessionDB:
             local_created_sources=tuple(local_created_sources) if local_created_sources else None))
 
     @_held
+    def list_gateway_sessions(self, *, platform: "Optional[str]" = None,
+                              active_only: "bool" = True) -> "list[dict[str, Any]]":
+        return [{**entry.session.as_session_row(), "last_active": entry.last_active}
+                for entry in self._store.sessions.list_gateway_sessions(platform=platform, active_only=active_only)]
+
+    @_held
     def set_session_title(self, session_id: "str", title: "str") -> "bool":
         return self._store.sessions.set_title(session_id, title)
 
@@ -533,16 +539,21 @@ def _resolve(name: "str") -> "Any":
     return getattr(_importlib.import_module(module), attr)
 
 
-def __getattr__(name: "str") -> "Any":
+def _first_warning() -> "bool":
+    """True for the first caller in this process, which emits the stand-in's one deprecation warning."""
     global _warned
+    first, _warned = not _warned, True
+    return first
+
+
+def __getattr__(name: "str") -> "Any":
     if name not in _REPLACEMENTS:
         raise AttributeError(
             f"module 'hermes_state' has no attribute {name!r}: the old session store was removed and this module "
             f"carries only the names the plugin guide lists ({_MIGRATION_GUIDE})"
         )
     value = _resolve(name)
-    if not _warned:
-        _warned = True
+    if _first_warning():
         _warnings.warn(
             f"hermes_state.{name} is deprecated and is removed in {_REMOVAL_RELEASE}; use {_REPLACEMENTS[name]} "
             f"instead ({_MIGRATION_GUIDE}).",

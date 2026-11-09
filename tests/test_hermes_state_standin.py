@@ -238,6 +238,52 @@ def test_validate_flags_a_name_the_stand_in_does_not_carry(tmp_path):
     assert private_import_findings(plugin) == ["__init__.py:2 hermes_state.SessionMessagesMixin"]
 
 
+def test_the_registry_stand_in_lends_a_session_db_that_reads_gateway_sessions(monkeypatch, store):
+    import hermes_state_registry
+
+    seed_session(store, "g1", "telegram", session_key="agent:main:telegram:dm:42", chat_id="42", chat_type="dm")
+    seed_messages(store, "g1", {"role": "user", "content": "hello from telegram"})
+    seed_session(store, "g2", "discord", session_key="agent:main:discord:dm:7", end_reason="user_exit")
+    monkeypatch.setattr(hermes_state, "_warned", False)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        db = hermes_state_registry.acquire()
+    assert [w.category for w in caught] == [DeprecationWarning]
+    text = str(caught[0].message)
+    assert "hermes_state_registry.acquire" in text and "persistence_assembly.open_persistence" in text
+    assert "v0.27.0" in text and caught[0].filename == __file__
+    assert isinstance(db, hermes_state.SessionDB)
+    assert [row["content"] for row in db.get_messages("g1")] == ["hello from telegram"]
+    rows = db.list_gateway_sessions()
+    assert rows == [{**e.session.as_session_row(), "last_active": e.last_active}
+                    for e in store.sessions.list_gateway_sessions()]
+    assert [row["session_key"] for row in rows] == ["agent:main:telegram:dm:42"]
+    assert db.list_gateway_sessions(platform="TELEGRAM") == rows
+    assert {row["id"] for row in db.list_gateway_sessions(active_only=False)} == {"g1", "g2"}
+    closes = []
+    monkeypatch.setattr(db, "close", lambda: closes.append("close"))
+    assert hermes_state_registry.release(db) is True
+    hermes_state_registry.release_or_close(db)
+    assert closes == ["close", "close"]
+
+
+def test_the_plugin_api_lists_the_registry_stand_ins_names():
+    data = json.loads((REPO_ROOT / "hermes_cli" / "data" / "plugin_api.json").read_text(encoding="utf-8-sig"))
+    entries = {entry for group in data["groups"] for entry in group["entries"]}
+    assert {entry for entry in entries if entry.startswith("hermes_state_registry")} == {
+        "hermes_state_registry:acquire", "hermes_state_registry:release", "hermes_state_registry:release_or_close"}
+
+
+def test_the_registry_stand_in_is_silent_once_the_stand_in_has_warned(quiet, tmp_path):
+    import hermes_state_registry
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        db = hermes_state_registry.acquire(tmp_path / "state.db")
+        hermes_state_registry.release_or_close(db)
+    assert caught == []
+
+
 def test_the_first_name_used_warns_once_naming_its_replacement_and_the_removal_release(monkeypatch):
     monkeypatch.setattr(hermes_state, "_warned", False)
     with warnings.catch_warnings(record=True) as caught:
@@ -260,7 +306,8 @@ def test_the_stand_in_is_removed_before_its_removal_release_ships(monkeypatch):
         pytest.skip("no install stamp or release tag names the running release")
     assert not version_satisfies(f">={hermes_state._REMOVAL_RELEASE}", running), (
         f"Hermes {running} has reached {hermes_state._REMOVAL_RELEASE}, the release that removes the hermes_state "
-        "stand-in. Remove together: hermes_state.py and tests/test_hermes_state_standin.py; the session_db= argument "
+        "stand-in. Remove together: hermes_state.py, hermes_state_registry.py and tests/test_hermes_state_standin.py; "
+        "the session_db= argument "
         "plugin context engines get (context_engine_session_db and close_context_engine_session_db in "
         "agent/conversation_compression.py, and their callers); _REMOVED_STORE_PRIVATE_METHODS in "
         "hermes_cli/plugin_validate_private_imports.py; the hermes_state entries in hermes_cli/data/plugin_api.json "

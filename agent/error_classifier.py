@@ -1387,6 +1387,15 @@ def _classify_400(c: _Ctx) -> Verdict:
     ) or (
         # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
         "conflicting authenticated continuation identities" in msg
+    ) or (
+        # The message states the cached item belongs to a different resource and must be read
+        # from there, so replaying it unchanged returns this same rejection: retry without the
+        # cached reasoning instead. Qualifier and clause stay inside one sentence, so an
+        # unrelated 400 that merely mentions a resource cannot reach recovery.
+        re.search(
+            r"the requested item was created under a different [^.]+openai resource(?:\.|\s*$)",
+            msg,
+        ) is not None
     ):
         return _V_INVALID_ENCRYPTED
     # Route rejecting a reasoning disable: a reasoning-mandatory route (GLM-5.3 on Nous Portal /

@@ -19,7 +19,7 @@ from collections import deque
 from pathlib import Path
 from hermes_dir_acl import make_user_dir
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Optional
 
 from hermes_state_common import (
@@ -28,12 +28,22 @@ from hermes_state_common import (
     escape_like as _escape_like, _placeholders,
 )
 from hermes_state_pidns import holder_pid_checkable
-from hermes_state_dbfile import _connect_tracked_db
+from hermes_state_dbfile import (
+    _connect_tracked_db, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
+    quarantine_invalid_state_db, RetiredGenerationCaptureError, capture_retired_wal_generation,
+    refuse_deleted_wal_generation,
+)
 from hermes_state_guard import _register_test_instance
 from hermes_state_errors import (
     _STATE_DB_CORRUPT_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
-    StateDbReplacedError, classify_persistence_error, is_malformed_db_error,
+    StateDbReplacedError, classify_persistence_error, is_malformed_db_error, is_malformed_schema_error,
+    is_sqlite_lock_error,
 )
+from hermes_state_health import (
+    STORAGE_CORRUPT, mark_storage_corrupt, note_storage_error, storage_corrupt_reason, storage_state,
+)
+from hermes_state_holders import read_only_db_uri
+from hermes_state_lockowners import log_write_lock_holders
 from hermes_state_sessions import SessionSessionsMixin
 from hermes_state_fts import SessionFtsSetupMixin
 from hermes_state_portability import SessionPortabilityMixin
@@ -45,8 +55,8 @@ from hermes_state_prune_rewrite import SessionPruneRewriteMixin
 from hermes_state_api_content import SessionApiContentMixin
 from hermes_state_coverage import SessionCoverageMixin
 from hermes_state_rewind import SessionRewindMixin
-from hermes_state_wal import _WAL_INCOMPAT_MARKERS
-from hermes_state_repair import preflight_db_writability
+from hermes_state_wal import _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback
+from hermes_state_repair import preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
 from hermes_state_prompt_refresh import SessionPromptRefreshMixin
 from hermes_state_usage import SessionUsageMixin

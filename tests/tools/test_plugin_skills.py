@@ -158,6 +158,62 @@ class TestPluginContextRegisterSkill:
 
         assert ctx._manager.find_plugin_skill("testplugin:foo") == second
 
+    def test_two_arg_form_reads_description_from_skill_md(self, ctx, tmp_path):
+        # The developer guide's bundle-skills example is ctx.register_skill(name, skill_md)
+        # — two arguments, no description. A plugin following it has no text of its own to
+        # register, so the registry must fall back to the SKILL.md's own frontmatter;
+        # otherwise the skill reaches <available_skills> with an empty description and
+        # the model has no signal to route on.
+        skill_md = tmp_path / "skills" / "my-skill" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text(
+            "---\nname: my-skill\ndescription: A skill with a real description.\n"
+            "version: 1.0.0\n---\n\n# My Skill\n"
+        )
+
+        ctx.register_skill("my-skill", skill_md)
+
+        entry = ctx._manager._plugin_skills["testplugin:my-skill"]
+        assert entry["description"] == "A skill with a real description."
+        assert entry["frontmatter"].get("name") == "my-skill"
+
+    def test_explicit_description_wins_over_the_file(self, ctx, tmp_path):
+        skill_md = tmp_path / "skills" / "my-skill" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text("---\nname: my-skill\ndescription: From the file.\n---\n\nBody.\n")
+
+        ctx.register_skill("my-skill", skill_md, "From the caller.")
+
+        entry = ctx._manager._plugin_skills["testplugin:my-skill"]
+        assert entry["description"] == "From the caller."
+
+    def test_missing_frontmatter_leaves_description_empty(self, ctx, tmp_path):
+        # A SKILL.md with no frontmatter is malformed; registration must still succeed
+        # and simply carry no description rather than raising.
+        skill_md = tmp_path / "skills" / "my-skill" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text("# My Skill\n\nBody only, no frontmatter.\n")
+
+        ctx.register_skill("my-skill", skill_md)
+
+        entry = ctx._manager._plugin_skills["testplugin:my-skill"]
+        assert entry["description"] == ""
+
+    def test_bom_prefixed_skill_md_still_yields_description(self, ctx, tmp_path):
+        # parse_frontmatter strips a UTF-8 BOM; a Windows-edited SKILL.md must still
+        # register its description rather than silently losing it.
+        skill_md = tmp_path / "skills" / "my-skill" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text(
+            "﻿---\nname: my-skill\ndescription: Bom-prefixed description.\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+
+        ctx.register_skill("my-skill", skill_md)
+
+        entry = ctx._manager._plugin_skills["testplugin:my-skill"]
+        assert entry["description"] == "Bom-prefixed description."
+
 # ── skill_view qualified name dispatch ────────────────────────────────────
 
 class TestSkillViewQualifiedName:

@@ -1961,10 +1961,7 @@ class GatewayStartupMixin:
         cli_session_id = row["id"]
         dest = await self._handoff_resolve_destination(row, profile_name)
         session_key = self._handoff_session_key(dest, profile_name)
-        entry = await self._handoff_repoint(dest, session_key, cli_session_id)
-        # A Telegram DM topic lane follows its persisted topic binding, which would switch the
-        # route straight back to the topic's previous session on the very next turn.
-        await asyncio.to_thread(self._sync_telegram_topic_binding, dest.source, entry, reason="handoff")
+        await self._handoff_repoint_with_topic_binding(dest, session_key, cli_session_id)
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale
         # running-agent state so the synthetic turn isn't queued behind it.
         self._evict_cached_agent(session_key)

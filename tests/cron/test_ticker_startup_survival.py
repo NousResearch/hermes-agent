@@ -119,3 +119,38 @@ def test_supervisor_leaves_a_returning_external_provider_alone():
     ticker.start()
     _wait_until(lambda: not ticker.is_alive())
     assert ticker.restart_if_dead() is False and starts == [1] and ticker.restarts == 0
+
+
+def test_supervisor_restarts_a_builtin_ticker_that_returned():
+    """The built-in ticker is this process's only trigger. When its start() returns and shutdown
+    was not requested, housekeeping respawns it. Chronos returns on purpose and stays down."""
+    import types
+
+    from cron.scheduler_provider import InProcessCronScheduler
+    from cron.scheduler_thread import SupervisedTickerThread
+    from plugins.cron_providers.chronos import ChronosCronScheduler
+
+    builtin_starts = []
+    chronos_starts = []
+    stop = threading.Event()
+
+    def builtin_start(self, stop_event):
+        builtin_starts.append(1)
+
+    def chronos_start(self, stop_event):
+        chronos_starts.append(1)
+
+    builtin = SupervisedTickerThread(
+        types.MethodType(builtin_start, InProcessCronScheduler()), args=(stop,), stop_event=stop)
+    chronos = SupervisedTickerThread(
+        types.MethodType(chronos_start, ChronosCronScheduler()), args=(stop,), stop_event=stop)
+    builtin.start()
+    chronos.start()
+    _wait_until(lambda: not builtin.is_alive() and not chronos.is_alive())
+    assert builtin.restart_if_dead() is True
+    assert chronos.restart_if_dead() is False
+    _wait_until(lambda: len(builtin_starts) == 2 and not builtin.is_alive())
+    assert builtin_starts == [1, 1] and builtin.restarts == 1
+    assert chronos_starts == [1] and chronos.restarts == 0
+    stop.set()
+    assert builtin.restart_if_dead() is False and builtin_starts == [1, 1]

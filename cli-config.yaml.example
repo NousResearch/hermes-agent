@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 52
+_config_version: 53
 
 # =============================================================================
 # Database Configuration
@@ -1484,7 +1484,6 @@ platform_toolsets:
   slack: [hermes-slack]
   signal: [hermes-signal]
   qqbot: [hermes-qqbot]
-  yuanbao: [hermes-yuanbao]
   # Plugin platforms (teams, google_chat, ...) need no row: they default to hermes-<platform> once loaded.
 
 # =============================================================================
@@ -2276,10 +2275,12 @@ updates:
   # Disable passive CLI/banner update checks with `hermes config set updates.check false`.
   # Explicit `hermes update --check` and `hermes update` remain available.
   check: true
-  # Create a full HERMES_HOME zip before every `hermes update`.
-  # Backups land in ~/.hermes/backups/ and can be restored with `hermes import`.
-  # Off by default because large homes can add minutes to every update.
-  pre_update_backup: false
+  # Backup taken before every `hermes update`:
+  #   quick - snapshot of small critical state (pairing, cron jobs, config.yaml,
+  #           .env, auth.json, profile databases) in state-snapshots/ (default)
+  #   full  - quick plus a zip of HERMES_HOME in backups/; slow on large homes
+  #   off   - no backup
+  # pre_update_backup: quick
 
   # Number of pre-update backup zips to retain.
   backup_keep: 5

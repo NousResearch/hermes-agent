@@ -1,6 +1,9 @@
 {
   "name": "@hermes/bootstrap-installer",
   "private": true,
+  "engines": {
+    "npm": "npm is refused here: run pnpm install --frozen-lockfile at the repository root"
+  },
   "version": "0.0.0",
   "description": "Hermes Setup — signed installer that drives scripts/install.ps1 with a polished native UI.",
   "type": "module",

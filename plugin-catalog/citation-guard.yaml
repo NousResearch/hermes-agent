@@ -1,0 +1,17 @@
+name: citation-guard
+repo: https://github.com/ChienNguyen23/hermes-citation-guard
+sha: 6916b2ae7f561765883c57b32441db049e246113
+description: "Catches fabricated, mismatched and retracted references. Checks each DOI / PMID / arXiv id and each full reference entry against doi.org, Crossref, PubMed and arXiv: ids that do not exist, ids that point to a different paper, wrong year or first author, works found in no registry, and retractions (Crossref notices incl. Retraction Watch). A transform_llm_output reply guard appends a warning footer when the agent's own answer cites something that does not check out (the reply text is never rewritten); a verify_citations tool and a /citecheck command (.md .txt .bib .docx) give full reports. Deterministic, Python standard library only, no LLM calls, no API keys. Disclosure — network calls to api.crossref.org, doi.org, eutils.ncbi.nlm.nih.gov and export.arxiv.org carrying only the reference itself (id, title, first author, year), never the rest of the conversation; when references appear in a reply, the reply guard checks them on every such reply (up to 15 s by default); the optional contact_email setting is sent to Crossref and NCBI and the optional ncbi_api_key only to NCBI; a 7-day cache of registry answers in the plugin data directory; /citecheck reads the file the user names."
+maintainer: ChienNguyen23
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/ChienNguyen23/hermes-citation-guard#readme
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - verify_citations
+  provides_hooks:
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

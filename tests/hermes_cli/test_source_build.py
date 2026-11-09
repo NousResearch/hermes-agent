@@ -168,6 +168,11 @@ def source_checkout(tmp_path, monkeypatch):
     for name in ("node-deps.mjs", "electron-runtime.mjs", "freshness.mjs", "frontend-common.mjs", "pnpm-lock.mjs"):
         shutil.copy2(repository / "scripts/build" / name, scripts / name)
     (root / ".gitignore").write_text("node_modules/\n**/dist/\n", encoding="utf-8")
+    # node-deps requires PM's pnpm pin: pin the pnpm this test runs.
+    (root / "pm").mkdir()
+    version = subprocess.run([pnpm, "--version"], capture_output=True, text=True, encoding="utf-8",
+                             timeout=60, check=True).stdout.strip()
+    (root / "pm/lock.json").write_text(json.dumps({"packages": {"pnpm": {"version": version}}}), encoding="utf-8")
     return root, acquired
 
 

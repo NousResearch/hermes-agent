@@ -1,0 +1,23 @@
+name: booking-bridge
+repo: https://github.com/kyle-bartlett/booking-bridge
+sha: "8d013fcd7500f5b9e3b98588a6c32826f25c8252"
+version: "1.1.1"
+title: Booking Bridge
+description: "Find free time, then book, list, reschedule and cancel real Google Calendar consults (for example a Strategy consult) from Hermes. Signs in with the user's own Google OAuth client through hermes auth add booking-bridge:google; all calls go through credentialed_provider_request to www.googleapis.com only. Disclosure: network calls to Google Calendar API v3 only (scopes calendar.events and calendar.freebusy); write tools (book, reschedule, cancel) change the user's calendar, can email invitations to listed attendees, and are sent to Hermes' own approval gate by a pre_tool_call hook (action approve), so Hermes asks the user first and by default denies the call in cron, single-query and one-shot runs, webhook-style platforms and CLI sub-agents; they also require confirm=true and refuse, changing nothing, outside an allowlist of platforms and sources (interactive CLI, TUI, Desktop, ACP and the chat platforms Telegram, Discord, Slack, WhatsApp, WhatsApp Cloud, Signal, Mattermost, Matrix, BlueBubbles), so cron, single-query, kanban, webhook-style, email, SMS and any unrecognized platform or source are refused; booked events carry a private hash property to prevent duplicates; revoke with hermes auth logout booking-bridge:google; no shell commands, background processes, telemetry or stored credentials."
+maintainer: kyle-bartlett
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/kyle-bartlett/booking-bridge/blob/8d013fcd7500f5b9e3b98588a6c32826f25c8252/README.md
+readme: true
+capabilities:
+  provides_tools: [list_availability, list_upcoming, book_event, reschedule_event, cancel_event]
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: [BOOKING_BRIDGE_CLIENT_ID, BOOKING_BRIDGE_CLIENT_SECRET]
+known_issues:
+  - "Needs the user's own Google Cloud OAuth client (Desktop app) with the Calendar API enabled; sign in once with hermes auth add booking-bridge:google."
+  - "Google may show an unverified-app warning for a personal OAuth client in testing mode."
+  - "Hermes settings the user controls switch the approval gate off: approvals.mode off, YOLO mode, approvals.cron_mode / single_query_mode / unattended_mode set to approve, delegation.subagent_auto_approve true. Then only the plugin's own confirm=true and platform allowlist remain."
+  - "The plugin's own allowlist cannot tell a library caller or a delegated sub-agent from an interactive CLI, because the CLI and ACP bind no platform or source and the plugin has no public signal for sub-agents. The approval gate covers them by default."
+  - "Not yet exercised against live Google Calendar: no OAuth client sign-in has been run, so the Google request and response shapes are covered by mocked-HTTP tests only."

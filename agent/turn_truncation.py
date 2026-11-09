@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -718,6 +719,7 @@ def handle_content_policy_refusal(
     messages: list[dict[str, Any]], api_messages: Any, api_kwargs: Any, active_system_prompt: Any,
     conversation_history: Any, api_call_count: int, effective_task_id: Any, turn_id: Any,
     api_request_id: Any, api_start_time: float, retry_count: int, max_retries: int,
+    current_turn_user_idx: Any = None,
 ) -> RefusalVerdict:
     """HTTP-200 refusal (``finish_reason`` ``content_filter`` / ``guardrail_intervened``).
     Deterministic for the unchanged prompt — never retried: one configured-fallback try,
@@ -769,8 +771,31 @@ def handle_content_policy_refusal(
         summary=_refusal_text or "the model returned no explanation",
     )
     agent._cleanup_task_resources(effective_task_id)
-    agent._persist_session(messages, conversation_history)
+    # Do not persist the refused turn. A safety refusal is deterministic for the unchanged
+    # conversation (the filter judges the whole thread), so a durable refused turn re-trips the
+    # filter on every later message and locks the chat — the "stuck session" report. Hand the caller
+    # the PRE-refusal history so an in-memory surface (CLI/TUI/ACP keep ``result["messages"]`` as the
+    # live history) carries nothing forward, and flush token usage for the call that was made. The
+    # gateway reloads history from the durable transcript each turn, so it also drops the refused
+    # turn owner-side after the lease releases (``_drop_content_policy_refused_turn`` in
+    # run_turn_persistence) — a transcript mutation is refused while the turn lease is held, and a
+    # managed worker never mutates its own transcript. Mirrors the context_overflow no-grow rule
+    # (#1630); transient failures keep their persist-and-replay path, only a non-retryable block is
+    # dropped.
+    _db = getattr(agent, "_session_db", None)
+    if _db is not None:
+        with suppress(Exception):
+            _db.flush_token_counts()
+    # Hand back the CLEAN pre-refusal history, not the loop's ``conversation_history``: an in-place
+    # compaction this turn rewrote that baseline into ``list(messages)`` — the whole poisoned working
+    # set including the refused request + tool rounds — so returning it would re-poison CLI/ACP memory
+    # even after the owner cleans the durable transcript (#149708 review). Build it from the real
+    # turn boundary, and carry the refused run's durable boundary row so the owner drops the exact turn.
+    from agent.turn_context import history_before_current_turn, refused_turn_boundary_row_id
+    clean_history = history_before_current_turn(messages, current_turn_user_idx, conversation_history)
+    _boundary_row_id = refused_turn_boundary_row_id(messages, current_turn_user_idx)
     return RefusalVerdict("return", _content_policy_blocked_result(
-        messages, api_call_count, final_response=_refusal_response,
+        clean_history, api_call_count, final_response=_refusal_response,
         error_detail=_refusal_text or "model declined (content_filter)",
+        boundary_row_id=_boundary_row_id,
     ), active_system_prompt)

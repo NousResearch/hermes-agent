@@ -1,6 +1,6 @@
 import type { SessionListRow } from '@hermes/shared/gateway-events'
+import type { SessionActiveItem } from '@hermes/shared/gateway-types'
 
-import type { SessionActiveItem } from '../gatewayTypes.js'
 import { messages } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
 

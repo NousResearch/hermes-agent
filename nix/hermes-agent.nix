@@ -432,7 +432,7 @@ stdenv.mkDerivation (finalAttrs: {
       devDeps =
         runtimeDeps
         ++ [
-          # The pnpm the builds install with: the workspace's devEngines pin.
+          # The pnpm the builds install with: the pm/lock.json pin.
           hermesNpmLib.pnpm
           pmPackages.uv
           devVenv

@@ -1,5 +1,6 @@
+import type { SessionInfo } from '@hermes/shared/gateway-types'
+
 import type { QueueItem } from '../hooks/useQueue.js'
-import type { SessionInfo } from '../types.js'
 
 export type QueueCommand =
   | { kind: 'list' | 'clear' | 'error' | 'prompt' }

@@ -330,6 +330,19 @@ def _uv_lock_digest(path: Path) -> bytes:
 _uv_lock_digest_cache: dict[Path, tuple] = {}
 
 
+def _layout_digest(root: Path) -> bytes:
+    """sha256 of the packaging files, which decide how the core project installs beyond its lock
+    (uv's default ``cache-keys``). A change that moves packages (a new ``packages.find`` ``where``)
+    and leaves uv.lock alone still gets a new environment."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for name in ("pyproject.toml", "setup.py", "setup.cfg"):
+        path = root / name
+        h.update(name.encode() + b"\0" + (path.read_bytes() if path.is_file() else b"") + b"\0")
+    return h.digest()
+
+
 def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.PathLike:
     """Copy one payload cache file unless an earlier seed already copied it whole.
 
@@ -468,7 +481,7 @@ def uv_cache_dir() -> Path:
 
 @register
 class Venv(StatePackage):
-    """The project venv: pyproject.toml + uv.lock + enabled extras.
+    """The project venv: pyproject.toml + setup.py + uv.lock + enabled extras.
     Made true by `uv sync --frozen`; uv is its internal dependency."""
 
     name = "venv"
@@ -500,6 +513,7 @@ class Venv(StatePackage):
                   [artifact["sha256"] for artifact in lock.artifacts("python", target)])
         h = hashlib.sha256()
         h.update(_uv_lock_digest(self.project_root() / "uv.lock"))
+        h.update(_layout_digest(self.project_root()))
         h.update(",".join(sorted(extras)).encode())
         h.update(json.dumps(python).encode())
         # Plugin members union into the venv — a changed member set must
@@ -787,11 +801,13 @@ class Pnpm(BinaryPackage):
     deps = ("node",)
     binary_rel = {"win32": "pnpm.exe", "posix": "pnpm"}
     flatten = False
-    gaps = {"linux-arm64-bionic": "Termux ships a prebuilt TUI; nothing installs JS workspaces on device"}
+    # pnpm names its Termux build after the OS, not the libc: a bionic-linked executable.
+    exe_platforms = {"linux-arm64-bionic": "android-arm64"}
 
     def fetch_urls(self, version: str, target: str) -> list[str]:
+        exe = self.exe_platforms.get(target, target)
         return [
-            f"https://registry.npmjs.org/@pnpm/exe.{target}/-/exe.{target}-{version}.tgz",
+            f"https://registry.npmjs.org/@pnpm/exe.{exe}/-/exe.{exe}-{version}.tgz",
             f"https://registry.npmjs.org/pnpm/-/pnpm-{version}.tgz",
         ]
 

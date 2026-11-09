@@ -203,6 +203,7 @@ def _resolve_profile_dir(name: str) -> Path:
 
 
 _SKILLS_PROFILE_LOCK = threading.RLock()
+_CONFIG_MUTATION_LOCK = threading.RLock()
 
 
 @contextmanager

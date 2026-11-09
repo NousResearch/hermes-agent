@@ -761,8 +761,6 @@ async def create_profile_endpoint(body: ProfileCreate):
         name=body.name, clone_from=clone_from, clone_all=body.clone_all, clone_config=clone_config,
         no_skills=body.no_skills, description=body.description, clone_channels=body.clone_channels,
         soul=body.soul, seed_skills=not clone,
-        # Validate against THIS dashboard's home (the catalog the picker offered), not the empty new
-        # profile; the write still lands in the new profile.
         model=model, provider=provider, model_validate_in=get_process_hermes_home(),
         mcp_servers=tuple(body.mcp_servers), keep_skills=tuple(body.keep_skills))
     with _profile_errors("POST /api/profiles failed", not_found=(),

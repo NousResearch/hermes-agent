@@ -218,17 +218,11 @@ def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
 
 @contextlib.contextmanager
 def profile_config_scope(home: str | Path, *, launch_home: str | Path | None = None) -> Iterator[None]:
-    """Bind *home*'s home + secret + terminal scope for a body that reads and writes its config
-    (profile create, the Desktop profile editor). Home alone is half-bound: under multi-profile
-    hosting every credential read raised ``UnscopedSecretError``, which a best-effort catch turned
-    into a plausible wrong answer (#120726).
+    """Bind *home*'s home + secret + terminal scope for a body that reads and writes its config.
 
-    The launch home keeps the launch rules: its launch secret scope (the live env while single-profile,
-    the frozen snapshot once multiplexing) is always bound; once the process multiplexes it gets the
-    full :func:`launch_profile_runtime_scope` instead, so a single-profile host stays as it was. Any
-    other home gets its own files only, stamped as foreign. No external-source hydration (``op run`` /
-    ``bws``): these bodies persist config, never call a provider. ``launch_home`` defaults to the
-    process home (``get_process_hermes_home``); the RPC passes the server's ``_launch_home()``.
+    The launch home (``launch_home``, default ``get_process_hermes_home()``) gets its launch secret
+    scope, or the full :func:`launch_profile_runtime_scope` once the process multiplexes. Any other
+    home gets only its own files, stamped as foreign. No external-source hydration.
     """
     from agent.secret_scope import build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
@@ -236,7 +230,6 @@ def profile_config_scope(home: str | Path, *, launch_home: str | Path | None = N
 
     home = Path(home)
     launch = Path(launch_home if launch_home is not None else get_process_hermes_home())
-    # Each step is entered inside the stack, so one that raises unwinds the ones already bound.
     with contextlib.ExitStack() as stack:
         if home.resolve() == launch.resolve():
             if is_multiplex_active():

@@ -1,10 +1,3 @@
-"""``launch_profile_policy.profile_config_scope``: the scope profile create/describe/configure bind.
-
-A secondary home gets its own secrets (stamped foreign), its own home and its own terminal policy;
-the launch home keeps the launch rules (launch secrets always, its full runtime scope only once the
-process multiplexes). Everything is released on exit.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -57,7 +50,7 @@ def test_the_launch_home_keeps_the_launch_rules(homes):
     launch, _, multiplex = homes
     with policy.profile_config_scope(launch):
         assert current_secret_scope() is not None
-        assert current_secret_scope_home() is None  # its own home: never stamped foreign
+        assert current_secret_scope_home() is None
         assert _secrets() == {"LAUNCH_FILE_KEY": "launch-file", "LAUNCH_ENV_ONLY": "env-only", "WORK_KEY": None,
                               "SHARED_KEY": "launch"}
         if multiplex:

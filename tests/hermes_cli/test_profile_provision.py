@@ -1,5 +1,3 @@
-"""provision_profile is the one create path: every surface's options map onto one request, and the
-steps after the core create run once, in order, best-effort."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -70,7 +68,7 @@ def test_a_failing_step_is_a_warning_and_the_profile_stays(launch, monkeypatch):
     result = provision_profile(ProfileCreateRequest(name="work"))
     assert result.path.is_dir()
     assert result.warnings == ["bundled skills: disk full"]
-    assert result.alias_path == Path("/wrapper/work")  # later steps still run
+    assert result.alias_path == Path("/wrapper/work")
 
 
 def test_core_create_errors_propagate(launch):
@@ -80,7 +78,6 @@ def test_core_create_errors_propagate(launch):
 
 
 def test_every_surface_creates_through_provision_profile(launch, monkeypatch):
-    """The CLI, REST and RPC handlers build a request; none calls create_profile itself."""
     seen = []
     real = profile_provision.provision_profile
 
@@ -105,7 +102,6 @@ def test_every_surface_creates_through_provision_profile(launch, monkeypatch):
 
 
 def test_a_clone_reaches_the_selected_memory_providers_create_hook_once(launch, monkeypatch):
-    """Plugins get a new profile through ``on_profile_created`` (with its home bound), not a provision step."""
     import plugins.memory as memory_pkg
     from agent.memory_provider import MemoryProvider
     from hermes_constants import get_hermes_home
@@ -129,7 +125,7 @@ def test_a_clone_reaches_the_selected_memory_providers_create_hook_once(launch, 
 
     monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: Recorder() if name == "recorder" else None)
     (launch / "config.yaml").write_text("memory:\n  provider: recorder\n")
-    provision_profile(ProfileCreateRequest(name="fresh"))  # fresh: no memory.provider, so no hook
+    provision_profile(ProfileCreateRequest(name="fresh"))
     result = provision_profile(ProfileCreateRequest(name="work", clone_config=True, mirror_credentials=True))
     assert calls == [("work", str(result.path), str(result.path))]
     assert result.warnings == []

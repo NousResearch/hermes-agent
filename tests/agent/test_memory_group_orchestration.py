@@ -51,6 +51,7 @@ class _Recorder(MemoryProvider):
 
     def __init__(self):
         self.seen = []
+        self.turn_starts = []
 
     def initialize(self, session_id="", **kwargs): pass
     def is_available(self): return True
@@ -59,7 +60,9 @@ class _Recorder(MemoryProvider):
     def queue_prefetch(self, query, *, session_id=""): self.seen.append(query)
     def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
         self.seen.append((user_content, assistant_content, messages))
-    def on_turn_start(self, turn_number, message, **kwargs): self.seen.append(message)
+    def on_turn_start(self, turn_number, message, **kwargs):
+        self.seen.append(message)
+        self.turn_starts.append((message, kwargs))
     def on_session_end(self, messages): self.seen.append(messages)
     def on_pre_compress(self, messages, **kwargs): self.seen.append(messages); return ""
 
@@ -166,3 +169,34 @@ def test_human_steer_resumes_memory_ingestion_after_room_orchestration(manager, 
     observed = provider.seen[0][2] if fanout == "sync" else provider.seen[0]
     assert observed == human_exchange
     assert rows == original
+
+
+@pytest.mark.parametrize("restated", [False, True])
+def test_previous_room_ask_stays_out_of_turn_start_with_shared_redaction_and_human_control(
+    manager, room_prompt, restated
+):
+    from agent.turn_context import _previous_user_message_text
+
+    manager, provider = manager
+    key = "AQ.Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+    prior = f'{room_prompt}\nRoom settings: {{"api_key": "{key}"}}'
+    if restated:
+        prior = f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{prior}"
+    rows = [{"role": "user", "content": prior}, {"role": "assistant", "content": "room-only reply"}]
+    original = deepcopy(rows)
+    phone = "+1" + "555" + "0123456"
+    identity = {"author_id": phone, "author_name": phone, "model": "test/model"}
+
+    manager.on_turn_start(2, f"Keep migration notes; the echoed key is {key}.",
+                          previous_message=_previous_user_message_text(rows), **identity)
+
+    message, kwargs = provider.turn_starts[0]
+    assert kwargs["previous_message"] == ""
+    assert "Keep migration notes" in message and key not in message
+    assert all(kwargs[name] == value for name, value in identity.items())
+    assert rows == original
+
+    manager.on_turn_start(3, _HUMAN,
+                          previous_message=_previous_user_message_text([{"role": "user", "content": "Use release branch."}]),
+                          **identity)
+    assert provider.turn_starts[1] == (_HUMAN, {"previous_message": "Use release branch.", **identity})

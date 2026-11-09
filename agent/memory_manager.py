@@ -635,7 +635,7 @@ class MemoryManager:
         # are identity/runtime values, raw as in sync_all: masking a phone-number author_id merges two senders.
         if "previous_message" in kwargs:
             message, previous = _redact_for_provider(message, kwargs["previous_message"])
-            kwargs = {**kwargs, "previous_message": previous}
+            kwargs = {**kwargs, "previous_message": memory_user_text(previous) or ""}
         else:
             message = _redact_for_provider(message)
 

@@ -37,16 +37,13 @@ def _safe(callback, label: str, *args) -> None:
 
 
 def emit_blocked_tool_start(agent, ref) -> None:
-    """Announce ``ref`` as a started tool row on the progress lane.
+    """Announce ``ref`` as a started tool row on both start lanes.
 
-    ``tool.started`` covers progress-only consumers (CLI scrollback, ACP, the API server) and is
-    what opens their row; ``tool.complete`` then closes it with the hook's message.
-
-    ``tool_start_callback`` is deliberately NOT fired: a blocked call never reaches
-    ``_begin_tool_execution``, and ``tests/agent/test_run_agent.py::
-    test_sequential_blocked_tool_skips_checkpoints_and_callbacks`` pins that a hook-blocked call
-    triggers no start callback (nor a checkpoint). Its own row-start therefore stays withheld; the
-    surfaces that build rows from that callback still receive the completion frame below."""
+    ``tool.started`` covers progress-only consumers (CLI scrollback, ACP, the API server);
+    ``tool_start_callback`` is the ID-keyed lane TUI/Desktop open their row from — they drop the
+    progress ``tool.started`` as an id-less duplicate, so a completion frame alone would land on a
+    row that never opened. No checkpoint preflight rides along: a blocked call never reaches
+    ``_begin_tool_execution``, so nothing snapshots a workspace it will not change."""
     announced = getattr(agent, "_visible_blocked_tool_calls", None)
     if announced is None:
         announced = agent._visible_blocked_tool_calls = set()
@@ -58,6 +55,7 @@ def emit_blocked_tool_start(agent, ref) -> None:
     except Exception:  # a preview must never cost the row
         logger.debug("blocked-tool preview failed for %s", ref.name, exc_info=True)
     _safe(agent.tool_progress_callback, "Tool progress", "tool.started", ref.name, preview, display_args)
+    _safe(agent.tool_start_callback, "Tool start", ref.call_id, ref.name, display_args)
 
 
 def blocked_tool_result(agent, ref, *, block_body: dict | None, block_error_type: str, guardrail_decision) -> str:

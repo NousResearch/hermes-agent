@@ -8,9 +8,10 @@ concurrent route.
 
 Two boundaries are deliberate and asserted here:
 
-* ``tool_start_callback`` is NOT fired for a blocked call: ``tests/agent/test_run_agent.py::
-  test_sequential_blocked_tool_skips_checkpoints_and_callbacks`` pins that (the same test also pins
-  that no checkpoint is taken, which this change keeps).
+* ``tool_start_callback`` fires for a blocked call — it is the ID-keyed lane TUI/Desktop open a row
+  from — but no checkpoint is taken (``tests/agent/test_run_agent.py::
+  test_sequential_blocked_tool_skips_checkpoints_but_announces_start`` pins both halves), because a
+  call that will not run must not snapshot the workspace.
 * a guardrail/scope block keeps emitting nothing at all, as its own suite pins
   (``test_config_enabled_hard_stop_blocks_repeated_exact_failure_before_execution``).
 """
@@ -113,14 +114,16 @@ def test_a_hook_blocked_call_opens_and_closes_a_row_with_the_hook_message():
     assert completed[0][1]["is_error"] is True
     # The row carries the hook's own message, so the surface can say WHY the call did not run.
     assert BLOCK_MESSAGE in completed[0][1]["result"]
+    # Both start lanes carry the same stable id the completion uses, so TUI/Desktop can pair them.
+    assert [a[:2] for a, _ in seen["start"]] == [("c-blocked", "web_search")]
     assert [a[:2] for a, _ in seen["complete"]] == [("c-blocked", "web_search")]
     assert BLOCK_MESSAGE in seen["complete"][0][0][3]
     # The model-facing side is unchanged: exactly one tool result, carrying the block message.
     assert len([m for m in messages if m["role"] == "tool"]) == 1
 
 
-def test_a_hook_blocked_call_fires_no_start_callback_and_no_checkpoint():
-    """The row comes from the progress lane only: the pinned "no start callback, no snapshot" rule."""
+def test_a_hook_blocked_call_announces_a_start_but_takes_no_checkpoint():
+    """Both start lanes fire (TUI/Desktop open the row from the callback); no snapshot is taken."""
     agent = _make_agent("web_search")
     seen = _record(agent)
     agent._checkpoint_mgr.enabled = True
@@ -128,7 +131,7 @@ def test_a_hook_blocked_call_fires_no_start_callback_and_no_checkpoint():
 
     _blocked_sequential(agent, _mock_tool_call("web_search", json.dumps({"query": "x"}), "c-nocheck"))
 
-    assert seen["start"] == []
+    assert [a[:2] for a, _ in seen["start"]] == [("c-nocheck", "web_search")]
     agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
 
 
@@ -208,7 +211,8 @@ def test_a_blocked_call_in_a_concurrent_batch_keeps_its_own_row():
     ):
         agent._execute_tool_calls(assistant, messages, "task-1")
 
-    assert [a[:2] for a, _ in seen["start"]] == [("c-ok", "web_search")]
+    # One start per call, blocked slot included: the TUI/Desktop lane must find its row to complete.
+    assert sorted(a[:2] for a, _ in seen["start"]) == [("c-blocked", "web_search"), ("c-ok", "web_search")]
     assert [a[:2] for a, _ in seen["complete"]] == [("c-ok", "web_search"), ("c-blocked", "web_search")]
     completed = _events(seen, "tool.completed")
     assert len(completed) == 2

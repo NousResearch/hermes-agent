@@ -593,20 +593,36 @@ def _install_ssrf_guard_on_client(client: Any, *, is_async: bool = False) -> Non
         getattr(client, "__dict__", {}).get("_transport"), contextvars.ContextVar(var_name), is_async=is_async)
 
 
+# Identifying UA for Hermes-owned direct downloads: CDNs with basic bot detection
+# (upload.wikimedia.org, #89260) 403 the bare ``python-httpx/x`` default. Names the agent
+# rather than spoofing a browser (Wikimedia's User-Agent policy asks clients to identify).
+DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; HermesAgent/1.0)"
+
+
+def _with_default_user_agent(kwargs: dict) -> dict:
+    """``kwargs`` with a client-level ``User-Agent`` default; a caller's own UA (any case, any
+    ``headers=`` form) wins, and a caller-supplied headers object is never mutated."""
+    import httpx
+    headers = httpx.Headers(kwargs.get("headers"))
+    headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
+    return {**kwargs, "headers": headers}
+
+
 def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
     """``httpx.AsyncClient`` with connect-time SSRF validation: direct HTTP(S) connections are
     resolved, validated, and dialed by IP while the hostname is preserved for Host, SNI, and
-    certificate verification. Proxied requests delegate resolution to the proxy."""
+    certificate verification. Proxied requests delegate resolution to the proxy. Sends
+    ``DEFAULT_USER_AGENT`` unless the caller sets a ``User-Agent``."""
     import httpx
-    client = httpx.AsyncClient(**kwargs)
+    client = httpx.AsyncClient(**_with_default_user_agent(kwargs))
     _install_ssrf_guard_on_client(client, is_async=True)
     return client
 
 
 def create_ssrf_safe_client(**kwargs: Any) -> Any:
-    """Create an ``httpx.Client`` with connect-time SSRF validation."""
+    """Create an ``httpx.Client`` with connect-time SSRF validation (same UA default)."""
     import httpx
-    client = httpx.Client(**kwargs)
+    client = httpx.Client(**_with_default_user_agent(kwargs))
     _install_ssrf_guard_on_client(client)
     return client
 

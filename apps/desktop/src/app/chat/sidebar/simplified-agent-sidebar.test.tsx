@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
@@ -58,6 +59,7 @@ describe('Portal sidebar', () => {
 
   function mount(overrides: Partial<ComponentProps<typeof PortalSidebar>> = {}) {
     return render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <MemoryRouter>
         <RootTooltipProvider>
           <SidebarProvider>
@@ -80,6 +82,7 @@ describe('Portal sidebar', () => {
           </SidebarProvider>
         </RootTooltipProvider>
       </MemoryRouter>
+      </QueryClientProvider>
     )
   }
 

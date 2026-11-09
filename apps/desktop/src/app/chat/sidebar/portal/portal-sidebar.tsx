@@ -12,6 +12,7 @@ import { recordIaAction } from '@/store/ia-metrics'
 import { toggleSidebarOpen } from '@/store/layout'
 import { $newChatProfile } from '@/store/profile'
 
+import { ProfileGroupHeaderSlot } from '../gateway-groups'
 import type { ChatSidebar } from '../index'
 import { SidebarLoadMoreRow } from '../load-more-row'
 import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from '../section-states'
@@ -22,6 +23,7 @@ import { SimplifiedPinnedSessions } from '../simplified-pinned-sessions'
 import { SimplifiedSessionList } from '../simplified-session-list'
 import { useAgentSidebar } from '../use-agent-sidebar'
 
+import { PortalGroupChats } from './portal-group-chats'
 import { PortalPinnedEmpty } from './portal-pinned-empty'
 
 export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
@@ -98,12 +100,14 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
             onResumeSession={resumePinned}
             sessions={pinned}
           />
+          <PortalGroupChats query={query} />
           <SimplifiedAgentList
             agents={agents}
             expanded={expanded}
             onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
             renderSessions={(sessions, agent) => (
               <div className="portal-agent-sessions">
+                <ProfileGroupHeaderSlot connectionId={agent.connectionId} profile={agent.targetProfile || agent.profile} />
                 <SimplifiedBotChatRow agent={agent} />
                 <SimplifiedSessionList {...shared} sessions={sessions} />
               </div>

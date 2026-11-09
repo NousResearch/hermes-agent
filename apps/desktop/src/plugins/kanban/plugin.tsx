@@ -33,6 +33,7 @@ import {
 import { $boardSlug, bindApi, boardKey, fetchBoard, useKanbanScope } from './api'
 import { KanbanBoardPage } from './board'
 import { KANBAN_LOCALES } from './i18n'
+import { KanbanSettings } from './settings'
 import { $newTaskLane, useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
@@ -104,6 +105,15 @@ const plugin: HermesPlugin = {
       host.navigate('/kanban')
     }
 
+    // Settings ▸ Plugins ▸ Kanban. The rail label re-registers with the locale
+    // like the nav row does; the page itself reads copy through useKanban().
+    const registerSettingsPage = () =>
+      ctx.registerSettingsPage({
+        id: 'notifications',
+        title: ctx.i18n.t('nav'),
+        render: () => <KanbanSettings />
+      })
+
     ctx.registerMany([
       {
         id: 'page',
@@ -162,9 +172,12 @@ const plugin: HermesPlugin = {
       ])
 
     let disposeLabels = registerLabels()
+    let disposeSettingsPage = registerSettingsPage()
     ctx.i18n.onLocaleChange(() => {
       disposeLabels()
       disposeLabels = registerLabels()
+      disposeSettingsPage()
+      disposeSettingsPage = registerSettingsPage()
     })
   }
 }

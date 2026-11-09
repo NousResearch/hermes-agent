@@ -5,13 +5,14 @@
 
 import type { SessionAccountUsage, SessionStats } from '@hermes/shared/gateway-events'
 import type { BillingStateResponse, RollbackListResponse } from '@hermes/shared/gateway-types'
-import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+import { jsonRpcErrorReason, JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 import { CANONICAL_REASONING_EFFORTS } from '@hermes/shared/slash-input'
 
 import { usageFromTick } from '../../domain/usage.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { patchUiState } from '../uiStore.js'
+import { RPC_UNKNOWN_METHOD } from '../userMessages.js'
 
 import { mutateCanonical, type MutationSnapshot } from './canonicalSessionControls.js'
 import type { SlashRunCtx } from './types.js'
@@ -234,6 +235,13 @@ interface CommittedResult {
   total_tokens?: number
 }
 
+const NO_ROUTE: SessionAccountUsage = { lines: [], nous_route: false }
+
+const isUnknownMethod = (error: unknown): boolean =>
+  (error as { code?: number })?.code === RPC_UNKNOWN_METHOD ||
+  jsonRpcErrorReason(error) === 'unknown_method' ||
+  /unknown_method/.test(error instanceof Error ? error.message : '')
+
 /** `/usage`: main's session totals panel. The owner's `session.stats` is the same session-cumulative
  * dict its `session.usage` ticks carry (`gateway/session_usage.py`), mapped onto main's `Usage` shape
  * and rendered as the classic CLI's `/usage` is (Usage panel, or "no API calls yet", then the provider
@@ -241,10 +249,11 @@ interface CommittedResult {
 export function canonicalUsage(ctx: SlashRunCtx) {
   const sid = ctx.sid!
 
-  // An older owner without the read answers unknown_method; its /usage keeps main's lines.
+  // An older owner without the read answers unknown_method: its /usage keeps main's lines. Any other
+  // failure says nothing about the route, so it shows no Nous CTA or plan bars.
   const limits = ctx.gateway.gw
     .request<SessionAccountUsage>('session.account_usage', { session_id: sid })
-    .catch(() => null)
+    .catch((error: unknown): null | SessionAccountUsage => (isUnknownMethod(error) ? null : NO_ROUTE))
 
   void ctx.gateway.gw
     .request('session.stats', { session_id: sid })

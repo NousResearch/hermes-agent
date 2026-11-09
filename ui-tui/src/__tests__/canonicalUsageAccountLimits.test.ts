@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
@@ -99,4 +100,23 @@ it('/usage on an owner without session.account_usage keeps the totals and the CT
   expect(sys.mock.calls.map(([line]) => String(line))).toEqual([
     'Run /subscription to change plan · /topup to add to your balance'
   ])
+})
+
+it('/usage whose read is refused shows no Nous CTA or plan bars', async () => {
+  const { request, slash, sys } = run({
+    'billing.state': () => ({ ok: true }),
+    'session.account_usage': () => {
+      throw new JsonRpcGatewayError('launch_credentials_unavailable', {
+        code: 4001,
+        data: { reason: 'launch_credentials_unavailable' }
+      })
+    },
+    'session.stats': () => STATS
+  })
+
+  slash('/usage')
+  await flush()
+
+  expect(sys.mock.calls.map(([line]) => String(line))).toEqual([])
+  expect(request).not.toHaveBeenCalledWith('billing.state', expect.anything())
 })

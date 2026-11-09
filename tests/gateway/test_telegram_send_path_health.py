@@ -227,3 +227,79 @@ def test_record_polling_progress_does_not_flip_when_not_running_or_fatal(running
 
     write_status.assert_not_called()
     assert adapter._send_path_degraded is False
+
+
+def _runner_with_sweep() -> MagicMock:
+    runner = MagicMock()
+    runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=0)
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_polling_recovery_arms_the_reconnect_redelivery_sweep():
+    """A reply rejected with `send_path_degraded` while this adapter was reconnecting
+    in place is reconnect-only in the ledger: the recovery round-trip is its only
+    retry trigger, so it must arm the runner's runtime sweep."""
+    adapter = _make_adapter()
+    adapter._running = True
+    generation, _event = adapter._begin_polling_generation()
+    adapter._polling_network_error_count = 1  # this generation followed a network error
+    runner = _runner_with_sweep()
+    adapter.gateway_runner = runner  # type: ignore[assignment]
+
+    with patch.object(adapter, "_write_runtime_status_safe"):
+        adapter._record_polling_progress(generation)
+        await asyncio.sleep(0)
+
+    runner._redeliver_failed_obligations_for_platform.assert_awaited_once()
+    call = runner._redeliver_failed_obligations_for_platform.await_args
+    assert call.args == (adapter.platform,)
+    assert call.kwargs["profile"] is None
+
+
+@pytest.mark.asyncio
+async def test_polling_progress_without_network_error_does_not_sweep():
+    """A healthy generation must not arm a sweep: only the degraded->healthy
+    transition is the reconnect event the ledger waits for."""
+    adapter = _make_adapter()
+    adapter._running = True
+    generation, _event = adapter._begin_polling_generation()
+    adapter._polling_network_error_count = 0
+    runner = _runner_with_sweep()
+    adapter.gateway_runner = runner  # type: ignore[assignment]
+
+    with patch.object(adapter, "_write_runtime_status_safe"):
+        adapter._record_polling_progress(generation)
+        await asyncio.sleep(0)
+
+    runner._redeliver_failed_obligations_for_platform.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovery_before_a_second_sweep_is_not_stacked():
+    """Two recoveries in a row must not queue two sweeps: claiming is atomic and
+    one in-flight sweep already covers every stranded row for this identity."""
+    adapter = _make_adapter()
+    adapter._running = True
+    adapter._polling_network_error_count = 1
+    runner = _runner_with_sweep()
+    adapter.gateway_runner = runner  # type: ignore[assignment]
+
+    with patch.object(adapter, "_write_runtime_status_safe"):
+        generation, _event = adapter._begin_polling_generation()
+        adapter._record_polling_progress(generation)
+        adapter._send_path_degraded = True
+        adapter._polling_network_error_count = 1
+        adapter._polling_progress_event.clear()
+        adapter._record_polling_progress(generation)
+        await asyncio.sleep(0)
+
+    runner._redeliver_failed_obligations_for_platform.assert_awaited_once()
+
+
+def test_recovery_without_a_runner_does_not_raise():
+    """Adapters built before the runner is attached (and unit contexts) must stay no-ops."""
+    adapter = _make_adapter()
+    adapter.gateway_runner = None
+
+    adapter.notify_send_path_recovered()

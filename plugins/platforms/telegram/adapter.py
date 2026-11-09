@@ -1643,6 +1643,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             # After network-error WARNINGs the line must read as the matching recovery event (#111211).
             state = "recovered" if self._polling_network_error_count else "confirmed healthy"
             logger.info("[%s] Telegram polling %s: getUpdates progressing (generation %d)", self.name, state, generation)
+        # A proven round-trip after network errors IS the reconnect event the delivery
+        # ledger waits for: `send_path_degraded` rows are reconnect-only, so a reply
+        # rejected while this adapter was reconnecting in place is otherwise stranded
+        # until a restart. Capture the transition before the counters below are reset.
+        recovered_send_path = bool(self._polling_network_error_count) and self._send_path_degraded
         self._polling_progress_event.set()
         self._polling_last_progress_monotonic = time.monotonic()
         self._polling_network_error_count = 0
@@ -1664,6 +1669,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 "connected", platform_state="connected", error_code=None, error_message=None,
             )
         self._send_path_degraded = False
+        if recovered_send_path:
+            self.notify_send_path_recovered()
         return True
 
     def _observe_polling_request_result(self, request, generation, result):

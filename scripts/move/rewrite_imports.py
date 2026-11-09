@@ -3,7 +3,8 @@
 Usage: python scripts/move/rewrite_imports.py --from-commit <A> [--paths P ...] [--check]
 
 Sites listed in ``exclusions.py`` are left as they are and printed once per reason as ``excluded <reason>``;
-sites listed as by-hand are flagged instead of rewritten.
+sites listed as by-hand are flagged instead of rewritten. A row whose anchor is no longer in its file is flagged.
+A UTF-8 BOM is kept; a file that is not UTF-8 is skipped with a flag.
 
 Rewritten: ``import`` and ``from`` statements, attribute chains of plain ``import`` bindings,
 ``"-m", "<module>"`` argv pairs and ``-m <module>`` in strings, ``sys.modules`` keys and logger names
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import itertools
 import os
 import re
@@ -29,7 +31,7 @@ from libcst.helpers import get_full_name_for_node
 from libcst.metadata import MetadataWrapper, ParentNodeProvider, PositionProvider, ScopeProvider
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from exclusions import BY_HAND, EXCLUDED, IDENTITY
+from exclusions import BY_HAND, EXCLUDED, IDENTITY, anchor_spans
 from renames import current_name, git, module_renames, moved_modules, renamed_paths
 
 DYNAMIC, STRING_REF, BY_PATH, FILE_MATH, BY_HAND_KIND, OTHER = (
@@ -51,12 +53,49 @@ class Plan:
     paths: list[tuple[str, str]]
     names: dict[str, set[str]]
     """Every moved module's old name -> the names its top level defines."""
-    excluded: tuple[tuple[str, int, int, str], ...] = EXCLUDED
-    by_hand: tuple[tuple[str, int], ...] = BY_HAND
+    moves: dict[str, str] = field(default_factory=dict)
+    """The compat MOVES table of the tree: earlier chunks' old names, so exclusion paths match after any move."""
+    excluded: tuple[tuple[str, str, str], ...] = EXCLUDED
+    by_hand: tuple[tuple[str, str], ...] = BY_HAND
 
     @property
     def moved_files(self) -> set[str]:
         return {new for _, new in self.paths}
+
+    def aliases(self, path: str) -> set[str]:
+        """``path`` and where it lives after this move and the earlier ones in MOVES."""
+        out = {path} | {new for old, new in self.paths if old == path}
+        if path.endswith(".py"):
+            module = path[:-3].removesuffix("/__init__").replace("/", ".")
+            new = current_name(module, {**self.moves, **self.renames})
+            if new is not None and current_name(new, self.renames) is not None:
+                new = current_name(new, self.renames)
+            if new is not None:
+                stem = new.replace(".", "/")
+                out |= {f"{stem}.py", f"{stem}/__init__.py"} if path.endswith("__init__.py") else {f"{stem}.py"}
+        return out
+
+    @functools.cached_property
+    def rows_by_path(self) -> dict[str, tuple[list[tuple[str, str]], list[str]]]:
+        """Each file path (old or new) -> its excluded (anchor, reason) rows and by-hand anchors."""
+        rows: dict[str, tuple[list, list]] = {}
+        for path, anchor, reason in self.excluded:
+            for alias in self.aliases(path):
+                rows.setdefault(alias, ([], []))[0].append((anchor, reason))
+        for path, anchor in self.by_hand:
+            for alias in self.aliases(path):
+                rows.setdefault(alias, ([], []))[1].append(anchor)
+        return rows
+
+    @functools.cached_property
+    def path_pattern(self) -> re.Pattern | None:
+        """One pattern for every old path text (compiled once: per-literal compiles dominated chunk 11's run time)."""
+        olds = [old for old, _ in self.old_paths()]
+        return re.compile(r"(?<![\w/.])(" + "|".join(map(re.escape, olds)) + ")") if olds else None
+
+    @functools.cached_property
+    def new_path(self) -> dict[str, str]:
+        return dict(self.old_paths())
 
     def old_paths(self) -> list[tuple[str, str]]:
         """Old -> new path text a by-path literal can carry: each moved file and each moved directory."""
@@ -116,8 +155,9 @@ class _Rewriter(cst.CSTTransformer):
         self.counts: dict[str, int] = {}
         self.flags: list[str] = []
         self.excluded: list[str] = []
-        self.ranges = [(first, last, reason) for p, first, last, reason in plan.excluded if p == path]
-        self.by_hand_lines = {line for p, line in plan.by_hand if p == path}
+        self.ranges: list[tuple[int, int, str]] = []
+        self.by_hand_spans: list[tuple[int, int]] = []
+        self.stale: list[str] = []
         self.sinks: dict[int, _Sink] = {}
         self.prose: set[int] = set()
         self.blocked: dict[int, str] = {}
@@ -135,19 +175,39 @@ class _Rewriter(cst.CSTTransformer):
         line = self.get_metadata(PositionProvider, node).start.line
         self.flags.append(f"{self.path}:{line}  {kind}  {name}  {reason}")
 
+    def anchor(self, source: str) -> None:
+        """Turn this file's exclusion rows into line spans of ``source``; a row whose anchor is gone is flagged."""
+        excluded, by_hand = self.plan.rows_by_path.get(self.path, ([], []))
+        for anchor, reason in excluded:
+            spans = anchor_spans(source, anchor)
+            self.ranges += [(first, last, reason) for first, last in spans]
+            if not spans:
+                self.stale.append(f"{self.path}:1  stale-exclusion  {anchor[:60]}  excluded site ({reason}) not found; "
+                                  "check the file by hand and fix the row in exclusions.py")
+        for anchor in by_hand:
+            spans = anchor_spans(source, anchor)
+            self.by_hand_spans += spans
+            if not spans:
+                self.stale.append(f"{self.path}:1  stale-exclusion  {anchor[:60]}  by-hand site not found; "
+                                  "check the file by hand and fix the row in exclusions.py")
+
+    def _lines(self, node: cst.CSTNode) -> tuple[int, int]:
+        position = self.get_metadata(PositionProvider, node)
+        return position.start.line, position.end.line
+
     def _in_range(self, node: cst.CSTNode) -> bool:
-        line = self.get_metadata(PositionProvider, node).start.line
-        return any(first <= line <= last or first == 0 for first, last, _ in self.ranges)
+        start, end = self._lines(node)
+        return any(first <= end and start <= last for first, last, _ in self.ranges)
 
     def _held(self, node: cst.CSTNode, name: str = "") -> bool:
         """True when ``node`` sits at an excluded site (not touched, not flagged) or a by-hand one (flagged)."""
-        line = self.get_metadata(PositionProvider, node).start.line
+        start, end = self._lines(node)
         for first, last, reason in self.ranges:
-            if first <= line <= last or first == 0:
+            if first <= end and start <= last:
                 self.excluded.append(reason)
                 return True
-        if line in self.by_hand_lines:
-            self.flags.append(f"{self.path}:{line}  {BY_HAND_KIND}  {name or _code(node)}  {IDENTITY}; edit by hand")
+        if any(first <= end and start <= last for first, last in self.by_hand_spans):
+            self.flags.append(f"{self.path}:{start}  {BY_HAND_KIND}  {name or _code(node)}  {IDENTITY}; edit by hand")
             return True
         return False
 
@@ -366,12 +426,10 @@ class _Rewriter(cst.CSTTransformer):
         rewritten = self._text(text, original)
         if self.plan.names_module(rewritten):
             self._flag(original, OTHER, text, "string names a moved module; rewrite or confirm by hand")
-        else:
-            for old, new in self.plan.old_paths():
-                if re.search(rf"(?<![\w/.]){re.escape(old)}", rewritten):
-                    where = "docstring prose" if id(original) in self.prose else "string"
-                    self._flag(original, BY_PATH, old, f"{where} names a moved path (now {new})")
-                    break
+        elif self.plan.path_pattern is not None and (match := self.plan.path_pattern.search(rewritten)):
+            old = match.group(1)
+            where = "docstring prose" if id(original) in self.prose else "string"
+            self._flag(original, BY_PATH, old, f"{where} names a moved path (now {self.plan.new_path[old]})")
         if rewritten == text or self._held(original, text):
             return updated
         dashed = _DASH_M.sub(self._dash_m, text)
@@ -559,8 +617,11 @@ def rewrite_source(source: str, path: str, plan: Plan) -> Result:
     except cst.ParserSyntaxError as error:
         return Result(path, error=f"{path}: parse error: {str(error).splitlines()[0]}")
     rewriter = _Rewriter(plan, path, _binding_accesses(wrapper, plan.renames))
+    if path != "<string>":
+        rewriter.anchor(source)
     new = wrapper.visit(rewriter).code
-    return Result(path, new if new != source else None, rewriter.counts, rewriter.flags, rewriter.excluded)
+    return Result(path, new if new != source else None, rewriter.counts, rewriter.stale + rewriter.flags,
+                  rewriter.excluded)
 
 
 def top_level_names(source: str) -> set[str]:
@@ -585,9 +646,27 @@ def top_level_names(source: str) -> set[str]:
     return names
 
 
-def _work(item: tuple[Path, str, Plan]) -> Result:
-    root, path, plan = item
-    return rewrite_source((root / path).read_text(encoding="utf-8-sig"), path, plan)
+_BOM = "\ufeff"
+_PLAN: Plan | None = None
+
+
+def _init(plan: Plan) -> None:
+    global _PLAN
+    _PLAN = plan
+
+
+def _work(item: tuple[Path, str]) -> Result:
+    root, path = item
+    try:
+        source = (root / path).read_bytes().decode("utf-8")
+    except UnicodeDecodeError as error:
+        return Result(path, flags=[f"{path}:1  undecodable  -  not UTF-8 ({error.reason} at byte {error.start}); "
+                                   "skipped, rewrite its imports by hand"])
+    bom = source.startswith(_BOM)
+    result = rewrite_source(source.removeprefix(_BOM), path, _PLAN)
+    if bom and result.source is not None:
+        result.source = _BOM + result.source
+    return result
 
 
 def _candidates(root: Path, paths: list[str], plan: Plan) -> list[str]:
@@ -628,10 +707,29 @@ def update_moves(root: Path, renames: dict[str, str], write: bool) -> int:
     return sum(1 for old in table if moves.get(old) != table[old])
 
 
+def _module_names(file: Path) -> set[str] | None:
+    """Top-level names of a moved module in the working tree; None when the branch deleted it."""
+    if not file.is_file():
+        return None
+    try:
+        return top_level_names(file.read_bytes().decode("utf-8-sig", errors="replace"))
+    except SyntaxError:
+        return set()
+
+
+def _moves_table(root: Path) -> dict[str, str]:
+    tracked = git(root, "ls-files", "*hermes_agent/compat/moves.py").split()
+    if not tracked or not (root / tracked[0]).is_file():
+        return {}
+    node = next((n for n in ast.parse((root / tracked[0]).read_text(encoding="utf-8-sig")).body
+                 if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", None) == "MOVES"), None)
+    return ast.literal_eval(node.value) if node is not None else {}
+
+
 def build_plan(root: Path, commit: str) -> Plan:
-    names = {old: top_level_names((root / path).read_text(encoding="utf-8-sig"))
-             for old, (_, path) in moved_modules(root, commit).items()}
-    return Plan(module_renames(root, commit), renamed_paths(root, commit), names)
+    names = {old: found for old, (_, path) in moved_modules(root, commit).items()
+             if (found := _module_names(root / path)) is not None}
+    return Plan(module_renames(root, commit), renamed_paths(root, commit), names, _moves_table(root))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -646,8 +744,8 @@ def main(argv: list[str] | None = None) -> int:
         print("rewritten=0 flagged=0 failed=0")
         return 0
     files = _candidates(root, args.paths, plan)
-    with ProcessPoolExecutor(max_workers=os.cpu_count()) as pool:
-        results = list(pool.map(_work, [(root, f, plan) for f in files], chunksize=8))
+    with ProcessPoolExecutor(max_workers=os.cpu_count(), initializer=_init, initargs=(plan,)) as pool:
+        results = list(pool.map(_work, [(root, f) for f in files], chunksize=4))
     counts: dict[str, int] = {}
     flags, failed, changed, excluded = [], [], [], []
     for result in results:
@@ -661,7 +759,7 @@ def main(argv: list[str] | None = None) -> int:
         if result.source is not None:
             changed.append(result.path)
             if not args.check:
-                (root / result.path).write_text(result.source, encoding="utf-8")
+                (root / result.path).write_bytes(result.source.encode("utf-8"))
     moves = update_moves(root, plan.renames, write=not args.check)
     for line in failed + flags:
         print(line)

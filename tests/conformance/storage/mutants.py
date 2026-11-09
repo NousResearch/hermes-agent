@@ -169,24 +169,28 @@ def _reads_ignore_tenant(monkeypatch):
 
         def method(self, *args, **kwargs):
             _agent_pin(self)
-            return db_call[name](self, *args, **kwargs)
+            return db_call(self, *args, **kwargs)
         return method
 
     def admission_read(name):
         def get(self, admission_id):
+            _agent_pin(self)
             from hermes_state_runtime import get_session_admission
             return get_session_admission(self.db, admission_id=admission_id)
 
         def find(self, *, principal_id, session_id, request_id):
+            _agent_pin(self)
             from hermes_state_runtime import find_session_admission
             return find_session_admission(self.db, principal_id=principal_id, session_id=session_id,
                                           request_id=request_id)
 
         def list_(self, session_id, *, pending_only=True):
+            _agent_pin(self)
             from hermes_state_runtime import list_session_admissions
             return list_session_admissions(self.db, session_id=session_id, pending_only=pending_only)
 
         def generation(self, session_id):
+            _agent_pin(self)
             row = self.db.get_session(session_id)
             return None if row is None else row["runtime_generation"]
         return {"get": get, "find": find, "list": list_, "generation": generation}[name]

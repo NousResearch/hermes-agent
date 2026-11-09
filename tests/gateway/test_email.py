@@ -1546,7 +1546,7 @@ class TestEmailSubjectPrefixAndTaskContext(unittest.TestCase):
 
     def test_standalone_sender_without_subject_param_unaffected(self):
         import asyncio
-        from tools import send_message_senders as _senders
+        from gateway.outbound import senders as _senders
         async def _plain_sender(pconfig, chat_id, message, thread_id=None):
             return {"success": True}
         with patch.object(_senders, "_plugin_standalone_sender",

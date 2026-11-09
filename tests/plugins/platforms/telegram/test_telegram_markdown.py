@@ -152,3 +152,9 @@ def test_link_targets_telegram_cannot_open_degrade_to_label(adapter, markdown, e
     assert out == expected
     assert mdv2_error(out) is None
 
+
+@pytest.mark.parametrize("span", ["``[k](v w)``", "``a ` [k](v w)``", "`[k](v w)`"])
+def test_link_shaped_text_inside_a_code_span_stays_verbatim(span):
+    from plugins.platforms.telegram.telegram_markdown import degrade_unrenderable_links
+
+    assert degrade_unrenderable_links(f"use {span} then [x](y)") == f"use {span} then x"

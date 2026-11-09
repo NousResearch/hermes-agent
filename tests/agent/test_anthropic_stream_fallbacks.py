@@ -115,6 +115,68 @@ def test_null_usage_stream_is_normalized_before_sdk_accumulation():
     assert final.content[0].text == "hi" and final.stop_reason == "end_turn"
 
 
+def _minimax_thinking_stream():
+    """A MiniMax M3.1-style stream: the delta carries ``output_tokens_details.thinking_tokens``
+    but the SDK's accumulated final Usage drops it (only flat counters are copied over)."""
+    from anthropic import NOT_GIVEN
+    from anthropic._models import construct_type_unchecked
+    from anthropic.lib.streaming import MessageStream
+    from anthropic.types import RawMessageStreamEvent
+
+    raw = [construct_type_unchecked(type_=RawMessageStreamEvent, value=v) for v in (
+        {"type": "message_start", "message": {"id": "m", "type": "message", "role": "assistant",
+                                              "model": "MiniMax-M3.1-Flash", "content": [],
+                                              "usage": {"input_tokens": 20, "output_tokens": 0}}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+         "usage": {"input_tokens": 20, "output_tokens": 66,
+                   "output_tokens_details": {"thinking_tokens": 53}}},
+        {"type": "message_stop"},
+    )]
+    return MessageStream(iter(raw), output_format=NOT_GIVEN)
+
+
+def _thinking_tokens(usage):
+    """The hidden-thinking count on a usage object, whichever shape the SDK parsed
+    ``output_tokens_details`` into: a plain dict on some SDK versions, a typed model on others."""
+    details = getattr(usage, "output_tokens_details", None)
+    if details is None:
+        return None
+    if isinstance(details, dict):
+        return details.get("thinking_tokens")
+    return getattr(details, "thinking_tokens", None)
+
+
+def test_stream_preserves_minimax_thinking_tokens_on_final_usage():
+    """MiniMax reports hidden thinking in ``output_tokens_details.thinking_tokens`` on the
+    message_delta event. The SDK's accumulate_event() copies only the flat counters onto the
+    final Usage, so without re-attaching it, Hermes reports zero reasoning tokens for a
+    model that always thinks (and the thinking spend becomes invisible in usage reports)."""
+    from agent.anthropic_adapter import normalize_stream_usage
+    from agent.usage_pricing import normalize_usage
+
+    stream = _minimax_thinking_stream()
+    normalize_stream_usage(stream)
+    final = stream.get_final_message()
+
+    assert _thinking_tokens(final.usage) == 53
+    canonical = normalize_usage(final.usage, provider="minimax", api_mode="anthropic_messages")
+    assert canonical.reasoning_tokens == 53
+
+
+def test_stream_without_thinking_details_leaves_usage_untouched():
+    """A provider that sends no ``output_tokens_details`` must not gain a bogus bucket."""
+    from agent.anthropic_adapter import normalize_stream_usage
+
+    stream = _minimax_sdk_stream()
+    normalize_stream_usage(stream)
+    final = stream.get_final_message()
+
+    assert _thinking_tokens(final.usage) is None
+
+
 @pytest.mark.parametrize("provider,disabled", [("custom", True), ("bedrock", False)])
 def test_main_turn_event_order_error_disables_streaming(provider, disabled):
     # #72833 main turn: a custom anthropic_messages provider's out-of-order SSE must switch the

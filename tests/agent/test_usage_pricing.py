@@ -687,6 +687,36 @@ def test_normalize_usage_mapping_codex_fields():
     assert normalized.reasoning_tokens == 5
 
 
+def test_normalize_usage_reads_minimax_thinking_tokens():
+    """MiniMax's Anthropic wire names the hidden-thinking bucket ``thinking_tokens``
+    (not ``reasoning_tokens``). Without this, MiniMax reasoning models report zero
+    reasoning tokens and the thinking spend is invisible in usage reports."""
+    usage = {
+        "input_tokens": 1405,
+        "output_tokens": 13,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens_details": {"thinking_tokens": 8},
+    }
+
+    normalized = normalize_usage(usage, provider="minimax", api_mode="anthropic_messages")
+
+    assert normalized.reasoning_tokens == 8
+
+
+def test_normalize_usage_thinking_tokens_does_not_override_reasoning_tokens():
+    """``reasoning_tokens`` stays the preferred key when both are present."""
+    usage = {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "output_tokens_details": {"reasoning_tokens": 7, "thinking_tokens": 99},
+    }
+
+    normalized = normalize_usage(usage, provider="anthropic", api_mode="anthropic_messages")
+
+    assert normalized.reasoning_tokens == 7
+
+
 def test_normalize_usage_clamps_negative_counters():
     usage = SimpleNamespace(
         prompt_tokens=100,

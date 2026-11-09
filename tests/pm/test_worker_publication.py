@@ -364,7 +364,7 @@ def _icacls(path: Path) -> list[str]:
 
 @pytest.mark.platforms("windows")
 def test_published_plugin_takes_the_plugins_dir_permissions_not_the_staging_folders(
-    client, tmp_path, monkeypatch, isolated_python,
+    client, tmp_path, monkeypatch, isolated_python,  # health: allow F811 -- pytest injects the imported client and isolated_python fixtures by parameter name
 ):
     """`plugins install` / `update` stage in tempfile.TemporaryDirectory, which Python >= 3.13 gives a
     private, protected DACL on Windows (SYSTEM, Administrators, OWNER RIGHTS), and os.replace keeps it.

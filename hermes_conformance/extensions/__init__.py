@@ -22,6 +22,7 @@ from hermes_conformance.extensions.suite import (
     LevelBackend,
     LevelConformance,
     PinningConformance,
+    ProvisioningConformance,
     SwitchConformance,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "LevelBackend",
     "LevelConformance",
     "PinningConformance",
+    "ProvisioningConformance",
     "SwitchConformance",
 ]

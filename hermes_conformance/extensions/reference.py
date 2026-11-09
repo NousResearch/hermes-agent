@@ -3,7 +3,8 @@
 An in-memory registry that holds one tenant's whole registry in one store, exactly the shape a
 hosted backend serves, so the suite can exercise the ownership levels the local backend cannot
 express (a local install has one agent per file and one owner, the local person). It is
-executable documentation of the port's rules — the pin, the administration right and
+executable documentation of the port's rules — the pin, the administration right, the
+provisioning actor that alone writes tenant-wide entries and
 :func:`hermes_extension_registry_port.entry_visible_to` — and the substrate the deliberately
 broken backends in ``tests/conformance/extensions/mutants.py`` are cut from. It is test
 infrastructure: no deployment selects it, and it stores nothing when it dies.
@@ -19,6 +20,7 @@ from typing import Any, Optional
 
 from hermes_extension_registry_port import (
     ExtensionRegistry, RegistryAdminRefused, RegistryPinRefused, owner_key,
+    require_provisioning,
 )
 from hermes_scope import Group, Owner, Principal, current_scope
 
@@ -106,7 +108,13 @@ class ReferenceExtensionRegistry(ExtensionRegistry):
 
     def install(self, *, name, kind, version, content_hash, manifest, scan_result=None, level="owner"):
         scope = self._pin()
-        self._administer(scope)
+        if level == "tenant":
+            # The v1 rule: a tenant-wide entry is written by the tenant's provisioning actor
+            # alone, before anything is read — an agent's administration right never reaches
+            # past its owner's entries.
+            require_provisioning(scope)
+        else:
+            self._administer(scope)
         self._check_install_args(name=name, kind=kind, version=version, content_hash=content_hash,
                                  manifest=manifest, scan_result=scan_result, level=level)
         owner = self.owner if level == "owner" else None
@@ -135,6 +143,10 @@ class ReferenceExtensionRegistry(ExtensionRegistry):
             row = self._resolve(scope, name)
             if row is None:
                 return False
+            if row["level"] == "tenant":
+                # The agent's administration right reaches its owner's entries, never the
+                # tenant's (the v1 rule).
+                require_provisioning(scope)
             row["enabled"] = bool(enabled)
             return True
 
@@ -145,6 +157,8 @@ class ReferenceExtensionRegistry(ExtensionRegistry):
             row = self._resolve(scope, name)
             if row is None:
                 return False
+            if row["level"] == "tenant":
+                require_provisioning(scope)
             del self.store.entries[(owner_key(row["owner"]), name)]
             for agent in {key[0] for key in self.store.switches}:
                 self.store.switches.pop(self._switch_key(agent, name), None)

@@ -16,7 +16,11 @@ from agent.runtime_scope import bind_profile_scope
 from hermes_conformance.extensions import (
     AdminConformance, Backend, PinningConformance, SwitchConformance,
 )
-from hermes_extension_registry_port_local import LocalExtensionRegistryProvider
+from hermes_conformance.extensions.suite import install
+from hermes_extension_registry_port import RegistryAdminRefused
+from hermes_extension_registry_port_local import (
+    REGISTRY_FILE, LocalExtensionRegistryProvider,
+)
 from hermes_scope import LOCAL_OWNER, LOCAL_TENANT, Principal, Scope, push_state
 
 
@@ -35,6 +39,12 @@ def local_backend(tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(homes["unpinned"]))
         yield
 
+    def install_shared(reg):
+        # The local backend keeps entries owner-wide (its local exception: one owner, nothing to
+        # share tenant-wide), so the world's shared entry is the local owner's stand-in.
+        with bind_profile_scope(reg.home):
+            install(reg, name="shared", level="owner")
+
     # Variant scopes bind the scope the way a routed activity binds it (``push_state``): only the
     # pin is under test, so no profile state is rebuilt around it.
     backend = Backend(
@@ -49,6 +59,7 @@ def local_backend(tmp_path, monkeypatch):
         foreign_tenant=lambda agent: push_state(scope=Scope(
             "acme", str(homes[agent]), Principal("u"), owner=LOCAL_OWNER, can_administer=True)),
         unbound=unbound,
+        install_shared=install_shared,
     )
     return backend
 
@@ -70,3 +81,39 @@ class TestLocalAdmin(AdminConformance):
 
 class TestLocalSwitch(SwitchConformance):
     pass
+
+
+def test_every_administration_refusal_happens_before_the_file_is_loaded(tmp_path, monkeypatch):
+    """A scope that may not administer is refused for every write before the registry file is
+    read, so the refusal is the same for an entry the registry holds, a foreign one and a
+    missing one — and nothing is read on the way."""
+    home = tmp_path / "a"
+    home.mkdir()
+    reg = LocalExtensionRegistryProvider().open(home)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("the registry file was loaded before the administration gate")
+    monkeypatch.setattr(reg, "_load", unexpected)
+    noadmin = Scope(LOCAL_TENANT, str(home), LOCAL_OWNER, owner=LOCAL_OWNER, can_administer=False)
+    with push_state(scope=noadmin):
+        for name in ("present", "missing", "foreign"):
+            for call in (lambda n=name: reg.remove(n),
+                         lambda n=name: reg.set_enabled(n, True),
+                         lambda n=name: reg.set_agent_enabled(n, True),
+                         lambda n=name: install(reg, name=n)):
+                with pytest.raises(RegistryAdminRefused):
+                    call()
+
+
+def test_the_local_backend_refuses_tenant_wide_entries(tmp_path):
+    """The registry's local exception: one tenant, one owner and one agent per file, so an
+    entry has nothing to be tenant-wide over — the local backend keeps entries owner-wide, as
+    the local owner's, and refuses the tenant level outright. (An entry never sits at the
+    agent level by design; the per-agent switch alone is the agent's row.)"""
+    home = tmp_path / "a"
+    home.mkdir()
+    reg = LocalExtensionRegistryProvider().open(home)
+    with bind_profile_scope(home):
+        with pytest.raises(ValueError, match="owner-wide"):
+            install(reg, name="org-tool", level="tenant")
+    assert not (home / REGISTRY_FILE).exists()  # refused before anything was written

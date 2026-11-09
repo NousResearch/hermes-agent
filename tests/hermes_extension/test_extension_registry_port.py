@@ -124,14 +124,17 @@ def test_a_reinstall_replaces_the_entry_and_keeps_the_switch(registry, tmp_path)
         assert registry.agent_enabled("weather") is True  # the agent's choice survives an update
 
 
-def test_the_owner_level_beats_the_tenant_level_for_one_name(registry, tmp_path):
+def test_the_local_backend_refuses_tenant_wide_entries(registry, tmp_path):
+    """The registry's local exception: a local install is one owner's, with nothing to share
+    tenant-wide, so the local backend keeps owner-wide entries as the local owner's and
+    refuses the tenant level outright — whatever scope asks for it, provisioning included.
+    An entry never sits at the agent level by design (a malformed one is refused below); only
+    the per-agent switch is the agent's row."""
     with bind_profile_scope(tmp_path):
-        registry.install(name="dup", kind="plugin", version="1", content_hash="h", manifest={},
-                         level="tenant")
-        registry.install(name="dup", kind="plugin", version="2", content_hash="h", manifest={},
-                         level="owner")
-        assert registry.get("dup")["version"] == "2" and registry.get("dup")["level"] == "owner"
-        assert sorted(r["level"] for r in registry.list()) == ["owner", "tenant"]
+        with pytest.raises(ValueError):
+            registry.install(name="org", kind="plugin", version="1", content_hash="h",
+                             manifest={}, level="tenant")
+    assert not (tmp_path / REGISTRY_FILE).exists()  # and nothing was written
 
 
 def test_removal_takes_the_switch_with_it(registry, tmp_path):

@@ -6,10 +6,13 @@ loading**: local installs keep today's in-process plugin loading (``hermes_cli.p
 ``$HERMES_HOME/plugins/``), which never reads this file, and nothing in config.yaml selects this
 backend yet. Until a caller migrates, these rows are Hermes's own record only.
 
-A local install is one tenant (``local``) whose one person owns every agent, so an owner-wide
-entry and a tenant-wide entry resolve the same here, and the file a profile holds is that
-profile's registry: today profiles are islands, and a plugin installed for one profile is not
-offered to another. Every operation is pinned after the same fashion as the local session store
+A local install is one tenant (``local``) whose one person owns every agent, and the file a
+profile holds is that profile's registry: today profiles are islands, and a plugin installed
+for one profile is not offered to another. This is the registry's local exception: an entry
+never sits at the agent level by design (only the per-agent switch does), and the local backend
+keeps entries owner-wide — the local owner's, which is every agent this file serves — and
+refuses the tenant level outright, because one owner has nothing to share tenant-wide. Every
+operation is pinned after the same fashion as the local session store
 (``hermes_state_port_local``): the bound scope must be a local one naming this registry's own
 profile home, and its owner must be the local person — any other tenant, agent or owner is
 refused with :class:`~hermes_extension_registry_port.RegistryPinRefused` before anything is
@@ -82,6 +85,17 @@ class LocalExtensionRegistry(ExtensionRegistry):
             raise RegistryAdminRefused(
                 "installing, removing or switching a user extension needs the agent's administration right")
 
+    def _check_levels(self, level: str) -> None:
+        """The registry's local exception: one tenant (``local``) whose one person owns every
+        agent, so an entry has nothing to be tenant-wide over — the local backend keeps
+        owner-wide entries as the local owner's and refuses the tenant level outright. An entry
+        never sits at the agent level by design; the per-agent switch alone is the agent's row
+        (one file per profile, so the switch is stored at the agent level)."""
+        if level == "tenant":
+            raise ValueError(
+                "the local extension registry stores owner-wide entries only: a local install "
+                "is one owner, with nothing to share tenant-wide")
+
     # --- the file --------------------------------------------------------------------------
 
     def _load(self) -> dict[str, Any]:
@@ -129,6 +143,7 @@ class LocalExtensionRegistry(ExtensionRegistry):
         self._administer(scope)
         self._check_install_args(name=name, kind=kind, version=version, content_hash=content_hash,
                                  manifest=manifest, scan_result=scan_result, level=level)
+        self._check_levels(level)
         data = self._load()
         entry = {"name": name, "kind": kind, "version": version, "content_hash": content_hash,
                  "manifest": manifest, "scan_result": scan_result, "enabled": True, "level": level,

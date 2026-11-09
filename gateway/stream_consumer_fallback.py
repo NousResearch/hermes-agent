@@ -56,9 +56,12 @@ class StreamFallbackMixin:
 
     def _continuation_text(self, final_text: str) -> str:
         """Return only the part of final_text the user has not already seen."""
-        prefix = self._fallback_prefix or self._visible_prefix()
-        if prefix and final_text.startswith(prefix):
-            cut = len(prefix)
+        # A segment after a tool call streams with the separator's leading newlines; the final is
+        # stripped. Leading whitespace never renders, so it must not make shown text read as unseen.
+        prefix = (self._fallback_prefix or self._visible_prefix()).lstrip()
+        lead = len(final_text) - len(final_text.lstrip())
+        if prefix and final_text[lead:].startswith(prefix):
+            cut = lead + len(prefix)
             # ``prefix`` is whatever the last successful edit put on screen. Edits
             # fire on a throttle tick, not at a word boundary, so that prefix can
             # end inside a word.  Back the cut up to the last space or newline so
@@ -186,7 +189,9 @@ class StreamFallbackMixin:
         continuation to send (the whole final when the prefix is from a *previous* segment)
         or None when the turn is settled here."""
         visible = self._visible_prefix()
-        if self._preview_uncertain and final_text.strip() and final_text == visible:
+        # Leading whitespace (a post-tool segment's separator) never renders: compare without it.
+        shown_whole = bool(final_text.strip()) and final_text.lstrip() == visible.lstrip()
+        if self._preview_uncertain and shown_whole:
             # The whole answer went out in a preview whose send timed out: it may already be on
             # screen and, with no id, cannot be replaced, so any resend is a second copy.
             self._already_sent = True
@@ -195,8 +200,7 @@ class StreamFallbackMixin:
             return None
         # Telegram clients can lose (part of) a streamed preview after a failed
         # final edit, so opt-in adapters commit a fresh final send.
-        if (final_text.strip() and final_text == visible
-                and getattr(self.adapter, "RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK", False) is True):
+        if shown_whole and getattr(self.adapter, "RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK", False) is True:
             delivery = await self._send_empty_fallback_final(final_text)
             if delivery == "delivered":
                 return None
@@ -220,7 +224,7 @@ class StreamFallbackMixin:
             return None
         # The prefix may be from a *previous* segment (before a tool boundary),
         # wrongly reading as "already shown" — send final_text as-is.
-        if final_text.strip() and final_text != visible:
+        if final_text.strip() and not shown_whole:
             return final_text
         # Best-effort strip of a cursor left stuck by the edit failure.
         if (self._message_id and self._last_sent_text and self.cfg.cursor

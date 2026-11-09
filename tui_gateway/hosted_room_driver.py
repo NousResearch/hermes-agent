@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
+from tui_gateway.hosted_room_lease_keeper import LeaseKeeper
 
 logger = logging.getLogger(__name__)
 
@@ -766,6 +767,11 @@ class HostedRoomRuntime:
 
     def _renew_lease_if_needed(
         self, lease: state.DriverLease, *, force: bool = False) -> state.DriverLease:
+        with self._status_lock:
+            known = self._leases.get(lease.room_id)
+        if (known is not None and known.lease_generation == lease.lease_generation
+                and known.expires_at > lease.expires_at):
+            lease = known  # a LeaseKeeper renewed this generation since the caller's copy
         if not force and self.clock() < lease.expires_at - (self.lease_ttl_seconds / 2):
             return lease
         renewed = state.renew_lease(
@@ -802,7 +808,13 @@ class HostedRoomRuntime:
                 raise AttachmentsUnsupportedError(
                     "attachments_unsupported_on_route: this member's route cannot carry "
                     "attached files")
-            with self.turn_lock(profile):
+            # The profile lock can be held by another turn for up to `turn_wait_seconds`, past the
+            # lease ttl, and an expired lease cannot be renewed: keep it alive through the wait
+            # and the whole turn, and fence before submit if a renewal proved it lost.
+            with LeaseKeeper(
+                    attempt.lease, lambda lease: self._renew_lease_if_needed(lease, force=True),
+                    interval=self.lease_ttl_seconds / 3) as keeper, self.turn_lock(profile):
+                keeper.renew_now()
                 session = self._resolve_or_create(transport, profile, binding.room_id)
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
@@ -859,8 +871,14 @@ class HostedRoomRuntime:
                 self._rooms_needing_reschedule.add(binding.room_id)
 
     def _mark_ambiguous(self, binding: HostedRoomBinding, attempt: state.TaskAttempt) -> None:
-        self._drop_lease(binding.room_id)
-        self._ambiguous_rooms[binding.room_id] = attempt.lease.expires_at
+        # Wait out the lease as last renewed (a LeaseKeeper may have extended it), so the room is
+        # reclaimed under a new generation and recovery inspects the ambiguous attempt.
+        with self._status_lock:
+            known = self._leases.pop(binding.room_id, None)
+        expires_at = attempt.lease.expires_at
+        if known is not None and known.lease_generation == attempt.lease.lease_generation:
+            expires_at = max(expires_at, known.expires_at)
+        self._ambiguous_rooms[binding.room_id] = expires_at
 
     def _on_terminal(
         self, binding: HostedRoomBinding, attempt: state.TaskAttempt, receipt: Mapping[str, Any]

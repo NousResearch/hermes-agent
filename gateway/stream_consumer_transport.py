@@ -285,7 +285,9 @@ class StreamTransportMixin:
                 chat_id=self.chat_id, content=text, metadata=self._metadata_for_send(final=True))
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
-            return False
+            if not self._send_failure_may_have_delivered(e):
+                return False
+            result = e  # a raised timeout may have landed too: same handling as a returned one
         if not getattr(result, "success", False):
             if not self._send_failure_may_have_delivered(result):
                 return False

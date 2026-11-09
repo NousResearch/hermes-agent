@@ -73,14 +73,23 @@ async def test_timed_out_stream_send_is_shown_once_and_nothing_is_lost(shape, fa
 
 
 @pytest.mark.asyncio
-async def test_timed_out_fresh_final_does_not_edit_the_preview_up_to_the_answer():
-    """Preview shown, then the fresh-final send times out (it may be on screen): the preview must
-    not be edited into a second full copy, and nothing is sent a third time."""
+@pytest.mark.parametrize("raises", [False, True], ids=["returned", "raised"])
+async def test_timed_out_fresh_final_does_not_edit_the_preview_up_to_the_answer(raises):
+    """Preview shown, then the fresh-final send times out (it may be on screen), whether the
+    adapter returns the timeout or raises it: the preview must not be edited into a second full
+    copy, and nothing is sent a third time."""
     delivered: list = []
     adapter = _landing_adapter(delivered, fail_first=False)
     consumer = GatewayStreamConsumer(adapter, "chat", StreamConsumerConfig(edit_interval=0.01))
     await consumer._send_or_edit("Here is the")
-    adapter.send.side_effect = lambda **kw: delivered.append(kw["content"]) or _TIMED_OUT
+
+    async def lost_ack(**kw):
+        delivered.append(kw["content"])
+        if raises:
+            raise TimeoutError("Timed out")
+        return _TIMED_OUT
+
+    adapter.send.side_effect = lost_ack
     adapter.prefers_fresh_final_streaming = MagicMock(return_value=True)
 
     assert await consumer._send_or_edit("Here is the full answer.", finalize=True) is True

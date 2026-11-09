@@ -318,7 +318,7 @@ Session storage sits behind a storage interface: typed contracts in `persistence
 
 - The first use of a `hermes_state` name warns once per process, naming the replacement and the removal release.
 - The module is supported through v0.24, v0.25 and v0.26 and removed no earlier than v0.27.0.
-- Names not in the table are not carried; they were internal helpers of the old store.
+- Names not in the table are not carried: the old class's mixins and the SQLite backend's own helpers have no public replacement, and `hermes plugins validate` reports an import of one.
 
 | `hermes_state` name | Replacement |
 |---|---|
@@ -344,6 +344,11 @@ Session storage sits behind a storage interface: typed contracts in `persistence
 | `apply_wal_with_fallback`, `apply_database_pragmas` | the same names in `sqlite_support`, for a plugin's own SQLite file |
 | `storage_state`, `storage_corrupt_reason` | `persistence_assembly.storage_health(profile_scope()).storage_state()` |
 | `get_hermes_home`, `mkdir_under_hermes_home` | the same names in `hermes_constants` |
+| `format_session_db_unavailable`, `get_last_init_error` | the same names in `storage_user_copy` |
+| `resolved_max_resume_messages`, `resolved_max_export_messages` | the same names in `storage_limits` |
+| `preflight_db_writability`, `read_only_db_uri` | the same names in `sqlite_support`, for a plugin's own SQLite file |
+| `holder_pid_checkable`, `make_user_dir` | `process_identity.holder_pid_checkable`, `hermes_dir_acl.make_user_dir` |
+| `divert_session_transcript_jsonl(session_id, messages)` | `session_rescue.divert_session_transcript_jsonl(session_id, messages, sessions_dir=get_hermes_home() / "sessions")` |
 | `session_db`, the `SessionDB` a context engine's `bind_session_state` and `on_session_start` receive | `persistence`, the agent's store handle, passed beside it to a hook that accepts that keyword ([Context engine plugins](../context-engine-plugin.md#session-storage)) |
 
 `NewSession` and `SessionQuery`/`SessionWindow` come from `persistence.conversation.sessions`; `NewMessage` and `ReplaceMode` from `persistence.conversation.messages`. A dashboard route that listed sessions migrates like this:

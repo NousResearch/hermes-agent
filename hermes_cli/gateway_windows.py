@@ -975,8 +975,8 @@ def _build_transient_task_launcher(
         import time
         sys.path.insert(0, {project_root_literal})
         from hermes_cli._subprocess_compat import (
-            _WINDOWS_GATEWAY_BREAKAWAY_ENV, pid_exists_stdlib, windows_detach_flags,
-            windows_detach_flags_without_breakaway,
+            _WINDOWS_GATEWAY_BREAKAWAY_ENV, pid_exists_stdlib, process_is_in_job,
+            windows_detach_flags, windows_detach_flags_without_breakaway,
         )
 
         _TASK_NAME = {task_name_literal}
@@ -1046,6 +1046,10 @@ def _build_transient_task_launcher(
                 _popen_kwargs["env"] = {{**_base_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "1"}}
                 subprocess.Popen(_GATEWAY_CMD, **_popen_kwargs)
             except OSError:
+                # Task Scheduler can put this launcher in its own Job Object.
+                # A denied breakaway must not respawn into that doomed job.
+                if process_is_in_job():
+                    raise
                 _popen_kwargs["creationflags"] = windows_detach_flags_without_breakaway()
                 _popen_kwargs["env"] = {{**_base_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "0"}}
                 subprocess.Popen(_GATEWAY_CMD, **_popen_kwargs)

@@ -28,7 +28,7 @@ import pytest
 
 from hermes_cli import _subprocess_compat, gateway, gateway_windows
 
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object semantics")
+pytestmark = pytest.mark.platforms("windows")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -128,6 +128,39 @@ def test_transient_launcher_renders_none_env_and_compiles(tmp_path):
     assert "_WATCHER_ENV = null" not in src
     assert "HERMES_GATEWAY_TASK_LAUNCH" in src
     compile(src, "<transient-launcher>", "exec")
+
+
+def test_scheduler_job_denied_breakaway_never_retries_in_job(tmp_path, monkeypatch):
+    """The Scheduler launcher must not repeat the updater's doomed fallback."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(_subprocess_compat, "process_is_in_job", lambda: True)
+    attempted_flags = []
+
+    def denied_breakaway(*args, **kwargs):
+        attempted_flags.append(kwargs["creationflags"])
+        raise OSError(5, "breakaway denied")
+
+    monkeypatch.setattr(subprocess, "Popen", denied_breakaway)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0),
+    )
+    launcher = gateway_windows._build_transient_task_launcher(
+        task_name="Hermes_GW_Restart_test",
+        temp_dir=str(tmp_path / "transient-task"),
+        old_pid=0,
+        gateway_cmd=[sys.executable, "-c", "pass"],
+        respawn_cwd="",
+        respawn_env_overlay={},
+        watcher_env=None,
+        project_root=str(REPO_ROOT),
+        watcher_timeout_s=1.0,
+    )
+
+    with pytest.raises(OSError, match="breakaway denied"):
+        exec(compile(launcher, "<transient-launcher>", "exec"), {"__name__": "__main__"})
+    assert len(attempted_flags) == 1, "never retry without breakaway inside a Scheduler job"
 
 
 def test_transient_task_xml_is_triggerless_hidden():

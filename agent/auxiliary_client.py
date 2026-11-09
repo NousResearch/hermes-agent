@@ -38,6 +38,10 @@ from agent.auxiliary_fallback_recovery import reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
+from agent.auxiliary_pool_fallback import (pool_credential_is_model_eligible as _pool_credential_is_model_eligible,
+                                           pool_runtime_api_key as _pool_runtime_api_key,
+                                           pool_runtime_base_url as _pool_runtime_base_url,
+                                           pool_runtime_base_url_for_key as _pool_runtime_base_url_for_key)
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -1061,56 +1065,9 @@ def _peek_pool_entry(provider: str, pool: Any = None, model: Optional[str] = Non
         logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc)
     return None
 
-
-def _pool_runtime_api_key(entry: Any) -> str:
-    # runtime_api_key handles provider-specific fallback (e.g. agent_key for nous); None entry → "".
-    key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-    return str(key or "").strip()
-
-
-def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
-    if entry is None:
-        return str(fallback or "").strip().rstrip("/")
-    if getattr(entry, "provider", None) == "nous":
-        # Canonical auth-layer reader so the env override shares one normalization path.
-        from hermes_cli.auth import _nous_inference_env_override
-        env_url = _nous_inference_env_override()
-        if env_url:
-            return env_url
-    # runtime_base_url is provider-aware; fall back for non-PooledCredential entries.
-    url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "inference_base_url", None)
-           or getattr(entry, "base_url", None) or fallback)
-    return str(url or "").strip().rstrip("/")
-
-
-def _pool_runtime_base_url_for_key(entry: Any, runtime_key: Any, fallback: str = "") -> str:
-    """Use a pool row endpoint only when it owns the runtime credential."""
-    if entry is None or _pool_runtime_api_key(entry) != str(runtime_key or "").strip():
-        return str(fallback or "").strip().rstrip("/")
-    return _pool_runtime_base_url(entry, fallback)
-
-
-def _pool_credential_is_model_eligible(
-    provider: str, runtime_key: Any, model: Optional[str], pool: Any = None,
-) -> bool:
-    """Reject known credentials cooled for the requested model, including direct paths."""
-    token = str(runtime_key or "").strip()
-    if not token or not model:
-        return True
-    pool = pool or _load_pool_with_credentials(provider, " (model gate)")
-    if pool is None:
-        return True
-    try:
-        return not bool(pool.token_is_blocked(token, model=model))
-    except Exception as exc:
-        logger.debug("Auxiliary client: could not apply model cooldown gate for %s: %s", provider, exc)
-        return True
-
-
 # Hosts the aux Anthropic path may be pointed at via model.base_url; anything else falls back
 # to the Anthropic default so a foreign host never leaks in.
 _ANTHROPIC_COMPATIBLE_HOSTS = frozenset({"api.anthropic.com"})
-
 
 def _is_anthropic_compatible_host(url: str) -> bool:
     """True for native Anthropic hosts and gateways serving Messages under a ``/anthropic`` path

@@ -1,13 +1,13 @@
 name: ciphervault
 repo: https://github.com/samuel-1-avson/CipherVault
-sha: 3964115e7b1f5a10b3ba84048f4db58b72634965
+sha: cddbfc1dd5939c19f768679685b9a5a71a81e35f
 subdir: "plugins/ciphervault"
 description: Zero-knowledge secret backup for AI coding agents — masked sprawl scan, RAM-only run with exact-value output scrubbing, encrypted snapshots, pre_tool_call leak guard, and a secret source for Hermes itself.
 maintainer: samuel-1-avson
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.2.0"
+version: "0.3.0"
 readme: true
 capabilities:
   provides_tools:
@@ -17,9 +17,11 @@ capabilities:
     - ciphervault_push
     - ciphervault_recovery_drill
     - ciphervault_redact
+    - ciphervault_audit
   provides_hooks:
     - pre_tool_call
     - transform_tool_result
+    - post_tool_call
   provides_middleware:
     - tool_request
   requires_env: []

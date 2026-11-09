@@ -1,6 +1,6 @@
 name: signal-dog
 repo: https://github.com/scottleimroth/signal-dog
-sha: 619843043b2a596124c7912a56ed10fb1a9df948
+sha: ff54ff7de6886c173b27d4e64eaf85ef5d06b0bf
 title: Signal Dog
 description: >-
   Listens through the microphone for household sounds (a door knock, an appliance beeping, a smoke alarm
@@ -22,17 +22,20 @@ description: >-
   check who is asking, so do not use the plugin on an agent that strangers can message.
   Network: the plugin makes no network calls and has no telemetry; alerts are delivered by the agent
   through the messaging app the user already set up. No credentials are read or stored. The pre_llm_call
-  hook only notices which chat session is live and reads no message content.
+  hook only notices which chat session is live and reads no message content. While a beep keeps
+  sounding, it edits its own first alert ("still beeping", then "no longer detected") where the messaging
+  app allows edits, and otherwise sends periodic reminder messages (every three minutes by default, for as long as the beep
+  continues); it never edits anyone else's messages.
 maintainer: scottleimroth
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-image: https://raw.githubusercontent.com/scottleimroth/signal-dog/619843043b2a596124c7912a56ed10fb1a9df948/docs/demo-scene.png
+image: https://raw.githubusercontent.com/scottleimroth/signal-dog/ff54ff7de6886c173b27d4e64eaf85ef5d06b0bf/docs/demo-scene.png
 screenshots:
-  - https://raw.githubusercontent.com/scottleimroth/signal-dog/619843043b2a596124c7912a56ed10fb1a9df948/docs/demo-scene.png
-  - https://raw.githubusercontent.com/scottleimroth/signal-dog/619843043b2a596124c7912a56ed10fb1a9df948/docs/measured.png
-docs_url: https://github.com/scottleimroth/signal-dog/blob/619843043b2a596124c7912a56ed10fb1a9df948/README.md
-version: "0.1.0"
+  - https://raw.githubusercontent.com/scottleimroth/signal-dog/ff54ff7de6886c173b27d4e64eaf85ef5d06b0bf/docs/demo-scene.png
+  - https://raw.githubusercontent.com/scottleimroth/signal-dog/ff54ff7de6886c173b27d4e64eaf85ef5d06b0bf/docs/measured.png
+docs_url: https://github.com/scottleimroth/signal-dog/blob/ff54ff7de6886c173b27d4e64eaf85ef5d06b0bf/README.md
+version: "0.1.1"
 platforms:
   - linux
   - windows

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import time
@@ -235,7 +236,7 @@ class SessionTitlesConfigMixin:
 
     @staticmethod
     def _set_config(row: dict[str, Any], config: dict[str, Any]) -> None:
-        row["model_config"] = config
+        row["model_config"] = copy.deepcopy(config)
         row["model_config_stored"] = True
         sync_lineage_markers(row)
 
@@ -291,7 +292,7 @@ class SessionTitlesConfigMixin:
         row = self._table(scope).get(session_id)
         if row is None:
             return default
-        value: JsonValue = row["model_config"].get(key, default)
+        value: JsonValue = copy.deepcopy(row["model_config"].get(key, default))
         return value
 
     def session_ids_with_model_config_key(self, key: str) -> tuple[SessionId, ...]:

@@ -217,3 +217,41 @@ def test_multiplex_tick_routes_desktop_served_satellite_with_only_local_adapter(
     # The routed view releases the primary adapter for exactly the route-mapped target.
     assert shared.get(Platform.DISCORD, {"chat_id": "C1"}) is primary
     assert shared.get(Platform.DISCORD, {"chat_id": "unmapped"}) is None
+
+
+def _dm_routes(platform, **route):
+    from gateway.profile_routing import parse_profile_routes
+    return parse_profile_routes([{"name": "dm", "platform": platform, "profile": "fitness", **route}])
+
+
+def test_user_id_dm_routes_authorize_only_that_users_dm():
+    """#146336: a cron target carries no sender, so every route declaring ``user_id`` used to miss,
+    including the ``user_id + chat_id`` workaround. The target chat stands for the user only when it
+    is that user's DM; other chats, groups and other platforms still miss."""
+    adapter = object()
+    cases = [
+        (Platform.TELEGRAM, {"user_id": "399611999"}),                       # documented DM shape
+        (Platform.TELEGRAM, {"user_id": "399611999", "chat_id": "399611999"}),
+        ("rainbow", {"user_id": "399611999", "chat_id": "399611999"}),       # plugin platform DM
+    ]
+    for platform, route in cases:
+        shared = SharedRouteAdapters({platform: adapter}, _dm_routes(str(getattr(platform, "value", platform)), **route))
+        assert shared.get(platform, {"chat_id": "399611999"}) is adapter, route
+        assert shared.get(platform, {"chat_id": "399611999", "thread_id": "17"}) is adapter, route
+        for chat in ("424242", "-1001234567890", ""):
+            assert shared.get(platform, {"chat_id": chat}) is None, (route, chat)
+
+
+def test_user_id_routes_that_are_not_dms_still_fail_closed():
+    adapter = object()
+    # a user inside a group chat: the target chat is not the user
+    group = SharedRouteAdapters({Platform.TELEGRAM: adapter},
+                                _dm_routes("telegram", user_id="399611999", chat_id="-1001234567890"))
+    assert group.get(Platform.TELEGRAM, {"chat_id": "-1001234567890"}) is None
+    # user_id-only on a platform whose DM chat ids are not user ids
+    discord = SharedRouteAdapters({Platform.DISCORD: adapter}, _dm_routes("discord", user_id="555"))
+    assert discord.get(Platform.DISCORD, {"chat_id": "555"}) is None
+    # disabled DM route
+    off = SharedRouteAdapters({Platform.TELEGRAM: adapter},
+                              _dm_routes("telegram", user_id="399611999", enabled=False))
+    assert off.get(Platform.TELEGRAM, {"chat_id": "399611999"}) is None

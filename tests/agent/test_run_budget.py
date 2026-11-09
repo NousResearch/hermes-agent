@@ -359,3 +359,18 @@ def test_wrapup_lands_in_the_persisted_row_via_pre_flush_hook(monkeypatch, tmp_p
         session_db.close()
 
 # ── turn clock stamping ────────────────────────────────────────────────────
+
+def test_gemini_long_decode_scales_implicit_stale_timeout_by_hops(monkeypatch, tmp_path):
+    """One non-streaming stale timer spans every unary long-decode hop: an xhigh budget (262,144 tokens,
+    8 hops of 32,768) gets 8x the 600s gemini-4 floor, not 600s for the whole answer. Explicit config
+    still wins untouched, and a request without a long-decode budget is unchanged."""
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    agent = _make_agent(tmp_path, monkeypatch, model="gemini-4-argon", provider="gemini", api_key="AQ.dummy",
+                        base_url="https://generativelanguage.googleapis.com/v1beta")
+    payload = {"messages": [{"role": "user", "content": "hi"}], "model": "gemini-4-argon"}
+    assert agent._compute_non_stream_stale_timeout(payload) == 600.0
+    long_decode = {**payload, "extra_body": {"max_output_tokens": 262_144}}
+    assert agent._compute_non_stream_stale_timeout(long_decode) == 600.0 * 8
+    monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "120")
+    assert agent._compute_non_stream_stale_timeout(long_decode) == 120.0

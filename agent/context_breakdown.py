@@ -76,10 +76,10 @@ def _skills_block(stable: str) -> str:
     return m.group(0) if m else ""
 
 
-def _split_tools(tools: Sequence[dict]) -> Tuple[List[dict], List[dict], List[dict]]:
-    builtin: List[dict] = []
-    mcp: List[dict] = []
-    subagent: List[dict] = []
+def _split_tools(tools: Sequence[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    builtin: list[dict] = []
+    mcp: list[dict] = []
+    subagent: list[dict] = []
     for tool in tools:
         fn = tool.get("function") if isinstance(tool, dict) else None
         name = str((fn if isinstance(fn, dict) else tool).get("name") or "")
@@ -88,7 +88,7 @@ def _split_tools(tools: Sequence[dict]) -> Tuple[List[dict], List[dict], List[di
     return builtin, mcp, subagent
 
 
-def _memory_blocks(agent: Any) -> Tuple[str, str]:
+def _memory_blocks(agent: Any) -> tuple[str, str]:
     memory_block = user_block = ""
     store = getattr(agent, "_memory_store", None)
     try:
@@ -112,7 +112,7 @@ def _join(*parts: str) -> str:
     return "\n\n".join(part for part in parts if part).strip()
 
 
-def _glyph(cat: Dict[str, Any]) -> str:
+def _glyph(cat: dict[str, Any]) -> str:
     return _CATEGORIES.get(str(cat.get("id") or ""), (None, "▪"))[1]
 
 
@@ -127,7 +127,7 @@ def context_display_source(compressor: Any) -> str:
     return "local_estimate" if isinstance(real, (int, float)) and shown > 0 and shown != real else "provider_usage"
 
 
-def context_usage_fields(compressor: Any) -> Dict[str, Any]:
+def context_usage_fields(compressor: Any) -> dict[str, Any]:
     """Current occupancy only; lifetime throughput is never a context fallback."""
     used = max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
     maximum = getattr(compressor, "context_length", 0) or 0
@@ -140,9 +140,40 @@ def context_usage_fields(compressor: Any) -> Dict[str, Any]:
             "context_source": source, "context_estimated": source != "provider_usage"}
 
 
-def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]] = None) -> Dict[str, Any]:
-    """Return a Cursor-style context usage breakdown for one live agent."""
+def _categories(system_prompt: str, skills: str, tools: Sequence[dict], messages: list[dict],
+                rules: str = "", memory: str = "") -> dict[str, Any]:
+    """The category list in display order and its estimated total."""
     from agent.model_metadata import estimate_messages_tokens_rough
+    builtin_tools, mcp_tools, subagent_tools = _split_tools(tools)
+    tokens_by_id = {
+        "system_prompt": _chars_to_tokens(system_prompt),
+        "tool_definitions": _json_tokens(builtin_tools),
+        "rules": _chars_to_tokens(rules),
+        "skills": _chars_to_tokens(skills),
+        "mcp": _json_tokens(mcp_tools),
+        "subagent_definitions": _json_tokens(subagent_tools),
+        "memory": _chars_to_tokens(memory),
+        "conversation": estimate_messages_tokens_rough(messages),
+    }
+    return {
+        "categories": [
+            {"color": color, "id": category_id, "label": _category_label(category_id), "tokens": tokens_by_id[category_id]}
+            for category_id, (color, _glyph_) in _CATEGORIES.items()
+            if tokens_by_id[category_id] > 0 or category_id in _ALWAYS_REPORTED
+        ],
+        "estimated_total": sum(tokens_by_id.values()),
+    }
+
+
+def stored_context_breakdown(system_prompt: str, tools: Sequence[dict], messages: list[dict]) -> dict[str, Any]:
+    """Categories and estimated total from a frozen system prompt and tool schemas, without an agent. Only an
+    agent re-renders the prompt's tiers apart, so ``rules`` and ``memory`` count inside ``system_prompt``."""
+    skills_index = _skills_block(system_prompt)
+    return _categories(_strip_blocks(system_prompt, skills_index), skills_index, tools, messages)
+
+
+def compute_session_context_breakdown(agent: Any, messages: Optional[list[dict]] = None) -> dict[str, Any]:
+    """Return a Cursor-style context usage breakdown for one live agent."""
     from agent.usage_anchor import anchored_context_tokens
     from agent.system_prompt import build_system_prompt_parts
 
@@ -154,18 +185,9 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
     system_prompt_text = _join(
         _strip_blocks(stable, skills_index), _strip_blocks(parts.get("volatile", "") or "", memory_block, user_block)
     )
-    builtin_tools, mcp_tools, subagent_tools = _split_tools(list(getattr(agent, "tools", None) or []))
-    tokens_by_id = {
-        "system_prompt": _chars_to_tokens(system_prompt_text),
-        "tool_definitions": _json_tokens(builtin_tools),
-        "rules": _chars_to_tokens(parts.get("context", "") or ""),
-        "skills": _chars_to_tokens(skills_index),
-        "mcp": _json_tokens(mcp_tools),
-        "subagent_definitions": _json_tokens(subagent_tools),
-        "memory": _chars_to_tokens(_join(memory_block, user_block)),
-        "conversation": estimate_messages_tokens_rough(messages),
-    }
-    estimated_total = sum(tokens_by_id.values())
+    breakdown = _categories(system_prompt_text, skills_index, list(getattr(agent, "tools", None) or []), messages,
+                            rules=parts.get("context", "") or "", memory=_join(memory_block, user_block))
+    estimated_total = breakdown["estimated_total"]
 
     comp = getattr(agent, "context_compressor", None)
     context_max = int(getattr(comp, "context_length", 0) or 0) if comp else 0
@@ -194,22 +216,17 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
         context_used = min(context_used, context_max)
 
     return {
-        "categories": [
-            {"color": color, "id": category_id, "label": _category_label(category_id), "tokens": tokens_by_id[category_id]}
-            for category_id, (color, _glyph_) in _CATEGORIES.items()
-            if tokens_by_id[category_id] > 0 or category_id in _ALWAYS_REPORTED
-        ],
+        **breakdown,
         "context_max": context_max,
         "context_percent": max(0, min(100, round(context_used / context_max * 100))) if context_max else 0,
         "context_used": context_used,
         "context_source": source,
         "context_estimated": source != "provider_usage",
-        "estimated_total": estimated_total,
         "model": getattr(agent, "model", "") or "",
     }
 
 
-def compute_context_details(agent: Any) -> Dict[str, Any]:
+def compute_context_details(agent: Any) -> dict[str, Any]:
     """Expanded per-skill / per-toolset cost listing for ``/context all``.
 
     Reuses the ``hermes prompt-size`` attribution (index-line bytes from the
@@ -245,12 +262,12 @@ def compute_context_details(agent: Any) -> Dict[str, Any]:
 # (monospace is not guaranteed on messaging platforms).
 
 
-def render_context_grid(payload: Dict[str, Any]) -> List[str]:
+def render_context_grid(payload: dict[str, Any]) -> list[str]:
     """Glyph grid: 100 cells, one per percent of the context window; categories
     fill in declaration order, the remainder is free space."""
     context_max = int(payload.get("context_max") or 0)
     total_cells = _GRID_COLUMNS * _GRID_ROWS
-    cells: List[str] = []
+    cells: list[str] = []
     if context_max > 0:
         for cat in payload.get("categories") or []:
             tokens = int(cat.get("tokens") or 0)
@@ -262,7 +279,7 @@ def render_context_grid(payload: Dict[str, Any]) -> List[str]:
     return [" ".join(cells[row * _GRID_COLUMNS:(row + 1) * _GRID_COLUMNS]) for row in range(_GRID_ROWS)]
 
 
-def render_context_category_lines(payload: Dict[str, Any]) -> List[str]:
+def render_context_category_lines(payload: dict[str, Any]) -> list[str]:
     """Render the 'Estimated usage by category' table as plain-text lines."""
     categories = payload.get("categories") or []
     context_max = int(payload.get("context_max") or 0)
@@ -285,12 +302,12 @@ def render_context_category_lines(payload: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _toolset_row(group: Dict[str, Any]) -> str:
+def _toolset_row(group: dict[str, Any]) -> str:
     return t("gateway.context.toolset_row", toolset=f"{group['toolset']:<24}", count=f"{group['tool_count']:>3}",
              tokens=f"{group['schema_tokens']:>8,}")
 
 
-def _skill_row(entry: Dict[str, Any]) -> str:
+def _skill_row(entry: dict[str, Any]) -> str:
     name = str(entry.get("name") or "")
     if len(name) > 28:
         name = name[:27] + "…"
@@ -299,7 +316,7 @@ def _skill_row(entry: Dict[str, Any]) -> str:
     return t("gateway.context.skill_row", name=f"{name:<28}", index_tokens=f"{entry['index_tokens']:>6,}", md_tokens=md_str)
 
 
-def _table(lines: List[str], title: str, rows: List[Dict[str, Any]], fmt) -> None:
+def _table(lines: list[str], title: str, rows: list[dict[str, Any]], fmt) -> None:
     """Append a titled, display-capped table (blank-separated from a preceding one)."""
     if not rows:
         return
@@ -311,23 +328,23 @@ def _table(lines: List[str], title: str, rows: List[Dict[str, Any]], fmt) -> Non
         lines.append(t("gateway.context.and_more", count=len(rows) - _DETAILS_TABLE_LIMIT))
 
 
-def render_context_details_lines(details: Dict[str, Any]) -> List[str]:
+def render_context_details_lines(details: dict[str, Any]) -> list[str]:
     """Render the expanded ``/context all`` per-skill / per-toolset tables."""
-    lines: List[str] = []
+    lines: list[str] = []
     _table(lines, t("gateway.context.toolsets_title"), details.get("toolsets") or [], _toolset_row)
     _table(lines, t("gateway.context.skills_title"), details.get("skills") or [], _skill_row)
     return lines
 
 
 def render_context_breakdown_lines(
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
     *,
-    details: Optional[Dict[str, Any]] = None,
+    details: Optional[dict[str, Any]] = None,
     grid: bool = True,
-) -> List[str]:
+) -> list[str]:
     """Full /context view. ``grid`` prepends the glyph grid (CLI; the gateway
     keeps its own gauge); ``details`` appends the expanded listings."""
-    lines: List[str] = [*render_context_grid(payload), ""] if grid else []
+    lines: list[str] = [*render_context_grid(payload), ""] if grid else []
     lines.extend(render_context_category_lines(payload))
 
     context_max = int(payload.get("context_max") or 0)

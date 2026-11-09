@@ -4,8 +4,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
+import { PreviewDocumentFrame } from '@/components/ui/preview-document-frame'
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
-import { readDesktopFileText } from '@/lib/desktop-fs'
+import { isReadFileErrorResult, readDesktopFileText } from '@/lib/desktop-fs'
 import { localPreviewTarget } from '@/lib/local-preview'
 
 /**
@@ -405,7 +406,13 @@ function InlineHtmlFrame({
           return
         }
 
-        if (!result || result.binary || !result.text) {
+        if (!result || isReadFileErrorResult(result)) {
+          setFailed(true)
+
+          return
+        }
+
+        if (result.binary || !result.text) {
           setFailed(true)
         } else {
           setDoc(result.text)
@@ -518,7 +525,7 @@ function InlineHtmlFrame({
           className="relative block max-w-full transition-[height] duration-200"
           style={{ height, width: width ?? '100%' }}
         >
-          <iframe
+          <PreviewDocumentFrame
             className="absolute inset-0 size-full border-0 bg-transparent"
             loading="lazy"
             sandbox="allow-scripts"

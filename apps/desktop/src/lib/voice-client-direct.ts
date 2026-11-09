@@ -55,7 +55,8 @@ interface RelayConfig {
 }
 
 export interface VoiceClientConfig {
-  stt: DirectSttConfig | RelayConfig
+  /** `streaming`: the host serves live dictation over /api/audio/transcribe-stream (stt.streaming). */
+  stt: (DirectSttConfig | RelayConfig) & { streaming?: boolean }
   tts: DirectTtsConfig | RelayConfig
 }
 
@@ -229,7 +230,10 @@ export function isSttSilenceHallucination(
     return true
   }
 
-  if (filter.phrases.includes(cleaned.replaceAll('!', '').replaceAll('.', ''))) {
+  // Trailing `.!` only — the relay strips `cleaned.rstrip('.!')`, so an
+  // internal period (`thank. you`) stays internal and the transcript stays
+  // a real turn on both paths, never just one.
+  if (filter.phrases.includes(cleaned.replace(/[.!]+$/, ''))) {
     return true
   }
 
@@ -261,6 +265,24 @@ async function sttFetch(stt: DirectSttConfig, url: string, init: RequestInit): P
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** Multipart body for xAI `POST /v1/stt`. */
+function xaiSttForm(audio: Blob, stt: DirectSttConfig): FormData {
+  const form = new FormData()
+  form.set('file', audio, sttFileName(audio))
+
+  if (stt.model) {
+    form.set('model', stt.model)
+  }
+
+  // xAI rejects format=true without a language (HTTP 400), so auto-detect drops the flag.
+  if (stt.language) {
+    form.set('language', stt.language)
+    form.set('format', 'true')
+  }
+
+  return form
 }
 
 /**
@@ -312,18 +334,10 @@ export async function transcribeAudioClientDirect(audio: Blob, owner?: ResolvedO
   }
 
   if (stt.wire === 'xai-stt') {
-    const form = new FormData()
-    form.set('file', audio, sttFileName(audio))
-    form.set('format', 'true')
-
-    if (stt.language) {
-      form.set('language', stt.language)
-    }
-
     const response = await sttFetch(stt, `${stt.base_url.replace(/\/+$/, '')}/stt`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${stt.api_key}` },
-      body: form,
+      body: xaiSttForm(audio, stt),
       signal: AbortSignal.timeout(STT_REQUEST_TIMEOUT_MS)
     })
 

@@ -30,7 +30,10 @@ class TurnState:
     # Held turn-lease tokens keyed by acquiring run generation: release/rebind resolve the
     # token for their own generation, so a displaced turn's unwind frees only its own lease and
     # never a successor's (an evicted turn and its replacement may both hold one briefly).
-    lease_tokens: Dict[int, Any] = field(default_factory=dict)
+    lease_tokens: dict[int, Any] = field(default_factory=dict)
+    # Agents taken out of the cache while this turn still ran them (a one-turn ``model_override``
+    # agent): ``_release_running_agent_state`` releases them once the slot clears.
+    retired_agents: list[Any] = field(default_factory=list)
 
     def clear(self) -> None:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""
@@ -42,16 +45,16 @@ class TurnState:
 class ConversationState:
     """State scoped to one conversation (survives turns, not boundaries)."""
 
-    model_override: Optional[Dict[str, Any]] = None  # /model per-session override
-    one_turn_restore: Optional[Dict[str, Any]] = None  # /model --once snapshot
-    reasoning_override: Optional[Dict[str, Any]] = None  # /reasoning override
+    model_override: Optional[dict[str, Any]] = None  # /model per-session override
+    one_turn_restore: Optional[dict[str, Any]] = None  # /model --once snapshot
+    reasoning_override: Optional[dict[str, Any]] = None  # /reasoning override
     service_tier_override: Any = _UNSET_TIER  # /fast: "priority" or None; _UNSET_TIER = absent
     last_resolved_model: str = ""  # last successfully-resolved non-empty model
-    queued_events: List[Any] = field(default_factory=list)  # /queue overflow FIFO (head in adapter)
-    sidecar_notes: List[str] = field(default_factory=list)  # one-shot must-deliver notes
-    ephemeral_pin: Optional[Tuple[Any, ...]] = None  # pinned session-context (change_key, text, redact_pii)
+    queued_events: list[Any] = field(default_factory=list)  # /queue overflow FIFO (head in adapter)
+    sidecar_notes: list[str] = field(default_factory=list)  # one-shot must-deliver notes
+    ephemeral_pin: Optional[tuple[Any, ...]] = None  # pinned session-context (change_key, text, redact_pii)
     # (channel_prompt, parent_chat_id) of the last non-internal turn; internal events reuse it
-    channel_pin: Optional[Tuple[Optional[str], Optional[str]]] = None
+    channel_pin: Optional[tuple[Optional[str], Optional[str]]] = None
     vc_last: Optional[str] = None  # last voice-channel context delivered
 
     def clear(self) -> None:
@@ -64,9 +67,9 @@ class PersistentState:
     """State with its own lifecycle — NOT cleared wholesale by turn or boundary resets
     (approvals/update prompts ARE cleared, individually, by the boundary security funnel)."""
 
-    approvals: Optional[Dict[str, Any]] = None  # {"command": ..., "pattern_key": ...}
+    approvals: Optional[dict[str, Any]] = None  # {"command": ..., "pattern_key": ...}
     update_prompt_pending: bool = False  # /update prompt awaiting a reply
-    native_image_paths: List[str] = field(default_factory=list)  # consumed one-shot
+    native_image_paths: list[str] = field(default_factory=list)  # consumed one-shot
     # Legacy runner-level pending text (flushed on shutdown); not the adapter-level one.
     pending_command_text: Optional[str] = None
     run_generation: int = 0  # monotonic; NEVER reset (stale-run detection depends on it)
@@ -123,7 +126,7 @@ class _RunnerView(MutableMapping):
     def __init__(self, runner: Any) -> None:
         self._runner = runner
 
-    def _sessions(self) -> Dict[str, SessionState]:
+    def _sessions(self) -> dict[str, SessionState]:
         return self._runner.__dict__.get("_sessions") or {}
 
     def __len__(self) -> int:
@@ -184,60 +187,15 @@ class SessionFieldView(_RunnerView):
         return f"SessionFieldView({self._spec.scope}.{self._spec.name}, {dict(self.items())!r})"
 
 
-class TurnLeaseTokenView(_RunnerView):
-    """Legacy (session_key, generation)-keyed view of ``_turn_lease_tokens``; the lease registry
-    serializes acquisition per session, so one ``TurnState`` slot per key equals the old dict."""
-
-    __slots__ = ()
-
-    def _held(self, key: Any) -> TurnState:
-        """TurnState for a currently-held (session_key, generation) or raise KeyError."""
-        if not isinstance(key, tuple) or len(key) != 2:
-            raise KeyError(key)
-        state = self._sessions().get(key[0])
-        if state is None or key[1] not in state.turn.lease_tokens:
-            raise KeyError(key)
-        return state.turn
-
-    def __getitem__(self, key: Any) -> Any:
-        return self._held(key).lease_tokens[key[1]]
-
-    def __setitem__(self, key: Any, value: Any) -> None:
-        if not isinstance(key, tuple) or len(key) != 2:
-            raise KeyError(key)
-        self._runner._session_state(key[0]).turn.lease_tokens[key[1]] = value
-
-    def __delitem__(self, key: Any) -> None:
-        del self._held(key).lease_tokens[key[1]]
-
-    def __iter__(self) -> Iterator[Tuple[str, Any]]:
-        return ((k, gen) for k, s in list(self._sessions().items()) for gen in list(s.turn.lease_tokens))
-
-    def clear(self) -> None:  # avoid MutableMapping's popitem loop
-        for key in list(self):
-            del self[key]
-
-
 # One spec per legacy dict attribute.
-LEGACY_FIELD_SPECS: Dict[str, _FieldSpec] = {
+LEGACY_FIELD_SPECS: dict[str, _FieldSpec] = {
     "_running_agents": _spec("turn", "agent", None),
     "_running_agents_ts": _spec("turn", "started_ts", float),
-    "_active_session_leases": _spec("turn", "lease", None),
     "_busy_ack_ts": _spec("turn", "busy_ack_ts", float),
     "_session_model_overrides": _spec("conversation", "model_override", None),
-    "_pending_one_turn_model_restores": _spec("conversation", "one_turn_restore", None),
-    "_session_reasoning_overrides": _spec("conversation", "reasoning_override", None),
-    "_session_service_tier_overrides": _spec("conversation", "service_tier_override", _UNSET_TIER),
-    "_last_resolved_model": _spec("conversation", "last_resolved_model", str),
     "_queued_events": _spec("conversation", "queued_events", list),
-    "_pending_turn_sidecar_notes": _spec("conversation", "sidecar_notes", list),
-    "_session_ephemeral_pin": _spec("conversation", "ephemeral_pin", None),
-    "_session_vc_last": _spec("conversation", "vc_last", None),
     "_pending_approvals": _spec("persistent", "approvals", None),
-    "_update_prompt_pending": _spec("persistent", "update_prompt_pending", bool),
-    "_pending_native_image_paths_by_session": _spec("persistent", "native_image_paths", list),
     "_pending_messages": _spec("persistent", "pending_command_text", None),
-    "_session_run_generation": _spec("persistent", "run_generation", int),
 }
 
 
@@ -245,7 +203,7 @@ def _legacy_property(make_view: Callable[[Any], MutableMapping], doc: str) -> pr
     """Dict-shaped @property over a live view; the setter takes a plain dict (test pattern
     ``runner._X = {...}``): reset the field on every session, then apply the entries."""
 
-    def fset(self: Any, mapping: Optional[Dict[Any, Any]]) -> None:
+    def fset(self: Any, mapping: Optional[dict[Any, Any]]) -> None:
         view = make_view(self)
         view.clear()
         view.update(mapping or {})
@@ -259,11 +217,4 @@ def legacy_dict_property(attr_name: str) -> property:
     return _legacy_property(
         lambda self: SessionFieldView(self, spec),
         f"Legacy dict view over SessionState.{spec.scope}.{spec.name} (for pre-SessionState tests).",
-    )
-
-
-def legacy_lease_token_property() -> property:
-    """Legacy (session_key, generation)-keyed view of held turn-lease tokens."""
-    return _legacy_property(
-        TurnLeaseTokenView, "Legacy (session_key, generation)-keyed turn-lease token view."
     )

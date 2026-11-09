@@ -13,6 +13,8 @@ Interactive mode (tool_progress_mode == "full") still uses ChatConsole.
 from datetime import datetime
 from unittest.mock import MagicMock
 
+import pytest
+
 
 from cli import HermesCLI
 from agent.i18n import t
@@ -32,12 +34,11 @@ def _make_cli(quiet=False, session_id="20260524_111111_xyz", db=None):
     cli.agent = None
     # We need _init_agent to reach the resume block (line ~4757) but not
     # proceed into actual AIAgent construction. _ensure_runtime_credentials
-    # must return True (False returns early at line 4743). _install_tool_callbacks,
-    # _ensure_tirith_security are stubbed; the resume block will either return
+    # must return True (False returns early at line 4743). _install_tool_callbacks
+    # is stubbed; the resume block will either return
     # False (session-not-found) or reach the eventual AIAgent() call which
     # we'll let raise — we only check stdout/stderr printed BEFORE that.
     cli._install_tool_callbacks = lambda: None
-    cli._ensure_tirith_security = lambda: None
     cli._ensure_runtime_credentials = lambda: True
     return cli
 
@@ -115,3 +116,27 @@ class TestResumeQuietStderr:
         assert "has no messages" not in captured.out
         assert "has no messages" in captured.err
         assert "Starting fresh" in captured.err
+
+    def test_resume_policy_refusal_is_a_usage_error_not_an_agent_init_failure(self, capsys):
+        """`--resume X --max-turns 1 -q ...` printed the agent-init failure copy ("couldn't start the model
+        connection ... hermes doctor") and exited 1; it is interactive startup's `Error:` line on stderr
+        with exit 2. Any other failed open keeps the agent-init copy."""
+        from hermes_cli.gateway_chat import _RESUME_POLICY_MISMATCH
+        from hermes_cli.gateway_client import GatewayClientError
+        cli = _make_cli(quiet=True, db=MagicMock())
+        refusal = f"{_RESUME_POLICY_MISMATCH} --max-turns differs from this session's launch."
+
+        def refuse():
+            raise GatewayClientError(refusal)
+        cli._ensure_gateway_session = refuse
+        with pytest.raises(SystemExit) as exited:
+            cli._init_agent()
+        captured = capsys.readouterr()
+        assert exited.value.code == 2
+        assert captured.err.strip() == f"Error: {refusal}"
+        assert "couldn't start" not in captured.out + captured.err
+
+        def unreachable():
+            raise GatewayClientError("gateway unavailable")
+        cli._ensure_gateway_session = unreachable
+        assert cli._init_agent() is False

@@ -60,6 +60,7 @@ export async function toggleMessageReaction(
   // in any active conversation), let the backend resolve the newest row of
   // this role — which is exactly the message being reacted to.
   const rowId = message.rowId
+
   // The runtime id is unavailable while a stored conversation is being
   // resumed (and can briefly be cleared during a profile/context switch), but
   // the mounted transcript is still owned by the selected stored session.
@@ -67,6 +68,7 @@ export async function toggleMessageReaction(
   // visible conversation as a draft. A genuinely new draft has neither id.
   const sessionId =
     sessionIdOverride === undefined ? ($activeSessionId.get() ?? $selectedStoredSessionId.get()) : sessionIdOverride
+
   const gateway = $gateway.get()
 
   if (!sessionId || !gateway) {

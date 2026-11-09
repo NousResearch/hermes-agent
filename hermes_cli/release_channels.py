@@ -287,7 +287,7 @@ class ChannelReader:
 
         # Channel reads are idempotent and precede the PM download path, so an explicit update
         # uses the same bounded transient-failure policy instead of a second retry classifier.
-        from pm.network import retry_network
+        from pm.network import edge_block, retry_network
 
         def read() -> bytes:
             with self.opener(Request(url, headers={"Cache-Control": "no-cache"}), timeout=30) as response:
@@ -300,7 +300,8 @@ class ChannelReader:
         except HTTPError as exc:
             if exc.code == 404:
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc
-            raise ChannelError(f"Channel read unavailable: HTTP {exc.code}") from exc
+            block = edge_block(exc)
+            raise ChannelError(f"Channel read unavailable: HTTP {exc.code}" + (f"; {block}" if block else "")) from exc
         except (OSError, URLError) as exc:
             raise ChannelError("Channel read unavailable") from exc
         if len(body) > MAX_METADATA:

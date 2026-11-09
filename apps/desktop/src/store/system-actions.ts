@@ -1,8 +1,9 @@
 import { atom } from 'nanostores'
 
-import { getActionStatus, getStatus, restartGateway } from '@/hermes'
+import { getActionStatus, getStatus, hermesApi, restartGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { sharedGatewayProfiles } from '@/lib/shared-gateway-restart'
+import { isSignedOutStatus } from '@/lib/signed-out-status'
 import { confirm } from '@/store/confirm'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { notify, notifyError } from '@/store/notifications'
@@ -31,7 +32,7 @@ export const $gatewayRestarting = atom(false)
 // a window refused end to end is a failure, not a silent success: resolving it
 // would erase the caller's "restart needed" banner while the gateway stays
 // down.
-async function awaitAction(name: string): Promise<void> {
+async function awaitAction(name: string, profile?: string): Promise<void> {
   let sawAnsweredPoll = false
   let lastPollError: unknown = null
 
@@ -41,7 +42,7 @@ async function awaitAction(name: string): Promise<void> {
     let status: Awaited<ReturnType<typeof getActionStatus>>
 
     try {
-      status = await getActionStatus(name)
+      status = await getActionStatus(name, 200, profile)
     } catch (err) {
       // The backend accepted the restart POST a moment ago and is now
       // refusing — the expected shape of the restart window itself.
@@ -84,7 +85,17 @@ export async function confirmSharedGatewayRestart(): Promise<false | null | stri
   let shared: null | string[] = null
 
   try {
-    shared = sharedGatewayProfiles(await getStatus())
+    let status = await getStatus()
+
+    // A Webapp tab whose access token expired since its last gated request reads the signed-out
+    // body, which omits the served set. A gated read rotates the cookies; then ask again, so a
+    // restart of the shared multiplexer still asks first.
+    if (isSignedOutStatus(status)) {
+      await hermesApi({ path: '/api/auth/me' })
+      status = await getStatus()
+    }
+
+    shared = sharedGatewayProfiles(status)
   } catch {
     // Status unavailable: fall back to the plain restart rather than blocking it.
     return null
@@ -110,8 +121,10 @@ export async function confirmSharedGatewayRestart(): Promise<false | null | stri
 // messaging save/toggle toasts — gets identical feedback from a plain
 // `void runGatewayRestart()`, and a failure is the only thing that toasts.
 // Resolves `true` when the restart child completed cleanly (callers that keep
-// a "restart needed" banner clear it on that signal only).
-export async function runGatewayRestart(): Promise<boolean> {
+// a "restart needed" banner clear it on that signal only). Pass `profile` to
+// pin both the restart request and its status polls to one backend owner; the
+// ambient scope serves callers without an owner (#71352).
+export async function runGatewayRestart(profile?: string): Promise<boolean> {
   const shared = await confirmSharedGatewayRestart()
 
   if (shared === false) {
@@ -121,8 +134,8 @@ export async function runGatewayRestart(): Promise<boolean> {
   $gatewayRestarting.set(true)
 
   try {
-    const started: ActionResponse = await restartGateway()
-    await awaitAction(started.name)
+    const started: ActionResponse = await restartGateway(profile)
+    await awaitAction(started.name, profile)
 
     if (shared) {
       notify({ kind: 'success', message: translateNow('commandCenter.sharedGatewayRestarted', shared.length) })

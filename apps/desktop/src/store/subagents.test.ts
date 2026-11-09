@@ -212,6 +212,7 @@ describe('subagent store', () => {
     const active = 's1'
     const panel = subagentsForPanel($subagentsBySession.get(), active)
     const indicatorRunning = Object.values($subagentsBySession.get()).reduce((n, l) => n + activeSubagentCount(l), 0)
+
     const indicatorFailed = Object.entries($subagentsBySession.get())
       .filter(([sid]) => sid === active)
       .reduce((n, [, l]) => n + failedSubagentCount(l), 0)

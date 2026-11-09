@@ -38,8 +38,8 @@ def _compressor(**kw: Any) -> ContextCompressor:
     ):
         return ContextCompressor(**defaults)
 
-def _history(n_pairs: int = 8, big: int = 9_000) -> List[Dict[str, Any]]:
-    msgs: List[Dict[str, Any]] = [{"role": "system", "content": "sys"}]
+def _history(n_pairs: int = 8, big: int = 9_000) -> list[dict[str, Any]]:
+    msgs: list[dict[str, Any]] = [{"role": "system", "content": "sys"}]
     for i in range(n_pairs):
         cid = f"call_{i}"
         msgs.append({
@@ -59,7 +59,7 @@ def _history(n_pairs: int = 8, big: int = 9_000) -> List[Dict[str, Any]]:
     return msgs
 
 def _park_rearm_just_above_messages(
-    compressor: ContextCompressor, messages: List[Dict[str, Any]]
+    compressor: ContextCompressor, messages: list[dict[str, Any]]
 ) -> int:
     """Reproduce the reporter's state: message-only estimate stuck 913 tokens
     below the rearm mark (schema overhead makes up the rest of the request)."""
@@ -83,7 +83,7 @@ def test_billed_basis_over_threshold_defeats_message_only_rearm_lockout() -> Non
     _park_rearm_just_above_messages(c, msgs)
     billed = c.threshold_tokens + 1  # provider says: over threshold, now
 
-    scans: List[int] = []
+    scans: list[int] = []
     # Stand in for the real multi-pass scan: a NEW list whose old tool outputs
     # are reclaimed, so the (untouched) reclaim gate can commit it.
     reclaimed = [dict(m) for m in msgs]
@@ -91,7 +91,7 @@ def test_billed_basis_over_threshold_defeats_message_only_rearm_lockout() -> Non
         if m.get("role") == "tool":
             m["content"] = "[pruned]"
 
-    def _scan(*args: Any, **kwargs: Any) -> tuple[List[Dict[str, Any]], int]:
+    def _scan(*args: Any, **kwargs: Any) -> tuple[list[dict[str, Any]], int]:
         scans.append(1)
         return reclaimed, 3
 

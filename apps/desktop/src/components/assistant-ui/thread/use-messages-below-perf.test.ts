@@ -2,8 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { countMessagesBelow } from './use-messages-below'
 
-const rect = (top: number, bottom: number): DOMRect =>
-  ({ top, bottom, height: bottom - top, width: 800 } as DOMRect)
+const rect = (top: number, bottom: number): DOMRect => ({ top, bottom, height: bottom - top, width: 800 }) as DOMRect
 
 afterEach(() => {
   window.document.body.innerHTML = ''

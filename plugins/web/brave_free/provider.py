@@ -24,7 +24,7 @@ class BraveFreeWebSearchProvider(BaseWebSearchProvider):
     DISPLAY_NAME = "Brave Search (Free)"
     KEY_ENV = "BRAVE_SEARCH_API_KEY"
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         api_key = provider_env("BRAVE_SEARCH_API_KEY")
         if not api_key:
             return search_fail("BRAVE_SEARCH_API_KEY is not set")
@@ -41,7 +41,7 @@ class BraveFreeWebSearchProvider(BaseWebSearchProvider):
         logger.info("Brave Search '%s': %d results (from %d raw, limit %d)", query, len(web_results), len(raw_results), limit)
         return search_ok(web_results)
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return setup_schema(
             "Brave Search (Free)", "free", "Free-tier API key — 2k queries/mo, search only.",
             "BRAVE_SEARCH_API_KEY", "Brave Search API key (free tier)", "https://brave.com/search/api/",

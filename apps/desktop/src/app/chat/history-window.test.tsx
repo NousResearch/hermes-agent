@@ -81,6 +81,32 @@ function mount(storedId = 'stored') {
 }
 
 describe('bounded direct history runtime', () => {
+  it('keeps navigation consumers stable while a live assistant reply advances', () => {
+    const mounted = mount()
+
+    const live: ChatMessage = {
+      id: 'streaming',
+      role: 'assistant',
+      pending: true,
+      parts: [{ type: 'text', text: 'Working' }]
+    }
+
+    const prefix = mounted.view.$messages.get()
+
+    act(() => mounted.view.$messages.set([...prefix, live]))
+    const navigation = mounted.window
+
+    act(() =>
+      mounted.view.$messages.set([...prefix, { ...live, parts: [{ type: 'text', text: 'Working on the next step' }] }])
+    )
+
+    expect(mounted.window).toBe(navigation)
+    expect(mounted.runtime.thread.getState().messages.at(-1)?.content[0]).toMatchObject({
+      type: 'text',
+      text: 'Working on the next step'
+    })
+  })
+
   it('reads one around page and selects it without replacing the live store', async () => {
     const api = vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(40))
     const mounted = mount()

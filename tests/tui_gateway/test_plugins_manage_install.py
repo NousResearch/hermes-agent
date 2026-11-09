@@ -36,7 +36,7 @@ def test_plugins_manage_install_failure():
 
 def test_plugins_manage_update_requires_catalog_sidecar(tmp_path, monkeypatch):
     """Non-catalog installs are refused — their update flows stay CLI-owned."""
-    import hermes_cli.plugins_cmd as plugins_cmd
+    from hermes_cli import plugins_cmd
 
     plugins_root = tmp_path / "plugins"
     (plugins_root / "plain-git-plugin").mkdir(parents=True)
@@ -75,6 +75,21 @@ def test_plugins_manage_list_reports_desktop_half(tmp_path):
     assert by_name["snap"]["has_desktop_half"] is False
     assert by_name["snap"]["servers"] == []
 
+def test_plugins_manage_list_reports_a_root_layout_desktop_half(tmp_path):
+    """A ROOT plugin.js beside plugin.yaml is a desktop half too (the install probe and the host's
+    reconcile both read it), so the row pairs with its app-level copy like a ``desktop/`` one."""
+    rooted = tmp_path / "radar"
+    rooted.mkdir()
+    (rooted / "plugin.js").write_text("export default {}")
+    rows = [("radar", "1.0", "Radar", "user", rooted, "radar")]
+    with patch("hermes_cli.plugins_cmd._discover_all_plugins", return_value=rows), \
+         patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), \
+         patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()), \
+         patch("hermes_cli.plugins_cmd_catalog.catalog_rows_maps", return_value=({}, {}, {})):
+        resp = server.handle_request({"id": "1", "method": "plugins.manage", "params": {"action": "list"}})
+
+    assert resp["result"]["plugins"][0]["has_desktop_half"] is True
+
 def test_plugins_manage_list_resolves_the_live_catalog_once_per_listing(tmp_path):
     """The server-sentence display name looks up the curated catalog title, but that lookup must
     cost ONE live-catalog resolution per listing, not one per installed plugin:
@@ -83,9 +98,9 @@ def test_plugins_manage_list_resolves_the_live_catalog_once_per_listing(tmp_path
     per-candidate cost ``resolved_removed_entries()`` exists to eliminate."""
     import json
 
-    import hermes_cli.plugin_catalog as plugin_catalog
-    import hermes_cli.plugins_cmd as plugins_cmd
-    import hermes_cli.plugins_cmd_catalog as plugins_cmd_catalog
+    from hermes_cli import plugin_catalog
+    from hermes_cli import plugins_cmd
+    from hermes_cli import plugins_cmd_catalog
     from hermes_cli.plugin_catalog import PluginCatalogEntry
 
     rows = []

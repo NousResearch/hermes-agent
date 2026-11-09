@@ -6,6 +6,7 @@ import { mediaKind, mediaMarkdownHref } from '@/lib/media'
 import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
+import { DIRECTIVE_WITH_BODY_RE } from '@/lib/transcript-directives'
 
 // Same tag set as agent/think_scrubber.py THINK_TAG_NAMES, plus desktop-only
 // `scratchpad`/`analysis`.
@@ -32,8 +33,8 @@ const PARTIAL_OPEN_REASONING_TAG_RE = new RegExp(`(^|\\n)[ \\t]*<(?:${REASONING_
 const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
 
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
-const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
-const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~|$))/g
+const FENCE_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)(`{3,}|~{3,})([^\n]*)$/
+const FENCE_CLOSE_LINE_RE = /^[ \t]*(?:>[ \t]*)*(`{3,}|~{3,})[ \t]*\r?$/
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // Math spans as remark-math will see them: a `$$…$$` block, which may span
 // lines, or a same-line `$…$`. A delimiter escaped as `\$` is prose — that is
@@ -113,10 +114,6 @@ const URL_LIKE_SPLIT_RE = /(<https?:\/\/[^>\s]+>|https?:\/\/[^\s<>"'`*]+[^\s<>"'
 // literal tilde, so CJK ranges (`1~10`) and approximation prefixes (`~¥0.089`)
 // no longer pair up into a GFM strikethrough span.
 const LONE_TILDE_RE = /(?<![\\~])~(?!~)/g
-// Same shape as DIRECTIVE_LINE_RE, anchored to a single line: escapeLoneTildes
-// tests one line at a time and must not carry the shared regex's `g` flag
-// (stateful lastIndex would skip every other directive line).
-const DIRECTIVE_LINE_ONLY_RE = /^[ \t]*::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,1024}\}[ \t]*$/
 // HTML-shaped prose tokens (`<tool_call>`, `<observation>`...) that are NOT
 // real inline elements get swallowed by the HTML-aware renderer (parse5 sees
 // an unclosed tag and consumes the rest of the message). Match unknown tag-like
@@ -212,21 +209,29 @@ const SOURCE_LIST_ENTRY_RE = /^[ \t]*(?:[-*+][ \t]+)?\[((?:\d+(?:\s*,\s*\d+)*))\
 // section — the same toggle the bundled skill uses to drop fenced code from
 // a draft's prose.
 const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
+
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
-// image syntax (`![alt](path)`) on its existing inline pipeline. The target
-// char class excludes `)`/whitespace, matching how LLMs actually emit these.
-const FILE_LINK_RE = /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target><?(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*>?)\)/gi
+// image syntax (`![alt](path)`) on its existing inline pipeline. Plain
+// targets exclude `)`/whitespace, matching how LLMs actually emit these;
+// CommonMark angle-bracket destinations (`[notes](<~/My Notes/todo.md>`) are
+// matched separately so paths with spaces route to the preview pipeline too
+// (#102782) — `routeFileLinksToPreview` strips the surrounding `<>`.
+const FILE_LINK_RE =
+  /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*)\)/gi
 
-// A transcript directive on its own line: `::name{...}`. Attribute values are
-// prose the model wrote (a task brief, a question) and read as markdown to the
-// parser — `*by week*` becomes <em>, `a_b c_d` becomes <em>, `~/x` opens
-// strikethrough. Any of those splits the paragraph into element children, the
-// directive stops being text-only, and the raw line paints as the user's
-// message. Same shape as lib/transcript-directives.ts DIRECTIVE_RE.
-const DIRECTIVE_LINE_RE = /^([ \t]*)(::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,1024}\})[ \t]*$/gm
-const MARKDOWN_INLINE_META_RE = /[\\`*_~[\]<>]/g
+// Transcript directives (`::name{...}`) carry DATA in their attributes: a task
+// brief, a signed URL with `_`/`~`/`&` in its query. Every prose rewrite here
+// corrupts them (the URL autolinker wraps `url="https://…"` in `<…>`, currency
+// escaping leaves `\$`), and the parser reads what survives as markdown
+// (`*by week*` → <em>, `~/x` → strikethrough), splitting the paragraph so the
+// card is never claimed. So directives are lifted out before the rewrites and
+// put back with every inline metachar backslash-escaped; the parser consumes
+// the escapes and the renderer sees the directive byte-for-byte.
+const MARKDOWN_INLINE_META_RE = /[\\`*_~[\]<>$&]/g
+const DIRECTIVE_SLOT_RE = /\uE000(\d+)\uE001/g
+const DIRECTIVE_OR_CODE_RE = new RegExp(`(${DIRECTIVE_WITH_BODY_RE.source})|${INLINE_CODE_SPLIT_RE.source}`, 'g')
 
 /**
  * Returns true when `body` contains a line that's exactly `marker` (modulo
@@ -340,8 +345,74 @@ function stripReasoningBlocks(text: string): string {
   return closed.replace(OPEN_REASONING_BLOCK_RE, '$1').replace(PARTIAL_OPEN_REASONING_TAG_RE, '$1')
 }
 
+interface MarkdownSegment {
+  code: boolean
+  // A closed fence whose closer is the very next line.
+  empty: boolean
+  text: string
+}
+
+// Prose and fenced-code segments in order; joined, they are `text` exactly. A
+// fence opens only on its own line (after any blockquote / list-item prefix)
+// and closes only on a line holding the same character at least as long — the
+// rule normalizeFenceBlocks applies. A ``` inside a code line, or the inner
+// fences of a ````-fenced markdown example, is code, not a boundary: treating it
+// as one ran the prose rewrites over the rest of the listing (`arr[0]` lost its
+// index, `$5` gained a backslash) and dropped the closing fences.
+function splitFencedCode(text: string): MarkdownSegment[] {
+  const segments: MarkdownSegment[] = []
+  let cursor = 0
+  let fence: null | { marker: string; openerEnd: number; start: number } = null
+
+  for (let lineStart = 0; ;) {
+    const newline = text.indexOf('\n', lineStart)
+    const lineEnd = newline === -1 ? text.length : newline
+    const line = text.slice(lineStart, lineEnd)
+
+    if (!fence) {
+      const open = line.match(FENCE_OPEN_LINE_RE)
+
+      // A backtick run with a backtick in its info string is inline code.
+      if (open && !(open[2][0] === '`' && open[3].includes('`'))) {
+        fence = { marker: open[2], openerEnd: lineEnd, start: lineStart + open[1].length }
+      }
+    } else {
+      const close = line.match(FENCE_CLOSE_LINE_RE)
+
+      if (close && close[1][0] === fence.marker[0] && close[1].length >= fence.marker.length) {
+        segments.push(
+          { code: false, empty: false, text: text.slice(cursor, fence.start) },
+          { code: true, empty: lineStart === fence.openerEnd + 1, text: text.slice(fence.start, lineEnd) }
+        )
+        cursor = lineEnd
+        fence = null
+      }
+    }
+
+    if (newline === -1) {
+      break
+    }
+
+    lineStart = newline + 1
+  }
+
+  if (fence) {
+    segments.push(
+      { code: false, empty: false, text: text.slice(cursor, fence.start) },
+      { code: true, empty: false, text: text.slice(fence.start) }
+    )
+  } else {
+    segments.push({ code: false, empty: false, text: text.slice(cursor) })
+  }
+
+  return segments
+}
+
 function stripEmptyFenceBlocks(text: string): string {
-  return text.replace(EMPTY_FENCE_BLOCK_RE, '$1')
+  return splitFencedCode(text)
+    .filter(segment => !segment.empty)
+    .map(segment => segment.text)
+    .join('')
 }
 
 function isUrlOnlyBlock(lines: string[]): boolean {
@@ -414,16 +485,7 @@ function escapeLoneTildes(text: string): string {
         return part
       }
 
-      // Directive lines are shielded verbatim further down the pipeline:
-      // shieldDirectiveLines backslash-escapes every inline metachar (`~`
-      // included) so the card value arrives as ONE text node. Escaping a `~`
-      // here would leave `\\~` after the shield doubles the backslash, and the
-      // parser then emits the stray `\` into the directive's rendered value
-      // (#50871 follow-up: `brief="Sync ~/notes to ~/backup nightly"`).
-      return part
-        .split('\n')
-        .map(line => (DIRECTIVE_LINE_ONLY_RE.test(line) ? line : line.replace(LONE_TILDE_RE, '\\~')))
-        .join('\n')
+      return part.replace(LONE_TILDE_RE, '\\~')
     })
     .join('')
 }
@@ -538,19 +600,31 @@ function rewriteProseSegment(segment: string, sourceListIds: Set<string>): strin
 }
 
 /**
- * Backslash-escape markdown inline syntax inside directive lines so the parser
- * yields one text node. The escapes are consumed by the parser, so the
- * directive the renderer sees is byte-for-byte what the model wrote.
+ * Lift every directive outside inline code out of `text`, leaving a slot the
+ * prose rewrites cannot match. `restore` puts each back shielded: inline
+ * markdown backslash-escaped so the parser yields it as plain text.
  */
-export function shieldDirectiveLines(text: string): string {
-  if (!text.includes('::')) {
-    return text
+function liftDirectives(text: string): { text: string; restore: (rewritten: string) => string } {
+  const lifted: string[] = []
+
+  if (text.includes('::') && !text.includes('\uE000')) {
+    // One leftmost-wins scan: a code span that opens first keeps a directive
+    // inside it as code; a directive that opens first keeps the backticks in
+    // its attribute values (`brief="wrap the `run` command"`) as data.
+    text = text.replace(DIRECTIVE_OR_CODE_RE, (match, directive?: string) =>
+      directive ? `\uE000${lifted.push(directive) - 1}\uE001` : match
+    )
   }
 
-  return text.replace(
-    DIRECTIVE_LINE_RE,
-    (_match, indent: string, directive: string) => indent + directive.replace(MARKDOWN_INLINE_META_RE, '\\$&')
-  )
+  return {
+    text,
+    restore: rewritten =>
+      lifted.length === 0
+        ? rewritten
+        : rewritten.replace(DIRECTIVE_SLOT_RE, (_slot, index: string) =>
+            lifted[Number(index)].replace(MARKDOWN_INLINE_META_RE, '\\$&')
+          )
+  }
 }
 
 /**
@@ -1070,11 +1144,10 @@ export function preprocessMarkdown(text: string): string {
   // `[n] url` entry there (see collectSourceListIds).
   const sourceListIds = collectSourceListIds(strippedEmptyFences)
 
-  return strippedEmptyFences
-    .split(CODE_FENCE_SPLIT_RE)
-    .map(part => {
+  return splitFencedCode(strippedEmptyFences)
+    .map(({ code, text: part }) => {
       // Fence blocks pass through untouched.
-      if (/^(?:```|~~~)/.test(part)) {
+      if (code) {
         return part
       }
 
@@ -1082,10 +1155,11 @@ export function preprocessMarkdown(text: string): string {
       // blocks stay intact. The HTML-depth clamp belongs here for the same
       // reason: a fenced block renders as code and never reaches rehype-raw,
       // so escaping tags inside one would corrupt the listing for nothing.
-      // Directive lines are shielded last, after the prose rewrites have had
-      // their look, so nothing re-introduces markdown into them.
-      return shieldDirectiveLines(
-        clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part)), sourceListIds))
+      // Directives sit out the rewrites entirely (see liftDirectives).
+      const { text: prose, restore } = liftDirectives(part)
+
+      return restore(
+        clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(prose)), sourceListIds))
       )
     })
     .join('')
@@ -1106,10 +1180,9 @@ export function preprocessMarkdown(text: string): string {
  * them regardless of this function.
  */
 export function normalizeFilePreviewMath(text: string): string {
-  return text
-    .split(CODE_FENCE_SPLIT_RE)
-    .map(part => {
-      if (/^(?:```|~~~)/.test(part)) {
+  return splitFencedCode(text)
+    .map(({ code, text: part }) => {
+      if (code) {
         return part
       }
 

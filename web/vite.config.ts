@@ -8,8 +8,13 @@ import react, { reactCompilerPreset } from "@vitejs/plugin-react";
  *  module — which made the babel pass parse the whole codebase. */
 function compilerPreset() {
   const preset = reactCompilerPreset();
-  preset.rolldown.filter.code = /\/>|<\/|from\s*['"][^'"]*react/;
-  return preset;
+  return {
+    ...preset,
+    rolldown: {
+      ...preset.rolldown,
+      filter: { ...preset.rolldown.filter, code: /\/>|<\/|from\s*['"][^'"]*react/ },
+    },
+  };
 }
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
@@ -77,9 +82,16 @@ function hermesDevToken(): Plugin {
 }
 
 export default defineConfig({
+  css: {
+    // Tailwind runs through its Vite plugin. Keep unrelated ancestor PostCSS
+    // configs (including BOM-marked JSON) out of this build.
+    postcss: { plugins: [] },
+  },
   plugins: [
     react(),
-    babel({ presets: [compilerPreset()] }),
+    // Babel resolves the compiler preset's plugin from its cwd; builders run Vite from the
+    // checkout root, where only this workspace's node_modules has it.
+    babel({ cwd: configDir, presets: [compilerPreset()] }),
     tailwindcss(),
     hermesDevToken(),
   ],
@@ -157,10 +169,18 @@ export default defineConfig({
     },
   },
   server: {
+    // Everything the dev page loads is same-origin. Vite's default CORS
+    // grants every localhost port, which would let another local page read
+    // the session token hermesDevToken() injects into index.html.
+    cors: false,
     proxy: {
       "/api": {
         target: BACKEND,
         ws: true,
+        // No changeOrigin or Origin rewrite: the backend admits a WebSocket
+        // whose Origin names the Host it was sent to, and the dev page's own
+        // upgrades arrive that way however BACKEND is reached (port forwards
+        // included). The backend trusts no fixed dev port.
       },
       // Same host as `hermes dashboard` must serve these; Vite has no
       // dashboard-plugins/* files, so without this, plugin scripts 404

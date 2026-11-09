@@ -31,7 +31,7 @@ vi.mock('@/hermes', async importOriginal => {
   }
 })
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph: vi.fn() }))
 
 const { pluginSocket, setApiRequestConnection, setApiRequestProfile } = await import('@/hermes')
 const { closeSecondaryGateways, configureGatewayRegistry, setPrimaryGateway } = await import('@/store/gateway')
@@ -63,8 +63,7 @@ beforeEach(() => {
       getConnection,
       getConnectionFor,
       getGatewayWsUrl: vi.fn(async () => 'wss://pool.invalid/api/ws?ticket=fake'),
-      getGatewayWsUrlFor: vi.fn(async () => 'wss://homelab.invalid/api/ws?ticket=fake'),
-      touchBackend: vi.fn(async () => ({ ok: true }))
+      getGatewayWsUrlFor: vi.fn(async () => 'wss://homelab.invalid/api/ws?ticket=fake')
     }
   })
   configureGatewayRegistry({ onEvent: vi.fn() })

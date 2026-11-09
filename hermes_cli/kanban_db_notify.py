@@ -268,6 +268,26 @@ def remove_notify_sub(
     return cur.rowcount > 0
 
 
+def retarget_notify_subs(
+    conn: sqlite3.Connection, *, platform: str, from_chat_ids: Iterable[str], to_chat_id: str,
+) -> int:
+    """Re-key subscriptions bound to any of ``from_chat_ids`` onto ``to_chat_id`` (cursor kept), returning
+    how many moved. A row whose new key already exists is dropped: the owner's own subscription wins."""
+    ids = sorted({c for c in from_chat_ids if c and c != to_chat_id})
+    if not ids:
+        return 0
+    moved = 0
+    with _kb.write_txn(conn):
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            where = f"LOWER(platform) = LOWER(?) AND chat_id IN ({','.join('?' * len(chunk))})"
+            moved += conn.execute(
+                f"UPDATE OR IGNORE kanban_notify_subs SET chat_id = ? WHERE {where}", (to_chat_id, platform, *chunk),
+            ).rowcount
+            conn.execute(f"DELETE FROM kanban_notify_subs WHERE {where}", (platform, *chunk))
+    return moved
+
+
 def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int = 30) -> int:
     """Delete notify subs whose task sat in ``done``/``blocked`` untouched for
     longer than ``max_age_days`` (``<= 0`` disables); returns rows deleted.
@@ -438,4 +458,4 @@ def rewind_notify_cursor(
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb  # noqa: E402
+from hermes_cli import kanban_db as _kb

@@ -58,9 +58,13 @@ export const zhHantArtifacts = {
 
   preview: {
     tab: '預覽',
+    pin: '固定到工作區',
+    unpin: '從工作區取消固定',
     closePane: '關閉預覽窗格',
     loading: '正在載入預覽',
     unavailable: '預覽不可用',
+    missingTitle: '檔案已不存在',
+    missingBody: label => `${label} 已被刪除、移動，或其暫存位置已被清除。此分頁不會在下一次啟動時還原。`,
     opening: '開啟中...',
     hide: '隱藏',
     openPreview: '開啟預覽',
@@ -86,6 +90,7 @@ export const zhHantArtifacts = {
     editing: '編輯中',
     unsavedChanges: '未儲存的變更',
     saveFailed: message => `無法儲存：${message}`,
+    saveScopeChanged: '請切換回原本的連線和設定檔以儲存此草稿。',
     diskChangedTitle: '檔案已在磁碟上變更',
     diskChangedBody: '此檔案自開啟以來已變更。用你的版本覆寫，還是放棄你的編輯並重新載入？',
     overwrite: '覆寫',
@@ -111,6 +116,7 @@ export const zhHantArtifacts = {
       sentMessage: count => `已將 ${count} 條記錄新增至輸入框`
     },
     web: {
+      embeddedPreviewHint: '部分網站不允許嵌入式預覽。請在瀏覽器分頁中開啟原始頁面。',
       appFailedToBoot: '預覽應用程式啟動失敗',
       serverNotFound: '找不到伺服器',
       remoteLoopback:
@@ -151,7 +157,17 @@ export const zhHantArtifacts = {
       loadFailedConsole: (code, message) => `載入失敗${code ? ` (${code})` : ''}：${message}`,
       unreachableDescription: '無法連線至預覽頁面。',
       openTarget: url => `開啟 ${url}`,
-      fallbackTitle: '預覽'
+      fallbackTitle: '預覽',
+      vaultFill: '填入已儲存的登入資訊',
+      vaultTitle: site => `${site} 的已儲存登入資訊`,
+      vaultLoading: '正在載入已儲存的登入資訊…',
+      vaultEmpty: '此網站沒有已儲存的登入資訊',
+      vaultUnlock: name => `解鎖 ${name}`,
+      vaultOpenSettings: '開啟憑證保險庫設定',
+      vaultFilled: label => `已填入 ${label}。請檢查表單，然後登入。`,
+      vaultFillFailed: '無法填入登入資訊',
+      vaultLoadFailed: '無法載入已儲存的登入資訊',
+      vaultPageNotReady: '頁面仍在載入。載入完成後請再試一次。'
     }
   }
 } satisfies Pick<TranslationOverrides, 'artifacts' | 'artifactCard' | 'artifactPreview' | 'preview'>

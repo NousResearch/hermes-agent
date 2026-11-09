@@ -68,8 +68,9 @@ def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):
         db.create_session("repo_a", source="cli", cwd=str(repo_a), git_repo_root=str(repo_a))
         db.create_session("repo_b", source="cli", cwd="/other/repo-b", git_repo_root="/other/repo-b")
         with db._lock:
-            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (100.0, "repo_a"))
-            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (9000.0, "repo_b"))
+            # One message each: ``-c`` never resumes an empty launch stub.
+            db._conn.execute("UPDATE sessions SET started_at=?, message_count=1 WHERE id=?", (100.0, "repo_a"))
+            db._conn.execute("UPDATE sessions SET started_at=?, message_count=1 WHERE id=?", (9000.0, "repo_b"))
             db._conn.commit()
     finally:
         db.close()
@@ -81,7 +82,7 @@ def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):
             cmd, 0, stdout=str(repo_a), stderr=""
         ),
     )
-    monkeypatch.setattr("hermes_state.SessionDB", lambda **kw: real_db(db_path=state_db, **kw))
+    monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
     assert _resolve_last_session("cli") == "repo_a"
 
 
@@ -94,21 +95,21 @@ def test_resolve_last_session_cli_continues_a_oneshot(monkeypatch, tmp_path):
     import hermes_state
     from pathlib import Path
 
-    state_db = Path(tmp_path / "state.db")
-    real_db = hermes_state.SessionDB
-    db = real_db(db_path=state_db)
+    db = hermes_state.SessionDB(db_path=Path(tmp_path / "state.db"))
     try:
         db.create_session("interactive", source="cli")
         db.create_session("oneshot_run", source="oneshot")
         db.create_session("tui_chat", source="tui")
         with db._lock:
             for sid, started in (("interactive", 100.0), ("oneshot_run", 200.0), ("tui_chat", 300.0)):
-                db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (started, sid))
+                db._conn.execute("UPDATE sessions SET started_at=?, message_count=1 WHERE id=?", (started, sid))
             db._conn.commit()
     finally:
         db.close()
 
     monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: None)
-    monkeypatch.setattr("hermes_state.SessionDB", lambda **kw: real_db(db_path=state_db, **kw))
+    # The lookup opens the active home's store by explicit path (a served-profile process has no
+    # single default home), so the home is the seam — same as the workspace test above.
+    monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
     assert _resolve_last_session("cli") == "oneshot_run"
     assert _resolve_last_session("tui") == "tui_chat"

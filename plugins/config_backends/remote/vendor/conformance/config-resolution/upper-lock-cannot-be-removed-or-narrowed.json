@@ -1,0 +1,139 @@
+{
+  "fixtureVersion": 1,
+  "name": "upper-lock-cannot-be-removed-or-narrowed",
+  "description": "Proves rule-4: A lower level cannot unlock an upper lock, nor lock or unlock a path under it; the level that stores the lock may unlock it.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "web": {
+          "use_gateway": true
+        }
+      },
+      "locks": [
+        "web.use_gateway"
+      ]
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-support",
+      "values": {
+        "display": {
+          "personality": "concise"
+        }
+      },
+      "locks": [
+        "display"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "web": {
+        "use_gateway": true
+      },
+      "display": {
+        "personality": "concise"
+      }
+    },
+    "provenance": {
+      "web.use_gateway": "global",
+      "display.personality": "group"
+    },
+    "locks": [
+      {
+        "path": "web.use_gateway",
+        "level": "global"
+      },
+      {
+        "path": "display",
+        "level": "group"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "tenant",
+      "op": "unlock",
+      "path": "web.use_gateway",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "web.use_gateway",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "unlock",
+      "path": "web.use_gateway",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "web.use_gateway",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "unlock",
+      "path": "display",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "display",
+        "lockedBy": "group"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "unlock",
+      "path": "display.personality",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "display",
+        "lockedBy": "group"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "lock",
+      "path": "display.personality",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "display",
+        "lockedBy": "group"
+      }
+    },
+    {
+      "by": "group",
+      "op": "unlock",
+      "path": "display",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

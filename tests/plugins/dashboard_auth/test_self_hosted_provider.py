@@ -32,6 +32,7 @@ import plugins.dashboard_auth.self_hosted as oidc_plugin
 from hermes_cli.dashboard_auth import (
     InvalidCodeError,
     ProviderError,
+    RefreshExpiredError,
     Session,
     assert_protocol_compliance,
 )
@@ -54,7 +55,7 @@ _DISCOVERY_DOC = {
 
 
 @pytest.fixture(scope="module")
-def rsa_keypair() -> Dict[str, Any]:
+def rsa_keypair() -> dict[str, Any]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
@@ -86,7 +87,7 @@ def rsa_keypair() -> Dict[str, Any]:
 
 
 def _mint_id_token(
-    rsa_keypair: Dict[str, Any],
+    rsa_keypair: dict[str, Any],
     *,
     iss: str = _ISSUER,
     aud: str = _CLIENT_ID,
@@ -96,10 +97,10 @@ def _mint_id_token(
     groups: Any = None,
     org_id: str | None = None,
     ttl_seconds: int = 900,
-    extra_claims: Dict[str, Any] | None = None,
+    extra_claims: dict[str, Any] | None = None,
 ) -> str:
     now = int(time.time())
-    claims: Dict[str, Any] = {
+    claims: dict[str, Any] = {
         "iss": iss,
         "aud": aud,
         "sub": sub,
@@ -138,7 +139,7 @@ def _make_provider(
     doc (pass a list, or ``None`` to omit the key entirely); left unset, the
     discovery doc carries no auth-methods key (the absent-key default).
     """
-    kwargs: Dict[str, Any] = {"issuer": _ISSUER, "client_id": _CLIENT_ID}
+    kwargs: dict[str, Any] = {"issuer": _ISSUER, "client_id": _CLIENT_ID}
     if scopes is not None:
         kwargs["scopes"] = scopes
     if client_secret is not None:
@@ -681,22 +682,43 @@ class TestVerifySession:
 
 
     def test_expired_returns_none(self, provider, rsa_keypair):
-        token = _mint_id_token(rsa_keypair, ttl_seconds=-1)
+        # Well past the 60s default leeway — a just-expired token is accepted
+        # within the clock-skew window (RFC 7519 §4.1.4), a long-dead one is not.
+        token = _mint_id_token(rsa_keypair, ttl_seconds=-600)
         assert provider.verify_session(access_token=token) is None
 
-    def test_wrong_audience_raises(self, provider, rsa_keypair):
+    def test_wrong_audience_returns_none(self, provider, rsa_keypair):
+        # A wrong-audience token is a confirmed denial: the IdP answered (JWKS fetched,
+        # token parsed) but the token isn't ours. verify_session must return None so the
+        # middleware refreshes / re-logins instead of answering the misleading 503
+        # "provider unreachable" (folding denials into ProviderError produced exactly
+        # that against a desktop reusing one session across same-issuer gateways).
         token = _mint_id_token(rsa_keypair, aud="some-other-client")
-        with pytest.raises(ProviderError, match="verification failed"):
-            provider.verify_session(access_token=token)
+        assert provider.verify_session(access_token=token) is None
 
-
-    def test_failure_message_surfaces_claims(self, provider, rsa_keypair):
+    def test_failure_message_surfaces_claims(self, provider, rsa_keypair, caplog):
+        import logging
         token = _mint_id_token(rsa_keypair, iss="https://evil.example")
-        with pytest.raises(ProviderError) as excinfo:
-            provider.verify_session(access_token=token)
-        msg = str(excinfo.value)
+        with caplog.at_level(logging.WARNING, logger="plugins.dashboard_auth._shared"):
+            assert provider.verify_session(access_token=token) is None
+        msg = caplog.text
         assert "'https://evil.example'" in msg
         assert f"'{_ISSUER}'" in msg
+
+    def test_refresh_verify_denial_maps_to_refresh_expired(self, rsa_keypair):
+        """A verify-stage denial inside the refresh grant maps to RefreshExpiredError so
+        the middleware refresh scan rejects this provider instead of crashing on an
+        uncaught InvalidCodeError."""
+        provider = _make_provider(rsa_keypair)
+        id_token = _mint_id_token(rsa_keypair, aud="some-other-client")
+        mock_resp = _mock_post(
+            200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(RefreshExpiredError, match="verification failed"):
+                provider.refresh_session(refresh_token="rt_old")
 
 
     def test_jwks_unreachable_raises(self, provider, rsa_keypair):
@@ -842,3 +864,29 @@ class TestPluginRegister:
         registered = ctx.register_dashboard_auth_provider.call_args.args[0]
         assert registered._client_secret == "cfg-secret"
 
+
+
+class TestForgedSignature:
+    """A bearer whose signature does not verify is an invalid token, never a provider outage.
+
+    Live remote-bind probe: a tampered OIDC bearer on the gated API returned 503
+    ``Auth provider 'self-hosted' unreachable`` (cookies kept, no fall-through), so a forged
+    token was indistinguishable from an IDP outage.
+    """
+
+    def test_tampered_signature_is_invalid_token_not_unreachable(self, rsa_keypair):
+        provider = _make_provider(rsa_keypair)
+        token = _mint_id_token(rsa_keypair)
+        head, body, sig = token.split(".")
+        forged = ".".join((head, body, sig[:-4] + ("AAAA" if not sig.endswith("AAAA") else "BBBB")))
+        assert provider.verify_session(access_token=forged) is None
+
+    def test_wrong_key_signature_is_invalid_token_not_unreachable(self, rsa_keypair):
+        provider = _make_provider(rsa_keypair)
+        other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = other.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                  serialization.NoEncryption())
+        now = int(time.time())
+        token = jwt.encode({"iss": _ISSUER, "aud": _CLIENT_ID, "sub": "usr_abc", "iat": now, "exp": now + 900},
+                           pem, algorithm="RS256", headers={"kid": rsa_keypair["kid"]})
+        assert provider.verify_session(access_token=token) is None

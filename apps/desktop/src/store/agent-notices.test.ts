@@ -190,3 +190,39 @@ test('the urgent pair maps to a global native input carrying the text as its bod
   expect(restored?.kind).toBe('credits')
   expect(restored?.body).toBe('✓ Credit access restored')
 })
+
+// ── a window plan's limit line: the error card says it, not a toast ──────────
+
+test("a window plan's limit line is no toast, but still an OS notification", () => {
+  const limit: AgentNoticePayload = {
+    key: 'credits.window_limit',
+    kind: 'sticky',
+    level: 'error',
+    text: "✕ You've hit your daily limit · resets 15:56 · /topup to add credits"
+  }
+
+  expect(noticeToToast(limit)).toBeNull()
+  showAgentNotice(limit)
+  expect($notifications.get()).toHaveLength(0)
+  expect(nativeNoticeInput(limit, 'Hermes credits')?.body).toBe(limit.text)
+})
+
+// ── a window plan's 90% heads-up (credits.window.<id>) ───────────────────────
+
+test('the 90% heads-up is an orange ttl toast, replaced in place per allowance', () => {
+  const headsUp: AgentNoticePayload = {
+    key: 'credits.window.week',
+    kind: 'ttl',
+    level: 'warn',
+    text: '⚠ 91% of your weekly limit used · resets Thu 09:00',
+    ttl_ms: 10_000
+  }
+
+  const toast = noticeToToast(headsUp)
+
+  expect(toast?.accentColor).toBe('var(--ui-orange)')
+  expect(toast?.message).toBe('91% of your weekly limit used')
+  expect(toast?.id).toBe('credits.window.week')
+  // A heads-up, not an alarm: no OS notification.
+  expect(nativeNoticeInput(headsUp, 'Hermes credits')).toBeNull()
+})

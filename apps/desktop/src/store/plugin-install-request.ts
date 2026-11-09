@@ -13,11 +13,20 @@ export interface PluginInstallRequest {
   /** Curated-catalog pick: install the agent half by catalog name so the
    *  backend pins the reviewed SHA and records sidecar provenance. */
   catalogName?: string
+  /** Catalog tier (official / verified / community), display only: an
+   *  official pick is badged Official rather than Verified. */
+  tier?: string
   /** The catalog pin (display only — the backend resolves it itself). */
   sha?: string
+  /** Display name for the dialog heading (the catalog card's title); falls back to the catalog name. */
+  title?: string
+  /** One line on what the plugin does (the catalog description's first sentence). */
+  summary?: string
   /** Capabilities profile scope the pick was made under; the agent half
    *  installs into THIS profile (null/undefined = active profile). */
   profile?: string | null
+  /** The caller keeps the user where they are after a successful install (the setup chat's plugins card). */
+  stayAfterInstall?: boolean
 }
 
 export const $pluginInstallRequest = atom<PluginInstallRequest | null>(null)

@@ -15,6 +15,7 @@ import json
 import pytest
 import pytest_asyncio
 
+from gateway.relay import ws_transport
 from gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not WEBSOCKETS_AVAILABLE, reason="websockets not installed")
@@ -173,6 +174,91 @@ async def test_reconnect_redials_after_unexpected_close():
 
 
 # ── scale-to-zero go_dormant() (D12 / F14) ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reply_waits_for_dormant_reconnect_and_target_descriptor(server, monkeypatch):
+    from tests.waiting import async_wait_until
+
+    wake_hello = asyncio.Event()
+    allow_descriptor = asyncio.Event()
+    sending = asyncio.Event()
+    outbound = []
+    original_on_frame = server._on_frame
+
+    async def on_frame(ws, frame):
+        if frame["type"] == "hello" and frame["platform"] == "slack":
+            if server.connections > 1:
+                wake_hello.set()
+                await allow_descriptor.wait()
+            descriptor = {**DESCRIPTOR, "platform": "slack"}
+            await ws.send(json.dumps({"type": "descriptor", "descriptor": descriptor}) + "\n")
+        elif frame["type"] == "outbound":
+            outbound.append(frame)
+            await ws.send(json.dumps({
+                "type": "outbound_result", "requestId": frame["requestId"],
+                "result": {"success": True, "message_id": "reply-id"},
+            }) + "\n")
+        else:
+            await original_on_frame(ws, frame)
+
+    monkeypatch.setattr(server, "_on_frame", on_frame)
+    t = WebSocketRelayTransport(
+        server.url, "discord", "discord-bot", reconnect=True,
+        identities=[("discord", "discord-bot"), ("slack", "slack-bot")],
+    )
+    t._dormant_redial_s = 0
+
+    async def send_reply():
+        sending.set()
+        return await t.send_outbound({"op": "send", "text": "reply"}, platform="slack")
+
+    await t.connect()
+    reply = None
+    try:
+        await t.handshake()
+        t.hold_redial()
+        assert await t.go_dormant()
+        await async_wait_until(lambda: t._ws is None, timeout=5, what="dormant socket close")
+        reply = asyncio.create_task(send_reply())
+        await asyncio.wait_for(sending.wait(), 5)
+        assert not reply.done(), "the reply failed before the wake dial"
+
+        t.release_redial()
+        await asyncio.wait_for(wake_hello.wait(), 5)
+        await t.handshake()  # Discord is ready, but Slack's descriptor is still held.
+        await asyncio.sleep(0)
+        assert not t._pending, "the reply went out before Slack's hello was acknowledged"
+        allow_descriptor.set()
+        assert await asyncio.wait_for(reply, 5) == {"success": True, "message_id": "reply-id"}
+        assert len(outbound) == 1
+        assert outbound[0]["platform"] == "slack"
+        assert outbound[0]["botId"] == "slack-bot"
+    finally:
+        allow_descriptor.set()
+        if reply is not None and not reply.done():
+            reply.cancel()
+            await asyncio.gather(reply, return_exceptions=True)
+        await t.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_dormant_reply_timeout_is_a_definite_failure(server, monkeypatch):
+    from tests.waiting import async_wait_until
+
+    monkeypatch.setattr(ws_transport, "_WAKE_RECONNECT_WAIT_S", 0)
+    t = WebSocketRelayTransport(server.url, "discord", "bot", reconnect=True)
+    await t.connect()
+    try:
+        await t.handshake()
+        t.hold_redial()
+        assert await t.go_dormant()
+        await async_wait_until(lambda: t._ws is None, timeout=5, what="dormant socket close")
+        result = await asyncio.wait_for(t.send_outbound({"op": "send", "text": "reply"}), 5)
+        assert result == {"success": False, "error": "relay transport not connected"}
+        assert not t._pending
+    finally:
+        await t.disconnect()
 
 
 @pytest.mark.asyncio

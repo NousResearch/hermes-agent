@@ -36,6 +36,7 @@ WEBSOCKETS_AVAILABLE = websockets is not None
 
 _HANDSHAKE_TIMEOUT_S = 30.0
 _OUTBOUND_TIMEOUT_S = 30.0
+_WAKE_RECONNECT_WAIT_S = 5.0
 # Bound on each of the three sequential teardown awaits (supervisor, reader,
 # ws.close) so a wedged peer cannot stall adapter.disconnect past the runner's
 # default 5s budget.
@@ -378,10 +379,11 @@ class WebSocketRelayTransport:
         # Dormant close (go_dormant) is distinct from disconnect() (terminal) and
         # an unexpected close (fast re-dial): the socket closes WITHOUT _closing,
         # so the reader still arms the supervisor, but it polls on the dormant
-        # cadence so it does not fight the platform's suspend window. Cleared on
-        # a successful re-dial. A suspended machine's event loop is frozen, so the
-        # timer only advances once awake; it just needs to re-dial promptly then.
+        # cadence so it does not fight the platform's suspend window. Dormancy
+        # ends when the new connector has acknowledged the hellos.
         self._dormant = False
+        self._dormant_generation = 0
+        self._wake_progress = asyncio.Event()
         self._dormant_redial_s = 1.0
         # Set while a NAS-brokered suspend is in flight. See _await_redial_hold.
         self._redial_held = False
@@ -448,8 +450,6 @@ class WebSocketRelayTransport:
         # descriptor per hello, so stale descriptors must not survive.
         self._descriptor = None
         self._descriptors_by_platform = {}
-        # A successful (re-)dial ends any dormant state.
-        self._dormant = False
         # WAN-friendly keepalive: the library default (20s pong deadline) produces
         # spurious `1011 keepalive ping timeout` closes under transient latency /
         # event-loop stalls; 60s tolerates them while detecting a dead link ~90s.
@@ -507,6 +507,8 @@ class WebSocketRelayTransport:
         ``budget_s`` is the REMAINING wall-clock budget the caller can spend here;
         None applies the env-mirrored runner default."""
         self._closing = True
+        if getattr(self, "_dormant", False):
+            self._wake_progress.set()
         try:
             # A trailing outbound frame (typically the turn's finalize edit) may
             # still await its outbound_result; failing it immediately loses a
@@ -659,6 +661,8 @@ class WebSocketRelayTransport:
             return False
         # Mark dormant BEFORE closing so the supervisor takes the dormant cadence.
         self._dormant = True
+        self._dormant_generation = self._dial_generation
+        self._wake_progress.clear()
         try:
             await asyncio.wait_for(self._ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
         except Exception:
@@ -673,14 +677,33 @@ class WebSocketRelayTransport:
         except Exception:
             logger.debug("relay: inbound_ack send failed for %s", buffer_id)
 
+    async def _wait_for_wake(self, platform: Optional[str]) -> bool:
+        """Wait for the addressed identity on a fresh socket before writing a frame."""
+        if self._bot_id_for(platform) is None:
+            platform = self._identities[0][0]
+        try:
+            async with asyncio.timeout(_WAKE_RECONNECT_WAIT_S):
+                while self._dormant and not self._closing and not self._auth_revoked:
+                    if (self._ws is not None and self._dial_generation != self._dormant_generation
+                            and platform in self._descriptors_by_platform):
+                        return True
+                    self._wake_progress.clear()
+                    await self._wake_progress.wait()
+        except TimeoutError:
+            return False
+        return not self._dormant
+
     async def _request_response(
         self, action: dict[str, Any], *, platform: Optional[str] = None
     ) -> dict[str, Any]:
+        wake_ready = True
+        if not self._closing and self._dormant:
+            wake_ready = self._reconnect and await self._wait_for_wake(platform)
         # Fail fast during teardown: the disconnect() fail-pending loop may already
         # have run, so a future registered now would never be settled.
         if self._closing:
             return {"success": False, "error": "relay transport closed"}
-        if self._ws is None:
+        if not wake_ready or self._ws is None:
             return {"success": False, "error": "relay transport not connected"}
         request_id = uuid.uuid4().hex
         fut: asyncio.Future[dict[str, Any]] = _PendingRequest(
@@ -765,6 +788,7 @@ class WebSocketRelayTransport:
                             )
                     elif generation == self._auth_retry_generation:
                         self._auth_revoked = True
+                        self._wake_progress.set()
                         if not self._closing:
                             logger.warning(
                                 "relay ws closed 4401 (unauthorized) again on a re-dial with a "
@@ -888,6 +912,7 @@ class WebSocketRelayTransport:
         if self._close_reason_of(exc) == _RELAY_EXPIRED_CLOSE_REASON:
             return False
         self._auth_revoked = True
+        self._wake_progress.set()
         logger.warning(
             "relay ws fresh-token re-dial rejected with 4401 — treating as a "
             "revoked relay credential (opt-out); not reconnecting"
@@ -967,6 +992,10 @@ class WebSocketRelayTransport:
         self._handshake_succeeded = True
         if self._descriptor_ready is not None and not self._descriptor_ready.done():
             self._descriptor_ready.set_result(descriptor)
+        if self._dormant and self._dial_generation != self._dormant_generation:
+            if all(platform in self._descriptors_by_platform for platform, _ in self._identities):
+                self._dormant = False
+            self._wake_progress.set()
 
     async def _on_inbound(self, frame: dict[str, Any]) -> None:
         if self._inbound is None:

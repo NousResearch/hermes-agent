@@ -173,8 +173,10 @@ model:
   also set `model.ollama_num_ctx` so that Hermes requests that window on each
   call.
 - Hermes needs at least **64,000 tokens**, and a smaller window is refused at
-  startup. llama.cpp parallel slots split the total (`-c 65536 -np 4` gives each
-  slot 16K), so use `-np 1` or raise `-c`.
+  startup. The one exception is `provider: lmstudio` with an explicit positive
+  `model.context_length`, which can run below that. llama.cpp parallel slots
+  split the total (`-c 65536 -np 4` gives each slot 16K), so use `-np 1` or
+  raise `-c`.
 - Check the `Context limit: … tokens` line at startup to confirm the value
   Hermes is using.
 
@@ -236,16 +238,25 @@ fallback_providers:
 
 ### Tune compression for small windows
 
-Compression starts when context usage passes `compression.threshold`. Windows
-under 512K are floored at `0.75`, so a 64K model compacts at about 48K. To
-compact earlier or later, change the ratio, or set an absolute cap:
+Compression starts when context usage passes a trigger that Hermes derives from
+`compression.threshold`:
+
+- Windows under 512K use a ratio of at least `0.75`. A 128K model compacts at
+  about 98K.
+- The trigger never drops below 64,000 tokens. Near that minimum it is capped
+  at 85% of the window instead, so a 65,536-token model compacts at about 55.7K
+  whether `threshold` is 0.50, 0.75 or 0.80. Only a `threshold` above 0.85 moves
+  it later.
+
+To compact **earlier** on a small window, set an absolute cap. Hermes uses the
+lower of the cap and the derived trigger:
 
 ```yaml
 compression:
-  threshold: 0.80           # values above 0.75 override the small-window floor
-  threshold_tokens: 40000   # optional: compress at the lower of ratio and this
+  threshold_tokens: 40000   # compress at 40K or the derived trigger, whichever is lower
 ```
 
+The `Context limit: … (compress at …)` startup line shows the trigger in effect.
 The summary itself is written by the `auxiliary.compression` model. If your
 main model is slow, point that model at a faster endpoint (see
 [Auxiliary Models](./configuration.md#auxiliary-models)).

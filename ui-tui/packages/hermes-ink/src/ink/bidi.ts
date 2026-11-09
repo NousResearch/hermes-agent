@@ -131,21 +131,34 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
   const bidi = getBidi()
   const { levels } = bidi.getEmbeddingLevels(plainText, 'auto')
 
-  // Map bidi levels back to ClusteredChar indices.
-  // Each ClusteredChar may be multiple code units in the joined string.
+  // Rule L4 — mirroring. Characters with the Bidi_Mirrored property that
+  // resolve to an odd (RTL) level must be replaced by their mirror glyph: a
+  // "(" laid out inside an RTL run reads as ")" and vice versa. A terminal
+  // that runs the UBA does this itself; because we reorder in software we
+  // must do it too, or a bracket pair displays glyph-swapped — e.g.
+  // "שלום (עולם)" comes out ")םלוע( םולש" instead of "(םלוע) םולש".
+  const mirrors = bidi.getMirroredCharactersMap(plainText, levels)
+
+  // Map bidi levels back to ClusteredChar indices, applying the mirror at the
+  // same time. Each ClusteredChar may be several code units in the joined
+  // string, so the logical offset (UTF-16) is what indexes `levels`/`mirrors`.
   const charLevels: number[] = []
+  const visual: ClusteredChar[] = []
   let offset = 0
 
   for (let i = 0; i < characters.length; i++) {
+    const cluster = characters[i]!
     charLevels.push(levels[offset]!)
-    offset += characters[i]!.value.length
+    const mirror = mirrors.get(offset)
+    visual.push(mirror === undefined ? cluster : { ...cluster, value: mirror })
+    offset += cluster.value.length
   }
 
   // Get reorder segments from bidi-js, but we need to work at the
   // ClusteredChar level, not the string level. We'll implement the
   // standard bidi reordering: find the max level, then for each level
   // from max down to 1, reverse all contiguous runs >= that level.
-  const reordered = [...characters]
+  const reordered = visual
   const maxLevel = Math.max(...charLevels)
 
   for (let level = maxLevel; level >= 1; level--) {

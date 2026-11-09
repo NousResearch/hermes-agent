@@ -76,3 +76,33 @@ describe('reorderBidi', () => {
     expect(reorderAs('שלום', { TERM_PROGRAM: 'iTerm.app' } as NodeJS.ProcessEnv)).toBe('שלום')
   })
 })
+
+describe('reorderBidi mirroring (UAX #9 rule L4)', () => {
+  // Reordering alone is not enough: a bracket pair that resolves into an RTL
+  // run must also be glyph-mirrored, or it reads swapped — ")םלוע( םולש"
+  // instead of "(םלוע) םולש". Expected values are the visual strings produced
+  // by GNU FriBidi (`fribidi --ltr --nopad --nobreak`), and every case here is
+  // base-direction independent, so it holds under the UAX#9 first-strong rule
+  // as-is (the base policy is tracked separately, see #72508).
+  const env = { TERM: 'xterm' } as NodeJS.ProcessEnv
+
+  it('mirrors a bracket pair that resolves into the RTL run', () => {
+    expect(reorderAs('שלום (עולם)', env)).toBe('(םלוע) םולש')
+    expect(reorderAs('│ שלום (עולם) │', env)).toBe('│ (םלוע) םולש │')
+    expect(reorderAs('א (ב) ג (ד) ה', env)).toBe('ה (ד) ג (ב) א')
+    expect(reorderAs('שלום (עולם), עולם (שלום)', env)).toBe('(םולש) םלוע ,(םלוע) םולש')
+    expect(reorderAs('שלום (עולם (עולם))', env)).toBe('((םלוע) םלוע) םולש')
+  })
+
+  it('leaves a bracket pair that resolves to the paragraph direction', () => {
+    // Brackets preceded only by the paragraph start stay at level 0.
+    expect(reorderAs('(שלום)', env)).toBe('(םולש)')
+    expect(reorderAs('עולם (שלום) עולם', env)).toBe('םלוע (םולש) םלוע')
+    expect(reorderAs('שלום [עולם] עולם', env)).toBe('םלוע [םלוע] םולש')
+  })
+
+  it('does not mirror when reordering is skipped or disabled', () => {
+    expect(reorderAs('שלום (עולם)', { HERMES_TUI_BIDI: '0' } as NodeJS.ProcessEnv)).toBe('שלום (עולם)')
+    expect(reorderAs('hello (world)', env)).toBe('hello (world)')
+  })
+})

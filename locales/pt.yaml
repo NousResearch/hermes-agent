@@ -625,6 +625,7 @@ gateway:
     action_always: "Sempre permitir"
     action_deny: "Negar"
     deadline: "Se não responder em {window}, ele NÃO será executado."
+    not_requester: "Apenas {requester} pode responder a esta aprovação."
     text_choice_once: "Responda `{prefix}approve` para executar uma vez"
     text_choice_session: "`{prefix}approve session` para permitir este padrão pelo restante desta sessão"
     text_choice_always: "`{prefix}approve always` para permitir permanentemente"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", ou {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Pré-visualização encurtada: o comando completo ({total} caracteres) está na mensagem acima."
+    truncated_deny_only: "Pré-visualização encurtada ({total} caracteres) e não foi possível mostrar o comando completo aqui, por isso só é oferecido Negar. Revê-o na CLI ou na app Desktop."
+    text_prompt_deny_only: "O pedido de aprovação completo é demasiado longo para esta plataforma, por isso só é oferecido Negar. Revê-o na CLI ou na app Desktop."
   notify:
     media_kind:
       audio: "áudio"
@@ -974,9 +978,6 @@ platform:
     approved: "✅ Aprovado."
     denied: "❌ Negado."
     approval_expired: "⌛ Aprovação expirada — o comando não foi executado (já excedeu o tempo limite ou foi resolvido em outro lugar)."
-  yuanbao:
-    slow_response_notice: "Esta tarefa é um pouco complexa — ainda estou trabalhando nela, aguarde um momento..."
-    owner_command_denied: "⚠️ {command} só está disponível para o criador no modo de chat privado"
   shared:
     truncated_suffix: "\n...(truncado)"
     unknown: "desconhecido"
@@ -1710,10 +1711,10 @@ slash:
     description: "Sair da CLI (use --delete para também remover o histórico da sessão)"
 cli:
   backtrack:
-    title: "↺ Retroceder — escolha um prompt anterior"
-    keys_hint: "↑/↓ escolher · Enter editar e reenviar · f bifurcar daqui · Esc fechar"
-    preview_label: "Prompt {number} de {total}:"
-    more_lines: "… (mais {count} linhas)"
+    title: "↺ Transcrição — escolha um prompt para editar"
+    keys_hint: "Navegando na transcrição · ↑↓/jk rolar · ←→/hl prompts · ↵ editar · f bifurcar · esc voltar"
+    prime_hint: "esc de novo para editar a mensagem anterior"
+    no_previous: "Nenhuma mensagem anterior para editar."
     editing_hint: "↺ Editando o prompt {number} — Enter retrocede até aqui e envia · Esc Esc cancela"
     edit_cancelled: "↺ Retrocesso cancelado; nada foi removido."
     rewound: "↺ Retrocedido ao prompt {number} ({count} mensagem(ns) arquivada(s)); enviando a edição."
@@ -3981,3 +3982,8 @@ plan_usage:
   large_notice_limit: "Modelo grande: o seu limite {name} foi atingido ({resets})."
   large_notice_limit_stops: "Modelo grande: o seu limite {name} foi atingido ({resets}), por isso não funcionará até lá."
   large_notice_percent: "Modelo grande: usa mais do uso do seu plano por mensagem. Limite mensal de modelos grandes: {percent} usado."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Arquivos alterados nos turnos desfeitos: {files}. Execute /rollback para listar os checkpoints e restaurar um."
+    more: "+{count} mais"

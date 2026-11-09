@@ -259,7 +259,7 @@ def release(*, product_id: str, store_file: str, tenant_id: str, client_id: str,
         response = run(request)
         if response["status"] == 409 and method != "GET":
             raise _Refused(f"{method} {path}: {response['body']}")
-        if response["status"] != 200:
+        if not 200 <= response["status"] < 300:
             raise StoreError(f"{method} {path} failed: {response['status']} {response['body']}")
         return response["body"]
 

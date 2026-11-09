@@ -187,60 +187,15 @@ class SessionFieldView(_RunnerView):
         return f"SessionFieldView({self._spec.scope}.{self._spec.name}, {dict(self.items())!r})"
 
 
-class TurnLeaseTokenView(_RunnerView):
-    """Legacy (session_key, generation)-keyed view of ``_turn_lease_tokens``; the lease registry
-    serializes acquisition per session, so one ``TurnState`` slot per key equals the old dict."""
-
-    __slots__ = ()
-
-    def _held(self, key: Any) -> TurnState:
-        """TurnState for a currently-held (session_key, generation) or raise KeyError."""
-        if not isinstance(key, tuple) or len(key) != 2:
-            raise KeyError(key)
-        state = self._sessions().get(key[0])
-        if state is None or key[1] not in state.turn.lease_tokens:
-            raise KeyError(key)
-        return state.turn
-
-    def __getitem__(self, key: Any) -> Any:
-        return self._held(key).lease_tokens[key[1]]
-
-    def __setitem__(self, key: Any, value: Any) -> None:
-        if not isinstance(key, tuple) or len(key) != 2:
-            raise KeyError(key)
-        self._runner._session_state(key[0]).turn.lease_tokens[key[1]] = value
-
-    def __delitem__(self, key: Any) -> None:
-        del self._held(key).lease_tokens[key[1]]
-
-    def __iter__(self) -> Iterator[tuple[str, Any]]:
-        return ((k, gen) for k, s in list(self._sessions().items()) for gen in list(s.turn.lease_tokens))
-
-    def clear(self) -> None:  # avoid MutableMapping's popitem loop
-        for key in list(self):
-            del self[key]
-
-
 # One spec per legacy dict attribute.
 LEGACY_FIELD_SPECS: dict[str, _FieldSpec] = {
     "_running_agents": _spec("turn", "agent", None),
     "_running_agents_ts": _spec("turn", "started_ts", float),
-    "_active_session_leases": _spec("turn", "lease", None),
     "_busy_ack_ts": _spec("turn", "busy_ack_ts", float),
     "_session_model_overrides": _spec("conversation", "model_override", None),
-    "_pending_one_turn_model_restores": _spec("conversation", "one_turn_restore", None),
-    "_session_reasoning_overrides": _spec("conversation", "reasoning_override", None),
-    "_session_service_tier_overrides": _spec("conversation", "service_tier_override", _UNSET_TIER),
-    "_last_resolved_model": _spec("conversation", "last_resolved_model", str),
     "_queued_events": _spec("conversation", "queued_events", list),
-    "_pending_turn_sidecar_notes": _spec("conversation", "sidecar_notes", list),
-    "_session_ephemeral_pin": _spec("conversation", "ephemeral_pin", None),
-    "_session_vc_last": _spec("conversation", "vc_last", None),
     "_pending_approvals": _spec("persistent", "approvals", None),
-    "_update_prompt_pending": _spec("persistent", "update_prompt_pending", bool),
-    "_pending_native_image_paths_by_session": _spec("persistent", "native_image_paths", list),
     "_pending_messages": _spec("persistent", "pending_command_text", None),
-    "_session_run_generation": _spec("persistent", "run_generation", int),
 }
 
 
@@ -262,11 +217,4 @@ def legacy_dict_property(attr_name: str) -> property:
     return _legacy_property(
         lambda self: SessionFieldView(self, spec),
         f"Legacy dict view over SessionState.{spec.scope}.{spec.name} (for pre-SessionState tests).",
-    )
-
-
-def legacy_lease_token_property() -> property:
-    """Legacy (session_key, generation)-keyed view of held turn-lease tokens."""
-    return _legacy_property(
-        TurnLeaseTokenView, "Legacy (session_key, generation)-keyed turn-lease token view."
     )

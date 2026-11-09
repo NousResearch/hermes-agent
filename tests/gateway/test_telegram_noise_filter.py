@@ -3,6 +3,7 @@
 import pytest
 
 from agent.conversation_compression import (
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
     ROUTINE_COMPRESSION_STATUS_SAMPLES,
 )
@@ -57,6 +58,8 @@ NOISY_STATUS_MESSAGES = [
         "⚠ Skipping concurrent compression — another path is already "
         "compressing this session. Will retry after it finishes."
     ),
+    # Automatic anti-growth refusal: a no-op diagnostic (nothing dropped), pinned from the emit-site constant.
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
 ]
 
 # Messages that must NEVER be swallowed by the compression-noise filter:
@@ -68,6 +71,8 @@ VISIBLE_COMPRESSION_MESSAGES = [
     "Compression aborted: 30 messages preserved",
     "Compressed with fallback: 30 → 12 messages",
     "No changes from compression: 30 messages",
+    # Manual /compress refused-would-grow feedback stays visible (manual_compression_feedback.py).
+    "Compression refused (summary would grow the conversation): 30 messages preserved",
     (
         "⚠ Compression aborted: auth failure. No messages were dropped — "
         "conversation continues unchanged. Run /compress to retry, or /new "
@@ -131,6 +136,10 @@ def test_programmatic_surfaces_keep_raw_status():
     for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
         assert (
             _prepare_gateway_status_message(platform, "lifecycle", message) == message
+        )
+        assert (
+            _prepare_gateway_status_message(platform, "warn", COMPRESSION_REFUSED_WOULD_GROW_WARNING)
+            == COMPRESSION_REFUSED_WOULD_GROW_WARNING
         )
 
 

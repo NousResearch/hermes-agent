@@ -17,6 +17,8 @@ import { isBrowserHostedDesktop } from '@/lib/platform'
 type Host = 'browser' | 'native'
 
 export const HOST_CAPABILITIES = Object.freeze({
+  /** OS notifications go through the browser's Notification API and its per-site permission. */
+  browserNotifications: 'browser',
   /** Mouse back/forward buttons are the app's to handle; a browser tab keeps its own history. */
   appMouseHistoryButtons: 'native',
   /** The browser opens its own context menu, which the app menu must cancel or let through. */

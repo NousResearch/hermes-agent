@@ -200,7 +200,7 @@ def _completion_attempts_path(project_root: Path) -> Path:
 #: What a launch-time dependency sync consumes. A failed sync is recorded against
 #: these inputs (#139952): relaunching over the same inputs repeats the same doomed
 #: repair and backs off, while a corrected source update is a fresh repair.
-_SYNC_INPUTS = ("pyproject.toml", "uv.lock", "pm/lock.json")
+_SYNC_INPUTS = ("pyproject.toml", "setup.py", "uv.lock", "pm/lock.json")
 
 
 def _sync_inputs_digest(root: Path) -> str:
@@ -670,7 +670,10 @@ def _sync_source_dependencies(root: Path, *, arm: bool, borrowed_from: Path | No
     # Same order as `hermes update`: an interrupted update or a hand-run
     # `git pull` leaves this tree's lockfile ahead of the installed tools.
     ensure_tools_for_sync()
-    pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True)
+    # The old venv's extras are carried, not asked for: none of them undoes a `--without`, and
+    # one beyond [all] that no longer builds is left out.
+    carried = {"carried": extras[1:]} if extras and len(extras) > 1 else {}
+    pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True, **carried)
     collect_superseded_generations(root)
     if borrowed_from is not None:
         return  # The checkout's markers describe the owner's environment, not this one.

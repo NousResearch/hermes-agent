@@ -1,0 +1,22 @@
+name: oathkeeper
+repo: https://github.com/Whydiriki700/oathkeeper
+sha: dfff809521c78e98e461ce72d4592ee02eea345c
+title: Oathkeeper
+description: "An owner's oath, enforced by the machine. The owner writes standing rules once in a plain oath file (standing missions briefed into every session, never delete or modify these surfaces, always require evidence such as a backup before touching those) and Oathkeeper enforces them deterministically on every tool call: never rules block with the violated oath line cited, always-require rules block until the prerequisite evidence exists in the same session, fingerprint snapshots of sworn surfaces detect changes made outside the gate and report them on the next turn, and the oath file itself can never be modified by the agent. Every verdict is written to an append-only local ledger. Disclosure: reads tool call arguments to extract intended file actions and reads files covered by oath patterns to fingerprint them; all state is stored locally under $HERMES_HOME/oathkeeper/; makes no network calls and calls no model."
+maintainer: Whydiriki700
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Whydiriki700/oathkeeper
+platforms: []
+capabilities:
+  provides_tools:
+    - oath_check
+    - oath_status
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

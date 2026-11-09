@@ -10,12 +10,114 @@ import { type RefObject, useEffect } from 'react'
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 
 import { type PreviewInputEvent, registerPreviewInput, toWebviewInputSpace } from './preview-input'
-import { registerPreviewScriptRunner } from './preview-script-runner'
+import { type PreviewScriptRunner, registerPreviewScriptRunner } from './preview-script-runner'
 
 export type PreviewDriveGuest = HTMLElement & {
   executeJavaScript?: (code: string) => Promise<unknown>
+  getWebContentsId?: () => number
   getZoomFactor?: () => number
   sendInputEvent?: (event: PreviewInputEvent) => void
+}
+
+/** A script can await a frame even when its page is hidden. Wake only for that
+ * round trip, never for the guest's lifetime or for a detached cosmetic loop. */
+export async function withPreviewGuestActivity<T>(
+  guest: PreviewDriveGuest,
+  operation: (token: number) => Promise<T>,
+  signal?: AbortSignal,
+  releaseSignal = signal
+) {
+  if (!guest.executeJavaScript) {
+    throw new Error('preview webview is not ready')
+  }
+
+  signal?.throwIfAborted()
+  releaseSignal?.throwIfAborted()
+
+  const desktop = window.hermesDesktop
+  const begin = desktop?.beginPreviewGuestActivity
+  const end = desktop?.endPreviewGuestActivity
+
+  if (!begin || !end || !guest.getWebContentsId) {
+    throw new Error('preview guest activity is unavailable')
+  }
+
+  const cancelled = Promise.withResolvers<never>()
+  const acquisition = begin(guest.getWebContentsId())
+  let token: number | undefined
+  let started = false
+  let released: Promise<void> | undefined
+
+  const release = () => {
+    if (token !== undefined) {
+      released ??= end(token)
+      // Observe an early release failure now; the finally below still reports it.
+      void released.catch(() => {})
+    }
+  }
+
+  const abort = () => {
+    if (!started || signal?.aborted) {
+      const reason = signal?.aborted ? signal.reason : releaseSignal?.reason
+      cancelled.reject(reason ?? new DOMException('Preview script cancelled', 'AbortError'))
+    }
+
+    release()
+  }
+
+  signal?.addEventListener('abort', abort, { once: true })
+  releaseSignal?.addEventListener('abort', abort, { once: true })
+
+  try {
+    token = await Promise.race([acquisition, cancelled.promise])
+    signal?.throwIfAborted()
+    releaseSignal?.throwIfAborted()
+    started = true
+
+    return await Promise.race([operation(token), cancelled.promise])
+  } finally {
+    signal?.removeEventListener('abort', abort)
+    releaseSignal?.removeEventListener('abort', abort)
+
+    if (token === undefined) {
+      // Cancellation must not wait for IPC. A late token still has one owner
+      // responsible for releasing it, without dispatching the cancelled work.
+      // Acquisition rejection is already observed by the race.
+      void acquisition.then(end, () => {}).catch(error => console.error('Could not release preview activity', error))
+    } else {
+      release()
+      await released
+    }
+  }
+}
+
+export function runPreviewGuestScript(guest: PreviewDriveGuest, code: string, signal?: AbortSignal) {
+  const execute = window.hermesDesktop?.executePreviewGuestScript
+
+  if (!execute) {
+    return Promise.reject(new Error('preview script activity is unavailable'))
+  }
+
+  return withPreviewGuestActivity(guest, token => execute(token, code), signal)
+}
+
+/** First-party reads/crops are bounded; approved plugin scripts keep their own lifetime. */
+export async function withPreviewDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  lifetime?: AbortSignal
+): Promise<T> {
+  lifetime?.throwIfAborted()
+  const deadline = new AbortController()
+  const signal = lifetime ? AbortSignal.any([lifetime, deadline.signal]) : deadline.signal
+  // Match the page-read bridge's response deadline, without leaving an idle timer.
+  const timer = setTimeout(() => deadline.abort(new DOMException('Preview operation timed out', 'TimeoutError')), 8_000)
+
+  try {
+    return await operation(signal)
+  } finally {
+    clearTimeout(timer)
+    deadline.abort()
+  }
 }
 
 export function usePreviewDriveChannels(
@@ -31,15 +133,37 @@ export function usePreviewDriveChannels(
       return
     }
 
-    return registerPreviewScriptRunner(tabId, async code => {
+    const lifetime = new AbortController()
+
+    const runner: PreviewScriptRunner = async (code, signal) => {
       const webview = webviewRef.current
 
       if (!webview?.executeJavaScript) {
         throw new Error('preview webview is not ready')
       }
 
-      return webview.executeJavaScript(code)
-    })
+      return runPreviewGuestScript(webview, code, signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal)
+    }
+
+    runner.withActivity = (operation, signal) => {
+      const webview = webviewRef.current
+
+      if (!webview) {
+        throw new Error('preview webview is not ready')
+      }
+
+      // A typing action reports how many characters landed on cancellation.
+      // Release its lease immediately, but let it return that existing result
+      // rather than racing it away with an AbortError.
+      return withPreviewGuestActivity(webview, operation, lifetime.signal, signal)
+    }
+
+    const unregister = registerPreviewScriptRunner(tabId, runner)
+
+    return () => {
+      lifetime.abort()
+      unregister()
+    }
   }, [tabId, usesWebview, webviewRef])
 
   // Publish the INPUT channel for this tab. Same idea as the script runner, but

@@ -431,10 +431,18 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
         # So do the password managers it unlocked: this path never reaches the viewer-close settle.
         release_unlocks(sid)
         candidate = authority.sessions.pop(sid, None)
+        if candidate is None and sid in getattr(authority, 'retired_routes', ()):
+            # A conversation retirement let go: its cached agent, and what the local adapter keeps for it.
+            from gateway.session_retirement import forget_retired
+            forget_retired(authority, sid)
+        elif candidate is not None:
+            getattr(authority, 'retired_routes', {}).pop(sid, None)
         if candidate is not None:  # a detached conversation's route is its own key
             evict = getattr(authority.runner, '_evict_cached_agent', None)
             if callable(evict):
                 evict(candidate.route)
+            from gateway.session_local import forget_live_session
+            forget_live_session(authority, sid, candidate)
             if candidate.detached:  # the ids its key owned in the store (session_detached.detached_entry)
                 from gateway.session_detached import drop_owner_hints
                 drop_owner_hints(authority.runner.session_store, candidate.route)

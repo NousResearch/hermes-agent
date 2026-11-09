@@ -69,6 +69,9 @@ gateway:
     usage_switch_model: "`/model <name>` — switch model"
     usage_switch_provider: "`/model <name> --provider <slug>` — switch provider"
     usage_persist: "`/model <name> --global` — persist"
+    usage_reset: "`/model reset` — clear this session's override"
+    reset_done: "Session model override cleared — now using `{model}` (the channel/global default). Conversation history kept."
+    reset_none: "No session model override is active — already using `{model}` (the channel/global default)."
     err_skew: "This gateway is running code from {boot_rev} but the checkout on disk is now {disk_rev}. Switching models would risk a stale-module crash — restart the gateway to load the new code: hermes gateway restart"
     err_switch_failed: "Model switch to {model} failed ({error}); staying on {current}."
     err_config_not_updated: "config.yaml not updated ({error})"
@@ -626,6 +629,7 @@ gateway:
     action_always: "Always Allow"
     action_deny: "Deny"
     deadline: "If you don't answer within {window} it will NOT run."
+    not_requester: "Only {requester} can answer this approval."
     text_choice_once: "Reply `{prefix}approve` to run it once"
     text_choice_session: "`{prefix}approve session` to allow this pattern for the rest of this session"
     text_choice_always: "`{prefix}approve always` to allow it permanently"
@@ -633,6 +637,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", or {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Preview shortened: the full command ({total} characters) is in the message above."
+    truncated_deny_only: "Preview shortened ({total} characters) and the full command could not be shown here, so only Deny is offered. Review it in the CLI or Desktop app."
+    text_prompt_deny_only: "The full approval prompt is too long for this platform, so only Deny is offered. Review it in the CLI or Desktop app."
   notify:
     media_kind:
       audio: "audio"
@@ -1015,9 +1022,6 @@ platform:
     approved: "✅ Approved."
     denied: "❌ Denied."
     approval_expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
-  yuanbao:
-    slow_response_notice: "This task is a bit involved — still working on it, please hang on..."
-    owner_command_denied: "⚠️ {command} is only available to the creator in private chat mode"
   shared:
     truncated_suffix: "\n...(truncated)"
     unknown: "unknown"
@@ -1428,6 +1432,12 @@ platform:
       not_requester: "Only the user who requested this action can use these controls."
 
   feishu:
+    clarify:
+      title: "Hermes needs your input"
+      other: "✏️ Other (type answer)"
+      awaiting_typed: "Awaiting typed response from {user}…"
+    picker:
+      apply_error: "Error applying selection: {error}"
     approval:
       # Feishu keeps shorter button words than the shared card (emoji prefixes are added in code).
       action_session: "Session"
@@ -1542,6 +1552,8 @@ platform:
     prompt_other: "✏️ Other (type answer)"
     prompt_expired: "⌛ That prompt is no longer waiting for an answer. Send your reply as a normal message."
 slash:
+  rewind:
+    description: "Rewind to an earlier prompt to edit & resend it, or fork from there (Esc Esc)"
   approve:
     description: "Approve a pending dangerous command"
   bg:
@@ -1769,6 +1781,20 @@ slash:
   quit:
     description: "Exit the CLI (use --delete to also remove session history)"
 cli:
+  backtrack:
+    title: "↺ Transcript — pick a prompt to edit"
+    keys_hint: "Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ↵ edit · f fork · esc back"
+    prime_hint: "esc again to edit previous message"
+    no_previous: "No previous message to edit."
+    editing_hint: "↺ Editing prompt {number} — Enter rewinds here and sends · Esc Esc cancels"
+    edit_cancelled: "↺ Rewind cancelled; nothing was removed."
+    rewound: "↺ Rewound to prompt {number} ({count} message(s) archived); sending the edit."
+    forked: "⑂ Forked before prompt {number}; the original session {parent} is unchanged. Edit the prompt below and press Enter to send."
+    nothing: "(._.) No earlier prompts to rewind to."
+    target_changed: "(x_x) The session changed since you picked prompt {number}; nothing was removed. Your edit is back in the composer."
+    invalid: "(._.) No prompt {value} — pick 1 to {total}."
+    usage: "Usage: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Rewind failed; history was not changed: {error}"
   modern:
     thought_for: "Thought for {seconds}s"
     thought: "Thought"
@@ -2102,6 +2128,8 @@ cli:
     usage_switch_reasoning: "switch and set reasoning effort"
     usage_switch_provider: "switch provider"
     usage_refresh: "re-fetch live model lists"
+    reset_none: "Already on the configured default ({model}) — nothing to reset."
+    reset_no_default: "No model.default in config.yaml — nothing to reset to."
     choice_switch_anyway: "Switch anyway"
     desc_switch_anyway: "Use this model for the current Hermes session."
     choice_cancel: "Cancel"
@@ -2255,6 +2283,7 @@ cli:
     images_attached_other: "📎 {count} images attached"
     command_interrupted: "Command interrupted."
     welcome: "Welcome to Hermes Agent! Type your message or /help for commands."
+    vscode_images_hint: "VS Code can show full-resolution images here: turn on terminal.integrated.enableImages in settings."
     activated_skills_label: "Activated skills:"
     redaction_disabled_title: "⚠  Secret redaction is DISABLED"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). API keys and tokens may appear verbatim in chat output, session JSONs, and logs. Set {setting} in config.yaml to re-enable."
@@ -2713,6 +2742,7 @@ cli:
     goal_turns: "⊙ goal {used}/{max}"
     goal: "⊙ goal"
     ctx_pinned: " pinned"
+    ctx_fallback: " fallback"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Stash ({count} item)"
@@ -4067,3 +4097,8 @@ plan_usage:
   large_notice_limit: "Large model: your {name} limit is reached ({resets})."
   large_notice_limit_stops: "Large model: your {name} limit is reached ({resets}), so it won't run until then."
   large_notice_percent: "Large model: uses more of your plan's usage per message. Monthly large-model limit: {percent} used."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Files changed in the undone turns: {files}. Run /rollback to see checkpoints and restore them."
+    more: "+{count} more"

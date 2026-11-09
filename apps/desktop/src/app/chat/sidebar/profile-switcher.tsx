@@ -206,13 +206,12 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 //
 // With one registered gateway this is the whole story. With several, the rail
 // becomes the FLEET rail: the active gateway's profiles stay exactly as they
-// are, and every other registered gateway follows on the same strip as an
-// at-rest group — a hairline, that gateway's kind glyph, its default home
-// square and its named squares, dimmed. Clicking an at-rest square performs
-// the same re-home the statusbar switcher does, landing on that exact
-// (gateway, profile); the workspace still lives on one gateway at a time, only
-// the picker spans the fleet. Groups keep registry order regardless of which
-// one is active, so a square never moves under the pointer that clicked it.
+// are, and every other registered gateway follows on the same strip as its own
+// group — a hairline, that gateway's kind glyph, its default home square and
+// its named squares. Every gateway is connected all the time, so clicking one
+// of those squares is a profile pick on that gateway, landing on that exact
+// (gateway, profile) with no dial. Groups keep registry order regardless of
+// which one is active, so a square never moves under the pointer that clicked it.
 export function ProfileRail() {
   const { t, locale } = useI18n()
   const p = t.profiles
@@ -349,16 +348,14 @@ export function ProfileRail() {
       return
     }
 
-    // Probe spinner only. The dialog — install confirm or fresh-session cue —
-    // must be on screen before selectConnection replaces the center.
+    // Probe spinner only: This device prompts only when picking it would
+    // start the installer.
     const key = fleetRouteKey(agent.connectionId, agent.profile)
     setPendingRoute(key)
 
     void requestLocalDevice({
       connectionId: agent.connectionId,
-      label: agent.connectionLabel,
-      profile: agent.profile,
-      replaceCenter: agent.profile === 'default'
+      label: agent.connectionLabel
     }).then(accepted => {
       setPendingRoute(current => (current === key ? null : current))
 
@@ -1094,7 +1091,7 @@ interface ProfilePillProps {
   glyph: string
   label: string
   onSelect: () => void
-  // Fleet at-rest: dimmed until hovered, like the at-rest squares beside it.
+  // Another gateway's pill: the same unselected weight as the squares beside it.
   muted?: boolean
   pending?: boolean
   slot?: string
@@ -1131,7 +1128,7 @@ function ProfilePill({
         className={cn(
           'bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
           active && 'bg-(--ui-control-active-background) text-foreground',
-          muted && 'opacity-40 hover:opacity-100',
+          muted && 'opacity-55 hover:opacity-100',
           summary && !active && 'relative'
         )}
         data-connection-id={connectionId}
@@ -1231,8 +1228,8 @@ function FleetRestGroup({
     : `${group.needsSignIn ? `${p.fleet.gateway(group.label)} · ${t.settings.toolsets.needsSignIn}` : p.fleet.gatewayUnreachable(group.label)}${group.error ? `\n${group.error}` : ''}`
 
   const defaultKey = fleetRouteKey(group.connectionId, group.defaultAgent.profile)
-  // At rest, This device is a backend switch, not Home. The house glyph stays
-  // on the active gateway's default profile.
+  // Off the active gateway, This device wears its device glyph, not Home. The
+  // house glyph stays on the active gateway's default profile.
   const localDefault = group.kind === 'local'
 
   return (
@@ -1329,7 +1326,7 @@ function RestSquare({
                   <button
                     aria-busy={pending || undefined}
                     aria-label={statusText ? `${label}, ${statusText}` : label}
-                    className="relative grid size-5 shrink-0 select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none opacity-35 transition-opacity hover:opacity-100 aria-busy:opacity-100"
+                    className="relative grid size-5 shrink-0 select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none opacity-55 transition-opacity hover:opacity-100 aria-busy:opacity-100"
                     data-connection-id={agent.connectionId}
                     data-profile={agent.profile}
                     data-slot="profile-rail-rest-square"

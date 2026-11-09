@@ -59,6 +59,16 @@ def fits_socket_budget(resolved_dir: str, budget: Optional[int]) -> bool:
     return budget is None or len(resolved_dir.encode()) <= budget
 
 
+def harness_pid_file(env: dict) -> Path:
+    """Where the harness publishes the pid of the daemon a call with ``env`` drives
+    (browser_harness ``_ipc``): ``<runtime dir>/bu-<BU_NAME>.pid``, or ``bu.pid`` in an isolated
+    runtime dir that is not shared between names."""
+    isolated = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
+    runtime = Path(isolated).expanduser() if isolated else Path(_harness_home(env)) / "runtime"
+    shared = not isolated or env.get("BH_RUNTIME_DIR_SHARED") == "1"
+    return runtime / (f"bu-{env.get('BU_NAME', 'default')}.pid" if shared else "bu.pid")
+
+
 def namespace_harness_dirs(env: dict, tag: str) -> None:
     """Give served profile ``tag`` its own harness runtime and tmp dirs in the child ``env``. An empty
     ``tag`` (outside a served-profile scope) leaves ``env`` unchanged."""

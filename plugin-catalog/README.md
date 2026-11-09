@@ -58,8 +58,11 @@ meaningful:
    (querying `data-slot` / `data-tour` / `data-sidebar` / `data-testid`
    elements from `document`, or a `document.body` MutationObserver, to restyle,
    hide, click or rewrite core UI). `hermes plugins validate` refuses these at
-   admission (`desktop surface` check); a plugin that needs a capability the
-   SDK lacks asks for an SDK hook instead of patching around it.
+   admission (`desktop surface` check) and warns, for the reviewer, on raw
+   `window.hermesDesktop` bridge calls and on the app's markup selected any
+   other way (`[data-slot]`, `[data-tree-*]` in CSS text or `closest()`); a
+   plugin that needs a capability the SDK lacks asks for an SDK hook instead
+   of patching around it.
 9. **No runtime overrides of Hermes core.** A listed plugin extends Hermes only
    through public surfaces: hooks, middleware, provider profiles and the
    other `register_*` APIs, and Desktop SDK slots and routes. It must not
@@ -69,7 +72,8 @@ meaningful:
    patching the same seam silently break each other, and every core release
    can break both. `hermes plugins validate` refuses these at admission (`no
    core override` check), and warns (without failing) on each import of an
-   undocumented core module, by file and line. If the hook you need does not
+   undocumented core module and each call to a private method of a core
+   object it is handed (`db._execute_write(...)`), by file and line. If the hook you need does not
    exist, open an issue describing it: we would rather add the seam than list
    a patch.
 10. **Dependency security policy is the plugin's.** Hermes's 3-day

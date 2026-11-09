@@ -218,7 +218,7 @@ def deployment(tmp_path, monkeypatch):
 
 
 def _args(**over):
-    base = dict(names=[], check=False, target=None, uv=False, npm=False, termux=True)
+    base = dict(names=[], check=False, target=None, uv=False, pnpm=False, termux=True)
     base.update(over)
     return argparse.Namespace(**base)
 

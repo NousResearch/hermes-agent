@@ -208,6 +208,40 @@ class TestGenerateSummaryTruncationGuard:
         assert c._last_compress_aborted is True
         assert c._previous_summary is None
 
+    def test_gemini_safety_blocked_summary_request_aborts_and_preserves(self):
+        """Gemini's safety block of the summary request is a refusal: abort, never the lossy fallback.
+
+        Gemini answers a blocked prompt with HTTP 200 and ``promptFeedback.blockReason``; the native
+        adapter raises it as a content-policy error instead of the empty content it used to return."""
+        import httpx
+
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        sent = []
+
+        def handle(request):
+            sent.append(request)
+            return httpx.Response(200, json={"promptFeedback": {"blockReason": "SAFETY"}})
+
+        client = GeminiNativeClient(api_key="AQ.test", http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+
+        def call_llm(**kwargs):
+            return client.chat.completions.create(model="gemini-2.5-flash", messages=kwargs["messages"])
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="gemini-2.5-flash", provider="gemini", quiet_mode=True,
+                protect_first_n=2, protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = _msgs()
+        with patch("agent.context_compressor.call_llm", side_effect=call_llm):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert len(sent) == 1
+
     def test_provider_refusal_field_is_rejected_even_with_summary_shaped_content(self):
         """An explicit ``message.refusal`` wins over plausible-looking content (#118406)."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):

@@ -149,6 +149,7 @@ def _overridden_project(tmp_path, overridden, extra_wheels=(), extra_dependencie
     return source, env
 
 
+@pytest.mark.allow_network  # a real build provisions the locked Python toolchain
 @pytest.mark.parametrize("color", [{}, {"FORCE_COLOR": "1", "CLICOLOR_FORCE": "1"}], ids=["plain", "forced-color"])
 def test_build_accepts_the_override_and_check_still_rejects_what_it_does_not_cover(overridden_project, tmp_path, color):
     from pm import build_environment
@@ -178,6 +179,7 @@ def test_build_accepts_the_override_and_check_still_rejects_what_it_does_not_cov
         environment.check(stale)
 
 
+@pytest.mark.allow_network  # a real build provisions the locked Python toolchain
 def test_requirements_builds_from_an_overridden_lock_apply_its_overrides(overridden_project, tmp_path):
     """Termux and the PM runtime install the lock's export with `uv pip install`, which
     re-resolves: without the lock's overrides it rejects the graph the lock resolved."""
@@ -208,6 +210,7 @@ def test_requirements_builds_from_an_overridden_lock_apply_its_overrides(overrid
     environment.install_wheelhouse(source, wheels)
 
 
+@pytest.mark.allow_network  # a real build provisions the locked Python toolchain
 def test_streamed_check_still_sees_failures_ahead_of_a_long_expected_report(tmp_path):
     """Interactive builds stream uv output and keep only its tail. An unrelated failure
     reported before 2,000+ characters of override-covered lines must still fail the check."""

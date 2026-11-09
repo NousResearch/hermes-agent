@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { decideLivenessForceClose, LIVENESS_PROBE_FAILURE_STREAK } from './gateway-liveness-policy'
+import { decideLivenessForceClose, LIVENESS_PROBE_FAILURE_STREAK, probeGatewayLiveness } from './gateway-liveness-policy'
 
 describe('decideLivenessForceClose', () => {
   it('keeps the socket on the first timeout while a turn is in flight (#95327)', () => {
@@ -54,5 +54,20 @@ describe('decideLivenessForceClose', () => {
       close: true,
       reason: 'no-in-flight-work'
     })
+  })
+})
+
+describe('probeGatewayLiveness', () => {
+  // The backend answers `gateway.ping` on its socket reader; every other RPC, `ping` included,
+  // waits behind the connection's serial control lane. A probe stuck behind a slow control RPC
+  // closed a healthy socket (#145737). The reader fast path itself is pinned by
+  // tests/tui_gateway/test_tui_gateway_ws.py::test_ws_ping_is_answered_while_an_earlier_rpc_blocks_dispatch.
+  it('sends the reader-answered gateway.ping, never a method queued behind control RPCs', async () => {
+    const gateway = {
+      request: (method: string) =>
+        method === 'gateway.ping' ? Promise.resolve({ ok: true }) : new Promise<unknown>(() => undefined)
+    }
+
+    await expect(probeGatewayLiveness(gateway)).resolves.toEqual({ ok: true })
   })
 })

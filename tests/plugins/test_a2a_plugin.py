@@ -191,6 +191,18 @@ class TestPeerIdentity:
         assert security.A2ASecurityContext.capture().authenticate("Bearer tok-c", "1.1.1.1") == "carol"
         assert security.A2ASecurityContext.capture().authenticate("Bearer shared-tok", "1.1.1.1") == "ip:1.1.1.1"
 
+    def test_non_ascii_token_is_rejected_not_raised(self, monkeypatch):
+        """#150028: http.server decodes header bytes as latin-1, so one stray byte in the
+        Authorization header becomes a non-ASCII str, which hmac.compare_digest refuses
+        with TypeError. That killed the request thread with no response; it is a 401."""
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
+        monkeypatch.setenv("A2A_PEER_TOKENS", "carol:tok-c")
+        ctx = security.A2ASecurityContext.capture()
+        assert ctx.authenticate("Bearer shared\x83tok", "1.1.1.1") is None
+        assert ctx.authenticate("Bearer 토큰", "1.1.1.1") is None
+        assert ctx.authenticate("Bearer shared-tok", "1.1.1.1") == "ip:1.1.1.1"
+        assert ctx.authenticate("Bearer tok-c", "1.1.1.1") == "carol"
+
 
 class TestTrustedPeers:
     def test_localhost_trusts_all(self, monkeypatch):
@@ -1236,6 +1248,18 @@ class TestInboundRoundTrip:
                     return json.loads(e.read().decode())
 
             err = await asyncio.to_thread(_post_unauth)
+            assert err["error"]["code"] == protocol.ERR_UNAUTHORIZED
+
+            # A non-ASCII byte in the token is a 401 too, not a dropped connection (#150028).
+            def _post_non_ascii():
+                try:
+                    _post_json(base + "/", _send_body("x"), {"Authorization": "Bearer top\x83secret"})
+                    raise AssertionError("expected 401")
+                except urllib.error.HTTPError as e:
+                    assert e.code == 401
+                    return json.loads(e.read().decode())
+
+            err = await asyncio.to_thread(_post_non_ascii)
             assert err["error"]["code"] == protocol.ERR_UNAUTHORIZED
 
             # POST with the token succeeds.

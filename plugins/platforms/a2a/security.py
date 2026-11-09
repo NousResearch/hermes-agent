@@ -97,11 +97,14 @@ class A2ASecurityContext:
         parts = (auth_header or "").split(None, 1)
         if len(parts) != 2 or parts[0].lower() != "bearer":
             return None
-        presented = parts[1].strip()
+        # Bytes, not str: hmac.compare_digest raises TypeError on non-ASCII str, and http.server
+        # decodes header bytes as latin-1, so one stray byte would kill the request thread
+        # with no response instead of a 401 (#150028).
+        presented = parts[1].strip().encode("utf-8")
         for token, name in self.peer_tokens:
-            if hmac.compare_digest(presented, token):
+            if hmac.compare_digest(presented, token.encode("utf-8")):
                 return name
-        if self.bearer_token and hmac.compare_digest(presented, self.bearer_token):
+        if self.bearer_token and hmac.compare_digest(presented, self.bearer_token.encode("utf-8")):
             return f"ip:{client_ip or 'unknown'}"
         return None
 

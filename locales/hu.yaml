@@ -1063,6 +1063,16 @@ platform:
       clarify_already_answered: "Erre a kérdésre már érkezett válasz~"
       answered_by: "{user} válasza: {choice}"
       awaiting_typed: "Várakozás {user} beírt válaszára…"
+    vault_code:
+      title: "🔐 Ellenőrző kód: {site}"
+      body: "A(z) {site} egyszer használatos kódot kér (SMS vagy e-mail). Nyomd meg a gombot, és írd be a megnyíló űrlapba: a kód közvetlenül az oldalra kerül, és soha nem jelenik meg itt."
+      button: "Kód megadása"
+      modal_title: "Kód: {site}"
+      input_label: "Egyszer használatos kód"
+      submitted: "Kód elküldve; beírás az oldalra folyamatban."
+      ended: "Ez a kódkérés lezárult; semmi nem lett beírva."
+      not_author: "Csak az adhatja meg a kódot, aki ezt a kérést elindította."
+      submitted_footer: "✓ Kód elküldve"
     picker:
       title: "⚙ Modellbeállítás"
       select_provider: "Jelenlegi modell: `{model}`\nSzolgáltató: {provider}\n\nVálassz szolgáltatót:"

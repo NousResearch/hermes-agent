@@ -1239,6 +1239,16 @@ platform:
       clarify_already_answered: "Cette demande a déjà reçu une réponse~"
       answered_by: "Réponse de {user} : {choice}"
       awaiting_typed: "En attente de la réponse saisie par {user}…"
+    vault_code:
+      title: "🔐 Code de vérification pour {site}"
+      body: "{site} demande un code à usage unique (SMS ou e-mail). Appuie sur le bouton et saisis-le dans le formulaire qui s'ouvre : il va directement dans la page et n'est jamais publié ici."
+      button: "Saisir le code"
+      modal_title: "Code pour {site}"
+      input_label: "Code à usage unique"
+      submitted: "Code envoyé ; saisie dans la page en cours."
+      ended: "Cette demande de code est terminée ; rien n'a été saisi."
+      not_author: "Seule la personne qui a lancé cette demande peut saisir le code."
+      submitted_footer: "✓ Code envoyé"
     picker:
       title: "⚙ Configuration du modèle"
       select_provider: |-

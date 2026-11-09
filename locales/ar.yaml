@@ -1046,6 +1046,16 @@ platform:
       clarify_already_answered: "تمت الإجابة على هذه المطالبة مسبقًا~"
       answered_by: "أجاب {user}: {choice}"
       awaiting_typed: "في انتظار ردّ مكتوب من {user}…"
+    vault_code:
+      title: "🔐 رمز التحقق لـ {site}"
+      body: "يطلب {site} رمزًا لمرة واحدة (رسالة نصية أو بريد إلكتروني). اضغط الزر واكتبه في النموذج الذي يظهر: يُدخل مباشرة في الصفحة ولا يُنشر هنا أبدًا."
+      button: "إدخال الرمز"
+      modal_title: "رمز {site}"
+      input_label: "رمز لمرة واحدة"
+      submitted: "تم إرسال الرمز؛ جارٍ إدخاله في الصفحة."
+      ended: "انتهى طلب الرمز هذا؛ لم يُدخل أي شيء."
+      not_author: "يمكن فقط لمن بدأ هذا الطلب إدخال الرمز."
+      submitted_footer: "✓ تم إرسال الرمز"
     picker:
       title: "⚙ إعدادات النموذج"
       select_provider: "النموذج الحالي: `{model}`\nالمزوّد: {provider}\n\nاختر مزوّدًا:"

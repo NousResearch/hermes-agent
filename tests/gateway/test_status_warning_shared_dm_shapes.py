@@ -3,12 +3,15 @@
 chats, so the warning stays out of them, while a real DM still gets it."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
+from gateway.config import Platform
 from gateway.session import build_session_key
+from tests.gateway.test_handoff_thread_session_key import _handoff_destination
 from tests.gateway.test_slack import SlackAdapter  # installs the slack SDK stand-in
 
 WARNING = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(tokens=85_000, threshold=72_000, reason="cooldown:30")
@@ -57,3 +60,12 @@ def test_slack_group_dm_is_not_a_dm_for_the_warning(channel_type, shown):
     assert source.chat_type == "dm"  # Slack's session scoping still treats both as DM-style
     assert build_session_key(source).split(":")[3] == "dm"
     assert _delivered(source) == ([WARNING] if shown else [])
+
+
+@pytest.mark.parametrize(("platform", "home_type", "shown"), [
+    (Platform.DISCORD, "channel", False), (Platform.DISCORD, "dm", True),
+    (Platform.MATTERMOST, "group", False), (Platform.SIGNAL, "dm", True)])
+def test_a_handoff_without_a_thread_keeps_the_home_chats_type(platform, home_type, shown):
+    adapter = SimpleNamespace(get_chat_info=AsyncMock(return_value={"type": home_type}))
+    dest, _ = _handoff_destination(platform, "home-1", None, None, adapter)
+    assert _delivered(dest.source) == ([WARNING] if shown else [])

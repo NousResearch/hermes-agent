@@ -1,7 +1,7 @@
 name: sapiens-sinteticos
 title: "Sapiens Sintéticos"
 repo: https://github.com/inhabitants/sapiens-mcp
-sha: d97bc0a54ebca38404e0046ff872c0032aa19454
+sha: 11bc613e4eae6a0bfadb7c24c945d3e80c4607b3
 subdir: hermes
 description: "Operate your Sapiens Sintéticos account from Hermes: images, video, music, voice, characters, your repertoire and the members' forum, through the hosted Sapiens MCP server (Streamable HTTP, OAuth 2.1 + DCR), with the 18 house skills bundled (prompting rules, engine choice, cost traps, publishing flows). Portable Agent Plugins v1 package (skills/ only; the server is added by the sign-in command below). Disclosure: hosted-only connector with no local code; every tool call goes to the Sapiens server at https://www.sapiensinteticos.com/api/mcp/mcp. Generation tools debit Sinapses, the prepaid credit of the user's Sapiens account; the skills tell the agent to check the balance first and to confirm with the user before a video, the most expensive generation. Publishing tools post to the members' forum and to social accounts the user connected on Sapiens, only when asked. Sapiens Sintéticos is a members' lab: a new user requests an invite on the site. The skills are written in Brazilian Portuguese. The server and its OAuth sign-in are added with `hermes mcp add sapiens --url https://www.sapiensinteticos.com/api/mcp/mcp --auth oauth --connect-timeout 300`."
 maintainer: inhabitants
@@ -9,7 +9,7 @@ tier: community
 category: tools
 version: "1.113.1"
 docs_url: https://www.sapiensinteticos.com/en/connect-claude
-image: https://raw.githubusercontent.com/inhabitants/sapiens-mcp/d97bc0a54ebca38404e0046ff872c0032aa19454/hermes/assets/banner.jpg
+image: https://raw.githubusercontent.com/inhabitants/sapiens-mcp/11bc613e4eae6a0bfadb7c24c945d3e80c4607b3/hermes/assets/banner.jpg
 platforms: []
 capabilities:
   provides_tools: []

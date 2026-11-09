@@ -1666,13 +1666,13 @@ DEFAULT_CONFIG = {
         # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
         # commands touching /etc".
         "smart_policy": "",
-        # After this many consecutive guardian DENYs in a session, the deny message escalates to a
-        # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
+        # Consecutive guardian DENYs per session before the deny message hard-stops (0 off; approval resets).
         "denial_breaker_threshold": 3,
-        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo
-        # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
-        # --force*".
+        # Case-insensitive fnmatch globs on terminal commands; a match blocks even under --yolo / mode=off.
+        # Quote in YAML when starting with * or containing {}/!/: e.g. "git push --force*".
         "deny": [],
+        # Reboot/shutdown opt-in (security.md): read ONLY from managed /etc/hermes/config.yaml, ignored here (agent-writable). allow_<cat> = human approves EVERY time; + <cat>_without_approval = no prompt when interactive (cron/-q/webhook always deny).
+        "allow_reboot": False, "allow_shutdown": False, "reboot_without_approval": False, "shutdown_without_approval": False,
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
         # so the next message re-sends full input). "Always Approve" → false.
         "mcp_reload_confirm": True,

@@ -3124,6 +3124,22 @@ approvals:
   denial_breaker_threshold: 3   # 0 disables the breaker
 ```
 
+### Host reboot and shutdown
+
+`approvals.allow_reboot` and `approvals.allow_shutdown` (both default `false`) let an always-on, self-hosted agent reboot or power off its own host. Each one removes its category from the hardline blocklist, and the command then requires a human approval every time: smart mode, `command_allowlist`, session/"always" approvals, `--yolo` and `mode: off` cannot approve it, the prompt offers only once/deny, and cron, `-q` and unattended sessions with nobody to ask deny it. See [Security — Opt-in: letting the agent reboot or power off its host](./security.md#opt-in-letting-the-agent-reboot-or-power-off-its-host).
+
+Each category has a second, separate level: `approvals.reboot_without_approval` and `approvals.shutdown_without_approval` (both default `false`). When **both** `allow_<category>` and `<category>_without_approval` are `true`, that category runs without a prompt in interactive sessions (every such run is logged at `WARNING` with the command). `<category>_without_approval` on its own does nothing: the category stays on the hardline floor. Cron, `-q`, webhooks and other unattended sessions still deny these commands at either level.
+
+```yaml
+approvals:
+  allow_reboot: false              # level 1: may request; a human approves every time
+  reboot_without_approval: false   # level 2: with allow_reboot, no prompt in interactive sessions
+  allow_shutdown: false
+  shutdown_without_approval: false
+```
+
+These four keys are read **only from `/etc/hermes/config.yaml`**, and only when that file and `/etc/hermes` are owned by root, are not symlinks, and are not group- or world-writable. `HERMES_MANAGED_DIR` does not apply to them. In your own `~/.hermes/config.yaml` they are ignored, and Hermes logs a warning once if it finds one set to `true` there. The agent's terminal runs as the user who owns `~/.hermes/config.yaml` and `~/.hermes/.env`, so the agent could write those files in ways no command filter can catch. As an extra layer, `hermes config set` / `unset` naming one of these keys, and a redirect, `tee` or in-place edit of `~/.hermes/config.yaml` that names one, are on the hardline blocklist.
+
 ### Deny rules
 
 `approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist:

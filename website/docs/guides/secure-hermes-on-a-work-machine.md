@@ -18,7 +18,7 @@ Fresh install, no configuration — these protections are active:
 
 **Approval prompts fail closed.** If you don't respond to an approval prompt within the timeout (default 300 seconds), the command is **denied**. Walking away from your desk never silently approves anything.
 
-**A hardline blocklist is the always-on floor.** Some commands — `rm -rf /`, fork bombs, zeroing a physical disk — are refused **regardless** of approval mode, `--yolo`, or an explicit "allow always". The blocklist trips before the approval layer even sees the command, and there is no override flag.
+**A hardline blocklist is the always-on floor.** Some commands — `rm -rf /`, fork bombs, zeroing a physical disk — are refused **regardless** of approval mode, `--yolo`, or an explicit "allow always". The blocklist trips before the approval layer even sees the command, and there is no override flag. The one opt-in is host reboot/shutdown (`approvals.allow_reboot` / `approvals.allow_shutdown`, both off by default); on a work machine, leave them off.
 
 **File writes to sensitive paths are blocked.** The `write_file` and `patch` tools cannot touch OS credential stores (`~/.ssh/`, `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc`), Hermes credential stores (`auth.json`, `.env`, pairing data), or project secret files (`.env`, `.env.local`, `.envrc`) anywhere on disk. Blocked writes return an error immediately — there is no approval prompt and no way to override from the chat UI.
 

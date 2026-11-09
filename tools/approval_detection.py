@@ -92,16 +92,20 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # shutdown, DoS). Recoverable operations (git reset --hard, chmod -R 777, curl|sh) stay in
 # DANGEROUS_PATTERNS.
 
-# Start-of-command position: start of string, newline, subshell opener ($( or backtick), optionally consuming
-# sudo/env/exec/nohup/setsid/time wrappers. Keeps shutdown/reboot rules from firing on "echo reboot" / "grep
-# 'shutdown' log". Real ;/&/| separators are converted to newlines by the quote-aware _mark_command_starts pass;
-# keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
-_CMDPOS = (
-    r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
+from tools.approval_detection_power import (
+    HARDLINE_OPT_IN_CATEGORIES, _CMDPOS, _POWER_STATE_PATTERNS, _POWER_SETTING_KEY_RE, _cmd_name,
 )
 
+# The four approvals.* power keys decide whether reboot/shutdown leave the floor, so the agent must not
+# flip them from its own terminal: `hermes config set|unset` naming a key, or a redirect / tee /
+# in-place edit of ~/.hermes/config.yaml in a command that names one. Not opt-in, not approvable.
+_POWER_SETTING_WRITE_DESC = "agent edit of host power approval settings (approvals.allow_reboot/...)"
+_POWER_SETTING_PATTERNS = [
+    (_CMDPOS + r'(?:' + _cmd_name(r'hermes') + r'|' + _cmd_name(r'python[0-9.]*') + r'\s+-m\s+hermes_cli(?:\.main)?)'
+     r'\s+' + _GLOBAL_FLAGS + r'config\s+(?:set|unset)\b[^\n]*' + _POWER_SETTING_KEY_RE, _POWER_SETTING_WRITE_DESC),
+    (r'(?:^|\n)(?=[^\n]*' + _POWER_SETTING_KEY_RE + r')[^\n]*(?:>|\btee\b|\bsed\s+(?:-[^\s]*i|--in-place)|'
+     r'\b(?:perl|ruby|yq)\b[^\n]*\s-[^\s]*i)[^\n]*' + _HERMES_CONFIG_PATH, _POWER_SETTING_WRITE_DESC),
+]
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
@@ -117,7 +121,7 @@ _HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/
 # `rm` plus flag group, shared by the rm hardline rules (plain concatenation, not f-string:
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`
 # must be an actual command word — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
-_RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+_RM_FLAG_PREFIX = _CMDPOS + _cmd_name(r'rm') + r'\s+(-[^\s]*\s+)*'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
@@ -132,11 +136,11 @@ HARDLINE_PATTERNS = [
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
     # (`echo "does this use mkfs?"`) cannot trip the floor.
     # See #93392.
-    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    (_CMDPOS + _cmd_name(r'mkfs(?:\.[a-z0-9]+)?'), "format filesystem (mkfs)"),
     # `dd` is a command-name token, so anchor it to command position like mkfs/rm/shutdown (#93392): quoted
     # prose such as `git commit -m "never dd of=/dev/sda"` is an argument, not a command. The argument tail
     # ([^\n]*of=/dev/...) is kept so flag order doesn't matter.
-    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (_CMDPOS + _cmd_name(r'dd') + r'[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
     # Positionless rules (no command-name token: `>` sits mid-command, the fork bomb is a function
     # definition) are matched against a QUOTE-MASKED variant (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS /
     # _mask_quoted_prose) so quoted prose cannot trip them; sh -c / bash -c / eval payloads still scan raw.
@@ -149,11 +153,13 @@ HARDLINE_PATTERNS = [
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
-    (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
-    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
-    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
-    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    (_CMDPOS + _cmd_name(r'kill') + r'\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    # Host power-state rules, split into two opt-in categories (approvals.allow_reboot /
+    # approvals.allow_shutdown, see HARDLINE_OPT_IN_CATEGORIES). A command that could plausibly do
+    # either (`shutdown -r -h`, `reboot -p`, `poweroff --reboot`) matches BOTH categories, so it stays
+    # blocked unless both are enabled — classification ambiguity never widens the opt-in.
+    *_POWER_STATE_PATTERNS,
+    *_POWER_SETTING_PATTERNS,
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out
@@ -362,8 +368,44 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
-def detect_hardline_command(command: str) -> tuple:
-    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
+_POWER_STATE_COMPILED = [
+    (pattern_re, description) for pattern_re, description, _ in HARDLINE_PATTERNS_COMPILED
+    if description in HARDLINE_OPT_IN_CATEGORIES
+]
+
+
+def detect_power_state_command(command: str) -> str | None:
+    """Description of the first host reboot/shutdown rule anywhere in *command* (any chained
+    segment, any de-obfuscated variant), else ``None``. Used after the floor to route an opted-in
+    power command to the human-only gate: such a command is never approved by smart mode, an
+    allowlist, a session approval, yolo/off or an unattended approve-mode."""
+    for command_variant in _command_detection_variants(command):
+        variant_lower = command_variant.lower()
+        for pattern_re, description in _POWER_STATE_COMPILED:
+            if pattern_re.search(variant_lower):
+                return description
+    return None
+
+
+def detect_power_state_categories(command: str) -> frozenset:
+    """EVERY power-state category (``"reboot"`` / ``"shutdown"``) that any rule matches in any
+    chained segment or de-obfuscated variant of *command*. A command can carry both (`reboot -p`,
+    `sync; reboot; poweroff`); the no-approval level applies only when it is enabled for all of them."""
+    found = set()
+    for command_variant in _command_detection_variants(command):
+        variant_lower = command_variant.lower()
+        for pattern_re, description in _POWER_STATE_COMPILED:
+            if pattern_re.search(variant_lower):
+                found.add(HARDLINE_OPT_IN_CATEGORIES[description])
+    return frozenset(found)
+
+
+def detect_hardline_command(command: str, allow_categories=()) -> tuple:
+    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description).
+
+    ``allow_categories`` names opt-in categories (``"reboot"`` / ``"shutdown"``, from
+    HARDLINE_OPT_IN_CATEGORIES) the operator enabled via config; their rules are skipped here so
+    the command reaches the normal dangerous-command approval flow. Every other rule is unaffected."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
     # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
@@ -377,6 +419,8 @@ def detect_hardline_command(command: str) -> tuple:
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+            if allow_categories and HARDLINE_OPT_IN_CATEGORIES.get(description) in allow_categories:
+                continue
             if quote_masked and masked_lower is None:
                 # Positionless rules see quoted prose as DATA, except under shell carriers
                 # (sh -c, eval, source) whose quoted argument is code — those scan raw. bash -c
@@ -499,8 +543,8 @@ DANGEROUS_PATTERNS = [
     (r'\bchown\s+--recur[a-z]*\b.*root', "recursive chown to root (long flag)"),
     # _CMDPOS-anchored like the hardline twins: quoted prose mentioning mkfs/dd must not require approval to echo.
     # See #93392.
-    (_CMDPOS + r'mkfs\b', "format filesystem"),
-    (_CMDPOS + r'dd\s+.*if=', "disk copy"),
+    (_CMDPOS + _cmd_name(r'mkfs(?:\.[a-z0-9]+)?'), "format filesystem"),
+    (_CMDPOS + _cmd_name(r'dd') + r'\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # [^\n]* not .*: under DOTALL a WHERE on the *next* line would satisfy the lookahead and
@@ -510,6 +554,10 @@ DANGEROUS_PATTERNS = [
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
+    # Host reboot/shutdown: hardline by default. Once a category is opted out of the floor
+    # (approvals.allow_reboot / allow_shutdown) the guards route it to the human-only gate before
+    # this layer; listing it here keeps detection and `hermes approvals test` consistent.
+    *_POWER_STATE_PATTERNS,
     (r'\bpkill\s+-9\b', "force kill processes"),
     # killall with SIGKILL (-9 / -KILL / -s KILL / -SIGKILL) and `killall -r <regex>` broad sweeps
     # that can wipe unrelated processes.

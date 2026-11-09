@@ -146,7 +146,7 @@ Some commands are so catastrophic — irreversible filesystem wipes, fork bombs,
 - Cron jobs running in headless `approve` mode
 - User explicitly clicking "allow always"
 
-The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
+The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag (the one exception: host reboot/shutdown, which you can opt into, see below). Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
 
 | Pattern | Why it's hardline |
 |---|---|
@@ -156,8 +156,50 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 | `mkfs.*` on a mounted root device | Formats the live system |
 | `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
 | Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
+| `reboot`, `shutdown -r`, `systemctl reboot`/`kexec`, `init 6` / `telinit 6` | Reboots the host (opt-in: `approvals.allow_reboot`) |
+| `shutdown [-h\|-P\|-H]`, `poweroff`, `halt`, `systemctl poweroff`/`halt`, `init 0` / `telinit 0` | Powers off the host (opt-in: `approvals.allow_shutdown`) |
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
+
+#### Opt-in: letting the agent reboot or power off its host
+
+Host reboot and shutdown are the only hardline classes with an opt-in. A self-hosted, always-on agent can have a real need to reboot its own machine, for example after a kernel update or to recover wedged USB hardware. Two independent settings, both `false` by default, lift one category each off the floor. Put them in the **managed config**, `/etc/hermes/config.yaml` (root-owned; see below why your own `config.yaml` does not count):
+
+```yaml
+# /etc/hermes/config.yaml
+approvals:
+  allow_reboot: true     # reboot, shutdown -r, systemctl reboot/kexec, init/telinit 6
+  allow_shutdown: false  # shutdown [-h|-P|-H], poweroff, halt, systemctl poweroff/halt, init/telinit 0
+```
+
+Enabling a category does **not** auto-run its commands. They leave the hardline floor and require a **live human approval every time**: the prompt offers only *once* or *deny*, and nothing is remembered. The `smart` guardian is never consulted for them, `command_allowlist` entries and session/"always" approvals do not pre-approve them, and `--yolo` / `mode: off` do not skip the prompt — the opt-in is a narrow escape from the hardline floor, not a way back to auto-approval. Where there is nobody to ask (cron jobs, `hermes chat -q`, unattended platforms such as webhooks, headless runs with no approval surface) the command is **denied**, whatever `cron_mode` / `single_query_mode` / `unattended_mode` say. A chained command (`sync; sudo reboot`, `make && reboot`) takes this path as a whole. A spelling that could either halt or reboot (`shutdown -rh`, `reboot -p`, `poweroff --reboot`) stays blocked unless **both** settings are on. No other hardline class is affected. While a category is off, its block message names only the setting that would enable it (`approvals.allow_reboot` / `approvals.allow_shutdown`).
+
+Why the managed config: the agent's terminal runs as the same user who owns `~/.hermes/config.yaml`, so anything read from that file is something a confused or prompt-injected agent could have written itself, by more routes than any command filter can list (shell variables, `eval`, `sed`, a Python one-liner...). Hermes therefore reads these four keys **only** from `/etc/hermes/config.yaml`, and only when that file and its directory are root-owned, not symlinks, and not group- or world-writable. It ignores them in the user config (logging one warning if it finds one set to `true` there), and `HERMES_MANAGED_DIR` does not apply to them, because a line in the agent-writable `~/.hermes/.env` could set it. This holds only while the agent's user cannot become root: do not give the agent passwordless `sudo` on a host where you enable these keys. As an extra layer, `hermes config set` / `unset` naming a key and a redirect, `tee` or in-place edit of `~/.hermes/config.yaml` naming one are on the hardline blocklist.
+
+##### Second level: running without approval
+
+Each category also has a separate no-prompt level, `false` by default:
+
+```yaml
+approvals:
+  allow_reboot: true
+  reboot_without_approval: true     # reboot category runs with no prompt (interactive sessions only)
+  allow_shutdown: true
+  shutdown_without_approval: false  # shutdown category still asks a human every time
+```
+
+| `allow_<cat>` | `<cat>_without_approval` | Interactive session (CLI, gateway chat) | Cron, `-q`, webhook, headless |
+|---|---|---|---|
+| `false` | `false` | Hardline block | Hardline block |
+| `false` | `true` | Hardline block (the second key alone has no effect) | Hardline block |
+| `true` | `false` | Human approval every time (once/deny) | Denied |
+| `true` | `true` | Runs without a prompt, logged at `WARNING` | Denied |
+
+- Reboot and shutdown are never combined. A command that touches both categories, whether one ambiguous spelling (`shutdown -rh`, `reboot -p`) or a chain (`reboot; poweroff`), runs without a prompt only when **both** categories are at the second level. If only one is, a human is asked; if either category is not allowed at all, the floor blocks it.
+- `--yolo` and `approvals.mode: off` add nothing: an opted-in power command runs unprompted only at the second level, and is otherwise asked about exactly as above.
+- Contexts with nobody present still **deny**, even at the second level. There is deliberately no third "unattended" setting: a cron job, a `-q` one-shot or a webhook payload is exactly where a confused or injected instruction would power-cycle the host with nobody watching, and a reboot/shutdown cannot be undone from inside the agent. If you need a scheduled reboot, schedule it outside the agent (systemd timer, `shutdown -r 03:00` from your own shell).
+- "Interactive" includes any gateway chat. In a group chat, a message from another member (or text the agent reads from a web page or file) can ask for a reboot; at the second level nothing stops it. Use the second level only where every chat that reaches the agent is one you control.
+- `hermes approvals test -- sudo reboot` reports which level applies: `runs without approval (approvals.reboot_without_approval)` (verdict `allow`) or `requires human approval every time` (verdict `ask-approval`).
 
 The floor also fails closed on a command whose shell quoting cannot be parsed (`grep 'unterminated`): the error says `malformed executable payload`. Quoting is judged on the command exactly as written, so shell-valid escapes inside a quoted pattern (`grep -o "[^\"]*" file`) are not malformed, and an escaped quote before a separator (`echo "a\"b"; reboot`) does not hide the command that follows it.
 

@@ -98,6 +98,21 @@ async def test_get_soul_404_json_marker(soul_home):
 
 
 @pytest.mark.asyncio
+async def test_get_soul_500_json_on_non_utf8(soul_home):
+    # An externally-dropped non-UTF-8 SOUL.md must stay inside the contract
+    # table: JSON 500 soul_read_failed, never aiohttp's plain-text 500.
+    adapter = _make_adapter()
+    (soul_home / "SOUL.md").write_bytes(b"\xff\xfe\x00#\x00bad\x00")
+    async with TestClient(TestServer(_create_app(adapter))) as client:
+        resp = await client.get("/api/soul")
+        assert resp.status == 500
+        assert resp.content_type == "application/json"
+        body = await resp.json()
+        assert body["object"] == "hermes.soul"
+        assert body["error"] == "soul_read_failed"
+
+
+@pytest.mark.asyncio
 async def test_put_soul_200_backup_epoch(soul_home):
     adapter = _make_adapter()
     adapter._ensure_session_db = lambda: _epoch_db(epoch=7)

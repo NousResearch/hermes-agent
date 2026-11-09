@@ -3474,6 +3474,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return web.json_response(
                 {"object": "hermes.soul", "error": "soul_not_found", "path": str(exc)},
                 status=404)
+        except UnicodeDecodeError as exc:
+            # An externally-dropped non-UTF-8 SOUL.md stays inside the contract
+            # table (JSON error bodies only) instead of aiohttp's plain-text 500.
+            logger.warning("[%s] GET /api/soul: SOUL.md is not valid UTF-8", self.name)
+            return web.json_response(
+                {"object": "hermes.soul", "error": "soul_read_failed",
+                 "detail": "SOUL.md is not valid UTF-8"}, status=500)
         except OSError as exc:
             logger.warning("[%s] GET /api/soul read failed: %s", self.name, exc)
             return web.json_response(

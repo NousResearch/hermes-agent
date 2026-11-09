@@ -17,6 +17,8 @@ GATEWAY_WS_TICKET_PREFIX = "hermes-gateway-ticket."
 # Per-request answer budget. Owner verbs are admissions/reads that answer promptly; the one that
 # legitimately runs long passes its own budget (``rpc(..., _timeout=...)``).
 DEFAULT_RPC_TIMEOUT = 30
+# A session.resume answer carries the whole history; shared by interactive and forwarding dials.
+DEFAULT_GATEWAY_WS_MAX_SIZE = 8 * 1024 * 1024
 # A typed ``--api-key`` on a resume that the owner does not bind (``rebind_launch_key``): every CLI says this.
 RESUME_KEY_MISMATCH = ("--api-key on resume must be the key this session was launched with "
                        "(a session launched without --api-key keeps its profile credentials). "
@@ -316,7 +318,7 @@ def outside_restart_wait():
 
 
 @asynccontextmanager
-async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 1024):
+async def connect_gateway(endpoint=None, subject=None, *, max_size=DEFAULT_GATEWAY_WS_MAX_SIZE):
     """Attach to this home's owner. ``endpoint``: an already-discovered ready owner to dial as-is
     (maintenance that must never start a gateway); default ensures one, starting it if needed.
     ``subject``: mint the ticket for this principal (the caller's authenticated dashboard user)

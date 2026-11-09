@@ -208,7 +208,10 @@ def test_a_declined_dependency_consent_carries_its_class_not_its_copy(monkeypatc
     console = SimpleNamespace(print=lambda *a, **k: None)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     consented, reason = plugins_cmd_install._consent_python_deps("p", ("dep",), console)
-    assert (consented, reason) == (False, "dependency install skipped (non-interactive)")
+    assert (consented, reason) == (
+        False,
+        "dependency install skipped (non-interactive); retry the install with `--yes-deps` "
+        "to consent from a non-interactive context")
     assert fields.tagged_failure_class(reason) == "non_interactive"
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)

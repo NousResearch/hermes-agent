@@ -93,7 +93,7 @@ async def test_a_turn_that_takes_in_an_addressed_message_keeps_the_silence_fallb
     if route == "priority_interrupt":
         await runner._hm_busy_interrupt(incoming, source, receiver, "key")
     elif route == "priority_steer":
-        runner._hm_busy_steer(incoming, receiver, "key")
+        await runner._hm_busy_steer(incoming, receiver, "key")
     elif route == "slash_steer":
         incoming.text = "/steer " + incoming.text
         assert (await runner._busy_steer_command(incoming, "key", source)).startswith("⏩")

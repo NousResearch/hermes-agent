@@ -15,7 +15,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.config import Platform
 from gateway.run_turn import GatewayTurnMixin
+from gateway.session import SessionSource
 
 
 class _InterimOnlyHarness(GatewayTurnMixin):
@@ -28,15 +30,13 @@ class _InterimOnlyHarness(GatewayTurnMixin):
 
 def _run_mark_streamed_delivery(consumer, caplog):
     harness = _InterimOnlyHarness()
-    turn_ctx = SimpleNamespace(
-        stream_consumer_holder=[consumer],
-        source=SimpleNamespace(platform="telegram"),
-        session_key="sess-105341",
-    )
     with caplog.at_level("WARNING", logger="gateway.run_turn"):
         asyncio.run(
             harness._run_agent_mark_streamed_delivery(
-                {"final_response": "olá"}, turn_ctx
+                {"final_response": "olá"},
+                stream_consumer=consumer,
+                source=SessionSource(platform=Platform.TELEGRAM, chat_id="c1"),
+                session_key="sess-105341",
             )
         )
     return caplog

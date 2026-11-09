@@ -12,7 +12,17 @@ import time
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state_local import API_BINDING_PREFIX
+from hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX
+
+
+def _session_receipt(name, sid, platform, **extra):
+    """A session receipt minted by profile *name* for *sid* on *platform*: its route and entry key
+    sit in the ``agent:<name>:`` namespace, its origin names the profile."""
+    route = f"agent:{name}:{platform}:dm:{sid}"
+    entry_sid = extra["lineage"][-1] if "lineage" in extra else sid
+    return {"profile_id": f"/homes/{name}", "session_id": sid, "route": route, **extra,
+            "entry": {"session_id": entry_sid, "session_key": route,
+                      "origin": {"platform": platform, "chat_id": sid, "profile": name}}}
 
 
 @pytest.fixture
@@ -216,35 +226,21 @@ class TestRekeyProfileState:
 
     def test_rekeys_api_binding_receipts(self, db):
         """The renamed profile's API receipts move to the new name; others and every id stay."""
-        bound = {
-            "profile_id": "/homes/oldname", "session_id": "sess_api",
-            "entry": {"session_id": "sess_api",
-                      "session_key": "agent:oldname:api_server:dm:sess_api",
-                      "origin": {"platform": "api_server", "chat_id": "sess_api",
-                                 "profile": "oldname"}},
-        }
+        bound = _session_receipt("oldname", "sess_api", "api_server")
         # Its name starts with the renamed one: only the whole ``agent:<name>:`` namespace may match.
-        bystander = {
-            "profile_id": "/homes/oldname2", "session_id": "sess_keep",
-            "entry": {"session_id": "sess_keep",
-                      "session_key": "agent:oldname2:api_server:dm:sess_keep",
-                      "origin": {"platform": "api_server", "chat_id": "sess_keep",
-                                 "profile": "oldname2"}},
-        }
+        bystander = _session_receipt("oldname2", "sess_keep", "api_server")
         db.set_meta(API_BINDING_PREFIX + "sess_api", json.dumps(bound))
         db.set_meta(API_BINDING_PREFIX + "sess_keep", json.dumps(bystander))
 
         counts = db.rekey_profile_state("oldname", "newname")
 
         saved = json.loads(db.get_meta(API_BINDING_PREFIX + "sess_api"))
-        assert saved["entry"]["session_key"] == "agent:newname:api_server:dm:sess_api"
+        assert saved["route"] == saved["entry"]["session_key"] == "agent:newname:api_server:dm:sess_api"
         assert saved["entry"]["origin"]["profile"] == "newname"
         # The id and the minting home are the store's, not the name's: both stay as stored.
-        assert saved["session_id"] == "sess_api"
-        assert saved["entry"]["session_id"] == "sess_api"
+        assert saved["session_id"] == saved["entry"]["session_id"] == "sess_api"
         assert saved["profile_id"] == "/homes/oldname"
-        untouched = json.loads(db.get_meta(API_BINDING_PREFIX + "sess_keep"))
-        assert untouched == bystander
+        assert json.loads(db.get_meta(API_BINDING_PREFIX + "sess_keep")) == bystander
         assert counts.get("api_binding_receipts") == 1
 
     def test_leaves_unparseable_receipt_rows_alone(self, db):
@@ -270,50 +266,27 @@ class TestRekeyProfileState:
         assert keys == {"ob_gone": "agent:newname:feishu:dm:chatA",
                         "ob_keep": "agent:keepme:feishu:dm:chatB"}
 
-    def test_rekeys_state_meta_local_policy_and_legacy_lineage(self, db):
-        from hermes_state_local import POLICY_PREFIX
+    def test_rekeys_local_policy_receipts(self, db):
+        """The renamed profile's local-chat receipts move to the new name (route, entry key, origin);
+        the minting home, the id and the lineage stay, and no legacy marker is written."""
+        from hermes_state_local import local_receipt
         from hermes_state_local_migration import LEGACY_PREFIX
-        from hermes_cli.profiles import get_profile_dir
 
-        old_dir = str(get_profile_dir("oldname"))
-        new_dir = str(get_profile_dir("newname"))
-        sid = "local-1234567890abcdef"
-        receipt = {
-            "session_id": sid,
-            "profile_id": old_dir,
-            "principal_id": "sid:userA",
-            "route": f"agent:oldname:local:dm:{sid}",
-            "entry": {
-                "session_id": sid,
-                "session_key": f"agent:oldname:local:dm:{sid}",
-                "origin": {"platform": "local", "chat_id": sid, "profile": "oldname"},
-            },
-        }
-        db._write_sql(
-            "INSERT INTO state_meta (key, value) VALUES (?, ?)",
-            (POLICY_PREFIX + sid, json.dumps(receipt)),
-        )
+        moved = _session_receipt("oldname", "local-a", "local", lineage=["local-a", "local-a-tip"])
+        bystander = _session_receipt("oldname2", "local-b", "local")
+        db.set_meta(POLICY_PREFIX + "local-a", json.dumps(moved))
+        db.set_meta(POLICY_PREFIX + "local-b", json.dumps(bystander))
 
         counts = db.rekey_profile_state("oldname", "newname")
-        assert counts["state_meta_policies"] == 1
 
-        row = db._read_one("SELECT value FROM state_meta WHERE key = ?", (POLICY_PREFIX + sid,))
-        assert row is not None
-        updated = json.loads(row["value"])
-        assert updated["profile_id"] == new_dir
-        assert updated["legacy_session_id"] == sid
-        assert updated["route"] == f"agent:newname:local:dm:{sid}"
-        assert updated["entry"]["session_key"] == f"agent:newname:local:dm:{sid}"
-        assert updated["entry"]["origin"]["profile"] == "newname"
-        assert updated["lineage"] == [sid]
-
-        legacy_row = db._read_one("SELECT value FROM state_meta WHERE key = ?", (LEGACY_PREFIX + sid,))
-        assert legacy_row is not None
-        legacy = json.loads(legacy_row["value"])
-        assert legacy == {
-            "session_id": sid,
-            "profile_id": new_dir,
-            "principal_id": "sid:userA",
-            "legacy_session_id": sid,
-        }
-
+        saved = local_receipt(db, "local-a")
+        assert saved["route"] == saved["entry"]["session_key"] == "agent:newname:local:dm:local-a"
+        assert saved["entry"]["origin"]["profile"] == "newname"
+        # The minting home is the session id's hash input: it, the id and the lineage stay as stored.
+        assert saved["profile_id"] == "/homes/oldname"
+        assert saved["session_id"] == "local-a"
+        assert saved["lineage"] == ["local-a", "local-a-tip"]
+        assert "legacy_session_id" not in saved
+        assert db.get_meta(LEGACY_PREFIX + "local-a") is None
+        assert local_receipt(db, "local-b") == bystander
+        assert counts["local_policy_receipts"] == 1

@@ -499,3 +499,35 @@ def test_recovered_lobby_message_carries_the_topics_prompt_inputs(lobby_thread_i
 # ── _build_message_event: from_user=None fallback in DMs ──
 
 
+def test_recovered_lobby_message_inherits_the_chat_prompt_without_a_topic_prompt():
+    """A topic with no prompt of its own inherits the chat's, as a message sent inside it does."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter([{"chat_id": 111, "topics": [{"name": "Research", "thread_id": 100}]}])
+    adapter.config.extra["channel_prompts"] = {"111": "root prompt"}
+    adapter._dm_topics["111:Research"] = 100
+    adapter.set_topic_recovery_fn(lambda source: "100")
+
+    recovered = adapter._build_message_event(_make_mock_message(), MessageType.TEXT)
+    adapter._apply_topic_recovery(recovered)
+
+    assert (recovered.source.thread_id, recovered.channel_prompt) == ("100", "root prompt")
+
+
+def test_unrecovered_group_topic_message_keeps_its_prompt_inputs():
+    """Batching runs topic recovery on every text event; one it leaves alone keeps its own inputs."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {"chat_id": -1001234567890, "topics": [{"name": "Engineering", "thread_id": 5, "skill": "software-development"}]},
+    ])
+    adapter.config.extra["channel_prompts"] = {"5": "engineering prompt"}
+    adapter.set_topic_recovery_fn(lambda source: None)
+    msg = _make_mock_message(chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=5,
+                             is_topic_message=True, is_forum=True)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    adapter._text_batch_key(event)
+
+    assert (event.source.chat_topic, event.auto_skill, event.channel_prompt) == (
+        "Engineering", "software-development", "engineering prompt")

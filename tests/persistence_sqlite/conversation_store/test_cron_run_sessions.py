@@ -18,6 +18,7 @@ from persistence.sqlite.conversation._store.portability import cron_run_identity
 from persistence.sqlite.conversation._store.sessions import create_session
 from tests.fakes.cron_owner import admit_fire, cron_owner
 from tests.gateway.fixtures.storage_handles import close_storage_handles
+from tests.fixtures.storage_holder import raw_holder
 
 
 @pytest.fixture()
@@ -28,7 +29,7 @@ def owner(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unified_runs_are_listed_with_legacy_runs_and_only_for_their_job(owner):
-    db = owner.persistence.holder()
+    db = raw_holder(owner.persistence)
     alpha = jobs.create_job(prompt='alpha report', schedule='every 1h', deliver='local')['id']
     beta = jobs.create_job(prompt='beta report', schedule='every 1h', deliver='local')['id']
     legacy = f'cron_{alpha}_20261011_120000'
@@ -60,8 +61,8 @@ async def test_a_fresh_execution_id_with_a_colon_is_refused_before_it_can_misfil
     with pytest.raises(AuthorityRefusal, match='invalid_params'):
         await session_cron.operation(owner, 'submit', params)
     assert await session_cron.operation(owner, 'recover', params) == {'status': 'missing', 'result': None}
-    assert list_cron_job_runs(owner.persistence.holder(), job) == []
-    assert list_cron_job_runs(owner.persistence.holder(), f'{job}:fire') == []
+    assert list_cron_job_runs(raw_holder(owner.persistence), job) == []
+    assert list_cron_job_runs(raw_holder(owner.persistence), f'{job}:fire') == []
 
 
 class _PreUpgradeRequestId(str):
@@ -82,7 +83,7 @@ async def test_an_execution_id_admitted_with_a_colon_before_the_upgrade_keeps_it
         owner, 'submit', dict(params, request_id=_PreUpgradeRequestId('fire:1')))
 
     def admissions():
-        return owner.persistence.holder()._conn.execute('SELECT admission_id, request_id FROM session_admissions').fetchall()
+        return raw_holder(owner.persistence)._conn.execute('SELECT admission_id, request_id FROM session_admissions').fetchall()
     before = [tuple(r) for r in admissions()]
 
     assert await session_cron.operation(owner, 'submit', params) == receipt
@@ -94,10 +95,10 @@ async def test_an_execution_id_admitted_with_a_colon_before_the_upgrade_keeps_it
     assert [tuple(r) for r in admissions()] == before == [(receipt['admission_id'], f'cron:{job}:fire:1')]
 
     sid = receipt['session_id']
-    assert [(r['id'], r['cron_job_id'], r['cron_execution_id']) for r in list_cron_job_runs(owner.persistence.holder(), job)] == [
+    assert [(r['id'], r['cron_job_id'], r['cron_execution_id']) for r in list_cron_job_runs(raw_holder(owner.persistence), job)] == [
         (sid, job, 'fire:1')]
-    assert list_cron_job_runs(owner.persistence.holder(), f'{job}:fire') == []
-    assert cron_run_identity(owner.persistence.holder(), sid) == {'cron_job_id': job, 'cron_execution_id': 'fire:1'}
+    assert list_cron_job_runs(raw_holder(owner.persistence), f'{job}:fire') == []
+    assert cron_run_identity(raw_holder(owner.persistence), sid) == {'cron_job_id': job, 'cron_execution_id': 'fire:1'}
 
 
 def test_legacy_runs_of_a_job_whose_id_extends_another_stay_with_their_own_job(tmp_path):

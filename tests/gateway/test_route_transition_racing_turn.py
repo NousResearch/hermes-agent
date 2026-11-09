@@ -27,6 +27,7 @@ from gateway.session_ingress_context import register_transport_home
 from gateway.session_persistence import authority_persistence
 from persistence_assembly import close_stores_under
 from tests.waiting import async_wait_until
+from tests.fixtures.storage_holder import raw_holder
 
 
 class _Adapter:
@@ -77,7 +78,7 @@ class _HoldPredecessorEnd:
     names the new conversation, and nothing of it is in state.db yet."""
 
     def __init__(self, store):
-        self.conn, self.reached, self.release = store.holder()._conn, threading.Event(), threading.Event()
+        self.conn, self.reached, self.release = raw_holder(store)._conn, threading.Event(), threading.Event()
 
     def _trace(self, sql):
         if 'SET ended_at' in sql and not self.reached.is_set():

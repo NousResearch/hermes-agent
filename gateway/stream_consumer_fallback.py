@@ -19,7 +19,7 @@ class StreamFallbackMixin:
 
     async def _send_new_chunk(self, text: str, reply_to_id: Optional[str], *,
                               final: bool = False) -> Optional[str]:
-        """Send a new chunk threaded to ``reply_to_id``; returns the new message_id."""
+        """Send a sealed head. ``__no_edit__`` means it may have landed without an id."""
         text = self._clean_for_display(text)
         if not text.strip():
             return reply_to_id
@@ -27,18 +27,28 @@ class StreamFallbackMixin:
             result = await self.adapter.send(
                 chat_id=self.chat_id, content=text, reply_to=reply_to_id,
                 metadata=self._metadata_for_send(final=final, expect_edits=not final))
-            if not (result.success and result.message_id):
-                self._edit_supported = False
-                return reply_to_id
-            self._message_id = str(result.message_id)
-            self._track_preview_ids_from_result(result)
-            self._already_sent = True
-            self._last_sent_text = text
-            self._notify_new_message()
-            return str(result.message_id)
         except Exception as e:
             logger.error("Stream send chunk error: %s", e)
+            if await self._uncertain_send_fully_shown(e):
+                self._already_sent = True
+                self._last_sent_text = text
+                return "__no_edit__"
             return reply_to_id
+        if not result.success and await self._uncertain_send_fully_shown(result):
+            # The head may be visible without a message id. Do not send it again
+            # inside the whole answer; the split loop must send only its unseen tail.
+            self._already_sent = True
+            self._last_sent_text = text
+            return "__no_edit__"
+        if not (result.success and result.message_id):
+            self._edit_supported = False
+            return reply_to_id
+        self._message_id = str(result.message_id)
+        self._track_preview_ids_from_result(result)
+        self._already_sent = True
+        self._last_sent_text = text
+        self._notify_new_message()
+        return str(result.message_id)
 
     def _visible_prefix(self) -> str:
         """Return the visible text already shown in the streamed message."""

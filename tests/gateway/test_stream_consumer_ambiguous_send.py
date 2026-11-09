@@ -304,3 +304,26 @@ async def test_timed_out_rich_continuation_is_counted_as_shown():
 
     assert delivered[1:] == [tail]
     assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [_TIMED_OUT, _RESET], ids=["timeout", "reset_after_write"])
+async def test_oversized_first_head_with_lost_ack_sends_only_the_unsent_tail(failure):
+    """The sealed overflow head landed but has no ACK/message id. Finish the
+    split without sending the head a second time inside the whole answer."""
+    delivered: list[str] = []
+    adapter = _landing_adapter(delivered, failure=failure)
+    adapter.MAX_MESSAGE_LENGTH = 650  # consumer safe limit: 550
+    adapter.truncate_message = MagicMock(
+        side_effect=lambda text, limit: [text[:limit], text[limit:]])
+    answer = "H" * 550 + "T" * 250
+    consumer = GatewayStreamConsumer(
+        adapter, "chat", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
+    consumer.on_delta(answer)
+    consumer.finish()
+    await asyncio.wait_for(consumer.run(), timeout=10)
+
+    assert len(delivered) == 2, delivered
+    assert "".join(delivered) == answer  # head once, then only the unseen tail
+    assert consumer.final_content_delivered is True
+    assert consumer.delivery_uncertain is True  # ledger may issue a marked retry

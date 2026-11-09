@@ -624,10 +624,9 @@ def _stream_env_stale_base() -> tuple[float, bool]:
     return env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), "HERMES_STREAM_STALE_TIMEOUT" in os.environ
 
 
-def _configured_stale_base(agent) -> float:
-    """Per-provider ``stale_timeout_seconds`` config, else HERMES_STREAM_STALE_TIMEOUT (180s)."""
-    cfg = get_provider_stale_timeout(agent.provider, agent.model)
-    return cfg if cfg is not None else _stream_env_stale_base()[0]
+def _stream_stale_timeout_is_explicit(agent) -> bool:
+    """A per-provider ``stale_timeout_seconds`` or HERMES_STREAM_STALE_TIMEOUT is set, whatever its value."""
+    return get_provider_stale_timeout(agent.provider, agent.model) is not None or _stream_env_stale_base()[1]
 
 
 def _local_stream_stale_timeout_default() -> float:
@@ -3840,13 +3839,14 @@ class _StreamingCall(StreamingWaitMonitor):
     # ── orchestration ───────────────────────────────────────────────────
 
     def _resolve_stale_timeout(self) -> None:
-        """Set ``_stream_stale_timeout``. Local endpoints (unless the env is set) get
+        """Set ``_stream_stale_timeout``. Local endpoints (unless a stale timeout is set) get
         long but FINITE patience — 900s / ``agent.local_stream_stale_timeout`` /
         HERMES_LOCAL_STREAM_STALE_TIMEOUT — an infinite one stalled sessions on a
         crashed endpoint forever. Cloud values scale with context size and are
         floored for known reasoning models (else BrokenPipeError from the gateway)."""
-        base = _configured_stale_base(self.agent)
-        if base == 180.0 and waits_like_local(self.agent.base_url, self.agent.provider):
+        # Presence, not value: an explicit 180 is the operator's deadline, not the unset default.
+        if (not _stream_stale_timeout_is_explicit(self.agent)
+                and waits_like_local(self.agent.base_url, self.agent.provider)):
             self._stream_stale_timeout = _local_stream_stale_timeout_default()
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)

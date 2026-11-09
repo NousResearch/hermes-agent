@@ -52,8 +52,10 @@ def test_external_process_stall_budget_is_the_local_ceiling_for_every_model(proc
     assert _budgets(process_agent, model) == (float("inf"), 900.0)
 
 
-def test_explicit_stale_timeout_still_wins_for_an_external_process(process_agent):
+@pytest.mark.parametrize("seconds", [180, 1200])
+def test_explicit_stale_timeout_wins_on_both_paths(process_agent, seconds):
+    """An explicit value is the operator's deadline as-is; 180 is not mistaken for the unset default."""
     from hermes_constants import get_hermes_home
 
-    (get_hermes_home() / "config.yaml").write_text(f"providers:\n  {PROVIDER}:\n    stale_timeout_seconds: 1200\n")
-    assert _budgets(process_agent, "claude-haiku-5-5") == (1200.0, 1200.0)
+    (get_hermes_home() / "config.yaml").write_text(f"providers:\n  {PROVIDER}:\n    stale_timeout_seconds: {seconds}\n")
+    assert _budgets(process_agent, "claude-haiku-5-5") == (float(seconds), float(seconds))

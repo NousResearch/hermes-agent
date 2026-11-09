@@ -85,7 +85,7 @@ def test_standalone_telegram_sender_logs_proxy_without_credentials(monkeypatch, 
     import telegram
     import telegram.request
     from gateway.platforms import base as gw_base
-    from tools import send_message_senders
+    from plugins.platforms.telegram import standalone as send_message_senders  # 150996 moved _telegram_bot here
 
     monkeypatch.setattr(gw_base, "resolve_proxy_url", lambda *a, **k: PROXY)
     seen: list = []
@@ -198,7 +198,7 @@ def test_proxy_secret_never_logged_in_any_shape(monkeypatch, caplog, shape):
     import telegram.request
     from gateway.platforms import base as gw_base
     from plugins.platforms.matrix import adapter as matrix_adapter
-    from tools import send_message_senders
+    from plugins.platforms.telegram import standalone as send_message_senders  # 150996 moved _telegram_bot here
 
     proxy = shape.format(T=TOKEN)
     monkeypatch.setenv("MATRIX_PROXY", proxy)

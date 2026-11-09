@@ -196,6 +196,8 @@ export function extractClipboardText(clipboard: DataTransfer): { flavor: 'html' 
         return { flavor: 'html', text: href }
       }
 
+      // textContent drops <br> separators, merging separate pasted lines.
+      doc.body?.querySelectorAll('br').forEach(br => br.replaceWith(doc.createTextNode('\n')))
       const body = doc.body?.textContent ?? ''
 
       if (body.trim()) {

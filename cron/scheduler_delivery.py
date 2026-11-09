@@ -438,7 +438,14 @@ def _home_env_lookup(env_var: str, suffix: str = "", *, strip: bool = False) -> 
         get_secret = None  # type: ignore
 
     def read(name: str) -> str:
-        value = (get_secret(name, "") or "") if get_secret is not None else os.getenv(name, "")
+        try:
+            value = (get_secret(name, "") or "") if get_secret is not None else os.getenv(name, "")
+        except Exception:
+            # No active profile secret scope (out-of-turn delivery path on the
+            # multiplexed gateway) or a secret-store hiccup: fall back to the
+            # host environ instead of letting UnscopedSecretError crash the
+            # whole delivery span.
+            value = os.getenv(name, "")
         return value.strip() if strip else value
 
     value = read(env_var + suffix)

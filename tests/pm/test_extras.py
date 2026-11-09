@@ -211,6 +211,32 @@ def test_ensure_import_respects_terminal_decline_without_installing(monkeypatch,
     assert synced == []
 
 
+def test_ensure_import_never_prompts_off_the_main_thread(monkeypatch, synced):
+    """A ``hermes serve`` request or agent worker thread shares the launching terminal's stdin but
+    nobody watches it: the extra question must not block there (#120527)."""
+    import builtins
+    import threading
+
+    monkeypatch.setattr(extras, "available", lambda _: False)
+    monkeypatch.setattr(extras, "missing", lambda _: ["fal_client"])
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(builtins, "input", lambda text: pytest.fail(f"worker thread prompted: {text}"))
+    errors = []
+
+    def run():
+        try:
+            extras.ensure_import("fal")
+        except BaseException as exc:  # surfaced below; pytest.fail raises a BaseException
+            errors.append(exc)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive() and errors == []
+    assert synced == [["fal"]]
+
+
 def test_ensure_import_propagates_install_error(monkeypatch):
     def boom(x=None):
         raise pm.InstallError("venv", "lazy installs are disabled")

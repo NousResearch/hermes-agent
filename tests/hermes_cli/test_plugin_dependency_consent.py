@@ -91,6 +91,38 @@ def test_node_sidecar_question_stays_independent(tmp_path, monkeypatch):
     assert not any('Python dependencies' in str(line) for line in lines)
 
 
+def test_dependency_questions_never_prompt_off_the_main_thread(tmp_path, monkeypatch):
+    """A dashboard/Desktop plugin install runs on a ``hermes serve`` worker thread whose stdin may
+    still be the launching terminal: neither dependency question may block on it (#120527)."""
+    import threading
+    from types import SimpleNamespace
+
+    target = tmp_path / 'plugin'
+    target.mkdir()
+    (target / 'package.json').write_text('{}', encoding='utf-8')
+    (target / 'pyproject.toml').write_text(
+        '[project]\nname="worker-plugin"\nversion="1.0"\nrequires-python=">=3.11"\n'
+        'dependencies=["never-install-without-consent==1"]\n', encoding='utf-8')
+    monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(plugins_cmd.sys.stdout, 'isatty', lambda: True)
+    monkeypatch.setattr('builtins.input', lambda prompt: pytest.fail(f'worker thread prompted: {prompt}'))
+    results = []
+
+    def run():
+        try:
+            results.append(plugins_cmd._install_plugin_python_deps(
+                {'name': 'worker-plugin'}, target, SimpleNamespace(print=lambda *args, **kwargs: None)))
+        except BaseException as exc:  # pytest.fail raises a BaseException; surface it below
+            results.append(exc)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    consented, reason = results[0]
+    assert consented is False and 'non-interactive' in reason
+
+
 def test_yes_deps_carries_consent_through_non_interactive_install(admission_env, monkeypatch, capsys):
     """--yes-deps (#122134): the flag is the user's own answer to the consent
     question, so a non-interactive install publishes AND enables in one run

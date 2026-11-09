@@ -388,6 +388,72 @@ class TestInstall:
         assert server["tools"]["include"] == ["tool_a"]
         assert "exclude" not in server["tools"]
 
+    def test_install_from_worker_thread_skips_checklist_even_on_a_tty(
+        self, catalog_dir, monkeypatch
+    ):
+        """A serve dashboard install runs install_entry on a worker thread while
+        the owning console is still a TTY: the interactive checklist must not
+        open there (it would block the thread forever and, via the profile
+        lock, park every thread-pool slot). Instead the non-TTY branch applies
+        the manifest default_enabled."""
+        body = _basic_manifest(tools={"default_enabled": ["tool_a"]})
+        _write_manifest(catalog_dir, "demo", body)
+        import sys as _sys
+        from concurrent.futures import ThreadPoolExecutor
+
+        import hermes_cli.curses_ui as cui
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.config import load_config
+
+        def _fail_checklist(*args, **kwargs):
+            raise AssertionError("interactive checklist must not open on a worker thread")
+
+        probed = [("tool_a", "a"), ("tool_b", "b")]
+        monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(cui, "curses_checklist", _fail_checklist)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(mc.install_entry, _entry("demo"), enable=True)
+            future.result(timeout=10)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["tools"]["include"] == ["tool_a"]
+        assert "exclude" not in server["tools"]
+
+    def test_install_from_worker_thread_with_required_env_raises_instead_of_blocking(
+        self, catalog_dir, monkeypatch
+    ):
+        """The credential prompt runs BEFORE the tool checklist, so the checklist
+        guard alone never gets a chance on a thread whose required env has no
+        value: the install must fail fast with CatalogError (mapped to a 400 by
+        the web router) instead of parking the thread on stdin — while holding
+        the profile lock, which is what parks every thread-pool slot."""
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_TOKEN", "prompt": "Demo token"}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        import sys as _sys
+        from concurrent.futures import ThreadPoolExecutor
+
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.mcp_catalog import CatalogError
+
+        def _fail_prompt(*args, **kwargs):
+            raise AssertionError("interactive prompt must not open on a worker thread")
+
+        # A TTY stdin, so the only disqualifier is the worker thread itself.
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(mc, "_prompt_input", _fail_prompt)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(mc.install_entry, _entry("demo"), enable=True)
+            with pytest.raises(CatalogError, match="DEMO_TOKEN"):
+                future.result(timeout=10)
+
     def test_reinstall_preserves_user_edited_exclude_list(
         self, catalog_dir, monkeypatch
     ):
@@ -537,8 +603,11 @@ class TestInstall:
         )
         _write_manifest(catalog_dir, "demo", body)
 
+        import sys as _sys
+
         from hermes_cli import mcp_catalog
 
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val")
 
         from hermes_cli.mcp_catalog import install_entry
@@ -548,6 +617,112 @@ class TestInstall:
 
         assert get_env_value("DEMO_KEY") == "secret-val"
         assert "demo" in load_config()["mcp_servers"]
+
+    def test_noninteractive_install_rejects_missing_required_credential_without_prompt(
+        self, catalog_dir, monkeypatch
+    ):
+        """Request handlers fail fast rather than waiting for stdin."""
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_KEY", "prompt": "key", "secret": True}],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        import sys as _sys
+
+        from hermes_cli import mcp_catalog
+
+        # Main thread with a TTY stdin: only the explicit flag stops the prompt.
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(mcp_catalog, "get_env_value", lambda _name: None)
+        monkeypatch.setattr(
+            mcp_catalog, "_prompt_input", lambda *_args, **_kwargs: pytest.fail("stdin prompt opened")
+        )
+        events = []
+        monkeypatch.setattr(
+            "hermes_cli.observability.shared_metrics_events.record_extension_install",
+            lambda **fields: events.append(fields),
+        )
+
+        with pytest.raises(mcp_catalog.CatalogError, match="DEMO_KEY is required but was not supplied") as exc:
+            mcp_catalog.install_entry(_entry("demo"), interactive=False)
+
+        assert exc.value.failure_class == "missing_credentials"
+        assert events == [{
+            "kind": "mcp_server", "source": "catalog", "name": "demo", "outcome": "failed",
+            "failure_class": None, "error": exc.value,
+        }]
+
+    def test_noninteractive_install_on_a_tty_takes_defaults_without_picker(self, catalog_dir, monkeypatch):
+        """``interactive=False`` alone keeps a main-thread TTY install off the prompt and the
+        checklist: declared defaults and the manifest's ``default_enabled`` apply."""
+        body = _basic_manifest(
+            transport={"type": "stdio", "command": "npx", "args": ["-y", "demo-mcp", "--region", "${DEMO_REGION}"]},
+            auth={"type": "api_key", "env": [
+                {"name": "DEMO_REGION", "prompt": "region", "secret": False, "required": False, "default": "eu"},
+            ]},
+            tools={"default_enabled": ["tool_a"]},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        import sys as _sys
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import load_config
+
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(mcp_catalog, "_probe_tools", lambda _name: [("tool_a", "a"), ("tool_b", "b")])
+        monkeypatch.setattr(
+            mcp_catalog, "_prompt_input", lambda *_args, **_kwargs: pytest.fail("stdin prompt opened")
+        )
+        monkeypatch.setattr(
+            "hermes_cli.curses_ui.curses_checklist", lambda *_a, **_kw: pytest.fail("checklist opened")
+        )
+
+        mcp_catalog.install_entry(_entry("demo"), interactive=False)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["args"][-1] == "eu"
+        assert server["tools"]["include"] == ["tool_a"]
+
+    def test_noninteractive_install_saves_a_secret_default_to_env(self, catalog_dir, monkeypatch):
+        """A secret's declared default is persisted to .env like a typed answer, so the
+        ``${VAR}`` ref in config.yaml resolves when the server connects."""
+        body = _basic_manifest(auth={"type": "api_key", "env": [
+            {"name": "DEMO_SECRET_DEFAULT", "prompt": "key", "secret": True, "default": "sekrit-default"},
+        ]})
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import get_env_value
+
+        monkeypatch.delenv("DEMO_SECRET_DEFAULT", raising=False)
+        monkeypatch.setattr(
+            mcp_catalog, "_prompt_input", lambda *_args, **_kwargs: pytest.fail("stdin prompt opened")
+        )
+
+        mcp_catalog.install_entry(_entry("demo"), interactive=False)
+
+        assert get_env_value("DEMO_SECRET_DEFAULT") == "sekrit-default"
+
+    def test_cli_install_reads_a_piped_credential_on_the_main_thread(self, catalog_dir, monkeypatch):
+        """``printf 'key\\n' | hermes mcp install demo``: redirected stdin on the console thread
+        still answers the credential prompt; only the checklist needs a TTY."""
+        body = _basic_manifest(auth={
+            "type": "api_key", "env": [{"name": "DEMO_PIPED_KEY", "prompt": "key", "secret": True}],
+        })
+        _write_manifest(catalog_dir, "demo", body)
+        import sys as _sys
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import get_env_value
+
+        monkeypatch.delenv("DEMO_PIPED_KEY", raising=False)
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *_args, **_kwargs: "piped-key")
+
+        mcp_catalog.install_entry(_entry("demo"))
+
+        assert get_env_value("DEMO_PIPED_KEY") == "piped-key"
 
     def test_install_http_api_key_writes_bearer_headers(self, catalog_dir, monkeypatch):
         body = _basic_manifest(
@@ -559,8 +734,11 @@ class TestInstall:
         )
         _write_manifest(catalog_dir, "demo", body)
 
+        import sys as _sys
+
         from hermes_cli import mcp_catalog
 
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val")
 
         from hermes_cli.mcp_catalog import install_entry
@@ -599,6 +777,9 @@ class TestInstall:
         from hermes_cli import mcp_catalog
         from hermes_cli.config import get_config_path, get_env_value, load_config
 
+        import sys as _sys
+
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda prompt, **kw: f"val-for-{prompt}")
         mcp_catalog.install_entry(_entry("demo"), enable=True)
 
@@ -716,6 +897,21 @@ class TestToolSelection:
         install_entry(_entry("demo"), enable=True)
         server = load_config()["mcp_servers"]["demo"]
         assert server["tools"]["include"] == ["a", "b", "c"]
+
+    def test_cli_install_keeps_interactive_tool_picker(self, catalog_dir, monkeypatch):
+        """The direct CLI path still lets a TTY user choose a tool subset."""
+        import sys as _sys
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import load_config
+
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        monkeypatch.setattr(mcp_catalog, "_probe_tools", lambda _name: self._make_probed("a", "b"))
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", lambda *_args, **_kwargs: {1})
+
+        mcp_catalog.install_entry(_entry("demo"))
+
+        assert load_config()["mcp_servers"]["demo"]["tools"]["include"] == ["b"]
 
 
     def test_reinstall_preserves_prior_user_selection(

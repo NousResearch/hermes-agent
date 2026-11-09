@@ -128,7 +128,12 @@ def _table(columns, **kwargs):
 
 
 def _is_tty() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    """True when a human at this process's console can answer a prompt. The console belongs to
+    the main thread: a dashboard/Desktop request runs on a worker thread of ``hermes serve``, whose
+    stdin may still be the launching terminal, and a prompt there blocks forever on input nobody
+    sees (#120527)."""
+    import threading
+    return sys.stdin.isatty() and sys.stdout.isatty() and threading.current_thread() is threading.main_thread()
 
 
 def _fail(console, message: str) -> NoReturn:

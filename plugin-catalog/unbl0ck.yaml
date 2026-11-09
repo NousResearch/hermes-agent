@@ -1,0 +1,23 @@
+name: unbl0ck
+title: UNBL0CK
+repo: https://github.com/KyaniteLabs/unbl0ck
+sha: 9ba3d308563da731d9fee5008692413f19a4c1a7
+version: "0.4.4"
+description: "One queue of everything blocked on you: live agent prompts, pairing requests, blocked Kanban cards and chats on any platform that ask you something. Answer Kanban cards in place; optional one-line summaries and Ask send item text to your configured model through ctx.llm (both can be turned off)."
+maintainer: KyaniteLabs
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/KyaniteLabs/unbl0ck/blob/9ba3d308563da731d9fee5008692413f19a4c1a7/README.md
+image: https://raw.githubusercontent.com/KyaniteLabs/unbl0ck/9ba3d308563da731d9fee5008692413f19a4c1a7/assets/banner.png
+screenshots: []
+readme: true
+platforms: []
+known_issues:
+  - "Uses Hermes's internal Kanban modules; a Hermes release that changes them can break the queue until UNBL0CK is updated."
+  - "With no principal_name set, only the generic words CEO, principal and human are detected."
+capabilities:
+  provides_tools: []
+  provides_hooks: [on_human_input_request, on_human_input_resolved]
+  provides_middleware: []
+  requires_env: []

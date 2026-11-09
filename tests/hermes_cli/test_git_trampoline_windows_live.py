@@ -7,9 +7,10 @@ helpers against the runner's genuine Git-for-Windows install plus a real
 broken-trampoline stand-in (a .bat that reproduces the launcher's
 "BUG (fork bomb)" guard output and refuses to run).
 
-windows-latest ships full Git for Windows at ``C:\\Program Files\\Git`` with
-the real ``mingw64\\libexec\\git-core\\git.exe`` — exactly the layout the
-locator targets — so the swap path is exercised end to end.
+windows-latest ships full Git for Windows at ``C:\\Program Files\\Git``. The
+real git-core binary may use the current ``ucrt64`` layout or a legacy
+``mingw64``/``clangarm64`` layout; the locator must find the installed layout so the
+swap path is exercised end to end.
 """
 
 from __future__ import annotations
@@ -58,8 +59,8 @@ class TestGitTrampolineLive:
         from hermes_cli import update_cmd
 
         real = update_cmd._locate_real_git()
-        # windows-latest ships Git for Windows under Program Files with the
-        # canonical git-core layout the locator searches first.
+        # The runner may use the current UCRT64 layout or a legacy Git-for-Windows
+        # architecture; assert the locator returns a working git-core binary.
         assert real is not None, "expected git-core git.exe on windows-latest"
         assert real.exists()
         assert real.name == "git.exe"

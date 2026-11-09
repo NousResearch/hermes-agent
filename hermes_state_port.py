@@ -36,9 +36,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from hermes_scope import Fence
+
+if TYPE_CHECKING:
+    from hermes_state_rewind import RewindOutcome
 
 # Sentinel: "claim whatever is first" (``hermes_state_runtime.claim_session_input``'s default).
 ANY_HEAD: Any = object()
@@ -76,7 +79,8 @@ class SessionStore(ABC):
     @abstractmethod
     def append_turn(self, session_id: str, messages: list[dict[str, Any]]) -> int:
         """Append the running turn's *messages* in one transaction, fenced by its claim. Refused
-        (``TurnFenceRequiredError``) when no claimed turn of *session_id* on this store is bound."""
+        (``TurnFenceRequiredError``) when no claimed turn of *session_id*, or of a session it is a
+        compression continuation of, is bound on this store."""
 
     @abstractmethod
     def read_conversation(self, session_id: str, *, include_row_ids: bool = False) -> list[dict[str, Any]]:
@@ -117,9 +121,12 @@ class SessionStore(ABC):
         active set and target content, when given, must still hold or nothing changes."""
 
     @abstractmethod
-    def rewind_user_turn(self, session_id: str, user_ordinal: int, **options: Any) -> Any:
+    def rewind_user_turn(self, session_id: str, user_ordinal: int, *, warm_history: Optional[list[dict[str, Any]]] = None,
+                         require_retryable: bool = False, require_composite: bool = False,
+                         adopt_row_ids: bool = False) -> RewindOutcome:
         """Rewind the active transcript to just before user turn *user_ordinal* (negative counts
-        from the newest, ``-n`` is ``/undo n``)."""
+        from the newest, ``-n`` is ``/undo n``): the :class:`~hermes_state_rewind.RewindOutcome`
+        today's callers get."""
 
     @abstractmethod
     def set_user_message_content(self, session_id: str, row_id: int, content: Any,
@@ -346,7 +353,9 @@ class SessionStorageProvider(ABC):
     def assert_isolating(self) -> None:
         """Raise unless this backend isolates tenants and agents from each other in storage
         itself (a Postgres backend whose role is a superuser or has ``BYPASSRLS`` fails).
-        Required, with no default: a backend that has not checked must not pass."""
+        Required, with no default: a backend that has not checked must not pass. Nothing calls it
+        yet: the first caller that serves a scope from a resolved provider must call it, and refuse
+        the provider when it raises, before :meth:`open`."""
 
 
 def resolve_session_storage(name: str) -> SessionStorageProvider:

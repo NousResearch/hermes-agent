@@ -104,9 +104,10 @@ def fresh_write_error(exc: BaseException) -> BaseException:
     name for it. Never *exc*'s own message, ``strerror`` or ``filename``: the code that failed —
     a backend, a writer, a plugin — wrote those, and nothing vouches them free of the write's
     value; an exception typed as one of the store's own refusals is no different, since the
-    port did not raise it. The errno number names the failure exactly as well as the failing
-    code's own text, with nothing the failing code controlled, so every failure of the write
-    becomes a :class:`SecretWriteFailed`.
+    port did not raise it. The errno slot is the failing code's too — Python allows any object
+    there, so only an errno that is exactly a built-in ``int`` names the failure (a number
+    nothing the failing code controlled), and every other errno is omitted entirely, leaving
+    the class name alone. Every failure of the write becomes a :class:`SecretWriteFailed`.
 
     Raise what this returns OUTSIDE the except block, after ``del``-ing the value (or record)
     binding of the write's own frame, with both chained-exception slots cleared first: the
@@ -117,7 +118,10 @@ def fresh_write_error(exc: BaseException) -> BaseException:
     suppresses from display; that chain is the caller's, and the port never touches it.)
     """
     detail = type(exc).__name__
-    if isinstance(exc, OSError) and exc.errno is not None:
+    # The errno slot is writer-controlled: Python leaves it whatever the failing code passed,
+    # string included, so only an errno that is exactly a built-in int names the failure with
+    # nothing the failing code wrote.
+    if isinstance(exc, OSError) and type(exc.errno) is int:
         detail += f", errno {exc.errno}"
         if exc.errno in errno.errorcode:
             detail += f" ({errno.errorcode[exc.errno]})"

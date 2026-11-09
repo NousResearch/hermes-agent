@@ -207,3 +207,26 @@ def test_managed_session_override_on_env_overridden_codex_host_follows_auth_stor
         _write_auth(tmp_path, "openai-codex", token)
         model, runtime = runner._resolve_session_agent_runtime(session_key="session")
         assert (model, runtime["base_url"], runtime["api_key"]) == ("selected-model", host, token)
+
+
+def test_secondary_profile_scoped_codex_host_follows_its_auth_store(tmp_path, monkeypatch):
+    """A profile whose HERMES_CODEX_BASE_URL lives only in its secret scope (the launch profile's
+    process env names another host) still re-resolves its managed bearer each turn."""
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+    runner = _runner(monkeypatch, tmp_path)
+    secondary_host = "http://127.0.0.1:9/secondary/v1"
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:9/launch-profile/v1")
+    (tmp_path / "config.yaml").write_text("model:\n  provider: openrouter\n  default: default-model\n")
+    runner._session_model_overrides["session"] = {
+        "model": "selected-model", "provider": "openai-codex", "api_key": "account-A",
+        "base_url": secondary_host, "api_mode": "codex_responses", "credential_pool": None,
+    }
+    token = set_secret_scope({"HERMES_CODEX_BASE_URL": secondary_host})
+    try:
+        for account in ("account-A", "account-B"):
+            _write_auth(tmp_path, "openai-codex", account)
+            model, runtime = runner._resolve_session_agent_runtime(session_key="session")
+            assert (model, runtime["base_url"], runtime["api_key"]) == ("selected-model", secondary_host, account)
+    finally:
+        reset_secret_scope(token)

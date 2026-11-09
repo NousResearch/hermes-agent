@@ -294,7 +294,7 @@ def test_parser_accepts_backends_dry_run_json():
     assert (args.backends, args.dry_run, args.json) == (True, True, True)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="ps-based scan")
+@pytest.mark.platforms("posix")
 def test_scan_failure_still_exits_zero(host, no_writes, monkeypatch, capsys):
     def broken(cmd, *a, **k):
         raise FileNotFoundError(cmd[0])

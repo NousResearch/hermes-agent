@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.anthropic_adapter import build_anthropic_client, build_anthropic_kwargs
+from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client, build_anthropic_kwargs
 from agent.anthropic_credentials import _is_oauth_token, _refresh_oauth_token, _write_claude_code_credentials, is_claude_code_token_valid, read_claude_code_credentials, resolve_anthropic_token, run_oauth_setup_token
 from agent.credential_pool import PooledCredential
 from agent.anthropic_message_convert import _to_plain_data, convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name
@@ -94,6 +94,23 @@ class TestBuildAnthropicClient:
             # Auth branch is unchanged: x-api-key via api_key, betas kept.
             assert kwargs["api_key"] == "sk-opencode-secret"
             assert "anthropic-beta" in headers
+
+    def test_bedrock_client_uses_configured_profile(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+                patch("agent.bedrock_adapter.resolve_bedrock_profile", return_value="prod"):
+            mock_sdk.AnthropicBedrock = MagicMock()
+            build_anthropic_bedrock_client("us-east-1")
+            kwargs = mock_sdk.AnthropicBedrock.call_args[1]
+            assert kwargs["aws_profile"] == "prod"
+            assert kwargs["max_retries"] == 0
+
+    def test_bedrock_client_omits_empty_profile(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+                patch("agent.bedrock_adapter.resolve_bedrock_profile", return_value=""):
+            mock_sdk.AnthropicBedrock = MagicMock()
+            build_anthropic_bedrock_client("us-east-1")
+            kwargs = mock_sdk.AnthropicBedrock.call_args[1]
+            assert "aws_profile" not in kwargs
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:

@@ -694,7 +694,7 @@ DEFAULT_CONFIG = {
     # openrouter.ai/docs/guides/routing/routers/pareto-router
     "openrouter": {"response_cache": True, "response_cache_ttl": 300, "min_coding_score": 0.65},
     "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
-        "region": "",  # empty = AWS_REGION env var → us-east-1
+        "region": "", "profile": "",  # AWS named profile; empty region = AWS_REGION → profile's region → us-east-1
         "discovery": {
             "enabled": True,           # auto-discover models via ListFoundationModels
             "provider_filter": [],     # restrict to these providers, e.g. ["anthropic", "amazon"]

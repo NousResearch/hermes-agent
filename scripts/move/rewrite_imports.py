@@ -30,7 +30,9 @@ from renames import current_name, git, module_renames, moved_modules, renamed_pa
 
 DYNAMIC, STRING_REF, BY_PATH, FILE_MATH, OTHER = (
     "dynamic-import", "string-module-ref", "by-path", "file-math", "other")
-_DASH_M = re.compile(r"(?<![\w-])(-m\s+)([A-Za-z_][\w.]*)")
+_DASH_M = re.compile(r"(?<![\w-])(-m(?:\s+|[\"'],\s*[\"']))([A-Za-z_][\w.]*)")
+_CODE_IMPORT = re.compile(r"(?<![\w.])((?:from|import)\s+)([A-Za-z_][\w.]*)(?=\s+import\b|\s*(?:$|[\n,;)]|\\n| as\b))",
+                          re.MULTILINE)
 _SYS_MODULES = {"sys.modules", "modules"}
 _SYS_MODULES_METHODS = {"pop", "get", "setdefault"}
 _STRICT_REASON = "left for the strict compat finder, which fails the test that runs it"
@@ -278,7 +280,7 @@ class _Rewriter(cst.CSTTransformer):
         text = original.evaluated_value
         if not isinstance(text, str):
             return updated
-        rewritten = _DASH_M.sub(self._dash_m, text)
+        rewritten = self._text(text)
         if self.plan.names_module(rewritten):
             self._flag(original, OTHER, text, "string names a moved module; rewrite or confirm by hand")
         else:
@@ -289,12 +291,16 @@ class _Rewriter(cst.CSTTransformer):
                     break
         if rewritten == text:
             return updated
-        replaced = _with_text(updated, lambda t: _DASH_M.sub(self._dash_m, t))
+        replaced = _with_text(updated, self._text)
         if replaced is None:
-            self._flag(original, OTHER, text, "-m text spells the name with escapes; fix by hand")
+            self._flag(original, OTHER, text[:80], "code in a string spells the name with escapes; fix by hand")
             return updated
-        self._count("argv")
+        self._count("string-code")
         return replaced
+
+    def _text(self, text: str) -> str:
+        """``-m <module>`` and ``import``/``from`` lines in string text: code a child process runs."""
+        return _CODE_IMPORT.sub(self._dash_m, _DASH_M.sub(self._dash_m, text))
 
     def _dash_m(self, match: re.Match) -> str:
         new = self._new(match.group(2))
@@ -304,9 +310,9 @@ class _Rewriter(cst.CSTTransformer):
         parts = []
         for part in updated.parts:
             if isinstance(part, cst.FormattedStringText):
-                text = _DASH_M.sub(self._dash_m, part.value)
+                text = self._text(part.value)
                 if text != part.value:
-                    self._count("argv")
+                    self._count("string-code")
                     part = part.with_changes(value=text)
             parts.append(part)
         updated = updated.with_changes(parts=parts)

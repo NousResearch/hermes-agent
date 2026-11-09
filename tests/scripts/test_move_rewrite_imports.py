@@ -80,7 +80,12 @@ def test_imports_and_their_attribute_chains_take_the_new_name(before, after):
      'cmd = [sys.executable, "-m", "hermes_agent.tui_gateway.entry"]\n', "argv"),
     ('cmd = (python, "-u", "-m", "watchdog")\n', 'cmd = (python, "-u", "-m", "hermes_agent.watchdog")\n', "argv"),
     ('os.system("python -m tui_gateway.entry --x")\n',
-     'os.system("python -m hermes_agent.tui_gateway.entry --x")\n', "argv"),
+     'os.system("python -m hermes_agent.tui_gateway.entry --x")\n', "string-code"),
+    ('CODE = "import tui_gateway.entry\\nmain()"\n', 'CODE = "import hermes_agent.tui_gateway.entry\\nmain()"\n',
+     "string-code"),
+    ("CODE = r\'\'\'\nfrom watchdog import arm\nPopen([sys.executable, \"-m\", \"tui_gateway.entry\"])\n\'\'\'\n",
+     "CODE = r\'\'\'\nfrom hermes_agent.watchdog import arm\nPopen([sys.executable, \"-m\", \"hermes_agent.tui_gateway.entry\"])\n\'\'\'\n",
+     "string-code"),
     ('sys.modules.pop("watchdog", None)\n', 'sys.modules.pop("hermes_agent.watchdog", None)\n', "sys-modules"),
     ('x = sys.modules["tui_gateway.entry"]\n', 'x = sys.modules["hermes_agent.tui_gateway.entry"]\n',
      "sys-modules"),
@@ -110,6 +115,8 @@ def test_strings_the_strict_finder_cannot_see_are_rewritten(before, after, kind)
     "import watchdogs\nimport hermes_agent.watchdog\n",
     'cmd = ["-m", "watchdogs"]\n',
     'help = "use --mode watchdog"\n',
+    'msg = "importing watchdog failed"\n',
+    'msg = "pick from watchdogs import list"\n',
 ])
 def test_names_that_are_not_the_moved_modules_stay(source):
     assert not check_noop(source).flags

@@ -975,6 +975,37 @@ def _topic_db(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("err", [FakeTimedOut("Timed out"), FakeRetryAfter(3)], ids=["timeout", "flood"])
+async def test_private_topic_unconfirmed_failure_keeps_binding_and_skips_root(tmp_path, err, monkeypatch):
+    """A private-topic send that may have delivered (timeout) or was refused for load (flood) is not a dead
+    topic: control and text sends report the failure, never re-send to the root, and keep the binding."""
+    async def _no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+    db = _topic_db(tmp_path)
+    adapter = _make_adapter()
+    adapter._session_store = SimpleNamespace(_db=db)
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id"):
+            raise err
+        return SimpleNamespace(message_id=9)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    with pytest.raises(type(err)):
+        await adapter._send_control_message("123", "control", parse_mode=None, thread_id="20197", metadata=dict(_GATEWAY_META))
+    result = await adapter.send(chat_id="123", content="text", reply_to="462", metadata=dict(_GATEWAY_META))
+
+    assert result.success is False
+    assert call_log and all(c.get("message_thread_id") == 20197 for c in call_log), call_log
+    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is not None
+
+
+@pytest.mark.asyncio
 async def test_media_ladder_ends_when_even_the_chat_root_is_rejected():
     """Each media step drops a constraint; the topic is not rebuilt from metadata after the root step."""
     adapter = _make_adapter()

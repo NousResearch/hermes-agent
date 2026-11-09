@@ -17,7 +17,8 @@ import pytest
 from tests.conformance.kanban.mutants import MUTANTS
 
 ROOT = Path(__file__).resolve().parents[3]
-SUITE = ["tests/conformance/kanban/test_local.py", "tests/conformance/kanban/test_local_pinning.py"]
+SUITE = ["tests/conformance/kanban/test_local.py", "tests/conformance/kanban/test_local_pinning.py",
+         "tests/conformance/kanban/test_local_cross_agent.py"]
 #: The mutant's own-agent control: every operation the agent itself may make, and the world setup.
 CONTROL = ["tests/conformance/kanban/test_local_pinning.py", "-k",
            "test_every_operation_succeeds_for_its_own_agent"]

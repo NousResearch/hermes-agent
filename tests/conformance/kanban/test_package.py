@@ -37,10 +37,15 @@ def test_a_plugin_imports_the_suite_from_outside_the_repo(tmp_path):
     elsewhere = tmp_path / "plugin"
     elsewhere.mkdir()
     (elsewhere / "test_backend.py").write_text(
-        "from hermes_conformance.kanban import Backend, KanbanConformance\n"
+        "from hermes_conformance.kanban import Backend, CrossAgentConformance, KanbanConformance\n"
         "def test_imported():\n"
         "    assert KanbanConformance.test_at_most_one_replica_claims_a_ready_task\n"
-        "    assert 'serves_unbound' in Backend.__dataclass_fields__\n", encoding="utf-8")
+        "    assert 'serves_unbound' in Backend.__dataclass_fields__\n"
+        "    # the cross-agent matrix ships in the default suite: no backend can skip it\n"
+        "    assert issubclass(KanbanConformance, CrossAgentConformance)\n"
+        "    assert KanbanConformance.test_every_write_is_refused_under_a_same_tenant_other_agents_scope_and_changes_nothing\n"
+        "    assert KanbanConformance.test_every_read_is_refused_or_missing_under_a_same_tenant_other_agents_scope\n",
+        encoding="utf-8")
     env = {**os.environ, "PYTHONPATH": str(site)}
     env.pop("PYTHONSAFEPATH", None)
     code = (f"import sys, importlib.util, hermes_conformance.kanban as k; "

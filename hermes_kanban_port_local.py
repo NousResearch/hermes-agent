@@ -14,6 +14,11 @@ and its pin is the tenant. A bound scope of any other tenant is refused with
 :class:`KanbanPinRefused` before anything is read or written; a local scope of any profile, and
 the ambient caller with no scope bound (today's CLI), are served. A hosted backend instead pins
 ``(tenant, agent)`` and refuses another agent's scope outright.
+
+The shared root is the declared local exception (:attr:`KanbanStore.LOCAL_SHARED_BOARD`): the
+conformance suite's same-tenant cross-agent matrix asserts its inverse — another local
+profile's scope is served on this handle — and :func:`hermes_kanban_port.resolve_kanban_storage`
+refuses the backend wherever the process runs hosted.
 """
 
 from __future__ import annotations
@@ -29,6 +34,11 @@ from hermes_kanban_port import (
 
 class LocalKanbanStore(KanbanStore):
     """Today's kanban operations, inside one frozen kanban root, for the local tenant."""
+
+    #: The local exception (see ``KanbanStore.LOCAL_SHARED_BOARD``): this machine's one board
+    #: root is shared by every profile — the dispatcher hands a card to another profile's worker
+    #: through it — so the store serves any scope of its tenant, whatever the profile.
+    LOCAL_SHARED_BOARD = True
 
     def __init__(self) -> None:
         from hermes_cli import kanban_db as kb
@@ -305,6 +315,10 @@ class LocalKanbanStorageProvider(KanbanStorageProvider):
     root), holding the local tenant's board set, shared by every local profile by design."""
 
     levels = frozenset({"agent"})
+
+    #: Declared with the store: one board root per machine, shared by every profile. Refused
+    #: wherever the process runs hosted (``resolve_kanban_storage``).
+    LOCAL_SHARED_BOARD = LocalKanbanStore.LOCAL_SHARED_BOARD
 
     @property
     def name(self) -> str:

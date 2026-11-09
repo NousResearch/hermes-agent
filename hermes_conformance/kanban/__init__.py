@@ -18,9 +18,11 @@ cover is listed in :mod:`hermes_conformance.kanban.suite`.
 
 from hermes_conformance.kanban.suite import (
     Backend,
+    CrossAgentConformance,
     IsolationConformance,
     KanbanConformance,
     PinningConformance,
 )
 
-__all__ = ["Backend", "IsolationConformance", "KanbanConformance", "PinningConformance"]
+__all__ = ["Backend", "CrossAgentConformance", "IsolationConformance", "KanbanConformance",
+           "PinningConformance"]

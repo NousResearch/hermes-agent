@@ -225,7 +225,10 @@ async function runWindowOpen(call: () => Promise<WindowOpenResult>, failMessage:
 
     return true
   } catch (err) {
-    notifyError(err, failMessage)
+    // A failure that may yet be undone names its toast so it can take it down (the Webapp's
+    // blocked pop-out, whose window can still open late).
+    const id = (err as { notificationId?: unknown } | null)?.notificationId
+    notifyError(err, failMessage, typeof id === 'string' ? { id } : {})
 
     return false
   }

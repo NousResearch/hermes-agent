@@ -1,0 +1,24 @@
+# Community catalog entry — webmint
+#
+# Owner-submitted: the PR author (`DECRUX9812`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex) at tag v0.1.4. No self-updating code: the plugin never fetches,
+# downloads or replaces its own files. Its only network access is the host's own model
+# call at mint time plus the site it is asked to capture.
+name: webmint
+repo: https://github.com/DECRUX9812/webmint
+sha: 5b7fa617ac1c88c74efc86c6b5f73db6939cd0e0   # tag v0.1.4
+version: "0.1.4"
+title: webmint
+description: "Turn a website into a deterministic tool: a real browser captures the page once, the host's own model writes a declarative extraction spec, two runs must agree (same field set, >=50% fill per field) before it is saved, and every later call runs that spec with no model in the loop (~2.7s). Five tools: setup, mint, run, list, remove. Disclosure — needs Node >= 18 and Playwright; on first mint the plugin installs Playwright and Chromium into its own directory (~120 MB, opt out with WEBMINT_NO_AUTO_SETUP=1). Capture runs in a fresh signed-out browser: actions may fill, click and submit forms, and http specs replay the captured GET or POST (Cookie and Authorization headers are never replayed). Public http(s) URLs only — file:, loopback/private and link-local/metadata addresses are refused, with private/loopback behind WEBMINT_ALLOW_PRIVATE_URLS=1 or the host's security.allow_private_urls. Headless Chromium is refused by some bot-protected sites."
+maintainer: DECRUX9812
+tier: community
+category: web
+requires_hermes: ">=0.22"
+image: "https://raw.githubusercontent.com/DECRUX9812/webmint/5b7fa617ac1c88c74efc86c6b5f73db6939cd0e0/docs/banner.png"
+docs_url: https://github.com/DECRUX9812/webmint#readme
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [webmint_setup, webmint_mint, webmint_run, webmint_list, webmint_remove]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

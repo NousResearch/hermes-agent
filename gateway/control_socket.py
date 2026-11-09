@@ -1,5 +1,5 @@
 """Gateway control socket — the gateway-owned local coordination surface: a local-only socket answering
-versioned JSON verbs (``identify``, ``status``). A connectable socket with a well-formed ``identify``
+versioned JSON verbs (``identify``, ``status``, ``resolve-profile``, ``session-ticket``, ...). A connectable socket with a well-formed ``identify``
 answer IS liveness — no PID-reuse heuristics. Never a TCP port: filesystem/pipe ACLs are the auth
 boundary. POSIX: ``$HERMES_HOME/gateway.sock`` (or a temp-dir socket + ``gateway.sock.path`` pointer
 file when the home path exceeds ``sun_path`` or its filesystem refuses sockets); Windows: named pipe ``\\\\.\\pipe\\hermes-gateway-<hash>``.
@@ -24,6 +24,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from gateway.control_dispatch import ControlRequestDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -213,9 +215,12 @@ class GatewayControlServer:
         # symlinked component, so an unresolved symlinked ~/.hermes would never mint tickets.
         self._home = Path(home).resolve()
         self.ticket_store = None
+        # ``resolve-profile`` (gateway.control_resolve); None keeps the unknown-verb answer.
+        self.resolve_handler: Optional[Callable[[dict, Path], dict[str, Any]]] = None
         self.private_handlers = {}
         self._server: Optional[asyncio.AbstractServer] = None
         self._pipe_server: Any = None  # Windows proactor pipe server
+        self._request_dispatch: ControlRequestDispatcher | None = None
         self._bind_path: Optional[Path] = None
         self._pointer_file: Optional[Path] = None
         self._fallback_root: Optional[Path] = None  # mkdtemp root created for a squatted fallback
@@ -233,6 +238,8 @@ class GatewayControlServer:
             return False
 
     async def _start_posix(self) -> bool:
+        if self._request_dispatch is None:
+            self._request_dispatch = ControlRequestDispatcher()
         bind_path, pointer_file = resolve_server_socket_path(self._home)
         try:
             bind_path = await self._bind_posix(bind_path, pointer_file)
@@ -304,6 +311,9 @@ class GatewayControlServer:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(self._pipe_server.close)
         self._server = self._pipe_server = None
+        if self._request_dispatch is not None:
+            self._request_dispatch.close()
+            self._request_dispatch = None
         self.cleanup_files()
 
     def cleanup_files(self) -> None:
@@ -336,6 +346,8 @@ class GatewayControlServer:
                     raise PermissionError("authenticated private request required")
                 response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
                             "result": self.private_handlers[verb](request["params"], peer_subject)}
+            elif verb == "resolve-profile" and self.resolve_handler is not None:
+                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION, "result": self.resolve_handler(request, self._home)}
             elif verb == "session-ticket":
                 response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
                             "result": self._session_ticket(request, peer_subject)}
@@ -373,7 +385,8 @@ class GatewayControlServer:
             raise PermissionError("invalid bootstrap envelope")
         params = request.get("params")
         if (not isinstance(params, dict) or not {"profile_id", "instance_id", "purpose"} <= set(params)
-                or set(params) - {"profile_id", "instance_id", "purpose", "scope", "subject"}):
+                or set(params) - {"profile_id", "instance_id", "purpose", "scope", "subject", "restart_wait"}
+                or params.get("restart_wait", "refuse") != "refuse"):
             raise PermissionError("invalid bootstrap parameters")
         if params["instance_id"] != self.ticket_store.instance_id:
             raise PermissionError("stale runtime instance")
@@ -389,7 +402,8 @@ class GatewayControlServer:
         if subject is not peer_subject and not _structured_login_subject(subject):
             raise PermissionError("invalid bootstrap subject")
         ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=subject,
-                                       purpose=params["purpose"], scope=params.get("scope", "profile"))
+                                       purpose=params["purpose"], scope=params.get("scope", "profile"),
+                                       refuse_restart_wait="restart_wait" in params)
         return {"ticket": ticket, "expires_in_seconds": 30,
                 "instance_id": self.ticket_store.instance_id,
                 "profile_id": params["profile_id"], "runtime_protocol": 1}
@@ -415,10 +429,11 @@ class GatewayControlServer:
             raw = await asyncio.wait_for(reader.readline(), timeout=_DEFAULT_CLIENT_TIMEOUT)
             if not raw or len(raw) > _MAX_REQUEST_BYTES:
                 return
-            # Handlers read disk; keep that off the loop that drives every platform
-            # adapter so a fast-polling consumer can't stall heartbeats.
-            response = await asyncio.get_running_loop().run_in_executor(
-                None, self.handle_request_line, raw.rstrip(b"\n"), self._posix_peer_subject(writer))
+            dispatcher = self._request_dispatch
+            if dispatcher is None:
+                return  # listener shutdown won the race with this connection's read
+            response = await dispatcher.dispatch(
+                self.handle_request_line, raw.rstrip(b"\n"), self._posix_peer_subject(writer))
             writer.write(response)
             await asyncio.wait_for(writer.drain(), timeout=_DEFAULT_CLIENT_TIMEOUT)
         except (TimeoutError, ConnectionError, OSError):

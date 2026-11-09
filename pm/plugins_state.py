@@ -22,6 +22,30 @@ def _profiles_root() -> Path:
     return dependency_home_root() / "profiles"
 
 
+def _selection_readers(config_path: Path):
+    """``(version(path), read(path))`` for a home's selection. PM's dependency runtime reads the
+    LOCAL file it publishes to and compare-and-swaps (``pm.publication``): it has neither the
+    remote config backend's client nor the plane credential, so a remote deployment never fails
+    PM closed there. Every other process reads through the selected config backend; a file
+    deployment never asks whether this is PM's runtime (the selector is all it needs)."""
+    import os
+
+    from hermes_cli import config_backend
+
+    if os.environ.get(config_backend.BACKEND_ENV, "").strip().lower() in ("", "file"):
+        return config_backend.config_version, config_backend.read_config_doc
+    from pm.package import InstallError
+    from pm.runtime import is_runtime
+    try:
+        in_runtime = is_runtime()
+    except InstallError:  # an application process whose packaged PM runtime is damaged: not PM's runtime
+        in_runtime = False
+    if not in_runtime:
+        return config_backend.config_version, config_backend.read_config_doc
+    backend, home = config_backend.local_file_layer(config_path)
+    return (lambda _path: backend.version(home)), (lambda _path: backend.read_user_doc(home))
+
+
 def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     """The plugin/memory selection a home's config.yaml declares (None: no config yet).
 
@@ -29,9 +53,8 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     An unreadable selection raises rather than shrinking the next dependency generation;
     empty YAML is an explicit empty configuration, as in the CLI loader.
     """
-    from hermes_cli.config_backend import config_version, read_config_doc
-
     config_path = home / "config.yaml"
+    config_version, read_config_doc = _selection_readers(config_path)
     # Stat before the YAML stack: a home without config needs none (PM's own runtime tree has none).
     # Only a missing file means "no config"; a symlink loop or permission error still refuses.
     try:

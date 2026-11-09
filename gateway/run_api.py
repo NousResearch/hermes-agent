@@ -317,6 +317,47 @@ def warm_gateway_dashboard(runner) -> None:
         _warm(), name="gateway-dashboard-warmup")
 
 
+_SESSION_SOCKET_MODULE = "tui_gateway.ws"
+
+
+def preload_session_socket() -> "asyncio.Task | None":
+    """Start importing the ``/api/ws`` handler (``tui_gateway.ws``, ~0.7 s of CPU) off the loop.
+
+    Unloaded, the first upgrade imports it on the event loop while the client's 10 s open timeout
+    runs, and a CPU-starved host turns that into a failed attach right after READY. Only a client's
+    own idle-exit gateway preloads: a supervised one may never get a native client, and the module
+    swaps ``sys.stdout``/excepthooks and starts an update check at import."""
+    if _SESSION_SOCKET_MODULE in sys.modules:
+        return None
+    import importlib
+    task = asyncio.create_task(asyncio.to_thread(importlib.import_module, _SESSION_SOCKET_MODULE),
+                               name="gateway-ws-preload")
+    # A startup that raises before awaiting it must not add "Task exception was never retrieved".
+    task.add_done_callback(lambda done: done.cancelled() or done.exception())
+    return task
+
+
+async def await_session_socket_preload(task: "asyncio.Task | None", *, timeout: float = 30.0) -> None:
+    """Let the preload finish before READY, for at most ``timeout`` seconds. Never raises: a failed or
+    still-running import is finished (or retried) by the first attach (:func:`session_socket_handler`)."""
+    if task is None:
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout)
+    except TimeoutError:
+        logger.warning("Session WebSocket handler preload still running after %.0fs; publishing READY", timeout)
+    except Exception:
+        logger.warning("Session WebSocket handler preload failed; it loads on first attach", exc_info=True)
+
+
+async def session_socket_handler():
+    """``tui_gateway.ws.handle_ws``, fetched on a worker thread: an attach that arrives while the
+    module is still loading (a preload that outlived its READY bound) would otherwise block the
+    event loop, and every connection on it, on the import lock the preload thread holds."""
+    import importlib
+    return (await asyncio.to_thread(importlib.import_module, _SESSION_SOCKET_MODULE)).handle_ws
+
+
 async def stop_gateway_api(handle: GatewayAPIHandle) -> None:
     """Drain sockets without stopping the session authority or taking signals."""
     handle.server.should_exit = True
@@ -335,6 +376,12 @@ def _embedded_chat_enabled() -> bool:
 def _restart_wait_read(runner, scope) -> bool:
     from gateway.drain_control import restart_wait_read
     return scope['type'] == 'http' and restart_wait_read(runner, scope.get('method'), scope.get('path'))
+
+
+def _restart_wait_socket_ticket(runner, scope) -> bool:
+    from gateway.drain_control import restart_wait_socket_ticket
+    return scope['type'] == 'http' and restart_wait_socket_ticket(
+        runner, scope.get('method'), scope.get('path'), scope.get('query_string', b'').decode('latin-1'))
 
 
 class GatewayRuntimeAPI:
@@ -381,7 +428,8 @@ class GatewayRuntimeAPI:
             and (self.runner._draining or descriptor['state'] == 'draining')
             and scope['type'] == 'websocket' and scope['path'] == '/api/ws')
         if ((descriptor['state'] != 'ready' or self.runner._draining) and not draining_socket
-                and not _restart_wait_read(self.runner, scope)):
+                and not _restart_wait_read(self.runner, scope)
+                and not _restart_wait_socket_ticket(self.runner, scope)):
             if scope['type'] == 'websocket':
                 await send({'type': 'websocket.close', 'code': 1013})
             else:
@@ -419,15 +467,25 @@ class GatewayRuntimeAPI:
         scope['app'] = self.web_app
         ws = WebSocket(scope, receive, send)
         ticket, reason = _gateway_ws_ticket_from_subprotocol(ws)
-        if reason == 'none' or ws.headers.get('origin'):
+        # Native grants are loopback-only, so a remote ticket is the Webapp's (the mobile app sends no
+        # Origin, #147361). Origin is client-controlled, so this reaches no gate an Origin could not.
+        native_peer = bool(ws.client) and ws.client.host in {'127.0.0.1', '::1'}
+        if reason == 'none' or ws.headers.get('origin') or (reason == 'ok' and not native_peer):
             if draining_socket:
-                await ws.close(code=1013)
-                return
+                # Let a Webapp tab's ticket reach its normal upgrade gate during restart wait: only a
+                # surface that mints browser tickets redeems one there (elsewhere the loopback gate
+                # takes ``?token=``).
+                from hermes_cli.web_server_surface import policy
+                admitted_in_wait = (reason == 'ok' and 'internal' not in ws.query_params
+                                    and policy(state).gateway_ticket
+                                    and restart_wait_open(self.runner))
+                if not admitted_in_wait:
+                    await ws.close(code=1013)
+                    return
             return await self.app(scope, receive, send)
         if (reason != 'ok' or not _embedded_chat_enabled()
                 or ws_host_origin_reason(ws, state) is not None or ws_client_reason(ws, state) is not None
-                or ws.headers.get('origin')
-                or not ws.client or ws.client.host not in {'127.0.0.1', '::1'}):
+                or ws.headers.get('origin') or not native_peer):
             await ws.close(code=4403)
             return
         operator = True
@@ -444,11 +502,16 @@ class GatewayRuntimeAPI:
                     return
                 return await self.app(scope, receive, send)
         allow_draining = not operator
-        admitted_in_wait = restart_wait_open(self.runner)
+        # Decided here, at admission, not at the mint: a restart wait that opened after the client's
+        # discovery still refuses the machine poller that asked to stay out of it (a Kanban worker),
+        # which would otherwise hold the turn the wait is waiting on.
+        admitted_in_wait = restart_wait_open(self.runner) and not grant.get('refuse_restart_wait')
         # A restart's after-turn wait still owns its turns: an interactive client attaches to answer
         # a parked approval/clarify (#139041); stop() closes this window.
-        if ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining
-                and not admitted_in_wait):
+        def refused() -> bool:
+            return ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining
+                    and not admitted_in_wait)
+        if refused():
             await ws.close(code=1013)
             return
         from gateway.session_authorities import authority_for_profile_id
@@ -459,12 +522,18 @@ class GatewayRuntimeAPI:
         # The ticket names the served profile; this connection binds to that home's authority.
         scope['hermes.session_authority'] = authority
         from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
-        from tui_gateway.ws import handle_ws
         from gateway.session_authorities import owner_scope
-        with owner_scope(authority), attached_client(self.runner):
-            await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
-                                              'profile_id': grant['profile_id'],
-                                              'instance_id': grant['instance_id'],
-                                              'capabilities': grant['capabilities'], 'native_bootstrap': True,
-                                              'profile_scope': grant.get('scope', 'profile')},
-                            subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)
+        # Counted before the handler fetch yields: the ticket is already redeemed, so an idle check
+        # in between would otherwise see no client and exit under this first connection.
+        with attached_client(self.runner):
+            handle_ws = await session_socket_handler()
+            if refused():  # a drain or stop that began while the handler loaded
+                await ws.close(code=1013)
+                return
+            with owner_scope(authority):
+                await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
+                                                  'profile_id': grant['profile_id'],
+                                                  'instance_id': grant['instance_id'],
+                                                  'capabilities': grant['capabilities'], 'native_bootstrap': True,
+                                                  'profile_scope': grant.get('scope', 'profile')},
+                                subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)

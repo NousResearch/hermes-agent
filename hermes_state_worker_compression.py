@@ -114,6 +114,7 @@ class CompressionSnapshot:
     get_compression_tip = _C.get_compression_tip
     get_compression_lineage = _C.get_compression_lineage
     _is_compression_child_row = _C._is_compression_child_row
+    get_tool_rotation_root = _C.get_tool_rotation_root
     _session_lineage_root_to_tip = _S._session_lineage_root_to_tip
     _is_explicit_branch_session = _S._is_explicit_branch_session
     declared_scope_identity = _S.declared_scope_identity
@@ -167,7 +168,8 @@ def worker_lineage(db, conn, sid, payload):
             'root': view.get_conversation_root(target),
             'tip': view.get_compression_tip(target),
             'resume': view.resolve_resume_session_id(target),
-            'identity': view.declared_scope_identity(target)}
+            'identity': view.declared_scope_identity(target),
+            'tool_root': view.get_tool_rotation_root(target)}
 
 
 def worker_boundary(db, conn, sid, payload):
@@ -190,7 +192,7 @@ def worker_history(db, conn, sid, payload):
     ids = view._resume_lineage_ids(target) if payload['include_ancestors'] else [target]
     active = db._active_clause(payload['include_inactive'], payload['include_compacted'])
     display = payload['include_compacted'] and not payload['include_inactive']
-    rows = conn.execute(f'SELECT {"compacted, " if display else ""}{db._CONVERSATION_ROW_COLUMNS} FROM messages '
+    rows = conn.execute(f'SELECT {"session_id, compacted, display_order, " if display else ""}{db._CONVERSATION_ROW_COLUMNS} FROM messages '
                         f'WHERE session_id IN ({",".join("?" for _ in ids)}){active} ORDER BY id', ids).fetchall()
     if display:  # the owner's display reads' rule: a message whose newest copy was removed stays hidden
         from hermes_state_messages import SessionMessagesMixin

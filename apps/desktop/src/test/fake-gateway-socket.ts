@@ -28,6 +28,10 @@ export class FakeWebSocket {
       if (willOpen) {
         this.readyState = FakeWebSocket.OPEN
         this.emit('open', {})
+        // A real gateway's first frame after accept; empty = a legacy (non-authority) peer.
+        this.emit('message', {
+          data: JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+        })
       } else {
         this.readyState = FakeWebSocket.CLOSED
         this.emit('error', {})
@@ -63,7 +67,8 @@ export class FakeWebSocket {
       return
     }
 
-    if (frame.method !== 'ping') {
+    // `ping` for tests calling it directly; the liveness probe sends `gateway.ping`.
+    if (frame.method !== 'ping' && frame.method !== 'gateway.ping') {
       return
     }
 

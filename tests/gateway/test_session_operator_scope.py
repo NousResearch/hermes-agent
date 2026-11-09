@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import Principal, Submission
+from gateway.session_contract import SessionActor, Submission
 from gateway.session_controls import AuthorityConnection
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
@@ -25,8 +25,8 @@ async def test_operators_share_local_sessions_without_reassigning_receipts(tmp_p
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='fixture')
     caps = frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:operator'})
-    native = Principal('uid:1000', str(tmp_path), caps, 'native')
-    remote = Principal('auth:v1:remote', str(tmp_path), caps, 'remote')
+    native = SessionActor('uid:1000', str(tmp_path), caps, 'native')
+    remote = SessionActor('auth:v1:remote', str(tmp_path), caps, 'remote')
     executed = []
 
     async def execute(authority, ref, row):
@@ -89,7 +89,7 @@ async def test_identity_fields_cannot_grant_operator_or_first_claim(tmp_path, mo
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='fixture')
-    owner = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'owner')
+    owner = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'owner')
     ref = create_local_session(authority, owner, {'request_id': 'owner', 'source': 'gui',
         'cwd': str(tmp_path), 'model': 'fixture', 'toolsets': []})
     identity = {'user_id': 'other', 'provider': 'local', 'operator': True,

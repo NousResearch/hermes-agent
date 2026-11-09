@@ -1215,7 +1215,9 @@ def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
         return
     if parked:
         return
-    if system and not _needs_sudo(scope) and svc_name == get_service_name():
+    from hermes_cli.update_cmd_commit import past_commit_point
+    # Past the move the generator would load the new tree's plugins into this process; the hint stays.
+    if system and not _needs_sudo(scope) and svc_name == get_service_name() and not past_commit_point():
         # The refresh adopts the unit's HERMES_HOME into os.environ (sudo strips it); the rest of the
         # update keeps running for the invoking profile.
         launch_home = os.environ.get("HERMES_HOME")
@@ -1692,6 +1694,9 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     every planned gateway is verifiably covered.
     """
     from hermes_cli.update_cmd import _m
+    from hermes_cli.update_stage import publish_stage
+
+    publish_stage("Restarting Hermes services")  # also after a failed build: the code is committed
     # All bookkeeping is declared before the try so abort recovery and fleet reconciliation
     # can read it even if the phase raises early. ``pre_restart_gateway_pids`` stays empty
     # until we are about to stop/drain, so an early exception has nothing to fail closed on,

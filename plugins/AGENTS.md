@@ -22,7 +22,10 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
   `hermes_cli/memory_provider_migration.py` for homes still configured for them. Host-side code a
   catalog provider still relies on (the `honcho_host_block` config storage kind, profile clone /
   rename / update-sync hooks) resolves the provider's modules through
-  `plugins.memory.import_provider_module`, never a `plugins.memory.<name>` import. New
+  `plugins.memory.import_provider_module`, never a `plugins.memory.<name>` import. Generic seams
+  supersede that code (it is removed once the catalog provider implements them): a provider owns its profile setup through `MemoryProvider.on_profile_created` /
+  `on_profile_renamed` and its dashboard config file through `storage=STORAGE_PROVIDER` +
+  `read_config_fields` / `write_config_fields`; new provider-specific host code is refused. New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **Other features that leave core** (Home Assistant platform + toolset, Oct 2026 →
@@ -162,6 +165,20 @@ native `api:` match, or version literals on unrelated payloads. Documented surfa
   minor releases before removal.
 - Compat tests load **frozen plugins through the real discovery path** and assert outcomes — never
   exact registry/catalog counts, source-reading tests, or "a global version literal changed".
+
+## Boundary lint (`scripts/boundary_lint.py`)
+
+CI fails when a bundled plugin imports a core name that is not in `hermes_cli/data/plugin_api.json`,
+or core imports a specific bundled plugin, more often than the committed baseline records. Fix it
+with a name already on that list, a `ctx` method or discovery. If nothing listed fits, add the seam
+in its own PR first, naming the plugin that needs it: prefer a `ctx` method or hook; otherwise list
+the name in `plugin_api.json` (`module:Name`), regenerate `public-api.md` with
+`scripts/gen_plugin_api_docs.py`, document it and add a behavior test. A listed name is published to
+every plugin author: never list one just to pass the lint.
+`--update` rewrites the whole baseline from the tree, so check that its diff holds only the lines
+you meant. Run it for an intended crossing (say why in the PR body), for an import moved to
+another file (the baseline counts per importing file), or after removing crossings, so the lower
+count sticks. Never run it just to turn CI green.
 
 ## Internal import paths are not API
 

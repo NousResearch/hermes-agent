@@ -5,7 +5,7 @@ Users map env-var names to ``op://vault/item/field`` references in
 call using whatever auth the user's ``op`` already has (``OP_SERVICE_ACCOUNT_TOKEN``
 headless, ``OP_SESSION_*`` interactive) — Hermes never authenticates on the
 user's behalf, and failures never block startup. Complete pulls are cached
-in-process and under ``<hermes_home>/cache/op_cache.json`` (values only; auth
+in-process and under ``<hermes_home>/op_cache.json`` (values only; auth
 material is fingerprinted, never stored).
 """
 
@@ -47,7 +47,7 @@ _OP_ENV_ALLOWLIST = (
 
 # L1 key folds in str(home_path) so a HERMES_HOME switch inside one long-lived
 # process (the gateway) can't return another profile's secrets. The disk key
-# omits home because the file already lives under <home>/cache/.
+# omits home because the file already lives in that home.
 _CacheKey = tuple[str, str, str, str]  # (auth_fp, account, home, refs_fp)
 _DISK_CACHE_BASENAME = "op_cache.json"
 

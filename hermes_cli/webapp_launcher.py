@@ -352,7 +352,7 @@ def _explain_refused_launch(target: Path, response: dict) -> int:
 
 def cmd_webapp(args) -> int:
     from gateway.webapp_listener import webapp_settings
-    from hermes_cli.webapp import WebappBuildError
+    from hermes_cli.webapp import WebappBuildError, packaged_webapp_dist
     from hermes_constants import get_hermes_home
 
     home = get_hermes_home()
@@ -371,8 +371,10 @@ def cmd_webapp(args) -> int:
         _build(args)
     except WebappBuildError as exc:
         print(f"✗ {exc}")
-        print("  Build it explicitly:")
-        print("    hermes webapp --build-only")
+        # A packaged bundle (HERMES_WEBAPP_DIST) is never built here, so no build can fix it.
+        if packaged_webapp_dist() is None:
+            print("  Build it explicitly:")
+            print("    hermes webapp --build-only")
         return 1
     if args.build_only:
         print("Webapp bundle ready.")

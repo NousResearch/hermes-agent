@@ -170,7 +170,13 @@ class TestCheckpointLimits:
 
     def test_limits_reach_agent(self, monkeypatch):
         captured = TestMakeAgentCheckpointsFallback()._make_agent_with_checkpoints(
-            monkeypatch, {"checkpoints": {"enabled": True, "max_total_size_mb": 1000, "max_snapshots": 5}}
+            monkeypatch, {"checkpoints": {
+                "enabled": True,
+                "max_total_size_mb": 1000,
+                "max_snapshots": 5,
+                "max_file_size_mb": 3,
+            }}
         )
         assert captured.get("checkpoint_max_total_size_mb") == 1000
         assert captured.get("checkpoint_max_snapshots") == 5
+        assert captured.get("checkpoint_max_file_size_mb") == 3

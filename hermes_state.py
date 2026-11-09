@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import threading
 import weakref
+from collections import deque
 from pathlib import Path
 from hermes_dir_acl import make_user_dir
 
@@ -301,6 +302,21 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]
     return path
 
 
+# The references of handles collected unclosed. The cyclic GC can run a finalizer on a thread that holds a registry
+# lock, so the finalizer only queues the holder; the next holder-less open or any close returns it, outside any lock.
+_collected_references: deque = deque()
+
+
+def _return_collected_references() -> None:
+    """Return every queued reference of a handle collected unclosed, logging (never raising) a failed close."""
+    while _collected_references:
+        try:
+            holder = _collected_references.popleft()
+        except IndexError:
+            return
+        _holders._close_quietly(holder, "Returning a collected SessionDB's reference failed")
+
+
 # Process-wide shared registry (#90837): every writable SessionDB serves through the ONE store holder the backend's
 # registry keeps per resolved path. Long-lived in-process callers (gateway, tui_gateway, cron, in-process tools) share
 # one SessionDB via hermes_state_registry.acquire(); a SessionDB() built directly takes its own reference on that
@@ -395,13 +411,14 @@ class SessionDB(
             del caller
         self._reference: Optional[weakref.finalize] = None
         if holder is None:
+            _return_collected_references()
             path = db_path or _default_db_path()
             if read_only:
                 holder = StoreHolder(path, read_only=True, creation_site=creation_site)
             else:
                 holder = _holders.acquire(path)
-                # This handle's own reference: returned at close(), or when the handle is collected unclosed.
-                self._reference = weakref.finalize(self, holder.close)
+                # This handle's own reference: returned at close(), or queued when the handle is collected unclosed.
+                self._reference = weakref.finalize(self, _collected_references.append, holder)
                 self._reference.atexit = False
                 _register_test_instance(self)
         self._holder = holder
@@ -429,9 +446,10 @@ class SessionDB(
         only closes a connection the holder reopened after the registry closed it. When the last release leaves the
         holder open (its close failed, as when a lost WAL generation could not be captured), the close is retried
         here so the error reaches the caller; a handle collected unclosed only logs it."""
+        _return_collected_references()
         reference = self._reference
-        if reference is not None and reference.alive:
-            reference()
+        if reference is not None and reference.detach() is not None:
+            self._holder.close()
             holder = self._holder
             if not holder._shared_registry_owned and holder._conn is not None:
                 holder.close()

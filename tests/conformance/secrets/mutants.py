@@ -5,7 +5,10 @@ Each passed an earlier version of the suite. ``local_reads_ignore_tenant`` and
 ``local_writes_skip_the_administration_check`` lets a non-administering scope change credentials;
 ``local_accepts_undeclared_levels`` writes an owner-wide or tenant-wide secret onto the agent
 level instead of refusing it; ``local_refusal_leaks_the_value`` and
-``local_logs_the_value_on_a_refusal`` publish the value on the write refusal path. Against the
+``local_logs_the_value_on_a_refusal`` publish the value on the write refusal path, and
+``local_refusal_keeps_the_value_in_frame_locals`` / ``reference_refusal_keeps_the_value_in_frame_locals``
+leave it bound in a frame the refusal propagates through, where a traceback-locals renderer
+reads it. Against the
 leveled reference backend: ``reference_reads_ignore_tenant`` drops the tenant half of the pin,
 ``reference_writes_skip_the_administration_check`` drops the administration check,
 ``reference_owner_wide_resolves_everywhere`` resolves another owner's entries,
@@ -116,6 +119,23 @@ def local_logs_the_value_on_a_refusal(monkeypatch):
     monkeypatch.setattr(LocalSecretStore, "set", set)
 
 
+def local_refusal_keeps_the_value_in_frame_locals(monkeypatch):
+    """A credential write reaches the store through a frame that never clears the caller's
+    value, so a refusal propagates with the plaintext still bound in that frame's locals —
+    readable by anything that renders traceback locals."""
+    from hermes_secret_port_local import LocalSecretStore
+    original_set, original_set_auth = LocalSecretStore.set, LocalSecretStore.set_auth
+
+    def set(self, name, value, *, level):
+        return original_set(self, name, value, level=level)
+
+    def set_auth(self, provider, record):
+        return original_set_auth(self, provider, record)
+
+    monkeypatch.setattr(LocalSecretStore, "set", set)
+    monkeypatch.setattr(LocalSecretStore, "set_auth", set_auth)
+
+
 def reference_reads_ignore_tenant(monkeypatch):
     """The reference pin keeps the agent half but drops the tenant: another tenant naming the
     agent reads its secrets."""
@@ -210,6 +230,22 @@ def reference_drops_level_precedence(monkeypatch):
     monkeypatch.setattr(MemorySecretStore, "get", get)
 
 
+def reference_refusal_keeps_the_value_in_frame_locals(monkeypatch):
+    """The reference write leaves the caller's value (or record) bound in a frame the refusal
+    propagates through — the store's own clearing never reaches it."""
+    from tests.conformance.secrets.reference import MemorySecretStore
+    original_set, original_set_auth = MemorySecretStore.set, MemorySecretStore.set_auth
+
+    def set(self, name, value, *, level):
+        return original_set(self, name, value, level=level)
+
+    def set_auth(self, provider, record):
+        return original_set_auth(self, provider, record)
+
+    monkeypatch.setattr(MemorySecretStore, "set", set)
+    monkeypatch.setattr(MemorySecretStore, "set_auth", set_auth)
+
+
 MUTANTS = {
     "local_reads_ignore_tenant": local_reads_ignore_tenant,
     "local_reads_ignore_the_bound_agent": local_reads_ignore_the_bound_agent,
@@ -217,11 +253,13 @@ MUTANTS = {
     "local_accepts_undeclared_levels": local_accepts_undeclared_levels,
     "local_refusal_leaks_the_value": local_refusal_leaks_the_value,
     "local_logs_the_value_on_a_refusal": local_logs_the_value_on_a_refusal,
+    "local_refusal_keeps_the_value_in_frame_locals": local_refusal_keeps_the_value_in_frame_locals,
     "reference_reads_ignore_tenant": reference_reads_ignore_tenant,
     "reference_writes_skip_the_administration_check": reference_writes_skip_the_administration_check,
     "reference_owner_wide_resolves_everywhere": reference_owner_wide_resolves_everywhere,
     "reference_owner_wide_keys_on_the_actor": reference_owner_wide_keys_on_the_actor,
     "reference_drops_level_precedence": reference_drops_level_precedence,
+    "reference_refusal_keeps_the_value_in_frame_locals": reference_refusal_keeps_the_value_in_frame_locals,
 }
 
 

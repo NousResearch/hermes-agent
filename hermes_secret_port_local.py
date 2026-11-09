@@ -28,7 +28,12 @@ from hermes_secret_port import (
 
 
 class LocalSecretStore(SecretStore):
-    """One profile home's secrets and auth records, pinned to that home."""
+    """One profile home's secrets and auth records, pinned to that home.
+
+    A refused credential write re-raises with the caller's value (or record) cleared from the
+    refusing frames: traceback locals are rendered by some error reporters, and no frame this
+    backend owns may still hold the plaintext when the refusal propagates.
+    """
 
     def __init__(self, home: str | Path) -> None:
         from hermes_constants import hermes_home_key
@@ -71,8 +76,14 @@ class LocalSecretStore(SecretStore):
         return sorted(self._resolved())
 
     def set(self, name: str, value: str, *, level: str) -> None:
-        self._pin(administering=True)
-        self._require_agent_level(level)
+        try:
+            self._pin(administering=True)
+            self._require_agent_level(level)
+        except PermissionError:
+            # The refusal must propagate with the value bound in no frame this backend owns
+            # (error reporters render traceback locals), so clear it before re-raising.
+            del value
+            raise
         from hermes_cli.config import require_env_writable, save_env_value
         # Today's writer, at today's path (get_env_path() honors the profile-home override the
         # pin just matched): the managed-scope write lock refuses by raising, the file gets the
@@ -95,7 +106,12 @@ class LocalSecretStore(SecretStore):
         return auth._load_provider_state_with_source(auth._load_auth_store(), provider)[0]
 
     def set_auth(self, provider: str, record: dict[str, Any]) -> None:
-        self._pin(administering=True)
+        try:
+            self._pin(administering=True)
+        except PermissionError:
+            # As set(): the record is cleared from this frame before the refusal re-raises.
+            del record
+            raise
         from hermes_cli import auth
         # Today's transaction — the store's own advisory lock, the same 0600 atomic write —
         # writing the record without changing the install's choice of active provider.

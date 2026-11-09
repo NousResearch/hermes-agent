@@ -24,7 +24,9 @@ Writes are administration. ``set``, ``delete`` and ``set_auth`` are refused with
 local person administering). A write naming a level the backend does not hold is refused with
 :class:`SecretLevelRefused`; a level no secret store holds is a programming error. No refusal says
 whether the target exists, and no refusal, log line or error the store raises ever contains a
-secret's value.
+secret's value — nor is one still bound in any frame a refusal's traceback passes through: an
+implementation clears the value (or record) from its frames before the refusal propagates,
+because some error reporters render traceback frame locals.
 
 Every operation reads its pin (tenant, agent, owner, actor) from ``hermes_scope.current_scope()``
 when it runs, never from a path, ``HERMES_HOME`` or an argument; a port exposes no way to pin
@@ -93,7 +95,9 @@ class SecretStore(ABC):
         """Write *name* at *level* (an explicit :data:`LEVELS` member; the subject and agent of
         the entry come from the bound scope, never from the caller). Administration: refused
         with :class:`SecretAdminRefused` unless the bound scope may administer the agent, and
-        with :class:`SecretLevelRefused` at a level this backend does not hold."""
+        with :class:`SecretLevelRefused` at a level this backend does not hold. A refusal
+        propagates with *value* bound in no frame the implementation's code owns — clear the
+        binding before re-raising (error reporters render traceback frame locals)."""
 
     @abstractmethod
     def delete(self, name: str, *, level: str) -> bool:
@@ -109,7 +113,8 @@ class SecretStore(ABC):
     @abstractmethod
     def set_auth(self, provider: str, record: dict[str, Any]) -> None:
         """Write *provider*'s auth *record* at the agent level (where ``auth.json`` keeps it
-        today). Administration, refused like :meth:`set`."""
+        today). Administration, refused like :meth:`set` — including clearing *record* from
+        the refusing frames before a refusal propagates."""
 
 
 class SecretStoreProvider(ABC):

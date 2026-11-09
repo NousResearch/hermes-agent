@@ -1,6 +1,6 @@
 name: werracle-evm-guard
 repo: https://github.com/pCwOrM/hermes-werracle-guard
-sha: 48feb9a2fc8e445367a03ef28cfa749bfeaa42d1
+sha: 572b58e9619f16d62a78ebc1c5835f232ca9ac84
 version: "1.0.1"
 description: >-
   Autonomous EVM execution guardrail and DeFi liquidation risk radar for Hermes Agent.

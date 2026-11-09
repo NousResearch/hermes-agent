@@ -4573,23 +4573,24 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         try:
             approval_id = int(parts[2])
         except (ValueError, IndexError):
-            await answer_callback(query, _toast("platform.telegram.approval.toast_invalid_data"))
+            return await answer_callback(query, _toast("platform.telegram.approval.toast_invalid_data"))
+        resolved = _toast("platform.telegram.approval.toast_already_resolved")
+        if not (session_key := await self._claim_callback_state(
+                query, cb, self._approval_state, approval_id, _unauthorized(), resolved, pop=False)):
             return
-        session_key = await self._claim_callback_state(
-            query, cb, self._approval_state, approval_id, _unauthorized(),
-            _toast("platform.telegram.approval.toast_already_resolved"))
-        if not session_key:
-            return
-        request_id = self._approval_request_ids.pop(approval_id, None)
+        from gateway.approval_actor import approval_refusal, refusal_text
+        request_id = self._approval_request_ids.get(approval_id)
+        if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra, request_id=request_id):
+            return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
+        if not self._approval_state.pop(approval_id, None):  # a concurrent tap claimed it first
+            return await answer_callback(query, resolved)
+        self._approval_request_ids.pop(approval_id, None)
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
-        try:
-            # Rendering happens after so the message reflects what actually occurred: a tap that lands after
-            # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
-            # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
+        try:  # resolve FIRST, render after: a tap after the wait timed out (count == 0) is not "Approved" (#63501)
             from tools.approval import resolve_gateway_approval_card
-            count = resolve_gateway_approval_card(session_key, choice, request_id)
-            logger.info(
-                "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
+            count = resolve_gateway_approval_card(session_key, choice, request_id,
+                                                  actor_id=getattr(query.from_user, "id", ""), extra=self.config.extra)
+            logger.info("Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             count = 0

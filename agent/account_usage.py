@@ -234,15 +234,16 @@ def _window_top_tier_line(reset_at: Optional[datetime], keep_going_on_credits: A
     return f"{_WINDOW_TOP_TIER_USED_UP}{resets}{tail}"
 
 
+_WINDOW_KEEP_GOING_OFF_STATUS = "Keep going on credits: off. Nous sessions wait for the reset."
 _WINDOW_KEEP_GOING_OFF_LINE = "Keep going on credits: off. Hermes waits for the reset (turn on in /topup)."
 _WINDOW_KEEP_GOING_ON_LINE = "Keep going on credits: on. Uses your credits when included usage runs out."
 
 
-def _usage_window_rows(gauges: Any, *, paused_reason: Any,
-                       keep_going_on_credits: Any = None) -> tuple[list[AccountUsageWindow], list[str]]:
+def _usage_window_rows(gauges: Any, *, paused_reason: Any, keep_going_on_credits: Any = None,
+                       cta: bool = True) -> tuple[list[AccountUsageWindow], list[str]]:
     """One row per server allowance, in the server's order, plus the top-tier, payment-paused and top-up-off
     lines. Empty unless the list has an allowance that stops every model. ``keep_going_on_credits``: the
-    account setting (None: an older server)."""
+    account setting (None: an older server). ``cta=False``: the setting's status without its /topup action."""
     from agent.usage_gauges import SCOPE_TOP_TIER, all_scope, gauge_title, parse_gauges
     parsed = parse_gauges(gauges)
     if not parsed or not all_scope(parsed):
@@ -264,7 +265,7 @@ def _usage_window_rows(gauges: Any, *, paused_reason: Any,
         from agent.usage_gauges import paused_for_payment
         lines.append(_WINDOW_PAUSED_LINE if paused_for_payment(paused_reason) else _WINDOW_PAUSED_OTHER_LINE)
     elif keep_going_on_credits is False:
-        lines.append(_WINDOW_KEEP_GOING_OFF_LINE)
+        lines.append(_WINDOW_KEEP_GOING_OFF_LINE if cta else _WINDOW_KEEP_GOING_OFF_STATUS)
     elif keep_going_on_credits is True:
         lines.append(_WINDOW_KEEP_GOING_ON_LINE)
     return out, lines
@@ -286,7 +287,7 @@ def build_nous_credits_snapshot(account_info, *, cta: bool = True) -> Optional[A
         if uw is not None:
             windows, window_lines = _usage_window_rows(
                 getattr(uw, "gauges", None), paused_reason=getattr(uw, "paused_reason", None),
-                keep_going_on_credits=getattr(uw, "keep_going_on_credits", None),
+                keep_going_on_credits=getattr(uw, "keep_going_on_credits", None), cta=cta,
             )
         if windows:  # usage-window account: percents, plus the top-up balance
             details.extend(window_lines)

@@ -33,7 +33,7 @@ def portal(monkeypatch):
 
     def fetch(token, base=None):
         seen["tokens"].append(token)
-        return _PAYLOAD
+        return seen.get("payload", _PAYLOAD)
     monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: state if seen.get("signed_in", True) else {})
     monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", refresh)
     monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", fetch)
@@ -61,6 +61,22 @@ def test_a_profile_not_signed_into_nous_has_no_nous_section(portal):
     seen["signed_in"] = False
     assert nous_usage_lines(nous_route=False) == [] and nous_usage_lines(nous_route=True) == []
     assert seen["tokens"] == []
+
+
+def _window_plan(*, keep_going_on_credits: bool) -> dict:
+    reset_ms = int(time.time() * 1000) + 3_600_000
+    gauges = [{"id": "day", "scope": "all", "label": "Today", "used_bp": 1_200, "resets_at_ms": reset_ms}]
+    return {**_PAYLOAD, "usage_window": {"gauges": gauges, "keep_going_on_credits": keep_going_on_credits}}
+
+
+def test_a_window_plan_keeps_its_setting_but_not_the_topup_action_on_another_providers_session(portal):
+    seen, _ = portal
+    seen["payload"] = _window_plan(keep_going_on_credits=False)
+    off_route = nous_usage_lines(nous_route=False)
+    assert any(line.startswith("Keep going on credits: off") for line in off_route), off_route
+    assert not any("/topup" in line for line in off_route), off_route
+    on_route = nous_usage_lines(nous_route=True)
+    assert any(line.startswith("Keep going on credits: off") and "/topup" in line for line in on_route), on_route
 
 
 def test_an_expiring_stored_token_is_not_refreshed_for_another_providers_session(portal):

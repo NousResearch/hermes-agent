@@ -444,7 +444,8 @@
           {
             systemd.tmpfiles.rules = [
               "d ${cfg.stateDir}                2770 ${cfg.user} ${cfg.group} - -"
-              "d ${hermesHome}                  2770 ${cfg.user} ${cfg.group} - -"
+              # hermesHome is the gateway control dir: the CLI refuses group-writable control dirs; group keeps r-x only.
+              "d ${hermesHome}                  2750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.workingDirectory}        2770 ${cfg.user} ${cfg.group} - -"
             ]
@@ -464,7 +465,8 @@
                   mkdir -p ${cfg.stateDir}/home
                   mkdir -p ${cfg.workingDirectory}
                   chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${hermesHome} ${cfg.stateDir}/home ${cfg.workingDirectory}
-                  chmod 2770 ${cfg.stateDir} ${hermesHome} ${cfg.workingDirectory}
+                  chmod 2770 ${cfg.stateDir} ${cfg.workingDirectory}
+                  chmod 2750 ${hermesHome}
                   chmod 0750 ${cfg.stateDir}/home
 
                   # Create subdirs, set setgid + group-writable, migrate existing files.

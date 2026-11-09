@@ -265,3 +265,34 @@ async def test_latest_skips_a_newer_empty_launch_stub(tmp_path, monkeypatch, adm
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('placeholder', ['unknown', 'local'])
+async def test_peer_refresh_stamps_the_surface_on_a_row_the_creator_never_repaired(
+        tmp_path, monkeypatch, placeholder):
+    """Regression for #143052: accounting can create the row first, and session.create's DO NOTHING
+    insert then leaves its non-surface ``created_source``. The peer refresh that relabels the row
+    ``local`` is the last writer that knows the creating surface, so it stamps it and ``-c`` finds the chat.
+    A stamped surface is never replaced."""
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        sids = {}
+        for name, stamped in (('unstamped', placeholder), ('stamped', 'tui')):
+            created = await _call(owner, 'session.create', request_id=name, source='cli',
+                                  cwd=str(tmp_path), toolsets=[], model='m')
+            sids[name] = sid = created['session_id']
+            _set_created(authority.db, sid, stamped)
+            live = authority.sessions[sid]
+            store._record_gateway_session_peer(sid, live.route, live.source)
+            authority.db.append_message(sid, 'user', 'hi')
+        assert authority.db.get_session(sids['unstamped'])['created_source'] == 'cli'
+        assert authority.db.get_session(sids['stamped'])['created_source'] == 'tui'
+
+        from hermes_cli.main import _resolve_last_session
+        monkeypatch.setattr('hermes_cli.main._resolve_workspace_key', lambda: None)
+        monkeypatch.setattr('hermes_cli.main.get_hermes_home', lambda: authority.db.db_path.parent)
+        assert _resolve_last_session('cli') == sids['unstamped']
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

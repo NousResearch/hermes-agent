@@ -1,11 +1,11 @@
+import { fileUrlToNativePath } from '@hermes/shared'
+
+import { isWindowsAbsolutePath } from '@/lib/path-compare'
+
 const PREVIEW_MARKDOWN_RE = /\[Preview:[^\]]+\]\((?<href>#preview[:/][^)]+)\)/gi
 
 export function stripPreviewTargets(text: string): string {
-  return text
-    .replace(PREVIEW_MARKDOWN_RE, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  return text.replace(PREVIEW_MARKDOWN_RE, '')
 }
 
 export function extractPreviewTargets(text: string): string[] {
@@ -41,11 +41,17 @@ export function previewTargetFromMarkdownHref(href?: string): string | null {
 }
 
 export function previewName(target: string): string {
+  // `new URL('C:\\...')` would read the drive letter as a URL scheme.
+  if (isWindowsAbsolutePath(target)) {
+    return target.split(/[\\/]/).filter(Boolean).pop() || target
+  }
+
   try {
     const url = new URL(target)
 
     if (url.protocol === 'file:') {
-      return decodeURIComponent(url.pathname).split(/[\\/]/).filter(Boolean).pop() || target
+      // A URL that does not decode, or encodes a separator, is labelled by its raw path.
+      return (fileUrlToNativePath(target) ?? url.pathname).split(/[\\/]/).filter(Boolean).pop() || target
     }
 
     const file = url.pathname.split('/').filter(Boolean).pop()
@@ -54,6 +60,41 @@ export function previewName(target: string): string {
   } catch {
     return target.split(/[\\/]/).filter(Boolean).pop() || target
   }
+}
+
+/** File identity only: do not resolve symlinks, guess home, or fold path case. */
+export function previewArtifactKey(target: string, cwd: string): string {
+  let path = target.trim()
+
+  if (/^https?:\/\//i.test(path)) {
+    return path
+  }
+
+  if (/^file:\/\//i.test(path)) {
+    const filePath = fileUrlToNativePath(path)
+
+    if (filePath === null) {
+      return path
+    }
+
+    path = filePath
+  }
+
+  const windows = /^[a-z]:[\\/]/i.test(path) || path.startsWith('\\\\')
+
+  if (windows) {
+    path = path.replace(/\\/g, '/')
+  }
+
+  if (!/^(?:\/|~\/|[a-z]:\/)/i.test(path) && cwd) {
+    path = `${cwd.replace(/\/$/, '')}/${path.replace(/^\.\//, '')}`
+  }
+
+  if (/^[a-z]:[\\/]/i.test(path) || path.startsWith('\\\\')) {
+    path = path.replace(/\\/g, '/')
+  }
+
+  return path.replace(/\/\.\//g, '/')
 }
 
 export function previewDisplayLabel(target: string): string {

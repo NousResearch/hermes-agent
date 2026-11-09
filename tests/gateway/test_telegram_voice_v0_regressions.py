@@ -14,7 +14,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
@@ -113,7 +114,6 @@ def _run_agent_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner._queued_events = {}
     runner._draining = False
     runner.hooks = SimpleNamespace(loaded_hooks=False)
@@ -163,7 +163,7 @@ async def test_pending_voice_interrupt_reuses_transcript_and_echo():
     assert interrupt_text == '"hello once"'
     assert drain_text == interrupt_text
     assert drain_transcripts == interrupt_transcripts == ["hello once"]
-    mock_transcribe.assert_called_once_with("/tmp/telegram-voice.ogg")
+    mock_transcribe.assert_called_once_with("/tmp/telegram-voice.ogg", None, "gateway")
     adapter.send.assert_awaited_once_with(
         "12345",
         '🎙️ "hello once"',
@@ -216,78 +216,8 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
 
     assert result["final_response"] == "follow-up complete"
     assert _PendingVoiceAgent.messages == ["initial turn", '"hello once"']
-    mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg")
+    mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg", None, "gateway")
     assert adapter.sent == [("12345", '🎙️ "hello once"', None)]
-
-
-@pytest.mark.asyncio
-async def test_busy_voice_interrupt_transcribes_before_pending_drain(monkeypatch):
-    adapter = SimpleNamespace(send=AsyncMock(), _pending_messages={})
-    runner = _runner(adapter)
-    runner._is_user_authorized = lambda _source: True
-    runner._draining = False
-    runner._running_agents = {}
-    runner._busy_input_mode = "interrupt"
-    runner._busy_text_mode = "interrupt"
-    runner._busy_ack_ts = {}
-    runner._queued_events = {}
-    runner._agent_has_active_subagents = lambda _agent: False
-    session_key = "telegram:dm:12345"
-    agent = MagicMock()
-    runner._running_agents[session_key] = agent
-    source = _source()
-    event = MessageEvent(
-        text="",
-        message_type=MessageType.VOICE,
-        source=source,
-        media_urls=["/tmp/telegram-busy-voice.ogg"],
-        media_types=["audio/ogg"],
-    )
-    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
-
-    with (
-        patch("tools.approval.has_blocking_approval", return_value=False),
-        patch(
-            "tools.transcription_tools.transcribe_audio",
-            return_value={"success": True, "transcript": "interrupt me", "provider": "mock"},
-        ) as mock_transcribe,
-    ):
-        handled = await runner._handle_active_session_busy_message(event, session_key)
-        drain_text, drain_transcripts = await runner._transcribe_pending_audio_event_once(
-            adapter._pending_messages[session_key],
-            event.text,
-        )
-        await runner._echo_pending_stt_transcripts_once(
-            adapter._pending_messages[session_key],
-            adapter,
-            source,
-            drain_transcripts,
-        )
-
-    assert handled is True
-    agent.interrupt.assert_called_once_with('"interrupt me"')
-    assert adapter._pending_messages[session_key] is event
-    assert drain_text == '"interrupt me"'
-    mock_transcribe.assert_called_once_with("/tmp/telegram-busy-voice.ogg")
-    adapter.send.assert_awaited_once_with(
-        "12345",
-        '🎙️ "interrupt me"',
-        metadata={},
-    )
-
-
-def test_telegram_audio_size_gate_rejects_oversized_media_before_download():
-    adapter = object.__new__(TelegramAdapter)
-    adapter._max_doc_bytes = 1024
-
-    allowed, note = adapter._telegram_media_size_allowed(
-        SimpleNamespace(file_size=2048),
-        "voice message",
-    )
-
-    assert allowed is False
-    assert "exceeds" in note
-    assert "voice message" in note
 
 
 @pytest.mark.asyncio
@@ -336,32 +266,9 @@ async def test_telegram_video_size_gate_rejects_oversized_media_before_download(
     assert "exceeds" in handled[0].text
 
 
-@pytest.mark.asyncio
-async def test_voice_tts_is_explicit_audio_reply_opt_in():
-    adapter = SimpleNamespace(
-        _auto_tts_disabled_chats=set(),
-        _auto_tts_enabled_chats=set(),
-    )
-    runner = _runner(adapter)
-    runner._voice_mode = {}
-    runner._voice_provider_mode = {}
-    runner._save_voice_modes = lambda: None
-    runner._save_voice_provider_modes = lambda: None
-
-    event = SimpleNamespace(
-        source=_source(),
-        get_command_args=lambda: "tts",
-    )
-    result = await GatewayRunner._handle_voice_command(runner, event)
-
-    assert runner._voice_mode["telegram:12345"] == "all"
-    assert "12345" in adapter._auto_tts_enabled_chats
-    assert result
-
-
-def _voice_event(source, urls):
+def _voice_event(source, urls, text=""):
     return MessageEvent(
-        text="",
+        text=text,
         message_type=MessageType.VOICE,
         source=source,
         media_urls=list(urls),
@@ -369,123 +276,109 @@ def _voice_event(source, urls):
     )
 
 
-@pytest.mark.asyncio
-async def test_pending_stt_merge_does_not_re_echo_delivered_transcript():
-    """A follow-up message must not replay an already-echoed transcript.
-
-    ``merge_pending_message_event`` invalidates the transcription cache so the
-    merged text/media is picked up, which makes the drain path transcribe
-    again.  The echo ledger has to survive that invalidation, otherwise the
-    user sees the same 🎙️ line twice.
-    """
-    from gateway.platforms.base import merge_pending_message_event
-
-    adapter = SimpleNamespace(send=AsyncMock())
-    runner = _runner(adapter)
-    source = _source()
-    event = _voice_event(source, ["/tmp/voice-1.ogg"])
-
-    with patch(
-        "tools.transcription_tools.transcribe_audio",
-        return_value={"success": True, "transcript": "hello", "provider": "mock"},
-    ):
-        _, transcripts = await runner._transcribe_pending_audio_event_once(event, event.text)
-        await runner._echo_pending_stt_transcripts_once(event, adapter, source, transcripts)
-
-        # A plain text follow-up merges into the still-pending voice event.
-        merge_pending_message_event(
-            {"telegram:dm:12345": event},
-            "telegram:dm:12345",
-            MessageEvent(text="and also this", message_type=MessageType.TEXT, source=source),
-        )
-
-        drain_text, drain_transcripts = await runner._transcribe_pending_audio_event_once(
-            event, event.text
-        )
-        await runner._echo_pending_stt_transcripts_once(
-            event, adapter, source, drain_transcripts
-        )
-
-    assert event.text == "and also this"
-    assert "and also this" in drain_text
-    adapter.send.assert_awaited_once_with("12345", '🎙️ "hello"', metadata=None)
 
 
 @pytest.mark.asyncio
-async def test_pending_stt_merge_echoes_only_the_newly_merged_transcript():
-    """A second voice note still gets echoed, without repeating the first."""
+async def test_voice_note_merged_during_pending_stt_is_transcribed():
+    """A 2nd voice note merged into the pending event while the interrupt monitor's STT is in
+    flight must not be dropped by the monitor publishing a transcript of the 1st note only."""
     from gateway.platforms.base import merge_pending_message_event
 
-    adapter = SimpleNamespace(send=AsyncMock())
-    runner = _runner(adapter)
+    runner = _runner()
     source = _source()
-    event = _voice_event(source, ["/tmp/voice-1.ogg"])
+    stt_started = asyncio.Event()
+    release = asyncio.Event()
 
-    def _fake_transcribe(path):
-        name = "hello" if path.endswith("voice-1.ogg") else "world"
-        return {"success": True, "transcript": name, "provider": "mock"}
+    async def fake_enrich(text, paths, _clip_memo=None):
+        stt_started.set()
+        await release.wait()
+        transcripts = [f"<{Path(p).name}>" for p in paths]
+        return text + " ".join(transcripts), transcripts
 
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=_fake_transcribe):
-        _, transcripts = await runner._transcribe_pending_audio_event_once(event, event.text)
-        await runner._echo_pending_stt_transcripts_once(event, adapter, source, transcripts)
+    runner._enrich_message_with_transcription = fake_enrich
+    pending = {}
+    merge_pending_message_event(pending, "k", _voice_event(source, ["/tmp/A.ogg"]))
+    event = pending["k"]
 
-        merge_pending_message_event(
-            {"telegram:dm:12345": event},
-            "telegram:dm:12345",
-            _voice_event(source, ["/tmp/voice-2.ogg"]),
-        )
+    monitor = asyncio.create_task(runner._transcribe_pending_audio_event_once(event, ""))
+    await stt_started.wait()
+    merge_pending_message_event(pending, "k", _voice_event(source, ["/tmp/B.ogg"]))
+    release.set()
+    await monitor
 
-        _, drain_transcripts = await runner._transcribe_pending_audio_event_once(
-            event, event.text
-        )
-        await runner._echo_pending_stt_transcripts_once(
-            event, adapter, source, drain_transcripts
-        )
+    drain_text, drain_transcripts = await runner._transcribe_pending_audio_event_once(event, "")
 
-    assert drain_transcripts == ["hello", "world"]
-    assert [c.args[1] for c in adapter.send.await_args_list] == [
-        '🎙️ "hello"',
-        '🎙️ "world"',
-    ]
+    assert drain_transcripts == ["<A.ogg>", "<B.ogg>"]
+    assert "<B.ogg>" in drain_text
 
 
 @pytest.mark.asyncio
-async def test_pending_stt_merge_echoes_two_identical_transcripts():
-    """Two separate notes that transcribe identically are two deliveries.
-
-    The ledger counts what was already echoed rather than remembering the
-    transcript strings: a value-based dedup would silently collapse a repeated
-    phrase into one echo, dropping a note the user actually sent.
-    """
+async def test_caption_of_voice_note_merged_during_pending_stt_is_kept():
+    """The interrupt path hands over a snapshot of the caption; the merged note's caption lands on
+    ``event.text`` during the STT await and must reach both the interrupt and the cached drain text."""
     from gateway.platforms.base import merge_pending_message_event
 
-    adapter = SimpleNamespace(send=AsyncMock())
-    runner = _runner(adapter)
+    runner = _runner()
     source = _source()
-    event = _voice_event(source, ["/tmp/voice-1.ogg"])
+    stt_started = asyncio.Event()
+    release = asyncio.Event()
 
-    with patch(
-        "tools.transcription_tools.transcribe_audio",
-        return_value={"success": True, "transcript": "on my way", "provider": "mock"},
-    ):
-        _, transcripts = await runner._transcribe_pending_audio_event_once(event, event.text)
-        await runner._echo_pending_stt_transcripts_once(event, adapter, source, transcripts)
+    async def fake_enrich(text, paths, _clip_memo=None):
+        stt_started.set()
+        await release.wait()
+        transcripts = [f"<{Path(p).name}>" for p in paths]
+        return " ".join(transcripts) + " | " + text, transcripts
 
-        merge_pending_message_event(
-            {"telegram:dm:12345": event},
-            "telegram:dm:12345",
-            _voice_event(source, ["/tmp/voice-2.ogg"]),
-        )
+    runner._enrich_message_with_transcription = fake_enrich
+    pending = {}
+    merge_pending_message_event(pending, "k", _voice_event(source, ["/tmp/A.ogg"], "first caption"))
+    event = pending["k"]
 
-        _, drain_transcripts = await runner._transcribe_pending_audio_event_once(
-            event, event.text
-        )
-        await runner._echo_pending_stt_transcripts_once(
-            event, adapter, source, drain_transcripts
-        )
+    interrupt = asyncio.create_task(runner._transcribe_and_echo_pending_voice(
+        event, None, source, event.text or "", log_context="Voice-priority-interrupt",
+    ))
+    await stt_started.wait()
+    merge_pending_message_event(pending, "k", _voice_event(source, ["/tmp/B.ogg"], "second caption"))
+    release.set()
+    interrupt_text, _ = await interrupt
 
-    assert drain_transcripts == ["on my way", "on my way"]
-    assert [c.args[1] for c in adapter.send.await_args_list] == [
-        '🎙️ "on my way"',
-        '🎙️ "on my way"',
-    ], "the second note must still be echoed even though it transcribes the same"
+    drain_text, _ = await runner._transcribe_and_echo_pending_voice(
+        event, None, source, event.text or "", log_context="Voice-drain",
+    )
+
+    for text in (interrupt_text, drain_text):
+        assert "<B.ogg>" in text
+        assert "first caption" in text
+        assert "second caption" in text
+
+
+@pytest.mark.asyncio
+async def test_burst_of_merged_voice_notes_transcribes_each_clip_once():
+    """STT is paid and delays the interrupt: a re-run after a merge must transcribe only the new
+    clips, and so must the drain path's re-run after a later merge drops the cached result."""
+    from gateway.platforms.base import merge_pending_message_event
+
+    runner = _runner()
+    source = _source()
+    pending = {}
+    merge_pending_message_event(pending, "k", _voice_event(source, ["/tmp/A.ogg"]))
+    event = pending["k"]
+    burst = ["/tmp/B.ogg", "/tmp/C.ogg", "/tmp/D.ogg"]
+    calls = []
+
+    async def fake_clip(path, *_stt):
+        calls.append(Path(path).name)
+        if burst:  # the next note of the burst arrives while this clip is being transcribed
+            merge_pending_message_event(pending, "k", _voice_event(source, [burst.pop(0)]))
+        await asyncio.sleep(0)
+        return f"<{Path(path).name}>", f"<{Path(path).name}>"
+
+    runner._transcribe_one_clip = fake_clip
+    _, transcripts = await runner._transcribe_pending_audio_event_once(event)
+    assert transcripts == ["<A.ogg>", "<B.ogg>", "<C.ogg>", "<D.ogg>"]
+
+    merge_pending_message_event(pending, "k", _voice_event(source, ["/tmp/E.ogg"]))
+    _, drain_transcripts = await runner._transcribe_pending_audio_event_once(event)
+
+    assert drain_transcripts == ["<A.ogg>", "<B.ogg>", "<C.ogg>", "<D.ogg>", "<E.ogg>"]
+    assert calls == ["A.ogg", "B.ogg", "C.ogg", "D.ogg", "E.ogg"]

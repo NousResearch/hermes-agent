@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- app-icon background, macOS HIG grid, dark: #0d1117 rounded square (824x824, r=185.4)
+       centered in the 1024 canvas with 100px transparent margins, so the icon matches the
+       size of Apple-template neighbors in the Dock -->
+  <rect x="100" y="100" width="824" height="824" rx="185.4" fill="#0d1117"/>
+</svg>

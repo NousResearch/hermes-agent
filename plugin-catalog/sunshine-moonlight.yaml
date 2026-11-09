@@ -1,0 +1,18 @@
+name: sunshine-moonlight
+repo: https://github.com/lEWFkRAD/hermes-plugin-sunshine-moonlight
+sha: "46554af075ffbd2919f3b30326ef774a8bd489d2"
+version: "0.1.0"
+image: "https://raw.githubusercontent.com/lEWFkRAD/hermes-plugin-sunshine-moonlight/46554af075ffbd2919f3b30326ef774a8bd489d2/docs/banner.jpg"
+description: "Set up and diagnose Moonlight game streaming (Sunshine host <-> Moonlight client) between machines that run Hermes. One tool, action-based: discover hosts on the tailnet/LAN, preflight ports, install+start Sunshine, pair clients, verify encoders, and launch a stream. Writes to remote machines only over SSH and only when the action says so. Disclosure — runs shell commands as your user on this machine and, over SSH, on hosts you name (BatchMode, your existing keys); `install` runs `sudo` with your package manager to install `sunshine` or `moonlight-qt` without a Hermes approval prompt; `configure`/`start` rewrite Sunshine's config (with a backup) and restart its user service; `discover` reads `tailscale status` and port-probes your tailnet peers; `launch` starts a Moonlight process. No credentials stored, no telemetry."
+title: Sunshine / Moonlight
+maintainer: lEWFkRAD
+tier: community
+category: tools
+docs_url: https://github.com/lEWFkRAD/hermes-plugin-sunshine-moonlight#readme
+requires_hermes: ">=0.21.3"
+platforms: [linux]
+capabilities:
+  provides_tools: [game_stream]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

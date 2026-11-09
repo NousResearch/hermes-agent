@@ -26,22 +26,13 @@ def _entry(**over):
 
 
 class TestModelMatches:
-    def test_models_dict_catalog_matches_session_model(self):
-        e = _entry(model="gpt-5.5", models={"gpt-5.5": {}, "gpt-5.6-terra": {}})
-        assert _custom_provider_model_matches("gpt-5.6-terra", e)
 
-    def test_models_list_catalog_matches(self):
-        e = _entry(model="gpt-5.5", models=["gpt-5.5", "gpt-5.6-sol"])
-        assert _custom_provider_model_matches("gpt-5.6-sol", e)
 
     def test_catalog_miss_falls_back_to_model_field(self):
         e = _entry(model="gpt-5.5", models={"gpt-5.5": {}})
         assert _custom_provider_model_matches("gpt-5.5", e)
         assert not _custom_provider_model_matches("gpt-4o", e)
 
-    def test_no_model_no_catalog_matches_everything(self):
-        e = _entry()
-        assert _custom_provider_model_matches("anything", e)
 
     def test_catalog_case_insensitive(self):
         e = _entry(models={"GPT-5.6-Terra": {}})

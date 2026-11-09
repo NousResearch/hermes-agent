@@ -100,23 +100,27 @@ group_sessions_per_user: false
 
 ## 第四步：查找你的 Mattermost 用户 ID
 
-Hermes Agent 使用你的 Mattermost 用户 ID 来控制谁可以与机器人交互。查找方式：
+Hermes Agent 使用你的 Mattermost 用户 ID 来控制谁可以与机器人交互。个人资料对话框（头像 → 个人资料）里没有这个 ID。
 
-1. 点击左上角的**头像** → **个人资料**。
-2. 用户 ID 显示在个人资料对话框中——点击即可复制。
+可以用以下任一方式查找（见 Mattermost 文档 [Identify a user's ID](https://docs.mattermost.com/administration-guide/configure/user-management-configuration-settings#identify-a-users-id)）：
+
+1. **System Console**（系统管理员）：**User Management** → **Users** → 打开你自己的用户。ID 在 User Configuration 页面上。
+2. **浏览器**（任何用户）：在已登录 Mattermost 的浏览器中新开标签页，打开 `https://your-mattermost-server/api/v4/users/me`。返回里的 `id` 就是你的用户 ID。
+3. **用 bot token 调用 API**：按你的用户名查询。返回里的 `id` 是你的：
+
+   ```bash
+   curl -s -H "Authorization: Bearer YOUR_BOT_TOKEN" \
+     https://your-mattermost-server/api/v4/users/username/YOUR_USERNAME
+   ```
+
+   不要用 bot token 调用 `/api/v4/users/me`：那返回的是 **bot** 的 ID，不是你的。
+4. **mmctl**（系统管理员）：`mmctl user list --all` 会为每个用户输出一行 `<id>: <username> (<email>)`。
 
 你的用户 ID 是一个 26 位字母数字字符串，例如 `3uo8dkh1p7g1mfk49ear5fzs5c`。
 
 :::warning
 你的用户 ID **不是**你的用户名。用户名是 `@` 后面显示的内容（例如 `@alice`）。用户 ID 是 Mattermost 内部使用的长字母数字标识符。
 :::
-
-**替代方法**：你也可以通过 API 获取用户 ID：
-
-```bash
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-  https://your-mattermost-server/api/v4/users/me | jq .id
-```
 
 :::tip
 要获取**频道 ID**：点击频道名称 → **查看信息**。频道 ID 显示在信息面板中。如果你想手动设置主频道，需要用到它。

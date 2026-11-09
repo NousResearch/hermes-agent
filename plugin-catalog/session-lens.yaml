@@ -1,0 +1,26 @@
+name: session-lens
+title: Hermes Session Lens
+repo: https://github.com/abualnassr/hermes-session-lens
+sha: 69bc2b183fd376acf27256cd9b43f578a16388ae
+version: "0.53.2"
+description: "Read-only observability for Hermes Desktop: what each session cost and why, its full trace, recurring tool failures, every profile at a glance, provider quotas and service balances, model comparison with cheaper-route evidence, and instruction-rule grading. Disclosure — reads every profile's state.db read-only plus agent logs, cron/gateway state, config.yaml and .env (key names, and the values of keys an adapter uses); with the credentials Hermes' own resolvers return, calls only each configured vendor's usage or balance endpoint (hosts listed in the README), sending Grok CLI client headers to cli-chat-proxy.grok.com and a Claude Code user-agent to api.anthropic.com; Hermes' resolvers may renew Hermes' Codex, Nous and xAI logins and, when Hermes holds no other Anthropic credential, Claude Code's login; runs the local monid CLI when installed; an Anthropic one-token Claude Haiku probe is off by default; writes no Hermes state itself and sends no session content anywhere."
+maintainer: abualnassr
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/abualnassr/hermes-session-lens/blob/69bc2b183fd376acf27256cd9b43f578a16388ae/README.md
+image: https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/why-it-cost.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/compare.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/fleet.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/recurring-failures.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/ai-usage.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/sessions.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

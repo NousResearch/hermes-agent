@@ -1,0 +1,413 @@
+"""Completion / model-key / paste JSON-RPC handlers.
+
+Rebound onto server.py's globals at install time (``method_ctx.bind_module``), so
+bodies reference server globals bare (``_ok``, ``_err``, ``_sessions``, ...).
+"""
+
+from .method_ctx import HandlerRegistry, bind_module
+
+_registry = HandlerRegistry()
+method = _registry.method
+_profile_scoped = _registry.profile_scoped
+
+_BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "url", "git", "diff", "staged"})
+_AT_DIRECTIVE_HINTS = [
+    ("@diff", "git diff"), ("@staged", "staged diff"), ("@file:", "attach file"),
+    ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log")]
+def _item(text: str, meta: str, display: str | None = None) -> dict:
+    return {"text": text, "display": display if display is not None else text, "meta": meta}
+
+
+def _catch(fail_code: int):
+    """Handler body exceptions → ``_err(rid, fail_code, str(e))``."""
+
+    def deco(body):
+        def handler(rid, params: dict) -> dict:
+            try:
+                return body(rid, params)
+            except Exception as e:
+                return _err(rid, fail_code, str(e))
+        handler.__doc__ = body.__doc__
+        return handler
+    return deco
+
+
+@method("paste.collapse")
+def _(rid, params: dict) -> dict:
+    global _paste_counter
+    text = params.get("text", "")
+    if not text:
+        return _err(rid, 4004, "empty paste")
+    _paste_counter += 1
+    line_count = text.count("\n") + 1
+    # The shared owner's legacy fallback serves secondary profiles too: write under the ticket's home.
+    from tui_gateway.ws_legacy_fallback import connection_profile_home
+    paste_dir = Path(connection_profile_home() or _hermes_home) / "pastes"
+    paste_dir.mkdir(parents=True, exist_ok=True)
+    from datetime import datetime
+    paste_file = paste_dir / f"paste_{_paste_counter}_{datetime.now().strftime('%H%M%S')}.txt"
+    paste_file.write_text(text, encoding="utf-8")
+    placeholder = f"[Pasted text #{_paste_counter}: {line_count} lines \u2192 {paste_file}]"
+    return _ok(rid, {"placeholder": placeholder, "path": str(paste_file), "lines": line_count})
+
+
+def _profile_mention_items(prefix: str) -> list[dict]:
+    """`@<profile>` completions (multi-agent UIs route `@<profile>` text to another
+    profile). Bare-word matches only, never `@kind:` directives; the primary profile
+    is also offered as 'hermes' when no real profile claims that name."""
+    out: list[dict] = []
+    try:
+        from hermes_cli.profiles import list_profiles
+        seen: set[str] = set()
+        # Per keystroke: only name/description are read, so never walk skill trees in-request (#114041).
+        for p in list_profiles(lazy_skill_count=True):
+            if not (name := (p.name or "").strip()):
+                continue
+            seen.add(name.lower())
+            if name.lower().startswith(prefix.lower()):
+                out.append(_item(f"@{name}", (getattr(p, "description", "") or "").strip() or "agent profile"))
+        if "hermes".startswith(prefix.lower()) and "hermes" not in seen:
+            out.append(_item("@hermes", "agent profile (primary)"))
+    except Exception:
+        return []
+    return out
+
+
+def _plugin_reference_items(pfx: str, qval: str) -> list[dict] | None:
+    """`@<prefix>:<query>` autocomplete for a plugin ContextReferenceProvider; None when
+    no provider owns ``pfx`` or it fails."""
+    try:
+        from agent.context_references import get_context_reference_providers
+        import asyncio
+        if (prov := get_context_reference_providers().get(pfx)) is None:
+            return None
+        coro = prov.autocomplete(qval, limit=20)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            ac = asyncio.run(coro)
+        else:  # already inside a running loop: run the coroutine on a side thread
+            import concurrent.futures
+            import contextvars
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                ac = pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
+        return [{"text": f"@{pfx}:{it.text}", "display": it.display, "meta": it.meta} for it in ac]
+    except Exception:
+        return None
+
+
+def _fuzzy_basename_items(root: str, path_part: str, prefix_tag: str) -> list[dict]:
+    """Cmd-P style fuzzy basename search for a bare `@name`; path-ish queries take the listing path."""
+    ranked: list[tuple[tuple[int, int], str, str, bool]] = []
+    walked_dirs: set[str] = set()
+    seen: set[str] = set()
+    want_hidden = path_part.startswith(".")
+
+    def _consider(rel: str, name: str, is_dir: bool) -> None:
+        if rel in seen or (name.startswith(".") and not want_hidden):
+            return
+        if (rank := _fuzzy_basename_rank(name, path_part)) is not None:
+            seen.add(rel)
+            ranked.append((rank, rel, name, is_dir))
+
+    # Seed with root's immediate children: `_list_repo_files` is capped at _FUZZY_CACHE_MAX_FILES
+    # and the non-git fallback walk can burn the whole budget on one deep subtree.
+    with contextlib.suppress(OSError):
+        for entry in os.listdir(root):
+            if entry not in _FUZZY_FALLBACK_EXCLUDES:
+                _consider(entry, entry, os.path.isdir(os.path.join(root, entry)))
+    for rel in _list_repo_files(root):
+        _consider(rel, os.path.basename(rel), False)
+        # Rank each ancestor dir too — a folder with no name-matching file inside is otherwise invisible.
+        parent = os.path.dirname(rel)
+        while parent and parent not in walked_dirs:
+            walked_dirs.add(parent)
+            _consider(parent, os.path.basename(parent), True)
+            parent = os.path.dirname(parent)
+
+    # Same rank tier: folders first, so `@Desktop` leads with the folder.
+    ranked.sort(key=lambda r: (r[0], not r[3], len(r[1]), r[1]))
+    tag = prefix_tag or "file"
+    return [
+        _item(
+            f"@{'folder' if is_dir else tag}:{rel}{'/' if is_dir else ''}",
+            "dir" if is_dir else os.path.dirname(rel), basename + ("/" if is_dir else ""))
+        for _, rel, basename, is_dir in ranked[:30]]
+
+
+def _at_root_items() -> list[dict]:
+    """Completions for a bare ``@``: directive hints, agent profiles, plugin ``@<prefix>:`` providers."""
+    items = [_item(t, m) for t, m in _AT_DIRECTIVE_HINTS] + _profile_mention_items("")
+    with contextlib.suppress(Exception):
+        from agent.context_references import get_context_reference_providers
+        for pfx, prov in sorted(get_context_reference_providers().items()):
+            items.append(_item(f"@{pfx}:", prov.description or f"plugin: {pfx}"))
+    return items
+
+
+def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple[str, bool]]:
+    """``(name, is_dir)`` entries of one directory inside the active non-local terminal backend.
+
+    Runs in the session's own backend (``task_id`` = session key), so relative paths and ``~`` resolve
+    where the agent's commands do. Completion is advisory: an unreachable backend yields nothing —
+    falling back to the gateway host would show a plausible but wrong tree (#112963).
+    """
+    import json
+    import shlex
+
+    script = (
+        'd=$1; case $d in "~") d=$HOME;; "~/"*) d=$HOME${d#?};; esac; [ -d "$d" ] || exit 0; '
+        'for p in "$d"/* "$d"/.[!.]* "$d"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
+        'if [ -d "$p" ]; then printf "%s/\\n" "${p##*/}"; else printf "%s\\n" "${p##*/}"; fi; done'
+    )
+    try:
+        from hermes_cli.observability.shared_metrics_loop import unmetered_backend_calls
+        from tools.terminal_tool import terminal_tool
+        # Pre-confirm this internal read-only listing: its fixed `sh -c` script shape is
+        # guard-flagged as "shell command via -c/-lc flag", so under smart approvals every
+        # completion would fire an auxiliary-LLM call (the main model when no auxiliary is
+        # configured), and Desktop's ws reconnect loop turns that into model traffic from an
+        # idle machine (#115478). The script is a constant and the search dir is quoted, so
+        # nothing here needs an approval verdict.
+        with unmetered_backend_calls():  # Hermes' own listing, not the user's backend work
+            result = json.loads(terminal_tool(
+                f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3,
+                force=True))
+    except Exception:
+        return []
+    if result.get("error") or result.get("exit_code") not in (0, None):
+        return []
+    entries = [(line.rstrip("/"), line.endswith("/")) for line in str(result.get("output") or "").splitlines()]
+    return sorted((name, is_dir) for name, is_dir in entries if name and "/" not in name)
+
+
+def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is_context: bool,
+                       session_key: str | None = None, local: bool | None = None) -> list[dict]:
+    """Prefix-match entries of the directory ``path_part`` points at (max 30)."""
+    import posixpath
+    local = _effective_terminal_backend() == "local" if local is None else local
+    # A non-local backend expands ``~`` itself (the gateway host's home is the wrong one) and its listing
+    # script speaks POSIX: from a Windows gateway host, os.path would hand it ``~\\src`` and list nothing.
+    pth = os.path if local else posixpath
+    expanded = (_normalize_completion_path(path_part) if local else path_part) if path_part else "."
+    if expanded == "." or not expanded or expanded.endswith("/"):
+        search_dir, match = (expanded or "."), ""
+    else:
+        search_dir, match = pth.dirname(expanded) or ".", pth.basename(expanded)
+    if not (pth.isabs(search_dir) or search_dir.startswith("~")):
+        search_dir = pth.join(root, search_dir)
+    search_dir = pth.normpath(search_dir)
+    items: list[dict] = []
+    if local:
+        if not os.path.isdir(search_dir):
+            return items
+        entries = [(entry, os.path.isdir(os.path.join(search_dir, entry))) for entry in sorted(os.listdir(search_dir))]
+    else:
+        entries = _backend_dir_entries(search_dir, session_key)
+    for entry, is_dir in entries:
+        if match and not entry.lower().startswith(match.lower()):
+            continue
+        if is_context and (entry in _FUZZY_FALLBACK_EXCLUDES or (not prefix_tag and entry.startswith("."))):
+            continue
+        if prefix_tag and (prefix_tag == "folder") != is_dir:  # explicit `@folder:`/`@file:` skip the other kind
+            continue
+        full = pth.join(search_dir, entry)
+        rel = pth.relpath(full, root).replace(os.sep, "/")
+        suffix = "/" if is_dir else ""
+        if is_context:
+            text = f"@{prefix_tag or ('folder' if is_dir else 'file')}:{rel}{suffix}"
+        elif word.startswith("~"):
+            text = "~/" + pth.relpath(full, os.path.expanduser("~") if local else "~") + suffix
+        else:
+            text = ("./" if word.startswith("./") else "") + rel + suffix
+        items.append(_item(text, "dir" if is_dir else "", entry + suffix))
+        if len(items) >= 30:
+            break
+    return items
+
+
+@method("complete.path")
+@_catch(5021)
+def _(rid, params: dict) -> dict:
+    word = params.get("word", "")
+    if not word:
+        return _ok(rid, {"items": []})
+    session = _sessions.get(params.get("session_id", ""))
+    local = _effective_terminal_backend() == "local"
+    # A non-local backend's cwd lives inside the target; the host cannot validate it, so take the composer's
+    # session cwd (Desktop sends it) or the session's terminal cwd as-is (".": the backend's own cwd). The TUI
+    # echoes session.info's cwd back; for a sandbox session nobody gave a workspace that is the host launch dir.
+    client_cwd = params.get("cwd")
+    if session and client_cwd == session.get("cwd") and _is_remote_launch_cwd(session):
+        client_cwd = None
+    root = _completion_cwd(params) if local else (client_cwd or _terminal_task_cwd(session) or ".")
+    session_key = session.get("session_key") if session else None
+    return _ok(rid, {"items": _path_completion_items(word, root, session_key, local)})
+
+
+def _path_completion_items(word: str, root: str, session_key: str | None, local: bool) -> list[dict]:
+    """``complete.path``'s items for ``word`` resolved against ``root``; the shared gateway serves the
+    same listing against a local session's own folder (``gateway/session_complete_path.py``)."""
+    is_context = word.startswith("@")
+    query = word[1:] if is_context else word
+    if is_context and not query:
+        return _at_root_items()
+    # Plugin `@<prefix>:<query>` runs before the built-in file/folder branching.
+    if is_context and ":" in query:
+        pfx, _, qval = query.partition(":")
+        if pfx not in _BUILTIN_AT_PREFIXES and (plugin_items := _plugin_reference_items(pfx, qval)) is not None:
+            return plugin_items
+    # Bare `@folder` lists as soon as the keyword is typed (the static `@folder:` hint is not accepted).
+    if is_context and (query in {"file", "folder"} or query.startswith(("file:", "folder:"))):
+        prefix_tag, _, path_part = query.partition(":")
+    else:
+        prefix_tag, path_part = "", query
+    # `@/foo` usually means "foo, from here": absolute only when that prefix exists,
+    # else resolve relative to cwd (`@/Desktop` must not dead-end; `@/usr/local` still resolves).
+    # Host probes (this one and the fuzzy repo walk) say nothing about a non-local backend's tree.
+    if (
+        is_context and path_part.startswith("/") and not path_part.startswith("//")
+        and local and not _abs_completion_prefix_exists(path_part)):
+        path_part = path_part.lstrip("/")
+    bare_word = is_context and path_part and "/" not in path_part
+    if local and bare_word and len(path_part.strip()) >= 2 and prefix_tag != "folder":
+        items = _fuzzy_basename_items(root, path_part, prefix_tag)
+    else:
+        items = _dir_listing_items(root, word, path_part, prefix_tag, is_context, session_key, local)
+    # Bare-word `@name` may be an agent mention: profiles rank ABOVE file hits.
+    if bare_word and not prefix_tag:
+        with contextlib.suppress(Exception):
+            items = _profile_mention_items(path_part) + items
+    return items
+
+
+@method("complete.slash")
+@_catch(5020)
+def _(rid, params: dict) -> dict:
+    from tui_gateway.command_discovery import slash_completions
+    # Skill/bundle lookups are home- and cwd-keyed: bind the calling session's profile and workspace so
+    # the popup offers the project-local skills ``command.dispatch`` accepts for that session (#114359).
+    # A new-chat draft has no session yet: it names its rail-selected ``profile`` instead (#124651).
+    scope = _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                                profile=params.get("profile"))
+    return _ok(rid, slash_completions(params.get("text", ""), scope=scope))
+
+
+def _session_agent(params: dict):
+    session = _sessions.get(params.get("session_id", ""))
+    return session.get("agent") if session else None
+
+
+def _model_skew_err(rid) -> dict | None:
+    """#99859 (R2): refuse model-serving/holding RPCs when this process runs stale
+    code — the TUI/desktop would otherwise resolve a post-update model string against
+    stale cached modules (the reporter's agent_init_failed). Mirrors the dashboard's
+    ``_dashboard_code_skew_guard`` and the gateway's ``_model_switch_skew_guard``;
+    never a false positive (non-git installs detect nothing)."""
+    from gateway.code_skew import detect_code_skew
+
+    skew = detect_code_skew()
+    if not skew:
+        return None
+    boot_rev, disk_rev = skew
+    from agent.i18n import t
+
+    return _err(rid, 5098, t("gateway.model.error_prefix", error=t(
+        "gateway.model.err_skew", boot_rev=boot_rev, disk_rev=disk_rev)))
+
+
+@method("model.options")
+@_profile_scoped
+@_catch(5033)
+def _(rid, params: dict) -> dict:
+    skew = _model_skew_err(rid)
+    if skew is not None:
+        return skew
+    from hermes_cli.inventory import build_model_options_payload
+    # A spawned agent owns the live provider/model/base_url; empty attributes must
+    # NOT clobber disk config (with_overrides is truthy-only).
+    return _ok(rid, build_model_options_payload(
+        _model_picker_context(_session_agent(params)), explicit_only=bool(params.get("explicit_only")),
+        include_unconfigured=bool(params.get("include_unconfigured")), refresh=bool(params.get("refresh"))))
+
+
+@method("model.save_key")
+@_profile_scoped
+@_catch(5034)
+def _(rid, params: dict) -> dict:
+    """Save an API key for ``slug``; return its refreshed provider row (model.options shape + ``authenticated``)."""
+    skew = _model_skew_err(rid)
+    if skew is not None:
+        return skew
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.config import is_managed
+    slug, api_key = (params.get("slug") or "").strip(), (params.get("api_key") or "").strip()
+    if not slug or not api_key:
+        return _err(rid, 4001, "slug and api_key are required")
+    if is_managed():
+        return _err(rid, 4006, "managed install — credentials are read-only")
+    if not (pconfig := PROVIDER_REGISTRY.get(slug)):
+        return _err(rid, 4002, f"unknown provider: {slug}")
+    if pconfig.auth_type != "api_key":
+        return _err(rid, 4003, f"{pconfig.name} uses {pconfig.auth_type} auth — run `hermes model` to configure")
+    if not pconfig.api_key_env_vars:
+        return _err(rid, 4004, f"no env var defined for {pconfig.name}")
+    # Save the key to ~/.hermes/.env via the unified credential lifecycle so any stale config.yaml mirror of
+    # the previous key (model.api_key, custom_providers[*].api_key) is rotated in the same action (#62269).
+    env_var = pconfig.api_key_env_vars[0]
+    from hermes_cli.config import load_env
+    from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
+    previous = load_env().get(env_var)
+    # Under the profile scope the save publishes into the addressed profile's secret scope (and the
+    # shared os.environ only for the launch profile), so the refreshed inventory below sees it.
+    save_provider_env_credential(env_var, api_key)
+    if api_key != previous:  # a same-key re-save connects nothing new
+        from hermes_cli.observability.shared_metrics_setup import record_provider_setup_done
+        record_provider_setup_done(_resolve_session_platform(), slug, background=True)
+    # The launch profile's boot record may still say "nothing configured"; the gated picker's own chat
+    # waits on setup.status, so the fresh key must move the record (+ setup.ready). reconcile_record
+    # leaves it alone when the bound home is another profile's.
+    from hermes_cli.free_tier_bootstrap import reconcile_record
+    reconcile_record()
+    # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
+    from hermes_cli.inventory import build_models_payload
+    payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)
+    provider_data = next((p for p in payload["providers"] if p["slug"] == slug), None)
+    if provider_data is None:  # key saved but provider didn't appear — still success
+        provider_data = {"slug": slug, "name": pconfig.name, "is_current": False, "models": [], "total_models": 0}
+    provider_data["authenticated"] = True  # synthetic fallback bypasses picker_hints
+    return _ok(rid, {"provider": provider_data})
+
+
+@method("model.disconnect")
+@_profile_scoped
+@_catch(5035)
+def _(rid, params: dict) -> dict:
+    """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
+    from hermes_cli import managed_scope
+    from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
+    from hermes_cli.config import env_write_refusal, load_env
+    from hermes_cli.credential_lifecycle import remove_provider_env_credential
+    if not (slug := (params.get("slug") or "").strip()):
+        return _err(rid, 4001, "slug is required")
+    pconfig = PROVIDER_REGISTRY.get(slug)
+    # Remove EVERY env var plus its mirrors or the provider resurrects in the picker after restart.
+    env_vars = (pconfig.api_key_env_vars if pconfig else None) or ()
+    # Ask the .env lock about every var before removing any: a refusal part-way through left the earlier stores
+    # stripped. A locked var that holds nothing is no refusal (a package-managed install keeps keys in auth.json).
+    removable = []
+    for ev in env_vars:
+        if (refusal := env_write_refusal(ev, "remove")) is None:
+            removable.append(ev)
+        elif managed_scope.is_env_managed(ev) or os.environ.get(ev) or load_env().get(ev):
+            return _err(rid, 5035, refusal)
+    cleared_env = any([remove_provider_env_credential(ev).get("found") for ev in removable])
+    cleared_auth = clear_provider_auth(slug)  # full disconnect: OAuth grants go too
+    if not cleared_env and not cleared_auth:
+        return _err(rid, 4005, f"no credentials found for {slug}")
+    return _ok(rid, {"slug": slug, "name": pconfig.name if pconfig else slug, "disconnected": True})
+
+
+def register(server) -> None:
+    """Rebind this module's helpers + handlers onto ``server`` and register the handlers."""
+    bind_module(globals(), server, skip=("_",))

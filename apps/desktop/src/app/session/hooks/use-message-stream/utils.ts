@@ -1,12 +1,24 @@
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
+import type { ErrorSurface } from '@/lib/error-surface'
+import { isTodoToolName } from '@/lib/todos'
 
 import type { ClientSessionState } from '../../../types'
 
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    | 'branch'
+    | 'cwd'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'reasoningEffortPending'
+    | 'reasoningEffortWire'
+    | 'serviceTier'
+    | 'yolo'
   >
 >
 
@@ -35,6 +47,11 @@ export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined):
 
   if (typeof payload?.reasoning_effort === 'string') {
     patch.reasoningEffort = payload.reasoning_effort
+    patch.reasoningEffortPending = false
+  }
+
+  if (typeof payload?.reasoning_effort_wire === 'string') {
+    patch.reasoningEffortWire = payload.reasoning_effort_wire
   }
 
   if (typeof payload?.service_tier === 'string') {
@@ -56,6 +73,35 @@ export function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boole
   return Object.keys(patch).length > 0
 }
 
+/** Keep the runtime-state object when a heartbeat only restates cached fields.
+ *  `$sessionStates` feeds every mounted session surface, so an equivalent spread
+ *  re-renders them all at the heartbeat cadence. */
+export function applySessionInfoStatePatch(
+  state: ClientSessionState,
+  patch: SessionRuntimeStatePatch
+): ClientSessionState {
+  if (
+    (patch.branch === undefined || patch.branch === state.branch) &&
+    (patch.cwd === undefined || patch.cwd === state.cwd) &&
+    (patch.fast === undefined || patch.fast === state.fast) &&
+    (patch.model === undefined || patch.model === state.model) &&
+    (patch.personality === undefined || patch.personality === state.personality) &&
+    (patch.provider === undefined || patch.provider === state.provider) &&
+    (patch.reasoningEffort === undefined || patch.reasoningEffort === state.reasoningEffort) &&
+    // The wire level can change alone: an optimistic paint already holds the new
+    // model/effort, so skipping here kept the previous route's clamp ("Medium→Max") forever.
+    (patch.reasoningEffortWire === undefined || patch.reasoningEffortWire === state.reasoningEffortWire) &&
+    (patch.reasoningEffortPending === undefined ||
+      patch.reasoningEffortPending === Boolean(state.reasoningEffortPending)) &&
+    (patch.serviceTier === undefined || patch.serviceTier === state.serviceTier) &&
+    (patch.yolo === undefined || patch.yolo === state.yolo)
+  ) {
+    return state
+  }
+
+  return { ...state, ...patch }
+}
+
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
 // (rAF only), which at typical LLM token rates of ~30-80 tok/sec meant every
 // token got its own React commit + Streamdown markdown re-parse, scaling
@@ -72,6 +118,21 @@ export const STREAM_DELTA_FLUSH_MS = 33
 // still visibly updates at least ~4x per second no matter the load.
 export const MAX_STREAM_FLUSH_GAP_MS = 250
 
+// How long an optimistically armed turn (busy/awaitingResponse set at submit /
+// restore / edit, before the backend confirms it live) may hold off a
+// session.info running=false heartbeat. Within this window a running=false is
+// treated as a PRE-START report — the submit round trip hasn't finished, so
+// settling on it would drop the spinner and reopen the send guard mid-flight.
+// Past it, the gateway's running=false is authoritative: the turn never went
+// live (rewind refused after the arm, gateway bounce, dropped submit response,
+// missed terminal error event) and holding busy any longer latches the
+// composer shut until app restart (#86795 — every send gets queued behind a
+// turn that does not exist, and the queue drain waits on busy→false forever).
+// Generous vs. the real pre-start gap: the busy-retry deadline is 6s and the
+// backend flips running=true on accept, so heartbeats stop carrying false
+// within a couple seconds of a healthy submit.
+export const PRE_TURN_LIVE_SETTLE_GRACE_MS = 15_000
+
 // Gateway/provider failures sometimes arrive as message.complete text instead
 // of an explicit error event. Treat matches as inline assistant errors so they
 // persist like real error events and don't get erased by hydrate fallback.
@@ -85,6 +146,50 @@ export function completionErrorText(finalText: string): string | null {
   const text = finalText.trim()
 
   return text && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
+}
+
+// A provider safety-filter refusal (agent/error_classifier.py
+// FailoverReason.content_policy_blocked). The gateway stamps it on the terminal
+// message.complete frame as `failure_reason` and/or the error_surface `code`.
+export const CONTENT_POLICY_REFUSAL_CODE = 'content_policy_blocked'
+
+export function isContentPolicyRefusal(
+  failure: { surface?: ErrorSurface | null } | undefined,
+  failureReason: string | undefined
+): boolean {
+  return failureReason === CONTENT_POLICY_REFUSAL_CODE || failure?.surface?.code === CONTENT_POLICY_REFUSAL_CODE
+}
+
+/**
+ * Replace a live safety-refused turn with the SAME greyed display row stored
+ * hydration builds (toChatMessages for a `content_refused` row): the user's own
+ * prompt — plus any assistant/tool rows it produced — collapse into ONE
+ * non-interactive `system` row that carries the user's text and the
+ * `contentRefused` marker. So an active chat shows the greyed block the instant
+ * the refusal lands, not only after a reload. The live frame carries no notice
+ * text, so the marker is left empty and the renderer fills the i18n fallback —
+ * exactly what a stored row from an older backend does.
+ */
+export function replaceTurnWithContentRefused(messages: ChatMessage[], occurredAt: number): ChatMessage[] {
+  const userIndex = messages.findLastIndex(message => message.role === 'user')
+
+  if (userIndex < 0) {
+    return messages
+  }
+
+  const prompt = messages[userIndex]
+
+  const refused: ChatMessage = {
+    id: `content-refused-${occurredAt}-${userIndex}`,
+    role: 'system',
+    parts: [textPart(chatMessageText(prompt), occurredAt)],
+    timestamp: prompt.timestamp ?? occurredAt,
+    completedAt: occurredAt,
+    contentRefused: {},
+    ...(prompt.rowId !== undefined ? { rowId: prompt.rowId } : {})
+  }
+
+  return [...messages.slice(0, userIndex), refused]
 }
 
 export const SUBAGENT_EVENT_TYPES = new Set([
@@ -103,9 +208,9 @@ export function toTodoPayload(payload: GatewayEventPayload | undefined): Gateway
     return undefined
   }
 
-  const isTodo = payload.name === 'todo' || (!payload.name && Object.hasOwn(payload, 'todos'))
+  const isTodo = isTodoToolName(payload.name) || (!payload.name && Object.hasOwn(payload, 'todos'))
 
-  return isTodo ? { ...payload, name: 'todo', tool_id: payload.tool_id || 'todo-live' } : undefined
+  return isTodo ? { ...payload, name: 'todo_list', tool_id: payload.tool_id || 'todo-live' } : undefined
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -147,7 +252,9 @@ export function delegateTaskPayloads(
   const result = parseMaybeRecord(payload.result)
   const rawTasks = Array.isArray(args.tasks) ? args.tasks : []
   const tasks = rawTasks.length ? rawTasks.map(parseMaybeRecord) : [args]
-  const status = phase === 'complete' ? (payload.error ? 'failed' : 'completed') : 'running'
+  const resultStatus = typeof result.status === 'string' ? result.status.toLowerCase() : ''
+  const failedResult = Boolean(payload.error) || ['timeout', 'error', 'failed', 'failure'].includes(resultStatus)
+  const status = phase === 'complete' ? (failedResult ? 'failed' : 'completed') : 'running'
   const toolId = payload.tool_id || payload.tool_call_id || payload.id || 'delegate_task'
   const progressText = firstString(payload.preview, payload.message, payload.context)
 

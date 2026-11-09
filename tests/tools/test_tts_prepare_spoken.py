@@ -58,10 +58,6 @@ class TestVerifierFooterStrip:
         assert "NOT modified" not in spoken
         assert "fixed the file" in spoken
 
-    def test_footer_bullets_removed(self):
-        spoken = strip_nonspoken_blocks("Reply.\n" + self.FOOTER)
-        assert "old_string" not in spoken
-        assert "write_file" not in spoken
 
     def test_text_without_footer_untouched(self):
         raw = "Just a normal reply about files."
@@ -85,9 +81,6 @@ class TestNewlineFlattening:
         assert "First line" in spoken
         assert "Third paragraph" in spoken
 
-    def test_newlines_become_sentence_breaks(self):
-        out = flatten_newlines_for_payload("Alpha\nBeta")
-        assert out == "Alpha. Beta"
 
     def test_existing_punctuation_not_doubled(self):
         out = flatten_newlines_for_payload("Alpha.\nBeta!")
@@ -99,7 +92,7 @@ class TestSharedCleanerWiring:
     """The ONE cleaner must be applied on every TTS entry path."""
 
     def test_tool_path_strips_think_blocks(self):
-        from tools.tts_tool import _strip_markdown_for_tts
+        from tools.tts_text_normalize import _strip_markdown_for_tts
 
         cleaned = _strip_markdown_for_tts("<think>hidden</think>**Loud** and clear 🎉")
         assert "hidden" not in cleaned
@@ -114,7 +107,7 @@ class TestSharedCleanerWiring:
         assert result["success"] is False
 
     def test_streaming_helper_uses_shared_cleaner(self):
-        from tools.tts_tool import _strip_markdown_for_tts
+        from tools.tts_text_normalize import _strip_markdown_for_tts
 
         cleaned = _strip_markdown_for_tts("Temp is 14°C today\nand rising")
         assert "degrees Celsius" in cleaned

@@ -12,7 +12,7 @@ description: "在 Hermes 中接收 Microsoft Graph 变更通知（会议、日�
 
 ## 前提条件
 
-- Microsoft Graph 应用凭据——[注册 Microsoft Graph 应用程序](/guides/microsoft-graph-app-registration)
+- Microsoft Graph 应用凭据——[注册 Microsoft Graph 应用程序](../../guides/microsoft-graph-app-registration.md)
 - 一个 Microsoft Graph 可访问的**公开 HTTPS URL**（Graph 不会调用私有端点）。测试时可使用 dev tunnel；生产环境需要具有有效证书的真实域名。
 - 一个强共享密钥，用作 `clientState` 的值。使用 `openssl rand -hex 32` 生成，并以 `MSGRAPH_WEBHOOK_CLIENT_STATE` 写入 `~/.hermes/.env`。
 
@@ -67,7 +67,7 @@ https://ops.example.com/msgraph/webhook
 | `max_seen_receipts` | `5000` | 通知 ID 的去重缓存大小。达到上限时淘汰最旧的条目。 |
 | `allowed_source_cidrs` | `[]`（允许全部） | 可选的源 IP 白名单。见下文。 |
 
-大多数设置也有对应的环境变量（`MSGRAPH_WEBHOOK_*`），在 gateway 启动时合并到配置中（例外是 `host`，它仅可通过配置文件设置——参见上方说明）——参见[环境变量参考](/reference/environment-variables#microsoft-graph-teams-meetings)。
+大多数设置也有对应的环境变量（`MSGRAPH_WEBHOOK_*`），在 gateway 启动时合并到配置中（例外是 `host`，它仅可通过配置文件设置——参见上方说明）——参见[环境变量参考](../../reference/environment-variables.md#microsoft-graph-teams-meetings)。
 
 ## 安全加固
 
@@ -132,6 +132,6 @@ MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS="52.96.0.0/14,52.104.0.0/14"
 
 ## 相关文档
 
-- [注册 Microsoft Graph 应用程序](/guides/microsoft-graph-app-registration) — Azure 应用注册前提条件
-- [环境变量 → Microsoft Graph](/reference/environment-variables#microsoft-graph-teams-meetings) — 完整环境变量列表
-- [Microsoft Teams 机器人设置](/user-guide/messaging/teams) — 允许用户在 Teams 中与 Hermes 聊天的另一平台
+- [注册 Microsoft Graph 应用程序](../../guides/microsoft-graph-app-registration.md) — Azure 应用注册前提条件
+- [环境变量 → Microsoft Graph](../../reference/environment-variables.md#microsoft-graph-teams-meetings) — 完整环境变量列表
+- [Microsoft Teams 机器人设置](./teams.md) — 允许用户在 Teams 中与 Hermes 聊天的另一平台

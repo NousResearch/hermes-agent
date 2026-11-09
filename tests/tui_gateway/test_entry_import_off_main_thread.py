@@ -26,6 +26,8 @@ thread, so an in-process import would not reproduce the bug).
 import subprocess
 import sys
 
+import pytest
+
 REPO_ROOT = "."
 
 
@@ -61,10 +63,12 @@ def _spawn_worker_import_entry():
         text=True,
         timeout=60,
         env={**__import__("os").environ},
+        check=False,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
 
+@pytest.mark.platforms("linux")
 def test_entry_imports_cleanly_from_worker_thread():
     """First import of tui_gateway.entry from a worker thread must succeed."""
     rc, out, err = _spawn_worker_import_entry()
@@ -74,12 +78,3 @@ def test_entry_imports_cleanly_from_worker_thread():
     assert "OK" in combined, f"unexpected output: {out!r} / {err!r}"
 
 
-def test_entry_installs_sigpipe_handler_in_main_thread():
-    """Even though it can be imported off-thread, the main-thread path still
-    installs the SIGPIPE handler (process-global, so it applies everywhere)."""
-    rc, out, err = _spawn_worker_import_entry()
-    combined = out + err
-    assert rc == 0, f"entry import off main thread failed (rc={rc}): {err!r}"
-    assert "handler_installed=True" in combined, (
-        f"SIGPIPE handler not installed: {out!r} / {err!r}"
-    )

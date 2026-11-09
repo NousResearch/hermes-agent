@@ -1,0 +1,808 @@
+{
+  "inputs": {
+    "empty": null,
+    "garbage-root": [
+      1,
+      2
+    ],
+    "local-only": {
+      "version": 2,
+      "primary": "local",
+      "launchMode": "primary",
+      "lastUsed": "local",
+      "connections": [
+        {
+          "id": "local",
+          "kind": "local",
+          "label": "This device"
+        }
+      ]
+    },
+    "full": {
+      "version": 2,
+      "primary": "homelab",
+      "launchMode": "last-used",
+      "lastUsed": "box",
+      "connections": [
+        {
+          "id": "local",
+          "kind": "local",
+          "label": "Studio"
+        },
+        {
+          "id": "homelab",
+          "kind": "remote",
+          "label": "Homelab",
+          "url": "http://10.0.0.5:9119",
+          "authMode": "token",
+          "token": {
+            "encoding": "plain",
+            "value": "tok-abcdef123456"
+          },
+          "headers": {
+            "CF-Access-Client-Id": {
+              "encoding": "plain",
+              "value": "id1"
+            },
+            "Authorization": "nope",
+            "X-Bad Name": "x",
+            "CF-Access-Client-Secret": "sec\r\n"
+          }
+        },
+        {
+          "id": "cloud-1",
+          "kind": "cloud",
+          "label": "My Cloud",
+          "url": "https://agent.example.hermes.cloud",
+          "org": " acme ",
+          "name": "inst-1"
+        },
+        {
+          "id": "cloud-2",
+          "kind": "cloud",
+          "label": "Cloud tok",
+          "url": "https://c2.example",
+          "token": {
+            "encoding": "safeStorage",
+            "value": "YmxvYg=="
+          },
+          "authMode": "token"
+        },
+        {
+          "id": "oauthy",
+          "kind": "remote",
+          "label": "OAuth box",
+          "url": "https://gw.example.com",
+          "authMode": "oauth",
+          "org": "dropped",
+          "name": "dropped"
+        },
+        {
+          "id": "box",
+          "kind": "ssh",
+          "label": "Box",
+          "host": "ssh alice@box.lan:2222",
+          "keyPath": " ~/.ssh/id ",
+          "remoteHermesPath": "/opt/hermes",
+          "remoteProfile": "coder",
+          "token": {
+            "encoding": "plain",
+            "value": "t"
+          }
+        },
+        {
+          "id": "box2",
+          "kind": "ssh",
+          "label": "Box2",
+          "host": "[fe80::1]:22",
+          "user": "bob",
+          "port": "2200",
+          "remoteProfile": "root"
+        },
+        {
+          "id": "box3",
+          "kind": "ssh",
+          "label": "Box3",
+          "host": "b3",
+          "port": 22
+        }
+      ]
+    },
+    "dupes-and-quarantine": {
+      "primary": "gone",
+      "lastUsed": "also-gone",
+      "launchMode": "weird",
+      "quarantined": [
+        {
+          "reason": "old",
+          "entry": {
+            "label": "Old"
+          }
+        },
+        {
+          "noentry": 1
+        }
+      ],
+      "connections": [
+        null,
+        false,
+        "",
+        0,
+        "mangled",
+        42,
+        [
+          1
+        ],
+        {
+          "kind": "local",
+          "label": "A"
+        },
+        {
+          "kind": "local",
+          "label": "Second local"
+        },
+        {
+          "id": "x",
+          "kind": "remote",
+          "label": "a",
+          "url": "http://x"
+        },
+        {
+          "id": "x",
+          "kind": "remote",
+          "label": "A",
+          "url": "http://y"
+        },
+        {
+          "kind": "remote",
+          "label": "",
+          "url": "https://host.example:8443/base/"
+        },
+        {
+          "kind": "remote",
+          "label": "nourl"
+        },
+        {
+          "kind": "ssh",
+          "label": "nohost"
+        },
+        {
+          "kind": "martian",
+          "label": "m"
+        },
+        {
+          "id": "local",
+          "kind": "remote",
+          "label": "Sneaky",
+          "url": "http://s"
+        },
+        {
+          "kind": "ssh",
+          "host": "h.example"
+        },
+        {
+          "kind": "cloud",
+          "url": "https://cl.example",
+          "token": ""
+        }
+      ]
+    },
+    "long-labels": {
+      "connections": [
+        {
+          "kind": "remote",
+          "label": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+          "url": "http://a"
+        },
+        {
+          "kind": "remote",
+          "label": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+          "url": "http://b"
+        }
+      ]
+    }
+  },
+  "saveRegistry": {
+    "version": 2,
+    "primary": "local",
+    "launchMode": "primary",
+    "lastUsed": "local",
+    "connections": [
+      {
+        "id": "local",
+        "kind": "local",
+        "label": "This device"
+      },
+      {
+        "id": "homelab",
+        "kind": "remote",
+        "label": "Homelab",
+        "url": "http://10.0.0.5:9119",
+        "authMode": "token",
+        "token": {
+          "encoding": "plain",
+          "value": "tok"
+        },
+        "headers": {
+          "CF-Access-Client-Id": {
+            "encoding": "plain",
+            "value": "id1"
+          }
+        }
+      },
+      {
+        "id": "cloud",
+        "kind": "cloud",
+        "label": "Cloud",
+        "url": "https://c.example",
+        "authMode": "oauth",
+        "org": "acme",
+        "name": "i1"
+      },
+      {
+        "id": "box",
+        "kind": "ssh",
+        "label": "Box",
+        "host": "box.lan",
+        "user": "alice",
+        "port": 2222,
+        "remoteProfile": "coder"
+      }
+    ]
+  },
+  "saves": [
+    {
+      "kind": "remote",
+      "label": "New",
+      "url": "10.0.0.9:9119/",
+      "authMode": "token",
+      "token": {
+        "encoding": "plain",
+        "value": "n"
+      }
+    },
+    {
+      "kind": "remote",
+      "label": "homelab",
+      "url": "http://other"
+    },
+    {
+      "kind": "remote",
+      "label": "Other",
+      "url": "HTTP://10.0.0.5:9119/"
+    },
+    {
+      "kind": "remote",
+      "label": "Bad",
+      "url": "ftp://x"
+    },
+    {
+      "kind": "remote",
+      "label": "Bad2",
+      "url": ""
+    },
+    {
+      "kind": "ssh",
+      "label": "Dup ssh",
+      "host": "ALICE@box.lan:2222",
+      "remoteProfile": "coder"
+    },
+    {
+      "kind": "ssh",
+      "label": "No host",
+      "host": "  "
+    },
+    {
+      "kind": "local",
+      "label": "Renamed local"
+    },
+    {
+      "id": "local",
+      "kind": "remote",
+      "label": "Hijack",
+      "url": "http://h"
+    },
+    {
+      "kind": "martian",
+      "label": "M"
+    },
+    {
+      "kind": "remote",
+      "label": ""
+    },
+    {
+      "kind": "remote",
+      "label": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      "url": "http://x"
+    },
+    {
+      "id": "homelab",
+      "kind": "remote",
+      "label": "Homelab renamed"
+    },
+    {
+      "id": "homelab",
+      "kind": "remote",
+      "label": "Homelab",
+      "authMode": "oauth"
+    },
+    {
+      "id": "homelab",
+      "kind": "remote",
+      "label": "Homelab",
+      "headers": {}
+    },
+    {
+      "id": "cloud",
+      "kind": "cloud",
+      "label": "Cloud 2"
+    },
+    {
+      "id": "cloud",
+      "kind": "cloud",
+      "label": "Cloud 3",
+      "url": "https://moved.example"
+    },
+    {
+      "id": "box",
+      "kind": "ssh",
+      "label": "Box"
+    },
+    {
+      "id": "box",
+      "kind": "ssh",
+      "label": "Box",
+      "host": "carol@box.lan"
+    },
+    {
+      "kind": "cloud",
+      "label": "Cloud new",
+      "url": "https://cn.example",
+      "token": {
+        "encoding": "plain",
+        "value": "dropped"
+      },
+      "org": "o",
+      "name": "n"
+    },
+    {
+      "kind": "remote",
+      "label": "Header box",
+      "url": "http://hb",
+      "authMode": "oauth",
+      "headers": {
+        "X-Api": "v",
+        "Cookie": "c"
+      }
+    },
+    {
+      "kind": "remote",
+      "label": "Connection",
+      "url": "http://slug1"
+    }
+  ],
+  "expected": {
+    "empty": {
+      "version": 2,
+      "primary": "local",
+      "launchMode": "primary",
+      "lastUsed": "local",
+      "connections": [
+        {
+          "id": "local",
+          "kind": "local",
+          "label": "This device"
+        }
+      ]
+    },
+    "garbage-root": {
+      "version": 2,
+      "primary": "local",
+      "launchMode": "primary",
+      "lastUsed": "local",
+      "connections": [
+        {
+          "id": "local",
+          "kind": "local",
+          "label": "This device"
+        }
+      ]
+    },
+    "local-only": {
+      "version": 2,
+      "primary": "local",
+      "launchMode": "primary",
+      "lastUsed": "local",
+      "connections": [
+        {
+          "id": "local",
+          "kind": "local",
+          "label": "This device"
+        }
+      ]
+    },
+    "full": {
+      "version": 2,
+      "primary": "homelab",
+      "launchMode": "last-used",
+      "lastUsed": "box",
+      "connections": [
+        {
+          "id": "local",
+          "kind": "local",
+          "label": "Studio"
+        },
+        {
+          "id": "homelab",
+          "kind": "remote",
+          "label": "Homelab",
+          "url": "http://10.0.0.5:9119",
+          "authMode": "token",
+          "token": {
+            "encoding": "plain",
+            "value": "tok-abcdef123456"
+          },
+          "headers": {
+            "CF-Access-Client-Id": {
+              "encoding": "plain",
+              "value": "id1"
+            },
+            "CF-Access-Client-Secret": {
+              "encoding": "plain",
+              "value": "sec"
+            }
+          }
+        },
+        {
+          "id": "cloud-1",
+          "kind": "cloud",
+          "label": "My Cloud",
+          "url": "https://agent.example.hermes.cloud",
+          "authMode": "oauth",
+          "name": "inst-1",
+          "org": "acme"
+        },
+        {
+          "id": "cloud-2",
+          "kind": "cloud",
+          "label": "Cloud tok",
+          "url": "https://c2.example",
+          "authMode": "token",
+          "token": {
+            "encoding": "safeStorage",
+            "value": "YmxvYg=="
+          }
+        },
+        {
+          "id": "oauthy",
+          "kind": "remote",
+          "label": "OAuth box",
+          "url": "https://gw.example.com",
+          "authMode": "oauth"
+        },
+        {
+          "id": "box",
+          "kind": "ssh",
+          "label": "Box",
+          "host": "box.lan",
+          "user": "alice",
+          "port": 2222,
+          "keyPath": "~/.ssh/id",
+          "remoteHermesPath": "/opt/hermes",
+          "remoteProfile": "coder",
+          "token": {
+            "encoding": "plain",
+            "value": "t"
+          }
+        },
+        {
+          "id": "box2",
+          "kind": "ssh",
+          "label": "Box2",
+          "host": "fe80::1",
+          "user": "bob",
+          "port": 2200
+        },
+        {
+          "id": "box3",
+          "kind": "ssh",
+          "label": "Box3",
+          "host": "b3"
+        }
+      ]
+    },
+    "dupes-and-quarantine": {
+      "version": 2,
+      "primary": "local",
+      "launchMode": "primary",
+      "lastUsed": "local",
+      "connections": [
+        {
+          "id": "local",
+          "kind": "local",
+          "label": "A"
+        },
+        {
+          "id": "x",
+          "kind": "remote",
+          "label": "a 2",
+          "url": "http://x",
+          "authMode": "token"
+        },
+        {
+          "id": "a-3",
+          "kind": "remote",
+          "label": "A 3",
+          "url": "http://y",
+          "authMode": "token"
+        },
+        {
+          "id": "host-example-8443",
+          "kind": "remote",
+          "label": "host.example:8443",
+          "url": "https://host.example:8443/base/",
+          "authMode": "token"
+        },
+        {
+          "id": "sneaky",
+          "kind": "remote",
+          "label": "Sneaky",
+          "url": "http://s",
+          "authMode": "token"
+        },
+        {
+          "id": "h-example",
+          "kind": "ssh",
+          "label": "h.example",
+          "host": "h.example"
+        },
+        {
+          "id": "cl-example",
+          "kind": "cloud",
+          "label": "cl.example",
+          "url": "https://cl.example",
+          "authMode": "oauth",
+          "token": ""
+        }
+      ],
+      "quarantined": [
+        {
+          "reason": "old",
+          "entry": {
+            "label": "Old"
+          }
+        },
+        {
+          "reason": "entry-malformed",
+          "entry": "mangled"
+        },
+        {
+          "reason": "entry-malformed",
+          "entry": 42
+        },
+        {
+          "reason": "entry-unrecognized-kind",
+          "entry": [
+            1
+          ]
+        },
+        {
+          "reason": "entry-missing-url",
+          "entry": {
+            "kind": "remote",
+            "label": "nourl"
+          }
+        },
+        {
+          "reason": "entry-missing-ssh-host",
+          "entry": {
+            "kind": "ssh",
+            "label": "nohost"
+          }
+        },
+        {
+          "reason": "entry-unrecognized-kind",
+          "entry": {
+            "kind": "martian",
+            "label": "m"
+          }
+        }
+      ]
+    },
+    "long-labels": {
+      "version": 2,
+      "primary": "local",
+      "launchMode": "primary",
+      "lastUsed": "local",
+      "connections": [
+        {
+          "id": "local",
+          "kind": "local",
+          "label": "This device"
+        },
+        {
+          "id": "llllllllllllllllllllllllllllllllllllllllllllllll",
+          "kind": "remote",
+          "label": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+          "url": "http://a",
+          "authMode": "token"
+        },
+        {
+          "id": "llllllllllllllllllllllllllllllllllllllllllllllll-2",
+          "kind": "remote",
+          "label": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL 2",
+          "url": "http://b",
+          "authMode": "token"
+        }
+      ]
+    }
+  },
+  "expectedSaves": [
+    {
+      "entry": {
+        "id": "new",
+        "kind": "remote",
+        "label": "New",
+        "url": "http://10.0.0.9:9119",
+        "authMode": "token",
+        "token": {
+          "encoding": "plain",
+          "value": "n"
+        }
+      }
+    },
+    {
+      "error": "A connection named \"Homelab\" already exists. Connection names must be unique."
+    },
+    {
+      "error": "A connection to this gateway URL already exists (\"Homelab\")."
+    },
+    {
+      "error": "Remote gateway URL must be http:// or https://, got ftp:"
+    },
+    {
+      "error": "Remote gateway URL is required."
+    },
+    {
+      "error": "A connection to this SSH host already exists (\"Box\")."
+    },
+    {
+      "error": "SSH connections need a host."
+    },
+    {
+      "entry": {
+        "id": "local",
+        "kind": "local",
+        "label": "Renamed local"
+      }
+    },
+    {
+      "error": "The id \"local\" is reserved for the local connection."
+    },
+    {
+      "error": "Unknown connection kind: martian"
+    },
+    {
+      "error": "Every connection needs a name. Give this instance a device name (e.g. \"Homelab\", \"Work laptop\")."
+    },
+    {
+      "error": "Connection name is too long (max 64 characters)."
+    },
+    {
+      "entry": {
+        "id": "homelab",
+        "kind": "remote",
+        "label": "Homelab renamed",
+        "url": "http://10.0.0.5:9119",
+        "authMode": "token",
+        "headers": {
+          "CF-Access-Client-Id": {
+            "encoding": "plain",
+            "value": "id1"
+          }
+        }
+      }
+    },
+    {
+      "entry": {
+        "id": "homelab",
+        "kind": "remote",
+        "label": "Homelab",
+        "url": "http://10.0.0.5:9119",
+        "authMode": "oauth",
+        "headers": {
+          "CF-Access-Client-Id": {
+            "encoding": "plain",
+            "value": "id1"
+          }
+        }
+      }
+    },
+    {
+      "entry": {
+        "id": "homelab",
+        "kind": "remote",
+        "label": "Homelab",
+        "url": "http://10.0.0.5:9119",
+        "authMode": "token"
+      }
+    },
+    {
+      "entry": {
+        "id": "cloud",
+        "kind": "cloud",
+        "label": "Cloud 2",
+        "url": "https://c.example",
+        "authMode": "oauth",
+        "name": "i1",
+        "org": "acme"
+      }
+    },
+    {
+      "entry": {
+        "id": "cloud",
+        "kind": "cloud",
+        "label": "Cloud 3",
+        "url": "https://moved.example",
+        "authMode": "oauth",
+        "org": "acme"
+      }
+    },
+    {
+      "entry": {
+        "id": "box",
+        "kind": "ssh",
+        "label": "Box",
+        "host": "box.lan",
+        "user": "alice",
+        "port": 2222,
+        "remoteProfile": "coder"
+      }
+    },
+    {
+      "entry": {
+        "id": "box",
+        "kind": "ssh",
+        "label": "Box",
+        "host": "box.lan",
+        "user": "carol",
+        "remoteProfile": "coder"
+      }
+    },
+    {
+      "entry": {
+        "id": "cloud-new",
+        "kind": "cloud",
+        "label": "Cloud new",
+        "url": "https://cn.example",
+        "authMode": "oauth",
+        "name": "n",
+        "org": "o"
+      }
+    },
+    {
+      "entry": {
+        "id": "header-box",
+        "kind": "remote",
+        "label": "Header box",
+        "url": "http://hb",
+        "authMode": "oauth",
+        "headers": {
+          "X-Api": {
+            "encoding": "plain",
+            "value": "v"
+          }
+        }
+      }
+    },
+    {
+      "entry": {
+        "id": "connection",
+        "kind": "remote",
+        "label": "Connection",
+        "url": "http://slug1",
+        "authMode": "token"
+      }
+    }
+  ]
+}

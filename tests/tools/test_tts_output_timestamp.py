@@ -2,35 +2,32 @@
 
 Default output paths used second-resolution ``%Y%m%d_%H%M%S`` timestamps, so
 two text_to_speech_tool calls landing in the same wall-clock second produced
-the same filename and the second synthesis overwrote the first. The format
-now appends ``%f`` (microseconds).
+the same filename and the second synthesis overwrote the first.
 """
 
-import datetime
-import re
+import datetime as real_datetime
+from types import SimpleNamespace
+
+from tools import tts_tool
 
 
-class TestDefaultOutputTimestampResolution:
-    def test_default_output_path_uses_microsecond_timestamp(self):
-        """The source must build default filenames with a %f component."""
-        import inspect
+def test_default_output_paths_differ_within_the_same_second(tmp_path, monkeypatch):
+    stamps = iter([
+        real_datetime.datetime(2026, 9, 23, 12, 0, 0, 1000),
+        real_datetime.datetime(2026, 9, 23, 12, 0, 0, 2000),
+    ])
 
-        from tools import tts_tool
+    class _FrozenDateTime:
+        @staticmethod
+        def now():
+            return next(stamps)
 
-        src = inspect.getsource(tts_tool.text_to_speech_tool)
-        assert "%Y%m%d_%H%M%S_%f" in src, (
-            "default TTS output timestamp lost its microsecond component — "
-            "concurrent calls in the same second would collide again (#43911)"
-        )
+    monkeypatch.setattr(tts_tool, "datetime", SimpleNamespace(datetime=_FrozenDateTime))
+    monkeypatch.setattr(tts_tool, "_default_output_dir", lambda: str(tmp_path))
 
-    def test_microsecond_format_distinguishes_same_second_instants(self):
-        fmt = "%Y%m%d_%H%M%S_%f"
-        base = datetime.datetime(2026, 7, 28, 12, 0, 0, 1)
-        later_same_second = base.replace(microsecond=2)
-        assert base.strftime(fmt) != later_same_second.strftime(fmt)
-        # And the rendered value still parses back to the same instant.
-        assert datetime.datetime.strptime(base.strftime(fmt), fmt) == base
+    first, err1 = tts_tool._resolve_output_base(None, "edge", None, False)
+    second, err2 = tts_tool._resolve_output_base(None, "edge", None, False)
 
-    def test_timestamp_component_is_filename_safe(self):
-        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        assert re.fullmatch(r"\d{8}_\d{6}_\d{6}", stamp)
+    assert err1 is None and err2 is None
+    assert first.parent == tmp_path and second.parent == tmp_path
+    assert first != second, "same-second TTS calls must not share an output file (#43911)"

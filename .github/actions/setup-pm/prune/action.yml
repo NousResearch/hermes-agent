@@ -1,0 +1,17 @@
+name: Prune the PM uv cache at job teardown
+description: Register lock-exact pruning before the enclosing cache action saves.
+inputs:
+  python:
+    description: Prepared Python used to invoke the PM cache operation.
+    required: true
+  cache:
+    description: Cache directory restored by the enclosing setup action.
+    required: true
+  lock-source:
+    description: Repository checkout whose uv.lock selects the kept entries.
+    required: true
+runs:
+  using: node24
+  main: index.mjs
+  post: index.mjs
+  post-if: success()

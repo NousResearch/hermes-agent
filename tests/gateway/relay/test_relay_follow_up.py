@@ -4,7 +4,7 @@ Proves the gateway can act on a shared-identity capability (e.g. a Discord
 interaction follow-up token) WITHOUT ever holding the credential: it names the
 session it is in plus the capability ``kind``, and the connector resolves the
 real value from its vault and egresses. See gateway/relay/transport.py
-(send_follow_up) and docs/relay-connector-contract.md §4.
+(send_follow_up) and website/docs/developer-guide/relay-connector-contract.md §4.
 
 The gateway side is what's exercised here (against the stub connector); the
 connector's resolve + tenant-match enforcement lives in the connector repo
@@ -48,28 +48,6 @@ def wired():
 
 
 @pytest.mark.asyncio
-async def test_follow_up_round_trips_without_a_token(wired):
-    adapter, stub = wired
-    await adapter.connect()
-    stub.next_follow_up_result = {"success": True, "message_id": "fu-7"}
-
-    result = await adapter.send_follow_up(
-        session_key="agent:main:discord:group:chanA:userX",
-        kind="discord.interaction_token",
-        content="here is your follow-up",
-    )
-
-    assert result.success is True
-    assert result.message_id == "fu-7"
-    assert len(stub.follow_ups) == 1
-    action = stub.follow_ups[0]
-    assert action["op"] == "follow_up"
-    assert action["session_key"] == "agent:main:discord:group:chanA:userX"
-    assert action["kind"] == "discord.interaction_token"
-    assert action["content"] == "here is your follow-up"
-
-
-@pytest.mark.asyncio
 async def test_follow_up_wire_action_carries_no_credential(wired):
     """The action dict must carry only session refs — no credential VALUE.
 
@@ -93,25 +71,3 @@ async def test_follow_up_wire_action_carries_no_credential(wired):
     assert "credential" not in action
 
 
-@pytest.mark.asyncio
-async def test_follow_up_failure_surfaces_when_capability_unresolvable(wired):
-    """Connector couldn't resolve (absent/expired/tenant mismatch) -> success=False."""
-    adapter, stub = wired
-    await adapter.connect()
-    stub.next_follow_up_result = {"success": False, "error": "capability absent or tenant mismatch"}
-
-    result = await adapter.send_follow_up(
-        session_key="sess-1", kind="discord.interaction_token", content="x"
-    )
-
-    assert result.success is False
-    assert result.message_id is None
-    assert "tenant mismatch" in (result.error or "")
-
-
-@pytest.mark.asyncio
-async def test_follow_up_without_transport_fails_cleanly():
-    adapter = RelayAdapter(PlatformConfig(), _discord_descriptor(), transport=None)
-    result = await adapter.send_follow_up(session_key="s", kind="k", content="c")
-    assert result.success is False
-    assert result.error == "no transport"

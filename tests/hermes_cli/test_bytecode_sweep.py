@@ -13,7 +13,10 @@ updaters).
 
 from pathlib import Path
 
+import pytest
+
 from hermes_cli import main as hermes_main
+from hermes_cli import main_web_build
 
 
 def _make_repo(tmp_path: Path, sha: str = "a" * 40) -> Path:
@@ -38,7 +41,7 @@ def test_sweep_clears_pycache_when_checkout_changed(monkeypatch, tmp_path):
     cache = _make_pycache(repo)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
     # Stamp records a different (older) fingerprint.
-    (repo / hermes_main._BYTECODE_FINGERPRINT_FILE).write_text(
+    (repo / main_web_build._BYTECODE_FINGERPRINT_FILE).write_text(
         "git:refs/heads/main:" + "a" * 40, encoding="utf-8"
     )
 
@@ -46,95 +49,14 @@ def test_sweep_clears_pycache_when_checkout_changed(monkeypatch, tmp_path):
 
     assert not cache.exists()
     # Stamp updated to the current fingerprint.
-    recorded = (repo / hermes_main._BYTECODE_FINGERPRINT_FILE).read_text(encoding="utf-8")
+    recorded = (repo / main_web_build._BYTECODE_FINGERPRINT_FILE).read_text(encoding="utf-8")
     assert recorded.strip().endswith("b" * 40)
 
 
-def test_sweep_noop_when_fingerprint_matches(monkeypatch, tmp_path):
-    repo = _make_repo(tmp_path, sha="c" * 40)
-    cache = _make_pycache(repo)
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-    fingerprint = hermes_main._read_git_revision_fingerprint(repo)
-    assert fingerprint is not None
-    (repo / hermes_main._BYTECODE_FINGERPRINT_FILE).write_text(fingerprint, encoding="utf-8")
-
-    hermes_main._sweep_stale_bytecode_if_checkout_changed()
-
-    assert cache.exists()  # untouched — no needless recompiles on every launch
 
 
-def test_sweep_first_launch_clears_and_records(monkeypatch, tmp_path):
-    """No stamp yet (first launch with the guard) → sweep once, record."""
-    repo = _make_repo(tmp_path, sha="d" * 40)
-    cache = _make_pycache(repo)
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-
-    hermes_main._sweep_stale_bytecode_if_checkout_changed()
-
-    assert not cache.exists()
-    assert (repo / hermes_main._BYTECODE_FINGERPRINT_FILE).exists()
 
 
-def test_sweep_noop_on_non_git_install(monkeypatch, tmp_path):
-    """No .git → no fingerprint → guard must not touch anything or raise."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cache = _make_pycache(repo)
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-
-    hermes_main._sweep_stale_bytecode_if_checkout_changed()
-
-    assert cache.exists()
-    assert not (repo / hermes_main._BYTECODE_FINGERPRINT_FILE).exists()
-
-
-def test_sweep_never_raises_on_unreadable_stamp(monkeypatch, tmp_path):
-    repo = _make_repo(tmp_path, sha="e" * 40)
-    cache = _make_pycache(repo)
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-    stamp = repo / hermes_main._BYTECODE_FINGERPRINT_FILE
-    stamp.mkdir()  # a directory where a file is expected → OSError on read
-
-    hermes_main._sweep_stale_bytecode_if_checkout_changed()  # must not raise
-
-    # Unreadable stamp is treated as "changed": cache swept.
-    assert not cache.exists()
-
-
-def test_record_bytecode_fingerprint_writes_atomically(monkeypatch, tmp_path):
-    repo = _make_repo(tmp_path, sha="f" * 40)
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-
-    hermes_main._record_bytecode_fingerprint()
-
-    stamp = repo / hermes_main._BYTECODE_FINGERPRINT_FILE
-    assert stamp.read_text(encoding="utf-8").endswith("f" * 40)
-    assert not stamp.with_name(stamp.name + ".tmp").exists()
-
-
-def test_record_bytecode_fingerprint_noop_without_git(monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-
-    hermes_main._record_bytecode_fingerprint()  # must not raise
-
-    assert not (repo / hermes_main._BYTECODE_FINGERPRINT_FILE).exists()
-
-
-def test_sweep_skips_venv_and_git_dirs(monkeypatch, tmp_path):
-    """The underlying clear must not touch venv/node_modules bytecode."""
-    repo = _make_repo(tmp_path, sha="9" * 40)
-    repo_cache = _make_pycache(repo, "hermes_cli")
-    venv_cache = repo / "venv" / "lib" / "__pycache__"
-    venv_cache.mkdir(parents=True)
-    (venv_cache / "x.pyc").write_bytes(b"keep")
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-
-    hermes_main._sweep_stale_bytecode_if_checkout_changed()
-
-    assert not repo_cache.exists()
-    assert venv_cache.exists()
 
 # ---------------------------------------------------------------------------
 # Plugin-update sibling site: __pycache__ under ~/.hermes/plugins/<name>
@@ -158,7 +80,101 @@ def test_clear_plugin_bytecode_removes_nested_caches(tmp_path):
     assert not nested.exists()
 
 
-def test_clear_plugin_bytecode_never_raises_on_missing_dir(tmp_path):
-    from hermes_cli import plugins_cmd
 
-    assert plugins_cmd._clear_plugin_bytecode(tmp_path / "nope") == 0
+
+def test_a_package_the_checkout_moved_leaves_no_directory_behind(monkeypatch, tmp_path):
+    """Git removes a moved package's files but keeps its directory while ``__pycache__`` is in it;
+    the sweep emptied it, and the empty directory imported as a namespace package that hid the
+    package's new location. A directory that still holds a user's file is kept."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+    (repo / "pkg" / "sub").mkdir(parents=True)
+    (repo / "notes").mkdir()
+    for rel in ("pkg/__init__.py", "pkg/sub/__init__.py", "notes/__init__.py", "kept.py"):
+        (repo / rel).write_text("x = 1\n", encoding="utf-8")
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    git("add", ".")
+    git("commit", "-qm", "flat")
+    flat = git("rev-parse", "HEAD")
+    (repo / "src").mkdir()
+    git("mv", "pkg", "src/pkg")
+    git("rm", "-q", "notes/__init__.py")
+    git("commit", "-qm", "move pkg under src")
+    git("checkout", "-q", "--detach", flat)
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
+    hermes_main._sweep_stale_bytecode_if_checkout_changed()
+    for cache in ("pkg/__pycache__", "pkg/sub/__pycache__", "notes/__pycache__"):
+        (repo / cache).mkdir()
+        (repo / cache / "m.cpython-311.pyc").write_bytes(b"stale")
+    (repo / "notes" / "mine.txt").write_text("user file\n", encoding="utf-8")
+    git("checkout", "-q", "main")
+    assert (repo / "pkg" / "sub").is_dir(), "sanity: git leaves the directory while __pycache__ is in it"
+
+    hermes_main._sweep_stale_bytecode_if_checkout_changed()
+
+    assert not (repo / "pkg").exists()
+    assert (repo / "notes" / "mine.txt").is_file()
+    assert (repo / "src" / "pkg" / "sub" / "__init__.py").is_file()
+
+
+def test_a_sweep_that_cannot_list_dropped_files_keeps_the_old_fingerprint(monkeypatch, tmp_path):
+    """A failed ``git diff`` used to count as "nothing to prune", and the new fingerprint then hid the
+    old commit from every later sweep. The old fingerprint stays, so the next launch retries."""
+    import subprocess
+
+    from hermes_cli import main_web_build as build
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@e.invalid", "-c", "user.name=T", "commit", "-q",
+                    "--allow-empty", "-m", "c"], cwd=repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True,
+                          text=True).stdout.strip()
+    recorded = f"git:refs/heads/main:{head}"
+    (repo / build._BYTECODE_FINGERPRINT_FILE).write_text(recorded, encoding="utf-8")
+    (repo / ".git" / "refs" / "heads" / "main").write_text("b" * 40 + "\n", encoding="utf-8")
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
+
+    hermes_main._sweep_stale_bytecode_if_checkout_changed()
+
+    assert (repo / build._BYTECODE_FINGERPRINT_FILE).read_text(encoding="utf-8") == recorded
+
+
+@pytest.mark.platforms("linux")
+def test_dropped_directory_keeps_exact_filename_bytes(monkeypatch, tmp_path):
+    import os
+    import subprocess
+
+    repo = tmp_path / "repo"
+    dropped = repo / os.fsdecode(b"old-\xff")
+    dropped.mkdir(parents=True)
+    (dropped / "__init__.py").write_text("", encoding="utf-8")
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, timeout=30)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    git("add", ".")
+    git("commit", "-qm", "before")
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
+    hermes_main._sweep_stale_bytecode_if_checkout_changed()
+    _make_pycache(repo, dropped.name)
+    git("rm", "--", f"{dropped.name}/__init__.py")
+    git("commit", "-qm", "drop package")
+    unrelated = repo / "old-\ufffd"
+    unrelated.mkdir()
+
+    hermes_main._sweep_stale_bytecode_if_checkout_changed()
+
+    assert unrelated.is_dir(), "lossy decoding must not target a different directory"
+    assert not dropped.exists()

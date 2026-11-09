@@ -6,7 +6,10 @@ description: "在 CLI、Telegram、Discord 及 Discord 语音频道中设置和�
 
 # 在 Hermes 中使用语音模式
 
-本指南是[语音模式功能参考](/user-guide/features/voice-mode)的实用配套文档。
+本页的 Python 依赖命令使用 [PM 准备的源码环境](../reference/package-management.md#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
+本指南是[语音模式功能参考](../user-guide/features/voice-mode.md)的实用配套文档。
 
 功能页面介绍语音模式能做什么，本指南则说明如何真正用好它。
 
@@ -57,32 +60,34 @@ What tools do you have available?
 ### CLI 麦克风 + 播放
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[voice]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['voice'], explicit=True)"
 ```
 
 ### 消息平台
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"
 ```
 
 ### 高级 ElevenLabs TTS
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[tts-premium]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['tts-premium'], explicit=True)"
 ```
 
 ### 本地 NeuTTS（可选）
 
+声明的 `neutts` 依赖要求 Python 低于 3.14，而 Hermes 运行时要求 Python 3.14。
+因此该 extra 不会在 Hermes 运行时安装 NeuTTS。请选择兼容的提供商。
+独立的 NeuTTS 命令提供商需要自行管理兼容的 Python 环境。
+
+### 同时启用语音和消息平台
+
 ```bash
-python -m pip install -U neutts[all]
+python -c "import pm; pm.sync_venv(['voice', 'messaging', 'tts-premium', 'edge-tts'], explicit=True)"
 ```
 
-### 全部安装
-
-```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"
-```
+`all` extra 并不包含所有可选功能，也不包含上述语音和消息依赖。
 
 ## 第三步：安装系统依赖
 
@@ -149,19 +154,20 @@ ELEVENLABS_API_KEY=***
 
 ### 如果使用 `hermes setup`
 
-如果你在设置向导中选择了 NeuTTS，Hermes 会检查 `neutts` 是否已安装。如果缺失，向导会告知你 NeuTTS 需要 Python 包 `neutts` 和系统包 `espeak-ng`，并提供自动安装，使用平台包管理器安装 `espeak-ng`，然后运行：
+设置向导通过 PM 请求声明的 Python extras，不能绕过版本或平台限制：
 
-```bash
-python -m pip install -U neutts[all]
-```
+声明的 `neutts` 依赖要求 Python 低于 3.14，而 Hermes 运行时要求 Python 3.14。
+因此该 extra 不会在 Hermes 运行时安装 NeuTTS。请选择兼容的提供商。
+独立的 NeuTTS 命令提供商需要自行管理兼容的 Python 环境。
 
-如果跳过安装或安装失败，向导会回退到 Edge TTS。
+如果依赖不支持当前平台，请选择其他提供商。
 
 ## 第五步：推荐配置
 
 ```yaml
 voice:
   record_key: "ctrl+b"
+  submit_mode: "direct"  # TUI：direct | draft
   max_recording_seconds: 120
   auto_tts: false
   beep_enabled: true
@@ -180,6 +186,18 @@ tts:
 ```
 
 这是适合大多数人的保守默认配置。
+
+在 TUI 中，`voice.submit_mode` 控制转写完成后的行为：
+
+- `direct`（默认）会立即提交转写文本。
+- `draft` 会把转写文本放入输入框，供你编辑或取消，按 Enter 后才发送。
+
+如需可编辑的语音草稿，请设置：
+
+```yaml
+voice:
+  submit_mode: "draft"
+```
 
 如果想改用本地 TTS，将 `tts` 块替换为：
 
@@ -449,8 +467,8 @@ Hermes 加入 Discord 语音频道（VC），监听用户语音，转录后运�
 
 ## 下一步阅读
 
-- [语音模式功能参考](/user-guide/features/voice-mode)
-- [消息 Gateway](/user-guide/messaging)
-- [Discord 设置](/user-guide/messaging/discord)
-- [Telegram 设置](/user-guide/messaging/telegram)
-- [配置](/user-guide/configuration)
+- [语音模式功能参考](../user-guide/features/voice-mode.md)
+- [消息 Gateway](../user-guide/messaging/index.md)
+- [Discord 设置](../user-guide/messaging/discord.md)
+- [Telegram 设置](../user-guide/messaging/telegram.md)
+- [配置](../user-guide/configuration.md)

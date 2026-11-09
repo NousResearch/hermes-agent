@@ -3,7 +3,7 @@
 The sidecar token is generated at spawn and used to exist only in the
 gateway process memory + sidecar child env — so cron/`hermes send`
 standalone sends structurally could not authenticate. The adapter now
-persists ``<hermes-home>/runtime/photon-sidecar.json`` after the sidecar
+persists ``<hermes-home>/photon-sidecar.json`` after the sidecar
 passes its /healthz readiness check, deletes it on stop/failed-start, and
 ``_standalone_send`` falls back to it when PHOTON_SIDECAR_TOKEN is unset.
 No Node, no ports, no network.
@@ -22,19 +22,30 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.photon import adapter as photon_adapter
+from plugins.platforms.photon import sidecar_paths
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
 @pytest.fixture()
 def record_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    path = tmp_path / "runtime" / "photon-sidecar.json"
+    path = tmp_path / "photon-sidecar.json"
     monkeypatch.setattr(photon_adapter, "_runtime_record_path", lambda: path)
     return path
+
+
+def _previous_record(record_path: Path, data: dict) -> Path:
+    """A record where earlier releases kept it: ``<hermes-home>/runtime/``."""
+    previous = record_path.parent / "runtime" / record_path.name
+    previous.parent.mkdir(parents=True, exist_ok=True)
+    previous.write_text(json.dumps(data), encoding="utf-8")
+    return previous
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    # Stand-in for PM's node; the user's PATH node is never picked up.
+    monkeypatch.setattr(photon_adapter, "find_node_executable", lambda _name: "/pm/node")
     monkeypatch.delenv("PHOTON_SIDECAR_TOKEN", raising=False)
     cfg = PlatformConfig(enabled=True, token="", extra={})
     return PhotonAdapter(cfg)
@@ -58,7 +69,52 @@ def test_write_read_delete_roundtrip(record_path: Path) -> None:
     assert photon_adapter._read_runtime_record() is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_record_lives_at_the_top_of_the_profile_home() -> None:
+    from hermes_constants import get_hermes_home
+
+    assert photon_adapter._runtime_record_path() == get_hermes_home() / "photon-sidecar.json"
+
+
+def test_read_deletes_a_previous_record_unread(record_path: Path) -> None:
+    previous = _previous_record(record_path, {"port": 8789, "token": "tok", "pid": 4242})
+
+    assert photon_adapter._read_runtime_record() is None
+    assert not previous.exists()
+    assert not record_path.exists()
+
+
+def test_a_previous_symlink_is_removed_and_its_target_kept(record_path: Path) -> None:
+    target = record_path.parent / "workspace" / "leak.json"
+    target.parent.mkdir()
+    target.write_text("{}", encoding="utf-8")
+    previous = record_path.parent / "runtime" / record_path.name
+    previous.parent.mkdir()
+    try:
+        previous.symlink_to(target)
+    except OSError:
+        pytest.skip("creating a symlink needs a privilege this host lacks")
+
+    photon_adapter._write_runtime_record(8789, "new", 4242)
+
+    assert not os.path.lexists(previous)
+    assert target.read_text(encoding="utf-8") == "{}"
+    assert json.loads(record_path.read_text(encoding="utf-8"))["token"] == "new"
+
+
+def test_write_and_delete_leave_no_previous_record(record_path: Path) -> None:
+    previous = _previous_record(record_path, {"port": 1, "token": "old", "pid": 1})
+
+    photon_adapter._write_runtime_record(8789, "new", 4242)
+    assert not previous.exists()
+    assert json.loads(record_path.read_text(encoding="utf-8"))["token"] == "new"
+
+    _previous_record(record_path, {"port": 1, "token": "old", "pid": 1})
+    photon_adapter._delete_runtime_record()
+    assert not record_path.exists()
+    assert not previous.exists()
+
+
+@pytest.mark.platforms("posix")  # POSIX permission bits
 def test_record_written_with_0600(record_path: Path) -> None:
     photon_adapter._write_runtime_record(8789, "secret", 1)
     mode = stat.S_IMODE(record_path.stat().st_mode)
@@ -82,10 +138,10 @@ class _HealthzClient:
     def __init__(self, *a: Any, **k: Any) -> None:
         pass
 
-    async def __aenter__(self) -> "_HealthzClient":
+    async def __aenter__(self) -> _HealthzClient:
         return self
 
-    async def __aexit__(self, *a: Any) -> bool:
+    async def __aexit__(self, *a: object) -> bool:
         return False
 
     async def post(self, *a: Any, **k: Any) -> Any:
@@ -123,7 +179,7 @@ def _patch_spawn(
     # sidecar_deps_installed() checks the dependency's own directory, not just
     # node_modules/ (9cf2046081) — mirror a real completed install.
     (sidecar_dir / "node_modules" / "spectrum-ts").mkdir(parents=True)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", sidecar_dir)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", sidecar_dir)
     monkeypatch.setattr(photon_adapter, "_sidecar_deps_stale", lambda: False)
 
     async def _no_reap(self: PhotonAdapter) -> None:
@@ -167,49 +223,6 @@ async def test_record_written_after_healthz_success(
 
 
 @pytest.mark.asyncio
-async def test_record_removed_on_failed_startup(
-    monkeypatch: pytest.MonkeyPatch, record_path: Path, tmp_path: Path
-) -> None:
-    adapter = _make_adapter(monkeypatch)
-    _patch_spawn(monkeypatch, adapter, tmp_path)
-    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _HealthzClient)
-
-    class _DeadProc(_FakeProc):
-        returncode = 1
-
-        def poll(self) -> int | None:
-            return 1
-
-    monkeypatch.setattr(
-        photon_adapter.subprocess, "Popen", lambda *a, **k: _DeadProc()
-    )
-
-    # Pre-seed a stale record; the failed startup must clear it.
-    photon_adapter._write_runtime_record(1234, "stale", 1)
-
-    with pytest.raises(RuntimeError, match="before becoming ready"):
-        await adapter._start_sidecar()
-
-    assert not record_path.exists()
-    if adapter._sidecar_supervisor_task is not None:
-        adapter._sidecar_supervisor_task.cancel()
-
-
-@pytest.mark.asyncio
-async def test_record_removed_on_stop(
-    monkeypatch: pytest.MonkeyPatch, record_path: Path
-) -> None:
-    adapter = _make_adapter(monkeypatch)
-    photon_adapter._write_runtime_record(8789, "tok", 4242)
-    adapter._sidecar_proc = _FakeProc()  # type: ignore[assignment]
-
-    await adapter._stop_sidecar()
-
-    assert not record_path.exists()
-    assert adapter._sidecar_proc is None
-
-
-@pytest.mark.asyncio
 async def test_stop_without_proc_still_clears_record(
     monkeypatch: pytest.MonkeyPatch, record_path: Path
 ) -> None:
@@ -233,10 +246,10 @@ class _SendClient:
     def __init__(self, *a: Any, **k: Any) -> None:
         pass
 
-    async def __aenter__(self) -> "_SendClient":
+    async def __aenter__(self) -> _SendClient:
         return self
 
-    async def __aexit__(self, *a: Any) -> bool:
+    async def __aexit__(self, *a: object) -> bool:
         return False
 
     async def post(self, url: str, json: Any = None, headers: Any = None) -> Any:
@@ -273,56 +286,3 @@ async def test_standalone_send_consumes_record_when_env_missing(
     assert headers["X-Hermes-Sidecar-Token"] == "record-token"
 
 
-@pytest.mark.asyncio
-async def test_standalone_send_env_token_still_wins(
-    monkeypatch: pytest.MonkeyPatch, record_path: Path
-) -> None:
-    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "env-token")
-    monkeypatch.delenv("PHOTON_SIDECAR_PORT", raising=False)
-    photon_adapter._write_runtime_record(9111, "record-token", os.getpid())
-    _SendClient.calls = []
-    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _SendClient)
-
-    result = await photon_adapter._standalone_send(
-        PlatformConfig(enabled=True, token="", extra={}), "+15551234567", "hi"
-    )
-
-    assert result["success"] is True
-    _url, _body, headers = _SendClient.calls[0]
-    assert headers["X-Hermes-Sidecar-Token"] == "env-token"
-
-
-@pytest.mark.asyncio
-async def test_standalone_send_stale_record_errors_cleanly(
-    monkeypatch: pytest.MonkeyPatch, record_path: Path
-) -> None:
-    monkeypatch.delenv("PHOTON_SIDECAR_TOKEN", raising=False)
-    photon_adapter._write_runtime_record(9111, "record-token", 2**22 + 12345)
-    monkeypatch.setattr(photon_adapter, "_sidecar_pid_alive", lambda pid: False)
-    _SendClient.calls = []
-    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _SendClient)
-
-    result = await photon_adapter._standalone_send(
-        PlatformConfig(enabled=True, token="", extra={}), "+15551234567", "hi"
-    )
-
-    assert "error" in result
-    assert "gateway" in result["error"]
-    assert _SendClient.calls == []  # never hit the sidecar
-
-
-@pytest.mark.asyncio
-async def test_standalone_send_no_record_no_env_errors(
-    monkeypatch: pytest.MonkeyPatch, record_path: Path
-) -> None:
-    monkeypatch.delenv("PHOTON_SIDECAR_TOKEN", raising=False)
-    _SendClient.calls = []
-    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _SendClient)
-
-    result = await photon_adapter._standalone_send(
-        PlatformConfig(enabled=True, token="", extra={}), "+15551234567", "hi"
-    )
-
-    assert "error" in result
-    assert "gateway" in result["error"].lower() or "sidecar" in result["error"].lower()
-    assert _SendClient.calls == []

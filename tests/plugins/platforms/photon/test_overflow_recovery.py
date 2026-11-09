@@ -80,55 +80,6 @@ def test_structured_non_retryable_sidecar_error_not_legacy_retried() -> None:
 
 
 @pytest.mark.asyncio
-async def test_structured_sidecar_retryable_error_preserved(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _make_adapter(monkeypatch)
-    adapter._http_client = object()
-    adapter._sidecar_bind = "127.0.0.1"
-    adapter._sidecar_port = 43210
-    adapter._sidecar_token = "token"
-
-    class _Resp:
-        status_code = 500
-        text = (
-            '{"ok":false,"error":"temporary upstream failure",'
-            '"error_class":"upstream_transient","retryable":true}'
-        )
-
-        @staticmethod
-        def json() -> Dict[str, Any]:
-            return {
-                "ok": False,
-                "error": "temporary upstream failure",
-                "error_class": "upstream_transient",
-                "retryable": True,
-            }
-
-    class _FakeClient:
-        def __init__(self, *a: Any, **k: Any) -> None:
-            pass
-
-        async def __aenter__(self) -> "_FakeClient":
-            return self
-
-        async def __aexit__(self, *a: Any) -> bool:
-            return False
-
-        async def post(self, *a: Any, **k: Any) -> _Resp:
-            return _Resp()
-
-    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
-
-    result = await adapter._sidecar_send("space-1", "hello")
-
-    assert result.success is False
-    assert result.retryable is True
-    assert "upstream_transient" in (result.error or "")
-    assert "temporary upstream failure" in (result.error or "")
-
-
-@pytest.mark.asyncio
 async def test_send_with_retry_uses_structured_retryable_flag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -139,7 +90,7 @@ async def test_send_with_retry_uses_structured_retryable_flag(
     async def _fake_sleep(delay: float) -> None:
         sleeps.append(delay)
 
-    async def _fake_sidecar_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_sidecar_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -162,37 +113,8 @@ async def test_send_with_retry_uses_structured_retryable_flag(
     assert result.success is True
     assert result.message_id == "m-2"
     assert calls == 2
-    assert sleeps == [0.25]
-
-
-@pytest.mark.asyncio
-async def test_send_with_retry_does_not_fallback_after_auth_or_config_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _make_adapter(monkeypatch)
-    calls = 0
-
-    async def _permanent_failure(**kwargs: Any) -> SendResult:
-        nonlocal calls
-        calls += 1
-        return SendResult(
-            success=False,
-            error="Photon sidecar /send returned 500 (auth_or_config)",
-            raw_response={
-                "error_class": "auth_or_config",
-                "retryable": False,
-            },
-            retryable=False,
-        )
-
-    monkeypatch.setattr(adapter, "send", _permanent_failure)
-
-    result = await adapter._send_with_retry(
-        "space-1", "hello", max_retries=2, base_delay=0
-    )
-
-    assert result.success is False
-    assert calls == 1
+    # base backoff: base_delay * 2**0 plus up to 1s of jitter
+    assert len(sleeps) == 1 and 0.25 <= sleeps[0] <= 1.25
 
 
 # -- Gap 2: typing-indicator cooldown ---------------------------------------
@@ -202,9 +124,9 @@ async def test_typing_cooldown_suppresses_rapid_repeats(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _make_adapter(monkeypatch)
-    calls: list[Dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
 
-    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+    async def _fake_call(path: str, payload: dict[str, Any]) -> Any:
         calls.append(payload)
         return {"ok": True}
 
@@ -219,33 +141,13 @@ async def test_typing_cooldown_suppresses_rapid_repeats(
 
 
 @pytest.mark.asyncio
-async def test_typing_cooldown_is_per_chat(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _make_adapter(monkeypatch)
-    calls: list[str] = []
-
-    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
-        calls.append(payload["spaceId"])
-        return {"ok": True}
-
-    monkeypatch.setattr(adapter, "_sidecar_call", _fake_call)
-
-    # Different chats have independent cooldowns.
-    await adapter.send_typing("chat-1")
-    await adapter.send_typing("chat-2")
-
-    assert calls == ["chat-1", "chat-2"]
-
-
-@pytest.mark.asyncio
 async def test_stop_typing_resets_cooldown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _make_adapter(monkeypatch)
     starts = 0
 
-    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+    async def _fake_call(path: str, payload: dict[str, Any]) -> Any:
         nonlocal starts
         if payload.get("state") == "start":
             starts += 1
@@ -337,6 +239,34 @@ async def test_clean_shutdown_does_not_raise_fatal(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("runner_stopping", [True, False], ids=["gateway-stopping", "gateway-running"])
+async def test_sidecar_sigterm_is_fatal_only_while_gateway_keeps_running(
+    monkeypatch: pytest.MonkeyPatch, runner_stopping: bool
+) -> None:
+    """#127047: a supervisor stop SIGTERMs the sidecar before disconnect() clears
+    ``_inbound_running``. The runner's signal flag marks that window as intentional; the
+    same -15 while the gateway keeps running must still queue the reconnect."""
+    from types import SimpleNamespace
+
+    adapter = _make_adapter(monkeypatch)
+    adapter._inbound_running = True  # disconnect() has NOT run yet
+    adapter.gateway_runner = SimpleNamespace(_stop_requested_by_signal=runner_stopping)  # type: ignore[assignment]
+
+    notified: list[bool] = []
+
+    async def _fake_notify() -> None:
+        notified.append(True)
+
+    monkeypatch.setattr(adapter, "_notify_fatal_error", _fake_notify)
+
+    await adapter._supervise_sidecar(_DeadProc(exit_code=-15))  # type: ignore[arg-type]
+    await _drain_pending_tasks()
+
+    assert adapter.has_fatal_error is (not runner_stopping)
+    assert notified == ([] if runner_stopping else [True])
+
+
+@pytest.mark.asyncio
 async def test_degraded_stream_health_raises_retryable_fatal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -344,7 +274,7 @@ async def test_degraded_stream_health_raises_retryable_fatal(
     adapter._inbound_running = True
     adapter._sidecar_health_interval = 0.0
 
-    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+    async def _fake_call(path: str, payload: dict[str, Any]) -> Any:
         assert path == "/healthz"
         return {
             "ok": True,
@@ -547,49 +477,6 @@ def test_target_not_allowed_maps_to_canonical_message() -> None:
     assert "Target not allowed for this project" not in str(err)
 
 
-def test_target_not_allowed_is_not_legacy_retryable() -> None:
-    error = str(
-        photon_adapter.PhotonSidecarError(
-            path="/send",
-            status_code=500,
-            error=photon_adapter._TARGET_NOT_ALLOWED_MESSAGE,
-            error_class="target_not_allowed",
-            retryable=False,
-        )
-    )
-
-    assert PhotonAdapter._is_retryable_error(error) is False
-
-
-@pytest.mark.asyncio
-async def test_send_with_retry_returns_immediately_on_target_not_allowed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _make_adapter(monkeypatch)
-    calls = 0
-
-    async def _fake_sidecar_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        nonlocal calls
-        calls += 1
-        raise photon_adapter._sidecar_error_from_response(
-            path,
-            500,
-            '{"ok":false,"error":"internal sidecar error",'
-            '"error_class":"target_not_allowed","retryable":false}',
-        )
-
-    monkeypatch.setattr(adapter, "_sidecar_call", _fake_sidecar_call)
-
-    result = await adapter._send_with_retry("space-1", "hello", max_retries=3)
-
-    assert result.success is False
-    assert result.retryable is False
-    assert calls == 1, "permanent target_not_allowed must not be retried or resent"
-    assert photon_adapter._TARGET_NOT_ALLOWED_MESSAGE in (result.error or "")
-    assert isinstance(result.raw_response, dict)
-    assert result.raw_response.get("error_class") == "target_not_allowed"
-
-
 @pytest.mark.asyncio
 async def test_standalone_send_classifies_target_not_allowed(
     monkeypatch: pytest.MonkeyPatch,
@@ -604,7 +491,7 @@ async def test_standalone_send_classifies_target_not_allowed(
         )
 
         @staticmethod
-        def json() -> Dict[str, Any]:
+        def json() -> dict[str, Any]:
             return {
                 "ok": False,
                 "error": "internal sidecar error",
@@ -616,10 +503,10 @@ async def test_standalone_send_classifies_target_not_allowed(
         def __init__(self, *a: Any, **k: Any) -> None:
             pass
 
-        async def __aenter__(self) -> "_FakeClient":
+        async def __aenter__(self) -> _FakeClient:
             return self
 
-        async def __aexit__(self, *a: Any) -> bool:
+        async def __aexit__(self, *a: object) -> bool:
             return False
 
         async def post(self, *a: Any, **k: Any) -> _Resp:

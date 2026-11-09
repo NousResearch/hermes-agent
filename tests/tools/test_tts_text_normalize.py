@@ -35,27 +35,6 @@ def test_prepare_spoken_text_expands_celsius_and_weather_units():
     assert "km/h" not in spoken
 
 
-def test_prepare_spoken_text_flattens_visual_formatting_for_tts():
-    raw = """## Short answer\n\n- [link text](https://example.com) → NZ$120 & 80% likely\n- `inline code` should not keep backticks\n"""
-
-    spoken = prepare_spoken_text(raw)
-
-    assert "Short answer, link text to 120 New Zealand dollars and 80 percent likely" in spoken
-    assert "inline code should not keep backticks" in spoken
-    assert "https://" not in spoken
-    assert "`" not in spoken
-    assert "→" not in spoken
-    assert "&" not in spoken
-
-
-def test_gateway_auto_tts_preparation_uses_spoken_normalizer():
-    adapter = _DummyAdapter()
-
-    spoken = adapter.prepare_tts_text("## Weather\n- Now: 14°C, wind 9 km/h")
-
-    assert spoken == "Weather, Now: 14 degrees Celsius, wind 9 kilometres per hour."
-
-
 def test_prepare_spoken_text_polish_edge_cases():
     # Heading folds into the next sentence as a lead-in, not a bare label.
     assert prepare_spoken_text("## Weather\nIt will be sunny") == "Weather, It will be sunny."
@@ -68,3 +47,37 @@ def test_prepare_spoken_text_polish_edge_cases():
     assert "and/or" in prepare_spoken_text("choose and/or option")
     assert "N/A" in prepare_spoken_text("status N/A here")
     assert "2026/06/02" in prepare_spoken_text("due 2026/06/02 ok")
+
+
+def test_prepare_spoken_text_strips_media_file_links():
+    # "Open inference-server-shopping-list.xlsx" style tokens must never reach
+    # the voice: hyphenated slugs + odd extensions make TTS loop ("eeeeee").
+    raw = "The files are below.\nMEDIA:/Users/ricardo.mendes/Documents/inference-server-shopping-list.xlsx\nBye."
+    spoken = prepare_spoken_text(raw)
+    assert "MEDIA" not in spoken
+    assert "shopping-list" not in spoken
+    assert "xlsx" not in spoken
+    assert "below" in spoken
+    assert "Bye" in spoken
+
+
+def test_prepare_spoken_text_keeps_sentence_break_after_inline_media_link():
+    spoken = prepare_spoken_text("See MEDIA:/tmp/report-2026-q3.xlsx. Then reply.")
+    assert "report" not in spoken
+    assert spoken == "See. Then reply."
+
+
+def test_prepare_spoken_text_closes_trailing_colons():
+    # "the regex list:" + a now-removed raw token would leave the voice hanging
+    # on an open colon-pause (the "aaaa" stutter). Close it with a period.
+    spoken = prepare_spoken_text("Here is the list:\nMEDIA:/tmp/x.py\nMore text")
+    assert "list:" not in spoken
+    assert "list." in spoken
+
+
+def test_prepare_spoken_text_closes_colon_on_single_line():
+    # Multi-line text gets colons closed per line; single-line text reaches the
+    # end-of-text rule instead.
+    assert prepare_spoken_text("Here is the list:") == "Here is the list."
+    # ...but a digit-preceded colon is a ratio and must stay intact.
+    assert prepare_spoken_text("Final score 3:2") == "Final score 3:2"

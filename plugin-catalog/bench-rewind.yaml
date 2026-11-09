@@ -1,0 +1,23 @@
+name: bench-rewind
+repo: https://github.com/rusty4444/hermes-bench-rewind
+sha: 27979cba5559cedebf0cf6be9a8e4b6a29df97c3
+description: "An undo history for a physical teardown: record removal steps on your own photos, keep a parts ledger by bag, answer \"where does this go?\" and reassemble in a valid reverse order. Human-confirmed records only, with native agent tools, a live Desktop page and a printable reassembly packet. Disclosure — no network, model, shell or subprocess use and no telemetry; it reads only an image or kit file the user names (or picks in Desktop) and refuses symlinks; it strips photo metadata (GPS, camera, XMP, text, content credentials) before storing a copy, and keeps projects and photo copies under the profile's plugin-data/bench-rewind/ folder (0700/0600); exported reassembly packets embed the user's photos unless the text-only variant is chosen."
+maintainer: rusty4444
+tier: community
+category: tools
+title: "Bench Rewind"
+docs_url: https://github.com/rusty4444/hermes-bench-rewind#readme
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+platforms: [linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/rusty4444/hermes-bench-rewind/27979cba5559cedebf0cf6be9a8e4b6a29df97c3/docs/screenshots/workbench.png
+capabilities:
+  provides_tools:
+    - bench_rewind_projects
+    - bench_rewind_record
+    - bench_rewind_locate
+    - bench_rewind_rewind
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

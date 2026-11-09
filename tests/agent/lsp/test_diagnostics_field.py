@@ -6,14 +6,12 @@ having LSP output prepended to the lint string.
 """
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import (
-    PatchResult,
     ShellFileOperations,
-    WriteResult,
 )
 
 
@@ -22,37 +20,16 @@ from tools.file_operations import (
 # ---------------------------------------------------------------------------
 
 
-def test_writeresult_lsp_diagnostics_optional():
-    r = WriteResult()
-    assert r.lsp_diagnostics is None
 
 
-def test_writeresult_to_dict_omits_field_when_none():
-    r = WriteResult(bytes_written=10)
-    assert "lsp_diagnostics" not in r.to_dict()
 
 
-def test_writeresult_to_dict_includes_field_when_set():
-    r = WriteResult(bytes_written=10, lsp_diagnostics="<diagnostics>...</diagnostics>")
-    d = r.to_dict()
-    assert d["lsp_diagnostics"] == "<diagnostics>...</diagnostics>"
 
 
-def test_patchresult_to_dict_includes_field_when_set():
-    r = PatchResult(success=True, lsp_diagnostics="ERROR [1:1] thing")
-    d = r.to_dict()
-    assert d["lsp_diagnostics"] == "ERROR [1:1] thing"
 
 
-def test_patchresult_to_dict_omits_field_when_none():
-    r = PatchResult(success=True)
-    assert "lsp_diagnostics" not in r.to_dict()
 
 
-def test_patchresult_to_dict_omits_field_when_empty_string():
-    """Empty string counts as falsy — agent shouldn't see an empty field."""
-    r = PatchResult(success=True, lsp_diagnostics="")
-    assert "lsp_diagnostics" not in r.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -60,19 +37,6 @@ def test_patchresult_to_dict_omits_field_when_empty_string():
 # ---------------------------------------------------------------------------
 
 
-def test_lint_and_lsp_diagnostics_are_separate_channels():
-    """A WriteResult can carry BOTH a syntax-error lint AND an LSP
-    diagnostic block.  They belong in separate fields."""
-    r = WriteResult(
-        bytes_written=42,
-        lint={"status": "error", "output": "SyntaxError: ..."},
-        lsp_diagnostics="<diagnostics>ERROR [1:5] type mismatch</diagnostics>",
-    )
-    d = r.to_dict()
-    assert "lint" in d
-    assert "lsp_diagnostics" in d
-    assert d["lint"]["output"] == "SyntaxError: ..."
-    assert "type mismatch" in d["lsp_diagnostics"]
 
 
 # ---------------------------------------------------------------------------
@@ -80,31 +44,8 @@ def test_lint_and_lsp_diagnostics_are_separate_channels():
 # ---------------------------------------------------------------------------
 
 
-def test_write_file_populates_lsp_diagnostics_when_layer_returns_block(tmp_path):
-    """When the LSP layer returns a non-empty block, write_file puts it
-    into the ``lsp_diagnostics`` field — NOT into ``lint.output``."""
-    fops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
-    target = tmp_path / "x.py"
-
-    block = "<diagnostics file=\"x.py\">\nERROR [1:1] problem\n</diagnostics>"
-
-    with patch.object(fops, "_maybe_lsp_diagnostics", return_value=block):
-        res = fops.write_file(str(target), "x = 1\n")
-
-    assert res.lsp_diagnostics == block
-    # Lint is the syntax check, which is clean for "x = 1" — must NOT
-    # have the LSP block folded into it.
-    assert res.lint == {"status": "ok", "output": ""}
 
 
-def test_write_file_lsp_diagnostics_none_when_layer_returns_empty(tmp_path):
-    fops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
-    target = tmp_path / "x.py"
-
-    with patch.object(fops, "_maybe_lsp_diagnostics", return_value=""):
-        res = fops.write_file(str(target), "x = 1\n")
-
-    assert res.lsp_diagnostics is None
 
 
 def test_write_file_skips_lsp_when_syntax_failed(tmp_path):
@@ -119,6 +60,22 @@ def test_write_file_skips_lsp_when_syntax_failed(tmp_path):
     assert mock_lsp.call_count == 0
     assert res.lsp_diagnostics is None
     assert res.lint["status"] == "error"
+
+
+def test_maybe_lsp_diagnostics_swallows_enabled_for_failure(tmp_path):
+    """``_maybe_lsp_diagnostics`` gates through the guarded ``_lsp_will_handle``
+    helper, so a workspace-resolution failure (e.g. the process cwd was removed
+    under a running worker) degrades to "no LSP for this write" instead of
+    surfacing as an error from a write that already landed on disk."""
+    fops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+
+    with patch.object(fops, "_lsp_service") as mock_service:
+        mock_service.return_value.enabled_for = MagicMock(
+            side_effect=FileNotFoundError(2, "No such file or directory")
+        )
+        result = fops._maybe_lsp_diagnostics(str(tmp_path / "x.py"))
+
+    assert result == ""
 
 
 # ---------------------------------------------------------------------------

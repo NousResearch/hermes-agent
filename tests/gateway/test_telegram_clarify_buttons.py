@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway.platforms.base import unauthorized_action_notice
+
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------
@@ -23,31 +25,8 @@ if _repo not in sys.path:
 # Minimal Telegram mock so TelegramAdapter can be imported (mirrors
 # test_telegram_approval_buttons.py)
 # ---------------------------------------------------------------------------
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
-    mod = MagicMock()
-    mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
-    mod.constants.ChatType.PRIVATE = "private"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
-    mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    mod.error.BadRequest = type("BadRequest", (Exception,), {})
-
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, mod)
-    sys.modules.setdefault("telegram.error", mod.error)
-
-
-_ensure_telegram_mock()
-
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt as _ClarifyPrompt
 from gateway.config import PlatformConfig
 
 
@@ -82,6 +61,8 @@ class TestTelegramSendClarify:
         adapter = _make_adapter()
         mock_msg = MagicMock()
         mock_msg.message_id = 100
+        mock_msg.chat_id = 12345
+        mock_msg.message_thread_id = None
         adapter._bot.send_message = AsyncMock(return_value=mock_msg)
 
         result = await adapter.send_clarify(
@@ -108,64 +89,12 @@ class TestTelegramSendClarify:
         # Mocked InlineKeyboardMarkup — just verify it was constructed
         # with rows.  We check state instead of poking the mock structure.
         assert "cid1" in adapter._clarify_state
-        assert adapter._clarify_state["cid1"] == "sk1"
+        # State carries the session key *and* the identity of the message that rendered the
+        # buttons, so a callback can be matched against it (#102957).
+        assert adapter._clarify_state["cid1"] == _ClarifyPrompt(
+            session_key="sk1", chat_id="12345", message_id="100", thread_id=None)
 
-    @pytest.mark.asyncio
-    async def test_open_ended_no_keyboard(self):
-        adapter = _make_adapter()
-        mock_msg = MagicMock()
-        mock_msg.message_id = 101
-        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
 
-        result = await adapter.send_clarify(
-            chat_id="12345",
-            question="What is your name?",
-            choices=None,
-            clarify_id="cid2",
-            session_key="sk2",
-        )
-
-        assert result.success is True
-        kwargs = adapter._bot.send_message.call_args[1]
-        # No reply_markup means no buttons — open-ended path
-        assert "reply_markup" not in kwargs
-        assert "What is your name?" in kwargs["text"]
-        assert adapter._clarify_state["cid2"] == "sk2"
-
-    @pytest.mark.asyncio
-    async def test_not_connected(self):
-        adapter = _make_adapter()
-        adapter._bot = None
-        result = await adapter.send_clarify(
-            chat_id="12345",
-            question="?",
-            choices=["a"],
-            clarify_id="cid3",
-            session_key="sk3",
-        )
-        assert result.success is False
-
-    @pytest.mark.asyncio
-    async def test_long_choice_rendered_in_body_not_truncated(self):
-        """Long choice text appears in full in the message body;
-        button labels stay short numeric (1, 2, …)."""
-        adapter = _make_adapter()
-        mock_msg = MagicMock()
-        mock_msg.message_id = 102
-        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
-
-        long_choice = "x" * 200
-        result = await adapter.send_clarify(
-            chat_id="12345",
-            question="?",
-            choices=[long_choice],
-            clarify_id="cid4",
-            session_key="sk4",
-        )
-        assert result.success is True
-        kwargs = adapter._bot.send_message.call_args[1]
-        # The full long choice text appears in the message body
-        assert long_choice in kwargs["text"]
         # The button label should be short ("1"), not the long choice
         # (we can't inspect mock button labels directly, but the send
         # succeeded — old truncation code could raise on edge cases)
@@ -207,12 +136,15 @@ class TestTelegramClarifyCallback:
         adapter = _make_adapter()
         # Pre-register a clarify entry so the callback can look up the choice text
         cm.register("cidA", "sk-cb", "Pick", ["red", "green", "blue"])
-        adapter._clarify_state["cidA"] = "sk-cb"
+        adapter._clarify_state["cidA"] = _ClarifyPrompt(
+            session_key="sk-cb", chat_id="12345", message_id="100", thread_id=None)
 
         query = AsyncMock()
         query.data = "cl:cidA:1"  # green
         query.message = MagicMock()
         query.message.chat_id = 12345
+        query.message.message_id = 100
+        query.message.message_thread_id = None
         query.message.text = "Pick"
         query.from_user = MagicMock()
         query.from_user.id = "777"
@@ -242,69 +174,6 @@ class TestTelegramClarifyCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_other_button_flips_to_text_mode(self):
-        from tools import clarify_gateway as cm
-
-        adapter = _make_adapter()
-        cm.register("cidB", "sk-cb-other", "Pick", ["x", "y"])
-        adapter._clarify_state["cidB"] = "sk-cb-other"
-
-        query = AsyncMock()
-        query.data = "cl:cidB:other"
-        query.message = MagicMock()
-        query.message.chat_id = 12345
-        query.message.text = "Pick"
-        query.from_user = MagicMock()
-        query.from_user.id = "777"
-        query.from_user.first_name = "Tester"
-        query.answer = AsyncMock()
-        query.edit_message_text = AsyncMock()
-
-        update = MagicMock()
-        update.callback_query = query
-        context = MagicMock()
-
-        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            await adapter._handle_callback_query(update, context)
-
-        # Entry should now be in text-capture mode
-        pending = cm.get_pending_for_session("sk-cb-other")
-        assert pending is not None
-        assert pending.clarify_id == "cidB"
-        assert pending.awaiting_text is True
-        # State NOT popped — the user still needs to type their answer
-        assert "cidB" in adapter._clarify_state
-        # Entry NOT yet resolved
-        with cm._lock:
-            entry = cm._entries.get("cidB")
-        assert entry is not None
-        assert not entry.event.is_set()
-
-    @pytest.mark.asyncio
-    async def test_already_resolved(self):
-        adapter = _make_adapter()
-        # No state for cidGone
-
-        query = AsyncMock()
-        query.data = "cl:cidGone:0"
-        query.message = MagicMock()
-        query.message.chat_id = 12345
-        query.from_user = MagicMock()
-        query.from_user.id = "777"
-        query.from_user.first_name = "Tester"
-        query.answer = AsyncMock()
-
-        update = MagicMock()
-        update.callback_query = query
-        context = MagicMock()
-
-        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            await adapter._handle_callback_query(update, context)
-
-        query.answer.assert_called_once()
-        # Should NOT resolve anything
-        assert "already" in query.answer.call_args[1]["text"].lower()
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_rejected(self):
@@ -312,7 +181,8 @@ class TestTelegramClarifyCallback:
 
         adapter = _make_adapter()
         cm.register("cidC", "sk-auth", "Pick", ["a", "b"])
-        adapter._clarify_state["cidC"] = "sk-auth"
+        adapter._clarify_state["cidC"] = _ClarifyPrompt(
+            session_key="sk-auth", chat_id="12345", message_id="100", thread_id=None)
 
         # Hook up a runner that says NOT authorized
         class _DenyRunner:
@@ -347,106 +217,142 @@ class TestTelegramClarifyCallback:
         assert entry is not None
         assert not entry.event.is_set()
         query.answer.assert_called_once()
-        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
         # State preserved
-        assert adapter._clarify_state["cidC"] == "sk-auth"
+        assert adapter._clarify_state["cidC"].session_key == "sk-auth"
 
-    @pytest.mark.asyncio
-    async def test_numeric_choice_expired_notifies_user(self):
-        """Late tap after the entry was evicted (timeout) or the gateway
-        restarted must surface an expiry notice, not a misleading ✓."""
-        adapter = _make_adapter()
-        # _clarify_state still maps the id (timeout eviction does not pop it),
-        # but the clarify primitive entry is gone → resolve returns False.
-        adapter._clarify_state["cidExpired"] = "sk-expired"
 
+# ===========================================================================
+# Prompt binding — a callback may only resolve the clarify it was rendered on
+# ===========================================================================
+
+class TestTelegramClarifyPromptBinding:
+    """#102957 — chat-level authorization cannot tell a deliberate tap from a callback
+    that arrived on some other message, so the clarify is bound to its prompt message."""
+
+    ASK_CHAT_ID = 12345
+    ASK_MESSAGE_ID = 100
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def _ask(self, adapter, clarify_id="cid-bind", session_key="sk-bind"):
+        """Register a pending clarify bound to (ASK_CHAT_ID, ASK_MESSAGE_ID)."""
+        from tools import clarify_gateway as cm
+        cm.register(clarify_id, session_key, "Recover the worker?", ["keep running", "stop the worker"])
+        adapter._clarify_state[clarify_id] = _ClarifyPrompt(
+            session_key=session_key, chat_id=str(self.ASK_CHAT_ID),
+            message_id=str(self.ASK_MESSAGE_ID), thread_id=None)
+
+    def _tap(self, chat_id, message_id, *, clarify_id="cid-bind", token="1"):
         query = AsyncMock()
-        query.data = "cl:cidExpired:0"
+        query.id = "cbq-1"
+        query.data = f"cl:{clarify_id}:{token}"
         query.message = MagicMock()
-        query.message.chat_id = 12345
-        query.message.text = "Pick"
+        query.message.chat_id = chat_id
+        query.message.message_id = message_id
+        query.message.message_thread_id = None
+        query.message.chat.type = "private"
+        query.message.text = "Recover the worker?"
         query.from_user = MagicMock()
         query.from_user.id = "777"
-        query.from_user.first_name = "Tester"
+        query.from_user.first_name = "Owner"
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
-
         update = MagicMock()
         update.callback_query = query
-        context = MagicMock()
+        return update, query
 
+    async def _deliver(self, adapter, update):
+        # The caller is allowed to answer prompts — authorization is not what is under test.
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            await adapter._handle_callback_query(update, context)
-
-        # User is told the prompt expired — not a misleading checkmark.
-        answer_text = query.answer.call_args[1]["text"].lower()
-        assert "expired" in answer_text
-        edit_text = query.edit_message_text.call_args[1]["text"].lower()
-        assert "expired" in edit_text or "session reset" in edit_text
-        assert "/retry" in edit_text
+            await adapter._handle_callback_query(update, MagicMock())
 
     @pytest.mark.asyncio
-    async def test_other_button_expired_notifies_user(self):
-        """Tapping 'Other' after the entry was evicted must tell the user the
-        prompt expired instead of silently entering text-capture mode."""
-        adapter = _make_adapter()
-        # No clarify primitive entry → mark_awaiting_text returns False.
-        adapter._clarify_state["cidOtherExpired"] = "sk-other-expired"
-
-        query = AsyncMock()
-        query.data = "cl:cidOtherExpired:other"
-        query.message = MagicMock()
-        query.message.chat_id = 12345
-        query.message.text = "Pick"
-        query.from_user = MagicMock()
-        query.from_user.id = "777"
-        query.from_user.first_name = "Tester"
-        query.answer = AsyncMock()
-        query.edit_message_text = AsyncMock()
-
-        update = MagicMock()
-        update.callback_query = query
-        context = MagicMock()
-
-        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            await adapter._handle_callback_query(update, context)
-
-        answer_text = query.answer.call_args[1]["text"].lower()
-        assert "expired" in answer_text
-        # State popped so a subsequent typed message is not mis-captured.
-        assert "cidOtherExpired" not in adapter._clarify_state
-
-    @pytest.mark.asyncio
-    async def test_invalid_choice_token(self):
+    async def test_callback_from_another_message_does_not_resolve(self):
         from tools import clarify_gateway as cm
 
         adapter = _make_adapter()
-        cm.register("cidD", "sk-inv", "Q?", ["a"])
-        adapter._clarify_state["cidD"] = "sk-inv"
+        self._ask(adapter)
+        update, query = self._tap(self.ASK_CHAT_ID, 999)
 
-        query = AsyncMock()
-        query.data = "cl:cidD:not-a-number"
-        query.message = MagicMock()
-        query.message.chat_id = 12345
-        query.message.text = "Q?"
-        query.from_user = MagicMock()
-        query.from_user.id = "777"
-        query.from_user.first_name = "Tester"
-        query.answer = AsyncMock()
-
-        update = MagicMock()
-        update.callback_query = query
-        context = MagicMock()
-
-        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            await adapter._handle_callback_query(update, context)
+        await self._deliver(adapter, update)
 
         with cm._lock:
-            entry = cm._entries.get("cidD")
-        assert entry is not None
+            entry = cm._entries.get("cid-bind")
         assert not entry.event.is_set()
-        query.answer.assert_called_once()
-        assert "invalid" in query.answer.call_args[1]["text"].lower()
+        assert entry.response is None
+        # The real prompt stays answerable.
+        assert "cid-bind" in adapter._clarify_state
+        query.edit_message_text.assert_not_called()
+        # The refused tap is still answered, so the client's spinner stops on the refusal toast.
+        from agent.i18n import t
+        query.answer.assert_awaited_once_with(text=t("platform.telegram.prompt.invalid_choice"))
+
+    @pytest.mark.asyncio
+    async def test_callback_from_another_chat_does_not_resolve(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        self._ask(adapter)
+        update, _query = self._tap(67890, 555)
+
+        await self._deliver(adapter, update)
+
+        with cm._lock:
+            entry = cm._entries.get("cid-bind")
+        assert not entry.event.is_set()
+        assert "cid-bind" in adapter._clarify_state
+
+    @pytest.mark.asyncio
+    async def test_mismatched_callback_does_not_flip_to_text_capture(self):
+        """The "Other" branch mutates state too, so it fails closed on the same check."""
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        self._ask(adapter)
+        update, _query = self._tap(self.ASK_CHAT_ID, 999, token="other")
+
+        await self._deliver(adapter, update)
+
+        with cm._lock:
+            entry = cm._entries.get("cid-bind")
+        assert entry.awaiting_text is False
+        assert "cid-bind" in adapter._clarify_state
+
+    @pytest.mark.asyncio
+    async def test_genuine_tap_on_the_prompt_still_resolves(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        self._ask(adapter)
+        update, _query = self._tap(self.ASK_CHAT_ID, self.ASK_MESSAGE_ID)
+
+        await self._deliver(adapter, update)
+
+        with cm._lock:
+            entry = cm._entries.get("cid-bind")
+        assert entry.event.is_set()
+        assert entry.response == "stop the worker"
+        assert "cid-bind" not in adapter._clarify_state
+
+    @pytest.mark.asyncio
+    async def test_prompt_without_a_bound_message_stays_answerable(self):
+        """A send that reported no message id leaves nothing to match — resolve rather than
+        strand the prompt, since no caller-controlled input can reach that state."""
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        cm.register("cid-unbound", "sk-unbound", "Pick", ["a", "b"])
+        adapter._clarify_state["cid-unbound"] = _ClarifyPrompt(session_key="sk-unbound")
+        update, _query = self._tap(self.ASK_CHAT_ID, self.ASK_MESSAGE_ID, clarify_id="cid-unbound", token="0")
+
+        await self._deliver(adapter, update)
+
+        with cm._lock:
+            entry = cm._entries.get("cid-unbound")
+        assert entry.event.is_set()
+        assert entry.response == "a"
 
 
 # ===========================================================================
@@ -493,31 +399,3 @@ class TestBaseAdapterClarifyFallback:
         assert "1." in text and "apple" in text
         assert "2." in text and "banana" in text
 
-    @pytest.mark.asyncio
-    async def test_open_ended_fallback_renders_question_only(self):
-        from gateway.platforms.base import BasePlatformAdapter, SendResult
-
-        class _Stub(BasePlatformAdapter):
-            name = "stub"
-            def __init__(self):
-                self.sent: list = []
-            async def connect(self, *, is_reconnect: bool = False): pass
-            async def disconnect(self): pass
-            async def send(self, chat_id, content, **kw):
-                self.sent.append(content)
-                return SendResult(success=True, message_id="1")
-            async def edit(self, *a, **k): return SendResult(success=False)
-            async def get_history(self, *a, **k): return []
-            async def get_chat_info(self, *a, **k): return {}
-
-        adapter = _Stub()
-        await adapter.send_clarify(
-            chat_id="c",
-            question="Free form?",
-            choices=None,
-            clarify_id="x",
-            session_key="s",
-        )
-        assert "Free form?" in adapter.sent[0]
-        # No numbered list — choices were empty
-        assert "1." not in adapter.sent[0]

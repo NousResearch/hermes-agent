@@ -3,6 +3,7 @@
 import pytest
 
 from agent.conversation_compression import (
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
     ROUTINE_COMPRESSION_STATUS_SAMPLES,
 )
@@ -14,22 +15,14 @@ from gateway.run import (
 
 # Every human-facing chat surface that must receive noise-filtered,
 # secret-redacted, provider-error-sanitized output (not just Telegram).
+# The filtering functions under test (_prepare_gateway_status_message /
+# _sanitize_gateway_final_response) are platform-agnostic shared logic in
+# gateway.run — a representative platform subset is sufficient; per-platform
+# copies were near-duplicate parametrizations.
 CHAT_PLATFORMS = [
     "telegram",
-    "whatsapp",
-    "discord",
     "slack",
-    "signal",
-    "matrix",
-    "mattermost",
-    "dingtalk",
     "feishu",
-    "wecom",
-    "weixin",
-    "bluebubbles",
-    "qqbot",
-    "homeassistant",
-    "sms",
 ]
 
 NOISY_STATUS_MESSAGES = [
@@ -65,6 +58,8 @@ NOISY_STATUS_MESSAGES = [
         "⚠ Skipping concurrent compression — another path is already "
         "compressing this session. Will retry after it finishes."
     ),
+    # Automatic anti-growth refusal: a no-op diagnostic (nothing dropped), pinned from the emit-site constant.
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
 ]
 
 # Messages that must NEVER be swallowed by the compression-noise filter:
@@ -76,6 +71,8 @@ VISIBLE_COMPRESSION_MESSAGES = [
     "Compression aborted: 30 messages preserved",
     "Compressed with fallback: 30 → 12 messages",
     "No changes from compression: 30 messages",
+    # Manual /compress refused-would-grow feedback stays visible (manual_compression_feedback.py).
+    "Compression refused (summary would grow the conversation): 30 messages preserved",
     (
         "⚠ Compression aborted: auth failure. No messages were dropped — "
         "conversation continues unchanged. Run /compress to retry, or /new "
@@ -99,10 +96,10 @@ VISIBLE_COMPRESSION_MESSAGES = [
     ),
     # Blocked-overflow warning (#62625/#62708): the context is over the
     # compression threshold but compression is blocked (summary-LLM cooldown
-    # or the anti-thrash breaker). FAILURE-CLASS — must reach chat users so
-    # they can /new or /compress before the session dies at the hard token
-    # limit. Formatted from the SAME template the emit site uses, so a
-    # rewording that drifts into the noise regex fails here.
+    # or the anti-thrash breaker). FAILURE-CLASS — must reach a DM so the
+    # owner can /new or /compress before the session dies at the hard token
+    # limit; shared chats drop it (#101003, tests/gateway/test_run_status_filter.py).
+    # Formatted from the SAME template the emit site uses.
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
         tokens=85_000, threshold=72_000, reason="cooldown:30"
     ),
@@ -139,6 +136,10 @@ def test_programmatic_surfaces_keep_raw_status():
     for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
         assert (
             _prepare_gateway_status_message(platform, "lifecycle", message) == message
+        )
+        assert (
+            _prepare_gateway_status_message(platform, "warn", COMPRESSION_REFUSED_WOULD_GROW_WARNING)
+            == COMPRESSION_REFUSED_WOULD_GROW_WARNING
         )
 
 
@@ -180,12 +181,13 @@ def test_manual_compress_feedback_and_failure_notices_stay_visible(platform, mes
 
     These are the deliberate carve-outs from routine-compression silence
     (#16775 failures, manual_compression_feedback.py) — widening the noise
-    regex must not start eating them.
+    regex must not start eating them. Pinned in a DM: the blocked-overflow
+    warning is DM-only since #101003.
     """
-    assert _prepare_gateway_status_message(platform, "warn", message) == message
+    assert _prepare_gateway_status_message(platform, "warn", message, "dm") == message
 
 
-@pytest.mark.parametrize("platform", ["whatsapp", "slack", "signal", "matrix"])
+@pytest.mark.parametrize("platform", ["slack", "matrix"])
 def test_chat_gateways_redact_secret_in_provider_error(platform):
     """Provider-error bodies carrying secrets must never reach chat users.
 
@@ -203,11 +205,11 @@ def test_chat_gateways_redact_secret_in_provider_error(platform):
     assert "sk-ABCDEF0123456789abcdef0123" not in sanitized
     assert "sk-ABCDEF" not in sanitized
     assert "HTTP 401" not in sanitized
-    # The user gets the safe provider-error category instead of the raw body.
-    assert "provider" in sanitized.lower()
+    # The user gets the safe error category and a command to run instead of the raw body.
+    assert "sign-in" in sanitized.lower() and "/login" in sanitized
 
 
-@pytest.mark.parametrize("platform", ["whatsapp", "slack", "signal", "matrix"])
+@pytest.mark.parametrize("platform", ["slack", "matrix"])
 def test_chat_gateways_redact_secret_in_non_error_body(platform):
     """Secrets must be redacted even when no provider-error rewrite fires.
 
@@ -230,10 +232,8 @@ def test_chat_gateways_redact_secret_in_non_error_body(platform):
 
     assert "sk-ABCDEF0123456789abcdef0123" not in sanitized
     assert "sk-ABCDEF" not in sanitized
-    # The secret body is gone — assert the invariant, not the specific mask
-    # marker. The outbound redactor delegates to redact_sensitive_text (#23810),
-    # which masks as `***`/partial; the local pattern fallback uses `[REDACTED]`.
-    assert "***" in sanitized or "[REDACTED]" in sanitized
+    # redact_for_egress masks a prefix token through _mask_token: `***` or a head...tail stub.
+    assert "***" in sanitized
     # Non-secret prose is preserved — redaction is surgical, not a wholesale
     # rewrite, on bodies that are not provider-error envelopes.
     assert "here is the example request you asked for" in sanitized
@@ -263,6 +263,29 @@ def test_chat_gateways_drop_interrupt_sentinel(platform):
     assert _sanitize_gateway_final_response("local", sentinel) == sentinel
 
 
+@pytest.mark.parametrize("platform", [*CHAT_PLATFORMS, Platform.BLUEBUBBLES])
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("<|eos|>", ""),
+        ("<|eos|><|eos|>\n", ""),
+        ("normal answer<|eos|>", "normal answer"),
+        ("normal answer<|eos|>  \n", "normal answer"),
+        ("literal <|eos|> in the middle stays visible", "literal <|eos|> in the middle stays visible"),
+        ("case variant remains literal: <|EOS|>", "case variant remains literal: <|EOS|>"),
+        ("inline code remains literal: `<|eos|>`", "inline code remains literal: `<|eos|>`"),
+    ],
+)
+def test_chat_gateways_strip_terminal_eos_control_tokens(platform, raw, expected):
+    """Provider EOS control tokens are transport metadata, never user-facing chat bubbles."""
+    assert _sanitize_gateway_final_response(platform, raw) == expected
+
+
+def test_local_surface_keeps_terminal_eos_control_token():
+    """Raw/programmatic surfaces retain provider output byte-for-byte."""
+    assert _sanitize_gateway_final_response("local", "normal answer<|eos|>") == "normal answer<|eos|>"
+
+
 def test_telegram_status_sanitizes_raw_provider_security_errors():
     """Provider policy/security bodies should be replaced before chat delivery."""
     raw = (
@@ -273,7 +296,7 @@ def test_telegram_status_sanitizes_raw_provider_security_errors():
     sanitized = _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", raw)
 
     assert sanitized is not None
-    assert "provider rejected" in sanitized.lower()
+    assert "rejected this request" in sanitized.lower()
     assert "cybersecurity risk" not in sanitized.lower()
     assert "HTTP 400" not in sanitized
     assert "req_123" not in sanitized
@@ -288,7 +311,7 @@ def test_telegram_final_response_sanitizes_raw_provider_errors():
 
     sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
 
-    assert "provider rejected" in sanitized.lower()
+    assert "rejected this request" in sanitized.lower()
     assert "cybersecurity risk" not in sanitized.lower()
     assert "HTTP 400" not in sanitized
     assert "req_abc" not in sanitized
@@ -303,16 +326,11 @@ def test_telegram_final_response_redacts_auth_secrets():
 
     sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
 
-    assert "authentication failed" in sanitized.lower()
-    assert "check the configured credentials" in sanitized.lower()
+    assert "sign-in" in sanitized.lower()
+    assert "/login" in sanitized
     assert "sk-live" not in sanitized
 
 
-def test_telegram_final_response_keeps_normal_answers():
-    """Normal assistant content should not be rewritten."""
-    answer = "Here is the clean summary you asked for."
-
-    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
 
 
 # Synthetic credential shapes from #23810. Bodies are placeholder gibberish —

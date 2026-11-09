@@ -14,7 +14,7 @@ Hermes 可以选择将 `openai/*` 和 `openai-codex/*` 的轮次交由 [Codex CL
 - 通过 Codex CLI 使用的相同认证流程，使用你的 **ChatGPT 订阅**运行 OpenAI agent 轮次（无需 API 密钥）。
 - 使用 **Codex 自带的工具集和沙箱**——`shell` 用于终端/读/写/搜索，`apply_patch` 用于结构化编辑，`update_plan` 用于规划，全部在 seatbelt/landlock 沙箱内运行。
 - **原生 Codex 插件**——Linear、GitHub、Gmail、Calendar、Canva 等——通过 `codex plugin` 安装后，会自动迁移并在你的 Hermes 会话中激活。
-- **Hermes 的丰富工具一并可用**——web_search、web_extract、浏览器自动化、视觉、图像生成、技能和 TTS 通过 MCP 回调提供。Codex 会回调 Hermes 获取其自身没有内置的工具。
+- **Hermes 的丰富工具一并可用**——web_search、web_extract、视觉、图像生成、技能和 TTS 通过 MCP 回调提供。Codex 会回调 Hermes 获取其自身没有内置的工具。
 - **记忆与技能提示持续生效**——Codex 的事件被投影为 Hermes 的消息格式，使自我改进循环看到正常的对话记录。
 
 ## 模型实际拥有哪些工具
@@ -56,7 +56,6 @@ Hermes 可以选择将 `openai/*` 和 `openai-codex/*` 的轮次交由 [Codex CL
 Hermes 将自身注册为 MCP server，以便 Codex 能够回调获取 Codex 自身未内置的工具。通过回调可用的工具：
 
 - **`web_search`** / **`web_extract`** — 基于 Firecrawl；对于结构化内容，通常比直接抓取更干净。
-- **`browser_navigate` / `browser_click` / `browser_type` / `browser_press` / `browser_snapshot` / `browser_scroll` / `browser_back` / `browser_get_images` / `browser_console` / `browser_vision`** — 通过 Camofox 或 Browserbase 实现完整的浏览器自动化。
 - **`vision_analyze`** — 调用独立的视觉模型检查图像（与 Codex 的 `view_image` 不同，后者是将图像加载到对话中）。
 - **`image_generate`** — 通过 Hermes 的 image_gen 插件链生成图像。
 - **`skill_view` / `skills_list`** — 读取 Hermes 的技能库。
@@ -88,7 +87,7 @@ Hermes 将自身注册为 MCP server，以便 Codex 能够回调获取 Codex 自
 Codex 运行时 worker 内可用的功能：
 - Codex 完整工具集（shell、apply_patch、update_plan、view_image、web_search）——worker 原生完成实际任务
 - 已迁移的 Codex 插件——Linear、GitHub 等
-- 用于 browser_*、vision、image_gen、技能、TTS 的 Hermes 工具回调
+- 用于网页、vision、image_gen、技能、TTS 的 Hermes 工具回调
 
 通过 MCP 回调同样可用的功能：
 - **`kanban_complete` / `kanban_block` / `kanban_comment` / `kanban_heartbeat`** — worker 交接工具。这些工具从环境变量中读取 `HERMES_KANBAN_TASK`（由分发器设置），正确进行访问控制，并写入由 `HERMES_KANBAN_DB` 固定的每个看板 SQLite 数据库。若回调中没有这些工具，此运行时上的 worker 可以完成任务但无法汇报，会一直挂起直到分发器超时。
@@ -108,7 +107,7 @@ Kanban 工具通过分发器设置的 `HERMES_KANBAN_TASK` 环境变量进行访
 | `delegate_task` 子 agent | 是 | 不可用——需要 agent 循环上下文 |
 | `memory`、`session_search`、`todo` | 是 | 不可用——需要 agent 循环上下文 |
 | `web_search`、`web_extract` | 是 | 是（通过 MCP 回调） |
-| 浏览器自动化（Camofox/Browserbase） | 是 | 是（通过 MCP 回调） |
+| 浏览器自动化（`browser_exec`、`browser_cdp`、`browser_dialog`、`browser_vault`） | 是 | 不可用——未通过 MCP 回调暴露 |
 | `vision_analyze`、`image_generate` | 是 | 是（通过 MCP 回调） |
 | `skill_view`、`skills_list` | 是 | 是（通过 MCP 回调） |
 | `text_to_speech` | 是 | 是（通过 MCP 回调） |
@@ -344,7 +343,7 @@ Hermes 的 `mcp_servers` 配置会自动转换为 Codex 所需的 TOML 格式。
 
 ## Hermes 工具回调（新 MCP server）
 
-Codex 的内置工具集涵盖 shell/文件操作/patch，但没有网络搜索、浏览器自动化、视觉、图像生成等功能。为了在 Codex 轮次中保持这些工具可用，Hermes 在 `~/.codex/config.toml` 中将自身注册为 MCP server：
+Codex 的内置工具集涵盖 shell/文件操作/patch，但没有网络搜索、视觉、图像生成等功能。为了在 Codex 轮次中保持这些工具可用，Hermes 在 `~/.codex/config.toml` 中将自身注册为 MCP server：
 
 ```toml
 [mcp_servers.hermes-tools]
@@ -357,7 +356,7 @@ tool_timeout_sec = 600.0
 
 当模型调用 `web_search`（或其他暴露的 Hermes 工具）时，Codex 通过 stdio 生成 `hermes_tools_mcp_server` 子进程，请求通过 `model_tools.handle_function_call()` 分发，结果像其他 MCP 响应一样投影回 Codex。
 
-**通过回调可用的工具：** `web_search`、`web_extract`、`browser_navigate`、`browser_click`、`browser_type`、`browser_press`、`browser_snapshot`、`browser_scroll`、`browser_back`、`browser_get_images`、`browser_console`、`browser_vision`、`vision_analyze`、`image_generate`、`skill_view`、`skills_list`、`text_to_speech`。
+**通过回调可用的工具：** `web_search`、`web_extract`、`vision_analyze`、`image_generate`、`skill_view`、`skills_list`、`text_to_speech`。
 
 **不可用的工具：** `delegate_task`、`memory`、`session_search`、`todo`。这些工具需要运行中的 AIAgent 上下文（循环中间状态）才能分发，无状态的 MCP 回调无法驱动它们。需要这些工具时，请使用默认 Hermes 运行时（`/codex-runtime auto`）。
 
@@ -433,7 +432,7 @@ tool_timeout_sec = 600.0
                                                         ▼
         ┌──────────────────────────────────────────────────────────┐
         │  hermes_tools_mcp_server.py (subprocess on demand)        │
-        │   web_search, web_extract, browser_*, vision_analyze,    │
+        │   web_search, web_extract, vision_analyze,               │
         │   image_generate, skill_view, skills_list, text_to_speech│
         └──────────────────────────────────────────────────────────┘
 ```

@@ -1,0 +1,37 @@
+name: kairos
+repo: https://github.com/Gens-ai/Kairos
+sha: 0e45fcd4f2ea50f6024854b9ebccb7551482f328
+description: >-
+  The god who put Zeus to sleep, installed in your terminal. Your agent was in
+  the room at 3am — it knows whether you are at a clean stopping point, offers a
+  wind-down against the bedtime you chose, saves your place so stopping costs
+  nothing, and reports only what the sample supports.
+maintainer: Gens-ai
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/Gens-ai/Kairos#readme
+version: "0.4.0"
+readme: true
+platforms: [linux, macos]
+title: Kairos
+capabilities:
+  provides_tools:
+    - sleep_log
+    - sleep_import
+    - kairos_activity
+    - kairos_report
+    - kairos_guard
+    - kairos_goal
+    - kairos_commitment
+    - kairos_winddown
+    - kairos_checkin
+    - kairos_wearable
+    - kairos_ping
+  provides_hooks:
+    - on_session_start
+    - post_tool_call
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

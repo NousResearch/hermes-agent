@@ -1,6 +1,6 @@
 name: command-reviewer
 repo: https://github.com/spideysri2802/command-reviewer
-sha: 0f2a17c17fc340b7b4acb95990919e76b3ed939f
+sha: 5c07dcf3f400ac1ecc0b074278e8f77098163f00
 subdir: ''
 description: 'Reviews every terminal/execute_code call before execution: deterministic hard rules block credential reads and destructive patterns, script contents are ingested and judged (not just filenames), an LLM reviewer with an injection-resistant prompt issues SAFE/SUSPICIOUS/MALICIOUS verdicts, and operator approve/deny decisions are recorded content-hash-bound so an unchanged script is never re-asked. Disclosure - the reviewer reads the contents of script files referenced by reviewed commands and sends them to your configured LLM provider; it shells out to docker exec to read sandbox files when the in-process environment is unavailable; reviewer failures fail closed to a human approval prompt; nothing is auto-approved.'
 maintainer: spideysri2802
@@ -8,7 +8,7 @@ tier: community
 category: tools
 requires_hermes: '>=0.23'
 docs_url: https://github.com/spideysri2802/command-reviewer#readme
-version: '0.2.8'
+version: '0.2.9'
 platforms: []
 capabilities:
   provides_tools: []

@@ -10,6 +10,7 @@ Debug: ``WEB_TOOLS_DEBUG=true`` writes ``logs/web_tools_debug_<UUID>.json``.
 """
 
 import json
+import inspect
 import logging
 import os
 from typing import List, Any, Optional
@@ -299,18 +300,22 @@ def _finish_debug(call_name: str, debug_call_data: dict, error_msg: Optional[str
     return None if error_msg is None else tool_error(error_msg)
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def web_search_tool(query: str, limit: int = 5, categories: Optional[list[str]] = None) -> str:
     """Search the web via the configured backend.
 
     Returns a JSON string ``{"success": bool, "data": {"web": [{"title", "url", "description", "position"},
     ...]}}`` (metadata only — use web_extract_tool for page content) or ``{"success": false, "error": ...}``.
     """
+    if categories is not None:
+        if not isinstance(categories, list) or any(not isinstance(c, str) or not c.strip() for c in categories):
+            return tool_error("categories must be a list of non-empty strings", success=False)
+        categories = sorted(set(c.strip().lower() for c in categories)) or None
     try:
         limit = min(max(int(limit), 1), 100)
     except (TypeError, ValueError):
         limit = 5
     debug_call_data = {
-        "parameters": {"query": query, "limit": limit}, "error": None, "results_count": 0,
+        "parameters": {"query": query, "limit": limit, "categories": categories}, "error": None, "results_count": 0,
         "original_response_size": 0, "final_response_size": 0,
     }
 
@@ -336,7 +341,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             response_data = {"success": False, "error": _no_provider_error("search", fallback)}
         else:
             logger.info("Web search via %s: '%s' (limit: %d)", provider.name, query, limit)
-            response_data = _memoized_search(provider, query, limit)
+            response_data = _memoized_search(provider, query, limit, categories=categories)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -347,7 +352,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return _finish_debug("web_search_tool", debug_call_data, f"Error searching web: {e!s}")
 
 
-def _memoized_search(provider, query: str, limit: int) -> dict:
+def _memoized_search(provider, query: str, limit: int, categories: Optional[list[str]] = None) -> dict:
     """TTL memo + single-flight around the paid vendor call (tools/web_result_cache.py); sits after every
     safety/config check. The provider is asked for the BUCKETED count so near-identical limits share an entry;
     the caller's count is sliced out. Only successful, non-rescued responses are cached — caching a rescue
@@ -357,7 +362,13 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
     def _paid_search() -> tuple[dict, bool]:
         fetch_limit = bucket_limit(limit)
         try:
-            resp = provider.search(query, fetch_limit)
+            if categories:
+                parameters = inspect.signature(provider.search).parameters
+                if "categories" not in parameters and not any(p.kind == p.VAR_KEYWORD for p in parameters.values()):
+                    return {"success": False, "error": f"{provider.name} does not support category filters"}, False
+                resp = provider.search(query, fetch_limit, categories=categories)
+            else:
+                resp = provider.search(query, fetch_limit)
         except Exception as exc:
             served = _served_after_failure(str(exc), fetch_limit)
             if served is None:
@@ -372,20 +383,22 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
     def _served_after_failure(error: str, fetch_limit: int) -> Optional[dict]:
         """Managed Firecrawl for a failed managed Perplexity call, else the one-shot keyless rescue when
         eligible; None means the vendor's own failure stands."""
+        if categories:
+            return None  # An unfiltered rescue would silently change the requested search.
         fallback = _managed_search_fallback(provider, error, query, fetch_limit)
         if fallback is not None:
             return fallback
         return _rescue_search(provider.name, error, query, fetch_limit) if _rescue_eligible(provider) else None
 
-    response_data = search_memo.lookup(provider.name, query, limit)
+    response_data = search_memo.lookup(provider.name, query, limit, categories=categories)
     if response_data is None:
-        with search_memo.flight_lock(provider.name, query, limit):
+        with search_memo.flight_lock(provider.name, query, limit, categories=categories):
             # Re-check inside the lock: a concurrent identical call may have stored.
-            response_data = search_memo.lookup(provider.name, query, limit)
+            response_data = search_memo.lookup(provider.name, query, limit, categories=categories)
             if response_data is None:
                 response_data, was_rescued = _paid_search()
                 if not was_rescued:
-                    search_memo.store(provider.name, query, limit, response_data)
+                    search_memo.store(provider.name, query, limit, response_data, categories=categories)
     return slice_search_response(response_data, limit)
 
 
@@ -522,6 +535,10 @@ WEB_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": "The search query to look up on the web. You may include backend-supported operators such as site:example.com, filetype:pdf, intitle:word, -term, or \"exact phrase\"."
             },
+            "categories": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Optional backend category filters, e.g. science or news on SearXNG. Unsupported backends return an error."
+            },
             "limit": {
                 "type": "integer",
                 "description": "Maximum number of results to return. Defaults to 5.",
@@ -558,7 +575,7 @@ WEB_EXTRACT_SCHEMA = {
 
 registry.register(
     name="web_search", toolset="web", schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5), categories=args.get("categories")),
     check_fn=check_web_api_key, requires_env=_web_requires_env(), emoji="🔍",
     max_result_size_chars=100_000,
 )

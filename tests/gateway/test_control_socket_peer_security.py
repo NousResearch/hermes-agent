@@ -108,15 +108,19 @@ def test_clients_refuse_a_control_listener_run_by_another_uid(tmp_path, monkeypa
     # client must authenticate the listening process itself (SO_PEERCRED / getpeereid).
     import asyncio
     import inspect
+    from types import SimpleNamespace
     from gateway import control_socket, session_hosted_transport
-    from hermes_cli import gateway_client
+    from hermes_cli import gateway_client, webapp_launcher
     from hermes_cli import gateway_runtime_discovery as discovery
     home = tmp_path / "home"
     home.mkdir(mode=0o700)
     real_uid = os.getuid()
+    answered = []
+    endpoint = SimpleNamespace(profile_id="default", instance_id="owner", control_home=None)
 
     async def run():
-        server = control_socket.GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 1}})
+        server = control_socket.GatewayControlServer(
+            home, verb_handlers={"identify": lambda: answered.append("identify") or {"pid": 1}})
         assert await server.start()
         try:
             path = discovery._socket_path(home)
@@ -124,6 +128,11 @@ def test_clients_refuse_a_control_listener_run_by_another_uid(tmp_path, monkeypa
             monkeypatch.setattr(discovery, "_socket_path", lambda _home: path)
             with pytest.raises(discovery.DiscoveryError, match="unsafe_control_peer"):
                 await asyncio.to_thread(discovery.query_identify, home, timeout=2)
+            with pytest.raises(discovery.DiscoveryError, match="unsafe_control_peer"):
+                await asyncio.to_thread(gateway_client._session_ticket, home, endpoint)
+            with pytest.raises(webapp_launcher.GatewayUnreachable, match="unsafe_control_peer"):
+                await asyncio.to_thread(webapp_launcher._control, home, "identify")
+            assert answered == []  # refused before a request reached the listener
         finally:
             monkeypatch.undo()
             await server.stop()
@@ -132,7 +141,7 @@ def test_clients_refuse_a_control_listener_run_by_another_uid(tmp_path, monkeypa
     spec = importlib.util.spec_from_file_location("tui_bootstrap", "ui-tui/scripts/gateway_bootstrap.py")
     tui_bootstrap = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tui_bootstrap)
-    for client in (gateway_client._session_ticket, session_hosted_transport.owner_request, tui_bootstrap.bootstrap):
+    for client in (gateway_client.private_control_query, session_hosted_transport.owner_request, tui_bootstrap.bootstrap):
         source = inspect.getsource(client)
         assert "connect_private(" in source and "AF_UNIX" not in source, client.__qualname__
 

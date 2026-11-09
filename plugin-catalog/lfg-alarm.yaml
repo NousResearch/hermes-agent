@@ -1,0 +1,32 @@
+name: lfg-alarm
+title: LFG Alarm
+repo: https://github.com/lfg-gm/lfg-alarm-mcp
+subdir: plugins/hermes
+sha: c21345b69561c8479a1452a8b567a2e89ed60eee
+description: >-
+  Put a real alarm on your phone from Hermes, and on your friends', family's or community's phones,
+  ringing together: for a time, an event, a post, a stream going live, a token price, or anything
+  that can call a link. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), with
+  one workflow skill bundled. Disclosure — hosted-only connector with no local code: every tool call
+  goes to LFG Alarm's MCP server at mcp.lfg.gm, signed in as the user through LFG Alarm's sign-in.
+  Alarm titles, times, notes, links and the people added are sent there, and what the tools return,
+  such as the user's alarms and friends, enters the session and reaches the user's model provider.
+  Tools make, change and delete alarms and can ring every phone on an alarm the user made. The tool
+  list comes from LFG Alarm's server at run time, so the pinned commit doesn't cover it. Hermes
+  stores and refreshes the OAuth tokens. OAuth must be enabled with
+  `hermes mcp add lfg-alarm --url https://mcp.lfg.gm --auth oauth --connect-timeout 300`; the bundled
+  mcp.json alone yields 401. That command replaces the package's server entry and its trust setting,
+  so the README's next step sets it again:
+  `hermes config set mcp_servers.lfg-alarm.trust untrusted`.
+maintainer: lfg-gm
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/lfg-gm/lfg-alarm-mcp/blob/c21345b69561c8479a1452a8b567a2e89ed60eee/plugins/hermes/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

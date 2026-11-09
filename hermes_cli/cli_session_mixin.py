@@ -830,58 +830,67 @@ class CLISessionMixin:
         that must not touch the input buffer. Returns the number of user turns undone (None when
         nothing changed).
         """
-        from cli import logger
         if not self.conversation_history:
             print(t("cli.session.undo_no_messages"))
             return
         n = max(n, 1)
-
-        from agent.context_compressor import history_before_user_originated_turn
-
-        warm_history = list(self.conversation_history)
-        user_indices = _user_turn_indices(warm_history)
+        user_indices = _user_turn_indices(self.conversation_history)
         if not user_indices:
             print(t("cli.session.undo_no_user_message"))
             return
 
         turns_undone = min(n, len(user_indices))
-        target_ordinal = len(user_indices) - turns_undone
-        cut_idx = user_indices[target_ordinal]
-        removed_count = len(warm_history) - cut_idx
-        truncated, live_view = history_before_user_originated_turn(warm_history, cut_idx)
-        removed_text = self._undo_content_to_text(live_view.get("content"))
-
-        rewound_rows = 0
-        if self._session_db is not None and self.session_id:
-            try:
-                outcome = self._session_db.rewind_user_turn(
-                    self.session_id, target_ordinal, warm_history=warm_history)
-                truncated = outcome.prefix
-                # Canonical editable prefill: the raw carrier holds the reference-summary wrapper.
-                removed_text = outcome.live_text or removed_text
-                rewound_rows = outcome.rewound_count
-            except Exception as e:
-                logger.debug("undo: durable rewind failed: %s", e)
-                print(t("cli.session.undo_failed", error=e))
-                return
-
-        # Publish only after the durable rewind succeeds (or no store exists).
-        self._publish_truncated_history(truncated, invalidate_prompt=True)
-        # Same hook /branch fires; rewound=True invalidates per-turn document caches.
-        _mm = getattr(self.agent, "_memory_manager", None)
-        # See #21910, #6672.
-        if _mm is not None and self.session_id:
-            with contextlib.suppress(Exception):
-                _mm.on_session_switch(self.session_id, parent_session_id="", reset=False, rewound=True)
-
+        rewound = self._rewind_to_user_ordinal(len(user_indices) - turns_undone)
+        if rewound is None:
+            return
+        removed_text, removed_count = rewound
         key = "cli.session.undo_ok_one" if turns_undone == 1 else "cli.session.undo_ok_other"
-        print(t(key, count=turns_undone, messages=rewound_rows or removed_count,
+        print(t(key, count=turns_undone, messages=removed_count,
                 backup=f"{removed_text[:60]}{'...' if len(removed_text) > 60 else ''}"))
         print(f"  {t('cli.session.undo_remaining', count=len(self.conversation_history))}")
         # Editable, not auto-sent (Claude-Code-style).
         if prefill and removed_text:
             self._prefill_input_buffer(removed_text)
         return turns_undone
+
+    def _rewind_to_user_ordinal(self, target_ordinal: int, *, failure_key: str = "cli.session.undo_failed"):
+        """Cut the session back to just before real user turn ``target_ordinal`` (0 = oldest).
+
+        The shared /undo and /rewind primitive: soft-deletes the rows on disk (``active=0``) via
+        ``SessionDB.rewind_user_turn`` before publishing the shorter history, patches the agent,
+        and fires the memory providers' ``rewound`` hook. Returns ``(live_text, archived_count)``,
+        or None after printing ``failure_key`` when the durable rewind refused (history untouched).
+        """
+        from cli import logger
+        from agent.context_compressor import history_before_user_originated_turn
+
+        warm_history = list(self.conversation_history)
+        cut_idx = _user_turn_indices(warm_history)[target_ordinal]
+        removed_count = len(warm_history) - cut_idx
+        truncated, live_view = history_before_user_originated_turn(warm_history, cut_idx)
+        removed_text = self._undo_content_to_text(live_view.get("content"))
+
+        if self._session_db is not None and self.session_id:
+            try:
+                outcome = self._session_db.rewind_user_turn(
+                    self.session_id, target_ordinal, warm_history=warm_history)
+            except Exception as e:  # health: allow BLE001 -- moved from undo_last: any refusal (local SessionDB or the gateway store) must leave history untouched and be shown
+                logger.debug("rewind: durable rewind failed: %s", e, exc_info=True)
+                print(t(failure_key, error=e))
+                return None
+            truncated = outcome.prefix
+            # Canonical editable prefill: the raw carrier holds the reference-summary wrapper.
+            removed_text = outcome.live_text or removed_text
+            removed_count = outcome.rewound_count or removed_count
+
+        # Publish only after the durable rewind succeeds (or no store exists).
+        self._publish_truncated_history(truncated, invalidate_prompt=True)
+        # Same hook /branch fires; rewound=True invalidates per-turn document caches (#21910, #6672).
+        _mm = getattr(self.agent, "_memory_manager", None)
+        if _mm is not None and self.session_id:
+            with contextlib.suppress(Exception):
+                _mm.on_session_switch(self.session_id, parent_session_id="", reset=False, rewound=True)
+        return removed_text, removed_count
 
     @staticmethod
     def _undo_content_to_text(content) -> str:

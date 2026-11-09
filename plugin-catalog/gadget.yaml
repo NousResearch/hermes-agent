@@ -1,26 +1,33 @@
 name: gadget
 repo: https://github.com/Adolanium/hermes-gadget-sdk
-sha: 4a22503cd5888d00b3fe4aedde167793e1c3961a
+sha: 0b957aae2f7f11904a9daab031f1378a45de21dc
 subdir: plugin
 title: Hermes Gadget
-description: "Talk to your Hermes from small ESP32 devices with a screen, microphone and speaker: hold a button, ask, and hear the answer. Adds a gateway platform where each device is a chat, plus tools to list devices, show a card on a screen and run device actions (LEDs, relays). Disclosure — the gateway listens for devices on a WebSocket port (8765, all interfaces by default; plain ws:// unless tls_cert/tls_key are set). New devices need a Hermes pairing code unless listed in GADGET_ALLOWED_USERS; GADGET_ALLOW_ALL_USERS skips pairing (development only). A paired device answers the agent's command approvals for its own chat (allow once or deny). The first approved device becomes the platform's home channel by default. Spoken replies that are not WAV are converted with the local ffmpeg. `hermes gadget update --latest` downloads firmware from this repository's GitHub releases, checks size and SHA-256 against the release manifest (files carry build provenance attestations) and sends it to the device. Writes only under plugin-data/gadget/. Uses Hermes's own STT, TTS and image cache; no telemetry. Independent community project, not affiliated with Nous Research."
+description: "Talk to your Hermes from small ESP32 devices with a screen, microphone and speaker: hold a button, ask, and hear the answer. Adds a gateway platform where each device is a chat, plus tools to list devices, show a card on a screen and run device actions (LEDs, relays). Disclosure — the gateway listens for devices on a WebSocket port (8765, all interfaces by default; plain ws:// unless tls_cert/tls_key are set). New devices need a Hermes pairing code unless listed in GADGET_ALLOWED_USERS; GADGET_ALLOW_ALL_USERS skips pairing (development only). A paired device answers the agent's command approvals for its own chat (allow once or deny), within Hermes's approval timeout. The first approved device becomes the platform's home channel by default. Session hooks feed a dashboard on paired devices with each agent session's platform, a short id and its state (idle, busy, waiting for approval); a device that can switch profiles also sees the offered profiles' sessions. Optional profile switching (off unless `profiles` is set in the default profile's gadget config) lets a device paired on the default profile talk to the listed profiles; each profile approves the device through its own pairing flow (the device shows the `hermes -p <profile> pairing approve` command), the plugin writes nothing into other profiles, and revoking the device in the default profile sends it back there. Spoken replies that are not WAV are converted with the local ffmpeg; Opus reply audio uses the host's libopus when installed (loaded with ctypes, not bundled). `hermes gadget update --latest` downloads firmware from this repository's GitHub releases, checks size and SHA-256 against the release manifest (files carry build provenance attestations) and sends it to the device. Writes only under plugin-data/gadget/. Uses Hermes's own STT, TTS and image cache; no telemetry. Independent community project, not affiliated with Nous Research."
 maintainer: Adolanium
 tier: community
 category: platform
 requires_hermes: ">=0.21.6"
 docs_url: https://adolanium.github.io/hermes-gadget-sdk/docs/connect-hermes.html
-version: "0.2.0"
-image: https://raw.githubusercontent.com/Adolanium/hermes-gadget-sdk/4a22503cd5888d00b3fe4aedde167793e1c3961a/docs/images/banner.webp
+version: "0.3.0"
+image: https://raw.githubusercontent.com/Adolanium/hermes-gadget-sdk/0b957aae2f7f11904a9daab031f1378a45de21dc/docs/images/banner.webp
 screenshots:
-  - https://raw.githubusercontent.com/Adolanium/hermes-gadget-sdk/4a22503cd5888d00b3fe4aedde167793e1c3961a/docs/images/sim-window.png
-  - https://raw.githubusercontent.com/Adolanium/hermes-gadget-sdk/4a22503cd5888d00b3fe4aedde167793e1c3961a/docs/images/screen-listening.png
-  - https://raw.githubusercontent.com/Adolanium/hermes-gadget-sdk/4a22503cd5888d00b3fe4aedde167793e1c3961a/docs/images/screen-reply.png
-  - https://raw.githubusercontent.com/Adolanium/hermes-gadget-sdk/4a22503cd5888d00b3fe4aedde167793e1c3961a/docs/images/screen-prompt.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-gadget-sdk/0b957aae2f7f11904a9daab031f1378a45de21dc/docs/images/sim-window.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-gadget-sdk/0b957aae2f7f11904a9daab031f1378a45de21dc/docs/images/screen-listening.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-gadget-sdk/0b957aae2f7f11904a9daab031f1378a45de21dc/docs/images/screen-reply.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-gadget-sdk/0b957aae2f7f11904a9daab031f1378a45de21dc/docs/images/screen-prompt.png
 capabilities:
   provides_tools:
     - gadget_devices
     - gadget_display
     - gadget_action
-  provides_hooks: []
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - on_session_end
+    - pre_approval_request
+    - post_approval_response
+    - on_session_finalize
+    - on_session_reset
   provides_middleware: []
   requires_env: []

@@ -1,12 +1,12 @@
 name: nachos
 repo: https://github.com/Nacho-Labs-LLC/hermes-plugin-nachos
-sha: 4850d47a876d43b61ec6ea58bb0d690aeffde062
-version: "0.5.3"
-description: "Durable memory and context compression for Hermes Agent with local SQLite or flat-file storage. Disclosure — replaces the memory provider (memory.provider: nachos) and, only when context.engine: nachos is set, the context engine; the provider injects a system-prompt block telling the agent to use the nachos_memory_* tools and keep built-in memory disabled; opt-in semantic ranking either runs a separately installed nachos-embeddings CLI or sends the turn query plus memory titles/summaries to api.openai.com with OPENAI_API_KEY; all storage is local under /nachos/."
+sha: 2ad0b272d4fbd2c000713e927a656851dc8787e2
+version: "0.5.4"
+description: "Durable memory and context compression for Hermes Agent with local SQLite or flat-file storage. Disclosure — replaces the memory provider (memory.provider: nachos) and, only when context.engine: nachos is set, the context engine; the provider injects a system-prompt block telling the agent to use the nachos_memory_* tools and keep built-in memory disabled; opt-in semantic ranking either runs a separately installed nachos-embeddings CLI or sends the turn query plus memory titles/summaries to api.openai.com with OPENAI_API_KEY; all storage is local under $HERMES_HOME/nachos/."
 maintainer: Nacho Labs LLC
 tier: community
 category: memory
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.5"
 docs_url: https://github.com/Nacho-Labs-LLC/hermes-plugin-nachos#readme
 platforms: []
 capabilities:

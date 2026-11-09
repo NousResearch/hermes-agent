@@ -24,6 +24,7 @@ import {
   setMessagingSessions,
   setMessagingTruncated,
   setSelectedStoredSessionId,
+  setSessionProfilesFailed,
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
   setSessions,
@@ -38,9 +39,10 @@ import { clearAllSessionTodos } from '@/store/todos'
 import { clearTranscriptTailPaging } from '@/store/transcript-tail'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
 
-// True while a connection switch is mid-flight — a Settings → Gateway apply
-// (wipe → re-dial, use-gateway-boot softSwitch) or a Sessions-switcher source
-// change (store/connections selectConnection). Lets the boot hook suppress the
+// True while a Settings → Gateway connection-mode apply is mid-flight (wipe →
+// re-dial, use-gateway-boot softSwitch). Picking a registered gateway in
+// Sessions is not a switch: every gateway stays connected and the pick is a
+// live activation (store/connections selectConnection). Lets the boot hook suppress the
 // backend-exit toast, keeps the cold-boot CONNECTING overlay from resurrecting
 // when startHermes re-emits boot progress, and tells the resume path that a
 // "session not found" mid-switch means "retry once things settle", not "gone".
@@ -51,8 +53,10 @@ export const $gatewaySwitching = atom(false)
  * is activated or published: fresh-draft the open transcript, drop the overlay
  * return route, reset the project tree, close terminals — everything bound to
  * the OUTGOING backend that lives outside the session store. Registered by
- * useGatewayBoot (whose host owns those React callbacks) so store-driven
- * switches run the exact same reset as a Settings → Gateway apply.
+ * useGatewayBoot, whose host owns those React callbacks. Only a connection
+ * apply (Settings → Gateway, or a backend recycle) runs it. A gateway pick does
+ * not: selectConnection's beforeActivate does its own narrower draft/project
+ * reset.
  */
 export interface GatewaySwitchLifecycle {
   beforeConnectionSwitch: () => void
@@ -83,14 +87,12 @@ export function registerGatewaySwitchLifecycle(lifecycle: GatewaySwitchLifecycle
 }
 
 /**
- * Commit point of every connection switch: raise the barrier and sever every
- * binding to the outgoing backend in ONE synchronous step. Both switch doors —
- * Settings apply (softSwitch) and the Sessions switcher (selectConnection) —
- * must call this BEFORE the next gateway is activated or its descriptor
- * published. The sidebar door used to activate first and wipe afterwards
- * (across an IPC round-trip), so route/session effects saw the new source while
- * $activeSessionId still named the previous backend's runtime and sent that id
- * to a backend that had never minted it — "session not found" (#93937).
+ * Commit point of a connection-mode apply: raise the barrier and sever every
+ * binding to the outgoing backend in ONE synchronous step, BEFORE the next
+ * gateway is activated or its descriptor published. Activating first and
+ * wiping after (across an IPC round-trip) let route/session effects see the new
+ * source while $activeSessionId still named the previous backend's runtime —
+ * "session not found" (#93937).
  */
 export function beginGatewaySwitch(): GatewaySwitchToken {
   const token = ++latestSwitchToken
@@ -124,6 +126,17 @@ export function beginGatewaySwitch(): GatewaySwitchToken {
     }
 
     throw error
+  }
+}
+
+/**
+ * A gateway pick made while a Settings apply is mid-flight wins: the apply's
+ * token stops owning any later publication, and its barrier comes down.
+ */
+export function supersedeGatewaySwitch(): void {
+  if ($gatewaySwitching.get()) {
+    latestSwitchToken += 1
+    endGatewaySwitch()
   }
 }
 
@@ -215,6 +228,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   resetDeadSessionPrune()
   setSessionProfilesTruncated({})
   setSessionProfilesUsage({})
+  setSessionProfilesFailed([])
   setCronSessions([])
   invalidateCronJobsRequests()
   // The star map is a scan of the outgoing backend's skills and memory; an open view reloads it

@@ -19,7 +19,11 @@ from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_
 # stored-row CAS digest and the durable row adopted onto the live dict. Never transcript payload.
 DB_ROW_SNAPSHOT = "_db_row_snapshot"
 CANONICAL_ROW = "_canonical_row"
-REPAIR_BOOKKEEPING_FIELDS = frozenset({DB_ROW_SNAPSHOT, CANONICAL_ROW})
+# Set by the agent flush on a batch row (never a live dict) whose ``message_uid`` the agent itself saw durable in
+# this session (written by an earlier flush, or loaded from the store with its marker). Only such a row, with no
+# row address or snapshot, may be skipped as a re-insert of an ACTIVE uid; a bare copied uid proves nothing.
+RESTORED_FROM_STORE = "_restored_from_store"
+REPAIR_BOOKKEEPING_FIELDS = frozenset({DB_ROW_SNAPSHOT, CANONICAL_ROW, RESTORED_FROM_STORE})
 # Unanswered text a merged user row held before the current turn was absorbed
 # (agent_runtime_helpers._merge_consecutive_users); the persist override keeps it.
 # It repeats the row's own content, so pricing it would double the estimate.
@@ -69,6 +73,48 @@ def stamp_data_use(message: MutableMapping[str, Any], requires: list[str]) -> No
     message["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), DATA_USE: list(requires)}
 
 
+# What the user typed on a turn a ``pre_llm_call`` hook vetoed, kept inside ``display_metadata``. The row's
+# ``content`` is the withheld placeholder, so every reader that hands transcript text to a model (wire
+# replay, compaction, session_search, memory providers, background review) only ever sees that; transcript
+# views render this key instead (agent/turn_context.py::_withhold_blocked_prompt).
+WITHHELD_PROMPT = "withheld_prompt"
+PRE_LLM_BLOCK_WITHHELD_PROMPT = "[Message withheld: a pre_llm_call policy hook blocked it.]"
+
+
+def withheld_prompt_text(message: Any) -> Optional[str]:
+    """The typed text a transcript view shows for a vetoed user row, else None."""
+    metadata = message.get("display_metadata") if isinstance(message, Mapping) else None
+    text = metadata.get(WITHHELD_PROMPT) if isinstance(metadata, Mapping) else None
+    return text if isinstance(text, str) else None
+
+
+def typed_prompt_content(content: Any, message: Any) -> Any:
+    """*content* (a rewind's live view of *message*) with the withheld placeholder swapped back for what
+    the user typed: ``/retry`` re-submits the real ask so the hook decides again, and ``/undo`` restores it
+    to the composer. Never the placeholder as a new prompt."""
+    typed = withheld_prompt_text(message)
+    if typed is None:
+        return content
+    if isinstance(content, str):
+        return content.replace(PRE_LLM_BLOCK_WITHHELD_PROMPT, typed)
+    if isinstance(content, list):
+        return [{**part, "text": part["text"].replace(PRE_LLM_BLOCK_WITHHELD_PROMPT, typed)}
+                if isinstance(part, dict) and isinstance(part.get("text"), str) else part for part in content]
+    return content
+
+
+def without_withheld_prompts(messages: Any) -> Any:
+    """*messages* with the vetoed text dropped from each row's ``display_metadata`` (copies only where
+    one is present), for hand-offs that leave the host with whole row dicts (memory providers)."""
+    if not isinstance(messages, list) or not any(withheld_prompt_text(m) is not None for m in messages):
+        return messages
+    return [
+        {**m, "display_metadata": {k: v for k, v in m["display_metadata"].items() if k != WITHHELD_PROMPT}}
+        if withheld_prompt_text(m) is not None else m
+        for m in messages
+    ]
+
+
 def lift_data_use(message: MutableMapping[str, Any]) -> None:
     """Restore a replayed row's ``data_use`` key from its durable ``display_metadata`` copy."""
     metadata = message.get("display_metadata")
@@ -78,8 +124,17 @@ def lift_data_use(message: MutableMapping[str, Any]) -> None:
 
 # Replay carriers the preflight estimate prices at 0, exactly as the compaction tail walk does (opaque signatures,
 # duplicate reasoning copies, ordered sidecars); a mismatch between the two estimates loops compaction.
-UNPRICED_REPLAY_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",
-                                    "reasoning_opaque", "reasoning_text", "bedrock_content_blocks", DATA_USE})
+_UNPRICED_CORE_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",
+                                   "bedrock_content_blocks", DATA_USE})
+
+
+def unpriced_replay_fields() -> frozenset[str]:
+    """The core unpriced carriers plus every message carrier key a registered profile declares
+    (``ProviderProfile.message_carrier_*``). Resolve once per message, never per key."""
+    from agent.reasoning_carriers import declared_carrier_keys
+
+    opaque, text = declared_carrier_keys()
+    return _UNPRICED_CORE_FIELDS.union(opaque, text)
 
 
 def without_persistence_fields(msg: Mapping[str, Any]) -> Mapping[str, Any]:

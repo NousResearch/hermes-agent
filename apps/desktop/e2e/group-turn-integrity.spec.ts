@@ -1,6 +1,7 @@
 import os from 'node:os'
 import path from 'node:path'
 
+import { writeEnvFile } from '../../../tests-js/scripts/mock-provider-config'
 import { MOCK_REPLY } from '../../../tests-js/scripts/mock-server'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
@@ -9,6 +10,7 @@ import { expect, test } from './test'
 const SHOTS = path.join(os.tmpdir(), 'botmode-campaign')
 const FIRST_REPLY = 'FIRST_REPLY: initial work completed'
 const FOLLOWUP_REPLY = 'FOLLOWUP_REPLY: subsequent work completed'
+const BOT_KICKOFF = 'Hey, tell me about yourself!'
 let fixture: MockBackendFixture | null = null
 
 async function publicLog(page: MockBackendFixture['page']) {
@@ -39,10 +41,41 @@ async function createAgent(page: MockBackendFixture['page'], name: string, title
   await expect(page.getByRole('button', { name: new RegExp(`^${title}\\b`) }).first()).toBeVisible({ timeout: 30_000 })
 }
 
+// These tests pin the Desktop-courier (legacy) room engine. A current gateway
+// reports itself as the room owner in groups.capabilities, so New Group Chat
+// builds a gateway-owned room instead; the courier engine opens only for a
+// gateway that answers { driver: false, persistent_process: false } with no
+// room-owner markers. Answer just that probe that way. Member turns, sessions
+// and inference still run through the real backend.
+async function answerAsCourierGateway(page: MockBackendFixture['page']): Promise<void> {
+  await page.evaluate(() => {
+    const send = WebSocket.prototype.send
+
+    WebSocket.prototype.send = function(data) {
+      let frame: any = null
+
+      try { frame = JSON.parse(String(data)) } catch { frame = null }
+
+      if (frame?.method === 'groups.capabilities') {
+        (window as any).__courierProbes = ((window as any).__courierProbes || 0) + 1
+        const result = { driver: false, persistent_process: false }
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }) })))
+      } else {
+        send.call(this, data)
+      }
+    }
+  })
+}
+
 async function createRoom(page: MockBackendFixture['page']) {
+  await answerAsCourierGateway(page)
   await openBots(page)
   await createAgent(page, 'programmer', 'Programmer')
   await createAgent(page, 'reviewer', 'Reviewer')
+  // Each new bot's birth opens its Bot Chat and sends the kickoff; a late one
+  // foregrounds that tab over the room. Build the room after both landed.
+  await expect.poll(() => fixture!.mock.receivedPrompts.filter(p => p.includes(BOT_KICKOFF)).length, { timeout: 60_000 }).toBe(2)
+  await openBots(page)
 
   await page.getByRole('button', { name: 'New bot or group chat' }).click()
   await page.getByRole('menuitem', { name: 'New Group Chat' }).click()
@@ -61,7 +94,7 @@ async function createRoom(page: MockBackendFixture['page']) {
   await expect(groupTab).toBeVisible({ timeout: 20_000 })
   await expect(groupTab).toHaveAttribute('aria-selected', 'true')
   await expect(groupComposer).toBeVisible()
-
+  expect(await page.evaluate(() => (window as any).__courierProbes)).toBeGreaterThan(0)
 
   return groupComposer
 }
@@ -71,6 +104,9 @@ test.beforeEach(async () => {
     holdFirstCompletionContaining: 'LANE_A_FIRST',
     replyForPrompt: prompt => prompt.includes('LANE_A_FOLLOWUP') ? FOLLOWUP_REPLY : prompt.includes('LANE_A_FIRST') ? FIRST_REPLY : MOCK_REPLY
   } })
+  // Bots created below copy this .env; without the provider's key_env every
+  // member turn is refused ("No API key for custom provider 'Mock'").
+  writeEnvFile(fixture.sandbox.hermesHome, 'e2e-mock-key', fixture.mockUrl)
   await waitForAppReady(fixture, 120_000)
 })
 

@@ -13,7 +13,7 @@ async def test_delete_of_secondary_profile_session_does_not_409(tmp_path, monkey
     from gateway.run import _profile_runtime_scope
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
 
@@ -28,7 +28,7 @@ async def test_delete_of_secondary_profile_session_does_not_409(tmp_path, monkey
         authority = runner.session_authorities.for_home(home)
         assert authority is not runner.session_authority  # a secondary, never the launch authority
         assert runner.session_store._routing_db.db_path != authority.db.db_path  # the bug's premise
-        actor = Principal('owner', authority.profile_id,
+        actor = SessionActor('owner', authority.profile_id,
                           frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
         with _profile_runtime_scope(home, {}):
             ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'gui',
@@ -73,7 +73,7 @@ async def test_a_stale_routing_save_cannot_restore_a_deleted_secondary_route(tmp
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
     from gateway.session import SessionEntry
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
 
@@ -86,7 +86,7 @@ async def test_a_stale_routing_save_cannot_restore_a_deleted_secondary_route(tmp
         await initialize_gateway_runtime(runner)
         _name, home = homes[1]
         authority = runner.session_authorities.for_home(home)
-        actor = Principal('owner', authority.profile_id,
+        actor = SessionActor('owner', authority.profile_id,
                           frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
         store = runner.session_store
         key = 'agent:main:telegram:222'

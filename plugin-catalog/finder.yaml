@@ -1,0 +1,19 @@
+name: finder
+repo: https://github.com/oways/hermes-finder
+sha: 0f3f878f027ed2abaf5a67e0c684add211297ee9
+subdir: ""
+description: "Sidebar tab that searches and filters Hermes projects and sessions, including by project name, which the built-in search cannot. All, Projects and Sessions views; right-click a project to add a session, copy its folder path, rename, recolour, reorder or delete, and right-click a session to open, copy id, tag, archive or delete; plus per-session and per-project token and cost stats and a live context meter. Desktop only; no agent tools, hooks, middleware or env vars."
+maintainer: oways
+tier: community
+category: desktop
+requires_hermes: ">=0.22"
+docs_url: https://github.com/oways/hermes-finder#readme
+version: "1.0.0"
+title: "Finder"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -224,10 +224,12 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
         _u.set_state(name, state)
         counts[key] += 1
 
+    from tools.skill_lock import is_locked_skill
+    locked_names = _u.locked_skill_names()  # keyed by directory; rows carry the frontmatter name
     for row in _u.curated_report():
         counts["checked"] += 1
         name = row["name"]
-        if row.get("pinned") or name in protected:
+        if row.get("pinned") or name in protected or (locked_names and is_locked_skill(name, locked_names)):
             continue
         # First sight with no persisted record: anchor its clock to now and defer.
         if not row.get("_persisted", True):
@@ -295,9 +297,9 @@ CURATOR_REVIEW_PROMPT = (
     "INSTRUCTIONS AND EXPERIENTIAL KNOWLEDGE. A collection of hundreds of "
     "narrow skills where each one captures one session's specific bug is "
     "a FAILURE of the library — not a feature. An agent searching skills "
-    "matches on descriptions, not on exact names (note: long descriptions "
-    "are truncated to 57 chars in the system prompt skill index — keep the "
-    "trigger class in that window). One broad umbrella "
+    "matches on descriptions, not on exact names (note: the system prompt "
+    "skill index shows 60 chars of a description — keep the trigger class "
+    "in that window). One broad umbrella "
     "skill with labeled subsections beats five narrow siblings for "
     "discoverability, not the other way around.\n\n"
     "The right target shape is CLASS-LEVEL skills whose SKILL.md carries the "

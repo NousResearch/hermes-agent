@@ -1,7 +1,29 @@
 """Initial profile files, written on the staging tree before publication."""
 import contextlib
+import os
+import shutil
 from pathlib import Path
 from typing import Optional
+
+
+def clone_staging_dir(profile_dir: Path) -> Path:
+    """Fresh ``profiles/.<name>.staging-<pid>`` beside the final dir (same filesystem, so the publish
+    rename is atomic). A leftover from a crashed create is discarded."""
+    staging = profile_dir.parent / f".{profile_dir.name}.staging-{os.getpid()}"
+    profile_dir.parent.mkdir(parents=True, exist_ok=True)
+    if staging.is_symlink() or staging.is_file():
+        staging.unlink()
+    elif staging.is_dir():
+        shutil.rmtree(staging, ignore_errors=True)
+    return staging
+
+
+def discard_unpublished_vault_key(ref: Optional[dict]) -> None:
+    """A create that fails after a --clone-all copy got its own keychain entry (``ref``, returned by
+    ``VaultStore.own_copied_key``) deletes exactly that entry; never one inferred from the source."""
+    if ref is not None:
+        from agent.vault_keychain import delete_key
+        delete_key(ref)
 
 
 def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,

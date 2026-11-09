@@ -7,6 +7,7 @@ from __future__ import annotations
 import itertools
 import threading
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
@@ -27,11 +28,13 @@ class HostedRoomSessionError(RuntimeError):
 class HostedRoomServerRPC:
     """Normalize the installed server handlers for :class:`HostedRoomRuntime`."""
 
-    accepts_attachments = False  # prompt.submit here has no event-bound file resolution
-
-    def __init__(self, server: ModuleType) -> None:
+    def __init__(self, server: ModuleType, *, db_path: Path | str | None = None) -> None:
         self.server = server
         self._ids = itertools.count(1)
+        # Event-bound files resolve from the room store, as on the gateway route; without the
+        # store there is nothing to resolve them from, so the driver refuses the turn by name.
+        self.db_path = Path(db_path) if db_path is not None else None
+        self.accepts_attachments = self.db_path is not None
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         envelope = self.server._methods[method](f"hosted-room-{next(self._ids)}", params)
@@ -72,11 +75,36 @@ class HostedRoomServerRPC:
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
         attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
-        if attachments:  # the driver refuses files before submit on this route
+        if attachments and self.db_path is None:  # the driver refuses files before submit here
             raise ValueError("attachments_unsupported_on_route: in-process route cannot carry files")
+        if not attachments:
+            return self._submit(profile, session_id, prompt, source, task, execution_generation,
+                                on_terminal, member_id, images=())
+        from gateway.session_hosted_attachments import bound_submission_payload, prepare_before_submit
+        from gateway.session_ingress_media import capture_lease
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        home = self.server._profile_home(profile)
+        # The member's own caches receive its files (the gateway route's owner scope), and the
+        # capture lease holds them until prompt.submit has persisted the row that names them.
+        with capture_lease():
+            token = set_hermes_home_override(str(home)) if home is not None else None
+            try:
+                inputs = prepare_before_submit(lambda: bound_submission_payload(
+                    self.db_path, room_id=task.room_id, member_id=member_id, prompt=prompt,
+                    attachments=list(attachments)))
+            finally:
+                if token is not None:
+                    reset_hermes_home_override(token)
+            return self._submit(profile, session_id, inputs["text"], source, task, execution_generation,
+                                on_terminal, member_id,
+                                images=[item["path"] for item in inputs.get("attachments", ())])
+
+    def _submit(self, profile, session_id, prompt, source, task, execution_generation, on_terminal,
+                member_id, *, images) -> Mapping[str, Any]:
         try:
             return self._call("prompt.submit", {
                 "profile": profile, "session_id": session_id, "text": prompt, "source": source,
+                **({"_hosted_images": images} if images else {}),
                 "_hosted_task": {
                     "room_id": task.room_id, "task_id": task.task_id, "thread_id": task.thread_id,
                     "turn_id": task.turn_id, "execution_generation": execution_generation,

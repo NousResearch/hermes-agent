@@ -84,6 +84,10 @@ _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (
 # pickers hide them (INTERNAL_LISTING_SOURCES).
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
 # ``tool`` and ``oneshot`` stay stored under their own labels so pickers can hide them.
+# Creation labels of the owner's own chats: the only LOCAL routes that carry OpenAI Daybreak (agent.daybreak),
+# the approved account's own access (no third-party or downstream use). Not ``tool`` (third-party
+# integrations), ``acp`` (editor clients), or the ``bot_room`` / ``a2a`` policies hosted rooms and peers stage.
+DAYBREAK_LABELS = frozenset({'cli', 'tui', 'gui', 'oneshot'})
 # Every other creation label is rewritten to ``source='local'`` on peer refresh.
 _KEEP_STORED_LABEL = frozenset({'tool', 'oneshot'})
 STORED_AS_LOCAL = frozenset(SURFACES) - _KEEP_STORED_LABEL
@@ -540,13 +544,34 @@ def _with_entry_pick(params, config):
     built-in in raw provider resolution, so the bare spelling would route, and be frozen, as a
     different provider than the entry the profile runs (#140107). Only the held entry's bare key
     is that entry (Desktop's guard). A keyed entry's display name is not; a keyless legacy
-    ``custom_providers:`` entry's is (``configured_entry_key``). Other picks stay as they came.
+    ``custom_providers:`` entry's is (``configured_entry_key``). A bare ``custom`` pick is the billing
+    class a client echoed from the runtime, not a route: on a bare ``custom`` profile with an endpoint
+    it is that profile's route unless it picks another endpoint, or another entry lists a model that
+    is not the profile's default; otherwise it names the configured entry serving its endpoint/model
+    (the profile's own first), else (no endpoint picked) the profile's own entry. A launch key for an
+    entry the model alone chose is refused. Other picks stay as they came.
     """
     from gateway.session_route_identity import configured_entry_key, profile_route_identity
     picked = params.get('provider')
     if not isinstance(picked, str):
         return params
     identity = profile_route_identity(config)
+    if picked.strip().lower() == 'custom':
+        from hermes_cli.runtime_provider_custom import _route_key, routed_custom_identity
+        url, model = params.get('base_url'), str(params.get('model') or '')
+        own_url = _route_key(model_route(config.get('model'))[1])
+        if identity == 'custom' and own_url and (
+                _route_key(url) == own_url if url is not None
+                else model.strip().lower() == profile_target(config)[0].lower()
+                or not routed_custom_identity(None, model, config)):
+            return params
+        held = identity if identity.startswith('custom:') else None
+        healed = routed_custom_identity(url, model, config, held=held) or (
+            identity if identity.startswith('custom:') and url is None else None)
+        if healed and healed != identity and url is None and 'api_key' in params:
+            # The model alone chose this entry: a launch key the user gave is never sent to a host they did not name.
+            _refuse('api_key', f'{healed} was chosen by model; name it with --provider or --base-url to use a launch key')
+        return {**params, 'provider': healed} if healed else params
     if identity == 'auto' or picked.strip().lower() != (configured_entry_key(identity, config) or None):
         return params
     return {**params, 'provider': identity}
@@ -885,13 +910,16 @@ def rebind_launch_key(authority, session, api_key):
     keys[_key_slot(ref)] = api_key
 
 
-def _secret_refs(authority, session_ids):
-    """The launch-key slots and config-secret references the live LOCAL policies of *session_ids* name."""
+def _secret_refs(authority, retired):
+    """The launch-key slots and config-secret references the LOCAL policies outside *retired* name: the
+    live sessions', and those of closed conversations ``session_retirement`` let go, which keep their
+    frozen policy on the local adapter and resume on it (a branch on its parent's slots)."""
     from gateway.config import Platform
-    sources = [getattr(authority.sessions.get(sid), 'source', None) for sid in session_ids]
-    chats = [source.chat_id for source in sources if source is not None and source.platform == Platform.LOCAL]
+    sources = [live.source for sid, live in authority.sessions.items() if sid not in retired]
+    chats = {source.chat_id for source in sources if source is not None and source.platform == Platform.LOCAL}
+    chats.update(sid for sid in getattr(authority, 'retired_local', ()) if sid not in retired)
     if not chats:
-        return set()  # only a restored (live) LOCAL session has a policy in the adapter map
+        return set()  # only a restored or retired LOCAL session has a policy in the adapter map
     from gateway.session_local_recovery import local_adapter_map
     policies = getattr(local_adapter_map(authority).get(Platform.LOCAL), 'policies', None) or {}
     refs = set()
@@ -906,8 +934,8 @@ def release_launch_secrets(authority, session_ids):
 
     They live only in this authority's memory for the session's lifetime; a deleted session can
     never run again, so keeping them would hold its credentials until the process exits. A branch's
-    policy names its parent's slots, so a slot named after a retired session stays while a live
-    policy references it, and then until restart, which revokes every launch secret anyway. Only
+    policy names its parent's slots, so a slot named after a retired session stays while a policy the
+    local adapter holds references it, and then until restart, which revokes every launch secret anyway. Only
     slots named after *session_ids* are released, so the set never exceeds release by name: no later
     sweep, and a binding not yet published always sits under its own live session's name. Call
     before the retired sessions leave ``authority.sessions``."""
@@ -916,7 +944,7 @@ def release_launch_secrets(authority, session_ids):
     retired = {str(sid) for sid in session_ids}
     if not retired:
         return
-    kept = _secret_refs(authority, set(authority.sessions) - retired)
+    kept = _secret_refs(authority, retired)
     prefix = f'{authority.instance_id}:{authority.epoch}:'
     keys = getattr(authority, '_local_launch_keys', None) or {}
     # A key re-supplied after a restart sits in the slot of the epoch that minted it.
@@ -1031,7 +1059,7 @@ def _serving_local_desktop_within(scope):
 def policy_for_source(runner, source):
     from gateway.session_local import LocalSessionAdapter
     from gateway.config import Platform
-    if source.platform != Platform.LOCAL:
+    if source is None or source.platform != Platform.LOCAL:  # None: a history mount, which runs nothing
         return None
     adapter = runner._adapter_for_source(source)
     if isinstance(adapter, LocalSessionAdapter) and adapter.authorize_source(source):
@@ -1062,6 +1090,26 @@ def workspace_unavailable_result(policy) -> dict:
                          "workspace_unavailable", False)
 
 
+def refused_turn_result(policy, exc) -> dict | None:
+    """A failed, never-run turn for an owner refusal at scope entry that an unchanged resend repeats
+    (gone working folder, changed launch key); None for any other refusal."""
+    from agent.error_surface import build_error_surface_from_result
+    from agent.turn_failure_copy import launch_credentials_copy, stamp_failure
+    if exc.reason == 'workspace_unavailable':
+        result = workspace_unavailable_result(policy)
+    elif exc.reason == 'launch_credentials_unavailable':
+        text = launch_credentials_copy(exc)
+        result = stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                                "failed": True, "completed": False, "error": text},
+                               "launch_credentials_unavailable", False)
+    else:
+        return None
+    # The descriptor makes settlement commit the explanation and its card as the transcript's
+    # failed-turn boundary (gateway_refusal_boundary), so a reopened chat still shows the way out.
+    result["error_surface"] = build_error_surface_from_result(result)
+    return result
+
+
 @contextmanager
 def policy_scope(policy, *, authority=None):
     if policy is None:
@@ -1090,9 +1138,10 @@ def policy_scope(policy, *, authority=None):
     try:
         from agent.auxiliary_task_config import session_auxiliary_scope
         from gateway.session_local_mcp import editor_mcp_scope
-        # Auxiliary tasks read the session's frozen section, never live config.yaml (a rotated key there).
-        auxiliary = policy.config(authority).get('auxiliary') if authority is not None else None
-        aux_scope = session_auxiliary_scope(auxiliary) if authority is not None else contextlib.nullcontext()
+        # Side tasks follow the profile's config.yaml, as every other side-task reader does; a bypass
+        # session never reads the profile: its side tasks use its own saved section (code defaults only).
+        aux_scope = (session_auxiliary_scope(policy.config(authority, secrets=False).get('auxiliary'))
+                     if policy.ignore_user_config else contextlib.nullcontext())
         with (editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope,
               policy.client_env_scope()):
             yield

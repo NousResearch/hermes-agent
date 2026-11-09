@@ -246,6 +246,8 @@ def _job_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
         ("Changed", mon_state.get("last_changed_at") if monitor_source else ""),
         ("Mode", color("no-agent", Colors.DIM) + " (script stdout delivered directly)"
          if job.get("no_agent") else ""),
+        ("Timezone", job.get("timezone")),
+        ("Grace", f"{job['grace_minutes']} min" if job.get("grace_minutes") is not None else ""),
         ("Workdir", job.get("workdir")),
         ("Python", job.get("interpreter")),
         ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
@@ -732,6 +734,20 @@ def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
     workdir = str(job.get("workdir") or "").strip()
     if workdir and not Path(workdir).expanduser().exists():
         issues.append(f"workdir not found: {workdir}")
+    if job.get("timezone"):
+        from cron.jobs_time import zone_for_job
+        if zone_for_job(job) is None:
+            issues.append(f"timezone {job['timezone']!r} is not a valid IANA zone; "
+                          "the job falls back to the profile timezone")
+    if job.get("grace_minutes") is not None:
+        from cron.jobs_time import normalize_grace_minutes
+        try:
+            normalize_grace_minutes(job.get("grace_minutes"))
+        except ValueError as exc:
+            issues.append(f"grace_minutes is unusable ({exc})")
+        else:
+            if (job.get("schedule") or {}).get("kind") != "cron":
+                issues.append("grace_minutes has no effect on a non-cron schedule")
     return issues
 
 
@@ -762,7 +778,8 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("model", "model"), ("provider", "model_provider"), ("pinned", "pinned"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
-                   ("interpreter", "interpreter"))
+                   ("interpreter", "interpreter"), ("timezone", "timezone"),
+                   ("grace_minutes", "grace_minutes"), ("catch_up", "catch_up"))
 
 
 def _job_api_kwargs(args) -> dict[str, Any]:
@@ -776,6 +793,7 @@ _JOB_DETAIL_LINES = (
     ("monitor_url", "  Monitor: {} (agent runs only on output change)"),
     ("no_agent", "  Mode: no-agent (script stdout delivered directly)"),
     ("continuity", "  Continuity: on (each run sees the previous run's output)"),
+    ("timezone", "  Timezone: {} (schedule runs on this zone's wall clock)"),
     ("workdir", "  Workdir: {}"),
     ("interpreter", "  Python: {}"))
 
@@ -884,6 +902,7 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     if action == "run":
         print(f"  {_run_outcome(result.get('job', {}))}")
         if (job.get('executed') and job.get('execution_success') is False
+                and job.get('last_status') != 'cancelled'
                 and not job.get('delegation_id') and job.get('execution_mode') != 'background'):
             return 1
     return 0
@@ -900,6 +919,8 @@ def _run_outcome(job: dict[str, Any]) -> str:
     if job.get("execution_mode") == "background":
         return "Running in background."
     if job.get("executed"):
+        if not job.get("execution_success") and job.get("last_status") == "cancelled":
+            return "Ran now: cancelled."
         return f"Ran now: {'succeeded' if job.get('execution_success') else 'failed'}."
     return job.get("execution_skipped") or "It will run on the next scheduler tick."
 
@@ -973,6 +994,24 @@ def cron_notepad(args) -> int:
         return 1
 
 
+def cron_cancel(args) -> int:
+    """Stop a job's live run. The schedule is untouched — the next fire still happens."""
+    result = _cron_api(action="cancel", job_id=args.job_id,
+                       reason=getattr(args, "reason", None))
+    if not result.get("success"):
+        print(color(f"Failed to cancel run: {result.get('error', 'unknown error')}", Colors.RED))
+        return 1
+    job = result.get("job") or {}
+    label = f"{job.get('name', args.job_id)} ({args.job_id})"
+    if not result.get("cancelled"):
+        print(color(f"Nothing to cancel for {label}", Colors.YELLOW))
+        return 0
+    print(color(f"Cancel requested for {label}", Colors.GREEN))
+    print(f"  Execution: {result['execution_id']} (pid {result.get('pid')})")
+    print(f"  {result.get('detail', '')}")
+    return 0
+
+
 # Late-bound lambdas keep module-level monkeypatching working; list/status/runs return None -> 0.
 _CRON_SUBCOMMANDS = {
     "list": lambda a: cron_list(getattr(a, "all", False)) or 0,
@@ -987,6 +1026,7 @@ _CRON_SUBCOMMANDS = {
     "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
     "resume": lambda a: cron_resume(a),
     "run": lambda a: _job_action("run", a.job_id, "Triggered"),
+    "cancel": lambda a: cron_cancel(a),
     "remove": lambda a: _job_action("remove", a.job_id, "Removed"),
 }
 _CRON_SUBCOMMANDS["history"] = _CRON_SUBCOMMANDS["runs"]
@@ -1001,5 +1041,5 @@ def cron_command(args):
     if handler is not None:
         return handler(args)
     print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|doctor|tick]")
+          "Usage: hermes cron [list|create|edit|pause|resume|run|cancel|remove|status|runs|doctor|tick]")
     sys.exit(1)

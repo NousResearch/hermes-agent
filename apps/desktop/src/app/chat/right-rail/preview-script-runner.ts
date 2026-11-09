@@ -15,7 +15,11 @@ import type { PreviewOwner } from '@/store/preview-ownership'
 import { activePreviewTabFor } from './preview-active-tab'
 
 /** Runs JS source in the pane's guest page, resolving its completion value. */
-export type PreviewScriptRunner = (code: string) => Promise<unknown>
+export interface PreviewScriptRunner {
+  (code: string, signal?: AbortSignal): Promise<unknown>
+  /** Keep the same guest awake between a driven action's script/input trips. */
+  withActivity?: <T>(operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>
+}
 
 const runners = new Map<string, PreviewScriptRunner>()
 

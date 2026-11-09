@@ -10,7 +10,7 @@ def test_cron_admission_uses_job_model_and_exact_retry(tmp_path, monkeypatch):
     from gateway import run, session_cron
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from hermes_state import SessionDB
     from hermes_state_runtime import begin_runtime_epoch, RuntimeStoreError
 
@@ -25,7 +25,7 @@ def test_cron_admission_uses_job_model_and_exact_retry(tmp_path, monkeypatch):
                                  epoch=begin_runtime_epoch(db, instance_id='test'))
     runner.session_authority = authority
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    actor = Principal('owner', str(tmp_path), frozenset({'session:create', 'session:submit', 'session:control'}), 'viewer')
+    actor = SessionActor('owner', str(tmp_path), frozenset({'session:create', 'session:submit', 'session:control'}), 'viewer')
 
     async def probe():
         params = {'job_id': 'job', 'request_id': 'fire', 'extra_prompt': 'extra'}
@@ -52,7 +52,7 @@ async def test_cron_cancel_between_claim_and_execution_registration_stops_the_jo
     from cron import scheduler
     from gateway import run, session_cron
     from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_contract import SessionActor, SessionRef
     from hermes_state import SessionDB
     from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 
@@ -62,7 +62,7 @@ async def test_cron_cancel_between_claim_and_execution_registration_stops_the_jo
     authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='test', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='test'))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='cron-owner'), 'route')
-    actor = Principal('cron-owner', 'p', frozenset({'session:create', 'session:submit', 'session:control'}), 'ticker')
+    actor = SessionActor('cron-owner', 'p', frozenset({'session:create', 'session:submit', 'session:control'}), 'ticker')
     ref = SessionRef('p', 's')
     monkeypatch.setattr(run, '_profile_runtime_scope', lambda home: nullcontext())
     seen = {}

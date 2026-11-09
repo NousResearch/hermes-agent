@@ -717,7 +717,9 @@ def resolve_nous_portal_base_url() -> str:
 
 
 def _portal_base_url(state: dict[str, Any]) -> Optional[str]:
-    value = state.get("portal_base_url")
+    from hermes_cli.auth_nous import _nous_portal_env_override
+
+    value = _nous_portal_env_override() or state.get("portal_base_url")
     return value.strip().rstrip("/") if _nonblank(value) else None
 
 

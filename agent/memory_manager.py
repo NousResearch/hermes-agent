@@ -136,7 +136,10 @@ def _redact_for_provider(*values: Any) -> Any:
 
 
 def _redact_messages_for_egress(messages: Optional[list[Any]]) -> Optional[list[Any]]:
-    return None if messages is None else list(_redact_for_provider(messages))
+    """Scrubbed copies of whole transcript rows for a provider; a ``pre_llm_call`` veto's typed text
+    (display-only metadata) never leaves the host."""
+    from agent.message_metadata import without_withheld_prompts
+    return None if messages is None else list(_redact_for_provider(without_withheld_prompts(messages)))
 
 
 class _StuckCallGate:
@@ -705,7 +708,9 @@ class MemoryManager:
             return ""
         parts = []
         checkpoint_succeeded = False
-        messages, evidence_messages = _redact_for_provider(messages or [], evidence_messages)
+        from agent.message_metadata import without_withheld_prompts
+        messages, evidence_messages = _redact_for_provider(
+            without_withheld_prompts(messages or []), without_withheld_prompts(evidence_messages))
         for provider in self._providers:
             version = self._checkpoint_api_version(provider)
             if version is None:

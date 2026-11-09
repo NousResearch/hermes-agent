@@ -188,27 +188,6 @@ def test_membership_preserves_terminal_delivery_and_revokes_departed_peers(monke
             server.reset_transport(token)
         assert a.receive()["id"] == "private"
         assert b.frames.empty()
-        from gateway import browser_control_broker as broker_module
-        monkeypatch.setattr(broker_module, "browser_control_enabled", lambda: True)
-        for client in (a, b, stranger):
-            client.auth_identity = {"user_id": "fanout-owner", "provider": "fixture"}
-        session["profile"] = "default"
-
-        def controller(client, action, **params):
-            return server.dispatch({"jsonrpc": "2.0", "id": 1,
-                                    "method": "browser.controller." + action,
-                                    "params": {"session_id": "fanout-invariant", **params}}, client)
-
-        registered = controller(a, "register", controller_id="invariant",
-                                browser_profile_id="fixture", capabilities=["controller.noop"],
-                                protocol_version=broker_module.BROWSER_CONTROL_PROTOCOL_VERSION)
-        assert "result" in registered, registered
-        try:
-            assert controller(a, "heartbeat")["result"] == {"ok": True}
-            assert controller(b, "heartbeat")["error"]["message"] == "controller is not owned by this transport"
-            assert controller(stranger, "heartbeat")["error"]["message"] == "session is not owned by this transport"
-        finally:
-            controller(a, "detach")
         session["viewers"] = {b: object(), stranger: object()}
         assert server._detach_session_transport(session, b)
         assert not session["viewers"]
@@ -324,6 +303,47 @@ def test_overflow_closes_only_the_slow_peer_and_healthy_keeps_streaming():
         assert healthy.frames[-1] == after
     finally:
         fan.close()
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2)
+        loop.close()
+
+
+def test_overflow_and_send_deadline_close_the_socket_once():
+    """abort() (fanout overflow) and the send-deadline path both reach for a 1011 close; under load both
+    fire. The peer must get exactly one close frame — proven by holding the first close open so the
+    second call genuinely overlaps it, which fails if the one-shot latch is set after the close await."""
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+    loop_thread.start()
+    entered = threading.Event()
+    release = asyncio.Event()
+    state = {"enter_count": 0}
+
+    class _SlowCloseWS:
+        def __init__(self):
+            self.close_codes = []
+
+        async def send_text(self, payload):
+            await asyncio.Event().wait()
+
+        async def close(self, code=1000):
+            state["enter_count"] += 1
+            self.close_codes.append(code)
+            entered.set()
+            await release.wait()  # hold the first close open so the second call overlaps it
+
+    ws = _SlowCloseWS()
+    t = WSTransport(ws, loop, peer="slow")
+    try:
+        f1 = asyncio.run_coroutine_threadsafe(t._close_socket(1011, "send deadline"), loop)
+        assert entered.wait(2)  # the first close is now inside the fake, holding
+        f2 = asyncio.run_coroutine_threadsafe(t._close_socket(1011, "fanout overflow"), loop)
+        f2.result(2)  # the second scheduler returns at once — latched out, never entering close
+        assert state["enter_count"] == 1
+        loop.call_soon_threadsafe(release.set)
+        f1.result(2)
+        assert ws.close_codes == [1011]
+    finally:
         loop.call_soon_threadsafe(loop.stop)
         loop_thread.join(timeout=2)
         loop.close()

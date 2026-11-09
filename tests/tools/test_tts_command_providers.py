@@ -117,17 +117,21 @@ class TestCommandTtsEnv:
 
         class Proc:
             returncode = 0
+            pid = 4242
             stdout = _Stream()
             stderr = _Stream()
 
             def wait(self, timeout=None):
                 return 0
 
+            def poll(self):
+                return 0
+
         def fake_popen(command, **kwargs):
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_popen)
 
         result = _run_command_tts("echo hi", timeout=1)
 
@@ -487,17 +491,21 @@ class TestCommandTtsEnvPassthrough:
 
         class Proc:
             returncode = 0
+            pid = 4242
             stdout = _Stream()
             stderr = _Stream()
 
             def wait(self, timeout=None):
                 return 0
 
+            def poll(self):
+                return 0
+
         def fake_popen(command, **kwargs):
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_popen)
 
         result = _run_command_tts(
             "echo hi", timeout=1, env_passthrough=["MY_TTS_API_KEY"]
@@ -552,11 +560,11 @@ class TestCommandProviderSpawnGroupKwargs:
             _subprocess_compat.windows_detach_flags_without_breakaway()
         )
 
-    def test_posix_branch_uses_start_new_session(self):
+    def test_posix_branch_leaves_the_group_to_spawn_owned(self):
         from tools.tts_command_provider import provider_popen_group_kwargs
 
-        kwargs = provider_popen_group_kwargs("posix")
-        assert kwargs == {"start_new_session": True}
+        # spawn_owned makes the child a session/group leader (and ties the group to our life).
+        assert provider_popen_group_kwargs("posix") == {}
 
     @pytest.mark.platforms("windows")
     def test_popen_kwargs_hide_console_window_windows(self, monkeypatch):
@@ -568,10 +576,14 @@ class TestCommandProviderSpawnGroupKwargs:
 
         class Proc:
             returncode = 0
+            pid = 4242
             stdout = _Stream()
             stderr = _Stream()
 
             def wait(self, timeout=None):
+                return 0
+
+            def poll(self):
                 return 0
 
         def fake_popen(command, **kwargs):
@@ -589,7 +601,7 @@ class TestCommandProviderSpawnGroupKwargs:
         assert "start_new_session" not in captured
 
     @pytest.mark.platforms("posix")
-    def test_popen_kwargs_start_new_session_posix(self, monkeypatch):
+    def test_posix_spawn_is_owned_and_has_no_console_flags(self, monkeypatch):
         captured = {}
 
         class _Stream:
@@ -598,22 +610,26 @@ class TestCommandProviderSpawnGroupKwargs:
 
         class Proc:
             returncode = 0
+            pid = 4242
             stdout = _Stream()
             stderr = _Stream()
 
             def wait(self, timeout=None):
                 return 0
 
-        def fake_popen(command, **kwargs):
-            captured.update(kwargs)
+            def poll(self):
+                return 0
+
+        def fake_spawn_owned(command, *, purpose, **kwargs):
+            captured.update(kwargs, purpose=purpose)
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_spawn_owned)
 
         result = _run_command_tts("echo hi", timeout=1)
 
         assert result.returncode == 0
-        assert captured["start_new_session"] is True
+        assert captured["purpose"] == "tts-command"
         assert "creationflags" not in captured
 
 

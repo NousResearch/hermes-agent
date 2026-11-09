@@ -39,10 +39,10 @@ def _compress(db, parent, child, source):
 
 async def _compressed(tmp_path):
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     authority = await initialize_session_authority(_runner(tmp_path), profile_id='fixture', instance_id='first')
-    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
+    actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
     ref = create_local_session(authority, actor, dict(request_id='row10', source='cli', cwd=str(tmp_path),
                                                       model='frozen', toolsets=[]))
     live = authority.sessions[ref.session_id]
@@ -115,8 +115,8 @@ def rig(tmp_path, monkeypatch):
 def _gateway_accepts(rig, session_id):
     """The admission/mutation gate every turn, /undo and /rollback reach: ``authorize`` restores the
     local session from its stored receipt (``restore_local_session`` -> ``local_receipt``)."""
-    from gateway.session_contract import Principal, SessionRef
-    actor = Principal('owner', 'fixture', frozenset({'session:read', 'session:control'}), 'socket')
+    from gateway.session_contract import SessionActor, SessionRef
+    actor = SessionActor('owner', 'fixture', frozenset({'session:read', 'session:control'}), 'socket')
     rig.authority.authorize(actor, SessionRef('fixture', session_id), 'session:control')
 
 

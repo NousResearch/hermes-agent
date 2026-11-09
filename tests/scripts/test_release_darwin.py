@@ -26,7 +26,7 @@ def _inputs(version="0.28.0", light=False):
     channel = "canary" if "+canary." in version else "stable"
     bytes_by_key = {}
     legs = {}
-    for i, arch in enumerate(("arm64", "x64")):
+    for i, arch in enumerate(darwin.ARCHES):
         name = f"{'HermesLight' if light else 'HermesBundled'}-{version}-mac-{arch}.zip"
         data = f"test artifact {arch}".encode()
         bytes_by_key[f"releases/tag/v{version}/{name}"] = data
@@ -80,7 +80,7 @@ def test_merges_native_legs_and_preserves_release_metadata():
     legs, _bytes = _inputs()
     plan = merge_mac_feeds(legs, "v0.28.0")
     feed = parse_mac_feed(plan["text"])
-    assert len(feed["files"]) == 2
+    assert len(feed["files"]) == len(darwin.ARCHES)
     assert feed["releaseNotes"] == "two lines\nof release notes"
     assert plan["key"] == "releases/darwin/stable/stable-mac.yml"
     assert mac_feed_references(plan["text"]) == [
@@ -120,6 +120,15 @@ def test_rejects_broken_legs_instead_of_publishing(kind):
         merge_mac_feeds(legs, "v0.28.0")
 
 
+def test_an_intel_leg_is_refused_because_no_intel_build_ships():
+    legs, _bytes = _inputs()
+    intel = legs["arm64-stable-mac.yml"].replace("mac-arm64", "mac-x64")
+    with pytest.raises(ValueError, match="ARM64"):
+        merge_mac_feeds({**legs, "x64-stable-mac.yml": intel}, "v0.28.0")
+    with pytest.raises(ValueError, match="ARM64"):
+        merge_mac_feeds({"x64-stable-mac.yml": intel}, "v0.28.0")
+
+
 def test_semver_grammar_rejects_non_release_versions():
     # The Python port never imports npm semver; it implements exactly the
     # release grammar (vMAJOR.MINOR.PATCH[+canary.<full UTC timestamp>]) and fails
@@ -150,12 +159,14 @@ def test_finalize_uses_the_real_signed_transport_and_publishes_last(r2_server):
     feed_key = "releases/darwin/stable/stable-mac.yml"
     assert feed_key in r2_server.store
     published = r2_server.store[feed_key][0].decode("utf-8")
-    assert len(parse_mac_feed(published)["files"]) == 2
+    assert len(parse_mac_feed(published)["files"]) == len(darwin.ARCHES)
     # Order: reads (legs verified) FIRST, then exactly one conditional PUT,
     # then the readback — verify bytes before the pointer write.
     methods = [m for m, _p, _h in r2_server.requests]
     assert methods.count("PUT") == 1
-    assert "PUT" not in methods[:3]
+    # The live-feed read and one verify per artifact all precede the write.
+    assert methods.index("PUT") == 1 + len(bytes_by_key)
+    assert all(method == "GET" for method in methods[:methods.index("PUT")])
     put_headers = next(h for m, _p, h in r2_server.requests if m == "PUT")
     assert put_headers["If-None-Match"] == "*"
     assert put_headers["Cache-Control"] == "no-store"

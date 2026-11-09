@@ -370,7 +370,10 @@ export function useSessionStateCache({
       // state anyway). The plain busy heartbeat stays RAF-batched: that
       // coalescing exists only to keep periodic `session.info` updates from
       // churning `$messages` and jerking the scroll position while reading.
-      const isCriticalTransition = !viewState.busy || viewState.needsInput
+      // A sealed interim is also a completed reply: auto-speak must receive it
+      // while tools continue, without requiring per-token paint in a hidden window.
+      const isCriticalTransition =
+        !viewState.busy || viewState.needsInput || (viewState.interimBoundaryPending && !viewState.streamId)
 
       if (isCriticalTransition) {
         if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {

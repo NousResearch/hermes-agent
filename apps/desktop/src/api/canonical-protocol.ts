@@ -1,7 +1,25 @@
-// Canonical local authority wire adapter. Remote legacy transports keep their
-// existing protocol; unsupported explicit semantics fail before network admission.
+// Canonical session authority wire adapter, for private native dials and remote owners
+// advertising session_authority in gateway.ready. Remote legacy servers keep their
+// existing protocol; wire negotiation never changes the transport's auth credentials.
+// Unsupported explicit semantics fail before network admission.
+
+import { randomUuid } from '@hermes/shared'
 
 export const CANONICAL_GATEWAY_PROTOCOL = 'hermes-gateway-v1'
+
+/** Dial `/api/ws` or a sibling stream beside it. A local gateway's one-use ticket leaves the URL
+ *  for the gateway subprotocol; a remote route keeps its own query credential. */
+export function openGatewaySocket(url: string): WebSocket {
+  const parsed = new URL(url)
+
+  if (!parsed.searchParams.has('native_dial')) {return new WebSocket(url)}
+  const ticket = parsed.searchParams.get('ticket')
+
+  if (!ticket) {throw new Error('Native gateway requires a fresh private ticket')}
+  parsed.searchParams.delete('ticket')
+
+  return new WebSocket(parsed.toString(), [CANONICAL_GATEWAY_PROTOCOL, `hermes-gateway-ticket.${ticket}`])
+}
 
 export const canonicalProfile = (profile: unknown): string =>
   typeof profile === 'string' && profile ? profile : 'default'
@@ -76,7 +94,10 @@ export function pickerModelMutation(value: unknown): { model: string; provider: 
 }
 
 function mutationSummary(operation: string, value: Record<string, unknown>): string {
-  if (operation === 'model') { return `model: ${value.model}${value.provider ? ` (${value.provider})` : ''}` }
+  if (operation === 'model') {
+    // `/model reset` already on the configured default answers with the owner's note.
+    return typeof value.note === 'string' ? value.note : `model: ${value.model}${value.provider ? ` (${value.provider})` : ''}`
+  }
 
   if (operation === 'branch') { return `branch: ${value.branched_session_id}` }
 
@@ -169,7 +190,7 @@ const OWNER_CONNECTION_VERBS = new Set([
 // gateway/session_tui_config.py), with the keys that take a `scope` (`reasoning --global`, the
 // Shift+click global yolo zap).
 const CANONICAL_CONFIG_KEYS = new Set([
-  'busy', 'verbose', 'yolo', 'model', 'reasoning', 'fast', 'personality', 'approvals.mode', 'voice.voice_chat_mode',
+  'busy', 'verbose', 'yolo', 'model', 'reasoning', 'fast', 'daybreak', 'personality', 'approvals.mode', 'voice.voice_chat_mode',
   'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'
 ])
 
@@ -195,7 +216,7 @@ function canonicalProducerFrame(method: string, params: Record<string, unknown>)
 
   // The owner admits identified input only. An identityless producer (session tile, quick entry,
   // bot chats) is a fresh send on every call, which is what the legacy wire did with it.
-  if (method === 'prompt.submit' && !params.submission_id && !params.input_id) { return { ...params, submission_id: crypto.randomUUID() } }
+  if (method === 'prompt.submit' && !params.submission_id && !params.input_id) { return { ...params, submission_id: randomUuid() } }
 
   return method === 'bot_relay.deliver' ? canonicalBotDelivery(params) : params
 }
@@ -321,7 +342,7 @@ export class CanonicalDesktopProtocol {
 
     if (withGeneration && generation === undefined) { throw new Error('Session execution identity unavailable; reconnect before this command') }
 
-    const mutation: Record<string, unknown> = { session_id: sessionId, request_id: crypto.randomUUID(), expected_revision: revision,
+    const mutation: Record<string, unknown> = { session_id: sessionId, request_id: randomUuid(), expected_revision: revision,
       ...(withGeneration ? { expected_generation: generation } : {}), operation, payload }
 
     this.mutations.set(key, mutation)
@@ -503,8 +524,13 @@ export class CanonicalDesktopProtocol {
   // pins priority, Normal pins normal over a profile tier, omitted inherits); `cwd_explicit` is the
   // provenance that lets a named profile's own workspace beat an inherited cwd.
   private prepareCreate(input: Record<string, unknown>): Record<string, unknown> {
-    const { reasoning_effort: effort, fast, service_tier: picked, ...params } = input
+    // `room_plumbing` is the serve socket's flag for a room member session: it only skips the stored
+    // runtime overrides (serve's agent_factory), which the owner calls `follow_profile_config`. It
+    // does not imply hidden there, so `hidden` stays whatever the caller sent.
+    const { reasoning_effort: effort, fast, service_tier: picked, room_plumbing: roomPlumbing, ...params } = input
     const tier = typeof picked === 'string' && picked ? picked : fast === true ? 'priority' : fast === false ? 'normal' : undefined
+
+    if (roomPlumbing === true) { params.follow_profile_config = true }
 
     if (typeof effort === 'string' && effort) { params.reasoning = effort }
 
@@ -523,7 +549,7 @@ export class CanonicalDesktopProtocol {
       ['request_id', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && typeof value === 'string' && value !== '')))
 
     const key = JSON.stringify(result)
-    const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()
+    const requestId = params.request_id ?? this.creates.get(key) ?? randomUuid()
     this.creates.set(key, String(requestId))
 
     return { ...result, request_id: requestId, source: 'gui' }
@@ -733,9 +759,10 @@ export class CanonicalDesktopProtocol {
       return projected
     })
 
-    const open_requests = prompts.map((prompt: Record<string, unknown>) => ({
+    // The owner's server requests (setup cards, batch clarify, sudo) ride beside the projected prompts.
+    const open_requests = [...(value.open_requests ?? []), ...prompts.map((prompt: Record<string, unknown>) => ({
       id: prompt.prompt_id, method: prompt.kind, params: canonicalPromptParams(prompt.kind, sid, prompt)
-    }))
+    }))]
 
     return { ...value, open_requests, pending_approval: prompts.find((p: any) => p.kind === 'approval'), pending_clarify: prompts.find((p: any) => p.kind === 'clarify'), info: { ...value.info, stored_session_id: value.stored_session_id, pending_submissions: value.pending_submissions, replay_epoch: value.replay_epoch, last_sequence: value.last_sequence, execution_generation: value.execution_generation, running: value.running } }
   }

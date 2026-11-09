@@ -77,6 +77,12 @@ def _close_fds(fds):
 class TestRunBashCwdRecovery:
     """End-to-end recovery: deleted ``self.cwd`` must not crash Popen."""
 
+    @pytest.fixture(autouse=True)
+    def _no_supervisor(self, monkeypatch):
+        # The faked Popen must see only the command, not the owner-death supervisor's spawn.
+        monkeypatch.setattr("tools.environments.local.own_process_groups", lambda pgids: None)
+        monkeypatch.setattr("tools.environments.local.release_process_groups", lambda pgids: None)
+
     def test_recovers_when_cwd_deleted_after_init(self, tmp_path, caplog):
         """Reproduces the wedge from #17558: cwd was valid when the
         snapshot was taken, but a subsequent command deleted it before the

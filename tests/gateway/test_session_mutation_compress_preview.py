@@ -42,7 +42,7 @@ async def test_preview_mutation_reports_without_summarizing_or_writing(tmp_path,
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='preview', source='cli', cwd=str(tmp_path),
                                                               model='frozen', toolsets=[]))
@@ -105,7 +105,7 @@ async def test_canonical_compress_runs_the_live_agents_pre_compress_memory_hook(
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: live_agent,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='hook', source='cli', cwd=str(tmp_path),
                                                               model='frozen', toolsets=[]))
@@ -151,7 +151,7 @@ async def test_input_is_admitted_while_compress_summarizes_but_not_claimed_until
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='busy', source='cli', cwd=str(tmp_path),
@@ -201,7 +201,7 @@ async def test_a_compress_that_removes_nothing_reports_mains_no_changes_without_
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='short', source='tui', cwd=str(tmp_path),
                                                               model='frozen', toolsets=[]))
@@ -244,7 +244,7 @@ async def test_no_op_compress_without_a_resident_agent_estimates_the_stored_prom
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='cold', source='tui', cwd=str(tmp_path),
                                                               model='frozen', toolsets=[]))

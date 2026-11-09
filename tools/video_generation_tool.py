@@ -244,8 +244,7 @@ _CAPABILITY_PARAMS = (
 )
 
 _GENERIC_DESCRIPTION = (
-    "Generate a video from a text prompt (text-to-video), animate a "
-    "still image (image-to-video), or guide generation with reference images. "
+    "Generate video from text, a still image or reference images (configured model). "
     "Pass `image_url` to animate an image or `reference_image_urls` for "
     "reference-to-video. Video edit/extend workflows are not part of this "
     "unified surface; use a dedicated provider-specific tool when one is "
@@ -253,10 +252,8 @@ _GENERIC_DESCRIPTION = (
     "`hermes tools` → Video Generation; the agent does not pick them. "
     "Long-running generations may take 30 seconds to several minutes — "
     "the call blocks until the video is ready. Returns the result in the "
-    "`video` field — either an HTTP URL or an absolute file path. To show "
-    "it to the user, reference that path/URL in your response using the "
-    "file-delivery convention for the current platform (your platform "
-    "guidance describes how files are delivered here)."
+    "`video` field — either an HTTP URL or an absolute file path; reference "
+    "it in your response using the current platform's file-delivery convention."
 )
 
 

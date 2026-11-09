@@ -143,7 +143,8 @@ def test_zip_command_migrates_profiles_recovers_snapshot_and_verifies_fleet(
         config = hermes_yaml.safe_load((profile / "config.yaml").read_text())
         assert config["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert config["model"]["default"] == "retained-model"
-    assert (state.sibling / ".env").read_bytes() == (state.active / ".env").read_bytes()
+    # The backfill seeds the placeholder, never a copy of the default's secrets.
+    assert b"EXAMPLE_TOKEN" not in (state.sibling / ".env").read_bytes()
     assert json.loads(state.jobs.read_text()) == state.original_jobs
     assert (state.root / "payload.txt").read_text() == "new"
     for name in ("tools/code.py", "apps/desktop/source.js", "new-entry/data"):

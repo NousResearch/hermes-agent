@@ -89,6 +89,31 @@ def test_cancelled_queued_admission_is_a_terminal_cancelled_receipt_not_ambiguou
         db.close()
 
 
+def test_a_turn_stopped_mid_run_is_a_cancelled_receipt_not_a_failure(tmp_path):
+    """The sender's ``message_agent`` cancel stops the started turn (``prompt.cancel`` interrupts
+    its generation): the turn settles ``interrupted`` with its result, and the sender's receipt is
+    ``cancelled`` (no error, never retried), not ``failed: Bot Chat delivery failed``."""
+    from hermes_state_runtime import settle_session_input
+    from gateway.session_bot import _delivery_result
+    db = SessionDB(tmp_path / 'state.db')
+    try:
+        db.create_session('bot', source='gui')
+        epoch = begin_runtime_epoch(db, instance_id='first')
+        admission = admit_session_input(db, epoch=epoch, principal_id='owner', session_id='bot',
+                                        request_id='bot:' + 'c' * 32, payload={'text': 'long task'})
+        row = claim_session_input(db, epoch=epoch, session_id='bot')
+        settle_session_input(db, epoch=epoch, admission_id=row['admission_id'], generation=row['generation'],
+                             outcome='interrupted', result={'result': {'final_response': '', 'interrupted': True},
+                                                            'usage': {}})
+        record = dict(status='claimed', admission_id=admission['admission_id'], delivery_id='c' * 32,
+                      profile_home=str(tmp_path), session_id='bot', message='long task')
+        receipt = _delivery_result(SimpleNamespace(db=db), record)
+        assert receipt['status'] == 'cancelled'
+        assert 'error' not in receipt and 'retry_admission_id' not in receipt
+    finally:
+        db.close()
+
+
 def test_settled_bot_receipt_relays_empty_reply_for_a_bare_silence_marker(tmp_path):
     """#110782: the authority receipt applies the gateway's silence rule — a successful bare
     marker reaches the sender as "", prose that merely mentions one is relayed verbatim."""

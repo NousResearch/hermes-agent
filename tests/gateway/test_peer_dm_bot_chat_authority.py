@@ -16,7 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
 
@@ -39,7 +39,7 @@ async def peer(tmp_path, monkeypatch):
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
-    owner = Principal('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit'}), 'native')
+    owner = SessionActor('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit'}), 'native')
     chat = create_local_session(authority, owner, {'request_id': 'bot', 'source': 'gui', 'cwd': str(tmp_path),
                                                     'model': 'fixture', 'toolsets': []})
     title_new_session(authority, chat, 'Bot Chat')

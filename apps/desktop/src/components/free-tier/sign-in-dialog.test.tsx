@@ -125,17 +125,6 @@ describe('FreeTierSignInDialog', () => {
       expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
     })
 
-    it('Reconnect for a sign-in made for another profile names that profile in the link', async () => {
-      const { connectorsTarget } = await import('./sign-in-dialog')
-      const handoff: AppHandoffStatus = { dropped_toolkits: ['slack'], lines: ['x'], state: 'claimed' }
-
-      expect(connectorsTarget(handoff, { connectionId: 'athena', profile: 'work' })).toBe(
-        '/capabilities?tab=connectors&connector=slack&profile=work&connection=athena'
-      )
-      expect(connectorsTarget(handoff, 'work')).toBe('/capabilities?tab=connectors&connector=slack&profile=work')
-      expect(connectorsTarget(handoff)).toBe('/capabilities?tab=connectors&connector=slack')
-    })
-
     it('a move still retrying is a waiting note with no connectors button', async () => {
       await renderCompleted({ lines: ['Moving your free-tier apps to this account.'], state: 'retrying' })
 

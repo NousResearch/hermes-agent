@@ -4029,7 +4029,7 @@ class TestThreadContextUnverifiedTagging:
         adapter._thread_context_cache.clear()
         adapter._app.client.conversations_replies = self._make_replies(self._thread_messages())
         adapter.set_authorization_check(
-            lambda user_id, chat_type=None, chat_id=None: user_id == "U_BOB"
+            lambda user_id, chat_type=None, chat_id=None, **_: user_id == "U_BOB"
         )
 
         with patch.object(
@@ -4049,18 +4049,18 @@ class TestThreadContextUnverifiedTagging:
 
     @pytest.mark.asyncio
     async def test_auth_check_chat_type_and_id_passed(self, adapter):
-        """The adapter forwards chat_type='thread' and the channel_id so the
-        gateway-side check can resolve group-allowlist rules correctly."""
+        """The adapter forwards the inbound chat type ('group' for a channel), channel_id and
+        thread root, so the gateway check reads the allowlist the live message used."""
         adapter._thread_context_cache.clear()
         adapter._app.client.conversations_replies = self._make_replies(
             [{"ts": "100.0", "user": "U_X", "text": "hello"}]
         )
 
         captured = {}
-        def check(user_id, chat_type=None, chat_id=None):
+        def check(user_id, chat_type=None, chat_id=None, thread_id=None):
             captured["user_id"] = user_id
             captured["chat_type"] = chat_type
-            captured["chat_id"] = chat_id
+            captured.update(chat_id=chat_id, thread_id=thread_id)
             return True
         adapter.set_authorization_check(check)
 
@@ -4072,7 +4072,7 @@ class TestThreadContextUnverifiedTagging:
                 channel_id="C_CHAN", thread_ts="100.0", current_ts="999.0",
             )
 
-        assert captured == {"user_id": "U_X", "chat_type": "thread", "chat_id": "C_CHAN"}
+        assert captured == {"user_id": "U_X", "chat_type": "group", "chat_id": "C_CHAN", "thread_id": "100.0"}
 
 
     @pytest.mark.asyncio

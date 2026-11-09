@@ -747,7 +747,7 @@ def test_install_by_name_resolves_to_the_skill_it_names(monkeypatch, tmp_path, i
 
 
 def test_built_in_restore_survives_leftovers_and_records_every_outcome_as_bundled(monkeypatch, tmp_path):
-    """Post-fix telemetry still showed `llm-wiki` failing as source=hub, filesystem_error: the
+    """Post-fix telemetry still showed `llm-wiki` (bundled then) failing as source=hub, filesystem_error: the
     restore copied with copytree onto a dest dir left behind without its SKILL.md (EEXIST on every
     retry), refused a skill already present behind a symlinked category the loader follows, and a
     failed restore was labelled a hub install."""
@@ -761,22 +761,22 @@ def test_built_in_restore_survives_leftovers_and_records_every_outcome_as_bundle
     rows = []
     monkeypatch.setattr("hermes_cli.observability.shared_metrics_events.record_extension_install",
                         lambda **row: rows.append((row["source"], row["outcome"])))
-    src = dict(skills_sync._discover_bundled_skills(skills_sync._get_bundled_dir()))["llm-wiki"]
-    dest = skill_usage._skills_dir() / src.parent.name / "llm-wiki"
+    src = dict(skills_sync._discover_bundled_skills(skills_sync._get_bundled_dir()))["obsidian"]
+    dest = skill_usage._skills_dir() / src.parent.name / "obsidian"
     console, _sink = _sink_console()
 
     (dest / "wiki").mkdir(parents=True)  # stranded: user data kept, SKILL.md gone
     (dest / "wiki" / "index.md").write_text("mine\n")
-    assert cli_hub.do_install("llm-wiki", console=console, skip_confirm=True) is True
+    assert cli_hub.do_install("obsidian", console=console, skip_confirm=True) is True
     assert (dest / "SKILL.md").is_file() and (dest / "wiki" / "index.md").read_text() == "mine\n"
 
     real = tmp_path / "real-category"
     dest.parent.rename(real)
     dest.parent.symlink_to(real, target_is_directory=True)
-    assert cli_hub.do_install("llm-wiki", console=console, skip_confirm=True) is None  # present, no-op
+    assert cli_hub.do_install("obsidian", console=console, skip_confirm=True) is None  # present, no-op
 
-    (real / "llm-wiki" / "SKILL.md").unlink()  # missing behind the symlink: refused, and still bundled
-    assert cli_hub.do_install("llm-wiki", console=console, skip_confirm=True) is False
+    (real / "obsidian" / "SKILL.md").unlink()  # missing behind the symlink: refused, and still bundled
+    assert cli_hub.do_install("obsidian", console=console, skip_confirm=True) is False
     assert rows == [("bundled", "success"), ("bundled", "failed")]
 
 

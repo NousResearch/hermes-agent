@@ -119,6 +119,15 @@ class GatewayNotificationOwnershipMixin:
                 return "terminal", session_id, row
             if session_id == current_session_id:
                 return "deliver", session_id, row
+            # A hop compressed into the current route is its conversation (a resumed delegate run), as
+            # admission rules: climbing past it would reach the parent the run was spawned from.
+            if current_session_id and row.get("end_reason") == "compression":
+                try:
+                    if await session_db.get_compression_tip(session_id) == current_session_id:
+                        return "deliver", session_id, row
+                except Exception:
+                    logger.debug("Completion compression lookup failed for %s", session_id, exc_info=True)
+                    return "retry", session_id, None
             config = row.get("model_config")
             try:
                 if isinstance(config, str):

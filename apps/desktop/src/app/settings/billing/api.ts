@@ -1,3 +1,4 @@
+import { randomUuid } from '@hermes/shared'
 import { createContext, useContext, useMemo } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
@@ -146,7 +147,7 @@ const callBilling = async <T>(
 }
 
 export const createBillingApi = (requestGateway: BillingRequestGateway): BillingApi => ({
-  charge: async (amountUsd, idempotencyKey = crypto.randomUUID()) => {
+  charge: async (amountUsd, idempotencyKey = randomUuid()) => {
     const result = await callBilling<BillingChargeResponse>(requestGateway, 'billing.charge', {
       amount_usd: amountUsd,
       idempotency_key: idempotencyKey

@@ -161,13 +161,15 @@ async def test_a_tool_that_moves_the_goal_mid_turn_repaints_the_viewers_once(own
         lambda frame: frame['params']['type'] == 'session.control.update' and updates.append(frame['params']['payload']))
     turn = _turn(Platform.LOCAL, [])
     turn._approval_owner = (owner.authority, owner.ref.session_id, 1)
-    turn._schedule = lambda coro, _message: asyncio.ensure_future(coro)
+    scheduled = []
+    turn._schedule = lambda coro, _message: scheduled.append(asyncio.ensure_future(coro))
 
     async def tool_completes(write=None):
         if write:
             GoalManager(session_id=owner.target).add_subgoal(write)  # the plugin tool's own write
         turn.combined_tool_complete_callback('call', 'probe', {}, 'ok')
-        await asyncio.sleep(0)
+        await asyncio.gather(*scheduled)  # the republish reads its snapshot in a worker thread
+        scheduled.clear()
     await tool_completes()
     assert updates == []
     await tool_completes('tests pass')

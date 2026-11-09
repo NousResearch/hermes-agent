@@ -97,6 +97,20 @@ def _make_adapter(platform_val="telegram"):
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
+    @pytest.mark.asyncio
+    async def test_busy_ack_is_not_sent_to_a_bot_peer(self):
+        """Regression for #137027: runtime acknowledgements must not restart bot loops."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        event = _make_event()
+        event.source.is_bot = True
+        adapter = _make_adapter()
+
+        await GatewayRunner._send_busy_ack_reply(runner, event, adapter, "⚡ Interrupting current task")
+
+        adapter._send_with_retry.assert_not_awaited()
+
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):

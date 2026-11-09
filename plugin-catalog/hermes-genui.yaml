@@ -1,0 +1,26 @@
+name: hermes-genui
+repo: https://github.com/sagarmainkar/hermes-genui
+sha: 43de4cdba042ebb087e44ccd6e0ba4f87769b67b
+description: "Generative UI for Hermes Desktop: the agent answers with interactive blocks drawn inside the chat reply (charts with hover cards, KPI cards, sortable tables, day-by-day plans, photo strips, calculators with sliders and live charts, forms, checklists that keep their ticks, and step-by-step explainers with flow diagrams, simulations and a 3D layer stack). The model sends data only (JSON blocks, never HTML, scripts or SVG); the plugin validates every block and draws it with its own components, in the app's theme. Telegram, the CLI and other chat apps get readable Markdown instead. Ships nine recipe skills (hermes-genui:trip-planner, compare, explain and more). Disclosure — network calls only when the model uses a tool, carrying the model's search words or ticker: market prices from Yahoo Finance (query1.finance.yahoo.com); photos from the Wikimedia Commons and Openverse APIs, from Unsplash or Pexels only when the user adds that key, from Tavily when a TAVILY_API_KEY is set (including one already set for Hermes's own Tavily web search), from the user's configured web search, and from the head (at most 256 KB) of the top result pages; each photo host is contacted briefly to check the picture loads (https only, public addresses only, DNS pinned, redirects re-checked). Boards are saved as JSON under the profile's plugin-data/hermes-genui/ folder; a recipe the user asks to save becomes a profile skill through Hermes's own skill_manage (write approval applies); no telemetry and no account. Adds a short drawing rule to the system prompt and, in Desktop only, a one-line reminder next to messages that ask for something visual, steering answers to blocks instead of Hermes's ::preview widgets."
+maintainer: sagarmainkar
+tier: community
+category: desktop
+title: Hermes GenUI
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/sagarmainkar/hermes-genui#readme
+version: "0.2.0"
+image: https://raw.githubusercontent.com/sagarmainkar/hermes-genui/43de4cdba042ebb087e44ccd6e0ba4f87769b67b/assets/catalog-card.png
+screenshots:
+  - https://raw.githubusercontent.com/sagarmainkar/hermes-genui/43de4cdba042ebb087e44ccd6e0ba4f87769b67b/assets/screens/compare.png
+  - https://raw.githubusercontent.com/sagarmainkar/hermes-genui/43de4cdba042ebb087e44ccd6e0ba4f87769b67b/assets/screens/trip.png
+  - https://raw.githubusercontent.com/sagarmainkar/hermes-genui/43de4cdba042ebb087e44ccd6e0ba4f87769b67b/assets/screens/explainer.png
+  - https://raw.githubusercontent.com/sagarmainkar/hermes-genui/43de4cdba042ebb087e44ccd6e0ba4f87769b67b/assets/screens/finance.png
+platforms: []
+known_issues:
+  - "Turn off tool search for the profile (hermes config set tools.tool_search.enabled off): with it on, large boards often fail inside the search bridge."
+  - "A Desktop that connects to Hermes on another machine needs the drawing half installed in that Desktop too (Capabilities → Plugins → Install from Git)."
+capabilities:
+  provides_tools: [show_blocks, market_history, find_photos, save_recipe]
+  provides_hooks: [pre_llm_call, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

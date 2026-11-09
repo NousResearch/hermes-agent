@@ -134,6 +134,34 @@ interface as `tools.environments.base.BaseEnvironment`:
 Subclassing `BaseEnvironment` is recommended (you inherit the shared file-sync
 and background-process plumbing) but not required.
 
+## File tools and the host filesystem
+
+`read_file`, `write_file`, `patch` and `search_files` go through your
+environment's `execute()`, so they see exactly the files your commands see.
+The one exception is an environment that declares
+`uses_host_filesystem = True` (only the built-in `LocalEnvironment` does): there
+the file tools read, write and search the host directly, run the bundled
+ripgrep, stat paths on the host, write oversized tool output straight to
+`~/.hermes/cache/spillover` and enable LSP diagnostics.
+
+A backend that subclasses `LocalEnvironment` to confine its commands (a
+bubblewrap or other host sandbox that hides paths, mounts them read-only or
+gives commands their own `$TMPDIR`) inherits `True` and must turn it off, or
+the file tools bypass the sandbox:
+
+```python
+from tools.environments.local import LocalEnvironment
+
+
+class AcmeJailEnvironment(LocalEnvironment):
+    uses_host_filesystem = False  # file tools run inside the jail, via execute()
+```
+
+Leave it unset on backends that don't subclass `LocalEnvironment`; the default
+is `False`. Hermes v0.22.5 and earlier ignore the attribute and use the host
+fast path for every `LocalEnvironment` subclass, so pin `requires_hermes` past
+that.
+
 ## Images
 
 Your backend reads its own image setting (a `config_schema` key, or a

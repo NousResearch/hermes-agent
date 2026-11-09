@@ -1,6 +1,8 @@
 """Durable ``/v1/runs`` admission, status, events, and control handlers."""
 
 import asyncio
+import contextvars
+import functools
 import hashlib
 import json
 import logging
@@ -25,6 +27,7 @@ except ImportError:
     RequestKey = None  # type: ignore[assignment,misc]
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
+from gateway.turn_executor import _UnboundedThreadExecutor
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
 
@@ -38,6 +41,40 @@ logger = logging.getLogger("gateway.platforms.api_server")
 # in the worker thread's own ``finally``, which also keeps it visible past ``adapters.clear()``.
 _API_WORKER_LOCK = threading.Lock()
 _API_WORKER_LIVE = 0
+# API-server agent turns and cron fires run on their own executor, as Desktop and messaging turns
+# do (``GatewayRunner._get_executor``). asyncio's default pool is ``min(32, cpu_count + 4)`` threads
+# shared with every ``asyncio.to_thread`` SessionDB read in the session handlers, so once live
+# turns filled it each /api/sessions read queued behind a whole turn (#144362). Turn concurrency is
+# bounded where it is refused: ``gateway.api_server.max_concurrent_runs`` (429 past the cap).
+# Created on first use and retired at adapter disconnect (``_close_run_state``), so its parked
+# threads do not outlive the adapter that used them; the loop's default executor this replaced
+# went away with its loop the same way.
+_API_TURN_EXECUTOR: _UnboundedThreadExecutor | None = None
+_API_TURN_EXECUTOR_LOCK = threading.Lock()
+
+
+def api_turn_executor() -> _UnboundedThreadExecutor:
+    """The executor that runs API-server agent turns and cron fires (never the loop's default)."""
+    global _API_TURN_EXECUTOR
+    with _API_TURN_EXECUTOR_LOCK:
+        if _API_TURN_EXECUTOR is None:
+            _API_TURN_EXECUTOR = _UnboundedThreadExecutor(thread_name_prefix="hermes-api-turn")
+        return _API_TURN_EXECUTOR
+
+
+def retire_api_turn_executor() -> _UnboundedThreadExecutor | None:
+    """Shut the API turn executor down without waiting and return it (None if never used).
+
+    Parked workers exit now; a worker still inside a turn finishes it, releases its
+    ``api_worker_live_count`` share as before, and exits instead of parking. A later submit gets
+    a fresh executor, so another adapter still serving keeps working.
+    """
+    global _API_TURN_EXECUTOR
+    with _API_TURN_EXECUTOR_LOCK:
+        executor, _API_TURN_EXECUTOR = _API_TURN_EXECUTOR, None
+    if executor is not None:
+        executor.shutdown(wait=False)
+    return executor
 
 
 def api_worker_live_count() -> int:
@@ -46,12 +83,18 @@ def api_worker_live_count() -> int:
         return _API_WORKER_LIVE
 
 
+async def on_turn_executor(fn, /, *args, **kwargs):
+    """``asyncio.to_thread`` (context copied the same way) on the API turn executor."""
+    call = functools.partial(contextvars.copy_context().run, fn, *args, **kwargs)
+    return await asyncio.get_running_loop().run_in_executor(api_turn_executor(), call)
+
+
 def _submit_api_worker(loop, fn):
-    """``loop.run_in_executor(None, fn)`` with the worker-lifetime count held for the submission.
+    """``loop.run_in_executor(api_turn_executor(), fn)`` with the worker-lifetime count held for the submission.
 
     Increment on the submitting (handler) thread so the count is live before the worker can
     exit; decrement in the worker thread's own ``finally`` so handler cancellation cannot drop
-    it early. When submission itself fails (default executor already shut down during quiesce
+    it early. When submission itself fails (executor shut down, or no thread can be started
     -> RuntimeError) the worker never runs, so the count is released here instead — a leaked
     count would make the shutdown close gate skip the SessionDB close for the process lifetime.
     """
@@ -68,7 +111,7 @@ def _submit_api_worker(loop, fn):
                 _API_WORKER_LIVE -= 1
 
     try:
-        return loop.run_in_executor(None, _counted)
+        return loop.run_in_executor(api_turn_executor(), _counted)
     except BaseException:
         with _API_WORKER_LOCK:
             _API_WORKER_LIVE -= 1
@@ -257,6 +300,7 @@ def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
 
 
 def _close_run_state(self) -> None:
+    retire_api_turn_executor()
     try:
         if getattr(self, "_run_idempotency_store", None) is not None:
             self._run_idempotency_store.close()
@@ -487,8 +531,9 @@ async def _resolve_chained_history(self, body: dict, raw_input: Any, *, _openai_
     that cannot answer is the retryable store verdict (``continued_session``). The last item is the
     stored session the chain moved past (``walked_from``), else None."""
     from gateway.platforms.api_server_authority_runs import continued_session
-    history, instructions, chain_root, error = _resolve_conversation_history(
-        self, body, raw_input, _openai_error=_openai_error)
+    # Off the loop: a previous_response_id chain reads (and json-decodes) the stored history.
+    history, instructions, chain_root, error = await asyncio.to_thread(
+        _resolve_conversation_history, self, body, raw_input, _openai_error=_openai_error)
     stored_session_id = chain_root
     if error is None:
         stored_session_id, error = await continued_session(self, chain_root)
@@ -536,8 +581,6 @@ class _RunLaunch:
     session_history_delivery: bool
     agent_kwargs: dict  # ``_create_agent`` keyword arguments (prompt, model overrides, route, room policy)
     request_profile: Any
-    browser_control_principal: Any
-    browser_control_transport_family: Any
     turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
     admission: Any = None
     walked_from: Optional[str] = None  # the swept stored session the chain moved past (``bind_api_steps``)
@@ -826,8 +869,6 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
-        browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
         turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None)
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
@@ -912,8 +953,6 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             session_tokens = self._bind_api_server_session(
                 chat_id=session_id or "", session_key=run.approval_session_key, session_id=session_id or "",
                 profile=run.request_profile or "",
-                browser_control_principal=run.browser_control_principal,
-                browser_control_transport_family=run.browser_control_transport_family,
                 # #98619 audited opt-in: the /v1/runs session id is wake-capable only when its
                 # own continuation path reloads session history — an explicit body/chained
                 # session id or a declared X-Hermes-Session-Key conversation (both load

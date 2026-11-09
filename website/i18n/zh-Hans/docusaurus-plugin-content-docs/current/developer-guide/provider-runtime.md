@@ -46,7 +46,6 @@ Hermes 拥有一个共享的 provider 运行时解析器，用于以下场景：
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
-- Copilot / Copilot ACP
 - Anthropic（原生）
 - Google / Gemini（`gemini`）
 - Alibaba / DashScope（`alibaba`、`alibaba-coding-plan`）
@@ -148,9 +147,7 @@ Codex 使用独立的 Responses API 路径：
 辅助任务包括：
 
 - 视觉
-- 网页提取摘要
 - 上下文压缩摘要
-- skills hub 操作
 - MCP 辅助操作
 - 记忆刷新
 

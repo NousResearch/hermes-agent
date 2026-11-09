@@ -8,7 +8,8 @@ the subject's before acting on any THIRD-PARTY / indirect record (see "Distingui
 
 **Autonomy:** `pdd.py next <subject>` sequences all of this - it decides which method applies, orders
 parents first, and routes human-only work to the digest. In `autonomy=full` (default), execute its
-actions without pausing per submission; the consent recorded at intake is the authorization. These
+actions without pausing per submission; the consent recorded at intake is the authorization (an
+action with `confirm_first: true`, such as `dnc_register`, still waits for the operator). These
 playbooks are the HOW for each action type.
 
 ## Opt-out posture: blind opt-out is the default (not a fallback)
@@ -70,8 +71,9 @@ URLs.
    (b) a broad `"First Last" <ZIP OR unique-address>` search (no `site:`) surfaces **brokers not yet in
    your DB** (e.g. information.com, peoplefinders.com) - record those as bonus exposures. Note: empty
    `site:` results are INCONCLUSIVE (many broker pages aren't indexed / are `noindex`), not `not_found`.
-2. If the page is JS-rendered or returns nothing useful, `browser_navigate` + `browser_snapshot`
-   (and `browser_type`/`browser_click` to run the site's search box).
+2. If the page is JS-rendered or returns nothing useful, use `browser_exec`: `new_tab(url)` +
+   `wait_for_load()`, then `page_info()` / `js()` to read the results (`fill_input()` + a `js()`
+   click to run the site's search box).
 3. If blocked by stealth/Cloudflare, use the `scrapling` skill via `terminal`. **If the broker record
    has `search.antibot` set (e.g. `datadome`), results are behind a device-check CAPTCHA**: a
    cloud/stealth browser (Browserbase) or `scrapling` may get through; if none is available, do **not**
@@ -99,8 +101,9 @@ If a listing genuinely does not exist: `pdd.py record <subject> <broker> not_fou
 A constructed search URL that 404s almost always means the **URL pattern is wrong**, not that the
 person is absent. Never record `not_found` off a 404. Instead:
   1. Re-check the broker's `search.url_patterns` / `url_format_quirks` and rebuild the URL.
-  2. Fall back to the **on-site search box**: `browser_navigate` to the search page, `browser_type`
-     the raw query, `browser_click` Search, then read the **canonical result URL** the site lands on.
+  2. Fall back to the **on-site search box**: in one `browser_exec` call, `new_tab()` the search page,
+     `fill_input()` the raw query, click Search via `js()`, `wait_for_load()`, then read the
+     **canonical result URL** the site lands on (`js('location.href')`).
   3. Only after the site's own search returns an empty result set do you record `not_found`.
   4. If a pattern was wrong, fix it in `references/brokers/<id>.json` (`url_patterns` +
      `url_format_quirks`) so the next run is correct - see the rule below.
@@ -156,10 +159,11 @@ re-deriving the listing URL). If a `found` turns out to be a false positive, cor
 
 ## web_form
 
-1. `browser_navigate` to `optout.url`; `browser_snapshot` to read the form.
-2. Fill only the planned `disclosure_fields` with `browser_type`/`browser_click`; for `profile_url`,
-   paste the confirmed listing URL from evidence.
-3. Submit; `browser_snapshot` to confirm the success state; screenshot to `evidence/`.
+1. `browser_exec`: `new_tab(optout.url)` + `wait_for_load()`; read the form with `page_info()` /
+   `js()` (field names, labels, required flags).
+2. Fill only the planned `disclosure_fields` with `fill_input()` (checkboxes/radios via a `js()`
+   click); for `profile_url`, paste the confirmed listing URL from evidence.
+3. Submit; `page_info()` to confirm the success state; `capture_screenshot()` into `evidence/`.
 4. `pdd.py record <subject> <broker> submitted --disclosed <field> --disclosed <field> --channel web_form`.
 5. If the broker requires email verification, follow **Verification loop** below.
 
@@ -198,24 +202,30 @@ actually sends depends on `email_mode`:
 
 1. **browser mode (no password, autonomous):** the command returns a recipient-locked `compose`
    payload (`to`/`subject`/`body`). Compose a NEW message in the operator's **logged-in webmail** via
-   `browser_*` (paste `compose.body` exactly, disclosing nothing beyond it) and send. No credentials
+   `browser_exec` (paste `compose.body` exactly, disclosing nothing beyond it) and send. No credentials
    stored. Requires the inbox signed in in the browser Hermes uses.
 2. **programmatic mode (SMTP creds):** the command SMTP-sends it directly, no human.
 3. **draft_only fallback:** `pdd.py render-email <subject> <broker> --listing <url>`; a digest entry
    tells the operator to send it, and the agent records `submitted --channel email` afterward.
+
+- **Confirm the contact email with the operator before anything is filed.** Every opt-out form,
+  the registry one-shots, and `send-email` disclose whatever `contact_email_for_optouts` carries, and
+  every confirmation link lands in that inbox. The env default mailbox may be a work address, and a
+  personal run filed to it is a disclosure nobody asked for — ask once at intake; re-filing is the
+  only remedy after the fact.
 
 Then follow the **Verification loop** if the broker emails a confirmation link.
 
 ## Verification loop (email_verification brokers)
 
 - **browser mode (autonomous, no password):** open the broker's confirmation email in the operator's
-  webmail (`browser_*`), then `pdd.py verify-link <subject> <broker> --text '<email body>'` returns
-  the anti-phishing-scored link. `browser_navigate` it **in the same browser** (several brokers, e.g.
+  webmail (`browser_exec`), then `pdd.py verify-link <subject> <broker> --text '<email body>'` returns
+  the anti-phishing-scored link. Open it with `browser_exec` (`goto_url(link)`) **in the same browser** (several brokers, e.g.
   PeopleConnect, bind the session to the browser that opens the link), finish the flow, record
   `awaiting_processing`.
 - **programmatic mode (IMAP):** `pdd.py poll-verification <subject>` polls IMAP for every in-flight
   case, extracts the link (anti-phishing scored: only opt-out-looking links on the broker's own
-  domains), and auto-advances `submitted → verification_pending`. Then `browser_navigate` the link in
+  domains), and auto-advances `submitted → verification_pending`. Then open the link with `browser_exec` in
   the agent's own browser, finish the flow, record `awaiting_processing`.
 - **draft_only:** the digest tells the operator to click the link in the subject's inbox; the agent
   records `awaiting_processing` on their word.
@@ -243,16 +253,22 @@ reCAPTCHA checkbox - as normal operation, so those brokers stay T1 and you just 
 **not** CAPTCHA solving: no solver service, no fingerprint spoofing.
 
 Only a **hard** challenge the browser genuinely can't pass (interactive image grids, behavioral
-scoring that flags the session) becomes a fallback: `record ... blocked` and requeue it for the
-stealth/operator-browser pass (`methods.md` → scan ladder 3b - the operator's own residential
-browser is the reliable unblock). Without a cloud browser configured, soft-CAPTCHA brokers drop to
-T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.**
+scoring that flags the session) becomes a fallback: `record ... human_task_queued --reason "..."`
+so it parks as one standing digest task (the operator's own residential browser is the
+reliable unblock; a `blocked` case would re-scan, re-find the listing and re-queue the opt-out).
+Without a cloud browser configured, soft-CAPTCHA brokers drop to T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.**
 
 ### CAPTCHA policy, clarified (on a consenting first-party opt-out)
 
 - **Do NOT defeat** behavioral / token challenges: a Cloudflare Turnstile that will not auto-clear,
   **DataDome**, and **"slide-to-verify" gesture-entropy sliders** (the InfoPay lane). These are hard
-  stops -> take the email lane (rule above) or record `blocked`.
+  stops -> take the email lane (rule above) or record `human_task_queued` with the reason.
+- **A visible Google reCAPTCHA v2 / Enterprise checkbox is in this class** (verified live 2026-10-26 across two sites): synthetic CDP clicks on a debug-profile Chrome do NOT toggle it -
+  no token, no challenge appears, no error surfaces, `grecaptcha.getResponse()` stays empty -
+  so it is a silent hard stop for the automation browser. By contrast a managed Cloudflare
+  **Turnstile** auto-cleared on the same residential setup as normal operation. So: Turnstile ->
+  drive the form; reCAPTCHA checkbox -> do not fight it, take the email lane or queue the manual
+  step.
 - **Acceptable to solve** on the subject's own first-party opt-out: a **static distorted-text image
   CAPTCHA** (read it with the vision tool) or a **plain arithmetic CAPTCHA** ("8 + 13 = ?"). That is OCR
   / arithmetic on a consenting removal, not evasion of a bot-detection system.
@@ -260,6 +276,35 @@ T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.*
   available") after a correct answer, it is fingerprinting the automation itself, not grading the answer
   -> **stop, do not loop** (e.g. PrivateRecords' distorted-text-THEN-arithmetic double gate). If no cited
   rights-email exists, that is a genuine `blocked`.
+
+## Spam-call lane (reverse-phone search + DNC registration)
+
+A phone-led run ("my number keeps getting spam calls") is the same loop entered from the number:
+`intake --phone ... --focus-phone ...` (the focus number is what phone-asking opt-out forms
+disclose), then `next` as usual. `search_vectors` already emits one `by: phone` vector per dossier
+phone on every broker that declares phone search (14 of the live records; five curated
+brokers are defunct - dead domains excluded from planning). Three phone-specific notes:
+
+- **Reverse-phone pages SEO-echo the number too.** The title/H1 templating trap applies: a real
+  result is a card naming the subscriber (name / age / city), not the query echo. Corroborate
+  against the dossier before recording `found`.
+- **The page answers "whose number is this".** Running it reveals the subscriber behind the
+  number - only run phone vectors on the consenting subject's own numbers.
+- **An SSRF-guard refusal can mean the broker is dead, not blocked.** A 'URL targets a private
+  or internal network address' refusal is the fetch guard refusing what DNS actually returns -
+  check the domain against a public resolver before rerunning through a browser: nuwber.com
+  (NXDOMAIN) and clustrmaps.com (public DNS answering 127.0.0.1) both turned out defunct,
+  their 'blocks' being DNS kill-switches. A dead domain is `not_found`, not `blocked`.
+
+**DNC one-shot** (`pdd.py dnc <subject>`, surfaced by `next` for US subjects with phones until
+`--filed`): register on the FTC's National Do Not Call Registry. Free, personal numbers only
+(business/fax lines are not covered), up to three numbers per registration pass with one
+confirmation email PER number (open each link within 72 hours or that number is not registered),
+sales calls stop within 31 days, registration never expires. It stops lawful telemarketers - it
+does NOT stop scammers, who ignore the list: broker removal is the complementary half, because the
+people-search listings are where lead lists come from. If the FTC form defeats the configured
+browser, present it as a manual step in the end-of-run digest; `dnc --filed` records completion so
+the loop stops re-surfacing it.
 
 ## Browser backends: scan vs execute
 
@@ -281,10 +326,10 @@ run stalling in Phase 2.
   multi-step flows that matter (e.g. PeopleConnect guided-mode, whose verify link is session- and
   device-bound to the browser that opens it - a cloud browser both fails the challenge and breaks the
   binding).
-- **How to drive the operator's browser (CDP).** Point Hermes's browser tools at the operator's real
-  Chrome over the DevTools protocol: launch
-  `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` and connect the
-  browser backend to `127.0.0.1:9222`. Use a **dedicated debug profile** (`chrome-debug`), NOT the
+- **How to drive the operator's browser (CDP).** Point Hermes's browser (`browser_exec`) at the
+  operator's real Chrome over the DevTools protocol: launch
+  `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` and attach Hermes
+  with `/browser connect` (or `browser.cdp_url` / `BROWSER_CDP_URL`) to `127.0.0.1:9222`. Use a **dedicated debug profile** (`chrome-debug`), NOT the
   operator's Default Chrome profile, and have the operator sign into their webmail (and any needed
   broker accounts) in that profile once. That single browser then carries residential IP + real
   fingerprint + logged-in sessions, which is precisely what Phase-2 flows need. (This is a Hermes-side
@@ -293,7 +338,7 @@ run stalling in Phase 2.
   binary, starts it detached on the dedicated profile, waits for the debug port, and prints the CDP
   endpoint (`webSocketDebuggerUrl`). `pdd.py cdp --check` reports whether a debug browser is already
   live (and never launches a second one); `pdd.py cdp --print` just emits the exact command for the
-  operator to run themselves. Point the browser tools at the `endpoint` it returns.
+  operator to run themselves. Attach Hermes's browser to the `endpoint` it returns (`/browser connect`).
 - **Always-available fallback:** if no CDP browser is wired up, use the operator-in-the-loop path
   (scan ladder 3b) - hand over paste-ready URLs and field-by-field least-disclosure guidance, pausing
   before submit. It never fails; it just needs a human present.

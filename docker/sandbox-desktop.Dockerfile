@@ -44,17 +44,13 @@ RUN apt-get -o Acquire::Retries=3 update && \
     rm -rf /var/lib/apt/lists/*
 
 # Headed Chromium through Playwright (the same build the Hermes -desktop image
-# uses), so agent-browser and the dock's Browser icon share one binary and one
-# --user-data-dir. --with-deps pulls the Chromium runtime libraries. agent-browser
-# itself is baked (the CLI the browser tools drive), pinned to the same range the
-# gateway resolves (tools/browser_tool.py AGENT_BROWSER_NPX_SPEC), scripts off:
-# the first browser_navigate in a fresh sandbox must not wait on an npm fetch.
+# uses), so the agent's browser and the dock's Browser icon share one binary and
+# one --user-data-dir: tools/bot_desktop/sandbox_host.py finds it under
+# /opt/playwright. --with-deps pulls the Chromium runtime libraries.
 RUN for i in 1 2 3; do \
         npx --yes playwright@1 install --with-deps chromium && break || \
         { [ "$i" = 3 ] && exit 1; echo "playwright chromium install failed (attempt $i); retrying in 10s"; sleep 10; }; \
-    done && chmod -R a+rX /opt/playwright && \
-    npm install -g --ignore-scripts --no-audit --fetch-retries=5 "agent-browser@^0.26.0" && \
-    agent-browser --version
+    done && chmod -R a+rX /opt/playwright
 
 # cua-driver: computer_use's MCP driver. Pinned release tarball from the
 # cua-driver-rs-v* tags (never releases/latest: prereleases publish 0 assets).
@@ -88,7 +84,9 @@ RUN echo "pn ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/pn && chmod 0440 /etc/sudo
 ENV XDG_RUNTIME_DIR=/tmp/hermes-runtime
 # Dockerfile ENV reaches `docker exec` only. When this image is the target of the
 # ssh backend (sshd added on top), a login session gets its environment from PAM,
-# so the browser location must also live where pam_env reads it or agent-browser
-# reports "Chrome not found" over ssh while working under docker exec.
+# so the browser location must also live where pam_env reads it, or Playwright
+# launched over ssh without an explicit executable path (agent or user scripts)
+# looks in ~/.cache/ms-playwright and finds no browser while working under
+# docker exec.
 RUN printf 'PLAYWRIGHT_BROWSERS_PATH=/opt/playwright\nXDG_RUNTIME_DIR=/tmp/hermes-runtime\n' >> /etc/environment
 CMD ["sleep", "infinity"]

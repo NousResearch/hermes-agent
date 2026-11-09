@@ -10,7 +10,9 @@ asserts zero contamination from shell noise via _assert_clean().
 
 import pytest
 
+import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -95,6 +97,39 @@ class TestLocalEnvironmentExecute:
         _assert_clean(result["output"])
 
 # ── _has_command ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("secret_source", [True, False])
+def test_quoted_yaml_reads_preserve_source_policy(ops, env, tmp_path, monkeypatch, secret_source):
+    """Real file and terminal output mask secret config while preserving code examples."""
+    from tools import file_tools
+    from tools.terminal_tool_result import finalize_foreground_result
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    config = (home if secret_source else tmp_path) / "config.yaml"
+    text = 'password: "shortsecret"\napi_key: "os.getenv(\'OPENAI_API_KEY\')"\n'
+    config.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(file_tools, "_get_file_ops", lambda task_id: ops)
+    read = json.loads(file_tools.read_file_tool(str(config), task_id="quoted-yaml"))
+    assert not read.get("error")
+    assert 'api_key: "os.getenv(\'OPENAI_API_KEY\')"' in read["content"]
+    expected = 'password: "«redacted-secret»"' if secret_source else 'password: "shortsecret"'
+    assert expected in read["content"]
+    assert "1|" in read["content"]
+
+    command = "cat " + shlex.quote(str(config))
+    raw = env.execute(command)
+    assert raw["returncode"] == 0
+    result = json.loads(finalize_foreground_result(
+        command=command, result=raw, env=env, env_type="local", effective_task_id="quoted-yaml",
+        task_id="quoted-yaml", session_id=None, session_key="quoted-yaml", workdir=str(tmp_path),
+        command_cwd=str(tmp_path), approval_note=None,
+    ))
+    expected = text.replace('"shortsecret"', '"***"') if secret_source else text
+    assert result["output"] == expected.strip()
+
 
 class TestHasCommand:
     def test_finds_echo(self, ops):

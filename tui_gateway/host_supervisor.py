@@ -351,6 +351,7 @@ class HostSupervisor:
         proc = subprocess.Popen(
             self.argv, cwd=str(self.cwd), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
+            # detached-spawn: ok — compute host exits on its own parent-guard (compute_host._parent_guard_loop) and flushes sessions; a supervisor KILL could cut that flush short
             start_new_session=True)
         self._proc = proc
         for target, name in ((self._drain_stdout, "compute-host-stdout"),

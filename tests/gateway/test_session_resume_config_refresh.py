@@ -672,3 +672,26 @@ def test_a_skipped_resume_refresh_warns_unless_the_session_is_busy(monkeypatch, 
               if 'keeps its stored policy' in record.getMessage()]
     assert levels == [(logging.INFO, 'session_busy'), (logging.WARNING, 'launch_credentials_unavailable'),
                       (logging.WARNING, 'OSError')], levels
+
+
+@pytest.mark.asyncio
+async def test_a_resume_expands_var_references_from_the_profiles_current_env(tmp_path, monkeypatch):
+    """The resume refresh reads config.yaml as session creation does: ``${VAR}`` against the profile's
+    current ``.env``, not the environment the gateway process started with, so an unchanged chat stays
+    unchanged on its next attach."""
+    home = _home(monkeypatch)
+    (home / 'config.yaml').write_text(BEFORE + 'mcp_servers: {docs: {command: docs-mcp, env: {DOCS_TOKEN: "${RESUME_ENV_KEY}"}}}\n')
+    (home / '.env').write_text('RESUME_ENV_KEY=from-env-file\n')
+    monkeypatch.setenv('RESUME_ENV_KEY', 'from-process-env')
+    store, authority = await _owner_authority(home)
+    owner = _connect(authority)
+    try:
+        sid = (await _call(owner, 'session.create', request_id='c', source='cli', cwd=str(tmp_path)))['session_id']
+        before = store._db.get_session(sid)['runtime_generation']
+        await owner.close()
+        owner = _connect(authority)
+        resumed = await _call(owner, 'session.resume', session_id=sid, omit_messages=True)
+        assert resumed['execution_generation'] == before
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

@@ -23,6 +23,11 @@ def _owning_home(home):
             reset_hermes_home_override(token)
 
 
+# display_metadata flag on a ``hold_stream`` turn's published reply: its commentary items stay for
+# model replay, but the transform never saw them, so no history projection shows them.
+COMMENTARY_WITHHELD = "commentary_withheld"
+
+
 def visible_commentary(text: str, *, strip_thinking=None) -> str:
     """Use the same think stripping and secret redaction as live delivery."""
     if strip_thinking is None:
@@ -70,7 +75,7 @@ def _phase_message_items(message: dict, phases: frozenset[str | None]) -> list[s
     return result
 
 
-def _commentary_items(message: dict) -> list[str]:
+def commentary_items(message: dict) -> list[str]:
     return _phase_message_items(message, frozenset({"commentary"}))
 
 
@@ -112,13 +117,13 @@ def _without_flattened_commentary(reasoning: str, commentary: list[str]) -> str:
 def _project_one(message: dict, *, enabled: bool) -> dict:
     if message.get("role") != "assistant" or message.get("display_kind") == "hidden":
         return message
-    raw = _commentary_items(message)
+    raw = commentary_items(message)
     if not raw:
         return message
     projected = dict(message)
     # A disabled profile must not recover raw sidecar text on the frontend.
     projected["display_commentary"] = []
-    if enabled:
+    if enabled and not (message.get("display_metadata") or {}).get(COMMENTARY_WITHHELD):
         projected["display_commentary"] = [
             part for text in raw if (part := visible_commentary(text))
         ]

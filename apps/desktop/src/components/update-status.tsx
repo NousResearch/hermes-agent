@@ -327,9 +327,27 @@ function UpdateActions({ target, u, view }: UpdateActionsProps): ReactElement | 
  */
 export function UpdateStatusCard({
   showReleaseNotes = true,
-  target
+  target,
+  version
 }: {
   showReleaseNotes?: boolean
+  target: UpdateTarget
+  version: DesktopVersionInfo | null
+}): ReactElement {
+  // An installed bundle waiting only for a restart owns the client status; a
+  // stale check error beside it contradicts it (#128195).
+  if (target === 'client' && version?.bundleSwapPending) {
+    return <></>
+  }
+
+  return <UpdateStatusCardBody showReleaseNotes={showReleaseNotes} target={target} />
+}
+
+function UpdateStatusCardBody({
+  showReleaseNotes,
+  target
+}: {
+  showReleaseNotes: boolean
   target: UpdateTarget
 }): ReactElement {
   const { t } = useI18n()

@@ -232,7 +232,7 @@ class RecordingContext:
     def register_tool(self, name, *args, **kwargs):
         recorded["tools"].append(str(name))
 
-    def register_hook(self, hook_name, callback):
+    def register_hook(self, hook_name, callback, *, hold_stream=False):
         recorded["hooks"].append(str(hook_name))
 
     def register_middleware(self, kind, callback):
@@ -354,10 +354,15 @@ def _run_capability_probe(
     with tempfile.TemporaryDirectory(prefix="hermes-validate-") as scratch:
         env = dict(probe[1] if probe else os.environ)
         env["HERMES_HOME"] = scratch
+        # The probe imports this tree's ``providers``; name the tree instead of relying on the cwd.
+        repo_root = str(Path(__file__).resolve().parents[1])
+        env["PYTHONPATH"] = os.pathsep.join(p for p in (repo_root, env.get("PYTHONPATH", "")) if p)
+        python, *options = probe[0] if probe else [sys.executable]
         try:
             result = subprocess.run(
                 [
-                    *(probe[0] if probe else [sys.executable]),
+                    # -P: ``-c`` would put the user's cwd ahead of Hermes and the plugin's imports.
+                    python, "-P", *options,
                     "-c",
                     _PROBE_SCRIPT,
                     str(plugin_dir),

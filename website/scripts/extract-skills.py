@@ -103,6 +103,12 @@ GITHUB_TAP_LABELS = {
     "VoltAgent/awesome-agent-skills": "VoltAgent",
     "garrytan/gstack": "gstack",
     "MiniMax-AI/cli": "MiniMax",
+    "wandb/skills": "Weights & Biases",
+    "qdrant/skills": "Qdrant",
+    "pinecone-io/skills": "Pinecone",
+    "makenotion/skills": "Notion",
+    "Airtable/skills": "Airtable",
+    "Shopify/Shopify-AI-Toolkit": "Shopify",
 }
 
 # Legacy filename -> label mapping for the deprecated skills/index-cache/

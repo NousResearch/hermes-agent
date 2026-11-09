@@ -1,9 +1,12 @@
 import type { Translations } from '@/i18n'
+import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
+import { hostHas } from '@/lib/host-capabilities'
 import { NATIVE_NOTIFICATION_KINDS } from '@/store/native-notifications'
 import { canUseQuickEntry } from '@/store/quick-entry'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 
 import type { AppearanceSubpageId } from './appearance-subpages'
+import { nativeHostOnly } from './other-subpages'
 import type { SettingsView } from './types'
 
 interface SettingCopy {
@@ -208,6 +211,15 @@ export const SETTINGS_MANIFEST = {
         } satisfies SettingDefinition
       ])
     ),
+    browserPermission: {
+      subpage: 'alerts',
+      keywords: ['notifications', 'browser', 'permission', 'allow', 'tab', 'flash'],
+      available: () => hostHas('browserNotifications'),
+      copy: t => ({
+        label: t.settings.notifications.browserPermission.title,
+        description: t.settings.notifications.browserPermission.states.default
+      })
+    },
     muteSounds: {
       subpage: 'sounds',
       keywords: ['mute', 'silence', 'quiet', 'sound', 'chime', 'wake', 'haptics'],
@@ -234,11 +246,13 @@ export const SETTINGS_MANIFEST = {
   },
   gateway: {
     connectionMode: {
+      available: nativeHostOnly,
       subpage: 'connection',
       keywords: ['gateway', 'connection', 'local', 'cloud', 'remote', 'ssh', 'url', 'token', 'host', 'port', 'key'],
       copy: t => ({ label: t.settings.gateway.modeTitle, description: t.settings.gateway.intro })
     },
     keychainEncryption: {
+      available: nativeHostOnly,
       subpage: 'connection',
       keywords: ['keychain', 'encrypt', 'secrets', 'secure storage', 'plain text'],
       copy: t => ({
@@ -247,6 +261,7 @@ export const SETTINGS_MANIFEST = {
       })
     },
     diagnostics: {
+      available: nativeHostOnly,
       subpage: 'connection',
       keywords: ['diagnostics', 'logs', 'debug', 'report', 'troubleshoot'],
       copy: t => ({ label: t.settings.gateway.diagnostics, description: t.settings.gateway.diagnosticsDesc })
@@ -254,6 +269,8 @@ export const SETTINGS_MANIFEST = {
   },
   about: {
     updates: {
+      // A Webapp served by Hermes Cloud renders no Updates section.
+      available: () => !servedByHermesCloud(),
       subpage: 'updates',
       keywords: ['update', 'auto update', 'download', 'release', 'version'],
       copy: t => ({ label: t.settings.about.updates })

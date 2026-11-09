@@ -35,6 +35,18 @@ export const deNotifications = {
       description: 'Ein Desktop-Plugin hat eine Benachrichtigung gesendet, während Hermes im Hintergrund war.'
     }
   },
+  browserPermission: {
+    title: 'Browser-Benachrichtigungen',
+    allow: 'Erlauben',
+    states: {
+      default:
+        'Hinweise dieses Browsers anzeigen, während der Tab im Hintergrund ist. Bis du es erlaubst, blinkt nur der Tab-Titel.',
+      granted: 'Erlaubt. Hinweise erscheinen, während dieser Tab im Hintergrund ist; der Tab-Titel blinkt ebenfalls.',
+      denied: 'In den Website-Einstellungen dieses Browsers blockiert. Der Tab-Titel blinkt trotzdem.',
+      insecure: 'Erfordert HTTPS, etwa über Tailscale serve. Über reines HTTP blinkt nur der Tab-Titel.',
+      unsupported: 'Dieser Browser kann keine Benachrichtigungen anzeigen. Der Tab-Titel blinkt trotzdem.'
+    }
+  },
   test: 'Testbenachrichtigung senden',
   testTitle: 'Hermes',
   testBody: 'Benachrichtigungen funktionieren.',

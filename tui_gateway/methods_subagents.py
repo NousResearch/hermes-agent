@@ -63,6 +63,81 @@ def _(rid, params):
     })
 
 
+def _live_work_owners():
+    """``(kind, owner candidates)`` for every live top-level child and running background process in this
+    process. A child names its durable conversation (``owner_agent_session_id``, the spine completion delivery
+    routes by). A process names the conversation that spawned it (``parent_session_id``, from
+    ``HERMES_SESSION_ID``) and its routing ``session_key``, which on the gateway path is a route
+    (``agent:main:local:dm:...``), never a stored id."""
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    from tools.process_registry import process_registry
+
+    with _active_subagents_lock:
+        owners = [("subagents", (str(r.get("owner_agent_session_id") or ""), ""))
+                  for r in _active_subagents.values() if not r.get("depth")]
+    for entry in process_registry.list_sessions():
+        proc = process_registry.get(entry.get("session_id"))
+        if proc is not None and not getattr(proc, "exited", True):
+            owners.append(("background", (str(getattr(proc, "parent_session_id", "") or ""),
+                                          str(getattr(proc, "session_key", "") or ""))))
+    return owners
+
+
+def _route_namespaces(profile_home):
+    """Session-key namespaces (the ``agent:<ns>`` segment) a route of the requested profile can carry.
+    Multiplexed routes are namespaced per profile; ``agent:main`` is also every unmultiplexed and legacy
+    route, so it is trusted for a named profile only when that profile is the sole one this process hosts."""
+    from gateway.session import _session_key_namespace
+    from gateway.session_authorities import served_profile_name
+
+    own = _session_key_namespace(served_profile_name(profile_home or _hermes_home)).split(":", 1)[1]
+    sole = profile_home is None and not _served_profile_homes
+    return {own, "main"} if sole else {own}
+
+
+def _stored_owner(db, owner_ids, namespaces):
+    """The conversation in ``db`` (the requested profile's state.db) that owns a piece of work; "" when none
+    is ours. A stored id (child lineage, process ``parent_session_id``) is authoritative: present here or
+    not ours. Only a process without one falls back to its route key, fenced to this profile's namespaces,
+    since an identical route (a legacy ``agent:main`` key, the same DM in two profiles) can sit in another
+    profile's store."""
+    stored_id, route = owner_ids
+    if stored_id:
+        return stored_id if db.get_session(stored_id) else ""
+    parts = route.split(":")
+    if len(parts) < 3 or parts[0] != "agent" or parts[1] not in namespaces:
+        return ""
+    row = db.find_latest_gateway_session_for_peer(source=parts[2], session_key=route)
+    return str(row["id"]) if row and row.get("id") else ""
+
+
+@method("subagent.roster")
+def _(rid, params):
+    """App-wide sidebar feed: which conversations still have children or background processes running.
+    ``subagent.list`` needs the conversation's live, transport-attached session record, so it cannot answer
+    for a row that is not open or for any row right after a renderer reload; this read needs neither. One
+    process hosts several profiles, so only conversations stored in the requested profile's state.db are
+    returned — a caller never learns another profile's session ids."""
+    owners = _live_work_owners()
+    if not owners:
+        return _ok(rid, {"sessions": []})
+    scope = params if isinstance(params, dict) else {}
+    if not str(scope.get("profile") or "").strip():
+        # A legacy-fallback socket ticketed to a non-launch profile answers for that profile only.
+        from tui_gateway.ws_legacy_fallback import connection_profile_home
+        if home := connection_profile_home():
+            scope = {"profile": Path(home).name}
+    counts = {}
+    namespaces = _route_namespaces(_profile_home(scope.get("profile")))
+    with _profile_db(scope) as db:
+        if db is None:
+            return _ok(rid, {"sessions": []})
+        for kind, owner_ids in owners:
+            if sid := _stored_owner(db, owner_ids, namespaces):
+                counts.setdefault(sid, {"subagents": 0, "background": 0})[kind] += 1
+    return _ok(rid, {"sessions": [{"session_id": sid, **c} for sid, c in counts.items()]})
+
+
 def _failed_delegations(session_id, owner):
     """Recently failed async delegation tasks for this session from the durable store (the live
     roster forgets ended children and dies with a renderer reload, #97202). Read under the session's

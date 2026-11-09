@@ -85,7 +85,7 @@ async def test_reap_of_a_segment_of_an_adopted_conversation_respects_the_owner_l
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local_recovery import reopen_local_session
     from gateway.session_local_title import resolve_titled_session
     from tui_gateway import server
@@ -98,7 +98,7 @@ async def test_reap_of_a_segment_of_an_adopted_conversation_respects_the_owner_l
     db.end_session('old-tui', 'tui_close')
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='review')
-    actor = Principal('native', str(tmp_path), frozenset({'session:create', 'session:read'}), 'sock')
+    actor = SessionActor('native', str(tmp_path), frozenset({'session:create', 'session:read'}), 'sock')
     authority._native_legacy_transports = {actor.transport_id: actor}
     ref = resolve_titled_session(authority, actor, 'old-tui')
     reopen_local_session(authority, ref)

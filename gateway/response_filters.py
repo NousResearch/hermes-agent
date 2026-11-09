@@ -82,6 +82,69 @@ def is_intentional_silence_response(response: Any) -> bool:
     return any(c in LIVE_GATEWAY_SILENT_MARKERS for c in _canonical_silence_candidates(response))
 
 
+def _split_trailing_line(text: str) -> tuple[str, str]:
+    """``(head, last line)`` of ``text`` with trailing blank space ignored; head is ``""`` when
+    there is only one line."""
+    head, _, tail = text.rstrip().rpartition("\n")
+    return head.rstrip(), tail
+
+
+def strip_trailing_silence_marker(response: Any) -> Any:
+    """Drop a silence marker that closes a real reply on its own line.
+
+    ``"Here is the answer.\\n\\nNO_REPLY"`` delivers ``"Here is the answer."``: the model
+    answered, then also said it has nothing more to add, and the token is not meant for the
+    reader. A bare marker is returned unchanged (that is the silence verdict, decided by
+    :func:`is_intentional_silence_response`), and a marker inside a line is prose.
+    """
+    if not isinstance(response, str):
+        return response
+    head, tail = _split_trailing_line(response)
+    return head if head.strip() and is_intentional_silence_response(tail) else response
+
+
+def ends_with_partial_silence_marker(text: Any) -> bool:
+    """True while a streamed reply's last line could still become a trailing silence marker
+    (``"answer\\n\\nNO_RE"``), so a stream preview never shows a marker it later retracts."""
+    if not isinstance(text, str):
+        return False
+    head, tail = _split_trailing_line(text)
+    return bool(head.strip()) and is_partial_silence_marker(tail)
+
+
+class SilenceMarkerStreamHold:
+    """Delta gate for a live reply stream that may be, or end in, a silence marker.
+
+    :meth:`feed` returns the part of the reply that is safe to show (or speak) now: nothing
+    while the whole reply could still become a bare marker, everything but the last line while
+    that line could still become a closing one. :meth:`finish` releases what the completed reply
+    delivers, so a held line that never became a marker (``"NO problem"``) still arrives in full.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._sent = 0
+
+    def feed(self, delta: str) -> str:
+        buf = self._buf = self._buf + delta
+        if is_partial_silence_marker(buf):
+            return ""
+        if ends_with_partial_silence_marker(buf):
+            return self._release(len(_split_trailing_line(buf)[0]))
+        return self._release(len(buf))
+
+    def finish(self) -> str:
+        if is_intentional_silence_response(self._buf):
+            return ""
+        return self._release(len(strip_trailing_silence_marker(self._buf)))
+
+    def _release(self, upto: int) -> str:
+        if upto <= self._sent:
+            return ""
+        out, self._sent = self._buf[self._sent:upto], upto
+        return out
+
+
 def is_autonomous_silence_response(response: Any) -> bool:
     """Loose silence matcher for autonomous lanes (cron, webhook).
 
@@ -143,6 +206,13 @@ def display_metadata_for_event(event: Any) -> dict:
     return {**_producer_card(event), **({"title_preview": preview} if preview else {})}
 
 
+def persisted_user_metadata_for_event(event: Any) -> dict:
+    """The user row's display metadata: ``display_metadata_for_event`` plus the canonical admission's
+    ``submission_id``, which lets a client match a send whose ack it never received to its stored row."""
+    from gateway.session_display import admission_submission
+    return {**display_metadata_for_event(event), **admission_submission(event)}
+
+
 def is_machinery_display_kind(display_kind: Any) -> bool:
     """Only a machinery turn may vanish on a bare silence marker; a human turn gets a visible fallback.
 
@@ -153,9 +223,20 @@ def is_machinery_display_kind(display_kind: Any) -> bool:
     return display_kind in MACHINERY_DISPLAY_KINDS
 
 
-def silence_allowed(display_kind: Any, reply_expected: Optional[bool] = None) -> bool:
-    """Whether a successful bare silence marker may remain silent for this turn."""
-    return is_machinery_display_kind(display_kind) or reply_expected is False
+def silence_allowed(
+    display_kind: Any, reply_expected: Optional[bool] = None, *,
+    allow_silence: Optional[bool] = None, agent_result: Optional[dict] = None,
+) -> bool:
+    """Keep existing exemptions; room opt-in additionally requires a healthy completed result.
+
+    Marker recognition stays with the caller. Extra health restrictions apply only to the new
+    room permission, preserving the established internal/unaddressed semantics.
+    """
+    if is_machinery_display_kind(display_kind) or reply_expected is False:
+        return True
+    return (allow_silence is True and isinstance(agent_result, dict)
+            and not any(agent_result.get(k) for k in ("failed", "partial", "interrupted", "error"))
+            and agent_result.get("completed") is not False)
 
 
 def reply_expected_metadata(reply_expected: Optional[bool]) -> dict:

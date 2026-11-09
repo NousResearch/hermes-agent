@@ -1,6 +1,7 @@
 """Tests for the gateway control socket (#92091 migration step 1)."""
 
 import asyncio
+import errno
 import json
 import socket
 import sys
@@ -228,6 +229,105 @@ def test_stale_socket_file_is_replaced_on_bind(home: Path):
             await server.stop()
 
     assert _run(scenario()) == {"pid": 7}
+
+
+@pytest.fixture()
+def short_home():
+    """A home short enough that the server binds IN-HOME (no pointer fallback).
+
+    pytest's tmp_path can exceed sun_path on macOS/CI, in which case the
+    server already uses the temp-dir fallback and an in-home bind refusal can
+    never be exercised — so build the home directly under /tmp, like
+    test_short_home_binds_in_home does.
+    """
+    import shutil
+    import tempfile
+    try:
+        root = Path(tempfile.mkdtemp(prefix="hgw-", dir="/tmp"))
+    except OSError:
+        pytest.skip("/tmp not writable on this host")
+    home = root / ".hermes"
+    home.mkdir()
+    if resolve_server_socket_path(home)[1] is not None:
+        shutil.rmtree(root, ignore_errors=True)
+        pytest.skip("even /tmp yields a too-long socket path here")
+    try:
+        yield home
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _refusing_start_unix_server(monkeypatch, *, refuse_under: Path, err: int):
+    """start_unix_server that refuses paths under ``refuse_under`` with ``err``
+    and otherwise delegates — the behaviour of a Docker Desktop bind mount."""
+    real = asyncio.start_unix_server
+    attempts: list[str] = []
+
+    async def fake(client_connected_cb, path=None, **kwargs):
+        attempts.append(str(path))
+        if Path(path).is_relative_to(refuse_under):
+            raise OSError(err, "Operation not supported" if err == errno.EOPNOTSUPP else "refused")
+        return await real(client_connected_cb, path=path, **kwargs)
+
+    monkeypatch.setattr(asyncio, "start_unix_server", fake)
+    return attempts
+
+
+def test_home_refusing_sockets_listens_on_private_fallback_both_clients_reach(short_home: Path, monkeypatch):
+    """Docker Desktop bind mount (#123761): the in-home path refuses the socket and a socket inode an
+    earlier container left there cannot even be stat'ed. The listener moves to the private temp-dir
+    socket + 0600 pointer, and both the authenticated discovery client and the legacy client reach it."""
+    import os
+    import stat
+
+    from hermes_cli.gateway_runtime_discovery import query_identify
+
+    home = short_home.resolve()  # the server resolves its home; macOS /tmp is a symlink to /private/tmp
+    home.chmod(0o700)
+    stale = home / "gateway.sock"
+    attempts = _refusing_start_unix_server(monkeypatch, refuse_under=home, err=errno.EOPNOTSUPP)
+    for name in ("lstat", "stat"):
+        real = getattr(os, name)
+
+        def unstatable(path, *a, _real=real, **k):
+            if os.fspath(path) == str(stale):
+                raise OSError(errno.EOPNOTSUPP, "Operation not supported", str(stale))
+            return _real(path, *a, **k)
+
+        monkeypatch.setattr(os, name, unstatable)
+
+    async def scenario():
+        server = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 11}})
+        assert await server.start()
+        try:
+            pointer = home / "gateway.sock.path"
+            target = Path(pointer.read_text(encoding="utf-8"))
+            assert server._bind_path == target and target.name == "control.sock"
+            assert stat.S_IMODE(pointer.lstat().st_mode) == 0o600
+            assert stat.S_IMODE(target.parent.lstat().st_mode) == 0o700
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, lambda: (query_identify(home, timeout=3), identify_gateway(home)))
+        finally:
+            await server.stop()
+
+    assert _run(scenario()) == ({"pid": 11}, {"pid": 11})
+    assert attempts[-1].endswith("/control.sock")  # the in-home attempt, if made, was refused
+    assert not (home / "gateway.sock.path").exists()
+
+
+def test_bind_refused_for_other_reasons_still_fails(short_home: Path, monkeypatch):
+    # A live sibling (EADDRINUSE) must keep failing loudly — no silent fallback
+    # that would let two gateways for one home both look healthy.
+    home = short_home.resolve()  # match the server's resolved home (macOS /tmp -> /private/tmp)
+    attempts = _refusing_start_unix_server(monkeypatch, refuse_under=home, err=errno.EADDRINUSE)
+
+    async def scenario():
+        server = GatewayControlServer(home)
+        return await server.start()
+
+    assert _run(scenario()) is False
+    assert attempts == [str(home / "gateway.sock")]
+    assert not (home / "gateway.sock.path").exists()
 
 
 def test_long_home_end_to_end_via_pointer(tmp_path: Path):

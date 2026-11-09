@@ -689,8 +689,6 @@ describe('createSlashHandler', () => {
   it.each([
     ['/browser status', 'browser.manage', { action: 'status', session_id: null }],
     ['/browser connect', 'browser.manage', { action: 'connect', session_id: null, url: 'http://127.0.0.1:9222' }],
-    ['/browser use', 'browser.manage', { action: 'use', enabled: true, session_id: null }],
-    ['/browser use off', 'browser.manage', { action: 'use', enabled: false, session_id: null }],
     ['/reload-mcp', 'reload.mcp', { session_id: null }],
     ['/reload', 'reload.env', {}],
     ['/stop', 'process.stop', {}],
@@ -704,6 +702,15 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)(command)).toBe(true)
     expect(rpc).toHaveBeenCalledWith(method, params)
     expect(gatewayWork(ctx)).toEqual([])
+  })
+
+  it('answers the removed /browser use with usage instead of an RPC', () => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/browser use off')).toBe(true)
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('/browser [connect|disconnect|status]'))
   })
 
   it('renders browser connect progress messages from the gateway', async () => {
@@ -1114,6 +1121,47 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('/tmp/hermes_conversation_test.json'))
     })
   })
+
+  it.each(['md notes.md redact', 'json --redact', 'json out.json', 'html'])(
+    '/save %s on a gateway without session.export refuses instead of writing raw JSON on its host',
+    arg => {
+      patchUiState({ sid: 'sid-abc' })
+
+      const rpc = vi.fn(() => Promise.resolve({ file: '/gateway/host/hermes_conversation.json' }))
+
+      const ctx = buildCtx({
+        gateway: { ...buildGateway(), rpc },
+        local: { ...buildLocal(), getHistoryItems: vi.fn(() => [{ role: 'user', text: 'hello' }]) }
+      })
+
+      createSlashHandler(ctx)(`/save ${arg}`)
+
+      expect(rpc).not.toHaveBeenCalled()
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('not saved'))
+    }
+  )
+
+  it.each(['', 'JSON', 'snapshot'])(
+    '/save %s on a gateway without session.export still saves raw JSON on its host and says so',
+    async arg => {
+      patchUiState({ sid: 'sid-abc' })
+
+      const file = '/gateway/host/hermes_conversation.json'
+      const rpc = vi.fn(() => Promise.resolve({ file }))
+
+      const ctx = buildCtx({
+        gateway: { ...buildGateway(), rpc },
+        local: { ...buildLocal(), getHistoryItems: vi.fn(() => [{ role: 'user', text: 'hello' }]) }
+      })
+
+      createSlashHandler(ctx)(`/save ${arg}`.trim())
+
+      expect(rpc).toHaveBeenCalledWith('session.save', { session_id: 'sid-abc' })
+      await vi.waitFor(() => {
+        expect(ctx.transcript.sys).toHaveBeenCalledWith(t('slashCmd.core.save.savedOnHost', file))
+      })
+    }
+  )
 
   it('/save reports empty state without calling the RPC or slash worker', () => {
     const rpc = vi.fn(() => Promise.resolve({}))

@@ -182,14 +182,12 @@ def _prune_spillover_once() -> None:
 
 def _is_host_side_env(env) -> bool:
     """True when this process should write the spill file directly: ``env=None`` (no sandbox
-    yet) or the local backend. Remote backends resolve ``read_file`` inside the sandbox."""
+    yet) or a backend whose files are the host's. Others resolve ``read_file`` inside the sandbox."""
     if env is None:
         return True
-    try:
-        from tools.environments.local import LocalEnvironment
-        return isinstance(env, LocalEnvironment)
-    except Exception:
-        return False
+    from tools.environments.base import env_uses_host_filesystem
+
+    return env_uses_host_filesystem(env)
 
 
 def _write_to_spillover(content: str, filename: str):

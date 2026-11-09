@@ -98,7 +98,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--setup", action="store_true",
                         help="Run interactive Hermes provider/model setup for ACP terminal auth")
     parser.add_argument("--setup-browser", action="store_true",
-                        help="Prepare PM's pinned browser tools and Chromium.")
+                        help="Prepare PM's pinned Chromium for browser_exec.")
     parser.add_argument("--yes", "-y", action="store_true", dest="assume_yes",
                         help="Accept setup prompts.")
     return parser.parse_args(argv)
@@ -132,7 +132,7 @@ def _run_setup() -> None:
     if not sys.stdin.isatty():
         return
     try:
-        reply = input("\nInstall browser tools? Downloads the pinned browser and "
+        reply = input("\nInstall browser tools? Downloads the pinned "
                       "Chromium through PM. [y/N] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         return
@@ -141,11 +141,11 @@ def _run_setup() -> None:
 
 
 def _run_setup_browser(assume_yes: bool = False) -> int:
-    """The setup command is an explicit request for PM's browser closure."""
+    """The setup command is an explicit request for PM's Chromium (browser_exec's local browser)."""
     import pm
 
     try:
-        pm.ensure("agent-browser", explicit=True)
+        pm.ensure("chromium", explicit=True)
     except (pm.InstallError, OSError) as exc:
         print(f"Browser setup failed: {exc}", file=sys.stderr)
         return 1

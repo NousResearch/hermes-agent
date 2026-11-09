@@ -882,3 +882,25 @@ def test_profile_named_main_keeps_its_own_namespace_and_store(multiplex_homes):
         assert Path(store._db_for_key(default_key).db_path) == root / "state.db"
     finally:
         reset_hermes_home_override(scope)
+
+
+def test_a_conversation_its_chat_moved_past_keeps_its_profile_history(multiplex_homes):
+    """#144840 review F2: a secondary profile's conversation its chat moved past is found by id in
+    that profile's store, so its turn loads its history and writes its transcript there."""
+    from gateway.session_detached import detached_key
+    from gateway.session_identity import replace_source
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+    token = set_hermes_home_override(str(profile))
+    try:
+        entry = store.get_or_create_session(_profile_source())
+        a = entry.session_id
+        store.append_to_transcript(a, {'role': 'user', 'content': 'first turn in A'})
+        store.reset_session(entry.session_key)  # the chat's /new
+        detached = replace_source(_profile_source(), detached_route=detached_key(entry.session_key, a))
+        resolved = store.get_or_create_session(detached)
+        assert [m.get('content') for m in store.load_transcript(resolved.session_id)] == ['first turn in A']
+        assert store._db_for_session_id(a).db_path == store._db_for_key(detached.detached_route).db_path
+    finally:
+        reset_hermes_home_override(token)

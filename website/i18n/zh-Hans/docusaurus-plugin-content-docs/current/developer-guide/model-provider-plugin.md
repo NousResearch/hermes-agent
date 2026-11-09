@@ -98,9 +98,9 @@ author: Your Name
 | `env_vars` | `tuple[str, ...]` | 按优先级排列的 API key 环境变量；最后一个 `*_BASE_URL` 条目用作用户 base URL 覆盖 |
 | `base_url` | str | 默认推理端点 |
 | `models_url` | str | 显式目录 URL（回退到 `{base_url}/models`） |
-| `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
+| `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `aws_sdk` \| `external_process` \| 任意插件自定义值（此时登录由提供商自行负责） |
 | `fallback_models` | `tuple[str, ...]` | 实时目录获取失败时显示的精选列表 |
-| `default_headers` | `dict[str, str]` | 随每个请求发送（如 Copilot 的 `Editor-Version`） |
+| `default_headers` | `dict[str, str]` | 随每个请求发送（如 IDE 订阅类 API 要求的 `Editor-Version` 请求头） |
 | `fixed_temperature` | Any | `None` = 使用调用方的值；`OMIT_TEMPERATURE` 哨兵值 = 完全不发送 temperature（Kimi） |
 | `default_max_tokens` | `int \| None` | 提供商级别的 max_tokens 上限（Nvidia：16384） |
 | `default_aux_model` | str | 用于辅助任务（压缩、视觉、摘要）的廉价模型 |
@@ -141,6 +141,118 @@ class AcmeProfile(ProviderProfile):
         或公开/无认证目录（OpenRouter）。"""
         return super().fetch_models(api_key=api_key, timeout=timeout)
 ```
+
+## ProviderProfile fields and hooks
+
+`providers/base.py` 声明的全部字段与 hook，按声明顺序排列（下表保留英文原文）。名称以 `()` 结尾的是需在子类中覆盖的方法，其余为 dataclass 字段（其中少数，如 `picker_catalog` 和设备码登录相关字段，接收可调用对象）。按端点区分的 hook（`client_headers`、`request_headers`、`max_tokens_param`）接收请求的 `base_url`，对不属于你的端点返回 `None` / `{}`；`responses_*`、`message_carrier_*` 字段及推理回放 hook 仅作用于 profile 在 `hostnames` 中声明的主机。热路径 hook 必须是纯函数且开销低（无 I/O），除非说明中另有注明。
+
+| Name | Meaning | Default |
+|---|---|---|
+| `name` | Canonical provider id (`model.provider`, `--provider`) | required |
+| `api_mode` | Static wire protocol; `api_mode_for_model()` can vary it per model | `"chat_completions"` |
+| `aliases` | Alternative names `get_provider_profile()` resolves | `()` |
+| `display_name` | Human label in pickers | `""` |
+| `description` | Picker subtitle | `""` |
+| `signup_url` | Shown during setup | `""` |
+| `hidden` | Pre-release: kept off discovery surfaces until `listed()` is true; resolution by name still works | `False` |
+| `env_vars` | API-key env vars in priority order; a final `*_BASE_URL` entry is the base-URL override | `()` |
+| `base_url` | Default inference endpoint | `""` |
+| `models_url` | Explicit models endpoint (else `{base_url}/models`) | `""` |
+| `auth_type` | `api_key` \| `oauth_device_code` \| `oauth_external` \| `external_process` \| `aws_sdk` \| plugin-defined | `"api_key"` |
+| `supports_streaming` | `None` keeps transport defaults, `True` opts a process client into streaming, `False` disables it | `None` |
+| `supports_health_check` | `False`: `hermes doctor` skips the `/models` probe | `True` |
+| `supports_model_listing` | `False`: `fetch_models()` returns `None` without a network call | `True` |
+| `auth_handler` | Provider-owned `hermes auth add\|status\|logout\|refresh <name>`; truthy return = handled | `None` |
+| `refresh_credential` | Rotates a pooled OAuth row and returns the rotated fields | `None` |
+| `classify_api_error` | Error classification for this provider's failures, before the built-in pipeline | `None` |
+| `supports_vision` | API accepts images inside tool-result messages | `False` |
+| `supports_vision_tool_messages` | API accepts list-type (multipart) tool message content | `True` |
+| `supports_prompt_cache_key` | Chat Completions endpoint documents `prompt_cache_key` | `False` |
+| `native_reasoning_details_type` | Namespaced `<provider>.native_assistant` reasoning carrier only this profile receives | `None` |
+| `process_command` | External-process default binary | `""` |
+| `process_args` | External-process default argv tail | `()` |
+| `process_command_env_vars` | Env vars overriding the binary, in priority order | `()` |
+| `process_args_env_var` | Env var overriding argv (shlex-split) | `""` |
+| `fallback_models` | Curated picker list when the live fetch fails | `()` |
+| `model_aliases` | Short name → model id; `/model <alias>` resolves here first | `{}` |
+| `hostname` | Base hostname for URL → provider reverse mapping (derived from `base_url` when empty) | `""` |
+| `default_headers` | Headers on every request and on the default catalog fetch | `{}` |
+| `fixed_temperature` | `None` = caller's value; `OMIT_TEMPERATURE` = never send temperature | `None` |
+| `default_max_tokens` | Provider-level max_tokens cap | `None` |
+| `unsupported_response_formats` | `response_format` types auxiliary requests omit | `()` |
+| `default_aux_model` | Cheap model for auxiliary tasks; empty = main model | `""` |
+| `model_capabilities` | Per-model metadata in the `model_overrides` schema | `{}` |
+| `account_card` | Accounts-tab card overrides `{name, flow, cli_command, docs_url}` (Desktop/dashboard) | `{}` |
+| `account_status` | Live status for that card; subprocess- and network-free | `None` (`auth.get_auth_status(name)`) |
+| `start_device_login` | In-app device-code sign-in: returns `{user_code, verification_url, expires_in, interval, state}` | `None` |
+| `poll_device_login` | One poll of that login: `{status, interval?, credential?, message?}` | `None` |
+| `save_device_login` | Persists the approved credential (core calls it in the session's profile scope) | `None` |
+| `model_setup_flow` | The provider's own `hermes model` step (credential prompt, catalog, persist) | `None` (generic flow for `auth_type`) |
+| `setup_reasoning_efforts` | Effort levels the setup picker offers for a model; `()` = no reasoning control | `None` (generic ladder) |
+| `fetch_account_usage()` | `/usage` snapshot when no built-in usage fetcher owns the provider | `None` |
+| `resolve_aux_model()` | Live cheap-model id for auxiliary tasks; cached, never raises | `""` (use `default_aux_model`) |
+| `get_hostname()` | Provider hostname for URL detection | `hostname`, else from `base_url` |
+| `prepare_messages()` | Message preprocessing after codex sanitization, before the developer-role swap | pass-through |
+| `build_extra_body()` | Provider-specific `extra_body` fields | `{}` |
+| `default_reasoning_config()` | Reasoning config sent when `agent.reasoning_effort` is unset | `None` |
+| `build_api_kwargs_extras()` | `(extra_body_additions, top_level_kwargs)` split | `({}, {})` |
+| `build_client_kwargs_extras()` | OpenAI-client kwargs defaults (explicit settings win; no I/O) | `{}` |
+| `default_vision_model()` | Provider's default vision model id | `None` |
+| `get_model_context_length()` | Provider-qualified context bound; explicit user overrides win | `None` |
+| `get_usage_cost()` | `CostResult` from canonical usage (estimates are never `actual`) | `None` |
+| `get_max_tokens()` | Per-model max_tokens cap when the user set none | `default_max_tokens` |
+| `supported_reasoning_efforts()` | Effort vocabulary for a model: `None` unknown, `()` none, tuple = clamp; no I/O | `None` |
+| `api_mode_for_model()` | Wire this provider serves a model on; `api_key` given only at resolution time | `None` (static `api_mode`) |
+| `client_headers()` | Default headers for a client built for `base_url` (`has_images` for image requests) | `None` (static `default_headers`) |
+| `request_headers()` | Per-request `extra_headers` for `base_url`; `user_initiated` on a turn's first call | `{}` |
+| `max_tokens_param()` | `"max_completion_tokens"` or `"max_tokens"` for `base_url` | `None` (core heuristic) |
+| `listed()` | Whether discovery surfaces may offer the provider | `True` unless `hidden` with no pool row |
+| `create_client()` | Provider-specific client object (ACP shim, native SDK) | `None` (standard client) |
+| `setup_status()` | External-process login state `{available, logged_in, plan, detail, login_command}` | `None` |
+| `discover_models()` | External-process live picker `[{id, label, note}]` without inference | `None` (`fallback_models`) |
+| `fetch_models()` | Live model ids | GET `{models_url or base_url}/models` |
+| `hostnames` | Hosts (and subdomains) serving this API, so a `custom` endpoint or aux client there is recognised | `()` |
+| `metadata_hostnames` | Hosts identifying this catalog for model metadata only (other credentials) | `()` |
+| `models_dev_id` | models.dev provider id when it differs from `name` | `""` |
+| `live_context_length()` | Context window from the live, credentialed catalog; after the persistent cache | `None` |
+| `normalize_model_id()` | Provider-native id for a model (aliases, catalog repair) | `None` (generic normalization) |
+| `ambient_credentials` | Credentials are ambient: never auto-detected; aux fallback skips unless configured | `False` |
+| `resolve_api_key_secret()` | Provider-owned `(runtime_api_key, source)` | `None` (env/pool ladder) |
+| `runtime_base_url()` | Base URL derived from the credential | `None` (env or default) |
+| `prepare_pool_entry()` | Turns the selected pool row's secret into the runtime key | the secret as-is |
+| `seed_pool_credentials(suppressed_sources, explicitly_configured)` | Pool rows `{source, access_token, base_url, label}` the provider seeds itself, skipping sources in `suppressed_sources` | `None` (generic env seeding) |
+| `remove_credential_source()` | `hermes auth remove`: `(sources_to_suppress, hints)` | `None` (generic removal) |
+| `refresh_runtime_credentials()` | Re-mints `(api_key, base_url)` on `unauthorized` \| `stale` \| `auxiliary_unauthorized`; error path only | `None` |
+| `is_stale_credential_error()` | A non-auth error really means the credential went stale (pure) | `False` |
+| `credential_refresh_notice()` | Status line after a successful runtime refresh | `""` (generic wording) |
+| `request_rejection_hint()` | User-facing lines for an endpoint's hard rejection of any route | `()` |
+| `external_auth_evidence()` | Subprocess-free `(verified, source)` login evidence for an external CLI | `None` (binary resolves) |
+| `responses_replay_item_ids` | Replayed Responses `message` items keep their `id` | `True` |
+| `responses_prompt_cache_key` | The Responses body carries `prompt_cache_key` | `True` |
+| `responses_issuer_kind` | Persisted issuer stamp for encrypted reasoning minted here | `""` (URL-derived) |
+| `responses_trusts_completed_status` | `False`: a reasoning-only `completed` response continues | `True` |
+| `responses_native_compaction` | `False`: never send `context_management` | `True` |
+| `responses_profile_reasoning` | `True`: `reasoning` = `reasoning_payload()` + summary, no `include` | `False` |
+| `message_carrier_opaque` | Top-level assistant key of an opaque reasoning blob (latest streamed wins) | `""` |
+| `message_carrier_text` | Top-level assistant key of readable reasoning text (streamed parts concatenate) | `""` |
+| `replays_tool_call_signatures` | Tool calls keep Gemini `extra_content` signatures | `False` |
+| `reasoning_payload()` | Verbatim `reasoning` object for a model (catalog-clamped) | `None` |
+| `replay_message_carriers()` | Captured `message_carrier_*` values to put back on a replayed assistant message | `{}` |
+| `replays_function_thought_signature()` | Replayed tool calls keep `function.thought_signature` | `False` |
+| `picker_catalog` | `(force_refresh) -> list`: the provider's own model-picker catalog, tried before the generic fetch | `None` |
+| `static_models` | Curated ids registered as this provider's row of the static catalog | `()` |
+| `catalog_credential_files` | Credential files whose mtime joins every cached catalog's fingerprint | `()` |
+| `probe_models()` | `(ids or None, probed_url, resolved_base_url)` for a `/models` probe this provider answers | `None` (generic HTTP probe) |
+| `invalidate_catalog_cache()` | Drops in-process catalog memos (`/model --refresh`) | no-op |
+| `picker_after` | Provider slug this row follows in the provider list | `""` (appended) |
+| `picker_group` | `(group_id, label, description)`: folds same-group rows in interactive pickers | `()` |
+| `catalog_aliases` | `aliases` also normalize in the model catalog | `False` |
+| `aggregator` | Catalog re-exposes many vendors' models | `False` |
+| `provider_overlay` | HermesOverlay fields for the models.dev-keyed definition | `{}` |
+| `overlay_aliases` | Extra names normalizing to the `provider_overlay` definition | `()` |
+| `registry_auth_type` | Auth-registry row `auth_type` when credential resolution differs from the setup flow | `""` (`auth_type`) |
+| `base_url_env_var` | Env var overriding `base_url` on the registry row when not in `env_vars` | `""` |
+| `registry_after` | Registry id this row follows in priority-ordered scans | `""` (appended) |
 
 ## Hook 参考示例
 
@@ -195,9 +307,9 @@ register_provider(ProviderProfile(
 | `api_key` | 单个环境变量携带静态 API key | 大多数提供商 |
 | `oauth_device_code` | 设备码 OAuth 流程 | — |
 | `oauth_external` | 用户在其他地方登录，token 存入 `auth.json` | Anthropic OAuth、MiniMax OAuth、Qwen Portal、Nous Portal |
-| `copilot` | GitHub Copilot token 刷新周期 | 仅 `copilot` 插件 |
+| *插件自定义* | 其他任意值：登录与刷新由提供商自行负责（`auth_handler`、`refresh_credential` 及凭据 hook）；若认证注册表行不同，用 `registry_auth_type` 指定 | 例如 [`github-copilot` labs 插件](https://github.com/NousResearch/hermes-labs-plugins/tree/main/github-copilot) 中的 `copilot` |
 | `aws_sdk` | AWS SDK 凭据链（IAM role、profile、env） | 仅 `bedrock` 插件 |
-| `external_process` | 认证由 agent 启动的子进程处理 | 仅 `copilot-acp` 插件 |
+| `external_process` | 认证由 agent 启动的子进程处理 | 树外 ACP 插件（例如 `github-copilot` labs 插件中的 `copilot-acp`） |
 
 `auth_type` 控制哪些代码路径将你的提供商视为"简单 api-key 提供商"——若不是 `api_key`，PluginManager 仍会记录 manifest，但 Hermes CLI 层面的自动化（doctor 检查、`--provider` 标志、设置向导委托）可能会跳过它。
 

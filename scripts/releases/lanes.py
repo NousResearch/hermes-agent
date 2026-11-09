@@ -5,8 +5,7 @@ A stable release is a set of lanes. A build lane produces something users get
 claim records the set, ``admit`` turns it into one flag per lane and one run
 flag per workflow job, and every gate judges each job against that same set.
 
-``release.py release`` starts from DEFAULT (every lane except macOS Intel and
-Termux) and edits it with ``--only``, ``--with`` and ``--without``.
+``release.py release`` starts from DEFAULT (every lane except Termux) and edits it with ``--only``, ``--with`` and ``--without``.
 
 Lanes are independent switches, but a job runs only when every lane it needs
 is on (JOB_LANES), so a test lane for something that is not built is inert:
@@ -30,7 +29,6 @@ LANES = (
     Lane("windows", True, "signed Windows x64 + arm64 MSIX and the universal bundle (the update channel's package)"),
     Lane("windows-store", True, "unsigned Microsoft Store bundle, submitted to Partner Center (needs no signing)"),
     Lane("macos-arm64", True, "macOS Apple Silicon DMG + ZIP"),
-    Lane("macos-intel", False, "macOS Intel DMG + ZIP (unsupported on main; its runner adds over an hour)"),
     Lane("termux", False, "Termux (Android aarch64) APT package"),
     Lane("ci", True, "the full CI pipeline"),
     Lane("nix", True, "Nix checks"),
@@ -46,7 +44,7 @@ LANES = (
 NAMES = tuple(lane.name for lane in LANES)
 DEFAULT = frozenset(lane.name for lane in LANES if lane.default)
 
-DESKTOP = ("windows", "macos-arm64", "macos-intel")
+DESKTOP = ("windows", "macos-arm64")
 WINDOWS = ("windows", "windows-store")
 BUNDLES = (*DESKTOP, "windows-store", "termux")
 # The protected desktop channel, the update feeds and the Termux index move only for a release that
@@ -71,7 +69,6 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "install-e2e": ("install-e2e",),
     "bootstrap-version": ("bootstrap-version",),
     "candidates-darwin-arm64": ("macos-arm64",),
-    "candidates-darwin-x64": ("macos-intel",),
     "candidates-win32-arm64": ("windows-build",),
     "candidates-win32-x64": ("windows-build",),
     "candidates-win32-bundle": ("windows-build",),
@@ -79,10 +76,8 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "candidate-manifest": ("bundles",),
     "publish-bundles": ("bundles",),
     "transitions-darwin-arm64": ("macos-arm64", "upgrade"),
-    "transitions-darwin-x64": ("macos-intel", "upgrade"),
     "transitions-win32": ("windows", "upgrade"),
     "macos-packaged-arm64": ("macos-arm64", "upgrade"),
-    "macos-packaged-x64": ("macos-intel", "upgrade"),
     "windows-packaged": ("windows", "upgrade"),
 }.items()}
 
@@ -90,15 +85,14 @@ CANDIDATE_CALLS = tuple(job for job in JOB_LANES if job.startswith("candidates-"
 
 # Candidate handoff group and manifest target, each with the lane that builds it.
 HANDOFF_LANE = {"win32-x64": "windows-build", "win32-arm64": "windows-build", "windows-universal": "windows-build",
-                "darwin-arm64": "macos-arm64", "darwin-x64": "macos-intel", "termux": "termux"}
+                "darwin-arm64": "macos-arm64", "termux": "termux"}
 TARGET_LANE = {"windows/x64": "windows", "windows/arm64": "windows", "macos/arm64": "macos-arm64",
-               "macos/x64": "macos-intel", "termux/aarch64": "termux"}
+               "termux/aarch64": "termux"}
 LEFT_OUT = {
     "docker": "the Docker image keeps its previous stable tag",
     "windows": "no signed Windows packages: the Windows update channel stays on its previous release",
     "windows-store": "no Microsoft Store submission",
     "macos-arm64": "no macOS Apple Silicon package",
-    "macos-intel": "Intel Macs get no update: the shared macOS stable feed lists arm64 only",
     "termux": "the Termux APT channel stays on its previous release",
 }
 
@@ -202,7 +196,8 @@ def claim_lanes(metadata: Mapping) -> frozenset[str]:
     Claims cut before lanes existed carry ``skipBundles``, ``skipTests`` and
     (later) ``includeMacosIntel`` / ``includeTermux`` instead of ``lanes``. They
     stay readable for as long as their tags do: each translates to the lane set
-    that gated the same jobs. A missing include key reads as false.
+    that gated the same jobs. A missing include key reads as false. macOS Intel
+    is no longer built, so only a claim that left it out (``false``) still reads.
     """
     if "lanes" in metadata:
         lanes = metadata["lanes"]
@@ -221,8 +216,12 @@ def claim_lanes(metadata: Mapping) -> frozenset[str]:
     if any(not isinstance(metadata.get(key), bool)
            for key in ("skipBundles", "skipTests", *(k for k in _LEGACY_OPTIONAL if k in metadata))):
         raise ValueError("Stable claim metadata is invalid")
-    lanes = set(NAMES) - {"macos-intel", "termux"}
-    lanes |= {lane for key, lane in zip(_LEGACY_OPTIONAL, ("macos-intel", "termux")) if metadata.get(key)}
+    if metadata.get("includeMacosIntel"):
+        raise ValueError("Stable claim metadata is invalid: it opts into macOS Intel (includeMacosIntel), "
+                         "which is no longer built")
+    lanes = set(NAMES) - {"termux"}
+    if metadata.get("includeTermux"):
+        lanes.add("termux")
     if metadata["skipBundles"]:
         lanes -= _LEGACY_BUNDLE_LANES
     if metadata["skipTests"]:

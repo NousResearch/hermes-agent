@@ -31,7 +31,7 @@ export function createSessionMutationClient() {
           || (snapshot.exists && (!Number.isSafeInteger(snapshot.runtime_generation) || snapshot.runtime_generation! < 0))) {
           throw new Error('Session mutation snapshot unavailable; refresh before trying again')
         }
-        return { request_id: newMutationRequestId(), expected_revision: snapshot.runtime_revision,
+        return { request_id: randomUuid(), expected_revision: snapshot.runtime_revision,
           ...(snapshot.exists ? { expected_generation: snapshot.runtime_generation! } : {}) }
       })
       pending.set(key, prepared)
@@ -54,7 +54,9 @@ export function createSessionMutationClient() {
   }
 }
 
-function newMutationRequestId(): string {
+/** A v4 UUID on every origin, the one id minter for renderer and plugin code. `crypto.randomUUID`
+ * exists only in secure contexts, so a Webapp opened over plain HTTP from another machine has none. */
+export function randomUuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
   }

@@ -58,6 +58,12 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
   ```
   Tests that `patch.object(Path, "home", ...)` must ALSO set `HERMES_HOME` — code reads the
   env var, not `Path.home()/.hermes`.
+- **Tests never reach the network.** `tests/conftest.py` refuses every lookup of a host off this
+  machine for the whole pytest process (address literals and loopback pass). Serve what a test
+  needs from a fixture: a server on `127.0.0.1`, a stubbed transport, a seeded cache (models.dev,
+  model catalog), or `public_dns` for SSRF-guard lookups. Only secrets-gated canaries
+  (`@pytest.mark.live`) and PM toolchain/wheel downloads (`@pytest.mark.allow_network`) open it.
+  Child processes a test spawns are outside the fence: give them a seeded home.
 
 ## Don't fake the host OS
 

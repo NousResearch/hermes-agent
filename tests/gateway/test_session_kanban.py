@@ -9,7 +9,7 @@ import pytest
 def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from hermes_state_runtime import RuntimeStoreError
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -28,7 +28,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
             goal_max_turns=3, model_override='loop-model', provider_override='custom')
         kb.recompute_ready(conn)
         task = kb.claim_task(conn, task_id)
-    actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
+    actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(tmp_path)), actor=actor, native_owner=True)
     params = dict(board='owned', task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
     from gateway.session_kanban import build_kanban_policy
@@ -105,7 +105,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     from contextlib import closing
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from hermes_state_runtime import RuntimeStoreError
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -137,7 +137,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
         calls.append(('resume', ref))
     db = SimpleNamespace(get_session=lambda sid: None, db_path=str(tmp_path / 'state.db'))
     authority = SimpleNamespace(profile_id=str(tmp_path), db=db, submit=submit)
-    actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
+    actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
     params = dict(board='owned', task_id=task_id, run_id=old.current_run_id, claim_lock=old.claim_lock)
     from gateway.session_kanban import run_task

@@ -41,6 +41,7 @@ _OAUTH_PROVIDER_CATALOG = LateState("_OAUTH_PROVIDER_CATALOG", "hermes_cli.web_s
 _nous_sign_in_poller = late("_nous_sign_in_poller", "hermes_cli.web_server_oauth")
 _minimax_poller = late("_minimax_poller", "hermes_cli.web_server_oauth")
 _xai_device_poller = late("_xai_device_poller", "hermes_cli.web_server_oauth")
+_profile_device_poller = late("_profile_device_poller", "hermes_cli.web_server_oauth")
 
 _CODEX_ISSUER = "https://auth.openai.com"
 _JSON_HEADERS = {"Content-Type": "application/json"}
@@ -584,11 +585,39 @@ _DEVICE_CODE_STARTERS = {
 }
 
 
+def _device_login_profile(provider_id: str):
+    """The registered provider profile that owns an in-app device-code login, or None."""
+    from providers import get_provider_profile
+    prof = get_provider_profile(provider_id)
+    if prof is None or not (prof.start_device_login and prof.poll_device_login and prof.save_device_login):
+        return None
+    return prof
+
+
+async def _start_profile_device_login(provider_id: str, profile: Optional[str]) -> dict[str, Any]:
+    """Device-code login a provider profile owns: its ``start_device_login`` runs in the request's
+    profile scope; ``_profile_device_poller`` polls and saves."""
+    def _begin():
+        prof = _device_login_profile(provider_id)
+        return (prof, dict(prof.start_device_login() or {})) if prof is not None else (None, {})
+
+    prof, login = await scoped_to_thread(profile, _begin)
+    if prof is None or not login:
+        raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
+    expires_in, interval = int(login["expires_in"]), max(1, int(login["interval"]))
+    return _device_session_started(
+        provider_id, profile, _profile_device_poller,
+        dict(_provider_profile=prof, _device_state=login.get("state"), interval=interval,
+             expires_at=time.time() + expires_in),
+        str(login["user_code"]), str(login["verification_url"]), expires_in, interval,
+    )
+
+
 async def _start_device_code_flow(provider_id: str, profile: Optional[str] = None) -> dict[str, Any]:
     """Hit the provider's device-auth endpoint, spawn its poller, return the display fields."""
     starter = _DEVICE_CODE_STARTERS.get(provider_id)
     if starter is None:
-        raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
+        return await _start_profile_device_login(provider_id, profile)
     return await starter(profile)
 
 
@@ -656,16 +685,34 @@ def _build_oauth_catalog() -> list[dict[str, Any]]:
     try:
         from hermes_cli.provider_catalog import provider_catalog
         for d in provider_catalog():
-            if d.tab != "accounts" or d.slug in seen:
+            if d.slug in seen:
                 continue
-            seen.add(d.slug)
-            rows.append({
-                "id": d.slug, "name": d.label, "flow": "external",
-                "cli_command": f"hermes auth add {d.slug}", "docs_url": d.signup_url or "", "status_fn": None,
-            })
+            row = _profile_account_row(d)
+            if row is not None:
+                seen.add(d.slug)
+                rows.append(row)
     except Exception:
         pass
     return rows
+
+
+def _profile_account_row(d) -> Optional[dict[str, Any]]:
+    """Accounts-tab card for one catalog provider: the generic external card, overlaid with what its
+    profile declares (``account_card``, ``account_status``, an in-app ``start_device_login``). A
+    Keys-tab provider gets a card only when its profile asks for one."""
+    from providers import get_provider_profile
+    prof = get_provider_profile(d.slug)
+    card = dict(getattr(prof, "account_card", None) or {})
+    device = _device_login_profile(d.slug) is not None
+    if d.tab != "accounts" and not (card or device):
+        return None
+    return {
+        "id": d.slug, "name": card.get("name") or d.label,
+        "flow": "device_code" if device else card.get("flow") or "external",
+        "cli_command": card.get("cli_command") or f"hermes auth add {d.slug}",
+        "docs_url": card.get("docs_url") or d.signup_url or "",
+        "status_fn": getattr(prof, "account_status", None),
+    }
 
 
 @router.get("/api/providers/oauth")
@@ -797,7 +844,9 @@ async def start_oauth_login(provider_id: str, request: Request, profile: Optiona
     _require_token(request)
     _gc_oauth_sessions()
     _validate_oauth_profile(profile)
-    catalog_entry = next((p for p in _OAUTH_PROVIDER_CATALOG if p["id"] == provider_id), None)
+    # The whole Accounts catalog, in the request's profile scope: a provider profile's card counts.
+    catalog = await scoped_to_thread(profile, _build_oauth_catalog)
+    catalog_entry = next((p for p in catalog if p["id"] == provider_id), None)
     if catalog_entry is None:
         raise HTTPException(status_code=400, detail=f"Unknown provider {provider_id}")
     if catalog_entry["flow"] == "external":

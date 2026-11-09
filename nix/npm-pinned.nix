@@ -2,11 +2,8 @@
   stdenv,
   makeWrapper,
   fetchurl,
-  nodejs_26,
-  # The interpreter the wrapper launches. Defaults to nixpkgs, but the dev
-  # shell passes the pm-pinned node so `npm` runs on the same node as the
-  # rest of that environment.
-  nodejs ? nodejs_26,
+  # The node the wrapper launches; lib.nix passes the pm-pinned one.
+  nodejs,
 }:
 let
   # pm/lock.json is the one pin table. Every artifact carries its resolved

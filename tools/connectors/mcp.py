@@ -834,8 +834,10 @@ def run_mcp_operation(
     if connection_callback is None:
         return _no_card_result(runner, names, action, session_key)
     try:
+        from tools.connectors.mcp_launch import launch_for
+
         return run_operation(
-            [Target(n, "mcp", action) for n in names],
+            [Target(n, "mcp", action, launch=launch_for(action, n)) for n in names],
             Kind(prepare=runner.prepare, observe=runner.observe, note=NOTE),
             session_key=session_key, tool_call_id=tool_call_id,
             connection_callback=connection_callback, with_urls_in_result=False,

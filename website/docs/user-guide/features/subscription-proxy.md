@@ -202,7 +202,7 @@ proxy is a credential-attaching pass-through.
 ## Future: more OAuth providers
 
 The adapter system is pluggable. Adding a new provider (e.g.
-HuggingFace, GitHub Copilot's chat endpoint, Anthropic via OAuth)
+HuggingFace, Anthropic via OAuth)
 requires implementing `UpstreamAdapter` in
 `hermes_cli/proxy/adapters/<provider>.py` and registering it in
 `adapters/__init__.py`. Providers that aren't OpenAI-compatible at the

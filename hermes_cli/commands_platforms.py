@@ -281,8 +281,14 @@ def _collect_gateway_skill_entries(
     plugin_entries = _entries(_plugin_rows())
     reserved_names.update(n for n, *_rest in plugin_entries)
 
-    bundle_entries = _entries(
-        (cmd_key.lstrip("/"), info.get("description", ""), cmd_key) for cmd_key, info in _gateway_bundles())
+    from agent.skill_commands import resolve_slash_key
+    bundles = dict(_gateway_bundles())
+    # A bundle whose menu name was shortened/renamed (32-char clamp) cannot dispatch: the platform
+    # sends the displayed name and bundle lookup resolves full slugs only. Advertise only names that
+    # resolve back to their own bundle.
+    bundle_entries = [e for e in _entries(
+        (cmd_key.lstrip("/"), info.get("description", ""), cmd_key) for cmd_key, info in bundles.items())
+        if resolve_slash_key(e[0], bundles) == e[2]]
     reserved_names.update(n for n, *_rest in bundle_entries)
     skill_entries = _entries(
         (cmd_key.lstrip("/"), info.get("description", ""), cmd_key)

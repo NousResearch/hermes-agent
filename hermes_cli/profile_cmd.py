@@ -185,6 +185,18 @@ def _print_channel_clone_notice(name: str, source_label: str, clone_channels: bo
         print(shared_credential_warning(name, shared, source_label))
 
 
+def _print_mirrored(mirrored: dict) -> None:
+    """What the new profile took from the main one (the bot page's "Share keys & accounts")."""
+    if mirrored.get("env"):
+        print("Copied API keys from the main profile (bot tokens and allowlists left out).")
+    if mirrored.get("auth") == "shared":
+        print("Logins and subscriptions are shared with the main profile (--isolated-auth to copy them).")
+    elif mirrored.get("auth"):
+        print("Copied logins from the main profile (single-use OAuth logins left out).")
+    if mirrored.get("model_inherited"):
+        print("Model inherited from the main profile.")
+
+
 def _profile_create(args):
     from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
     from hermes_cli.profiles import _get_wrapper_dir, _is_wrapper_dir_in_path, get_active_profile_name
@@ -202,7 +214,9 @@ def _profile_create(args):
         name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
         no_skills=getattr(args, "no_skills", False), description=getattr(args, "description", None),
         clone_channels=clone_channels, sync_imports=sync_imports,
-        alias=not no_alias, quiet=False)
+        alias=not no_alias, quiet=False,
+        mirror_credentials=not getattr(args, "no_credentials", False),
+        share_auth=not getattr(args, "isolated_auth", False))
     try:
         result = provision_profile(request)
     except (ValueError, FileExistsError, FileNotFoundError) as e:
@@ -246,6 +260,7 @@ def _profile_create(args):
                 print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
                 print("  Add to your shell config (~/.bashrc or ~/.zshrc):")
                 print('    export PATH="$HOME/.local/bin:$PATH"')
+    _print_mirrored(result.mirrored)
     for warning in result.warnings:
         print(f"⚠ {warning}")
     try:
@@ -265,7 +280,7 @@ def _profile_create(args):
         print("  hermes gateway restart    Serve this profile from the running multiplexed gateway")
     else:
         print(f"  {name} gateway start      Start the messaging gateway")
-    if clone or clone_all:
+    if clone or clone_all or result.mirrored.get("env"):
         print(f"\n  Edit {profile_dir_display}/.env for different API keys")
         print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
     else:

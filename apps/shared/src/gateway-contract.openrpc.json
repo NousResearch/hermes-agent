@@ -31040,7 +31040,7 @@
       },
       "ProfilesCreateParams": {
         "additionalProperties": false,
-        "description": "``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on\nso a headless bot has a provider.",
+        "description": "``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` and\n``share_auth`` default on (the bot page's defaults) so a headless bot has a provider.",
         "properties": {
           "profile": {
             "anyOf": [

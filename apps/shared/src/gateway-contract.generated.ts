@@ -2139,7 +2139,7 @@ export interface ProfileCanonicalSession {
   message_count?: number
   live_message_count?: number | null
 }
-/** ``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on so a headless bot has a provider. */
+/** ``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` and ``share_auth`` default on (the bot page's defaults) so a headless bot has a provider. */
 export interface ProfilesCreateParams {
   profile?: string | null
   name: string

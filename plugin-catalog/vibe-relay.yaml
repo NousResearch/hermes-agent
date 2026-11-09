@@ -1,6 +1,6 @@
 name: vibe-relay
 repo: https://github.com/trenthalden/vibe-relay
-sha: "fecef8a1ede363a44f016b249b5902210a24a53b"
+sha: "b796de38c2486cae514c8f01e83263050423749b"
 title: Vibe Relay
 description: >-
   Vibecoding without burning your best model. Sets Hermes `delegation.backend` to a quota-aware
@@ -9,11 +9,13 @@ description: >-
   (provider+model or profile). When the executor lane is selected, a `pre_tool_call` hook blocks
   the parent from `patch`/`write_file` and obvious terminal writes (`sed -i`, `>`/`>>`, `tee`) so
   coding work must go through `delegate_task` (children never blocked; `enforce_executor_lane`
-  default true). Every task must carry `allowed` path globs and a `gate` command — exit 0 alone
-  is not done. A `post_tool_call` hook captures gate PASS output bound to a working-tree hash;
-  `pre_verify` continues the turn until a fresh PASS exists; `vibe_accept` checks changed paths ⊆
-  allowed. Near the stop threshold (default 90% used) `/vibe park` writes a handoff and creates
-  one one-shot cron at reset_at+buffer; blueprint `resume-after-reset` is also registered.
+  default true). At `stop_used_percent` (default 90% used) the same hook blocks parent
+  `delegate_task` and writers, auto-parks once per reset window (handoff + one one-shot cron),
+  and injects `parked until …; do not start new work` via `pre_llm_call`; the block lifts after
+  reset or when used drops below stop. Every task must carry `allowed` path globs and a `gate`
+  command — exit 0 alone is not done. A `post_tool_call` hook captures gate PASS output bound to
+  a working-tree hash; `pre_verify` continues the turn until a fresh PASS exists; `vibe_accept`
+  checks changed paths ⊆ allowed. Manual `/vibe park` and blueprint `resume-after-reset` remain.
   Ships an Agent Workshop of 14 portable skills (build/debug loop, architecture audit, harness+evals,
   context budget, memory/retrieval, known-errors registry, frozen-tree review, product-aware releases,
   subagent-driven development, companion maintenance, lean executor orchestration, field-first
@@ -32,12 +34,12 @@ tier: community
 category: automation
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/trenthalden/vibe-relay#readme
-image: https://raw.githubusercontent.com/trenthalden/vibe-relay/fecef8a1ede363a44f016b249b5902210a24a53b/assets/banner.png
+image: https://raw.githubusercontent.com/trenthalden/vibe-relay/b796de38c2486cae514c8f01e83263050423749b/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/fecef8a1ede363a44f016b249b5902210a24a53b/assets/shot-1.png
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/fecef8a1ede363a44f016b249b5902210a24a53b/assets/shot-2.png
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/fecef8a1ede363a44f016b249b5902210a24a53b/assets/shot-3.png
-version: "0.2.4"
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/b796de38c2486cae514c8f01e83263050423749b/assets/shot-1.png
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/b796de38c2486cae514c8f01e83263050423749b/assets/shot-2.png
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/b796de38c2486cae514c8f01e83263050423749b/assets/shot-3.png
+version: "0.3.1"
 platforms: [linux, macos]
 capabilities:
   provides_tools:

@@ -253,11 +253,11 @@ class _Rewriter(cst.CSTTransformer):
                              and get_full_name_for_node(side.value) in self.caught for side in sides)
         for side in sides:
             if exception_name:
-                self._hold_matcher(side, "ImportError.name literal; the module part must match by hand")
+                self._hold_matcher(side, "ImportError.name literal")
             elif isinstance(side, (cst.List, cst.Tuple)) and isinstance(node.comparisons[0].operator,
                                                                          (cst.Equal, cst.NotEqual)):
                 for element in side.elements:
-                    self._hold_matcher(element.value, "command-line matcher; accept both names by hand")
+                    self._hold_matcher(element.value, "command-line matcher")
 
     def visit_Comparison(self, node: cst.Comparison) -> None:
         self._visit_matcher(node)
@@ -270,7 +270,7 @@ class _Rewriter(cst.CSTTransformer):
         func = get_full_name_for_node(node.func) or ""
         if isinstance(node.func, cst.Attribute) and node.func.attr.value == "startswith" \
                 and any(f"{name}.name" in _code(arg.value) for arg in node.args for name in self.caught):
-            self._hold_matcher(node.func.value, "ImportError.name literal; the module part must match by hand")
+            self._hold_matcher(node.func.value, "ImportError.name literal")
         owner_node = node.func.value if isinstance(node.func, cst.Attribute) else None
         method = node.func.attr.value if owner_node is not None else func
         positional = [arg.value for arg in node.args if arg.keyword is None and not arg.star]

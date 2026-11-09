@@ -254,11 +254,7 @@ def test_provider_payload_refuses_after_freeze(frozen_provider):
     assert dict(got.default_headers) == {"X-Probe": "before"}  # copies stay writable
 
 
-def test_provider_private_slot_payload_is_sealed_through_the_real_freeze(monkeypatch):
-    """A private ``__slots__`` name is stored under its mangled spelling, so the seal must read it
-    there: a profile whose payload lives in a private slot is refused like a plain-fielded one
-    after the freeze, or its nested containers stay writable for every tenant."""
-    import providers
+def _slotted_provider_class(class_name):
     from providers.base import ProviderProfile
 
     class SlottedProvider(ProviderProfile):
@@ -271,6 +267,31 @@ def test_provider_private_slot_payload_is_sealed_through_the_real_freeze(monkeyp
         def payload(self):
             return self.__payload
 
+    # The compiler mangled ``__payload`` with the name written above; a class named ``___`` mangles
+    # nothing, so build that case by compiling the same body under the real name.
+    if class_name == "SlottedProvider":
+        return SlottedProvider
+    namespace = {"ProviderProfile": ProviderProfile}
+    exec(compile(
+        f"class {class_name}(ProviderProfile):\n"
+        "    __slots__ = ('__payload',)\n"
+        "    def __init__(self, **kwargs):\n"
+        "        super().__init__(**kwargs)\n"
+        "        self.__payload = {'key': ['original']}\n"
+        "    def payload(self):\n"
+        "        return self.__payload\n", "<probe>", "exec"), namespace)
+    return namespace[class_name]
+
+
+@pytest.mark.parametrize("class_name", ["SlottedProvider", "___"])
+def test_provider_private_slot_payload_is_sealed_through_the_real_freeze(monkeypatch, class_name):
+    """A private ``__slots__`` name is stored under the spelling its declaring class mangles it to
+    (none for an all-underscore class name), so the seal must read it there: a profile whose payload
+    lives in a private slot is refused like a plain-fielded one after the freeze, or its nested
+    containers stay writable for every tenant."""
+    import providers
+
+    SlottedProvider = _slotted_provider_class(class_name)
     monkeypatch.setattr(registry_freeze, "_frozen", False)
     providers.list_providers()
     for name in ("_REGISTRY", "_ALIASES", "_SOURCES"):

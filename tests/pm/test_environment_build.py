@@ -1,6 +1,7 @@
 """Real, offline uv construction below PM selection and distribution packaging."""
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -794,14 +795,13 @@ def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, mo
 
 def test_no_config_drops_bridged_index_settings_from_child_env(tmp_path):
     """no_config must isolate the pinned runtime builder from ambient INDEX
-    redirection: --no-config covers config files, but PM's pip-mirror bridge
-    injects UV_INDEX_URL as an env var, and re-resolving the official-index
+    redirection and user config while preserving project configuration. PM's
+    pip-mirror bridge injects UV_INDEX_URL as an env var, and re-resolving the official-index
     runtime lockfile against that mirror trips `uv sync --locked` (#124418).
     Transport knobs are NOT index redirects and must survive isolation —
     corporate networks need UV_HTTP_TIMEOUT et al. to reach the pinned URLs.
     The default path keeps the whole bridge — mirrored networks need it to
     resolve their application dependencies at all."""
-    import io
     from pm.environment import PythonEnvironment
 
     ambient = dict(os.environ, UV_INDEX_URL="https://fixture-mirror.invalid/simple",
@@ -810,7 +810,11 @@ def test_no_config_drops_bridged_index_settings_from_child_env(tmp_path):
              "if 'UV_INDEX_URL' in os.environ:\n"
              "    sys.exit('leaked index redirect: UV_INDEX_URL')\n"
              "if 'UV_HTTP_TIMEOUT' not in os.environ:\n"
-             "    sys.exit('transport knob dropped: UV_HTTP_TIMEOUT')\n")
+             "    sys.exit('transport knob dropped: UV_HTTP_TIMEOUT')\n"
+             "if '--no-config' in sys.argv:\n"
+             "    sys.exit('project config disabled: --no-config')\n"
+             "if 'UV_INDEX_URL' not in os.environ and not all(os.environ.get(key) for key in ('XDG_CONFIG_HOME', 'XDG_CONFIG_DIRS', 'APPDATA', 'LOCALAPPDATA')):\n"
+             "    sys.exit('user config paths not isolated')\n")
 
     def run(**kwargs):
         environment = PythonEnvironment(
@@ -823,3 +827,34 @@ def test_no_config_drops_bridged_index_settings_from_child_env(tmp_path):
     bridged = run()
     assert bridged.returncode == 1, "default path must keep the bridge"
     assert "UV_INDEX_URL" in bridged.stderr, bridged.stderr
+
+
+def test_no_config_preserves_project_uv_configuration(tmp_path):
+    """Isolating user uv.toml must not hide project [tool.uv] settings."""
+    from pm.environment import PythonEnvironment
+
+    uv = shutil.which("uv")
+    if not uv:
+        pytest.skip("requires the pinned uv executable")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="project-config-regression"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.uv]\npackage=false\nexclude-newer="3 days"\n', encoding="utf-8",
+    )
+    cache = tmp_path / "uv-cache"
+    cache.mkdir()
+    env = dict(os.environ, UV_CACHE_DIR=str(cache))
+    created = subprocess.run([uv, "lock", "--offline"], cwd=project, env=env,
+                             capture_output=True, text=True, timeout=60, check=False)
+    assert created.returncode == 0, created.stderr
+    locked = (project / "uv.lock").read_bytes()
+    assert b'exclude-newer-span = "P3D"' in locked
+
+    environment = PythonEnvironment(
+        uv=Path(uv), python=Path(sys.executable), destination=tmp_path / "venv",
+        cache=cache, env=env, offline=True, output=io.StringIO(), no_config=True,
+    )
+    checked = environment._run(["lock", "--check"], cwd=project, timeout=60)
+    assert checked.returncode == 0, checked.stderr
+    assert (project / "uv.lock").read_bytes() == locked

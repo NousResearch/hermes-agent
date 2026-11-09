@@ -344,9 +344,9 @@ class PythonEnvironment:
         env.setdefault("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
+            if self.no_config:
+                env.update(APPDATA=config, LOCALAPPDATA=config)
             command = [native(self.uv), *map(native, args)]
-            if self.no_config and "--no-config" not in command:
-                command.append("--no-config")
             if self.offline:
                 command.append("--offline")
             try:

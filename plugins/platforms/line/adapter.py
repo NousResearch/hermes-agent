@@ -8,6 +8,8 @@
   a stale or vanished mapping falls through to a live wire send (#106446). Prompts
   (clarify, approval: ``is_approval_prompt``) always reach the wire and retire a PENDING
   button, so the reply that follows lands below the question.
+* Clarify: the base numbered prompt plus Quick Reply chips (≤13, single-select) that post the
+  choice's number, so a tap answers through the gateway clarify text intercept like typing it.
 * Three allowlists (users U…, groups C…, rooms R…); ``LINE_ALLOW_ALL_USERS`` is dev-only.
 * Media via public HTTPS only: local files served under ``/line/media/<token>/<name>``
   (allowed-roots guard); ``LINE_PUBLIC_URL`` overrides host:port behind tunnels/wildcards.
@@ -60,6 +62,8 @@ LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
 LINE_PER_BUBBLE_CHARS = 5000  # LINE hard limit
 LINE_SAFE_BUBBLE_CHARS = 4500  # conservative chunking limit
 LINE_MAX_MESSAGES_PER_CALL = 5
+LINE_QUICK_REPLY_MAX_ITEMS = 13
+LINE_QUICK_REPLY_LABEL_CHARS = 20
 LINE_REPLY_TOKEN_TTL_SECONDS = 50  # below LINE's ~60s
 WEBHOOK_BODY_MAX_BYTES = 1_048_576  # 1 MiB — webhooks are tiny JSON
 DEFAULT_WEBHOOK_PORT = 8646
@@ -310,6 +314,27 @@ def build_postback_button_message(text: str, button_label: str, request_id: str)
         "data": json.dumps({"action": "show_response", "request_id": request_id}),
         "displayText": button_label[:300] or t(DEFAULT_BUTTON_LABEL_KEY)[:300]}
     return {"type": "template", "altText": alt, "template": {"type": "buttons", "text": truncated, "actions": [action]}}
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(text.split())  # action labels are one line
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def build_clarify_quick_reply(choices: list) -> Optional[dict[str, Any]]:
+    """Quick Reply for a single-select clarify, or None without choices or past LINE's 13 items.
+    Each chip is a "message" action that posts the choice's number, so the gateway clarify text
+    intercept resolves it to ``choices[N-1]`` whatever the label holds. The label is display-only."""
+    if not choices or len(choices) > LINE_QUICK_REPLY_MAX_ITEMS:
+        return None
+    return {"items": [
+        {"type": "action", "action": {
+            "type": "message", "label": _clip(f"{i}. {choice}", LINE_QUICK_REPLY_LABEL_CHARS), "text": str(i)}}
+        for i, choice in enumerate(choices, start=1)]}
+
+
+# send_clarify → send(): the Quick Reply for the prompt's last bubble.
+_QUICK_REPLY_META = "_line_quick_reply"
 
 
 # Gateway busy-ack prefixes (interrupting / queued / steered / background review / working
@@ -665,7 +690,8 @@ class LineAdapter(BasePlatformAdapter):
         # the text prefixes stay as belt-and-suspenders for metadata-less callers.
         # A prompt (clarify, approval) blocks the turn on the user's reply, so caching it as the
         # answer hides the question until it times out.
-        is_prompt = bool((metadata or {}).get("is_approval_prompt"))
+        md = metadata or {}
+        is_prompt = bool(md.get("is_approval_prompt"))
         pending_rid = self._pending_buttons.get(chat_id)
         if pending_rid and not is_prompt and not _is_interim_send(content, metadata):
             entry = self._cache.get(pending_rid)
@@ -679,22 +705,29 @@ class LineAdapter(BasePlatformAdapter):
         # System busy-acks (interrupting / queued / steered) and progress heartbeats
         # bypass the postback cache and route directly to LINE so they reach the user
         # as visible bubbles. Source: PR #18153, #106446.
-        result = await self._send_text_chunks(chat_id, content, force_push=False)
+        messages = _text_messages(content)
+        if messages and md.get(_QUICK_REPLY_META):
+            messages[-1]["quickReply"] = md[_QUICK_REPLY_META]
+        result = await self._send_messages(chat_id, messages, text=True)
         if result.success and is_prompt and pending_rid:
             # A failed prompt keeps the button: the turn's answer can still ride its free token.
             self._cache.retire(pending_rid)
             self._pending_buttons.pop(chat_id, None)
         return result
 
-    async def _send_text_chunks(self, chat_id: str, content: str, *, force_push: bool) -> SendResult:
-        return await self._send_messages(chat_id, _text_messages(content), force_push=force_push, text=True)
-
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
         session_key: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """The base numbered prompt, marked as a prompt for ``send()``."""
-        return await super().send_clarify(
-            chat_id, question, choices, clarify_id, session_key, {**(metadata or {}), "is_approval_prompt": True})
+        """The base numbered prompt, marked as a prompt for ``send()``, with Quick Reply chips for a
+        single-select question. A tap posts the number as the tapper's own message, so the
+        session-keyed text intercept answers it; the base marks the clarify awaiting text, so an own
+        answer or "skip" still works after the chips vanish. Multi-select gets no chips: one tap
+        would commit a single pick."""
+        from tools.clarify_gateway import get_pending
+        md = {**(metadata or {}), "is_approval_prompt": True}
+        if choices and not getattr(get_pending(clarify_id), "multi_select", False):
+            md[_QUICK_REPLY_META] = build_clarify_quick_reply(choices)
+        return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, md)
 
     def _consume_reply_token(self, chat_id: str) -> tuple[str, bool]:
         """Consume a stashed reply token if present and unexpired → ``(token, used_reply)``."""

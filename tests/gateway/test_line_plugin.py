@@ -357,17 +357,20 @@ def line_adapter(monkeypatch):
 
 @pytest.fixture
 def clarify():
-    """Register a real pending clarify for ``SK``; returns its id."""
+    """Register a real pending clarify (``SK`` by default); returns its id."""
     from tools import clarify_gateway
     ids = iter(range(1, 100))
+    keys = set()
 
-    def _register(choices):
+    def _register(choices, multi_select=False, session_key=SK):
         cid = f"cl-{next(ids)}"
-        clarify_gateway.register(cid, SK, "Which region?", choices)
+        clarify_gateway.register(cid, session_key, "Which region?", choices, multi_select)
+        keys.add(session_key)
         return cid
 
     yield _register
-    clarify_gateway.clear_session(SK)
+    for key in keys:
+        clarify_gateway.clear_session(key)
 
 
 def _sent(client_call):
@@ -464,6 +467,119 @@ class TestPromptPastSlowButton:
         else:
             token, messages = line_adapter._client.reply.await_args.args
             assert token == "user-token" and messages[0]["type"] == "template"
+
+
+class TestClarifyQuickReply:
+    """A single-select clarify shows one Quick Reply chip per choice. The chip posts the choice's
+    number, so a tap and a typed number answer through the same gateway clarify text intercept."""
+
+    CHOICES = ["Tokyo (Recommended)", "Osaka", "Use the Singapore region"]
+
+    def _ask(self, adapter, cid, choices):
+        return asyncio.run(adapter.send_clarify("Uchat", "Which region?", choices, cid, SK))
+
+    def _answer(self, text):
+        from tools import clarify_gateway
+        return clarify_gateway.attempt_text_response_for_session(SK, text)
+
+    def test_chip_per_choice_posts_its_number_under_a_clipped_label(self, line_adapter, clarify):
+        self._ask(line_adapter, clarify(self.CHOICES), self.CHOICES)
+        actions = [item["action"] for item in _sent(line_adapter._client.push)[-1]["quickReply"]["items"]]
+        assert [a["type"] for a in actions] == ["message"] * 3
+        assert [a["text"] for a in actions] == ["1", "2", "3"]
+        assert [a["label"] for a in actions] == ["1. Tokyo (Recommend…", "2. Osaka", "3. Use the Singapor…"]
+
+    def test_multiline_choice_gets_a_single_line_label(self, line_adapter, clarify):
+        choices = ["Keep it\nas is", "Drop it"]
+        self._ask(line_adapter, clarify(choices), choices)
+        labels = [item["action"]["label"] for item in _sent(line_adapter._client.push)[-1]["quickReply"]["items"]]
+        assert labels == ["1. Keep it as is", "2. Drop it"]
+
+    @pytest.mark.parametrize("index", [0, 1, 2])
+    def test_each_chip_answers_with_the_full_choice(self, line_adapter, clarify, index):
+        from tools import clarify_gateway
+        cid = clarify(self.CHOICES)
+        entry = clarify_gateway.get_pending(cid)
+        self._ask(line_adapter, cid, self.CHOICES)
+        chip = _sent(line_adapter._client.push)[-1]["quickReply"]["items"][index]["action"]["text"]
+        assert self._answer(chip) == clarify_gateway.TEXT_RESOLVED
+        assert entry.response == self.CHOICES[index]
+
+    def test_plugin_labels_get_a_chip_each(self, line_adapter, clarify):
+        from tools import clarify_gateway
+        labels = [f"label {i}" for i in range(1, 13)]
+        cid = clarify(labels)
+        entry = clarify_gateway.get_pending(cid)
+        self._ask(line_adapter, cid, labels)
+        items = _sent(line_adapter._client.push)[-1]["quickReply"]["items"]
+        assert len(items) == 12
+        assert self._answer(items[-1]["action"]["text"]) == clarify_gateway.TEXT_RESOLVED
+        assert entry.response == "label 12"
+
+    @pytest.mark.parametrize("count, chips", [(13, 13), (14, 0)])
+    def test_past_thirteen_choices_only_the_numbered_text_goes_out(self, line_adapter, clarify, count, chips):
+        choices = [f"choice {i}" for i in range(1, count + 1)]
+        self._ask(line_adapter, clarify(choices), choices)
+        messages = _sent(line_adapter._client.push)
+        assert len(messages[-1].get("quickReply", {}).get("items", [])) == chips
+        assert f"{count}. choice {count}" in "".join(m["text"] for m in messages)
+
+    def test_multi_select_gets_no_chips_and_a_typed_list_answers(self, line_adapter, clarify):
+        from tools import clarify_gateway
+        cid = clarify(self.CHOICES, multi_select=True)
+        entry = clarify_gateway.get_pending(cid)
+        self._ask(line_adapter, cid, self.CHOICES)
+        assert "quickReply" not in _sent(line_adapter._client.push)[-1]
+        assert self._answer("1,3") == clarify_gateway.TEXT_RESOLVED
+        assert json.loads(entry.response) == [self.CHOICES[0], self.CHOICES[2]]
+
+    def test_open_ended_question_gets_no_chips(self, line_adapter, clarify):
+        self._ask(line_adapter, clarify(None), None)
+        message = _sent(line_adapter._client.push)[-1]
+        assert "quickReply" not in message and "Which region?" in message["text"]
+
+    @pytest.mark.parametrize("typed, expected", [("Somewhere in Europe", "Somewhere in Europe"), ("skip", None)])
+    def test_typed_own_answer_or_skip_still_answers(self, line_adapter, clarify, typed, expected):
+        from tools import clarify_gateway
+        cid = clarify(self.CHOICES)
+        entry = clarify_gateway.get_pending(cid)
+        self._ask(line_adapter, cid, self.CHOICES)
+        assert self._answer(typed) == clarify_gateway.TEXT_RESOLVED
+        assert entry.response == (expected or clarify_gateway.SKIPPED)
+
+    def test_clarify_rides_the_stashed_reply_token(self, line_adapter, clarify):
+        line_adapter._reply_tokens["Uchat"] = ("user-token", time.time() + 50)
+        self._ask(line_adapter, clarify(self.CHOICES), self.CHOICES)
+        line_adapter._client.push.assert_not_awaited()
+        assert line_adapter._client.reply.await_args.args[0] == "user-token"
+        assert "quickReply" in _sent(line_adapter._client.reply)[-1]
+
+    def test_chip_tap_arrives_as_text_and_its_token_carries_the_reply(self, line_adapter):
+        line_adapter.handle_message = AsyncMock()
+        asyncio.run(line_adapter._handle_message_event({
+            "type": "message", "replyToken": "tap-token", "source": {"type": "user", "userId": "Uchat"},
+            "message": {"type": "text", "id": "m1", "text": "2"}}))
+        assert line_adapter.handle_message.await_args.args[0].text == "2"
+        asyncio.run(line_adapter.send("Uchat", "Osaka it is"))
+        assert line_adapter._client.reply.await_args.args[0] == "tap-token"
+
+    def test_clarify_past_a_slow_button_carries_chips_and_retires_it(self, line_adapter, clarify):
+        rid = line_adapter._cache.register_pending("Uchat")
+        line_adapter._pending_buttons["Uchat"] = rid
+        self._ask(line_adapter, clarify(self.CHOICES), self.CHOICES)
+        assert len(_sent(line_adapter._client.push)[-1]["quickReply"]["items"]) == 3
+        assert line_adapter._cache.get(rid).state is State.DELIVERED
+
+    def test_another_group_member_tapping_does_not_answer(self, line_adapter, clarify):
+        from tools import clarify_gateway
+
+        def key(user_id):
+            return line_adapter._source_session_key(
+                line_adapter.build_source(chat_id="Cgrp", chat_type="group", user_id=user_id))
+
+        cid = clarify(self.CHOICES, session_key=key("Uasker"))
+        assert clarify_gateway.attempt_text_response_for_session(key("Ubystander"), "1") == clarify_gateway.TEXT_NO_PENDING
+        assert clarify_gateway.get_pending(cid) is not None
 
 
 class TestEnvEnablement:

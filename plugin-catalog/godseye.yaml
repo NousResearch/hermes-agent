@@ -1,7 +1,7 @@
 name: godseye
 title: Eye Of Hermes (EOH)
 repo: https://github.com/mojomast/EOH
-sha: fb614b924ed6932a9a0773391006917c89214c4d
+sha: 4c416689e1f28268ede78b6c083691491dc06412
 description: >-
   Eye Of Hermes (EOH), built on God's Eye View (bilawalsidhu/gods-eye-view, MIT):
   the same 11 composable godseye_* tools (godseye_view, godseye_query, godseye_layers,
@@ -16,7 +16,7 @@ description: >-
   update, list, play, and stop a Director scene on the pane; godseye_annotate
   op=clip stores a YouTube or X URL on a pin; godseye_feeds op=fire_check runs
   FIRMS, the clearest recent image, then imagery before/after, and does not
-  create a watch or a pin. v0.2.2 hardens Wayback imagery releases, overlays when the relay is out-of-process, pane routing timeouts, and layer/user-pref behavior; v0.2.3 keeps a visible imagery surface during compare swipe and the Wayback timeline; v0.2.4 captures the pane after render and falls back to public Overpass mirrors for OSM queries; v0.2.5 restores a clean plugin.yaml and adds a strict duplicate-key test; v0.2.6 declares street-level keys through Hermes requires_env/get_secret and removes the Gods Eye View env-file fallback. v0.2.7 addresses catalog security review (public-only fetches, scoped credentials, confined imports and minimal child environments) and bounds pane captures with explicit transport errors. The same 11 tools also carry the recent God's Eye
+  create a watch or a pin. v0.2.2 hardens Wayback imagery releases, overlays when the relay is out-of-process, pane routing timeouts, and layer/user-pref behavior; v0.2.3 keeps a visible imagery surface during compare swipe and the Wayback timeline; v0.2.4 captures the pane after render and falls back to public Overpass mirrors for OSM queries; v0.2.5 restores a clean plugin.yaml and adds a strict duplicate-key test; v0.2.6 declares street-level keys through Hermes requires_env/get_secret and removes the Gods Eye View env-file fallback. v0.2.7 addresses catalog security review (public-only fetches, scoped credentials, confined imports and minimal child environments) and bounds pane captures with explicit transport errors. v0.2.8 documents the public SDR receivers layer (); the map layer needs gods-eye-view main at or after b361a25 (PR #5). The same 11 tools also carry the recent God's Eye
   View v0.3-style ops (imagery before/after, a weather preset, GTFS-RT transit
   on the app's transit layer, and fire-perimeter watches). Requires Node 24 or
   newer (God's Eye View documents 24.14 or later, or 26.x) and a running God's
@@ -43,13 +43,13 @@ maintainer: mojomast
 tier: community
 category: tools
 docs_url: https://github.com/mojomast/EOH#readme
-version: "0.2.7"
+version: "0.2.8"
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/EOH/fb614b924ed6932a9a0773391006917c89214c4d/docs/screenshots/hermes-chat-tokyo-nvg.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/fb614b924ed6932a9a0773391006917c89214c4d/docs/screenshots/pane-full-ui.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/fb614b924ed6932a9a0773391006917c89214c4d/docs/screenshots/live-fly-to-tokyo.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/fb614b924ed6932a9a0773391006917c89214c4d/docs/screenshots/hud-via-hermes.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/fb614b924ed6932a9a0773391006917c89214c4d/docs/screenshots/pane-globe-only.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/4c416689e1f28268ede78b6c083691491dc06412/docs/screenshots/hermes-chat-tokyo-nvg.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/4c416689e1f28268ede78b6c083691491dc06412/docs/screenshots/pane-full-ui.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/4c416689e1f28268ede78b6c083691491dc06412/docs/screenshots/live-fly-to-tokyo.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/4c416689e1f28268ede78b6c083691491dc06412/docs/screenshots/hud-via-hermes.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/4c416689e1f28268ede78b6c083691491dc06412/docs/screenshots/pane-globe-only.jpg
 platforms: []
 known_issues:
   - "Full UI in the pane and the in-app HUD via Hermes need two opt-in God's Eye View patches (shipped in patches/, upstream PRs #1571 and #1572); stock upstream gets the globe-only pane."

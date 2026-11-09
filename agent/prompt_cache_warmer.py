@@ -122,9 +122,16 @@ def is_replayable(api_kwargs: dict[str, Any]) -> bool:
     replay is both rejected and useless. Adaptive thinking and no thinking replay fine.
     """
     thinking = api_kwargs.get("thinking")
-    if not isinstance(thinking, dict):
-        return True
-    return thinking.get("type") != "enabled" or "budget_tokens" not in thinking
+    if isinstance(thinking, dict) and thinking.get("type") == "enabled" and "budget_tokens" in thinking:
+        return False
+    # Chat Completions gateways turn ``reasoning`` into a thinking budget for Claude models that
+    # predate adaptive thinking, so a one-token replay would change (or be refused for) that budget.
+    reasoning = (api_kwargs.get("extra_body") or {}).get("reasoning")
+    if isinstance(reasoning, dict) and reasoning.get("enabled", True) and reasoning.get("effort") != "none":
+        from agent.anthropic_adapter import _supports_adaptive_thinking
+
+        return _supports_adaptive_thinking(str(api_kwargs.get("model") or ""))
+    return True
 
 
 @dataclass(frozen=True)
@@ -230,7 +237,9 @@ class PromptCacheWarmer:
             return self._stop("only Anthropic Messages and Chat Completions requests are warmed")
         if not getattr(agent, "_use_prompt_caching", False) or getattr(agent, "_cache_disabled", False):
             return self._stop("prompt caching disabled")
-        if "_moa_prepared_request" in api_kwargs:
+        if api_mode == "chat_completions" and "claude" not in str(getattr(agent, "model", "")).lower():
+            return self._stop("only Claude requests are warmed on Chat Completions")
+        if "_moa_prepared_request" in api_kwargs or getattr(agent, "provider", "") == "moa":
             return self._stop("MoA requests are not replayable")
         if getattr(agent, "_interrupt_requested", False):
             return self._stop("turn interrupted")
@@ -311,6 +320,11 @@ class PromptCacheWarmer:
         self._inactive_reason = reason
         return reason
 
+    def _stop_if_current(self, run: _Run, reason: str) -> None:
+        """Timer-thread stop: never cancels a newer run the loop armed during the warm call."""
+        if self._run is run:
+            self._stop(reason)
+
     def _schedule(self, run: _Run) -> None:
         now = time.time()
         run.next_warm_at = now + run.delay_s
@@ -358,15 +372,15 @@ class PromptCacheWarmer:
         decision = self._evaluate(run)
         self._last_decision = decision
         if decision.action != "warm":
-            self._stop("expected savings below threshold" if decision.economics_available
-                       else "cache economics unavailable")
+            self._stop_if_current(run, "expected savings below threshold" if decision.economics_available
+                                  else "cache economics unavailable")
             return
         run.refreshing = True
         try:
             message = self._send(run)
         except Exception as exc:  # health: allow BLE001 -- warming must never disturb the live turn; logged
             logger.info("%sprompt cache warm failed: %s", self._prefix(), exc, exc_info=True)
-            self._stop(f"warm request failed: {type(exc).__name__}")
+            self._stop_if_current(run, f"warm request failed: {type(exc).__name__}")
             return
         finally:
             run.refreshing = False
@@ -385,8 +399,10 @@ class PromptCacheWarmer:
         kwargs.pop("timeout", None)  # the warm request keeps its own short timeout
         if run.api_mode == "chat_completions":
             kwargs.pop("stream_options", None)
-            kwargs.pop("max_completion_tokens", None)
-            kwargs["max_tokens"] = 1
+            kwargs["max_completion_tokens" if "max_completion_tokens" in kwargs else "max_tokens"] = 1
+            # A byte-identical replay inside OpenRouter's response-cache TTL would be answered
+            # from that cache and never reach (or refresh) the prompt cache upstream.
+            kwargs["extra_headers"] = {**(kwargs.get("extra_headers") or {}), "X-OpenRouter-Cache": "false"}
             return client.chat.completions.create(**kwargs)
         from agent.anthropic_adapter import create_anthropic_message
 
@@ -423,15 +439,18 @@ class PromptCacheWarmer:
                 agent.session_estimated_cost_usd += amount
             db = getattr(agent, "_session_db", None)
             if db is not None and getattr(agent, "session_id", None):
+                from agent.turn_usage import _agent_session_source
+
                 db.queue_token_counts(
-                    agent.session_id, source="cache_warm",
+                    agent.session_id, source=_agent_session_source(agent),
                     input_tokens=canonical.input_tokens, output_tokens=canonical.output_tokens,
                     cache_read_tokens=canonical.cache_read_tokens,
                     cache_write_tokens=canonical.cache_write_tokens,
                     reasoning_tokens=canonical.reasoning_tokens, estimated_cost_usd=amount,
                     cost_status=cost.status, cost_source=cost.source,
                     billing_provider=agent.provider, billing_base_url=agent.base_url,
-                    billing_mode=None, model=agent.model, api_call_count=1,
+                    billing_mode="subscription_included" if cost.status == "included" else None,
+                    model=agent.model, api_call_count=1, task="cache_warm",
                 )
             logger.info(
                 "%sprompt cache warmed (%s #%d): cache_read=%d write=%d cost=%s "

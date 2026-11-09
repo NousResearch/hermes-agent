@@ -208,3 +208,12 @@ eslint +files:
 [positional-arguments]
 move-rewrite *args:
     scripts/hermes-python -m scripts.ci.python_packages libcst==1.9.0 -- scripts/move/rewrite_imports.py "$@"
+
+# Regenerate files built from code and docstrings a move rewrote (after move-rewrite and move-docs); the parity
+# table only checks, since its scan roots come from the guards
+[group('move')]
+move-generate:
+    scripts/gen_gateway_contracts.py
+    scripts/gen_serve_handler_ledger.py
+    scripts/gen_plugin_api_docs.py
+    scripts/gen_gateway_command_parity.py --check

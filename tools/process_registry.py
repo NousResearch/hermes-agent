@@ -1416,26 +1416,37 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     _log_delta_command = staticmethod(log_delta_command)
 
     def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
-        """Background thread: poll a sandbox log file for non-local backends."""
+        """Background thread: poll a sandbox log file for non-local backends.
+
+        One ``execute()`` per tick: the read command reports the process status
+        (taken before the log size, so the delta it returns alongside an exit is
+        the final output) in its header line, ahead of any log bytes. Sandboxes
+        rate-limit exec starts, so a poll must not cost more than one."""
         q = shlex.quote
         # Byte offset already read from the log (bytes, not chars: the shell counts bytes).
         prev_output_bytes = 0
         while not session.exited:
             time.sleep(2)
             try:
-                # Read only the bytes written since the last poll.
-                raw = env.execute(self._log_delta_command(q(log_path), prev_output_bytes),
-                                  timeout=10).get("output", "")
+                # Read only the bytes written since the last poll, plus the process status.
+                raw = env.execute(
+                    self._log_delta_command(q(log_path), prev_output_bytes,
+                                            quoted_pid_path=q(pid_path), quoted_exit_path=q(exit_path)),
+                    timeout=10).get("output", "")
                 header, _, delta = raw.partition("\n")
+                status = None
                 try:
-                    size_str, offset_str = header.split()
+                    size_str, offset_str, status = header.split()
                     new_size = int(size_str)
                     used_offset = int(offset_str)
+                    if status != "run" and not status.startswith("exit:"):
+                        raise ValueError(status)
                 except ValueError:
                     # No usable header (command failed, shell missing a tool): skip this
                     # poll rather than act on a half-read value.
                     new_size = None
                     used_offset = None
+                    status = None
                     delta = ""
                 if new_size is not None:
                     if used_offset < prev_output_bytes:
@@ -1457,15 +1468,21 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     self._check_watch_patterns(session, delta)
                     self._emit_output(session, delta)
 
-                check = env.execute(
-                    f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
-                check_output = check.get("output", "").strip()
-                if check_output and check_output.splitlines()[-1].strip() != "0":
-                    # Exited -- read the exit code captured by the wrapper shell.
+                if status is None:
+                    # Unreadable reply: fall back to separate liveness and exit-code reads
+                    # so a backend that mangles the combined reply still sees the exit.
+                    check = env.execute(
+                        f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
+                    check_output = check.get("output", "").strip()
+                    if not check_output or check_output.splitlines()[-1].strip() == "0":
+                        continue
                     exit_str = env.execute(f"cat {q(exit_path)} 2>/dev/null", timeout=5).get("output", "").strip()
+                    status = "exit:" + (exit_str.splitlines()[-1].strip() if exit_str else "")
+                if status != "run":
+                    # Exited: the wrapper shell recorded the code; a missing one is -1.
                     try:
-                        exit_code = int(exit_str.splitlines()[-1].strip())
-                    except (ValueError, IndexError):
+                        exit_code = int(status[len("exit:"):])
+                    except ValueError:
                         exit_code = -1
                     self._finish_exited(session, exit_code)
                     return

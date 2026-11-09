@@ -72,7 +72,8 @@ _PLANS: dict[str, tuple[str, str]] = {
         "Stop this process once the host gateway serves the dashboard.",
         "It was started from a shell or another program that may still be using it."),
     "unknown": (
-        "Find what starts this backend (on Windows: a Scheduled Task or Startup-folder entry) and remove it.",
+        "Find what starts this backend (on macOS: a launchd plist; on Windows: a Scheduled Task or Startup-folder"
+        " entry) and remove it.",
         "Its supervisor could not be identified, so there is nothing safe to change automatically."),
 }
 
@@ -154,13 +155,14 @@ def _installed_units() -> list[tuple[str, str, str]]:
     return found
 
 
-def _launchd_plist_paths() -> dict[str, str]:
-    """``label -> plist path`` across the launchd plist dirs (read-only)."""
+def _launchd_plists() -> dict[str, tuple[str, Optional[str], list[str]]]:
+    """``label -> (plist path, EnvironmentVariables.HERMES_HOME, ProgramArguments)`` across the
+    launchd plist dirs (read-only)."""
     import plistlib
     from xml.parsers.expat import ExpatError
 
     from hermes_cli.main_dashboard import _launchd_plist_dirs
-    paths: dict[str, str] = {}
+    found: dict[str, tuple[str, Optional[str], list[str]]] = {}
     for _kind, plist_dir in _launchd_plist_dirs():
         try:
             plists = sorted(plist_dir.glob("*.plist"))
@@ -173,8 +175,31 @@ def _launchd_plist_paths() -> dict[str, str]:
             except (OSError, ValueError, plistlib.InvalidFileException, ExpatError):
                 continue
             if isinstance(data, dict) and (label := str(data.get("Label") or "").strip()):
-                paths.setdefault(label, str(plist_path))
-    return paths
+                env, args = data.get("EnvironmentVariables"), data.get("ProgramArguments")
+                home = env.get("HERMES_HOME") if isinstance(env, dict) else None
+                found.setdefault(label, (str(plist_path), str(home) if home else None,
+                                         [str(a) for a in args] if isinstance(args, list) else []))
+    return found
+
+
+def _nix_launcher_jobs(plists) -> list[tuple[str, str, list[str], Optional[int]]]:
+    """Loaded jobs running the Nix ``backend.waitFor`` launcher (``nix/moduleCommon.nix``
+    ``backendLauncher``), which ``exec``s hermes but names no hermes command, so
+    ``_loaded_launchd_backend_jobs`` skips it."""
+    from hermes_cli.gateway import _launchd_print_service_pid
+    from hermes_cli.main_dashboard import _SYSTEMCTL_ERRORS
+    jobs: list[tuple[str, str, list[str], Optional[int]]] = []
+    for label, (_path, _home, argv) in plists.items():
+        if len(argv) != 1 or not os.path.basename(argv[0]).endswith("-hermes-backend-launch"):
+            continue
+        uid = os.getuid()  # windows-footgun: ok — only a launchd plist reaches here
+        for domain in (f"gui/{uid}", f"user/{uid}"):
+            with contextlib.suppress(*_SYSTEMCTL_ERRORS):
+                loaded, live_pid = _launchd_print_service_pid(domain, label)
+                if loaded:
+                    jobs.append((domain, label, argv, live_pid))
+                    break
+    return jobs
 
 
 def _s6_slot(pid: int) -> Optional[tuple[str, str]]:
@@ -214,7 +239,7 @@ def _running_backends() -> list[tuple[int, str]]:
     return [(pid, cmd) for pid, cmd in rows if pid != me and _hermes_holder_subcommand(cmd) in ("serve", "dashboard")]
 
 
-def _classify_running(pid: int, command: str, *, launchd_jobs, plist_paths, ssh_pids, desktop_pids,
+def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids, desktop_pids,
                       seen_units: set[str]) -> BackendItem:
     from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
     from hermes_cli.dashboard_procs import _is_desktop_local_serve_cmdline, _process_ancestors, _process_ppid
@@ -245,7 +270,8 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plist_paths, ssh_
     elif launchd_jobs and (job := _launchd_job_owning_backend(pid, argv, launchd_jobs,
                                                                 ancestors=_process_ancestors(pid))):
         domain, label, _live = job
-        item.unit, item.scope, item.unit_path = label, domain, plist_paths.get(label)
+        item.unit, item.scope = label, domain
+        item.unit_path, item.hermes_home, _args = plists.get(label, (None, None, []))
         item.supervisor = "nix-launchd" if _nix_managed(item.unit_path) else "launchd"
     elif pid in ssh_pids or is_desktop_ssh_backend_argv(argv):
         item.supervisor = "desktop-ssh"
@@ -255,10 +281,12 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plist_paths, ssh_
         item.supervisor = "container"
     elif sys.platform != "win32":
         ppid = _process_ppid(pid)
-        item.supervisor = "unknown" if ppid is None else ("detached" if ppid <= 1 else "manual")
+        # On macOS launchd is the parent of every job and every orphan: ppid 1 proves no supervisor.
+        orphan = ppid is not None and ppid <= 1 and sys.platform != "darwin"
+        item.supervisor = "detached" if orphan else ("manual" if ppid and ppid > 1 else "unknown")
     with contextlib.suppress(Exception):
         from hermes_cli.dashboard_procs import _hermes_home_for_pid
-        item.hermes_home = _hermes_home_for_pid(pid)
+        item.hermes_home = _hermes_home_for_pid(pid) or item.hermes_home
     return item
 
 
@@ -283,10 +311,10 @@ def collect_backends() -> list[BackendItem]:
     from hermes_cli.main_dashboard import _loaded_launchd_backend_jobs
     from hermes_constants import get_hermes_home
     own_home = str(get_hermes_home())
-    launchd_jobs = _loaded_launchd_backend_jobs()  # empty off macOS
-    plist_paths = _launchd_plist_paths() if launchd_jobs else {}
+    plists = _launchd_plists()  # no plist dir off macOS
+    launchd_jobs = _loaded_launchd_backend_jobs() + _nix_launcher_jobs(plists)  # empty off macOS
     seen_units: set[str] = set()
-    items = [_classify_running(pid, cmd, launchd_jobs=launchd_jobs, plist_paths=plist_paths,
+    items = [_classify_running(pid, cmd, launchd_jobs=launchd_jobs, plists=plists,
                                ssh_pids=_lock_owned_serve_pids(), desktop_pids=_exclude_pids_from_env(),
                                seen_units=seen_units)
              for pid, cmd in _running_backends()]
@@ -302,9 +330,9 @@ def collect_backends() -> list[BackendItem]:
     for domain, label, argv, _live_pid in launchd_jobs:
         if label in running_labels:
             continue
-        path = plist_paths.get(label)
+        path, home, _args = plists.get(label, (None, None, []))
         items.append(BackendItem(supervisor="nix-launchd" if _nix_managed(path) else "launchd", running=False,
-                                 argv=list(argv), unit=label, scope=domain, unit_path=path))
+                                 argv=list(argv), unit=label, scope=domain, unit_path=path, hermes_home=home))
     return [_finish(item, own_home) for item in items]
 
 

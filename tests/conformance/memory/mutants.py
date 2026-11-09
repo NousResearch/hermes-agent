@@ -6,7 +6,9 @@ profile's home passes; ``ambient_home_ignored`` drops the check that the files r
 pinned profile, so a bind that names the profile without moving the ambient home redirects the
 write; ``add_cap_writes_anyway`` writes the entry and then returns the over-cap refusal;
 ``batch_cap_after_write`` applies a batch operation by operation and refuses over-cap only at
-the end, so a refused batch leaves partial state; ``level_refusal_ignored`` accepts a write at a
+the end, so a refused batch leaves partial state; ``batch_partial_commit`` returns the port's
+own refusal for a refused batch but commits the batch's operations first, so a refusal whose
+response is right still leaves the files changed; ``level_refusal_ignored`` accepts a write at a
 level the store does not hold. Each mutant is applied by the ``backend`` fixture when
 ``HERMES_MEMORY_MUTANT`` names it.
 """
@@ -130,6 +132,31 @@ def _batch_cap_after_write(monkeypatch):
     monkeypatch.setattr(LocalMemoryStore, "apply_batch", apply_batch)
 
 
+def _batch_partial_commit(monkeypatch):
+    """apply_batch commits the batch's operations one by one after the port has refused them, so
+    a refused batch returns the port's own refusal response while leaving the operations that
+    fit on disk."""
+    from hermes_memory_port_local import LocalMemoryStore
+    original = LocalMemoryStore.apply_batch
+
+    def apply_batch(self, target, operations, *, level="agent"):
+        result = original(self, target, operations, level=level)
+        if result.get("success") is not False:
+            return result
+        for op in operations or []:
+            act = op.get("action")
+            content = (op.get("content") or op.get("new_text") or "").strip()
+            old_text = (op.get("old_text") or "").strip()
+            if act == "add":
+                self.store.add(target, content)
+            elif act == "remove":
+                self.store.remove(target, old_text)
+            elif act == "patch":
+                self.store.patch(target, old_text, content)
+        return result
+    monkeypatch.setattr(LocalMemoryStore, "apply_batch", apply_batch)
+
+
 def _level_refusal_ignored(monkeypatch):
     """Writes at a level the store does not hold are accepted at the agent level."""
     from hermes_memory_port_local import LocalMemoryStore
@@ -143,6 +170,7 @@ MUTANTS = {
     "ambient_home_ignored": _ambient_home_ignored,
     "add_cap_writes_anyway": _add_cap_writes_anyway,
     "batch_cap_after_write": _batch_cap_after_write,
+    "batch_partial_commit": _batch_partial_commit,
     "level_refusal_ignored": _level_refusal_ignored,
 }
 

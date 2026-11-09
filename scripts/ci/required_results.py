@@ -228,7 +228,7 @@ def main(argv: list[str] | None = None, fetch: Callable[[str], Any] = _github_ge
     if args.allow_superseded and only_cancellations(needs, verdict):
         try:
             duplicate = superseding_run_id(fetch)
-        except (OSError, ValueError, KeyError, TypeError) as exc:  # fail closed
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:  # fail closed
             print(f"Superseding-run lookup failed, keeping the failure: {exc}")
     for line in render_report(needs, verdict):
         if duplicate is None or not line.startswith("::error::"):

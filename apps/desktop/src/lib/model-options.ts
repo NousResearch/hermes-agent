@@ -146,7 +146,7 @@ export function cachedProfileModelOptions(
     const data = query.state.data as ModelOptionsResult | undefined
     const sameOwner = JSON.stringify(query.queryKey.slice(3)) === JSON.stringify(ownerTail)
 
-    if (sameOwner && hasSelectableModels(data) && (!newest || query.state.dataUpdatedAt > newest.at)) {
+    if (sameOwner && data && hasSelectableModels(data) && (!newest || query.state.dataUpdatedAt > newest.at)) {
       newest = { at: query.state.dataUpdatedAt, data }
     }
   }

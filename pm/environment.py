@@ -404,8 +404,15 @@ class PythonEnvironment:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
 
     def check_lock(self, source: Path) -> None:
-        result = self._run(["lock", "--check", "--python", str(self.python)],
-                           cwd=source, timeout=1800)
+        command = ["lock", "--check", "--python", str(self.python)]
+        # Online, uv re-downloads every direct-URL wheel even when the lock already satisfies
+        # the manifest, so one unreachable release asset (kittentts) failed every CI job's
+        # setup. Offline answers a current lock from the lock alone; only a lock it cannot
+        # vouch for goes online, where uv names what is stale.
+        if not self.offline and replace(self, offline=True, output=None)._run(
+                command, cwd=source, timeout=1800).returncode == 0:
+            return
+        result = self._run(command, cwd=source, timeout=1800)
         if result.returncode:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
 

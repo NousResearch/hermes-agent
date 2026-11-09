@@ -1061,6 +1061,33 @@ class Ripgrep(BinaryPackage):
 
 
 @register
+class Just(BinaryPackage):
+    """The developer command runner. Activation installs it; user installs and desktop bundles never do."""
+
+    name = "just"
+    optional = True
+    binary_rel = {"win32": "just.exe", "posix": "just"}
+
+    def verify(self, entry: Path, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            return Package.verify(self, entry, target)
+        return super().verify(entry, target)
+
+    def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            target = "linux-arm64"  # This upstream artifact is a static musl executable.
+        triple = _RUST_TRIPLE[target].replace("-unknown-linux-gnu", "-unknown-linux-musl")
+        ext = "zip" if target.startswith("win32") else "tar.gz"
+        return f"https://github.com/casey/just/releases/download/{version}/just-{version}-{triple}.{ext}"
+
+    def known_sha256(self, version: str, url: str) -> Optional[str]:
+        return _github_release_digests("casey/just", version).get(url.rsplit("/", 1)[-1])
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("casey/just")
+
+
+@register
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True

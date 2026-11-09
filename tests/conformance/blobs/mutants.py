@@ -7,8 +7,9 @@ lock leaking through a tenant-blind or missing pin (``reads_skip_the_pin``,
 (``traversal_unchecked``, ``symlink_followed``) and the level refusal dropped
 (``level_refusal_removed``). The two-level reference backend's holes: participant records
 stored without their subject (``participant_shared``), reads ignoring the participant level
-(``participant_reads_ignored``) and one shared namespace across agents
-(``shared_namespace``).
+(``participant_reads_ignored``), one shared namespace across agents
+(``shared_namespace``), and the turn fence on conversation-file writes never checked
+(``participant_writes_skip_the_fence``).
 """
 
 LOCAL_SUITE = "tests/conformance/blobs/test_local.py"
@@ -156,6 +157,13 @@ def _reference_shared_namespace(monkeypatch):
     monkeypatch.setattr(ReferenceBlobStore, "_level_dir", lambda self, level, subject: self.root / "shared")
 
 
+def _reference_participant_writes_skip_the_fence(monkeypatch):
+    """The turn fence on conversation-file writes is never checked: a write with no turn bound,
+    or one under a fence its session's lease no longer holds, lands anyway."""
+    from tests.conformance.blobs.reference import ReferenceBlobStore
+    monkeypatch.setattr(ReferenceBlobStore, "_write_fence", lambda self, level: None)
+
+
 #: name → (how to apply it, which suite file kills it, its own-agent control arguments).
 MUTANTS = {
     "reads_skip_the_pin": (_local_reads_skip_the_pin, LOCAL_SUITE,
@@ -179,6 +187,9 @@ MUTANTS = {
     "shared_namespace": (_reference_shared_namespace, REFERENCE_SUITE,
                          [REFERENCE_SUITE, "-k",
                           "succeeds_for_its_own_agent or reads_the_agents_own_files"]),
+    "participant_writes_skip_the_fence": (_reference_participant_writes_skip_the_fence, REFERENCE_SUITE,
+                                          [REFERENCE_SUITE, "-k",
+                                           "succeeds_for_its_own_agent or reads_the_agents_own_files"]),
 }
 
 

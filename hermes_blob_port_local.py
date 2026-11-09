@@ -24,7 +24,10 @@ these paths serve at the agent level until profiles become agents.
 A key that would leave its family's directory — ``..`` components, an absolute path, a
 component with a separator in it, or a symlink planted inside the tree pointing outside it —
 is refused with ``BlobKeyRefused``: the file it names through the kernel is resolved, and a
-resolution outside the family root names no blob of this store.
+resolution outside the family root names no blob of this store. A link swapped into that place
+between the check and the file's own open, or a hardlink to a file outside the tree, is the
+machine's own owner rearranging their filesystem under a running process, which
+``store_identity``'s threat model puts out of scope here.
 """
 
 from __future__ import annotations

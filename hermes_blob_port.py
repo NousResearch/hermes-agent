@@ -7,8 +7,10 @@ and means nothing else. Tenant, principal and agent are never taken from the key
 blob carries the ownership key (``hermes_scope``) of the scope bound when the operation
 runs, and a port exposes no way to pin anything else. A backend refuses a pin it cannot
 serve with :class:`BlobPinRefused`, a write at a level it does not store (or its actor
-may not write) with :class:`BlobLevelRefused`, and a key that cannot name a blob of this
-agent's namespace at all — one that escapes it (``..``, an absolute path, a component
+may not write) with :class:`BlobLevelRefused`, a conversation-file write that runs under
+no claimed turn, or whose turn no longer holds its session's lease, with
+:class:`BlobFenceRequired` / :class:`BlobFenceSuperseded`, and a key that cannot name a blob
+of this agent's namespace at all — one that escapes it (``..``, an absolute path, a component
 that is a separator or a drive) — with :class:`BlobKeyRefused`, never by silently
 resolving it elsewhere or treating it as missing.
 
@@ -22,6 +24,17 @@ A backend declares which levels it stores (:attr:`BlobStoreProvider.levels`) and
 refuses writes at any other with a clear error; today's local backend stores the agent
 level only, which is the documented local exception (a local install has one agent
 owner and, until profiles become agents, one participant).
+
+A conversation file (a ``"participant"``-level record) is session-owned data, so its writes
+are fenced by the turn that claimed the session: a participant-level ``put`` / ``delete`` must
+run under a bound turn (``hermes_scope.TurnScope``) whose fence the backend checks against
+the session's lease in the same operation, before anything of the write lands — refused with
+:class:`BlobFenceRequired` when no turn is bound, and with :class:`BlobFenceSuperseded` once
+the lease moved (another owner took the agent over, or the session's next claim). Work
+designed to outlive the turn keeps the fence's owner-epoch half, like a session write.
+Agent-level writes (pets, skill bodies, the agent's own files) are never turn-fenced, and a
+backend that stores no participant level refuses the write at the level, before any fence is
+asked for.
 
 This is the interface and its local backend only: no production caller goes through it
 yet, and nothing in config.yaml selects a backend. Today's callers still read and write
@@ -56,6 +69,21 @@ class BlobLevelRefused(PermissionError):
     """A write at a level this backend does not store, or one its bound actor may not write
     (a participant-level write by an actor that is no principal). The refusal names the level
     and says nothing about whether the target exists."""
+
+
+class BlobFenceRequired(PermissionError):
+    """A conversation-file (participant-level) write with no claimed turn bound, so there is no
+    fence to check it against: the write is session-owned data and must run under its turn's
+    claim. Agent-level writes are never turn-fenced, and a backend that stores no participant
+    level refuses the write at the level instead, before any fence is asked for."""
+
+
+class BlobFenceSuperseded(PermissionError):
+    """A conversation-file write whose turn no longer holds its session's lease: the owner epoch
+    moved (another owner took the agent over) or the session's runtime generation moved (its next
+    claim). Checked inside the write's own operation, so nothing of the write lands. Work designed
+    to outlive the turn keeps the fence's owner-epoch half, so a takeover still refuses it while
+    the session's next claim does not."""
 
 
 class BlobKeyRefused(ValueError):
@@ -107,12 +135,16 @@ class BlobStore(ABC):
     def put(self, key: str, data: bytes, *, level: str = "agent") -> None:
         """Write *data* at *key*, at the level *level* (:data:`LEVELS`), which the write names
         explicitly. The blob carries the ownership key of the bound scope; another principal's
-        or agent's blob at the same key is a different blob, never one this overwrites."""
+        or agent's blob at the same key is a different blob, never one this overwrites. A
+        participant-level write is session-owned data: it must run under the bound turn's fence,
+        checked against the session's lease in this operation (:class:`BlobFenceRequired`,
+        :class:`BlobFenceSuperseded`); agent-level writes are never turn-fenced."""
 
     @abstractmethod
     def delete(self, key: str, *, level: str = "agent") -> bool:
         """Delete the blob *key* names at *level*; ``False`` when there was nothing to delete
-        (a foreign blob and a missing one look the same)."""
+        (a foreign blob and a missing one look the same). A participant-level delete is a
+        conversation-file write and is turn-fenced like :meth:`put`."""
 
     @abstractmethod
     def list(self, prefix: str = "") -> list[str]:

@@ -151,7 +151,7 @@ def test_durable_kanban_admission_preserves_headless_policy_in_worker(kanban_own
 def test_retry_of_pre_finite_kanban_admission_returns_original_receipt(kanban_owner, monkeypatch):
     """An attempt admitted before cards were finite keeps its committed payload on retry: the
     upgraded run_task must return the original receipt, not admission_conflict. The retry reads
-    that payload by its exact admission key, never by listing the session's admissions."""
+    that payload by its exact admission key, never by listing the session's settled admissions."""
     import hermes_state_runtime
     from gateway.session_kanban import run_task
     from hermes_state_runtime import list_session_admissions
@@ -165,7 +165,21 @@ def test_retry_of_pre_finite_kanban_admission_returns_original_receipt(kanban_ow
         payload = {k: v for k, v in submission.payload.items() if k != 'finite'}
         return await real_submit(actor, type(submission)(submission.request_id, submission.ref, payload, submission.intent))
 
-    def no_listing(*args, **kwargs):
+    real_find = hermes_state_runtime.find_session_admission
+    exact_key_reads = []
+
+    def probing_find(db, **kwargs):
+        row = real_find(db, **kwargs)
+        exact_key_reads.append((kwargs, row))
+        return row
+
+    real_list = hermes_state_runtime.list_session_admissions
+
+    def no_settled_listing(*args, **kwargs):
+        # The attach's pending FIFO view lists the session's queued rows; the committed payload
+        # must come through the exact-key find instead, never a listing of its settled history.
+        if kwargs.get('pending_only', True):
+            return real_list(*args, **kwargs)
         raise AssertionError('retry must use the exact-key admission lookup')
 
     async def scenario():
@@ -173,9 +187,18 @@ def test_retry_of_pre_finite_kanban_admission_returns_original_receipt(kanban_ow
             monkeypatch.setattr(authority, 'submit', pre_finite_submit)
             first = await run_task(owner.connection, owner.params)
             monkeypatch.setattr(authority, 'submit', real_submit)
-            monkeypatch.setattr(hermes_state_runtime, 'list_session_admissions', no_listing)
+            monkeypatch.setattr(hermes_state_runtime, 'find_session_admission', probing_find)
+            monkeypatch.setattr(hermes_state_runtime, 'list_session_admissions', no_settled_listing)
             retry = await run_task(owner.connection, owner.params)
             assert retry == first
+            import json
+            request_id = 'kanban:' + json.dumps([owner.params.get('board'), owner.params.get('task_id'),
+                                                 owner.params.get('run_id')], separators=(',', ':'))
+            key = dict(principal_id=owner.connection.actor.subject,
+                       session_id=first['session_id'], request_id=request_id)
+            committed = [row for kwargs, row in exact_key_reads if kwargs == key and row is not None]
+            assert committed and 'finite' not in committed[0]['payload'], \
+                'retry must read the committed payload by its exact admission key'
             rows = list_session_admissions(authority.db, session_id=first['session_id'], pending_only=False)
             assert len(rows) == 1 and 'finite' not in rows[0]['payload']
         finally:

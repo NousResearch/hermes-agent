@@ -13,6 +13,7 @@ from gateway.session_ingress import admit_message, dispatch_shared_busy
 @pytest.mark.asyncio
 async def test_busy_receive_returns_after_acceptance_but_delivers_once_after_completion(monkeypatch):
     import gateway.session_ingress as ingress
+    import hermes_state_runtime
     accepted = asyncio.Event()
     release = asyncio.Event()
 
@@ -21,7 +22,15 @@ async def test_busy_receive_returns_after_acceptance_but_delivers_once_after_com
         await release.wait()
         return SimpleNamespace(status='queued', admission_id='queued')
 
-    authority = SimpleNamespace(admit_native=admit, native_waiters=set(), waiters={}, db=None)
+    # The committed-row re-read goes through the authority's admission port, like the real
+    # authority's: a local port resolves its ledger read at call time from hermes_state_runtime,
+    # so the monkeypatched get_session_admission below still drives it.
+    def admission():
+        return SimpleNamespace(get=lambda admission_id: hermes_state_runtime.get_session_admission(
+            None, admission_id=admission_id))
+
+    authority = SimpleNamespace(admit_native=admit, admission=admission,
+                                native_waiters=set(), waiters={}, db=None)
     adapter = SimpleNamespace(_background_tasks=set(), _message_handler=lambda event: admit_message(authority, event),
                               _release_turn_marker=AsyncMock())
     delivery = AsyncMock()

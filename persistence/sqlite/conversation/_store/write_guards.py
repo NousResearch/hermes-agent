@@ -4,6 +4,7 @@
 from __future__ import annotations
 from typing import Iterable
 from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.messages import _check_transcript_write_guards
 
 
 def _guarded_ids(holder: StoreHolder, conn, ids: Iterable[str]) -> set:
@@ -24,7 +25,3 @@ def _write_guards_reject(holder: StoreHolder, conn, sid: str, **kwargs) -> bool:
     except (SessionCompressionInProgressError, SessionTurnLeaseLostError):
         return True
     return False
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import _check_transcript_write_guards

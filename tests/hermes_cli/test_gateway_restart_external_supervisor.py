@@ -130,17 +130,51 @@ def test_manual_nonserving_or_unknown_restart_refuses_before_reaping_or_stopping
 
 
 @pytest.mark.parametrize("owner_present", [False, True])
-def test_restart_all_refuses_manual_control_gateway_before_dispatch_or_stop(restart_calls, monkeypatch, owner_present):
+def test_restart_all_refuses_manual_control_gateway_before_dispatch_or_stop(
+    restart_calls, monkeypatch, tmp_path, owner_present
+):
     monkeypatch.setattr(gw, "_capture_gateway_argv",
                         lambda pid: ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run", "--control-only"])
     monkeypatch.setattr(gw, "_host_multiplexer_for_all_verb",
-                        lambda: SimpleNamespace(pid=4321) if owner_present else None)
+                        lambda: SimpleNamespace(pid=4321, home=tmp_path) if owner_present else None)
     monkeypatch.setattr(gw, "find_gateway_pids", lambda **kwargs: [4321])
     monkeypatch.setattr(gw, "_dispatch_all_via_service_manager_if_s6",
                         lambda *args: pytest.fail("must refuse before supervisor dispatch"))
     monkeypatch.setattr(gw, "_restart_all", lambda *args: pytest.fail("must refuse before stop/start"))
     with pytest.raises(SystemExit) as exc:
         gw._cmd_restart(SimpleNamespace(system=False, all=True, force=False))
+    assert exc.value.code == 1
+    assert not restart_calls["stopped"] and not restart_calls["started"]
+
+
+@pytest.mark.parametrize("restart_all", [False, True])
+@pytest.mark.parametrize("argv", [
+    ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run", "--control-only"],
+    None,
+])
+def test_installed_serving_service_never_takes_over_recovery_or_unknown_process(
+    restart_calls, monkeypatch, tmp_path, restart_all, argv
+):
+    from hermes_cli.gateway_service_mode import systemd_definition_mode
+
+    unit = tmp_path / "hermes-gateway.service"
+    unit.write_text("[Service]\nExecStart=/usr/bin/hermes gateway run --replace\n", encoding="utf-8")
+    assert systemd_definition_mode(unit) == "serving"
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit)
+    monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: "systemd")
+    monkeypatch.setattr(gw, "_capture_gateway_argv", lambda pid: argv)
+    monkeypatch.setattr(gw, "_host_multiplexer_for_all_verb",
+                        lambda: SimpleNamespace(pid=4321, home=tmp_path) if restart_all else None)
+    monkeypatch.setattr(gw, "_service_call", lambda *args: pytest.fail("must not dispatch the serving service"))
+    monkeypatch.setattr(gw, "_dispatch_all_via_service_manager_if_s6",
+                        lambda *args: pytest.fail("must refuse before supervisor dispatch"))
+    monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6",
+                        lambda *args: pytest.fail("must refuse before supervisor dispatch"))
+    monkeypatch.setattr(gw, "_reap_unsupervised_gateway_orphans",
+                        lambda: pytest.fail("must refuse before orphan reaping"))
+    monkeypatch.setattr(gw, "_restart_all", lambda *args: pytest.fail("must refuse before stop/start"))
+    with pytest.raises(SystemExit) as exc:
+        gw._cmd_restart(SimpleNamespace(system=False, all=restart_all, force=False))
     assert exc.value.code == 1
     assert not restart_calls["stopped"] and not restart_calls["started"]
 

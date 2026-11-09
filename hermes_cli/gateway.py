@@ -5427,28 +5427,24 @@ def _cmd_restart(args):
     from hermes_cli.gateway_lifecycle_guards import refuse_while_sessions_live
     refuse_while_sessions_live("restart", args)
 
-    # Both manual restart paths replace the owner with a serving process. Check every
-    # target before s6 dispatch, orphan reaping, service stops, or signals.
+    # A configured serving service may be stopped while a manual recovery process owns
+    # the profile. Check the live targets before any supervisor dispatch or signal.
     kind = _installed_service_kind_for(is_windows)
     service_configured = kind is not None and (kind != "windows" or _gw_windows().is_installed())
-    if not service_configured:
-        from gateway.status import get_running_pid
-        from hermes_cli.gateway_service_mode import _command_mode
-        from hermes_cli.gateway_supervised_restart import gateway_declares_external_supervisor
-        if restart_all:
-            owner = _host_multiplexer_for_all_verb()
-            pids = {owner.pid} if owner is not None else set(find_gateway_pids(all_profiles=True))
-            if owner is None and (pid := get_running_pid()):
-                pids.add(pid)
-        else:
-            pid = get_running_pid()
-            pids = {pid} if pid else set()
-        for pid in pids:
-            if not restart_all and gateway_declares_external_supervisor(pid):
-                continue
-            if _command_mode(_capture_gateway_argv(pid) or [], live=True) != "serving":
-                print_error("Cannot restart a control-only or unrecognized manual gateway as serving.")
-                sys.exit(1)
+    from gateway.status import get_running_pid
+    from hermes_cli.gateway_service_mode import _command_mode
+    if restart_all:
+        owner = _host_multiplexer_for_all_verb()
+        pids = {owner.pid} if owner is not None else set(find_gateway_pids(all_profiles=True))
+        if owner is None and (pid := get_running_pid()):
+            pids.add(pid)
+    else:
+        pid = get_running_pid()
+        pids = {pid} if pid else set()
+    for pid in pids:
+        if _command_mode(_capture_gateway_argv(pid) or [], live=True) != "serving":
+            print_error("Cannot restart a control-only or unrecognized gateway as serving.")
+            sys.exit(1)
     if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
         return
     if not restart_all and _dispatch_via_service_manager_if_s6("restart"):

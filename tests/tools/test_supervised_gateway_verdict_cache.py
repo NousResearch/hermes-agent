@@ -76,3 +76,24 @@ def test_a_raising_probe_is_never_cached(monkeypatch):
     assert registry._is_supervised_gateway_process() is False
     assert registry._is_supervised_gateway_process() is False
     assert len(calls) == 2, "a failed probe must be retried, not frozen into 'not the gateway'"
+
+
+def test_transient_pid_mismatch_reprobes_then_caches_the_confirmed_true(monkeypatch):
+    """A gateway PID file that is missing or still names the previous pid at startup must not
+    freeze the process into "not the gateway" — that would disable the self-kill and ownership
+    guards for the process's whole life. Once the file names us, the True verdict is reused."""
+    launches: list[str] = []
+    this_pid = registry.os.getpid()
+    pid_reads = iter([this_pid + 1, this_pid, this_pid + 1])
+
+    def _launch():
+        launches.append("launch")
+        return True
+
+    monkeypatch.setattr("gateway.restart.is_supervised_gateway_launch", _launch)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda **_k: next(pid_reads))
+
+    assert registry._is_supervised_gateway_process() is False
+    assert registry._is_supervised_gateway_process() is True
+    assert registry._is_supervised_gateway_process() is True
+    assert launches == ["launch", "launch"], "only a confirmed identity may be memoized"

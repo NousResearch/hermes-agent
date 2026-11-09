@@ -326,12 +326,17 @@ def _is_supervised_gateway_process() -> bool:
     probe: a Windows Scheduled-Task gateway sets only that marker, and the self-kill guards
     gated here must protect it too (#113667).
 
-    The verdict is memoized on ``(pid, _HERMES_GATEWAY, HERMES_SUPERVISED_CHILD)``: it is
-    invariant for one process with one environment, and the probe behind it does real
-    filesystem and kernel-process work that can wedge. Three call sites (terminal guard,
-    execute_code guard, process ownership) run it per call, so recomputing bought nothing
-    and made one wedged ``open()`` inside the probe visible on every tool call.
-    A probe that *raised* is never cached, so a transient failure is retried rather than
+    Only a confirmed True verdict is memoized, on
+    ``(pid, _HERMES_GATEWAY, HERMES_SUPERVISED_CHILD)``: it is invariant for one process with
+    one environment, and the probe behind it does real filesystem and kernel-process work that
+    can wedge. Three call sites (terminal guard, execute_code guard, process ownership) run it
+    per call, so recomputing a positive verdict bought nothing and made one wedged ``open()``
+    inside the probe visible on every tool call.
+    A negative answer is deliberately NOT cached: a gateway PID file appears after the process
+    starts and can briefly name a previous pid, so caching that False would disable the
+    self-kill/ownership guards for the rest of the process's life. The negative path is still
+    cheap — the marker test above returns before any probe for every non-gateway caller.
+    A probe that *raised* is never cached either, so a transient failure is retried rather than
     frozen into a wrong "not the gateway" answer.
     """
     global _SUPERVISED_GATEWAY_VERDICT
@@ -356,7 +361,13 @@ def _is_supervised_gateway_process() -> bool:
     except Exception as exc:
         logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False
-    _SUPERVISED_GATEWAY_VERDICT = (key, verdict)
+    # Only a *confirmed* identity may be memoized. A probe that answered False can be a
+    # transient read (the gateway PID file is written after the process starts, or a stale
+    # file names the previous pid); freezing that answer would disable the self-kill and
+    # ownership guards for the rest of the process's life. The False path stays cheap —
+    # the marker test above short-circuits every non-gateway caller before any probe runs.
+    if verdict:
+        _SUPERVISED_GATEWAY_VERDICT = (key, True)
     return verdict
 
 

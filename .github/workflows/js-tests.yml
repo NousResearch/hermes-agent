@@ -84,7 +84,7 @@ jobs:
       - uses: ./.github/actions/retry
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
-          command: pnpm install --frozen-lockfile
+          command: just js-install
 
       # The cached tree is keyed on the lockfile alone, so an exact hit proves
       # nothing about the manifests. This checks the lockfile still matches
@@ -101,7 +101,7 @@ jobs:
         run: git diff --exit-code -- pnpm-workspace.yaml
 
       - name: Prepare locked Electron runtime before parallel checks
-        run: node scripts/build/electron-runtime.mjs --source .
+        run: just electron-runtime
 
       # The WhatsApp bridge is a standalone npm package, outside the root
       # workspaces, so run-workspace-checks never sees it. Two of its suites

@@ -292,8 +292,8 @@ resvg-py are core dependencies. Do not commit generated PNG/ICO/ICNS outputs.
 Use the canonical runner on every host:
 
 ```bash
-scripts/run_tests.sh
-scripts/run_tests.sh tests/agent/ -v
+just test-all
+just test tests/agent/ -v
 ```
 
 `just test tests/agent/ -v` is the same run; `just test` refuses to start

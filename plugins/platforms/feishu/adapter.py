@@ -1775,11 +1775,14 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
                 "session": "✅ " + t("platform.feishu.approval.action_session"),
                 "always": "✅ " + t("platform.feishu.approval.action_always"),
                 "deny": "❌ " + t("gateway.exec_approval.action_deny")}
+    _enforces_delegation_admin_identity = True
     _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Approval-button card; ``hermes_action`` in each button value lets the click callback
-        route to ``resolve_gateway_approval()`` and unblock the waiting agent thread."""
+        route to ``resolve_gateway_approval()`` and unblock the waiting agent thread.
+        ``prompt.admin_user_id`` (delegation) is stored with the card state so the click can be
+        validated against the configured admin."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
@@ -1792,6 +1795,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
+                admin_user_id=str(prompt.admin_user_id or ""),
                 extra_state={"body": prompt.text.replace(self._ea_deadline_line(), ""),  # deadline is moot once resolved
                              "request_id": prompt.request_id or ""},
             )
@@ -1801,7 +1805,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
 
     async def _send_interactive_card(
         self, chat_id: str, card: dict[str, Any], metadata: Optional[dict[str, Any]], failure_message: str, *,
-        state_map: dict[int, dict[str, str]], state_id: int, session_key: str, extra_state: Optional[dict[str, str]] = None,
+        state_map: dict[int, dict[str, str]], state_id: int, session_key: str,
+        admin_user_id: str = "", extra_state: Optional[dict[str, str]] = None,
     ) -> SendResult:
         """Send a button card and, on success, remember where it went (plus *extra_state*) so a click can be validated."""
         response = await self._feishu_send_with_retry(
@@ -1815,6 +1820,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
                 "message_id": result.message_id or "",
                 "chat_id": chat_id,
                 **(extra_state or {}),
+                "admin_user_id": admin_user_id,
             }
         return result
 

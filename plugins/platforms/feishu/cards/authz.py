@@ -78,6 +78,25 @@ def validate_card_action(
         logger.warning("[Feishu] %s callback chat mismatch for %s (expected=%s, got=%s)",
                        label.capitalize(), ident, expected_chat_id, callback_chat_id)
         return None
+
+    # Delegation admin identity gate (cross-platform): when the card state carries
+    # an admin_user_id (approval cards routed to a delegated admin), the click must
+    # come from that exact user_id — not just any member of the admin chat. Compare
+    # operator.user_id (tenant internal ID, as configured), NOT open_id (cross-tenant
+    # application ID). Update-prompt states have no admin_user_id and are unaffected.
+    expected_admin_uid = str(state.get("admin_user_id", "") or "")
+    clicker_uid = str(getattr(operator, "user_id", "") or "")
+    if not expected_admin_uid:
+        logger.warning(
+            "[Feishu] admin_user_id empty in approval state — "
+            "admin identity gate is not enforced (%s=%s)", label, ident,
+        )
+    if expected_admin_uid and clicker_uid and clicker_uid != expected_admin_uid:
+        logger.warning(
+            "[Feishu] Unauthorized %s click: expected admin %s, got %s (%s=%s)",
+            label, expected_admin_uid, clicker_uid, label, ident,
+        )
+        return None
     return open_id, callback_chat_id, adapter._get_cached_sender_name(open_id) or open_id, user_id, union_id
 
 

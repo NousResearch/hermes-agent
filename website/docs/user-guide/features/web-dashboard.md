@@ -431,6 +431,25 @@ Creating a shell hook (note the consent checkbox and the run-arbitrary-commands 
 The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine, with no login required. Binding to any non-loopback address (including `0.0.0.0`) engages the [auth gate](#authentication-gated-mode): the server refuses to start until an auth provider (username/password or OAuth) is configured.
 :::
 
+## Reporting dashboard background services
+
+Hermes never installs a service for `hermes dashboard` or `hermes serve`, so any that run in the
+background were set up by hand: a systemd unit copied from this page, a launchd plist, the Nix
+`hermes-backend` unit, the Docker image's `dashboard` slot or Compose sidecar, or a Desktop SSH
+backend. To list them, with what a future migration would do to each:
+
+```bash
+hermes gateway migrate --backends --dry-run          # human-readable report
+hermes gateway migrate --backends --dry-run --json   # the same report as JSON
+```
+
+For each backend the report shows its supervisor (systemd unit name, scope and unit file; launchd
+label and plist; Nix-managed; s6 slot; container; Desktop; detached process; or unknown), the
+`HERMES_HOME` it serves, and why nothing is applied yet. The report is read-only: it never stops,
+restarts or edits anything, and it exits 0. Running backends are found by what they run, whatever
+the unit is called; units that are enabled but not running are listed only when they are named
+`hermes-serve*`, `hermes-dashboard*` or `hermes-backend*`.
+
 ## `/reload` Slash Command
 
 The dashboard PR also adds a `/reload` slash command to the interactive CLI. After changing API keys via the web dashboard (or by editing `.env` directly), use `/reload` in an active CLI session to pick up the changes without restarting:

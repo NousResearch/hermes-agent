@@ -1,8 +1,8 @@
 name: grounded-recall
 title: Grounded Recall
 repo: https://github.com/joaquinbyagentx/hermes-grounded-recall
-sha: "b27531ba9c3c5207550bdfc041305498579c2d0b"
-version: "1.0.1"
+sha: "a826e73ee587c2b88b33657d71cb5c50a7abbc89"
+version: "1.0.2"
 description: >-
   Before every model turn, searches your existing markdown notes (plain folders or an
   Obsidian vault), this profile's recent sessions and, opt-in, secret-manager item titles

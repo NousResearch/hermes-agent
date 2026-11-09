@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+import shutil
 import site
 import sys
 import textwrap
@@ -109,6 +110,32 @@ NON_ISOLATING_STORAGE_PLUGIN = STORAGE_PLUGIN.replace(
     "        raise RuntimeError(\"the storage role bypasses row security\")\n",
 )
 
+VERIFIER_PLUGIN = '''
+from hermes_identity_verifier import IdentityVerifier, VerifiedTurn
+from hermes_scope import Principal
+
+
+class Provider(IdentityVerifier):
+    @property
+    def name(self):
+        return "stub-verifier"
+
+    async def verify(self, frame):
+        return VerifiedTurn(tenant="acme", agent="agent-a", actor=Principal("u1"),
+                            owner=Principal("u1"), can_administer=True)
+
+
+def register(ctx):
+    ctx.register_identity_verifier(Provider())
+'''
+
+UNAVAILABLE_VERIFIER_PLUGIN = VERIFIER_PLUGIN.replace(
+    "    async def verify(self, frame):",
+    "    def is_available(self):\n"
+    "        return False\n\n"
+    "    async def verify(self, frame):",
+).replace('"stub-verifier"', '"unavailable-verifier"')
+
 HOSTED = {"enabled": True, "identity_verifier": "stub-verifier", "session_storage": "stub-storage"}
 
 def _write_config(settings: dict) -> None:
@@ -177,12 +204,14 @@ def empty_bundled(monkeypatch, tmp_path):
     """No bundled plugins: the checks judge the home's own plugins, not the repo's tree. The
     session-storage kind's bundled directory moves beside it — a hosted boot resolves named
     providers only from the bundled tree, so the storage stubs install there."""
-    from plugins import session_storage
+    from plugins import identity_verifier, session_storage
 
     bundled = tmp_path / "bundled"
     (bundled / "session_storage").mkdir(parents=True)
+    (bundled / "identity_verifier").mkdir(parents=True)
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
     monkeypatch.setattr(session_storage, "_PLUGINS_DIR", bundled / "session_storage")
+    monkeypatch.setattr(identity_verifier, "_PLUGINS_DIR", bundled / "identity_verifier")
 
 
 def _no_gateway_config():
@@ -260,13 +289,24 @@ def _bundled_provider(name: str, body: str) -> Path:
     return provider
 
 
+def _bundled_verifier(name: str, body: str) -> Path:
+    """A named identity verifier installed in the kind's BUNDLED directory (same rule)."""
+    from plugins import identity_verifier
+
+    verifier = identity_verifier._PLUGINS_DIR / name
+    verifier.mkdir(parents=True, exist_ok=True)
+    (verifier / "__init__.py").write_text(textwrap.dedent(body), encoding="utf-8")
+    return verifier
+
+
 def _clean_boot(**kwargs):
-    """A hosted deployment that passes every check: the stub sandbox and storage plugins are
-    baked into the image's bundled tree (where a hosted deployment's own plugins live) and are
-    discovered for real, and the boot call sees a clean environment."""
+    """A hosted deployment that passes every check: the stub sandbox, verifier and storage
+    plugins are baked into the image's bundled tree (where a hosted deployment's own plugins
+    live) and are discovered for real, and the boot call sees a clean environment."""
     _write_config(_clean_hosted_config())
     _bundled_plugin("stub-sandbox", SANDBOX_PLUGIN)
     _bundled_provider("stub-storage", STORAGE_PLUGIN)
+    _bundled_verifier("stub-verifier", VERIFIER_PLUGIN)
     boot(env={"PATH": "/usr/bin", "HOME": "/home/op", "LC_ALL": "C"}, **kwargs)
 
 
@@ -590,6 +630,46 @@ def test_no_identity_verifier_refuses_hosted_boot(clean_hosted):
     _write_config(config)
     with pytest.raises(HostedBootRefused, match="identity_verifier"):
         boot(config=config, env={"PATH": "/usr/bin"})
+
+
+def test_a_missing_identity_verifier_plugin_refuses_hosted_boot(clean_hosted):
+    """The configured name must resolve to a provider: a name with no plugin behind it refuses
+    boot, because a hosted frame is admitted by the named verifier or by nobody."""
+    config = _clean_hosted_config()
+    config["hosted"] = dict(HOSTED, identity_verifier="not-installed")
+    _write_config(config)
+    with pytest.raises(HostedBootRefused, match="not-installed"):
+        boot(config=config, env={"PATH": "/usr/bin"})
+
+
+def test_an_unavailable_identity_verifier_refuses_hosted_boot(clean_hosted):
+    """A verifier that cannot check frames here (its ``is_available`` says no) refuses boot: the
+    process must not serve frames it cannot verify."""
+    _bundled_verifier("unavailable-verifier", UNAVAILABLE_VERIFIER_PLUGIN)
+    config = _clean_hosted_config()
+    config["hosted"] = dict(HOSTED, identity_verifier="unavailable-verifier")
+    _write_config(config)
+    with pytest.raises(HostedBootRefused, match="not available here"):
+        boot(config=config, env={"PATH": "/usr/bin"})
+
+
+def test_the_bundled_reference_verifier_boots_with_a_relay_id(clean_hosted, monkeypatch):
+    """``turn_claim_v1`` resolves through the same discovery at boot; its availability needs the
+    deployment's relay id (the audience every claim must name). The reference verifier ships
+    with the deployment's bundled tree (copied into the relocated bundled dir this file's
+    fixtures install the stubs in)."""
+    from plugins import identity_verifier
+
+    shutil.copytree(Path(identity_verifier.__file__).parent / "turn_claim_v1",
+                   identity_verifier._PLUGINS_DIR / "turn_claim_v1", dirs_exist_ok=True)
+    monkeypatch.setenv("GATEWAY_RELAY_ID", "inst_agent_a")
+    config = _clean_hosted_config()
+    config["hosted"] = dict(HOSTED, identity_verifier="turn_claim_v1")
+    _write_config(config)
+    boot(config=config, env={"PATH": "/usr/bin", "GATEWAY_RELAY_ID": "inst_agent_a"})
+    monkeypatch.setenv("GATEWAY_RELAY_ID", "")
+    with pytest.raises(HostedBootRefused, match="not available here"):
+        boot(config=config, env={"PATH": "/usr/bin", "GATEWAY_RELAY_ID": ""})
 
 
 def test_no_session_storage_name_refuses_hosted_boot(clean_hosted):

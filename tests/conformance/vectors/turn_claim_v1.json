@@ -1,0 +1,901 @@
+{
+  "version": 1,
+  "note": "TEST-ONLY keys; never use outside tests",
+  "evb_input_example": {
+    "event": {
+      "text": "hello there",
+      "message_type": "text",
+      "source": {
+        "platform": "telegram",
+        "chat_id": "c-42",
+        "user_id": "u-7",
+        "chat_type": "dm"
+      },
+      "message_id": "m-1001",
+      "bot_identity": "bot-1"
+    },
+    "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+  },
+  "jwks": {
+    "keys": [
+      {
+        "crv": "Ed25519",
+        "kty": "OKP",
+        "x": "VJ-ZO4JvqeMqEkiNgDb1ngFyq_mGnKsfvG344Zqiy3Y",
+        "kid": "SF-Gbyo-o2uA761edGCG7w41yvVMYBF0cgLQ9ku49oM",
+        "use": "sig",
+        "alg": "EdDSA"
+      }
+    ]
+  },
+  "test_private_key_pkcs8_pem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIK4Fy/FJZzkL3CgruAQa6WT2Mv/vYBqV7YaUmZpfDkIH\n-----END PRIVATE KEY-----\n",
+  "replay": {
+    "description": "verify cases[0].jws twice at its 'now': first valid, second 'replayed'"
+  },
+  "cases": [
+    {
+      "name": "valid",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.I-1EW2yjs1GiVEPKeP9xuN0-fHiW27fREBnCUi1WtzvE6bTcYTukDdvGUIoWuLyB-umPVsyoBoVcICh113WRAg",
+      "expect": "valid"
+    },
+    {
+      "name": "valid_principal_owner_admin",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "principal",
+          "id": "user_alice"
+        },
+        "adm": true,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6InByaW5jaXBhbCIsImlkIjoidXNlcl9hbGljZSJ9LCJhZG0iOnRydWUsImV2YiI6IkN2WW4tSGtZam5SSERWa09scThLOFIyaGpiTllpMFQ1Q3Jqei1kbm5rWjQifQ.B6nw8dpP9wYnXteizwiEmMRl808TvjtJqCmsnWhFCgVoYtm6B9qtK_C6eoPT7nWrtbCCyzIPMhoYqckhOBX5DA",
+      "expect": "valid"
+    },
+    {
+      "name": "valid_org_owner",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "org",
+          "id": "org_acme"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Im9yZyIsImlkIjoib3JnX2FjbWUifSwiYWRtIjpmYWxzZSwiZXZiIjoiQ3ZZbi1Ia1lqblJIRFZrT2xxOEs4UjJoamJOWWkwVDVDcmp6LWRubmtaNCJ9.1eqmjuk-yQknyptGW23wVprp6fPSGZhfkrXYafWiPL5CxfzzXsj2n1V1v62AliDzbZr1yVcYdwrC1JVw43h1CA",
+      "expect": "valid"
+    },
+    {
+      "name": "event_mismatch_source_platform",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "discord",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.I-1EW2yjs1GiVEPKeP9xuN0-fHiW27fREBnCUi1WtzvE6bTcYTukDdvGUIoWuLyB-umPVsyoBoVcICh113WRAg",
+      "expect": "event_mismatch"
+    },
+    {
+      "name": "event_mismatch_bot_identity",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-2"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.I-1EW2yjs1GiVEPKeP9xuN0-fHiW27fREBnCUi1WtzvE6bTcYTukDdvGUIoWuLyB-umPVsyoBoVcICh113WRAg",
+      "expect": "event_mismatch"
+    },
+    {
+      "name": "event_mismatch_source_chat_id",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-43",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.I-1EW2yjs1GiVEPKeP9xuN0-fHiW27fREBnCUi1WtzvE6bTcYTukDdvGUIoWuLyB-umPVsyoBoVcICh113WRAg",
+      "expect": "event_mismatch"
+    },
+    {
+      "name": "event_mismatch_source_user_id",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-8",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.I-1EW2yjs1GiVEPKeP9xuN0-fHiW27fREBnCUi1WtzvE6bTcYTukDdvGUIoWuLyB-umPVsyoBoVcICh113WRAg",
+      "expect": "event_mismatch"
+    },
+    {
+      "name": "event_mismatch_message_id",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1002",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.I-1EW2yjs1GiVEPKeP9xuN0-fHiW27fREBnCUi1WtzvE6bTcYTukDdvGUIoWuLyB-umPVsyoBoVcICh113WRAg",
+      "expect": "event_mismatch"
+    },
+    {
+      "name": "event_mismatch_text",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there!",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.I-1EW2yjs1GiVEPKeP9xuN0-fHiW27fREBnCUi1WtzvE6bTcYTukDdvGUIoWuLyB-umPVsyoBoVcICh113WRAg",
+      "expect": "event_mismatch"
+    },
+    {
+      "name": "expired",
+      "now": 1800000151,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.I-1EW2yjs1GiVEPKeP9xuN0-fHiW27fREBnCUi1WtzvE6bTcYTukDdvGUIoWuLyB-umPVsyoBoVcICh113WRAg",
+      "expect": "expired"
+    },
+    {
+      "name": "within_skew_after_exp",
+      "now": 1800000149,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.I-1EW2yjs1GiVEPKeP9xuN0-fHiW27fREBnCUi1WtzvE6bTcYTukDdvGUIoWuLyB-umPVsyoBoVcICh113WRAg",
+      "expect": "valid"
+    },
+    {
+      "name": "not_yet_valid",
+      "now": 1799999969,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.I-1EW2yjs1GiVEPKeP9xuN0-fHiW27fREBnCUi1WtzvE6bTcYTukDdvGUIoWuLyB-umPVsyoBoVcICh113WRAg",
+      "expect": "not_yet_valid"
+    },
+    {
+      "name": "wrong_audience",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_b",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_b",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYiIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYiIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.gw0eT84JmMRgPJdxZYSNjnnfuRuOQaA2O2xmQGpsL6RbDH0KLhdZHChTqGwEp1Lht5fLmzAQu2hX85-Y_tJxBA",
+      "expect": "wrong_audience"
+    },
+    {
+      "name": "wrong_alg",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFUzI1NiIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.XY3kv_uRBBU0pU90oh_Gx8-joIuLrIg_jlYhRAOs-9NPTLl_NQQk0ti7Kw5ByN1j6eHkXULfQshYFvw8RsoeAQ",
+      "expect": "bad_header"
+    },
+    {
+      "name": "wrong_typ",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.lN_KmAz3f7xgeI8AArAUes1rQdBbirxnV-r1UqxyYf8vQcFnclwrdtofnw1aYlWhqI5lJ6zbNfLYP2sCqKo7Dw",
+      "expect": "bad_header"
+    },
+    {
+      "name": "unknown_kid",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6Im5vdC1hLWtub3duLWtpZCJ9.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.8UHLdGXAxUCXz0L9AoE8x51XTwQRShzr4FgDDXVzPR4EWBpq8c7bRj1kmDdZD5wMV-057O9xdUELASJ57crCAw",
+      "expect": "unknown_kid"
+    },
+    {
+      "name": "signed_by_other_key_under_known_kid",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.urF7fB46Oqh8HFd2Wz89exzQ77l12wnOy28HGxPWMVbwRgfghGafQg25-Aq7ukx_8OlYl-2k0WbgcT7hpKnABg",
+      "expect": "bad_signature"
+    },
+    {
+      "name": "extra_payload_key",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4",
+        "tenant": "tenant_evil"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0IiwidGVuYW50IjoidGVuYW50X2V2aWwifQ.nSKPPLiSAJDqrgidBjIKxVc5WuXeiI5c7KbD8Qx_WLUmVnH6mH0VnDFJrHQfq4JukdjQ1Lu1Flv6QWTWZfUoCA",
+      "expect": "bad_payload"
+    },
+    {
+      "name": "missing_payload_key",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.JdBADQj1hxrldU2iGcXaEVU86f9pVLnP7-Z_UNQhXDdcengoXgu_FFdVn6wBvQi936kNIE1yJigorfqPiITZBQ",
+      "expect": "bad_payload"
+    },
+    {
+      "name": "bad_owner_kind",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "team",
+          "id": "x"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6InRlYW0iLCJpZCI6IngifSwiYWRtIjpmYWxzZSwiZXZiIjoiQ3ZZbi1Ia1lqblJIRFZrT2xxOEs4UjJoamJOWWkwVDVDcmp6LWRubmtaNCJ9.xhRS0lhBa3jn4qswBMy6VhlOhfyMN9DdbUahqGSj2P1Oz0DTQ7h6rdAk9ad5C1NUOkDVwMJHwTpi_Aihv1eVBw",
+      "expect": "bad_payload"
+    },
+    {
+      "name": "adm_not_bool",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": "true",
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOiJ0cnVlIiwiZXZiIjoiQ3ZZbi1Ia1lqblJIRFZrT2xxOEs4UjJoamJOWWkwVDVDcmp6LWRubmtaNCJ9.zoGngciou9CyN8nKBuJmz5NLZceN4pgH4BDF7arpSBtzv5lgSzQInI7KGOXNgRSORR1wgD9abRK5B2nVTzZDAQ",
+      "expect": "bad_payload"
+    },
+    {
+      "name": "agt_not_aud",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_b",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYiIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOmZhbHNlLCJldmIiOiJDdlluLUhrWWpuUkhEVmtPbHE4SzhSMmhqYk5ZaTBUNUNyanotZG5ua1o0In0.ZqMm9VxmgDnV4Kt7lEwiwFU3NuRHvycX7y5oUo0PLZFFIsICA3YAGUXEIUHjWSw0L8Xmn5r6lLk19P_MH_34DA",
+      "expect": "bad_payload"
+    },
+    {
+      "name": "tampered_payload",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6Imhlcm1lcy10dXJuLWNsYWltK2p3dCIsImtpZCI6IlNGLUdieW8tbzJ1QTc2MWVkR0NHN3c0MXl2Vk1ZQkYwY2dMUTlrdTQ5b00ifQ.eyJ2IjoxLCJpc3MiOiJodHRwczovL2Nvbm5lY3Rvci5leGFtcGxlIiwiYXVkIjoiaGVybWVzLXJlbGF5Omluc3RfYWdlbnRfYSIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiI2ZjFjMmI4ZS0xZDJhLTRjM2ItOWU4Zi0wYTFiMmMzZDRlNWYiLCJ0ZW4iOiJ0ZW5hbnRfYWNtZSIsImFndCI6Imluc3RfYWdlbnRfYSIsImFjdCI6InVzZXJfYWxpY2UiLCJvd24iOnsiayI6Imdyb3VwIiwiaWQiOiJncnBfc3VwcG9ydCJ9LCJhZG0iOnRydWUsImV2YiI6IkN2WW4tSGtZam5SSERWa09scThLOFIyaGpiTllpMFQ1Q3Jqei1kbm5rWjQifQ.I-1EW2yjs1GiVEPKeP9xuN0-fHiW27fREBnCUi1WtzvE6bTcYTukDdvGUIoWuLyB-umPVsyoBoVcICh113WRAg",
+      "expect": "bad_signature"
+    },
+    {
+      "name": "malformed_compact",
+      "now": 1800000010,
+      "audience": "hermes-relay:inst_agent_a",
+      "event": {
+        "text": "hello there",
+        "message_type": "text",
+        "source": {
+          "platform": "telegram",
+          "chat_id": "c-42",
+          "user_id": "u-7",
+          "chat_type": "dm"
+        },
+        "message_id": "m-1001",
+        "bot_identity": "bot-1"
+      },
+      "payload": {
+        "v": 1,
+        "iss": "https://connector.example",
+        "aud": "hermes-relay:inst_agent_a",
+        "iat": 1800000000,
+        "exp": 1800000120,
+        "jti": "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f",
+        "ten": "tenant_acme",
+        "agt": "inst_agent_a",
+        "act": "user_alice",
+        "own": {
+          "k": "group",
+          "id": "grp_support"
+        },
+        "adm": false,
+        "evb": "CvYn-HkYjnRHDVkOlq8K8R2hjbNYi0T5Crjz-dnnkZ4"
+      },
+      "jws": "not.a-jws",
+      "expect": "bad_signature"
+    }
+  ]
+}

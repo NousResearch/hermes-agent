@@ -21,7 +21,8 @@ import hermes_cli.plugins as plugins_mod
 import registry_freeze
 from hermes_constants import get_hermes_home
 from tests.hermes_cli.test_hosted_mode import (
-    SANDBOX_PLUGIN, STORAGE_PLUGIN, _clean_hosted_config, _write_config,
+    SANDBOX_PLUGIN, STORAGE_PLUGIN, VERIFIER_PLUGIN, _bundled_verifier, _clean_hosted_config,
+    _write_config,
 )
 
 
@@ -46,15 +47,17 @@ def verdict(monkeypatch):
 
 @pytest.fixture
 def clean_hosted(verdict, monkeypatch, tmp_path, start_command_flag):
-    """The deployment of the passing-boot test, with its own empty bundled tree: both stubs are
-    baked into it (a hosted boot loads in-process only what the image ships; the storage stub
-    installs in the session-storage kind's bundled dir)."""
-    from plugins import session_storage
+    """The deployment of the passing-boot test, with its own empty bundled tree: its stubs are
+    baked into it (a hosted boot loads in-process only what the image ships; the storage and
+    verifier stubs install in their kinds' bundled dirs)."""
+    from plugins import identity_verifier, session_storage
 
     bundled = tmp_path / "bundled"
     (bundled / "session_storage").mkdir(parents=True)
+    (bundled / "identity_verifier").mkdir(parents=True)
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
     monkeypatch.setattr(session_storage, "_PLUGINS_DIR", bundled / "session_storage")
+    monkeypatch.setattr(identity_verifier, "_PLUGINS_DIR", bundled / "identity_verifier")
     _write_config(_clean_hosted_config())
     sandbox = bundled / "stub-sandbox"
     sandbox.mkdir(parents=True)
@@ -63,6 +66,7 @@ def clean_hosted(verdict, monkeypatch, tmp_path, start_command_flag):
     storage = session_storage._PLUGINS_DIR / "stub-storage"
     storage.mkdir(parents=True)
     (storage / "__init__.py").write_text(STORAGE_PLUGIN, encoding="utf-8")
+    _bundled_verifier("stub-verifier", VERIFIER_PLUGIN)
 
 
 def test_a_local_boot_never_freezes_the_registries(verdict):

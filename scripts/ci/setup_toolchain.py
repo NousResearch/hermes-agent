@@ -32,18 +32,10 @@ def parse_package_list(value: str) -> list[str]:
     return sorted({name.strip() for name in value.split(",")})
 
 
-def roots(toolchain: str, lock: Lockfile) -> list[str]:
-    """The toolchain's roots plus the developer tools (just) this lockfile pins."""
-    from pm.testenv import developer_tools
-
-    return _ROOTS[toolchain] + developer_tools(lock.names())
-
-
-def packages(toolchain: str, extra: list[str] | None = None, lock: Lockfile | None = None) -> list[str]:
+def packages(toolchain: str, extra: list[str] | None = None) -> list[str]:
     # walk() resolves the deps-first closure, so an extra tool's dependencies
     # (ffmpeg -> none) come along without listing them.
-    lock = lock or Lockfile(lockfile_path())
-    return sorted(package.name for package in walk(roots(toolchain, lock) + (extra or [])))
+    return sorted(package.name for package in walk(_ROOTS[toolchain] + (extra or [])))
 
 
 def file_commands(destination: str, values: dict) -> None:
@@ -78,7 +70,7 @@ def prepare(args) -> None:
     home = args.home.resolve()
     lock = Lockfile(lockfile_path())
     target = current_target()
-    names = packages(args.toolchain, args.packages, lock)
+    names = packages(args.toolchain, args.packages)
     values = {
         "packages": json.dumps(names), "target": target, "arch": target.split("-")[1],
         "store": str(home / "tools"),
@@ -128,9 +120,7 @@ def archive_inputs(args) -> None:
     from scripts.ci.archive_inputs import Archive, pinned_inputs, stage_inputs
     from scripts.releases import r2
 
-    lock = Lockfile(repo_root() / "pm/lock.json")
-    pins = pinned_inputs(repo_root(), target=current_target(),
-                         packages=set(packages(args.toolchain, args.packages, lock)))
+    pins = pinned_inputs(repo_root(), target=current_target(), packages=set(packages(args.toolchain, args.packages)))
     stage_inputs(pins, archive=Archive(*r2.credentials()), store=Store(args.home.resolve() / "tools"))
 
 
@@ -192,7 +182,7 @@ def install(args) -> None:
     repaired = restore_cygwin_symlinks(store_root())
     if repaired:
         print(f"Restored {repaired} Cygwin symlink(s) in the cached PM store")
-    for name in roots(args.toolchain, Lockfile(lockfile_path())) + args.packages:
+    for name in _ROOTS[args.toolchain] + args.packages:
         ensure(name, explicit=True, progress=_live_progress(name))
     facts = Facts(facts_path())
     target = current_target()

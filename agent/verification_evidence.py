@@ -650,11 +650,32 @@ def _load_changed_paths(raw: Any) -> list[Any]:
         return []
 
 
+_CD_TOKENS = {"cd", "pushd", "chdir"}
+
+
+def _command_changed_directory(command: str) -> bool:
+    """Whether the command walks into another directory and then runs something there.
+
+    ``cd repo && pytest`` does. A trailing ``pytest && cd repo`` does not: the tests ran
+    before the shell moved, so the starting directory still describes that run.
+    """
+    segments = _split_shell_segments(command)
+    for index, segment in enumerate(segments):
+        head = segment.tokens[0].lstrip("({").rstrip(")};")
+        if head not in _CD_TOKENS:
+            continue
+        if any(
+            later.tokens[0].lstrip("({").rstrip(")};") not in _CD_TOKENS
+            for later in segments[index + 1:]
+        ):
+            return True
+    return False
+
+
 def _cwd_candidates(cwd: str | Path | None, alt_cwd: str | Path | None) -> list[str | Path | None]:
     """``cwd`` first, then the command's end cwd when it names a different directory.
 
-    ``cd some/repo && pytest`` starts in one directory and verifies another; the shell's
-    own code belongs to the whole command, so either end may carry the evidence.
+    Deduplicated by resolved path; precedence is settled by ``_candidate_order``.
     """
     candidates: list[str | Path | None] = []
     seen: set[str] = set()
@@ -672,6 +693,24 @@ def _cwd_candidates(cwd: str | Path | None, alt_cwd: str | Path | None) -> list[
     return candidates
 
 
+def _candidate_order(
+    command: str, cwd: str | Path | None, alt_cwd: str | Path | None,
+) -> list[str | Path | None]:
+    """Workspaces to classify against, most authoritative first.
+
+    A command that ``cd``s into another workspace is described by the directory it ended
+    in: the exit status and output belong to that run, so that workspace alone may claim
+    the evidence — a starting directory that merely answers to the same command text must
+    not absorb a run that happened elsewhere (#151861 review). Commands that stay put
+    keep the starting directory first, and so does a ``cd`` whose destination names no
+    workspace (nothing better to credit).
+    """
+    candidates = _cwd_candidates(cwd, alt_cwd)
+    if len(candidates) > 1 and _command_changed_directory(command) and _project_facts(alt_cwd):
+        return [alt_cwd]
+    return candidates
+
+
 def classify_verification_command(
     command: str, *, cwd: str | Path | None = None, session_id: str | None = None, exit_code: int = 0,
     output: str = "", pipeline_status: Optional[list[int]] = None,
@@ -684,14 +723,14 @@ def classify_verification_command(
     shell's code (which belongs to the last filter).
 
     ``alt_cwd`` is a second candidate workspace (the cwd the command ended in) for
-    commands that ``cd`` into the project they verify.
+    commands that ``cd`` into the project they verify; such a command is credited there.
 
     Ad-hoc temp scripts only count when the project has no canonical verify
     commands at all, so they never shadow a real suite.
     """
     if not command or not isinstance(command, str):
         return None
-    for candidate in _cwd_candidates(cwd, alt_cwd):
+    for candidate in _candidate_order(command, cwd, alt_cwd):
         facts = _project_facts(candidate)
         if not facts:
             continue
@@ -742,12 +781,13 @@ def record_terminal_result(
     it did not count.
 
     ``alt_cwd`` (the cwd the command ended in) is tried when the starting cwd names no
-    workspace — ``cd project && run tests`` is normally executed from elsewhere.
+    workspace, and outranks it outright when the command ``cd``s into another workspace —
+    ``cd project && run tests`` is normally executed from elsewhere.
     """
     if not _ledger_enabled() or not command or not isinstance(command, str):
         return None
     facts: Optional[dict[str, Any]] = None
-    for candidate in _cwd_candidates(cwd, alt_cwd):
+    for candidate in _candidate_order(command, cwd, alt_cwd):
         facts = _project_facts(candidate)
         if facts:
             cwd = candidate

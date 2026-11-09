@@ -844,3 +844,73 @@ def test_alt_cwd_records_a_terminal_result_from_the_end_of_the_command(tmp_path,
     assert recorded is not None
     assert recorded["status"] == "passed"
     assert recorded["root"] == str(project.resolve())
+
+
+def test_a_cd_into_another_workspace_outranks_the_starting_one(tmp_path, monkeypatch):
+    """`cd ended && pytest` run from a different workspace: the exit status describes the
+    run inside `ended`, so that workspace claims the evidence and the starting directory
+    stays unverified (#151861 review).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    started = tmp_path / "started"
+    started.mkdir()
+    _python_project(started)
+    ended = tmp_path / "ended"
+    ended.mkdir()
+    _python_project(ended)
+
+    evidence = classify_verification_command(
+        f"cd {ended.as_posix()} && pytest -q",
+        cwd=started, session_id="s1", exit_code=0, alt_cwd=ended,
+    )
+
+    assert evidence is not None
+    assert evidence.canonical_command == "pytest"
+    assert evidence.root == str(ended.resolve())
+
+
+def test_a_trailing_cd_leaves_the_starting_workspace_in_charge(tmp_path, monkeypatch):
+    """`pytest && cd ended`: the tests ran before the shell moved, so the starting directory
+    still describes that run and keeps the evidence.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    started = tmp_path / "started"
+    started.mkdir()
+    _python_project(started)
+    ended = tmp_path / "ended"
+    ended.mkdir()
+    _python_project(ended)
+
+    evidence = classify_verification_command(
+        f"pytest -q && cd {ended.as_posix()}",
+        cwd=started, session_id="s1", exit_code=0, alt_cwd=ended,
+    )
+
+    assert evidence is not None
+    assert evidence.root == str(started.resolve())
+
+
+def test_a_cd_into_another_workspace_records_the_terminal_result_there(tmp_path, monkeypatch):
+    """The ledger follows the same precedence: a run that `cd`ed elsewhere is recorded for
+    the workspace it ran in, so the start directory keeps its verify nudge.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    started = tmp_path / "started"
+    started.mkdir()
+    _python_project(started)
+    ended = tmp_path / "ended"
+    ended.mkdir()
+    _python_project(ended)
+
+    recorded = record_terminal_result(
+        command=f"cd {ended.as_posix()} && pytest -q",
+        cwd=started,
+        session_id="s1",
+        exit_code=0,
+        output="5 passed",
+        alt_cwd=ended,
+    )
+
+    assert recorded is not None
+    assert recorded["status"] == "passed"
+    assert recorded["root"] == str(ended.resolve())

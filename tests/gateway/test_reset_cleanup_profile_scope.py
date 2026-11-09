@@ -1,13 +1,12 @@
-"""Multiplex invariant: /reset and /new finalize the old agent's memory in the OWNING profile's scope.
+"""Multiplex invariant: session-end work a gateway hands to a worker runs in the OWNING profile's scope.
 
-``_cleanup_old_agent_for_reset`` used to hand ``_cleanup_agent_resources`` straight to the
-housekeeping executor. That executor carries the CALLING context along, and the reset path
-runs on the main loop where no profile scope is installed, so on a multiplexed gateway the
-memory provider's ``on_session_end`` hook saw no caller profile and refused it
-(``memory_caller_profile_unresolved``): the transcript of the old session was never
-extracted. The shutdown path already runs the same cleanup through
-``_run_release_in_profile_scope`` (run_shutdown.py); these tests pin the same contract on the
-reset path (#151672).
+Memory providers' ``on_session_end`` and plugin ``on_session_finalize`` / ``on_session_reset``
+read the caller profile (home + secrets) at call time. ``/new`` and ``/reset`` run on the main
+loop with no scope installed (the confirm button), so their old-agent cleanup and session hooks
+ran unscoped: on a multiplexed gateway ``on_session_end`` was refused
+(``memory_caller_profile_unresolved``) and a provider that extracts at session end lost the
+conversation (#151672). The opposite slip: an in-turn caller that passes no session key (session
+hygiene, deferred cleanup) must keep its own profile's scope, never be moved to the default one.
 """
 
 from __future__ import annotations
@@ -15,157 +14,88 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
-from agent import secret_scope
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner
+from agent import memory_caller_scope, secret_scope
+from gateway.config import GatewayConfig, Platform
+from gateway.run import GatewayRunner, _profile_runtime_scope
+from gateway.session import SessionSource
 from hermes_constants import get_hermes_home
 
 
-class _ScopeRecordingAgent:
-    """Agent double whose cleanup records the profile scope the cleanup ran under.
+class _RecordingAgent:
+    """What ``_cleanup_agent_resources`` calls on a real agent: records where it ran and what the
+    memory-caller guard decides for a manager bound to ``bound_home`` from that scope."""
 
-    ``guard_result`` mirrors what the memory-caller guard (agent/memory_caller_scope) decides
-    for a manager bound to ``bound_home`` when the hook fires from THIS cleanup's scope: the
-    recorded scope, or None when the guard refuses (no named caller profile, or a mismatch
-    between the caller and the manager's bound profile).
-    """
+    def __init__(self, seen: dict, bound_home: Path):
+        self.seen, self.bound_home = seen, bound_home
 
-    def __init__(self, bound_home: Path | None = None):
-        self.seen: dict = {}
-        self.bound_home = bound_home
-        self.guard_result: dict | None | str = "unset"
-        self._done = threading.Event()
-
-    # The cleanup chokepoint: what ``_cleanup_agent_resources`` calls on a real agent.
     def shutdown_memory_provider(self, messages=None):
-        from agent import memory_caller_scope
-
-        self.seen["scope"] = secret_scope.current_secret_scope()
-        self.seen["home"] = str(get_hermes_home())
-        if self.bound_home is not None:
-            bound = memory_caller_scope.bound_scope(self.bound_home)
-            self.guard_result = memory_caller_scope.caller_scope(
-                bound, "hook on_session_end"
-            )
-        self._done.set()
+        self.seen["cleanup"] = str(get_hermes_home())
+        self.seen["secret"] = (secret_scope.current_secret_scope() or {}).get("HINDSIGHT_LLM_API_KEY")
+        self.seen["guard"] = memory_caller_scope.caller_scope(
+            memory_caller_scope.bound_scope(self.bound_home), "hook on_session_end")
 
     def close(self):
         pass
 
 
-def _multiplex_runner(profile_homes: dict[str, Path | None]) -> GatewayRunner:
+def _runner(profile_homes: dict[str, Path]) -> GatewayRunner:
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     runner.config = GatewayConfig(multiplex_profiles=True)
-    runner.session_store = SimpleNamespace(
-        _profile_home_for_key=lambda key: profile_homes.get(key)
-    )
+    runner.session_store = SimpleNamespace(_profile_home_for_key=lambda key: profile_homes.get(key))
+    runner.hooks = SimpleNamespace(emit=AsyncMock())
     return runner
 
 
-def _reset_cleanup(runner: GatewayRunner, key: str, agent=None) -> _ScopeRecordingAgent:
-    agent = agent or _ScopeRecordingAgent()
-    runner._agent_cache[key] = (agent, "sig")
-    return agent
-
-
-@pytest.mark.asyncio
-async def test_reset_cleanup_finalizes_memory_in_the_owning_profile_scope(
-    tmp_path, monkeypatch
-):
-    """Unscoped reset path: the old agent's end-of-session memory must run under the profile
-    that OWNS the session key, not under no profile at all (refusal) or the launch profile."""
+def _profile_b(tmp_path, monkeypatch) -> Path:
     default_home = tmp_path / ".hermes"
     prof_b = default_home / "profiles" / "b"
     prof_b.mkdir(parents=True)
     (prof_b / ".env").write_text("HINDSIGHT_LLM_API_KEY=key-of-b\n")
     monkeypatch.setenv("HERMES_HOME", str(default_home))
-    secret_scope.set_multiplex_active(True)
-    runner = _multiplex_runner({"agent:b:telegram:dm:1": prof_b})
-    agent = _reset_cleanup(
-        runner, "agent:b:telegram:dm:1", _ScopeRecordingAgent(bound_home=prof_b)
-    )
-    try:
-        assert secret_scope.current_secret_scope() is None
-        await runner._cleanup_old_agent_for_reset("agent:b:telegram:dm:1")
-    finally:
-        secret_scope.set_multiplex_active(False)
-        runner._housekeeping_executor.shutdown(wait=True)
-    assert agent._done.wait(10)
-    assert agent.seen["home"] == str(prof_b), (
-        "reset cleanup ran outside the owning profile's scope; on_session_end is refused "
-        "on a multiplexed gateway and the old session's memory is lost (#151672)"
-    )
-    assert (
-        agent.seen["scope"]
-        and agent.seen["scope"].get("HINDSIGHT_LLM_API_KEY") == "key-of-b"
-    )
-    # Positive control inside the same cleanup: a manager bound to the OWNING profile is
-    # allowed to finalize from that scope.
-    assert agent.guard_result is not None and agent.guard_result["hermes_home"] == str(
-        prof_b
-    )  # type: ignore[index]
+    return prof_b
 
 
 @pytest.mark.asyncio
-async def test_reset_cleanup_of_a_default_profile_session_runs_in_default_scope(
-    tmp_path, monkeypatch
-):
-    """``agent:main:`` keys name no profile: the owner IS the default profile, and its cleanup
-    must run under it (positive control for the owning-profile resolution, not a refusal)."""
-    default_home = tmp_path / ".hermes"
-    default_home.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(default_home))
+async def test_reset_runs_memory_cleanup_and_session_hooks_under_the_owning_profile(tmp_path, monkeypatch):
+    prof_b = _profile_b(tmp_path, monkeypatch)
+    key = "agent:b:telegram:dm:1"
+    seen: dict = {}
+    monkeypatch.setattr("hermes_cli.lifecycle.finalize_session",
+                        lambda **_kw: seen.__setitem__("finalize", str(get_hermes_home())))
+    runner = _runner({key: prof_b})
+    runner._agent_cache[key] = (_RecordingAgent(seen, prof_b), "sig")
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", user_id="1", chat_type="dm")
     secret_scope.set_multiplex_active(True)
-    runner = _multiplex_runner({})
-    agent = _reset_cleanup(runner, "agent:main:telegram:dm:1")
     try:
-        await runner._cleanup_old_agent_for_reset("agent:main:telegram:dm:1")
+        assert secret_scope.current_secret_scope() is None  # the reset path is unscoped
+        await runner._cleanup_old_agent_for_reset(key)
+        await runner._fire_session_reset_hooks(source, key, "old", "new")
     finally:
         secret_scope.set_multiplex_active(False)
         runner._housekeeping_executor.shutdown(wait=True)
-    assert agent._done.wait(10)
-    assert agent.seen["home"] == str(default_home)
+    assert (seen["cleanup"], seen["secret"]) == (str(prof_b), "key-of-b")
+    assert seen["guard"] is not None, "on_session_end refused: the old session's memory is lost (#151672)"
+    assert seen["finalize"] == str(prof_b)
 
 
 @pytest.mark.asyncio
-async def test_reset_cleanup_of_an_unresolved_owner_refuses_a_manager_bound_to_another_profile(
-    tmp_path, monkeypatch
-):
-    """The profile guard stays fail-closed for cross-profile hooks.
-
-    A session key whose owning profile resolves to no home enters the DEFAULT home under
-    ``_run_release_in_profile_scope`` (the helper's existing fallback, shared with the
-    shutdown path). A manager bound to ANOTHER profile must still be refused from there:
-    the guard's equality check (agent/memory_caller_scope) rejects the mismatch. What the
-    wrapper closes is the no-scope refusal of the OWNING case, not the guard itself. A
-    default-bound manager is allowed, matching the shutdown path's shipped semantics
-    (#110622); that allowance is why the refusal is asserted through the guard here and
-    not through the wrapper.
-    """
-    default_home = tmp_path / ".hermes"
-    prof_b = default_home / "profiles" / "b"
-    prof_b.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(default_home))
+async def test_unkeyed_in_turn_cleanup_keeps_the_callers_named_profile(tmp_path, monkeypatch):
+    """Session hygiene and deferred cleanup pass no session key from inside profile b's turn."""
+    prof_b = _profile_b(tmp_path, monkeypatch)
+    seen: dict = {}
+    runner = _runner({})
     secret_scope.set_multiplex_active(True)
-    runner = _multiplex_runner({"agent:ghost:telegram:dm:1": None})
-    agent = _reset_cleanup(
-        runner, "agent:ghost:telegram:dm:1", _ScopeRecordingAgent(bound_home=prof_b)
-    )
     try:
-        await runner._cleanup_old_agent_for_reset("agent:ghost:telegram:dm:1")
+        with _profile_runtime_scope(prof_b):
+            await runner._cleanup_agent_resources_off_loop(_RecordingAgent(seen, prof_b), context="session hygiene")
     finally:
         secret_scope.set_multiplex_active(False)
         runner._housekeeping_executor.shutdown(wait=True)
-    assert agent._done.wait(10)
-    # The wrapper resolved the unresolvable owner to the default home (existing fallback).
-    assert agent.seen["home"] == str(default_home)
-    # ... and the memory-caller guard refused the hook for a manager bound to profile b.
-    assert agent.guard_result is None, (
-        "the guard must refuse an end-of-session hook whose caller profile (default, via the "
-        "unresolved-owner fallback) is not the manager's bound profile"
-    )
+    assert (seen["cleanup"], seen["secret"]) == (str(prof_b), "key-of-b")
+    assert seen["guard"] is not None

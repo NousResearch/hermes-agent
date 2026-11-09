@@ -41,7 +41,10 @@ def test_snapshot_reports_prepare_ahead_and_older_snapshots_still_package(tmp_pa
     assert current["compression_prepare_ahead"] == "off", "absent reads off, as the agent's default"
 
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
-    before_upgrade = {k: v for k, v in current.items() if k != "compression_prepare_ahead"}
+    # A pre-upgrade row also predates the later group chat counts.
+    before_upgrade = {
+        k: v for k, v in current.items() if k != "compression_prepare_ahead" and not k.startswith("group_chat_")
+    }
     store.record_counter(contract.INSTALL_SNAPSHOT_METRIC, before_upgrade, RESOURCE)
     store.record_counter(contract.INSTALL_SNAPSHOT_METRIC, {**current, "compression_prepare_ahead": "on"}, RESOURCE)
     [package_path] = store.create_and_export_package()

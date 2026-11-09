@@ -561,6 +561,8 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         snapshot["value"] != 1 or snapshot["dimensions"]["memory_provider"] != "builtin"
         # The smoke config leaves compression.prepare_ahead at its default.
         or snapshot["dimensions"]["compression_prepare_ahead"] != "off"
+        # The smoke home is a root profile with no group chats yet.
+        or snapshot["dimensions"]["group_chat_count_bucket"] != "0"
     ):
         raise AssertionError(f"Unexpected install snapshot: {snapshot}")
     [session] = by_name["hermes.session.count"]

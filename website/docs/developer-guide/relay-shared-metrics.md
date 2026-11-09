@@ -468,6 +468,18 @@ offline (no network call, no subprocess):
   the agent uses (absent or false reads `off`), from the profile's own `config.yaml` like the other
   snapshot fields (a managed-scope overlay is not read). Snapshots counted before this field
   existed carry no value for it and still package.
+- Group chats, four size buckets (`0` … `gte_251`): `group_chat_count_bucket` (group chats that exist,
+  not disbanded), `group_chat_active_7d_count_bucket` (those with a message posted in the last 7 days, by
+  a person or a scheduled post; bot replies alone do not count), `group_chat_created_7d_count_bucket`
+  (those created in the last 7 days) and `group_chat_peer_count_bucket` (those with a member served by
+  another gateway).
+  Each profile's snapshot counts the group chats its gateway hosts (in its `state.db`); the root
+  profile's also counts a standalone `hermes serve` backend's (in the root `shared-state.db`) that its
+  gateway has not taken over, so each group chat is counted once.
+  The stores are only read, never created or given `-wal`/`-shm` files: no store reads `0`, and a store
+  that cannot be read leaves the four fields out rather than reporting a false zero.
+  A group chat created and disbanded inside the window is not counted as created.
+  Room ids, names, members, link targets and message text are never read into the event.
 
 ### Decision-data metrics
 
@@ -715,7 +727,7 @@ packages use v4, which adds `failure_class` to `hermes.compression.count` and
 `hermes.memory.op.count` and still accepts their v3 field sets (and, extended in place with additive values only, also after v4 shipped in a stable release,
 `failure_class` on `hermes.extension.install.count` / `hermes.update.run` plus `registry` on the
 former, still accepting their earlier v4 field sets; `hermes.prepared_compaction.count` and the
-snapshot's optional `compression_prepare_ahead` arrived the same way), as v3 accepted the v2
+snapshot's optional `compression_prepare_ahead` and `group_chat_*` counts arrived the same way), as v3 accepted the v2
 field sets of `hermes.model_route.count`, `hermes.tool_call.count` and the task
 counters, so counters recorded before an upgrade drain safely.
 Vocabularies derived from in-repo registries (tool names, platforms, memory

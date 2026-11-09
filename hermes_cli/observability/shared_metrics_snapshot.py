@@ -3,6 +3,7 @@
 Only counts, closed enums (terminal backend, bundled memory provider, shipped locale), the main
 provider id and the profile's age are read out; server names, plugin names, skill names, job
 prompts and profile names stay local (the contract buckets every count).
+The snapshot also counts the profile's group chats (``shared_metrics_group_chats``).
 """
 
 from __future__ import annotations
@@ -120,16 +121,44 @@ def install_age_bucket(home: Path | None = None) -> str:
     return bucket(time.time() - first)
 
 
+def install_snapshot_fields(
+    *, memory_provider: Any, mcp_servers: int, plugins: int, skills: int, cron_jobs: int,
+    profiles: int, messaging_platforms: int, install_age_bucket: str, main_provider: Any,
+    terminal_backend: Any, display_language: Any,
+) -> dict[str, str]:
+    """Bounded daily configuration snapshot: counts, closed enums and public names only."""
+    from .shared_metrics_catalog import display_language_metric_name, provider_metric_name
+
+    size_bucket = contract.size_bucket
+    provider = contract._norm(memory_provider)
+    backend = contract._norm(terminal_backend) or "local"
+    return {
+        "cron_job_count_bucket": size_bucket(cron_jobs),
+        "display_language": display_language_metric_name(display_language),
+        "install_age_bucket": install_age_bucket if install_age_bucket in contract.INSTALL_AGE_BUCKETS else "unknown",
+        "main_provider": provider_metric_name(main_provider) if main_provider else "none",
+        "mcp_server_count_bucket": size_bucket(mcp_servers),
+        "memory_provider": "builtin" if not provider
+        else provider if provider in contract.MEMORY_PROVIDERS else "plugin",
+        "messaging_platform_count_bucket": size_bucket(messaging_platforms),
+        "plugin_count_bucket": size_bucket(plugins),
+        "profile_count_bucket": size_bucket(profiles),
+        "skill_count_bucket": size_bucket(skills),
+        "terminal_backend": backend if backend in contract.TERMINAL_BACKENDS else "other",
+    }
+
+
 def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:
     """Bounded snapshot fields for the active profile's ``config``."""
     model = _sub(config, "model")
     language = "other"
     with contextlib.suppress(Exception):
         language = _display_language()
+    from .shared_metrics_group_chats import group_chat_snapshot_fields
     from .shared_metrics_install import install_v4_snapshot_fields
     from .shared_metrics_prepared_compaction import prepare_ahead_state
 
-    return {**contract.install_snapshot_fields(
+    return {**install_snapshot_fields(
         memory_provider=_sub(_sub(config, "memory"), "provider"),
         mcp_servers=_mcp_server_count(config),
         plugins=_plugin_count(config),
@@ -141,4 +170,5 @@ def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:
         main_provider=_sub(model, "provider") if isinstance(model, dict) else None,
         terminal_backend=_sub(_sub(config, "terminal"), "backend"),
         display_language=language,
-    ), **install_v4_snapshot_fields(config), "compression_prepare_ahead": prepare_ahead_state(config)}
+    ), **install_v4_snapshot_fields(config), "compression_prepare_ahead": prepare_ahead_state(config),
+        **group_chat_snapshot_fields()}

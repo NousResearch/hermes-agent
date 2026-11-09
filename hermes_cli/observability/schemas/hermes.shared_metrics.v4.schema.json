@@ -1231,9 +1231,21 @@
                 "off",
                 "on"
               ]
+            },
+            "group_chat_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            },
+            "group_chat_active_7d_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            },
+            "group_chat_created_7d_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            },
+            "group_chat_peer_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
             }
           },
-          "description": "The five decision-data fields are absent on snapshots counted before they existed. The six version-lag/channel/hardware fields are absent on snapshots counted before they existed. compression_prepare_ahead is absent on snapshots counted before it existed."
+          "description": "The five decision-data fields are absent on snapshots counted before they existed. The six version-lag/channel/hardware fields are absent on snapshots counted before they existed. compression_prepare_ahead is absent on snapshots counted before it existed. The four group_chat_* counts are absent on snapshots counted before they existed and when the profile's group chat stores cannot be read."
         },
         "value": {
           "const": 1

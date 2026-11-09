@@ -20,6 +20,7 @@ from .shared_metrics_prepared_compaction import (
     PREPARED_COMPACTION_DIMENSIONS, PREPARED_COMPACTION_MARK, PREPARED_COMPACTION_METRIC,
     PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
 )
+from .shared_metrics_group_chats import GROUP_CHAT_SNAPSHOT_FIELDS
 from .shared_metrics_busy import BUSY_ARRIVAL_DISPOSITIONS, BUSY_ARRIVAL_METRIC, BUSY_PEAK_FIELD, BUSY_WAIT_BUCKETS
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
@@ -914,6 +915,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "plugin_count_bucket": SIZE_BUCKETS, "profile_count_bucket": SIZE_BUCKETS,
         "skill_count_bucket": SIZE_BUCKETS, "terminal_backend": TERMINAL_BACKENDS,
         **_INSTALL_V4_SNAPSHOT_DIMENSIONS, **PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
+        **dict.fromkeys(GROUP_CHAT_SNAPSHOT_FIELDS, SIZE_BUCKETS),
     },
     SESSION_METRIC: {
         "active_duration_bucket": SESSION_DURATION_BUCKETS, "entrypoint": TASK_ENTRYPOINTS,
@@ -1156,6 +1158,8 @@ _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
         _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS),
     ),
 }
+_LEGACY_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] = tuple(s - set(GROUP_CHAT_SNAPSHOT_FIELDS) for s in (  # group chats
+    *_LEGACY_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC], _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC]))
 # ---- v5 engagement ----
 _LEGACY_METRIC_FIELDS[SESSION_METRIC] = (_METRIC_FIELDS[SESSION_METRIC] - set(SESSION_VOLUME_DIMENSIONS),)
 # ---- end v5 engagement ----
@@ -1956,32 +1960,6 @@ _SIZE_THRESHOLDS = (
 def size_bucket(count: int) -> str:
     """Bucket a non-negative install-scale count."""
     return _bucket(max(0, int(count)), _SIZE_THRESHOLDS, "gte_251")
-
-
-def install_snapshot_fields(
-    *, memory_provider: Any, mcp_servers: int, plugins: int, skills: int, cron_jobs: int,
-    profiles: int, messaging_platforms: int, install_age_bucket: str, main_provider: Any,
-    terminal_backend: Any, display_language: Any,
-) -> dict[str, str]:
-    """Bounded daily configuration snapshot: counts, closed enums and public names only."""
-    from .shared_metrics_catalog import display_language_metric_name, provider_metric_name
-
-    provider = _norm(memory_provider)
-    backend = _norm(terminal_backend) or "local"
-    return {
-        "cron_job_count_bucket": size_bucket(cron_jobs),
-        "display_language": display_language_metric_name(display_language),
-        "install_age_bucket": install_age_bucket if install_age_bucket in INSTALL_AGE_BUCKETS else "unknown",
-        "main_provider": provider_metric_name(main_provider) if main_provider else "none",
-        "mcp_server_count_bucket": size_bucket(mcp_servers),
-        "memory_provider": "builtin" if not provider
-        else provider if provider in MEMORY_PROVIDERS else "plugin",
-        "messaging_platform_count_bucket": size_bucket(messaging_platforms),
-        "plugin_count_bucket": size_bucket(plugins),
-        "profile_count_bucket": size_bucket(profiles),
-        "skill_count_bucket": size_bucket(skills),
-        "terminal_backend": backend if backend in TERMINAL_BACKENDS else "other",
-    }
 
 
 def _metric_identifier(value: Any, *, max_length: int) -> str:

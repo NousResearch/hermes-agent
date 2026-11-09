@@ -69,6 +69,7 @@ interface UnionAgent {
   connectionKind: string
   connectionLabel?: string
   handle: string
+  profileMetadata?: { description?: string; display_name?: string; title?: string }
   profile: string
   reachable?: boolean
 }
@@ -764,7 +765,11 @@ describe('a launch that never opens the Bots pane', () => {
           connectionLabel: 'VPS',
           handle: 'default',
           profile: 'default',
-          profileMetadata: { display_name: 'Agent A', title: 'Agent A' }
+          profileMetadata: {
+            description: 'Builds prototypes',
+            display_name: 'Agent A',
+            title: 'Agent A'
+          }
         }
       ],
       primaryConnectionId: 'local'
@@ -777,6 +782,7 @@ describe('a launch that never opens the Bots pane', () => {
     expect(vps).toBeTruthy()
     // The composer's @handle and group prompts read these; the pane never ran.
     expect(botMentionTag(vps!)).toBe('agent-a')
+    expect(vps?.description).toBe('Builds prototypes')
     expect($botMeta.get()['vps::default']?.title).toBe('Agent A')
   })
 })

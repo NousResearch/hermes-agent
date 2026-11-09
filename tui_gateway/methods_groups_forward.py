@@ -139,9 +139,9 @@ def _call(server, rid, home, endpoint, method: str, params: dict) -> dict:
     return server._ok(rid, result)
 
 
-def _busy(server, rid, why) -> dict:
+def _busy(server, rid, why, data=None) -> dict:
     return server._err(rid, OWNER_LOST_CODE,
-                       f"The Hermes gateway is not ready yet ({why}). Try again in a moment.")
+                       f"The Hermes gateway is not ready yet ({why}). Try again in a moment.", data)
 
 
 def forward(server, rid, method: str, params: dict) -> dict | None:
@@ -149,6 +149,8 @@ def forward(server, rid, method: str, params: dict) -> dict | None:
     runs locally: no gateway serves the profile, or the room lives only in the standalone store."""
     if method not in forwarded():
         return None
+    # These refusals happen before forwarding; the owner cannot have admitted this Send.
+    not_admitted = {"admitted": False} if method == "groups.send" else None
     try:
         home = _home(server, params)
         room_id = str(params.get("room_id") or "")
@@ -164,15 +166,15 @@ def forward(server, rid, method: str, params: dict) -> dict | None:
             return _list(server, rid, home, params)
         endpoint = owner_endpoint(home)
     except _OwnerBusy as exc:
-        return _busy(server, rid, exc)
+        return _busy(server, rid, exc, not_admitted)
     except ValueError as exc:
-        return server._err(rid, 4000, str(exc))
+        return server._err(rid, 4000, str(exc), not_admitted)
     if endpoint is None:
         if holder == "gateway":
             # Only the gateway's store holds this room; the standalone copy is frozen and never
             # imported again, so a local call would acknowledge a change the owner never sees.
             return server._err(rid, OWNER_LOST_CODE, "The Hermes gateway that holds this Group Chat "
-                               "is not running. Start it and try again.")
+                               "is not running. Start it and try again.", not_admitted)
         return None
     return _call(server, rid, home, endpoint, method, params)
 

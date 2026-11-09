@@ -44,7 +44,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument("--deliver",
         help="Delivery target: origin, local, telegram, discord, signal, "
             "platform:chat_id, or bot-chat[:profile] (inject output into a "
-            "local profile's canonical Bot Chat as a message the bot responds to)")
+            "local profile's canonical Bot Chat as a message the bot responds to), "
+            "or room:<room_id>[@profile] (post into a Group Chat; wakes only the Bots it @mentions)")
     cron_create.add_argument("--failure-deliver", dest="failure_deliver",
         help="Override target for FAILURE notices only (same grammar as "
             "--deliver). 'local' suppresses failure notices entirely; run "

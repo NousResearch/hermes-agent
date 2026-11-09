@@ -1,0 +1,12 @@
+name: subscription-sheriff
+repo: https://github.com/HATWHY4041/subscription-sheriff
+sha: d0c3e12da627080323149af38ff2c85e0fd7b16d
+description: "Track subscriptions and free trials in plain English, get warned before they charge, and see what you really spend. Quiet renewal reminders (only when something is newly due, plus a trial-about-to-turn-paid warning), monthly and yearly totals per currency, biggest spenders, overlapping services, a /sheriff command and two one-click scheduled tasks (renewal reminders, monthly spend review). Fully offline. Disclosure — makes no network requests and imports no networking modules; reads no credentials, environment variables or files outside its own Hermes profile state, where the subscription list and reminder markers are stored; cannot cancel or pay anything (cancelling only marks the entry); no background processes, telemetry, self-updating code or binaries."
+maintainer: HATWHY4041
+tier: community
+category: tools
+docs_url: https://github.com/HATWHY4041/subscription-sheriff#readme
+requires_hermes: ">=0.21.5"
+version: "1.0.0"
+platforms: []
+capabilities: {provides_tools: [sheriff_subscriptions, sheriff_upcoming, sheriff_summary, sheriff_digest], provides_hooks: [], provides_middleware: [], requires_env: []}

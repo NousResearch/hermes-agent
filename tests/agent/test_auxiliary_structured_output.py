@@ -61,6 +61,8 @@ def test_fallback_candidate_retries_without_response_format_on_rejection(async_m
         temperature=None, max_tokens=64, tools=None, effective_timeout=30.0,
         effective_extra_body={"response_format": dict(_JSON_SCHEMA)}, reasoning_config=None,
     )
+    if async_mode:
+        common["classify_as"] = "custom"
     result = call(client, "relay-model", "fallback_chain[0](custom)", **common)
     if async_mode:
         result = asyncio.run(result)

@@ -38,7 +38,7 @@ def test_undelta_codex_messages_reach_the_attached_tui(tmp_path: Path) -> None:
     if shutil.which("node") is None or not (REPO_ROOT / "ui-tui" / "dist" / "entry.js").is_file():
         if os.environ.get("HERMES_E2E_REQUIRE_TUI") == "1":
             pytest.fail("ui-tui/dist/entry.js or node missing but HERMES_E2E_REQUIRE_TUI=1")
-        pytest.skip("Ink TUI not built (cd ui-tui && npm run build) or node missing")
+        pytest.skip("Ink TUI not built (cd ui-tui && pnpm run build) or node missing")
 
     fake = FakeCodex(tmp_path, [{"steps": [
         {"kind": "message", "text": COMMENTARY, "deltas": False},

@@ -10,7 +10,7 @@ import hashlib
 import json
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -94,8 +94,11 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     metadata = tomllib.loads((source / "pyproject.toml").read_text(encoding="utf-8-sig"))
     project = metadata.get("project", {})
     setuptools = metadata.get("tool", {}).get("setuptools", {})
-    patterns = setuptools.get("packages", {}).get("find", {}).get("include", ["*"])
+    find = setuptools.get("packages", {}).get("find", {})
+    patterns = find.get("include", ["*"])
     package_roots = {pattern.split(".", 1)[0] for pattern in patterns}
+    # A ``where`` root (``src``) holds packages the include patterns name below it, not by its own name.
+    where_roots = {Path(where).parts[0] for where in find.get("where", ["."]) if Path(where).parts}
     files = {"pyproject.toml", "setup.py", "setup.cfg"}
     readme = project.get("readme")
     if isinstance(readme, str):
@@ -120,7 +123,8 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
-                and any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots)):
+                and (entry.name in where_roots
+                     or any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots))):
             target = destination / entry.name
             shutil.copytree(entry, target, ignore=ignore)
     for name in files:
@@ -135,7 +139,7 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
 
 
 def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path,
-                        python: Path) -> None:
+                        python: Path, extras: Iterable[str] = ()) -> None:
     """Snapshot core and plugin build inputs into a fresh generation for the *python* that installs it."""
     source = source.resolve()
     if root.resolve() == source or source.is_relative_to(root.resolve()):
@@ -145,9 +149,11 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = [_workspace_member(source, root, identity=identity).relative_to(root).as_posix()
-               for identity, source in member_sources(plugin_dirs).items()
-               if _is_member_candidate(source)]
+    candidates = {identity: source for identity, source in member_sources(plugin_dirs).items()
+                  if _is_member_candidate(source)}
+    target = _target_environment(python) if candidates else {}
+    members = [_workspace_member(source, root, identity=identity, extras=extras, target=target)
+               .relative_to(root).as_posix() for identity, source in candidates.items()]
 
     if members:
         import tomllib
@@ -160,7 +166,11 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         uv_policy.pop("exclude-newer", None)
         uv_policy.pop("exclude-newer-package", None)
         uv_policy["workspace"] = {"members": sorted(members)}
-        _solve_only_for(uv_policy, python)
+        # A member requirement naming core (a selected extra's ``hermes-agent[x] @ git+…``)
+        # names a workspace member, which uv refuses without a source; root sources apply
+        # to every member, renamed virtual ones included.
+        uv_policy.setdefault("sources", {})[document["project"]["name"]] = {"workspace": True}
+        _solve_only_for(uv_policy, target)
         text = tomli_w.dumps(document)
     else:
         # A member-less generation syncs frozen against core's own lock.
@@ -184,25 +194,55 @@ def _without_release_age(text: str) -> str:
     return re.sub(r"(?m)^exclude-newer\s*=.*\n", "", text)
 
 
-def _solve_only_for(uv_policy: dict, python: Path) -> None:
-    """Narrow ``tool.uv.environments`` to the platform of the interpreter that installs the generation.
+# packaging.markers.default_environment(), computed by the target interpreter itself; stdlib
+# only, because that interpreter need not have packaging installed.
+_MARKER_ENVIRONMENT_PROBE = """
+import json, os, platform, sys
+v = sys.implementation.version
+level = "" if v.releaselevel == "final" else f"{v.releaselevel[0]}{v.serial}"
+print(json.dumps({
+    "implementation_name": sys.implementation.name,
+    "implementation_version": f"{v.major}.{v.minor}.{v.micro}{level}",
+    "os_name": os.name,
+    "platform_machine": platform.machine(),
+    "platform_release": platform.release(),
+    "platform_system": platform.system(),
+    "platform_version": platform.version(),
+    "python_full_version": platform.python_version(),
+    "platform_python_implementation": platform.python_implementation(),
+    "python_version": ".".join(platform.python_version_tuple()[:2]),
+    "sys_platform": sys.platform,
+}))
+"""
 
-    uv solves every platform the environments admit, and since uv 0.12.14 it fails the whole
-    lock when one fork has no wheels for a dependency: onnxruntime and torch ship none for
-    Android, so a Linux or macOS update evicted the plugin over a platform it never runs on.
-    A generation installs into one interpreter on one machine; only core's committed lock
-    has to cover every platform, and it never passes through here. The interpreter is asked
-    rather than this process, because PM can run under a bootstrap Python (an older Termux
-    interpreter reports ``linux``) while uv evaluates markers against *python*.
+
+def _target_environment(python: Path) -> dict[str, str]:
+    """The PEP 508 marker environment of the interpreter that installs the generation.
+
+    Asked of *python* rather than taken from this process, because PM can run under a
+    bootstrap Python (an older Termux interpreter reports ``linux``) while uv evaluates
+    markers against *python*.
     """
     import subprocess
 
     from pm.filesystem import native
 
-    probe = subprocess.run([native(python), "-I", "-c", "import platform, sys; print(sys.platform); print(platform.machine())"],
+    probe = subprocess.run([native(python), "-I", "-c", _MARKER_ENVIRONMENT_PROBE],
                            capture_output=True, text=True, encoding="utf-8", check=True, timeout=60)
-    sys_platform, machine = probe.stdout.split()
-    host = f"sys_platform == {sys_platform!r} and platform_machine == {machine!r}"
+    return json.loads(probe.stdout)
+
+
+def _solve_only_for(uv_policy: dict, target: Mapping[str, str]) -> None:
+    """Narrow ``tool.uv.environments`` to the platform of the interpreter that installs the generation.
+
+    uv solves every platform the environments admit, and since uv 0.12.14 it fails the whole
+    lock when one fork has no wheels for a dependency: onnxruntime and torch ship none for
+    Android, so a Linux or macOS update evicted the plugin over a platform it never runs on.
+    A generation installs into one interpreter on one machine (*target*, from
+    ``_target_environment``); only core's committed lock has to cover every platform, and it
+    never passes through here.
+    """
+    host = f"sys_platform == {target['sys_platform']!r} and platform_machine == {target['platform_machine']!r}"
     uv_policy["environments"] = [f"({entry}) and {host}" for entry in uv_policy.get("environments") or []] or [host]
 
 
@@ -258,20 +298,18 @@ def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
 def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
     """Keep every selected member or refuse an incompatible selection.
 
-    A member whose requires_hermes rejects the running version sits out instead: the
-    verdict is only as good as our version identity (an untagged source checkout reads
-    as an older release), the loader skips that plugin anyway, and the member rejoins
-    as soon as the verdict flips. Enabling one is still refused at admission.
+    A member that does not accept the running Hermes (``hermes_fit_error``) sits out instead:
+    the verdict is only as good as our version identity (an untagged source checkout reads
+    as an older release), the loader skips that plugin anyway, and the member rejoins as
+    soon as the verdict flips. Enabling one is still refused at admission. Judged with no
+    core extra selected; ``build_member_dirs`` adds the extras a build selects.
     """
     selected = enabled_plugin_dirs(proposed_home=proposed_home, enabled=enabled, disabled=disabled,
                                    skip_invalid_secondary=proposed_home is None)
     members = []
     for path in selected:
-        # Per plugin: with none selected, PM must not import the application's manifest module.
-        from hermes_cli.plugins_manifest import requires_hermes_error
-
         declaration = read_python_declaration(path)
-        if requires_hermes_error(declaration.manifest):
+        if hermes_fit_error(declaration, ()):
             continue
         reason = manifest_version_error(declaration.manifest, path.name)
         if reason:
@@ -279,6 +317,17 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
         if declaration.installs_packages:
             members.append(path)
     return members
+
+
+def build_member_dirs(extras: Iterable[str], python: Path | None = None) -> list[Path]:
+    """``enabled_member_dirs`` for a build selecting core *extras*: a plugin extra they select
+    can add a ``hermes-agent`` requirement the running Hermes misses, which sits out too.
+    A build passes its interpreter *python*, whose markers the generation (and so the loader)
+    sees; PM itself may run under a bootstrap Python."""
+    extras, members = list(extras), enabled_member_dirs()
+    target = _target_environment(python) if members and python is not None else None
+    return [path for path in members
+            if not core_requirement_error(read_python_declaration(path), extras, target)]
 
 
 def _member_key(identity: Path) -> str:
@@ -292,7 +341,267 @@ def _member_key(identity: Path) -> str:
     return f"{name}-{digest}"
 
 
-def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
+def _selected_member_extras(document: dict, extras: Iterable[str],
+                            target: Mapping[str, str] | None = None) -> tuple[set[str], set[str]]:
+    """The member's extras this generation installs, and those it only names.
+
+    Installed: those ``uv sync --extra`` names (it applies a name to every member declaring
+    it), closed over the member's own ``name[extra]`` references, which install whatever
+    references them. A reference is evaluated on *target* (the installing interpreter's
+    marker environment) under every extra this sync installs, so a base dependency
+    ``plugin[feature]; extra == 'runtime'`` installs ``feature`` once ``runtime`` is in, and
+    ``plugin[windows]; sys_platform == 'win32'`` installs no ``windows`` on Linux; that extra
+    is returned as named, because the build backend still validates the reference against
+    the extras table. With no *target*, or a marker it cannot evaluate, the reference installs.
+    """
+    from packaging.utils import canonicalize_name
+
+    from pm.install import _extra_key
+
+    project = document.get("project", {})
+    declared = {_extra_key(key): specs for key, specs in project.get("optional-dependencies", {}).items()}
+    own = canonicalize_name(str(project.get("name", "")))
+    selected = {_extra_key(extra) for extra in extras} & declared.keys()
+    references = {"": _self_references(project.get("dependencies", []), own)}
+    while True:
+        for key in selected - references.keys():
+            references[key] = _self_references(declared[key], own)
+        contexts = ("", *sorted(selected))
+        reached = {key for requirements in references.values() for requirement in requirements
+                   if _reference_active(requirement, contexts, target)
+                   for key in {_extra_key(name) for name in requirement.extras} & declared.keys()}
+        if reached <= selected:
+            break
+        selected |= reached
+    named = {key for requirements in references.values() for requirement in requirements
+             for key in {_extra_key(name) for name in requirement.extras} & declared.keys()}
+    return selected, named - selected
+
+
+def _self_references(specs: Iterable[str], own: str) -> list:
+    """The requirements among *specs* that name the project *own* itself."""
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
+
+    references = []
+    for spec in specs:
+        try:
+            requirement = Requirement(spec)
+        except InvalidRequirement:
+            continue  # uv reports it; this pass only decides what to keep.
+        if canonicalize_name(requirement.name) == own:
+            references.append(requirement)
+    return references
+
+
+def _reference_active(requirement, contexts: Iterable[str], target: Mapping[str, str] | None) -> bool:
+    """Whether *requirement* applies on *target* under any of the installed extra *contexts*.
+
+    uv lowers an extra's requirements to ``marker and extra == '<that extra>'``, and that extra
+    is among *contexts* once it is reached, so one evaluation per installed extra covers base
+    and extra requirements alike; a conjunction over two extras is kept, never dropped.
+    """
+    from packaging.markers import UndefinedComparison, UndefinedEnvironmentName
+
+    if requirement.marker is None or target is None:
+        return True
+    try:
+        return any(requirement.marker.evaluate({**target, "extra": extra}) for extra in contexts)
+    except (UndefinedComparison, UndefinedEnvironmentName):
+        return True
+
+
+def _prune_member_sources(settings: dict, installed: set[str]) -> bool:
+    """Drop ``tool.uv.sources`` alternatives for an extra or group this generation removed.
+
+    uv refuses a source qualified by an extra or group the project no longer declares
+    ("Source entry ... only applies to extra `dev`, but the `dev` extra does not exist"), so a
+    pruned development extra must take its sources with it. An extra declared but left empty
+    installs nothing, so its sources go too. A package keeps its key while any alternative
+    remains; unqualified (runtime) alternatives always stay.
+    """
+    from pm.install import _extra_key
+
+    sources = settings.get("sources")
+    if not isinstance(sources, dict):
+        return False
+
+    def applies(spec) -> bool:
+        if not isinstance(spec, dict):
+            return True
+        if "group" in spec:
+            return False
+        return "extra" not in spec or _extra_key(str(spec["extra"])) in installed
+
+    pruned = {}
+    for package, entry in sources.items():
+        if isinstance(entry, list):
+            alternatives = [spec for spec in entry if applies(spec)]
+            if alternatives:
+                pruned[package] = alternatives
+        elif applies(entry):
+            pruned[package] = entry
+    if pruned == sources:
+        return False
+    if pruned:
+        settings["sources"] = pruned
+    else:
+        settings.pop("sources")
+    return True
+
+
+def _rename_virtual_member(document: dict, name: str) -> None:
+    """Give a virtual member its unique workspace *name*, its self-references included.
+
+    ``dependencies = ["myplugin[runtime]"]`` in a project named ``myplugin`` installs the
+    member's own ``runtime`` extra. Left on the declared name after the rename, uv reads it as
+    a different package: a lock failure when no index has that name, or someone else's
+    package installed in place of the extra when one does. Extras, specifiers and markers
+    stay as written; only the leading name changes.
+    """
+    import re
+
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
+
+    project = document.setdefault("project", {})
+    own = canonicalize_name(str(project.get("name", "")))
+    project["name"] = name
+    if not own:
+        return
+
+    def renamed(spec):
+        try:
+            if not isinstance(spec, str) or canonicalize_name(Requirement(spec).name) != own:
+                return spec
+        except InvalidRequirement:
+            return spec  # uv reports it; renaming cannot make it valid.
+        return re.sub(r"^\s*[A-Za-z0-9][A-Za-z0-9._-]*", name, spec, count=1)
+
+    if "dependencies" in project:
+        project["dependencies"] = [renamed(spec) for spec in project["dependencies"]]
+    for extra, specs in project.get("optional-dependencies", {}).items():
+        project["optional-dependencies"][extra] = [renamed(spec) for spec in specs]
+    for conflict in document.get("tool", {}).get("uv", {}).get("conflicts", []):
+        for item in conflict:
+            if isinstance(item, dict) and canonicalize_name(str(item.get("package", ""))) == own:
+                item["package"] = name
+
+
+def _runtime_member_metadata(document: dict, extras: Iterable[str],
+                             target: Mapping[str, str] | None = None) -> bool:
+    """Keep what this generation installs, not a plugin checkout's development environment.
+
+    uv locks every declared group and extra of every member even when sync excludes it, so a
+    test pin (``dev = ["httpx<0.28"]``) would fail the lock against core's runtime pins. Sync
+    never installs a member's groups (core's ``default-groups = []`` covers the workspace) and
+    installs only the extras named by ``--extra``. The original plugin source stays untouched.
+    """
+    from pm.install import _extra_key
+
+    changed = "dependency-groups" in document
+    document.pop("dependency-groups", None)
+    project = document.get("project", {})
+    optional = project.get("optional-dependencies")
+    keep: set[str] = set()
+    if optional:
+        keep, named = _selected_member_extras(document, extras, target)
+        # A named-only extra stays declared but empty: its pins cannot reach the lock.
+        kept = {key: specs if _extra_key(key) in keep else [] for key, specs in optional.items()
+                if _extra_key(key) in keep | named}
+        if kept != optional:
+            changed = True
+            if kept:
+                project["optional-dependencies"] = kept
+            else:
+                project.pop("optional-dependencies")
+    kept_extras = {_extra_key(key) for key in project.get("optional-dependencies", {})}
+    settings = document.get("tool", {}).get("uv", {})
+    changed = _prune_member_sources(settings, keep) or changed
+    for key in ("default-groups", "dependency-groups", "dev-dependencies"):
+        if key in settings:
+            settings.pop(key)
+            changed = True
+    if "conflicts" in settings:
+        conflicts = [[spec for spec in conflict
+                      if "group" not in spec and ("extra" not in spec or _extra_key(spec["extra"]) in kept_extras)]
+                     for conflict in settings["conflicts"]]
+        conflicts = [conflict for conflict in conflicts if len(conflict) > 1]
+        if conflicts != settings["conflicts"]:
+            if conflicts:
+                settings["conflicts"] = conflicts
+            else:
+                settings.pop("conflicts")
+            changed = True
+    return changed
+
+
+def _recorded_extras() -> list[str]:
+    """The extras of the generation this install selected: what a gate asked outside a build
+    (admission, the loader) evaluates a plugin's extras under."""
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+
+    extras = (Facts(runtime_facts_path(paths.repo_root())).get("venv") or {}).get("extras")
+    return [extra for extra in extras if isinstance(extra, str)] if isinstance(extras, list) else []
+
+
+def core_requirement_error(declaration, extras: Iterable[str] | None = None,
+                           target: Mapping[str, str] | None = None) -> Optional[str]:
+    """Why the plugin's applicable requirement on ``hermes-agent`` rejects the running Hermes.
+
+    PM satisfies ``hermes-agent`` from the checkout itself: a runtime requirement naming it is
+    dropped, and a selected extra naming it binds to the workspace root, where uv ignores the
+    specifier. So the specifier is judged here, PEP 440 like any requirement, under *extras*
+    (the core extras the build selects; ``None`` reads the recorded selection) and the markers
+    of *target* (the installing interpreter; ``None`` is this process, which the loader runs
+    in). The identity is the one ``requires_hermes`` reads (the committed pyproject version is
+    a placeholder); with none (``unknown``) nothing is judged. It is read only for a plugin
+    that names core: the read walks git, and every plugin passes here at startup.
+    """
+    import tomllib
+
+    from packaging.markers import default_environment
+    from packaging.version import InvalidVersion, Version
+
+    from hermes_cli.plugins_manifest import running_hermes_version
+    from pm.install import _extra_key
+
+    if declaration.external:
+        return None
+    environment = default_environment() if target is None else target
+    specs, installed = list(declaration.requirements), set()
+    if declaration.pyproject is not None:
+        document = tomllib.loads(declaration.pyproject.read_text(encoding="utf-8-sig"))
+        installed = _selected_member_extras(document, _recorded_extras() if extras is None else extras, environment)[0]
+        specs += [spec for name, values in document["project"].get("optional-dependencies", {}).items()
+                  if _extra_key(name) in installed for spec in values]
+    pins = [requirement for requirement in _self_references(specs, "hermes-agent")
+            if requirement.specifier and _reference_active(requirement, ("", *sorted(installed)), environment)]
+    if not pins:
+        return None
+    current = running_hermes_version()
+    try:
+        Version(current)
+    except InvalidVersion:
+        return None
+    rejected = [str(requirement) for requirement in pins
+                if not requirement.specifier.contains(current, prereleases=True)]
+    return f"requires {rejected[0]}, running {current}" if rejected else None
+
+
+def hermes_fit_error(declaration, extras: Iterable[str] | None = None) -> Optional[str]:
+    """Why this Hermes is not one the plugin accepts: its ``requires_hermes`` or an applicable
+    ``hermes-agent`` requirement rejects the running version. Either verdict is only as good as
+    our version identity, so a selected misfit sits out of the build (config untouched) and
+    rejoins once it flips; admission refuses it."""
+    from hermes_cli.plugins_manifest import requires_hermes_error
+
+    return requires_hermes_error(declaration.manifest) or core_requirement_error(declaration, extras)
+
+
+def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: Iterable[str] = (),
+                      target: Mapping[str, str] | None = None) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
     import tomllib
@@ -313,9 +622,14 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         # package metadata its backend produces.
         # tool.uv.package = true opts into uv package mode: real build metadata, so buildable.
         virtual = "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True
-        changed = declaration.install_requirements != declaration.requirements
-        if changed:
+        changed = False
+        if declaration.install_requirements != declaration.requirements:
             document["project"]["dependencies"] = list(declaration.install_requirements)
+            changed = True
+        if virtual:
+            # Before the extras pass, so its self-reference closure reads the names uv will see.
+            _rename_virtual_member(document, f"hermes-plugin-{key}")
+        changed = _runtime_member_metadata(document, extras, target) or changed
         for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
             for spec in sources if isinstance(sources, list) else [sources]:
                 if not isinstance(spec, dict) or "path" not in spec:
@@ -328,8 +642,6 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                     continue  # The referenced tree was copied with this member.
                 spec["path"] = (identity / relative).resolve().as_posix()
                 changed = True
-        if virtual:
-            document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
         project = document.get("project")
         # uv rejects any [project] table whose version is neither set nor dynamic, at
         # parse time and for buildable members too, so a version-less member would abort
@@ -423,7 +735,7 @@ def lock_and_sync(
     if root.exists() or root.is_symlink():
         raise InstallError("venv", f"workspace must be fresh: {root}")
     if replay is None:
-        _generate_pyproject(plugin_dirs, root, source=source, python=environment.python)
+        _generate_pyproject(plugin_dirs, root, source=source, python=environment.python, extras=extras)
         if seed_lock is not None:
             (root / "uv.lock").write_bytes(seed_lock.read_bytes())
     else:

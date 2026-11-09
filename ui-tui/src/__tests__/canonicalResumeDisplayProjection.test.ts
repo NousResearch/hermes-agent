@@ -1,7 +1,7 @@
+import { canonicalRequest, canonicalResult } from '@hermes/shared/gateway-canonical'
 import { expect, it } from 'vitest'
 
 import { lastTurnRewind } from '../app/slash/canonicalSessionCommands.js'
-import { canonicalRequest, canonicalResult } from '../canonicalGateway.js'
 import { toTranscriptMessages } from '../domain/messages.js'
 
 // TUI parity (PR #106742 rows 12b/31/32): a resumed canonical session renders main's display

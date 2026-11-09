@@ -1,0 +1,25 @@
+name: permission-canvas
+title: Permission Canvas
+repo: https://github.com/TANGBUDU/permission-canvas
+sha: 3a3086066051f5cc7a6ee52c20d62395b814da3f
+version: "0.5.13"
+requires_hermes: ">=0.23.0"
+description: "Per-control permissions for the computer_use tool. In a native panel you preview the target window privately, click any control and set it to Allow, Read only, Ask first or Hide. The backend enforces the choice before every input and before a screenshot or accessibility tree reaches the model: read-only controls refuse clicks, typing and value changes; ask-first operations wait for a one-time human approval of the exact action and arguments; hidden controls are removed from the tree and their pixels masked, and a capture that cannot be masked reliably is refused. New profiles start paused with unknown controls set to Ask first. Select it with computer_use.backend: permission-canvas; adds the /pc-canvas and /pc-approve commands. Validated on Windows with cua-driver 0.21 and 0.39. Disclosure — launches cua-driver (telemetry disabled) and a bounded Windows accessibility helper as local subprocesses while the backend runs, reads the selected window's pixels and accessibility data, stores policy, approval records, an audit log and the latest redacted capture in its own data directory, and opens a local Tkinter panel on /pc-canvas; no network calls, no credentials, no telemetry. Protects only actions routed through this backend; it is not an OS sandbox."
+maintainer: TANGBUDU
+tier: community
+category: tools
+docs_url: https://github.com/TANGBUDU/permission-canvas/tree/3a3086066051f5cc7a6ee52c20d62395b814da3f#readme
+screenshots:
+  - https://raw.githubusercontent.com/TANGBUDU/permission-canvas/3a3086066051f5cc7a6ee52c20d62395b814da3f/docs/canvas-preview-dark.png
+  - https://raw.githubusercontent.com/TANGBUDU/permission-canvas/3a3086066051f5cc7a6ee52c20d62395b814da3f/docs/canvas-preview-light.png
+readme: true
+platforms: [windows]
+known_issues:
+  - "Desktop behaviour is validated on Windows only. Other native desktops need permission_canvas.desktop: native and are experimental."
+  - "Only actions routed through this computer_use backend are protected. Disable terminal, file, browser and other tools that could bypass it."
+  - "A Chromium window covered by another window at startup can report browser_page_unavailable until it is brought to the foreground."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

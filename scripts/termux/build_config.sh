@@ -21,7 +21,7 @@ PYTHON_ABI="cp314"
 # it is a native wheel that uv (rightly) refuses to install onto bionic,
 # and the rust-backend sdists (pydantic-core, jiter, ...) build through
 # ISOLATION, where the sdist's own constraint fetches the backend fresh.
-TOOLCHAIN_PINS=(setuptools==83.0.0 cython==3.3.0 pybind11==3.1.0)
+TOOLCHAIN_PINS=(setuptools==84.1.0 cython==3.3.0 pybind11==3.1.0)
 
 # pm package names staged for the payload (linux-arm64-bionic rows).
 PAYLOAD_PYTHON_PKG=python

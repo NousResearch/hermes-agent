@@ -73,12 +73,12 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
-    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, ssrf_redirect_guard,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, transcode_to_ogg_opus,
+    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, safe_proxy_url_for_log, ssrf_redirect_guard, describe_proxy_error,
 )
-from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -352,6 +352,8 @@ class _MatrixApprovalPrompt:
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
+    request_id: str | None = None  # the tools.approval request this prompt answers
+    offered: tuple[str, ...] = ()  # choices the card seeded; a Deny-only card offers only "deny"
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
 
@@ -484,7 +486,7 @@ def _create_matrix_session(proxy_url: str | None):
             return aiohttp.ClientSession(connector=ProxyConnector.from_url(proxy_url, rdns=True))
         except ImportError:
             logger.warning(
-                "aiohttp_socks not installed — SOCKS proxy %s ignored. Run: pip install aiohttp-socks", proxy_url)
+                "aiohttp_socks not installed — SOCKS proxy %s ignored. Run: pip install aiohttp-socks", safe_proxy_url_for_log(proxy_url))
             return aiohttp.ClientSession(trust_env=gateway_trust_env())
     return aiohttp.ClientSession(proxy=proxy_url)
 
@@ -878,7 +880,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._reaction_redaction_tasks: set[asyncio.Task] = set()
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
         if self._proxy_url:
-            logger.info("Matrix: proxy configured — %s", self._proxy_url)
+            logger.info("Matrix: proxy configured — %s", safe_proxy_url_for_log(self._proxy_url))
         self._max_media_bytes = _env_number("MATRIX_MAX_MEDIA_BYTES", 100 * 1024 * 1024, int)
         # Text batching merges client-side splits (~4000 chars) of one long message.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6"))
@@ -1120,8 +1122,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 if resolved_user_id:
                     self._user_id = str(resolved_user_id)
                     client.mxid = UserID(self._user_id)
-                # The configured device_id wins when whoami() reports none, but a token can
-                # only upload keys for its own device — on conflict whoami() wins, loudly.
+                # Configured device_id wins when whoami() reports none; on conflict whoami() wins, loudly.
                 if resolved_device_id and self._device_id and resolved_device_id != self._device_id:
                     logger.error(
                         "Matrix: MATRIX_DEVICE_ID=%s does not match the device this access token "
@@ -1154,8 +1155,9 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: using access token for %s%s", self._user_id or "(unknown user)",
                     f" (device {effective_device_id})" if effective_device_id else "")
             except Exception as exc:
-                logger.error(
-                    "Matrix: whoami failed — check MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER: %s", exc, exc_info=True)
+                proxy_error = describe_proxy_error(exc, matrix_redaction_proxy(self._proxy_url, self._homeserver))
+                logger.error("Matrix: whoami failed — check MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER: %s",
+                             proxy_error or exc, exc_info=not proxy_error)
                 return await self._abort_connect(api)
         elif self._password and self._user_id:
             try:
@@ -1166,7 +1168,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     client.device_id = resp.device_id
                 logger.info("Matrix: logged in as %s", self._user_id)
             except Exception as exc:
-                logger.error("Matrix: login failed — %s", exc)
+                logger.error("Matrix: login failed — %s", describe_proxy_error(exc, matrix_redaction_proxy(self._proxy_url, self._homeserver)) or exc)
                 return await self._abort_connect(api)
         else:
             logger.error("Matrix: need MATRIX_ACCESS_TOKEN or MATRIX_USER_ID + MATRIX_PASSWORD")
@@ -1304,7 +1306,7 @@ class MatrixAdapter(BasePlatformAdapter):
             else:
                 logger.warning("Matrix: initial sync returned unexpected type %s", type(sync_data).__name__)
         except Exception as exc:
-            logger.warning("Matrix: initial sync error: %s", exc)
+            logger.warning("Matrix: initial sync error: %s", describe_proxy_error(exc, matrix_redaction_proxy(self._proxy_url, self._homeserver)) or exc)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._device_id_unverified = False
@@ -1683,9 +1685,10 @@ class MatrixAdapter(BasePlatformAdapter):
         tier = "once"
         if not prompt.smart_denied:
             tier = "always" if "always" in choices else ("session" if "session" in choices else "once")
+        # A Deny-only card (command not shown in full) must not tell the user how to approve it.
+        hint = f"{t(self._EA_TYPED_HINT_KEYS[tier])}\n\n" if "once" in choices else ""
         text = (
-            f"{prompt.text}\n\n"
-            f"{t(self._EA_TYPED_HINT_KEYS[tier])}\n\n"
+            f"{prompt.text}\n\n{hint}"
             f"{t('platform.matrix.approval.legend_intro')}\n" + "\n".join(t(self._EA_LEGEND_KEYS[c]) for c in choices))
         reactions = tuple(self._EA_REACTIONS[c] for c in choices)
         session_key, chat_id = prompt.session_key, prompt.chat_id
@@ -1697,7 +1700,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session[session_key] = message_id
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
+                expires_at=expires_at, request_id=prompt.request_id, offered=tuple(choices))
         return await self._send_reaction_prompt(
             chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
@@ -1875,9 +1878,9 @@ class MatrixAdapter(BasePlatformAdapter):
                     return
                 # Detect permanent auth/permission failures. Transient 5xx outages must retry.
                 if _is_permanent_matrix_auth_error(exc):
-                    logger.error("Matrix: permanent auth error, stopping sync: %s", exc)
+                    logger.error("Matrix: permanent auth error, stopping sync: %s", describe_proxy_error(exc, matrix_redaction_proxy(self._proxy_url, self._homeserver)) or exc)
                     return
-                logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
+                logger.warning("Matrix: sync error: %s — retrying in 5s", describe_proxy_error(exc, matrix_redaction_proxy(self._proxy_url, self._homeserver)) or exc)
                 await asyncio.sleep(5)
 
     async def _absorb_sync(self, client: Any, sync_data: dict[str, Any], *, initial: bool = False) -> Optional[str]:
@@ -2544,17 +2547,26 @@ class MatrixAdapter(BasePlatformAdapter):
             choices=self._approval_reaction_map)
         if choice is None:
             return handled
+        if prompt.offered and choice not in prompt.offered:  # a hand-added ✅ on a Deny-only card: keep it live
+            await self._send_invalid_reaction_feedback(room_id, reacts_to, t("platform.matrix.approval.invalid_reaction"))
+            return True
+        from gateway.approval_actor import approval_refusal, refusal_text
+        if requester := approval_refusal(prompt.session_key, sender, extra=self.config.extra, request_id=prompt.request_id):
+            await self._send_invalid_reaction_feedback(room_id, reacts_to, refusal_text(requester))
+            return True
         try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(prompt.session_key, choice)
+            from tools.approval import resolve_gateway_approval_card
+            count = resolve_gateway_approval_card(prompt.session_key, choice, prompt.request_id,
+                                                  actor_id=sender, extra=self.config.extra)
             if count:
                 prompt.resolved = True
                 self._approval_prompts_by_event.pop(reacts_to, None)
                 self._approval_prompt_by_session.pop(prompt.session_key, None)
-                logger.info(
-                    "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, prompt.session_key, choice, sender)
+                logger.info("Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                            count, prompt.session_key, choice, sender)
                 await self._redact_bot_approval_reactions(room_id, prompt)
+            else:  # this card's request already timed out or was answered elsewhere
+                await self._expire_matrix_approval_prompt(room_id, reacts_to, prompt)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
         return True
@@ -2614,17 +2626,14 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _validate_matrix_prompt_reactor(
         self, room_id: str, target_event_id: str, sender: str, prompt: Any, prompt_label: str) -> bool:
         if not self._is_authorized_user(sender, room_id):
-            logger.info(
-                "Matrix: ignoring %s reaction from unauthorized user %s on %s", prompt_label, sender, target_event_id)
-            await self._send_invalid_reaction_feedback(
-                room_id, target_event_id, t("platform.matrix.reaction.unauthorized"))
+            logger.info("Matrix: ignoring %s reaction from unauthorized user %s on %s", prompt_label, sender, target_event_id)
+            await self._send_invalid_reaction_feedback(room_id, target_event_id, t("platform.matrix.reaction.unauthorized"))
             return False
         requester = getattr(prompt, "requester_user_id", None)
         # getattr: object.__new__-built test doubles may lack the attribute.
         if getattr(self, "_approval_require_sender", True) and requester and sender != requester:
             logger.info("Matrix: ignoring %s reaction from %s; requester is %s", prompt_label, sender, requester)
-            await self._send_invalid_reaction_feedback(
-                room_id, target_event_id, t("platform.matrix.reaction.not_requester"))
+            await self._send_invalid_reaction_feedback(room_id, target_event_id, t("platform.matrix.reaction.not_requester"))
             return False
         return True
 

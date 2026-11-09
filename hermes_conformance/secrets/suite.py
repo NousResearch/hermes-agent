@@ -78,10 +78,10 @@ class Backend:
     - ``levels``: the ownership levels the backend holds (:data:`LEVELS` names them).
     - ``managed_key()``: REQUIRED. While the context is active, the key it yields is
       refused by the backend's write path with a plain error — not the store's refusal —
-      with the caller's value already bound in the write's own frames: a backend with a
-      managed-key write lock pins one. A backend that cannot hold managed keys must supply
-      a hook that fails the yielded key's write some other plain way, or this failure path
-      of its write goes untested.
+      raised where the port's structure puts every check that can fail: before the value is
+      bound in any frame below the write method (a backend whose write lock refuses only
+      part-way through the write fails there instead, its plain error re-made fresh like any
+      other writer failure). A backend with a managed-key write lock pins one.
     - ``fail_writes()``: REQUIRED. While the context is active, the seeded agent ``"a"``'s
       writes fail part-way through with an ``OSError``, with the caller's value (or record)
       already bound in the writer's frames — a plain I/O failure, not the store's refusal.
@@ -199,7 +199,10 @@ def _plaintext_forms(marker: str) -> tuple[str, ...]:
         if escaped != marker:
             forms.add(escaped)
     stripped = marker.replace("\n", "").replace("\r", "")
-    if stripped and stripped != marker:
+    if len(stripped) >= 16 and stripped != marker:
+        # A shorter stripped form is a fragment short enough to appear in unrelated text (a
+        # one-letter marker of "a\n" would flag every frame holding "cat"), so it is hunted
+        # only for markers whose stripped form is substantial.
         forms.add(stripped)
     return tuple(forms)
 

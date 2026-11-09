@@ -136,3 +136,25 @@ def test_rich_currency_escape_does_not_backtrack_on_tex_commands(adapter, markdo
     started = time.perf_counter()
     adapter._rich_message_payload(markdown)
     assert time.perf_counter() - started < 2.0
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected"),
+    [
+        ("Already underway in [Long-Term Fix](Long-Term Fix).", "Already underway in Long\\-Term Fix\\."),
+        ("See [Run](@session:default/20260101_abc).", "See Run\\."),
+        ("[Docs](https://example.com/a_b)", "[Docs](https://example.com/a_b)"),
+        ("[me](tg://user?id=1) [w](example.com)", "[me](tg://user?id=1) [w](example.com)"),
+    ],
+)
+def test_link_targets_telegram_cannot_open_degrade_to_label(adapter, markdown, expected):
+    out = adapter.format_message(markdown)
+    assert out == expected
+    assert mdv2_error(out) is None
+
+
+@pytest.mark.parametrize("span", ["``[k](v w)``", "``a ` [k](v w)``", "`[k](v w)`"])
+def test_link_shaped_text_inside_a_code_span_stays_verbatim(span):
+    from plugins.platforms.telegram.telegram_markdown import degrade_unrenderable_links
+
+    assert degrade_unrenderable_links(f"use {span} then [x](y)") == f"use {span} then x"

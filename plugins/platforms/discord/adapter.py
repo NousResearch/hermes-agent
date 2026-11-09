@@ -255,9 +255,7 @@ except ImportError:
     Intents = Any
     commands = None
 
-import sys
 from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 
 def _is_discord_transport_error(exc: BaseException) -> bool:

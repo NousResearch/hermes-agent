@@ -32,7 +32,10 @@ except ImportError:
 import sys
 from pathlib import Path as _Path
 
-sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+_checkout_root = _Path(__file__).resolve().parents[3]
+# Append, never prepend: the checkout must not shadow same-named installed packages.
+if str(_checkout_root) not in sys.path:
+    sys.path.append(str(_checkout_root))
 
 from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
 from agent.i18n import t

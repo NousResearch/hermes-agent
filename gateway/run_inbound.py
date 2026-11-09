@@ -650,6 +650,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return True, None
         return False, None
 
+    def _hm_drop_held_input(self, event: MessageEvent) -> None:
+        """An idle /stop, /new or /reset past the slash-access gate and command hooks: the text or media
+        burst the receiving adapter still holds is the old chat's, so it never becomes a turn after
+        the command (#81370). A refused or hook-denied command leaves the caller's input alone."""
+        if (adapter := self._intake_adapter_for(event.source)) is not None:
+            adapter._discard_text_debounce(adapter._event_session_key(event))
+
     async def _hm_stop_owner_turn(self, _quick_key: str) -> None:
         """Messaging /stop and /new (busy, idle or confirmed) act on the authority's turn, as main
         cancelled the adapter task that ran it and dropped its pending slot. Cancels the still-queued
@@ -693,8 +700,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     def _hm_busy_telegram_grace_queue(
         self, event: MessageEvent, source: SessionSource, _quick_key: str, effective_busy_input_mode: str
     ) -> bool:
-        """Queue a Telegram text follow-up that lands within the post-start grace window."""
-        _grace = float(os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0"))
+        """Queue a Telegram text follow-up that lands within the post-start grace window.
+
+        Invalid or empty ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS`` falls back to 3.0
+        via ``_float_env`` — a config typo must not crash the inbound handler.
+        """
+        from gateway.run import _float_env
+        _grace = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
         _grace_state = self._peek_session_state(_quick_key)
         _started_at = _grace_state.turn.started_ts if _grace_state else 0
         if not (
@@ -852,7 +864,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     ) -> tuple[bool, Optional[str], Optional[str], Optional[str]]:
         """Resolve the slash command (aliases, access gate, hooks) → ``(handled, result, command,
         canonical)``; when ``handled`` the caller returns ``result`` as-is (may be None)."""
-        from hermes_cli.commands import is_gateway_known_command, resolve_command as _resolve_cmd
+        from hermes_cli.commands import (is_gateway_known_command, is_interrupt_then_dispatch,
+                                         resolve_command as _resolve_cmd)
 
         def _canon(cmd):
             # Aliases resolve to the canonical name so dispatch and hook names don't depend on them.
@@ -891,6 +904,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if new_command is not None:
             command = new_command
             _cmd_def, canonical = _canon(command)
+        if is_interrupt_then_dispatch(canonical):
+            self._hm_drop_held_input(event)
         return False, None, command, canonical
 
     async def _hm_confirm_destructive(self, event, command: str, detail: str, handler) -> tuple[bool, Optional[str]]:

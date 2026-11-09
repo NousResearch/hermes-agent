@@ -4557,7 +4557,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _attach_to_host_gateway_or_guard(force=force, replace=replace)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
-    sys.path.insert(0, str(PROJECT_ROOT))
+    sys.path[:0] = [] if str(PROJECT_ROOT) in sys.path else [str(PROJECT_ROOT)]
     _apply_startup_watchdog_config()
     from hermes_cli.observability.shared_metrics_process import begin_process
     begin_process("gateway")

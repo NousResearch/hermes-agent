@@ -482,6 +482,10 @@ TELEGRAM_CRON_THREAD_ID=<topic_thread_id>
 
 `TELEGRAM_CRON_THREAD_ID` overrides `TELEGRAM_HOME_CHANNEL_THREAD_ID` for cron deliveries only. Replies in that topic continue the topic's existing session.
 
+## Shared Contacts and Locations
+
+A contact card or location pin you share with the bot reaches the agent as a short text block (name, phone number and vCard for a contact; coordinates and venue for a location), so the agent can act on it.
+
 ## Voice Messages
 
 ### Incoming Voice (Speech-to-Text)
@@ -904,7 +908,7 @@ A ChatGPT-style multi-session DM — one bot, many parallel conversations. Unlik
 
 | Form | Context | Effect |
 |------|---------|--------|
-| `/topic` | Root DM, not yet enabled | Check BotFather capabilities, enable multi-session mode, create pinned System topic |
+| `/topic` | Root DM, not yet enabled | Check BotFather capabilities, enable multi-session mode |
 | `/topic` | Root DM, already enabled | Show status: unlinked sessions available for restore |
 | `/topic` | Inside a topic | Show the current topic's session binding |
 | `/topic help` | Any | Inline usage |
@@ -947,8 +951,7 @@ Hermes will:
 
 1. Check `getMe().has_topics_enabled` and `allows_users_to_create_topics`
 2. If both are true, enable multi-session topic mode for this DM
-3. Create and pin a **System** topic for status/commands (best-effort)
-4. Reply with a list of previous unlinked Telegram sessions the user can restore
+3. Reply with a list of previous unlinked Telegram sessions the user can restore
 
 After activation, the **root DM is a lobby**: normal prompts are rejected with guidance pointing at **All Messages**. System commands (`/status`, `/sessions`, `/usage`, `/help`, etc.) still work in the root.
 
@@ -1275,6 +1278,8 @@ Default: `false`.
 With `guest_mode: true`, a message from a non-allowlisted group is processed **only** if it explicitly @mentions the bot. The mention is required every turn — there's no session stickiness for guest interactions, so the bot never auto-engages in a friend group thread it isn't pinged into.
 
 DMs and allowlisted groups behave exactly as before.
+
+Broadcast **channel** posts run the same `allowed_chats`, `require_mention` and topic gates as groups, but never get the guest bypass: anyone with posting rights in a channel could otherwise cross the allowlist. Add the channel's ID to `allowed_chats` and @mention the bot in a post to address it.
 
 ## Slash Command Access Control
 

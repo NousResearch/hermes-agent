@@ -430,8 +430,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
+if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
+    sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
@@ -3921,12 +3921,9 @@ class BasePlatformAdapter(ABC):
             # say so once per adapter (#102260).
             if not getattr(self, "_no_message_handler_logged", False):
                 self._no_message_handler_logged = True
-                logger.error(
-                    "[%s] Dropping inbound message: no gateway message handler "
-                    "is installed on this adapter. The adapter is connected and "
-                    "can send, but every inbound message is discarded.",
-                    self.name,
-                )
+                logger.error("[%s] Dropping inbound message: no gateway message handler is installed on this "
+                             "adapter. The adapter is connected and can send, but every inbound message is "
+                             "discarded.", self.name)
             return
 
         if event.allow_gateway_control:

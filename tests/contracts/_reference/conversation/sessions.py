@@ -9,6 +9,7 @@ Retirement fencing: the delete verbs commit through the scope's shared :class:`A
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import threading
@@ -116,7 +117,7 @@ def blank_session_row(session_id: str, *, lineage_kind: Any, model_config: Optio
         "cwd_generation": 0,
         "transcript_revision": 0,
         "compression_fork": False,
-        "model_config": dict(model_config or {}),
+        "model_config": copy.deepcopy(dict(model_config or {})),
         # Whether a config was ever written: an empty create stores none, which a later create fills; an explicit empty config is kept.
         "model_config_stored": bool(model_config),
         "system_prompt": None,
@@ -245,7 +246,7 @@ class InMemorySessionRepository(SessionTitlesConfigMixin, SessionDeleteMixin, Se
     def _record(self, scope: ProfileScope, row: Mapping[str, Any], *, resolve_tool_pin: bool = True) -> SessionRecord:
         """The one place a :class:`SessionRecord` is built from a stored row. Pins are stored content-addressed; a read that does not join ``tool_names`` to the prompt store (``resolve_tool_pin=False``) carries the hash, so its ``tool_pin`` is ``None``."""
         # A planted raw cell (text) reads as the store reads it: tolerant decode, with the corrupt flag.
-        config = parse_model_config(row["model_config"])
+        config = copy.deepcopy(parse_model_config(row["model_config"]))
         prompt = row["system_prompt"]
         pin = row["tool_pin"]
         return SessionRecord(
@@ -258,7 +259,7 @@ class InMemorySessionRepository(SessionTitlesConfigMixin, SessionDeleteMixin, Se
             chat_type=row["chat_type"],
             thread_id=row["thread_id"],
             display_name=row["display_name"],
-            origin=dict(row["origin"]) if row["origin"] else None,
+            origin=copy.deepcopy(dict(row["origin"])) if row["origin"] else None,
             expiry_finalized=bool(row.get("expiry_finalized")),
             model=row["model"],
             model_config=config,
@@ -397,7 +398,7 @@ class InMemorySessionRepository(SessionTitlesConfigMixin, SessionDeleteMixin, Se
 
     def create(self, spec: NewSession) -> SessionId:
         scope = self._backend.scope
-        config = dict(spec.model_config or {})
+        config = copy.deepcopy(dict(spec.model_config or {}))
         if marker := _MARKER_BY_KIND.get(spec.lineage_kind):
             config[marker] = spec.parent_session_id
         table = self._table(scope)
@@ -417,7 +418,7 @@ class InMemorySessionRepository(SessionTitlesConfigMixin, SessionDeleteMixin, Se
         row = blank_session_row(spec.session_id, lineage_kind=spec.lineage_kind, model_config=config)
         for field in (*_SPEC_FIELDS, *_SEAM_FIELDS, "user_id"):
             row[field] = getattr(spec, field)
-        row["origin"] = dict(spec.origin) if spec.origin else None
+        row["origin"] = copy.deepcopy(dict(spec.origin)) if spec.origin else None
         row["source"] = spec.source
         row["created_source"] = spec.source
         owner = self._backend.owner_profile
@@ -434,7 +435,7 @@ class InMemorySessionRepository(SessionTitlesConfigMixin, SessionDeleteMixin, Se
         for field in (*_SPEC_FIELDS, *_SEAM_FIELDS):
             value = getattr(spec, field)
             if row[field] is None and value is not None:
-                row[field] = dict(value) if field == "origin" else value
+                row[field] = copy.deepcopy(dict(value)) if field == "origin" else value
         if row["source"] == "unknown":
             row["source"] = spec.source
         if row.get("created_source") in _UNSET_CREATED and spec.source != "local":

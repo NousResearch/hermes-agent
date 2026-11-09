@@ -46,10 +46,11 @@ it('provides translated canonical group controls and recovery copy in every supp
   }
 })
 
-
 it('translates group chat opening feedback in every supported locale', () => {
   for (const [locale, copy] of Object.entries(TRANSLATIONS)) {
-    if (locale === 'en') {continue}
+    if (locale === 'en') {
+      continue
+    }
 
     for (const key of ['opening', 'lookupFailed', 'missing'] as const) {
       expect(copy.gatewayGroupOpen[key], `${locale}.${key}`).not.toBe(TRANSLATIONS.en.gatewayGroupOpen[key])

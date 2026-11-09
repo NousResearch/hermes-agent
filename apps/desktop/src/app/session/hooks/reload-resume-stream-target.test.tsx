@@ -157,46 +157,49 @@ async function journalLiveRowBeforeReload() {
 it.each([
   ['the in-flight journal', true, undefined],
   ['the backend in-flight projection', false, { user: 'U2 second', assistant: 'A2 ', streaming: true }]
-] as const)('a reply streaming across a reload extends the live row %s restored', async (_label, journaled, inflight) => {
-  if (journaled) {
-    await journalLiveRowBeforeReload()
+] as const)(
+  'a reply streaming across a reload extends the live row %s restored',
+  async (_label, journaled, inflight) => {
+    if (journaled) {
+      await journalLiveRowBeforeReload()
+    }
+
+    const { result } = mount({
+      session_id: runtimeId,
+      resumed: storedId,
+      messages: storedRows,
+      message_count: 3,
+      running: true,
+      turn_started_at: 19,
+      ...(inflight ? { inflight } : {})
+    } as SessionResumeResult)
+
+    await act(async () => {
+      await result.current.actions.resumeSession(storedId, true)
+    })
+
+    const send = (type: GatewayEvent['type'], payload: GatewayEvent['payload']) =>
+      act(() => result.current.stream.handleGatewayEvent({ session_id: runtimeId, type, payload } as GatewayEvent))
+
+    send('message.delta', { text: 'finished after the reload' })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150)
+    })
+
+    const replies = () => {
+      const rows = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+      const prompt = rows.findLastIndex(row => row.role === 'user')
+
+      return rows.slice(prompt + 1).filter(row => row.role === 'assistant' && chatMessageText(row).trim())
+    }
+
+    expect(replies().map(row => chatMessageText(row).trim())).toEqual(['A2 finished after the reload'])
+
+    send('message.complete', { text: 'A2 finished after the reload', status: 'complete' })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150)
+    })
+
+    expect(replies().map(row => chatMessageText(row).trim())).toEqual(['A2 finished after the reload'])
   }
-
-  const { result } = mount({
-    session_id: runtimeId,
-    resumed: storedId,
-    messages: storedRows,
-    message_count: 3,
-    running: true,
-    turn_started_at: 19,
-    ...(inflight ? { inflight } : {})
-  } as SessionResumeResult)
-
-  await act(async () => {
-    await result.current.actions.resumeSession(storedId, true)
-  })
-
-  const send = (type: GatewayEvent['type'], payload: GatewayEvent['payload']) =>
-    act(() => result.current.stream.handleGatewayEvent({ session_id: runtimeId, type, payload } as GatewayEvent))
-
-  send('message.delta', { text: 'finished after the reload' })
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(150)
-  })
-
-  const replies = () => {
-    const rows = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
-    const prompt = rows.findLastIndex(row => row.role === 'user')
-
-    return rows.slice(prompt + 1).filter(row => row.role === 'assistant' && chatMessageText(row).trim())
-  }
-
-  expect(replies().map(row => chatMessageText(row).trim())).toEqual(['A2 finished after the reload'])
-
-  send('message.complete', { text: 'A2 finished after the reload', status: 'complete' })
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(150)
-  })
-
-  expect(replies().map(row => chatMessageText(row).trim())).toEqual(['A2 finished after the reload'])
-})
+)

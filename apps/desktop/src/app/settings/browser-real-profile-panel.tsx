@@ -122,7 +122,11 @@ export function BrowserRealProfilePanel({ profile }: BrowserRealProfilePanelProp
 
   return (
     <ToggleRow
-      below={enabled ? <RowFootnoteAction onClick={() => void reimport()}>{copy.reimportSignins}</RowFootnoteAction> : undefined}
+      below={
+        enabled ? (
+          <RowFootnoteAction onClick={() => void reimport()}>{copy.reimportSignins}</RowFootnoteAction>
+        ) : undefined
+      }
       checked={enabled}
       description={copy.description}
       disabled={busy || !config}

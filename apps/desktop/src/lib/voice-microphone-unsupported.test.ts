@@ -13,11 +13,16 @@ it('live voice fails with "microphone unsupported" without mediaDevices, before 
   expect(navigator.mediaDevices).toBeUndefined()
   const peers = vi.fn()
 
-  vi.stubGlobal('RTCPeerConnection', class {
-    constructor() { peers() }
-    addEventListener() {}
-    close() {}
-  })
+  vi.stubGlobal(
+    'RTCPeerConnection',
+    class {
+      constructor() {
+        peers()
+      }
+      addEventListener() {}
+      close() {}
+    }
+  )
 
   const session = new VoiceLiveSession({ onClosed: vi.fn(), onDelegation: vi.fn(), onError: vi.fn() })
   const failure = await session.start([]).catch((error: unknown) => error)

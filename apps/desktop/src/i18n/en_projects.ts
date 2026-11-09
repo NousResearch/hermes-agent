@@ -81,5 +81,16 @@ export const enProjects: Translations['sidebar']['projects'] = {
   reorder: label => `Reorder ${label}`,
   toggle: (label, open) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
   showAllCount: count => `Show all ${count} sessions`,
-  back: 'All projects'
+  back: 'All projects',
+  switchCurrentChat: 'Switch current chat',
+  openProject: 'Open project',
+  newChat: 'New chat',
+  defaultForNewChats: 'Default for new chats',
+  setDefaultFailed: 'Could not set the default project',
+  manageProjects: 'Manage projects…',
+  chooseFolder: 'Choose a folder',
+  noProjects: 'No projects',
+  removeFolderConfirm: 'Remove this folder from the project? Files on disk stay untouched.',
+  removeFolderFailed: 'Could not remove folder',
+  setPrimaryFailed: 'Could not set the primary folder'
 }

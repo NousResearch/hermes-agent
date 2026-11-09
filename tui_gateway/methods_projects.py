@@ -21,7 +21,8 @@ def _projects_payload(conn) -> dict:
     from hermes_cli import projects_db as pdb
     return {
         "projects": [p.to_dict() for p in pdb.list_projects(conn, include_archived=True)],
-        "active_id": pdb.get_active_id(conn)}
+        "active_id": pdb.get_active_id(conn),
+        "default_id": pdb.get_default_id(conn)}
 
 
 def _projects_method(name: str):
@@ -118,6 +119,14 @@ def _(rid, params, pdb, conn) -> dict:
 def _(rid, params, pdb, conn) -> dict:
     pdb.set_active(conn, _require_project(pdb, conn, params).id if params.get("id") else None)
     return _ok(rid, {"active_id": pdb.get_active_id(conn)})
+
+
+@_projects_method("projects.set_default")
+def _(rid, params, pdb, conn) -> dict:
+    """The default project for FUTURE chats; ``id``/null like ``projects.set_active`` but
+    validated against an existing, non-archived project and stored independently of active."""
+    pdb.set_default(conn, _require_project(pdb, conn, params).id if params.get("id") else None)
+    return _ok(rid, {"default_id": pdb.get_default_id(conn)})
 
 
 @_projects_method("projects.for_cwd")
@@ -340,8 +349,8 @@ def _project_tree_row(r: dict) -> dict:
 
 def _project_tree_inputs(
     db, session_limit: int, *, include_discovered: bool
-) -> tuple[list[dict], list[dict], list[dict], str | None]:
-    """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
+) -> tuple[list[dict], list[dict], list[dict], str | None, str | None]:
+    """Gather (sessions, projects, discovered_repos, active_id, default_id) for build_tree.
     ``include_discovered`` is the zero-session-repo overview tier; drill-in skips it (and
     the distinct-cwd scan + git probes) on that per-turn path."""
     # compact_rows: selecting the system-prompt blob only to drop it costs tens of MB of reads.
@@ -361,12 +370,13 @@ def _project_tree_inputs(
                 conn, policy_key, preserve_unversioned=_repo_discovery_policy_is_default(policy))
         projects = [p.to_dict() for p in pdb.list_projects(conn)]
         active_id = pdb.get_active_id(conn)
+        default_id = pdb.get_default_id(conn)
         # backfill stays off the hot tree path — grouping uses the live resolver.
         discovered = []
         if include_discovered:
             discovered = _discover_repos_payload(
                 db, conn=conn, backfill=False, include_cached=policy["enabled"])
-    return sessions, projects, discovered, active_id
+    return sessions, projects, discovered, active_id, default_id
 
 
 # Per-build memo for `_dir_exists_cached`; cleared by every `_build_project_tree`.
@@ -384,10 +394,12 @@ def _dir_exists_cached(path: str) -> bool:
 def _build_project_tree(
     db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
 ) -> tuple[dict, str | None]:
-    """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
+    """Gather inputs and run the one authoritative builder. Returns (tree, active_id);
+    the tree dict also carries ``default_id`` so profile fan-out callers that share this
+    builder see the pointer without unpacking a third value."""
     from tui_gateway import project_tree
     _DIR_EXISTS_CACHE.clear()
-    sessions, projects, discovered, active_id = _project_tree_inputs(
+    sessions, projects, discovered, active_id, default_id = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered)
     # build_tree also resolves declared project folders and discovered roots — warm them too.
     git_probe.warm_roots(
@@ -397,6 +409,7 @@ def _build_project_tree(
         projects, sessions, discovered, git_probe.resolve, preview_limit=preview_limit,
         hydrate=hydrate, is_junk_root=_is_repo_junk, is_junk_cwd=_is_session_cwd_junk,
         exists=_dir_exists_cached)
+    tree["default_id"] = default_id
     return tree, active_id
 
 

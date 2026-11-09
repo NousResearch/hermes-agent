@@ -73,5 +73,16 @@ export const jaProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   removeWorktreeDirty:
     'このワークツリーにはコミットされていない変更があります。強制削除（変更を破棄）するか、レーンを隠してディスク上に残します。',
   forceRemove: '強制削除',
-  enter: label => `${label} を開く`
+  enter: label => `${label} を開く`,
+  switchCurrentChat: '現在のチャットを切り替え',
+  openProject: 'プロジェクトを開く',
+  newChat: '新規チャット',
+  defaultForNewChats: '新規チャットのデフォルト',
+  setDefaultFailed: 'デフォルトプロジェクトを設定できませんでした',
+  manageProjects: 'プロジェクトを管理…',
+  chooseFolder: 'フォルダーを選択',
+  noProjects: 'プロジェクトがありません',
+  removeFolderConfirm: 'このフォルダーをプロジェクトから削除しますか？ ディスク上のファイルは変更されません。',
+  removeFolderFailed: 'フォルダーを削除できませんでした',
+  setPrimaryFailed: 'プライマリフォルダーを設定できませんでした'
 }

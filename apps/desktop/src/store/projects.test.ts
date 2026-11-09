@@ -6,15 +6,18 @@ import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/proje
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 import { deferred } from '@/test/deferred'
 import type { ProjectInfo } from '@/types/hermes'
 
 import { $projectScope, ALL_PROJECTS, exitProjectScope } from './project-scope'
 import {
   $activeProjectId,
+  $defaultProjectId,
   $projects,
   $projectsRpcAvailable,
   $projectTree,
+  $startWorkSessionRequest,
   addProjectFolder,
   addProjectFolders,
   applyRenamedSessionTitle,
@@ -22,15 +25,20 @@ import {
   deleteProject,
   enterProject,
   fetchProjectSessions,
+  goToProject,
+  moveSessionToProject,
   openProjectCreate,
   pickProjectFolder,
   pickProjectFolders,
   projectIdForCwd,
   projectNameForCwd,
+  projectWorkspaceCwds,
   refreshProjects,
   refreshProjectTree,
+  removeProjectFolder,
   resolveNewSessionCwd,
   scanAndRecordRepos,
+  setDefaultProject,
   startWorkInRepo,
   updateProject
 } from './projects'
@@ -1247,6 +1255,389 @@ describe('project tree profile isolation', () => {
 
     expect(profileB?.id).toBe('profile-b')
     await expect(pendingDefault).resolves.toBeNull()
+  })
+})
+
+describe('default project', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $activeGatewayProfile.set('default')
+    $profiles.set([{ is_default: true, name: 'default' } as never])
+    $activeProjectId.set(null)
+    $defaultProjectId.set(null)
+    $projects.set([])
+    $projectTree.set([])
+    $projectScope.set(ALL_PROJECTS)
+    $selectedStoredSessionId.set(null)
+    $currentCwd.set('')
+    setShowAllProfiles(false)
+  })
+
+  it('populates $defaultProjectId from the projects.list payload', async () => {
+    const request = vi.fn(async () => ({ active_id: null, default_id: 'p_def', projects: [], scoped_session_ids: [] }))
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await refreshProjects()
+
+    expect($defaultProjectId.get()).toBe('p_def')
+  })
+
+  it('populates $defaultProjectId from the projects.tree payload', async () => {
+    const request = vi.fn(async () => ({
+      active_id: null,
+      default_id: 'p_tree',
+      projects: [],
+      scoped_session_ids: []
+    }))
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await refreshProjectTree()
+
+    expect($defaultProjectId.get()).toBe('p_tree')
+  })
+
+  it('setDefaultProject calls projects.set_default and only moves the default pointer', async () => {
+    const request = vi.fn(async () => ({ default_id: 'p_new_default' }))
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    $activeProjectId.set('p_active')
+    $projectScope.set('p_scoped')
+    $selectedStoredSessionId.set('sess-open')
+    $currentCwd.set('/somewhere/live')
+
+    await expect(setDefaultProject('p_new_default')).resolves.toBeUndefined()
+
+    expect(request).toHaveBeenCalledWith('projects.set_default', { id: 'p_new_default', profile: 'default' })
+    expect($defaultProjectId.get()).toBe('p_new_default')
+    // Setting the default must NOT retarget the open chat, the sidebar scope,
+    // the pinned active project, or the live workspace cwd.
+    expect($activeProjectId.get()).toBe('p_active')
+    expect($projectScope.get()).toBe('p_scoped')
+    expect($selectedStoredSessionId.get()).toBe('sess-open')
+    expect($currentCwd.get()).toBe('/somewhere/live')
+  })
+
+  it('setDefaultProject(null) clears the default', async () => {
+    $defaultProjectId.set('p_was')
+    const request = vi.fn(async () => ({ default_id: null }))
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(setDefaultProject(null)).resolves.toBeUndefined()
+
+    expect(request).toHaveBeenCalledWith('projects.set_default', { id: null, profile: 'default' })
+    expect($defaultProjectId.get()).toBeNull()
+  })
+
+  it('marks the backend stale and surfaces the translated error when projects.set_default is missing', async () => {
+    $projectsRpcAvailable.set(true)
+    activeGateway.mockReturnValue({
+      connectionState: 'open',
+      request: vi.fn().mockRejectedValue(new Error('unknown method: projects.set_default'))
+    } as never)
+
+    await expect(setDefaultProject('p_x')).rejects.toThrow('sidebar.projects.staleBackend')
+    expect($projectsRpcAvailable.get()).toBe(false)
+    expect($defaultProjectId.get()).toBeNull()
+  })
+
+  it('surfaces backend validation errors without touching the cached default', async () => {
+    $defaultProjectId.set('p_keep')
+    const failure = new Error('unknown project')
+    activeGateway.mockReturnValue({ connectionState: 'open', request: vi.fn().mockRejectedValue(failure) } as never)
+
+    await expect(setDefaultProject('p_unknown')).rejects.toBe(failure)
+    expect($defaultProjectId.get()).toBe('p_keep')
+  })
+})
+
+describe('resolveNewSessionCwd default-project priority', () => {
+  const treeProject = {
+    id: 'p_def',
+    label: 'Default',
+    path: '/repos/default',
+    repos: [],
+    sessionCount: 0
+  } satisfies SidebarProjectTree
+
+  beforeEach(() => {
+    $projectScope.set(ALL_PROJECTS)
+    $defaultProjectId.set(null)
+    $projectTree.set([])
+    $activeGatewayProfile.set('default')
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+  })
+
+  afterEach(() => {
+    applyConfiguredDefaultProjectDir(null)
+    $projectScope.set(ALL_PROJECTS)
+    $defaultProjectId.set(null)
+    $projectTree.set([])
+    $activeGatewayProfile.set('default')
+  })
+
+  it('uses the default project root before the configured default dir', () => {
+    $projectTree.set([treeProject])
+    $defaultProjectId.set('p_def')
+
+    expect(resolveNewSessionCwd()).toBe('/repos/default')
+  })
+
+  it('still prefers an explicit project scope over the default project', () => {
+    $projectTree.set([treeProject, { id: 'p_other', label: 'Other', path: '/repos/other', repos: [], sessionCount: 0 }])
+    $defaultProjectId.set('p_def')
+    enterProject('p_other')
+
+    expect(resolveNewSessionCwd()).toBe('/repos/other')
+  })
+
+  it('does not apply the active profile project scope or default project to another profile tile', () => {
+    // $projectScope / $defaultProjectId / $projectTree describe the ACTIVE
+    // profile. A tile naming a different profile must not inherit them — its
+    // new chat falls through to that profile's own folder prefs.
+    $activeGatewayProfile.set('alpha')
+    $projectTree.set([treeProject, { id: 'p_other', label: 'Other', path: '/repos/other', repos: [], sessionCount: 0 }])
+    $defaultProjectId.set('p_def')
+    enterProject('p_other')
+
+    expect(resolveNewSessionCwd('beta')).toBe('/home/user/configured')
+  })
+
+  it('stays detached inside Home even with a default project', () => {
+    $projectTree.set([treeProject])
+    $defaultProjectId.set('p_def')
+    enterProject(NO_PROJECT_ID)
+
+    expect(resolveNewSessionCwd()).toBe('')
+  })
+
+  it('falls through to the configured default when the default id is stale', () => {
+    $projectTree.set([treeProject])
+    $defaultProjectId.set('p_gone')
+
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+
+  it('falls through to the configured default when the default project has no folder', () => {
+    $projectTree.set([{ ...treeProject, path: null }])
+    $defaultProjectId.set('p_def')
+
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+})
+
+describe('projectWorkspaceCwds / explicit cwd flows', () => {
+  const project = {
+    id: 'p_multi',
+    label: 'Multi',
+    path: '/root/primary',
+    repos: [
+      { id: 'r1', label: 'a', path: '/root/primary', sessionCount: 0, groups: [] },
+      { id: 'r2', label: 'b', path: '/root/b', sessionCount: 0, groups: [] }
+    ],
+    sessionCount: 0
+  } satisfies SidebarProjectTree
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $activeGatewayProfile.set('default')
+    $profiles.set([{ is_default: true, name: 'default' } as never])
+    $projectTree.set([])
+    $sessions.set([])
+    $projectScope.set(ALL_PROJECTS)
+    $selectedStoredSessionId.set(null)
+    $currentCwd.set('')
+    $sessionStates.set({})
+    setShowAllProfiles(false)
+  })
+
+  it('projectWorkspaceCwds lists unique non-empty primary and repo paths', () => {
+    expect(projectWorkspaceCwds(project)).toEqual(['/root/primary', '/root/b'])
+    expect(
+      projectWorkspaceCwds({
+        ...project,
+        path: '  ',
+        repos: [{ id: 'r', label: 'x', path: '', sessionCount: 0, groups: [] }]
+      })
+    ).toEqual([])
+    expect(projectWorkspaceCwds(undefined)).toEqual([])
+  })
+
+  it('goToProject new-session flow honors an explicit cwd over the project root', () => {
+    $projectTree.set([project])
+
+    goToProject('p_multi', { newSession: true, cwd: '/root/b' })
+
+    expect($projectScope.get()).toBe('p_multi')
+    expect($startWorkSessionRequest.get()?.path).toBe('/root/b')
+    expect($startWorkSessionRequest.get()?.openTab).toBe(true)
+  })
+
+  it('goToProject keeps the primary-root behavior when no cwd is given', () => {
+    $projectTree.set([project])
+
+    goToProject('p_multi', { newSession: true })
+
+    expect($startWorkSessionRequest.get()?.path).toBe('/root/primary')
+  })
+
+  it('moveSessionToProject sends an explicit cwd to session.workspace.move', async () => {
+    const request = vi.fn().mockResolvedValue({ cwd: '/root/b' })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await moveSessionToProject('sess-1', 'p_multi', 'default', '/root/b')
+
+    expect(request).toHaveBeenCalledWith('session.workspace.move', {
+      cwd: '/root/b',
+      profile: 'default',
+      session_key: 'sess-1'
+    })
+  })
+
+  it('moveSessionToProject mirrors the moved cwd into the selected live chat state', async () => {
+    $projectTree.set([project])
+    $selectedStoredSessionId.set('sess-1')
+    $currentCwd.set('/old')
+    $sessions.set([{ cwd: '/old', id: 'sess-1' }] as never)
+    $sessionStates.set({ runtime: { cwd: '/old', storedSessionId: 'sess-1' } as never })
+    activeGateway.mockReturnValue({
+      connectionState: 'open',
+      request: vi.fn().mockResolvedValue({ cwd: '/root/b' })
+    } as never)
+
+    await moveSessionToProject('sess-1', 'p_multi', 'default', '/root/b')
+
+    expect($currentCwd.get()).toBe('/root/b')
+    expect($sessions.get()[0]?.cwd).toBe('/root/b')
+    expect($sessionStates.get().runtime?.cwd).toBe('/root/b')
+  })
+
+  it('moveSessionToProject keeps the primary-root default for existing callers', async () => {
+    $projectTree.set([project])
+    const request = vi.fn().mockResolvedValue({ cwd: '/root/primary' })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await moveSessionToProject('sess-1', 'p_multi')
+
+    expect(request).toHaveBeenCalledWith('session.workspace.move', {
+      cwd: '/root/primary',
+      session_key: 'sess-1'
+    })
+  })
+})
+
+describe('removeProjectFolder optimistic tree update', () => {
+  const multiFolderProject = {
+    id: 'p_multi',
+    label: 'Multi',
+    path: '/root/primary',
+    repos: [
+      { id: 'r1', label: 'a', path: '/root/primary', sessionCount: 0, groups: [] },
+      { id: 'r2', label: 'b', path: '/root/b', sessionCount: 0, groups: [] }
+    ],
+    sessionCount: 0
+  } satisfies SidebarProjectTree
+
+  const multiFolderInfo = {
+    archived: false,
+    board_slug: null,
+    color: null,
+    created_at: 0,
+    description: null,
+    folders: [
+      { added_at: 0, is_primary: true, label: null, path: '/root/primary' },
+      { added_at: 0, is_primary: false, label: null, path: '/root/b' }
+    ],
+    icon: null,
+    id: 'p_multi',
+    name: 'Multi',
+    primary_path: '/root/primary',
+    slug: 'multi'
+  } satisfies ProjectInfo
+
+  // The reconcile refresh is fire-and-forget; keep projects.tree pending so the
+  // assertions observe ONLY the synchronous optimistic layer.
+  const requestMock = () =>
+    vi.fn(
+      async (method: string) =>
+        method === 'projects.tree' ? new Promise(() => undefined) : {}
+    )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $activeGatewayProfile.set('default')
+    $profiles.set([{ is_default: true, name: 'default' } as never])
+    setShowAllProfiles(false)
+    $projects.set([multiFolderInfo])
+    $projectTree.set([multiFolderProject])
+    $activeProjectId.set(null)
+    $defaultProjectId.set(null)
+  })
+
+  it('drops the removed folder from node.repos and re-roots node.path to a remaining repo', async () => {
+    const request = requestMock()
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(removeProjectFolder('p_multi', '/root/primary')).resolves.toBeUndefined()
+
+    const node = $projectTree.get().find(n => n.id === 'p_multi')
+    expect(node?.path).toBe('/root/b')
+    expect(node?.repos.map(repo => repo.path)).toEqual(['/root/b'])
+    expect(projectWorkspaceCwds(node)).toEqual(['/root/b'])
+    expect(node && projectWorkspaceCwds(node)).not.toContain('/root/primary')
+  })
+
+  it('re-roots to null when no non-empty repo path remains', async () => {
+    const request = requestMock()
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await removeProjectFolder('p_multi', '/root/b')
+    await removeProjectFolder('p_multi', '/root/primary')
+
+    const node = $projectTree.get().find(n => n.id === 'p_multi')
+    expect(node?.path).toBeNull()
+    expect(node?.repos).toEqual([])
+    expect(projectWorkspaceCwds(node)).toEqual([])
+  })
+
+  it('leaves the node untouched when the removed folder is not in node.repos', async () => {
+    // Folder rows and seeded repos can drift: a folder may exist in
+    // project.folders without a matching repo row in the tree node. Removing
+    // it must not rebuild the node (and must not re-root node.path).
+    $projects.set([
+      {
+        ...multiFolderInfo,
+        folders: [
+          ...multiFolderInfo.folders,
+          { added_at: 0, is_primary: false, label: null, path: '/root/extra' }
+        ]
+      }
+    ])
+    const before = $projectTree.get().find(n => n.id === 'p_multi')
+    const request = requestMock()
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(removeProjectFolder('p_multi', '/root/extra')).resolves.toBeUndefined()
+
+    const node = $projectTree.get().find(n => n.id === 'p_multi')
+    expect(node).toBe(before)
+    expect(node?.path).toBe('/root/primary')
+    expect(node?.repos.map(repo => repo.path)).toEqual(['/root/primary', '/root/b'])
+    expect(projectWorkspaceCwds(node)).toEqual(['/root/primary', '/root/b'])
+  })
+
+  it('rolls the whole cache back when the write fails', async () => {
+    const failure = new Error('remove_folder failed')
+    const request = vi.fn().mockRejectedValue(failure)
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(removeProjectFolder('p_multi', '/root/primary')).rejects.toBe(failure)
+
+    const node = $projectTree.get().find(n => n.id === 'p_multi')
+    expect(node?.path).toBe('/root/primary')
+    expect(node?.repos.map(repo => repo.path)).toEqual(['/root/primary', '/root/b'])
+    expect(projectWorkspaceCwds(node)).toEqual(['/root/primary', '/root/b'])
+    expect($projects.get()).toEqual([multiFolderInfo])
   })
 })
 

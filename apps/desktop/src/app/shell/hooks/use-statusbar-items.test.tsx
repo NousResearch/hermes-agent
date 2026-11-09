@@ -1,11 +1,16 @@
-import { act, renderHook } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
 import { isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { en } from '@/i18n/en'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as DesktopFs from '@/lib/desktop-fs'
@@ -13,6 +18,9 @@ import { usageContextLabel } from '@/lib/statusbar'
 import { $freeTierStatus } from '@/store/free-tier'
 import { INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
 import { markOnboardingDecided, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $projectsRpcAvailable, $projectTree } from '@/store/projects'
+import type * as ProjectsStore from '@/store/projects'
 import {
   $connection,
   $currentCwd,
@@ -31,14 +39,34 @@ import type { ContextBreakdown, FreeTierStatus, UsageStats } from '@/types/herme
 
 import { useStatusbarItems } from './use-statusbar-items'
 
+// Radix calls these on open; jsdom doesn't implement them.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.releasePointerCapture = vi.fn()
+})
+
 // The mock above replaces the computed store with a writable atom.
 const $focusedTreePaneId = $focusedTreePaneIdMock as unknown as WritableAtom<null | string>
 
 const selectDesktopPaths = vi.hoisted(() => vi.fn<(options?: unknown) => Promise<string[]>>())
 
+const moveSessionToProjectMock = vi.hoisted(() =>
+  vi.fn<(sessionId: string, projectId: string, profile?: null | string, cwd?: string) => Promise<void>>()
+)
+
 vi.mock('@/lib/desktop-fs', async importOriginal => ({
   ...(await importOriginal<typeof DesktopFs>()),
   selectDesktopPaths
+}))
+
+// The workspace menu's move row is exercised end-to-end here; the RPC write is
+// stubbed so the test can assert exactly which profile the move fired on.
+vi.mock('@/store/projects', async importOriginal => ({
+  ...(await importOriginal<typeof ProjectsStore>()),
+  moveSessionToProject: (...args: [string, string, (null | string)?, string?]) =>
+    Promise.resolve(moveSessionToProjectMock(...args)),
+  refreshProjectTree: () => Promise.resolve()
 }))
 
 // The focused pane is derived from the layout tree; a settable atom stands in
@@ -110,14 +138,20 @@ function renderStatusbarItems(changeSessionCwd: (cwd: string, sessionId?: string
   return result.current
 }
 
-function workspaceMenu(changeSessionCwd?: (cwd: string, sessionId?: string) => Promise<void>) {
-  const workspace = renderStatusbarItems(changeSessionCwd).leftStatusbarItems.find(item => item.id === 'workspace-cwd')
+function renderWorkspacePanel(changeSessionCwd?: (cwd: string, sessionId?: string) => Promise<void>) {
+  const item = renderStatusbarItems(changeSessionCwd).leftStatusbarItems.find(entry => entry.id === 'workspace-cwd')
+  const content = typeof item?.menuContent === 'function' ? item.menuContent(() => {}) : item?.menuContent
 
-  return (workspace?.menuItems ?? []).filter(item => !item.hidden)
-}
-
-function workspaceMenuIds(): string[] {
-  return workspaceMenu().map(item => item.id)
+  render(
+    <MemoryRouter>
+      <DropdownMenu open>
+        <DropdownMenuTrigger asChild>
+          <button type="button">chip</button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent>{content}</DropdownMenuContent>
+      </DropdownMenu>
+    </MemoryRouter>
+  )
 }
 
 afterEach(() => {
@@ -131,6 +165,10 @@ afterEach(() => {
   $tileSessionFocusStartedAt.set(null)
   $desktopVersion.set(null)
   $updateStatus.set(null)
+  $activeGatewayProfile.set('default')
+  $projectTree.set([])
+  $projectsRpcAvailable.set(null)
+  moveSessionToProjectMock.mockReset()
 })
 
 describe('statusbar update channel vocabulary', () => {
@@ -188,10 +226,13 @@ describe('statusbar workspace menu — "Open containing folder"', () => {
   it('offers reveal for a local workspace and hides it when the connection is remote', () => {
     $currentCwd.set('/home/me/project')
     $connection.set({ mode: 'local' } as never)
-    expect(workspaceMenuIds()).toContain('reveal-workspace-finder')
+    renderWorkspacePanel()
+    expect(screen.queryByRole('menuitem', { name: en.fileMenu.revealFileManager })).not.toBeNull()
 
+    cleanup()
     $connection.set({ mode: 'remote' } as never)
-    expect(workspaceMenuIds()).not.toContain('reveal-workspace-finder')
+    renderWorkspacePanel()
+    expect(screen.queryByRole('menuitem', { name: en.fileMenu.revealFileManager })).toBeNull()
   })
 
   // The reporter's topology (#115167): the window's primary is local but the
@@ -210,8 +251,9 @@ describe('statusbar workspace menu — "Open containing folder"', () => {
     // A focused tile never inherits the primary's cwd; its stored row carries it.
     $sessions.set([{ cwd: '/srv/bot/workspace', id: 'tile-remote' }] as never)
 
-    expect(workspaceMenuIds()).toContain('copy-workspace-path')
-    expect(workspaceMenuIds()).not.toContain('reveal-workspace-finder')
+    renderWorkspacePanel()
+    expect(screen.queryByRole('menuitem', { name: en.fileMenu.copyPath })).not.toBeNull()
+    expect(screen.queryByRole('menuitem', { name: en.fileMenu.revealFileManager })).toBeNull()
   })
 })
 
@@ -221,8 +263,8 @@ describe('statusbar workspace menu — change working directory', () => {
     selectDesktopPaths.mockResolvedValueOnce(['/opt/data/profiles/austin'])
     $currentCwd.set('/opt/data')
 
-    const item = workspaceMenu(changeSessionCwd).find(menuItem => menuItem.id === 'change-workspace-path')
-    item?.onSelect?.()
+    renderWorkspacePanel(changeSessionCwd)
+    fireEvent.click(screen.getByRole('menuitem', { name: en.rightSidebar.changeCwdTitle }))
 
     await vi.waitFor(() => expect(changeSessionCwd).toHaveBeenCalledWith('/opt/data/profiles/austin', undefined))
     expect(selectDesktopPaths).toHaveBeenCalledWith(
@@ -240,8 +282,10 @@ describe('statusbar workspace menu — change working directory', () => {
     ] as never)
     focusPane('tile')
 
-    expect(workspaceMenuIds()).not.toContain('change-workspace-path')
+    renderWorkspacePanel()
+    expect(screen.queryByRole('menuitem', { name: en.rightSidebar.changeCwdTitle })).toBeNull()
 
+    cleanup()
     $sessionTiles.set([
       {
         ownerRoute: { connectionId: null, mode: 'local', profile: 'austin' },
@@ -249,13 +293,124 @@ describe('statusbar workspace menu — change working directory', () => {
         storedSessionId: 'tile'
       }
     ] as never)
-    workspaceMenu(changeSessionCwd)
-      .find(menuItem => menuItem.id === 'change-workspace-path')
-      ?.onSelect?.()
+    renderWorkspacePanel(changeSessionCwd)
+    fireEvent.click(screen.getByRole('menuitem', { name: en.rightSidebar.changeCwdTitle }))
     await vi.waitFor(() => expect(changeSessionCwd).toHaveBeenCalledWith('/srv/bot', 'tile-rt'))
 
+    cleanup()
     $sessions.set([{ connection_id: 'conn-remote', cwd: '/opt/data', id: 'tile' }] as never)
-    expect(workspaceMenuIds()).not.toContain('change-workspace-path')
+    renderWorkspacePanel()
+    expect(screen.queryByRole('menuitem', { name: en.rightSidebar.changeCwdTitle })).toBeNull()
+  })
+})
+
+describe('statusbar workspace menu — switch current chat tracks the active profile', () => {
+  const ALPHA_PROJECT = { id: 'p_alpha', label: 'Alpha', path: '/work/alpha', repos: [], sessionCount: 0 }
+
+  // A fresh inline callback per render would bust the menu memo through the
+  // change-workspace item on every render, hiding exactly the staleness this
+  // test guards against — so the callback identity must stay stable.
+  const stableChangeSessionCwd = async () => {}
+
+  function renderMenuHook() {
+    return renderHook(
+      () =>
+        useStatusbarItems({
+          agentsOpen: false,
+          changeSessionCwd: stableChangeSessionCwd,
+          chatOpen: true,
+          commandCenterOpen: false,
+          extraLeftItems: [],
+          extraRightItems: [],
+          freshDraftReady: false,
+          gatewayState: 'ready',
+          inferenceStatus: null,
+          openAgents: () => {},
+          openCommandCenterSection: () => {},
+          requestGateway: async () => undefined as never,
+          statusSnapshot: null,
+          toggleCommandCenter: () => {}
+        }),
+      { wrapper }
+    )
+  }
+
+  function renderMenuFromHook(result: ReturnType<typeof renderMenuHook>['result']) {
+    const item = result.current.leftStatusbarItems.find(entry => entry.id === 'workspace-cwd')
+    const content = typeof item?.menuContent === 'function' ? item.menuContent(() => {}) : item?.menuContent
+
+    return render(
+      <MemoryRouter>
+        <DropdownMenu open>
+          <DropdownMenuTrigger asChild>
+            <button type="button">chip</button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent>{content}</DropdownMenuContent>
+        </DropdownMenu>
+      </MemoryRouter>
+    )
+  }
+
+  /** Open the only project submenu and click its "Switch current chat" row. */
+  async function switchCurrentChat(result: ReturnType<typeof renderMenuHook>['result']): Promise<void> {
+    const { unmount } = renderMenuFromHook(result)
+
+    const trigger = screen
+      .getAllByRole('menuitem')
+      .find(el => el.getAttribute('data-slot') === 'dropdown-menu-sub-trigger')
+
+    expect(trigger).toBeDefined()
+
+    fireEvent.pointerMove(trigger as HTMLElement, { pointerType: 'mouse' })
+    fireEvent.focus(trigger as HTMLElement)
+
+    await waitFor(() => expect(screen.getAllByRole('menu').length).toBeGreaterThanOrEqual(2))
+
+    const menus = screen.getAllByRole('menu')
+
+    fireEvent.click(
+      within(menus[menus.length - 1] as HTMLElement).getByRole('menuitem', {
+        name: en.sidebar.projects.switchCurrentChat
+      })
+    )
+    await vi.waitFor(() => expect(moveSessionToProjectMock).toHaveBeenCalled())
+    unmount()
+  }
+
+  it('keeps Switch current chat available for a local connection-tagged stored row', async () => {
+    $connection.set({ mode: 'local' } as never)
+    $selectedStoredSessionId.set('sess-local')
+    $sessions.set([{ connection_id: 'conn-local', cwd: '/work/beta', id: 'sess-local' }] as never)
+    $currentCwd.set('/work/beta')
+    $projectTree.set([ALPHA_PROJECT] as never)
+    $projectsRpcAvailable.set(true)
+
+    const { result } = renderMenuHook()
+    await switchCurrentChat(result)
+
+    expect(moveSessionToProjectMock).toHaveBeenCalledWith('sess-local', 'p_alpha', 'default', undefined)
+  })
+
+  it('a profile switch rebuilds the menu so the move uses the newly active profile', async () => {
+    $activeGatewayProfile.set('alpha')
+    $selectedStoredSessionId.set('sess-1')
+    $sessions.set([{ cwd: '/work/beta', id: 'sess-1' }] as never)
+    $currentCwd.set('/work/beta')
+    $projectTree.set([ALPHA_PROJECT] as never)
+    $projectsRpcAvailable.set(true)
+
+    const { result, rerender } = renderMenuHook()
+
+    await switchCurrentChat(result)
+    expect(moveSessionToProjectMock).toHaveBeenLastCalledWith('sess-1', 'p_alpha', 'alpha', undefined)
+
+    // The chat moved; the active profile changes underneath the statusbar.
+    act(() => $activeGatewayProfile.set('beta'))
+    rerender()
+    moveSessionToProjectMock.mockClear()
+
+    await switchCurrentChat(result)
+    expect(moveSessionToProjectMock).toHaveBeenLastCalledWith('sess-1', 'p_alpha', 'beta', undefined)
   })
 })
 

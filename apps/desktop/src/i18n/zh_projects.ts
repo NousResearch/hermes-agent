@@ -76,5 +76,16 @@ export const zhProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   reorder: label => `重新排序 ${label}`,
   toggle: (label, open) => `${open ? '展开' : '收起'} ${label} 会话`,
   showAllCount: count => `显示全部 ${count} 个会话`,
-  back: '全部项目'
+  back: '全部项目',
+  switchCurrentChat: '切换当前聊天',
+  openProject: '打开项目',
+  newChat: '新聊天',
+  defaultForNewChats: '新聊天默认项目',
+  setDefaultFailed: '无法设置默认项目',
+  manageProjects: '管理项目…',
+  chooseFolder: '选择文件夹',
+  noProjects: '没有项目',
+  removeFolderConfirm: '从项目中移除此文件夹？磁盘上的文件不受影响。',
+  removeFolderFailed: '无法移除文件夹',
+  setPrimaryFailed: '无法设置主文件夹'
 }

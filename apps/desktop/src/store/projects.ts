@@ -55,6 +55,7 @@ import {
   type SessionTombstoneGenerationSnapshot,
   tombstoneRowIds
 } from '@/store/session-removal'
+import { $sessionStates } from '@/store/session-states'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 import { recordFeatureUse } from './desktop-metrics'
@@ -71,6 +72,11 @@ export const $projects = atom<ProjectInfo[]>([])
 import { $projectTree } from './project-tree'
 export { $projectTree }
 export const $activeProjectId = atom<null | string>(null)
+
+// The project FUTURE chats start in by default (per-profile `default_id` in
+// projects.db). Independent of the active pointer: setting it never moves the
+// open chat, the sidebar scope, or the live workspace cwd.
+export const $defaultProjectId = atom<null | string>(null)
 
 // The authoritative project -> repo -> lane tree (overview), served by
 // `projects.tree`. Lanes carry counts + structure; per-project session rows are
@@ -126,13 +132,38 @@ export function enterProject(id: string): void {
 export const projectRootCwd = (project: SidebarProjectTree | undefined): string =>
   (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
 
+// Every distinct workspace path a project offers: its primary folder plus each
+// repo/folder root, deduped and order-stable, blanks dropped. The multi-root
+// switcher lists these so a new chat or a chat move can land in an explicitly
+// chosen folder instead of silently using the primary.
+export function projectWorkspaceCwds(project: SidebarProjectTree | undefined): string[] {
+  if (!project) {
+    return []
+  }
+
+  const seen = new Set<string>()
+  const paths: string[] = []
+
+  for (const path of [project.path, ...project.repos.map(repo => repo.path)]) {
+    const trimmed = (path || '').trim()
+
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed)
+      paths.push(trimmed)
+    }
+  }
+
+  return paths
+}
+
 // ⌘K "go to project": flip the sidebar into grouped mode and enter the project
 // — a pure scope switch, same as clicking the overview row (never spends main).
 // With `newSession` (⌘-select / ⌘-Enter) it also lands on a fresh session draft
 // anchored at the project root — stacked as a tab when main already holds a
 // chat (palette opens are opens-from-nowhere). A path-less project (the Home
-// bucket) gets a plain detached draft.
-export function goToProject(id: string, options?: { newSession?: boolean }): void {
+// bucket) gets a plain detached draft. An explicit `cwd` (multi-root pick)
+// overrides the primary root.
+export function goToProject(id: string, options?: { cwd?: string; newSession?: boolean }): void {
   setSidebarAgentsGrouped(true)
   enterProject(id)
 
@@ -140,7 +171,7 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
     return
   }
 
-  const cwd = projectRootCwd($projectTree.get().find(node => node.id === id))
+  const cwd = (options.cwd || '').trim() || projectRootCwd($projectTree.get().find(node => node.id === id))
 
   if (cwd) {
     requestStartWorkSession(cwd, undefined, { openTab: true })
@@ -153,7 +184,9 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 //
 // Priority (first hit wins):
 //   1. Explicit sidebar project scope (drilled into a project / Home bucket)
-//   2. Configured default project dir (detached otherwise — in BOTH local and
+//   2. The default project's primary root (a stale/path-less default falls
+//      through to the next tier)
+//   3. Configured default project dir (detached otherwise — in BOTH local and
 //      remote mode; a bare new chat never inherits the sticky remembered cwd,
 //      #57911 / #84220)
 //
@@ -164,25 +197,44 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 // stored cwd is often a home-dir fallback, so every new chat landed there
 // instead of the configured default (#71873, #80213, #77496).
 export function resolveNewSessionCwd(profile?: string): string {
-  const scope = $projectScope.get()
+  // $projectScope / $defaultProjectId / $projectTree all describe the ACTIVE
+  // profile. An explicit tile profile naming a different profile owns its own
+  // folder state — applying the active profile's scope or default project here
+  // would point the other profile's new chat at a project it cannot see.
+  const explicit = (profile ?? '').trim()
+  const active = $activeGatewayProfile.get()
 
-  // Inside Home, "no folder" is the point: a new chat must stay detached rather
-  // than silently attaching to the configured default dir and leaving Home.
-  if (scope === NO_PROJECT_ID) {
-    return ''
-  }
+  if (!explicit || normalizeProfileKey(explicit) === normalizeProfileKey(active)) {
+    const scope = $projectScope.get()
 
-  if (scope !== ALL_PROJECTS) {
-    const cwd = projectRootCwd($projectTree.get().find(node => node.id === scope))
+    // Inside Home, "no folder" is the point: a new chat must stay detached rather
+    // than silently attaching to the configured default dir and leaving Home.
+    if (scope === NO_PROJECT_ID) {
+      return ''
+    }
 
-    if (cwd) {
-      return cwd
+    if (scope !== ALL_PROJECTS) {
+      const cwd = projectRootCwd($projectTree.get().find(node => node.id === scope))
+
+      if (cwd) {
+        return cwd
+      }
+    }
+
+    const defaultId = $defaultProjectId.get()
+
+    if (defaultId) {
+      const cwd = projectRootCwd($projectTree.get().find(node => node.id === defaultId))
+
+      if (cwd) {
+        return cwd
+      }
     }
   }
 
   // A tile names its profile before $newChatProfile catches up. The folder
   // belongs to that profile, which on a browser host is its own stored default.
-  const owner = (profile?.trim() || $newChatProfile.get() || $activeGatewayProfile.get()).trim()
+  const owner = (explicit || $newChatProfile.get() || active).trim()
 
   return workspaceCwdForNewSession(owner)
 }
@@ -416,6 +468,7 @@ async function activeProjectsContext(profile = projectProfile()): Promise<Active
 function applyPayload(payload: ProjectsPayload): void {
   $projects.set(payload.projects ?? [])
   $activeProjectId.set(payload.active_id ?? null)
+  $defaultProjectId.set(payload.default_id ?? null)
 }
 
 let projectsRefreshGeneration = 0
@@ -452,6 +505,7 @@ export async function refreshProjects(): Promise<void> {
 interface ProjectTreePayload {
   projects: SidebarProjectTree[]
   active_id: null | string
+  default_id?: null | string
   scoped_session_ids: string[]
 }
 
@@ -507,6 +561,7 @@ function applyProjectTreePayload(res: ProjectTreePayload, owner: ProjectRowOwner
     )
   )
   $activeProjectId.set(res.active_id ?? null)
+  $defaultProjectId.set(res.default_id ?? null)
   const tombstones = $removedSessionIds.get()
 
   if (tombstones.size) {
@@ -793,21 +848,24 @@ interface WorkspaceMovePayload {
 // chat created in the wrong directory. The backend replaces cwd + git identity
 // (so the tree's grouping follows) and re-anchors any live agent bound to the
 // row; here we mirror the move into the `$sessions` cache so both the flat list
-// and the grouped tree reflect it before the next authoritative refresh.
+// and the grouped tree reflect it before the next authoritative refresh. An
+// explicit `cwd` (multi-root pick) overrides the primary root; existing
+// callers keep the primary-root behavior by omitting it.
 export async function moveSessionToProject(
   sessionId: string,
   projectId: string,
-  profile?: null | string
+  profile?: null | string,
+  cwd?: string
 ): Promise<void> {
-  const cwd = projectRootCwd($projectTree.get().find(node => node.id === projectId))
+  const target = (cwd || '').trim() || projectRootCwd($projectTree.get().find(node => node.id === projectId))
 
-  if (!cwd) {
+  if (!target) {
     throw new Error(translateNow('sidebar.projects.moveNoFolder'))
   }
 
   // The shared owner refuses a move while a turn runs (its frozen policy would change under it).
   const res = await gatewayRequest<WorkspaceMovePayload>('session.workspace.move', {
-    cwd,
+    cwd: target,
     session_key: sessionId,
     ...(profile ? { profile } : {})
   }).catch((err: unknown) => {
@@ -816,7 +874,7 @@ export async function moveSessionToProject(
       : err
   })
 
-  const moved = res.cwd || cwd
+  const moved = res.cwd || target
   setSessions(prev =>
     prev.map(s =>
       sessionMatchesStoredId(s, sessionId)
@@ -824,6 +882,32 @@ export async function moveSessionToProject(
         : s
     )
   )
+
+  // The status bar prefers the live runtime cwd over the stored row. Mirror the
+  // acknowledged move into both, or the chip keeps showing the old project even
+  // though the backend and sidebar have already moved.
+  if ($selectedStoredSessionId.get() === sessionId) {
+    setCurrentCwd(moved)
+  }
+
+  let liveStateMoved = false
+
+  const nextStates = Object.fromEntries(
+    Object.entries($sessionStates.get()).map(([runtimeId, state]) => {
+      if (state.storedSessionId !== sessionId) {
+        return [runtimeId, state]
+      }
+
+      liveStateMoved = true
+
+      return [runtimeId, { ...state, cwd: moved }]
+    })
+  )
+
+  if (liveStateMoved) {
+    $sessionStates.set(nextStates)
+  }
+
   void refreshProjectTree()
 }
 
@@ -1064,18 +1148,21 @@ interface ProjectsSnapshot {
   projects: ProjectInfo[]
   tree: SidebarProjectTree[]
   active: null | string
+  default: null | string
 }
 
 const snapshotProjects = (): ProjectsSnapshot => ({
   projects: $projects.get(),
   tree: $projectTree.get(),
-  active: $activeProjectId.get()
+  active: $activeProjectId.get(),
+  default: $defaultProjectId.get()
 })
 
-const restoreProjects = ({ projects, tree, active }: ProjectsSnapshot): void => {
+const restoreProjects = ({ projects, tree, active, default: defaultId }: ProjectsSnapshot): void => {
   $projects.set(projects)
   $projectTree.set(tree)
   $activeProjectId.set(active)
+  $defaultProjectId.set(defaultId)
 }
 
 // Await an already-applied optimistic write; restore the snapshot if it throws.
@@ -1340,6 +1427,101 @@ export async function addProjectFolder(
   reconcileProjects()
 }
 
+// Remove one folder from an existing project. Optimistic like addProjectFolder:
+// the cached list drops the folder instantly (promoting the next folder when
+// the primary was removed, mirroring the backend), and a failed write rolls
+// the whole cache back. Files on disk stay untouched — this only unlinks the
+// folder row from the project.
+export async function removeProjectFolder(id: string, path: string): Promise<void> {
+  const context = await activeProjectsContext(writableProjectProfile())
+  const snap = snapshotProjects()
+  const trimmed = path.trim()
+
+  if (trimmed) {
+    $projects.set(
+      snap.projects.map(proj => {
+        if (proj.id !== id || !proj.folders?.some(folder => folder.path === trimmed)) {
+          return proj
+        }
+
+        const folders = proj.folders.filter(folder => folder.path !== trimmed)
+        const wasPrimary = proj.primary_path === trimmed
+
+        return { ...proj, folders, ...(wasPrimary && { primary_path: folders[0]?.path ?? null }) }
+      })
+    )
+
+    $projectTree.set(
+      snap.tree.map(node => {
+        if (node.id !== id) {
+          return node
+        }
+
+        // The backend drops the folder (and its seeded repo) and promotes the
+        // next remaining folder when the primary was removed. Mirror that here:
+        // keep the node only if its repos list actually held the folder, prune
+        // the removed repo, and re-root to the first repo that still has a
+        // non-empty path — never back onto the removed one, or
+        // projectWorkspaceCwds would keep offering it.
+        const repos = node.repos.filter(repo => (repo.path || '').trim() !== trimmed)
+
+        // filter always allocates, so a same-length result means nothing was
+        // pruned: the removed folder isn't in this node's repos, and the node
+        // (including its path) must stay untouched.
+        if (repos.length === node.repos.length) {
+          return node
+        }
+
+        return { ...node, repos, path: repos.find(repo => (repo.path || '').trim())?.path ?? null }
+      })
+    )
+  }
+
+  await persistOrRollback(snap, () =>
+    gatewayRequestOn(
+      context.gateway,
+      'projects.remove_folder',
+      projectParams({ id, path: trimmed }, context.profile)
+    )
+  )
+  reconcileProjects()
+}
+
+// Mark one of a project's folders as its primary root. Optimistic: the cached
+// list flags the folder and the tree node re-roots instantly; a failed write
+// rolls back. Existing callers keep the primary-root behavior through
+// projectRootCwd, so the new root applies to the next new chat / move.
+export async function setProjectFolderPrimary(id: string, path: string): Promise<void> {
+  const context = await activeProjectsContext(writableProjectProfile())
+  const snap = snapshotProjects()
+  const trimmed = path.trim()
+
+  if (trimmed) {
+    $projects.set(
+      snap.projects.map(proj =>
+        proj.id === id
+          ? {
+              ...proj,
+              folders: proj.folders.map(folder => ({ ...folder, is_primary: folder.path === trimmed })),
+              primary_path: trimmed
+            }
+          : proj
+      )
+    )
+
+    $projectTree.set(snap.tree.map(node => (node.id === id ? { ...node, path: trimmed } : node)))
+  }
+
+  await persistOrRollback(snap, () =>
+    gatewayRequestOn(
+      context.gateway,
+      'projects.set_primary',
+      projectParams({ id, path: trimmed }, context.profile)
+    )
+  )
+  reconcileProjects()
+}
+
 // True when the session currently open in the main pane belongs to `projectId`.
 // Used so deleting a project you have a session open from kicks you back to the
 // intro draft instead of stranding you in a now-orphaned view.
@@ -1372,6 +1554,12 @@ export async function deleteProject(id: string): Promise<void> {
     $activeProjectId.set(null)
   }
 
+  // Deleting (or archiving) a project clears it as the profile default on the
+  // backend — mirror that so the optimistic cache doesn't point at a gone row.
+  if (snap.default === id) {
+    $defaultProjectId.set(null)
+  }
+
   // The open session's project is gone — reset to the intro draft (the session
   // itself survives; it just falls back to Recents).
   if (kickToIntro) {
@@ -1400,6 +1588,37 @@ export async function setActiveProject(id: null | string): Promise<void> {
   )
 
   $activeProjectId.set(res.active_id ?? null)
+}
+
+// Mark (or clear) the project FUTURE chats start in by default. This only
+// moves the per-profile default pointer — it never changes the active project,
+// the sidebar scope, the open session, or the live cwd. A backend without
+// `projects.set_default` marks the RPC surface stale and surfaces the same
+// translated remedy as the other project writes.
+export async function setDefaultProject(id: null | string): Promise<void> {
+  const context = await activeProjectsContext(writableProjectProfile())
+
+  try {
+    const res = await gatewayRequestOn<{ default_id?: null | string }>(
+      context.gateway,
+      'projects.set_default',
+      projectParams({ id }, context.profile)
+    )
+
+    if (stillOnWritableProjectOwner(context)) {
+      $defaultProjectId.set(res.default_id ?? null)
+    }
+  } catch (err) {
+    if (isMissingRpcMethod(err)) {
+      if (stillOnWritableProjectOwner(context)) {
+        $projectsRpcAvailable.set(false)
+      }
+
+      throw projectsStaleBackendError()
+    }
+
+    throw err
+  }
 }
 
 // ── Project management dialog ────────────────────────────────────────────────

@@ -393,8 +393,8 @@ def finish_text_response(
         agent._persist_session(messages, conversation_history)
         _handoff_failure = (
             "This kanban task could not be handed off: the worker ended without a terminal "
-            "board call (kanban_complete / kanban_request_review / kanban_block) after "
-            "repeated nudges. Nothing was auto-completed."
+            "board call (kanban_complete / kanban_request_review / kanban_request_changes / "
+            "kanban_schedule / kanban_block) after repeated nudges. Nothing was auto-completed."
         )
         return _verdict("return", stamp_failure(
             partial_result(messages, api_call_count, _handoff_failure, failed=True),

@@ -1006,9 +1006,10 @@ _LENGTH_CONTINUATION_KANBAN_OUTPUT_LIMIT = (
     "Continue the task with REAL tool calls and complete required arguments "
     "(including the content argument for write_file). Split large file writes "
     "into smaller tool calls if needed. Do not merely describe future actions. "
-    "After verifying deliverables, make a terminal kanban_complete or "
-    "kanban_request_review tool call; if blocked, call kanban_block. "
-    "Plain-text promises are not terminal Kanban actions.]"
+    "After verifying deliverables, invoke a terminal action: kanban_complete "
+    "(or kanban_request_review for code review; kanban_request_changes if "
+    "reviewing and returning rework; kanban_schedule if parking; or "
+    "kanban_block if blocked). Plain-text promises are not terminal Kanban actions.]"
 )
 # Pre-#74990 wording; kept so crash-persisted nudges from older sessions are still recognized.
 _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (

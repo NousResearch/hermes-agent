@@ -1,7 +1,8 @@
 """Regression tests for length-truncated dispatcher-owned Kanban workers.
 
-Extract the pure prompt helper via AST to avoid importing the full agent/model
-stack while still exercising the production function and literals unchanged.
+Exercises both the behavioral runtime function and the structural AST contracts
+to ensure length-truncated workers receive actionable tool instructions and
+their synthetic recovery nudges are preserved across context compression.
 """
 from __future__ import annotations
 
@@ -11,6 +12,11 @@ from pathlib import Path
 from typing import Optional
 from unittest.mock import patch
 
+from agent.conversation_loop import (
+    _LENGTH_CONTINUATION_KANBAN_OUTPUT_LIMIT,
+    _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+    _get_continuation_prompt,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "agent" / "conversation_loop.py"
@@ -22,7 +28,7 @@ CONSTANTS = {
 }
 
 
-def _helper():
+def _ast_helper():
     tree = ast.parse(SOURCE.read_text(), filename=str(SOURCE))
     nodes = []
     for node in tree.body:
@@ -41,17 +47,26 @@ def _helper():
 
 class KanbanLengthContinuationTests(unittest.TestCase):
     def setUp(self):
-        self.continue_prompt = _helper()
+        self.continue_prompt = _get_continuation_prompt
+        self.ast_continue_prompt = _ast_helper()
 
-    def test_truncated_worker_prompt_requires_real_terminal_tool(self):
+    def test_truncated_worker_prompt_requires_all_terminal_tools(self):
         with patch("agent.delegation_context.owned_kanban_task", return_value="t_probe"):
             prompt = self.continue_prompt(False)
         self.assertIn("REAL tool calls", prompt)
-        self.assertIn("kanban_request_review", prompt)
         self.assertIn("kanban_complete", prompt)
+        self.assertIn("kanban_request_review", prompt)
+        self.assertIn("kanban_request_changes", prompt)
+        self.assertIn("kanban_schedule", prompt)
         self.assertIn("kanban_block", prompt)
         self.assertIn("content argument for write_file", prompt)
         self.assertNotIn("Finish the answer directly", prompt)
+
+    def test_ast_extracted_helper_matches_live_function(self):
+        with patch("agent.delegation_context.owned_kanban_task", return_value="t_probe"):
+            live = self.continue_prompt(False)
+            extracted = self.ast_continue_prompt(False)
+        self.assertEqual(live, extracted)
 
     def test_unowned_session_keeps_original_byte_identical_prompt(self):
         with patch("agent.delegation_context.owned_kanban_task", return_value=""):
@@ -81,7 +96,6 @@ class KanbanLengthContinuationTests(unittest.TestCase):
             for name in node.names
         ]
         self.assertIn("_LENGTH_CONTINUATION_KANBAN_OUTPUT_LIMIT", imports)
-        # Imported names are AST aliases, so one Name reference proves membership use.
         matches = [
             node for node in ast.walk(method)
             if isinstance(node, ast.Name)
@@ -90,12 +104,8 @@ class KanbanLengthContinuationTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
 
     def test_context_compressor_runtime_recognizes_worker_nudge(self):
-        try:
-            from agent.context_compressor import ContextCompressor
-        except ModuleNotFoundError as exc:
-            # Lightweight maintenance worktrees may lack ruamel; the normal CI
-            # environment and deployed Hermes venv exercise the runtime check.
-            self.skipTest(f"Full context-compressor dependencies unavailable: {exc.name}")
+        from agent.context_compressor import ContextCompressor
+
         with patch("agent.delegation_context.owned_kanban_task", return_value="t_probe"):
             prompt = self.continue_prompt(False)
         self.assertTrue(ContextCompressor._is_synthetic_compression_user_turn(

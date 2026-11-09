@@ -13,12 +13,13 @@ Written unittest-style so it runs under the same direct-run path as the AST-base
 
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from agent.kanban_stop import kanban_handoff_exhausted
+from agent.kanban_stop import kanban_handoff_exhausted, session_called_kanban_terminal
 
 _ENV_WORKER = {"HERMES_KANBAN_TASK": "t_probe"}
 
@@ -37,10 +38,50 @@ _TERMINAL = [
     },
     {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": "done"},
 ]
+_TERMINAL_FAILED = [
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "1",
+                "type": "function",
+                "function": {"name": "kanban_complete", "arguments": "{}"},
+            }
+        ],
+    },
+    {
+        "role": "tool",
+        "name": "kanban_complete",
+        "tool_call_id": "1",
+        "content": json.dumps({"error": "kanban_complete blocked: missing required deliverables"}),
+    },
+    {"role": "assistant", "content": "I encountered an error trying to complete."},
+]
+_TERMINAL_WRONG_TASK = [
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "1",
+                "type": "function",
+                "function": {"name": "kanban_complete", "arguments": json.dumps({"task_id": "t_other"})},
+            }
+        ],
+    },
+    {
+        "role": "tool",
+        "name": "kanban_complete",
+        "tool_call_id": "1",
+        "content": json.dumps({"ok": True, "task_id": "t_other"}),
+    },
+    {"role": "assistant", "content": "Completed t_other."},
+]
 
 
 class KanbanHandoffExhaustedTests(unittest.TestCase):
-    """The pure predicate: worker identity + attempts + absence of a terminal call."""
+    """The pure predicate: worker identity + attempts + presence of a successful terminal call."""
 
     def setUp(self):
         self._env = patch.dict(os.environ, dict(_ENV_WORKER), clear=False)
@@ -55,6 +96,40 @@ class KanbanHandoffExhaustedTests(unittest.TestCase):
 
     def test_terminal_call_present_is_never_exhausted(self):
         self.assertFalse(kanban_handoff_exhausted(_TERMINAL, attempts=2))
+
+    def test_failed_terminal_tool_does_not_satisfy_handoff(self):
+        # A tool call whose execution produced an error did not hand off the card.
+        self.assertFalse(session_called_kanban_terminal(_TERMINAL_FAILED))
+        self.assertTrue(kanban_handoff_exhausted(_TERMINAL_FAILED, attempts=2))
+
+    def test_terminal_tool_targeting_wrong_task_does_not_satisfy_handoff(self):
+        # Completing an external or child task does not hand off the assigned task.
+        self.assertFalse(session_called_kanban_terminal(_TERMINAL_WRONG_TASK))
+        self.assertTrue(kanban_handoff_exhausted(_TERMINAL_WRONG_TASK, attempts=2))
+
+    def test_retry_after_failed_terminal_tool_succeeds(self):
+        # Initial failure followed by successful completion counts as handed off.
+        messages = list(_TERMINAL_FAILED) + [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "2",
+                        "type": "function",
+                        "function": {"name": "kanban_complete", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "kanban_complete",
+                "tool_call_id": "2",
+                "content": json.dumps({"ok": True, "task_id": "t_probe"}),
+            },
+        ]
+        self.assertTrue(session_called_kanban_terminal(messages))
+        self.assertFalse(kanban_handoff_exhausted(messages, attempts=2))
 
     def test_not_a_worker_is_never_exhausted(self):
         # HERMES_KANBAN_TASK cleared → owned_kanban_task() == "" → not a worker.
@@ -71,6 +146,22 @@ def _agent(*, nudges):
         _emit_interim_assistant_message=lambda _msg: None,
         _flush_messages_to_session_db=lambda *_a: None,
         _emit_diagnostic_status=lambda *_a, **_k: None,
+        _has_content_after_think_block=lambda text: bool(text),
+        _strip_think_blocks=lambda text: text,
+        _emit_pending_fallback_notice=lambda: None,
+        _clear_status_buffer=lambda: None,
+        _build_assistant_message=lambda msg, finish_reason: {
+            "role": "assistant",
+            "content": getattr(msg, "content", ""),
+        },
+        valid_tool_names=[],
+        api_mode="default",
+        model="mock",
+        provider="mock",
+        log_prefix="",
+        _vprint=lambda *_a, **_k: None,
+        _cleanup_task_resources=MagicMock(),
+        _persist_session=MagicMock(),
     )
 
 
@@ -111,6 +202,68 @@ class ApplyStopGatesHandoffTests(unittest.TestCase):
         verdict = self._apply(agent=_agent(nudges=2), messages=list(_TERMINAL))
         self.assertFalse(verdict.continue_turn)
         self.assertFalse(verdict.kanban_handoff_failed)
+
+    def test_worker_with_failed_terminal_tool_is_flagged_for_failure_when_exhausted(self):
+        verdict = self._apply(agent=_agent(nudges=2), messages=list(_TERMINAL_FAILED))
+        self.assertFalse(verdict.continue_turn)
+        self.assertTrue(verdict.kanban_handoff_failed)
+
+
+class FinishTextResponseHandoffFailureTests(unittest.TestCase):
+    """Integration: finish_text_response returns a failed result when handoff nudges exhaust."""
+
+    def setUp(self):
+        self._env = patch.dict(
+            os.environ, dict(_ENV_WORKER, HERMES_VERIFY_ON_STOP="0"), clear=False
+        )
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def test_handoff_exhausted_returns_failed_result(self):
+        from agent.turn_final_response import finish_text_response
+
+        agent = _agent(nudges=2)
+        agent._cleanup_task_resources = MagicMock()
+        agent._persist_session = MagicMock()
+
+        messages = list(_NARRATED)
+        assistant_msg = SimpleNamespace(
+            content=messages[-1]["content"],
+            tool_calls=[],
+            reasoning_content=None,
+        )
+
+        verdict = finish_text_response(
+            agent,
+            assistant_message=assistant_msg,
+            response=None,
+            finish_reason="stop",
+            messages=messages,
+            api_messages=[],
+            conversation_history=[],
+            api_call_count=1,
+            user_message="Work task t_probe",
+            active_system_prompt="system",
+            final_response=assistant_msg.content,
+            _turn_exit_reason=None,
+            _preflight_compression_blocked=False,
+            codex_ack_continuations=0,
+            truncated_response_parts=[],
+            length_continue_retries=0,
+            _pending_verification_response=None,
+            _pending_verification_response_previewed=False,
+            effective_task_id="t_probe",
+        )
+
+        self.assertEqual(verdict.action, "return")
+        result = verdict.result
+        self.assertIsNotNone(result)
+        self.assertTrue(result.get("failed"))
+        self.assertFalse(result.get("completed"))
+        self.assertEqual(result.get("failure_reason"), "loop_error")
+        self.assertIn("This kanban task could not be handed off", str(result.get("error")))
+        agent._cleanup_task_resources.assert_called_once_with("t_probe")
+        agent._persist_session.assert_called_once()
 
 
 if __name__ == "__main__":

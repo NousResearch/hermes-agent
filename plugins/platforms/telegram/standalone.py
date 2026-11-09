@@ -279,12 +279,34 @@ def _telegram_album_paths(media_files, force_document, caption):
     return [os.path.abspath(path) for path, _ in media_files] if ok else []
 
 
+# Markdown code (fenced or inline): a tag shown as code is an example, not markup to render.
+_MARKDOWN_CODE_RE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
+# Telegram rejects the whole message on one stray ``<`` / ``>`` / ``&`` outside a supported tag.
+_HTML_ENTITY_RE = re.compile(r"&(?:#\d+|#x[0-9a-fA-F]+|[a-zA-Z]+);")
+
+
+def _escape_non_telegram_markup(text):
+    """Escape everything between Telegram's supported tags, so a model-invented ``<service>``
+    reads as text instead of failing the parse (and the rest of the formatting with it)."""
+    def esc(chunk):
+        parts = _HTML_ENTITY_RE.split(chunk)
+        entities = _HTML_ENTITY_RE.findall(chunk)
+        out = [p.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for p in parts]
+        return "".join(x for pair in zip(out, entities + [""]) for x in pair)
+    pieces, pos = [], 0
+    for tag in _TELEGRAM_HTML_TAG_RE.finditer(text):
+        pieces += [esc(text[pos:tag.start()]), tag.group(0)]
+        pos = tag.end()
+    return "".join(pieces) + esc(text[pos:])
+
+
 def _telegram_format(message):
-    """``(formatted, parse_mode, has_html)``: text already containing a Telegram HTML tag is sent
-    as HTML; otherwise Markdown -> MarkdownV2 via the adapter's ``format_message``."""
+    """``(formatted, parse_mode, has_html)``: text using a Telegram HTML tag outside Markdown code
+    is sent as HTML (any other markup escaped); otherwise Markdown -> MarkdownV2 via the adapter's
+    ``format_message``."""
     from telegram.constants import ParseMode
-    if _TELEGRAM_HTML_TAG_RE.search(message):
-        return message, ParseMode.HTML, True
+    if _TELEGRAM_HTML_TAG_RE.search(_MARKDOWN_CODE_RE.sub("", message)):
+        return _escape_non_telegram_markup(message), ParseMode.HTML, True
     mdv2 = _telegram_mdv2(message)
     return (message if mdv2 is None else mdv2), ParseMode.MARKDOWN_V2, False  # None: send as-is
 

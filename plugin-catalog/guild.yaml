@@ -1,6 +1,6 @@
 name: guild
 repo: https://github.com/Nnadijoshuac/hermes-guild
-sha: ca2d91c221cda90122219428a5d088bbb6c2e6fd
+sha: f289f1e0224fbca0b39d9fe73f976b922038ecc7
 description: >-
   Shared skill library for a team's Hermes agents, or for one person's machines and profiles,
   kept in a git repository the team controls. A skill an agent saved is scrubbed of API keys,

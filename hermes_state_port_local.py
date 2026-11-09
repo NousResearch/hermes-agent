@@ -119,17 +119,22 @@ class LocalSessionStore(_Pinned, SessionStore):
         # the destination while this write waits for the writer cannot slip between them.
         def append_continuation(conn):
             from hermes_state_compression import _CHAIN_STEP_SQL, _walk_compression_chain
-            if session_id not in _walk_compression_chain(
-                    mark.session, lambda current: conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()):
+            chain = _walk_compression_chain(
+                mark.session, lambda current: conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone())
+            if session_id not in chain:
                 raise TurnFenceRequiredError(
                     f"a turn write to session {session_id!r} needs that session's claimed turn bound")
-            own_claim = conn.execute(
-                "SELECT 1 FROM session_admissions WHERE target_session_id=? "
-                "AND status IN ('started','unknown') LIMIT 1", (session_id,)).fetchone()
-            if own_claim is not None:
+            # Every session between the claim and the destination must be one no turn has ever
+            # claimed (an admission that got a generation): a claim anywhere on the path, running
+            # or settled, owns that session and what descends from it from then on.
+            path = chain[1:chain.index(session_id) + 1]
+            claimed = conn.execute(
+                f"SELECT target_session_id FROM session_admissions WHERE target_session_id IN "
+                f"({','.join('?' * len(path))}) AND generation IS NOT NULL LIMIT 1", path).fetchone()
+            if claimed is not None:
                 raise TurnFenceRequiredError(
-                    f"session {session_id!r} holds its own claimed turn; the claim it continues "
-                    f"cannot write it")
+                    f"session {claimed[0]!r} has its own claimed turn; the claim it continues "
+                    f"cannot write {session_id!r}")
             return self.db._append_messages_in_transaction(conn, session_id, messages)
 
         return self.db._execute_transcript_write(append_continuation, messages,

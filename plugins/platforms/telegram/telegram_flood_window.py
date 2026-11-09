@@ -38,10 +38,12 @@ def skipped_draft(adapter: Any, chat_id: Any) -> Optional[SendResult]:
 
 
 async def _after_window(adapter: Any, chat_id: Any, delete: Callable[[], Awaitable[bool]]) -> bool:
-    for _ in range(_MAX_WINDOW_WAITS + 1):
+    for waits in range(_MAX_WINDOW_WAITS + 2):  # re-check after the last allowed wait
         remaining = adapter._send_flood_cooldown_remaining(chat_id)
         if remaining is None:
             return await delete()
+        if waits > _MAX_WINDOW_WAITS:
+            break
         await asyncio.sleep(remaining)
     logger.warning("[%s] message delete in chat %s dropped: flood window kept re-arming", adapter.name, chat_id)
     return False

@@ -2,6 +2,7 @@
 tools/cronjob_tools.py)."""
 
 import contextlib
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
@@ -438,6 +439,43 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
             f"Script file not found: {resolved_script}. "
             f"Create it in {scripts_dir}/ first.")
     return None
+
+
+def _validate_cron_skills(skills: list[str]) -> Optional[str]:
+    """Attached skills/bundles must resolve NOW, the same way the script path is checked: a typo
+    is otherwise stored silently and the job runs without the skill's context, so the failure
+    only shows up when the job fires (#151012). Resolution mirrors the run-time loader
+    (``cron.scheduler_prompt._load_cron_skill_parts``): a bundle key shadows a same-slug skill,
+    otherwise ``skill_view`` on the slash-normalized name decides — never stricter than a run.
+    Error string if anything is unresolved, else None (empty = clear)."""
+    names = _clean_str_list(skills)
+    if not names:
+        return None
+    from agent.safe_worker_policy import safe_worker_enabled
+    if safe_worker_enabled():
+        return None  # safe workers load no skills at all, so the name is inert there
+    from agent.skill_bundles import resolve_bundle_command_key
+    from agent.skill_commands import ambiguous_skill_label
+    from agent.skill_utils import normalize_skill_lookup_name
+    from tools.skills_tool import skill_view
+    unknown: list[str] = []
+    for name in names:
+        if resolve_bundle_command_key(name.lstrip("/")):
+            continue
+        try:
+            payload = json.loads(skill_view(normalize_skill_lookup_name(name), preprocess=False))
+        except (TypeError, ValueError):
+            payload = {}
+        if isinstance(payload, dict) and payload.get("success"):
+            continue
+        # A same-tier name collision resolves to nothing at run time too; name the candidates.
+        label = ambiguous_skill_label(name, payload) if isinstance(payload, dict) else None
+        unknown.append(label or name)
+    if not unknown:
+        return None
+    return (
+        f"Skill(s) not available: {', '.join(unknown)}. Attach an installed skill or bundle by "
+        "name (see `hermes skills list`), or create the job without skills.")
 
 
 def _apply_continuity(

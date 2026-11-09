@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -150,46 +151,60 @@ async def test_reset_after_the_request_was_written_is_never_resent():
         assert (await adapter.send("4242", "hello")).success  # never left: retried and delivered
 
 
-def test_replacement_lookup_stays_inside_the_adapters_own_profile():
-    """#143364: a torn-down secondary must never borrow the primary's bot.
+def _multiplexed_runner(primary_live, profile_maps):
+    """The real ``GatewayRunner`` profile-scoped lookup: primary map + per-profile maps."""
+    from gateway.run import GatewayRunner
 
-    ``runner.adapters`` holds only the primary map; the replacement lookup
-    goes through ``_adapters_for_profile(owner)`` so a secondary with no
-    live replacement fails closed instead of sending under the default
-    profile's identity."""
-    secondary = _make_adapter()
-    secondary._bot = None
-    secondary._owner_profile = "yori"
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {primary_live.platform: primary_live}
+    runner._profile_adapters = profile_maps
+    return runner
 
+
+def _retired_secondary(profile: str = "yori") -> TelegramAdapter:
+    old = _make_adapter()
+    old._bot = None
+    old.set_owner_profile(profile)
+    return old
+
+
+@pytest.mark.asyncio
+async def test_retired_secondary_never_sends_through_the_primary_bot():
+    """#143364: a torn-down secondary with no live replacement fails closed instead of handing its
+    in-flight progress to the primary profile's bot."""
+    old = _retired_secondary()
     primary_live = _make_adapter()
     primary_live._bot = _connected_bot()
+    old.gateway_runner = _multiplexed_runner(primary_live, {"yori": {}})
 
-    asked = []
+    result = await old.send("123", "progress")
+    edited = await old.edit_message("123", "7", "progress")
+    deleted = await old.delete_message("123", "7")
 
-    def _for_profile(profile):
-        asked.append(profile)
-        # The gate answers {} for a named profile with no live adapter.
-        return {} if profile == "yori" else {secondary.platform: primary_live}
-
-    runner = MagicMock()
-    runner.adapters = {secondary.platform: primary_live}
-    runner._adapters_for_profile = _for_profile
-    secondary.gateway_runner = runner
-
-    assert secondary._replacement_telegram_adapter() is None
-    assert asked == ["yori"]
+    assert (result.success, edited.success, deleted) == (False, False, False)
+    primary_live._bot.send_message.assert_not_called()
+    primary_live._bot.edit_message_text.assert_not_called()
+    primary_live._bot.delete_message.assert_not_called()
 
 
-def test_replacement_lookup_returns_same_profile_replacement():
-    secondary = _make_adapter()
-    secondary._bot = None
-    secondary._owner_profile = "yori"
-
+@pytest.mark.asyncio
+async def test_retired_adapter_edits_and_deletes_through_its_same_profile_replacement():
+    """#98228: progress edits and cleanup deletes on a retired adapter reach the live replacement of
+    its own profile, like ``send()`` already does, instead of failing as "Not connected"."""
+    old = _retired_secondary()
     replacement = _make_adapter()
     replacement._bot = _connected_bot()
+    replacement.set_owner_profile("yori")
+    replacement.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="7"))
+    replacement.delete_message = AsyncMock(return_value=True)
+    primary_live = _make_adapter()
+    primary_live._bot = _connected_bot()
+    old.gateway_runner = _multiplexed_runner(primary_live, {"yori": {old.platform: replacement}})
 
-    runner = MagicMock()
-    runner._adapters_for_profile = lambda _profile: {secondary.platform: replacement}
-    secondary.gateway_runner = runner
+    edited = await old.edit_message("123", "7", "progress", finalize=True)
+    deleted = await old.delete_message("123", "7")
 
-    assert secondary._replacement_telegram_adapter() is replacement
+    assert edited.success is True and edited.message_id == "7"
+    assert deleted is True
+    replacement.edit_message.assert_awaited_once_with("123", "7", "progress", finalize=True, metadata=None)
+    replacement.delete_message.assert_awaited_once_with("123", "7")

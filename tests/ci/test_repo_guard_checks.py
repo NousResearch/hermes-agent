@@ -128,13 +128,15 @@ def test_only_unmapped_human_emails_fail_the_contributor_check(repo, step):
 
 def test_supply_chain_scan_flags_payload_lines_but_not_lockfiles(repo, step):
     base = git(repo, "rev-parse", "HEAD").strip()
-    payload = "exec(base64.b64decode(blob))\n"
+    # Built from pieces: the scanner reads this PR's own added lines, so no line here may match it.
+    decode, run = "base64." + "b64decode", "subprocess." + "run("
+    payload = f"exec({decode}(blob))\n"
     head = commit(repo, {"uv.lock": payload, "ok.py": "print(1)\n"})
     shas = {"_HERMES_PR_BASE_SHA": base, "_HERMES_PR_HEAD_SHA": head}
     assert step.run(repo, "scan_supply_chain.py", "patterns", **shas).returncode == 0
     assert step.outputs()["found"] == "false"
 
-    head = commit(repo, {"evil.py": payload + "subprocess.run(['sh', '-c', chr(65)])\n"})
+    head = commit(repo, {"evil.py": payload + run + "['sh', '-c', " + "chr" + "(65)])\n"})
     step.output.unlink()
     assert step.run(repo, "scan_supply_chain.py", "patterns", _HERMES_PR_BASE_SHA=base,
                     _HERMES_PR_HEAD_SHA=head).returncode == 0

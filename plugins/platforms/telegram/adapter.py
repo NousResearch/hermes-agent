@@ -3514,10 +3514,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Mark a split-send failure after earlier chunks landed with the ``partial_overflow`` contract (the key
         ``_edit_overflow_split`` sets and the stream consumer reads), so no caller re-sends the visible head;
         ``undelivered`` (for :meth:`_resume_partial_send`) is attached only when ``tail_certain``. An uncertain
-        failure reports ``unattempted_chunks``: messages after the one in flight that never left."""
+        failure reports ``unattempted_chunks``: the messages after the one in flight, which never left."""
         raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
         if not tail_certain and len(undelivered) > 1:
-            raw["unattempted_chunks"] = len(undelivered) - 1
+            raw["unattempted_chunks"] = tuple(undelivered[1:])
         if delivered:
             raw.update({
                 "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
@@ -3529,10 +3529,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     async def _resume_partial_send(
         self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> Optional[SendResult]:
-        """Send only the chunks a partial ``send()`` could not deliver (``raw_response["undelivered_chunks"]``),
-        continuing the message-id sequence; ``None`` when the tail was not certain-undelivered."""
+        """Send only the chunks a partial ``send()`` could not deliver (``undelivered_chunks``, or the never-attempted
+        ``unattempted_chunks``), continuing the message-id sequence; ``None`` when no tail is certain-undelivered."""
         raw = result.raw_response if isinstance(result.raw_response, dict) else {}
-        undelivered = raw.get("undelivered_chunks")
+        undelivered = raw.get("undelivered_chunks") or raw.get("unattempted_chunks")
         if not undelivered or not self._bot:
             return None
         delivered = list(raw.get("delivered_message_ids") or ())

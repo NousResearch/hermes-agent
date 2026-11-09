@@ -144,11 +144,9 @@ class StreamFallbackMixin:
             result = await self._send_with_flood_retry(
                 content=chunk, reply_to=None if sent_any_chunk else anchor,
                 retry_log="Flood control on fallback send, retrying in %.1fs")
-            if (result and not result.success and self._send_failure_may_have_delivered(result)
-                    and not self._send_left_text_unattempted(result)):
+            if result and not result.success and await self._uncertain_send_fully_shown(result):
                 # This chunk may be on screen: count it, so neither it nor the whole answer is
-                # sent again; later chunks still go out and must land on their own. A chunk the
-                # adapter split again and stopped on is not counted: its later messages never left.
+                # sent again; later chunks still go out and must land on their own.
                 sent_any_chunk = True
                 last_successful_chunk = chunk
                 continue
@@ -250,13 +248,21 @@ class StreamFallbackMixin:
                 logger.debug("per-chat limit resolution failed: %s", e)
         return _len_fn, raw_limit
 
-    @staticmethod
-    def _send_left_text_unattempted(result: Any) -> bool:
-        """True when the adapter reports that its uncertain send stopped before later messages of the
-        same content were attempted (Telegram's legacy path re-splits a chunk escaping grew past the
-        cap). Adapters that report nothing sent the content in one call."""
-        raw = getattr(result, "raw_response", None)
-        return isinstance(raw, dict) and bool(raw.get("unattempted_chunks"))
+    async def _uncertain_send_fully_shown(self, result: Any) -> bool:
+        """True when a failed send (result or raised exception) may have landed in full, so sending
+        it again would duplicate it. Telegram's legacy path re-splits content escaping grew past the
+        cap and reports the messages after the timed-out one as ``unattempted_chunks``: only those
+        are sent now (the one in flight may already show); when they cannot be, the send is NOT
+        fully shown and the caller treats it as undelivered (a repeated head beats a lost tail)."""
+        while self._send_failure_may_have_delivered(result):
+            raw = getattr(result, "raw_response", None)
+            if not (isinstance(raw, dict) and raw.get("unattempted_chunks")):
+                return True
+            result = await self.adapter._resume_partial_send(
+                self.chat_id, result, reply_to=None, metadata=self._metadata_for_send(final=True))
+            if result is None or getattr(result, "success", False):
+                return result is not None
+        return False
 
     async def _send_with_flood_retry(self, *, content: str, retry_log: str, reply_to=None):
         """adapter.send(final metadata) with ONE bounded flood retry; returns the last
@@ -292,11 +298,11 @@ class StreamFallbackMixin:
                 retry_log="Flood control on empty fallback final send; retrying in %.1fs")
         except Exception as exc:
             logger.debug("Empty fallback final send failed: %s", exc)
-            return "ambiguous" if self._send_failure_may_have_delivered(exc) else "failed"
+            return "ambiguous" if await self._uncertain_send_fully_shown(exc) else "failed"
         if not getattr(result, "success", False):
             if self._is_flood_error(result):
                 return "preview"
-            return "ambiguous" if self._send_failure_may_have_delivered(result) else "failed"
+            return "ambiguous" if await self._uncertain_send_fully_shown(result) else "failed"
 
         new_message_id = getattr(result, "message_id", None)
         # Telegram reports delete failure by returning False; the flood window that

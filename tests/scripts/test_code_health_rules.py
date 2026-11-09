@@ -363,6 +363,8 @@ def test_fix_texts():
     assert "allow" in RULES_BY_ID["HX001"].fix
     ble = RULES_BY_ID["BLE001"].fix
     assert "noqa" in ble and "health: allow BLE001" in ble and "exc_info=True" in ble
+    hx015 = RULES_BY_ID["HX015"].fix
+    assert "# health: allow HX015" in hx015 and "judged there" in hx015
 
 
 _HANDLER = "import logging\n\nlogger = logging.getLogger(__name__)\n\n\ndef boundary():\n    try:\n        pass\n{}"

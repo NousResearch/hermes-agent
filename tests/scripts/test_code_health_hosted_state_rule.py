@@ -545,6 +545,27 @@ def test_base_without_declared_roots_uses_the_head_roots(tmp_path, monkeypatch, 
     assert run(repo, base, head) == 0, capsys.readouterr().out
 
 
+def test_moved_function_state_import_allowed_by_the_fix_texts_comment(tmp_path, monkeypatch, capsys):
+    """The fix text's escape for a pure move: a function moved out of a facade into a sibling that
+    late-imports its state (the shape the module rules prescribe) adds an import-line hit for state
+    the facade already reports at its definition. The allow comment the fix text names waives the
+    import line; without it the move blocks."""
+    monkeypatch.setattr(config, "HOSTED_ENTRY", ("pkg.entry",))
+    repo, _ = _repo(tmp_path)
+    base = _commit(repo, {"pkg/__init__.py": "", "pkg/entry.py": "import pkg.facade\n",
+                          "pkg/facade.py": "_LOCAL = {}\n\ndef publish():\n    _LOCAL['x'] = 1\n"})
+    moved = ("def publish_notice():\n"
+             "    from pkg.facade import _LOCAL  # health: allow HX015 -- _LOCAL is pkg.facade's state, judged there\n"
+             "    _LOCAL['x'] = 2\n")
+    files: dict[str, str | None] = {"pkg/facade.py": "from pkg.sibling import publish_notice\n\n_LOCAL = {}\n\ndef publish():\n    _LOCAL['x'] = 1\n",
+             "pkg/sibling.py": moved}
+    code, out = _verdict(repo, base, files, capsys)
+    assert code == 0 and "Allowed by comment" in out and "pkg/sibling.py:2" in out, out
+    files["pkg/sibling.py"] = moved.replace("  # health: allow HX015 -- _LOCAL is pkg.facade's state, judged there", "")
+    code, out = _verdict(repo, base, files, capsys)
+    assert code != 0 and "pkg/sibling.py" in out and "HX015" in out, out
+
+
 @pytest.mark.parametrize(("text", "expected"), [
     ('HOSTED_ENTRY = ("a", "b")\n', ("a", "b")),
     ('HOSTED_ENTRY: tuple[str, ...] = ["a"]\nHOSTED_ENTRY = ("c",)\n', ("c",)),

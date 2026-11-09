@@ -638,9 +638,10 @@ _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s
 # identifier boundary, never inside a digit run (quadratic retries on dumps).
 # Consume only bounded escape spellings so JSON/repr/URL separators survive
 # verbatim; their last letter/digit is not the token's logical left neighbor.
+# An ANSI CSI control (colored output), raw or JSON/repr-escaped, is a separator too.
 _TELEGRAM_RE = re.compile(
     r"(?P<boundary>\\[nrtbfv]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|"
-    r"\\U[0-9a-fA-F]{8}|%[0-9a-fA-F]{2}|(?<![A-Za-z_\d]))"
+    r"\\U[0-9a-fA-F]{8}|%[0-9a-fA-F]{2}|(?P<csi>(?:\x1b|\\x1b|\\u001[bB]|\\033)\[[0-?]*[ -/]*[@-~])|(?<![A-Za-z_\d]))"
     r"(?P<bot>bot)?(?P<id>\d{8,}):(?P<body>[-A-Za-z0-9_]{30,})"
 )
 
@@ -648,7 +649,7 @@ _TELEGRAM_RE = re.compile(
 def _redact_telegram_token(match: re.Match) -> str:
     boundary = match.group("boundary")
     # Encoded identifier characters are still identifiers, not separators.
-    if len(boundary) > 2:
+    if len(boundary) > 2 and not match.group("csi"):
         value = int(boundary[1:] if boundary[0] == "%" else boundary[2:], 16)
         if value > 0x10FFFF:
             return match.group(0)

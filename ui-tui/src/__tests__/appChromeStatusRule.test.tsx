@@ -1,3 +1,7 @@
+import { PassThrough } from 'node:stream'
+
+import { renderSync } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -103,6 +107,59 @@ const baseProps = {
   usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
   voiceLabel: ''
 }
+
+describe('StatusRule clipboard feedback', () => {
+  it('places the copy receipt after the session count without replacing status or a notice', () => {
+    const rendered = textContent(
+      StatusRule({
+        ...baseProps,
+        cols: 200,
+        liveSessionCount: 3,
+        clipboardFeedback: 'copied 42 characters',
+        notice: { level: 'warn', text: 'credits running low' }
+      })
+    )
+
+    expect(rendered).toContain('3 sessions │ copied 42 characters')
+    expect(rendered).toContain('credits running low')
+    expect(rendered.indexOf('credits running low')).toBeLessThan(rendered.indexOf('3 sessions'))
+  })
+
+  it.each([
+    { cols: 80, busy: false },
+    { cols: 120, busy: true }
+  ])('renders the receipt on one line at $cols columns, busy=$busy', async ({ cols, busy }) => {
+    const stdout = Object.assign(new PassThrough(), { columns: cols, rows: 20, isTTY: false })
+    let output = ''
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      <StatusRule
+        {...baseProps}
+        busy={busy}
+        clipboardFeedback="copied 7 characters"
+        cols={cols}
+        liveSessionCount={2}
+      />,
+      {
+        stdout: stdout as NodeJS.WriteStream,
+        stdin: new PassThrough() as NodeJS.ReadStream,
+        stderr: stdout as NodeJS.WriteStream,
+        patchConsole: false
+      }
+    )
+
+    try {
+      await vi.waitFor(() => expect(stripAnsi(output)).toContain('2 sessions │ copied 7 characters'))
+      expect(stripAnsi(output).trim().split('\n')).toHaveLength(1)
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+  })
+})
 
 describe('StatusRule model label', () => {
   it('shows a clamped effort as what the route sends, never as a distinct level (#61634)', () => {

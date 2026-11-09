@@ -97,6 +97,10 @@ class InMemoryBackend:
         self._closed_under: set[str] = set()
         self._lock = threading.RLock()
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reference-store")
+        # While a read snapshot is open, ``watched_writes`` counts every outermost public verb that changed stored state.
+        self.watched_writes = 0
+        self.snapshots_open = 0
+        self._depth = 0
 
     def open(self, scope: ProfileScope) -> InMemoryStore:
         """The store handle bound to ``scope``; the harness opens one per profile and reuses it."""
@@ -145,7 +149,24 @@ class InMemoryBackend:
         """Begin an authority epoch on ``scope``'s store, the suites' epoch seam: the reference's authority state advances it."""
         from ._authority import authority_state  # _authority imports this module
 
-        return int(authority_state(self, scope).begin_epoch(instance_id))
+        with self._lock:
+            return int(self.run_verb(authority_state(self, scope).begin_epoch, instance_id))
+
+    def run_verb(self, verb: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """Run one public verb (the caller holds the lock); while a snapshot is open, an outermost verb that changed any stored state counts one watched write."""
+        outer = self.snapshots_open and not self._depth
+        before = self._stored_state() if outer else None
+        self._depth += 1
+        try:
+            return verb(*args, **kwargs)
+        finally:
+            self._depth -= 1
+            if outer and self._stored_state() != before:
+                self.watched_writes += 1
+
+    def _stored_state(self) -> str:
+        """Every profile's store and every store file, as text."""
+        return repr((self._scopes, self._files))
 
     def open_store_admin(self, target: ProfileScope | Path, *, read_only: bool = True) -> AdminUnsupported:
         """The reference has no physical admin capability (``physical_admin`` is False): the door answers ``AdminUnsupported``."""
@@ -186,7 +207,7 @@ class InMemoryStore:
             repository = factory(self)
             for name, method in inspect.getmembers(repository, inspect.ismethod):
                 if not name.startswith("_"):
-                    setattr(repository, name, _serialized(self._lock, method))
+                    setattr(repository, name, _serialized(backend, method))
             setattr(self, attribute, repository)
 
     def scope_store(self, scope: ProfileScope) -> dict[str, Any]:
@@ -197,11 +218,11 @@ class InMemoryStore:
         return self.backend.scope_exists(scope)
 
 
-def _serialized(lock: threading.RLock, method: Callable[..., Any]) -> Callable[..., Any]:
+def _serialized(backend: InMemoryBackend, method: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(method)
     def call(*args: Any, **kwargs: Any) -> Any:
-        with lock:
-            return method(*args, **kwargs)
+        with backend._lock:
+            return backend.run_verb(method, *args, **kwargs)
 
     return call
 

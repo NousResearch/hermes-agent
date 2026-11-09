@@ -44,10 +44,16 @@ class StoredReadsMixin(MessageBase):
 
     @contextmanager
     def _snapshot(self) -> Iterator[ReadCheck]:
-        # No read transaction to pin: every read is its own, checked against the scope's state at the start.
-        scope = self._backend.scope
-        start = repr(self._backend.scope_store(scope))
-        yield ReadCheck(lambda: repr(self._backend.scope_store(scope)) == start, pinned=False)
+        # No read transaction to pin: every read is its own, checked against the writes counted since the block began.
+        backend, lock = self._backend.backend, self._backend._lock
+        with lock:
+            backend.snapshots_open += 1
+            start = backend.watched_writes
+        try:
+            yield ReadCheck(lambda: backend.watched_writes == start, pinned=False)
+        finally:
+            with lock:
+                backend.snapshots_open -= 1
 
     def display_index_complete(self, session_id: SessionId) -> bool:
         return True

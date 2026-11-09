@@ -296,7 +296,7 @@ just test-all
 just test tests/agent/ -v
 ```
 
-`just test tests/agent/ -v` is the same run; `just test` refuses to start
+Both recipes call `scripts/run_tests.sh`; `just test` refuses to start
 without a path, and `just test-all` runs the full suite.
 
 On Windows, run the script through Bash. When no local `.venv` or `venv`

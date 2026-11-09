@@ -13,6 +13,57 @@ _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
 _EMPHASIS_MARK = {"bold": "*", "italic": "_"}
 
 
+# A line opening with one of these prefixes starts a Telegram blockquote.
+_QUOTE_LINE_PREFIXES = (_EXPANDABLE_QUOTE + ">", ">")
+
+
+def _line_begins_quote(text: str, start: int) -> bool:
+    """True when the line beginning at *start* is a blockquote line."""
+    return text.startswith(_QUOTE_LINE_PREFIXES, start)
+
+
+def _bordering_quote_newline(text: str, pos: int, line_start: int) -> bool:
+    """True when the newline at *pos* closes or opens a quote line (*line_start* starts the line it closes)."""
+    return _line_begins_quote(text, line_start) or _line_begins_quote(text, pos + 1)
+
+
+class _SpanEdges:
+    """Sorted line edges of one text, so delimiter pairing answers its span questions by bisect.
+
+    Re-slicing ``text[o_end:start]`` and re-finding its newlines for every candidate pair cost
+    closers × span: one distant unmatched ``**`` opener made a 32 KB reply take ~1.4 s (200 KB
+    ~106 s) on the gateway event loop (#151723).
+    """
+
+    __slots__ = ("blank_starts", "newlines", "quote_edges")
+
+    def __init__(self, text: str) -> None:
+        self.newlines = [m.start() for m in re.finditer("\n", text)]
+        self.blank_starts = [p for p in self.newlines if text.startswith("\n", p + 1)]
+        edges: list[int] = []
+        line_start = 0
+        for pos in self.newlines:
+            if _bordering_quote_newline(text, pos, line_start):
+                edges.append(pos)
+            line_start = pos + 1
+        self.quote_edges = edges
+
+    def has_newline(self, start: int, end: int) -> bool:
+        """A newline inside ``text[start:end]``."""
+        i = bisect.bisect_left(self.newlines, start)
+        return i < len(self.newlines) and self.newlines[i] < end
+
+    def has_blank_line(self, start: int, end: int) -> bool:
+        """A ``\\n\\n`` fully inside ``text[start:end]``."""
+        i = bisect.bisect_left(self.blank_starts, start)
+        return i < len(self.blank_starts) and self.blank_starts[i] + 2 <= end
+
+    def crosses_quote_edge(self, start: int, end: int) -> bool:
+        """A newline inside ``text[start:end]`` bordering a quote line."""
+        i = bisect.bisect_left(self.quote_edges, start)
+        return i < len(self.quote_edges) and self.quote_edges[i] < end
+
+
 def _resolve_emphasis(text: str, stash, escape) -> str:
     """Resolve **bold** and *italic* delimiter runs together so nested/combined emphasis keeps its
     inner markers (***x*** → _*x*_, **a *i* b** → *a _i_ b*) instead of the bold pass swallowing
@@ -42,6 +93,7 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
     if pos < len(text):
         tokens.append(("t", text[pos:]))
 
+    edges = _SpanEdges(text)
     stack = []  # indexes of delimiter tokens that may still close
     for idx, tok in enumerate(tokens):
         if tok[0] != "d":
@@ -52,10 +104,9 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
                 opener = tokens[stack[-1]]
                 o_end, o_remaining = opener[2], opener[5]
                 use = 2 if o_remaining >= 2 and remaining >= 2 else 1
-                span = text[o_end:start]
-                if use == 1 and "\n" in span:
+                if use == 1 and edges.has_newline(o_end, start):
                     break  # italic must not cross a line
-                if use == 2 and ("\n\n" in span or _crosses_quote_edge(text, o_end, start)):
+                if use == 2 and (edges.has_blank_line(o_end, start) or edges.crosses_quote_edge(o_end, start)):
                     break  # bold stays within one paragraph and on one side of a quote's edge
                 kind = "bold" if use == 2 else "italic"
                 opener[6].append((kind, idx))
@@ -75,9 +126,13 @@ def _crosses_quote_edge(text: str, start: int, end: int) -> bool:
     """True when a newline in text[start:end] borders a quote line: Telegram ends a blockquote at a
     newline into non-quote text, an entity still open there is rejected, and an entity spanning
     quote lines would swallow the next line's > marker."""
-    quote = re.compile(rf'(?:{_EXPANDABLE_QUOTE})?>')
-    is_quote = lambda pos: quote.match(text, text.rfind('\n', 0, pos) + 1) is not None
-    return any(is_quote(start + m.start()) or is_quote(start + m.end()) for m in re.finditer('\n', text[start:end]))
+    line_start = text.rfind("\n", 0, start) + 1
+    for m in re.finditer("\n", text[start:end]):
+        pos = start + m.start()
+        if _bordering_quote_newline(text, pos, line_start):
+            return True
+        line_start = pos + 1
+    return False
 
 
 def _emphasis_marks(tok, depth: dict) -> tuple:

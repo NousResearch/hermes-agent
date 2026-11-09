@@ -625,6 +625,7 @@ gateway:
     action_always: "始终允许"
     action_deny: "拒绝"
     deadline: "如果你在 {window} 内未回应，它将不会运行。"
+    not_requester: "只有 {requester} 可以回应此审批请求。"
     text_choice_once: "回复 `{prefix}approve` 运行一次"
     text_choice_session: "`{prefix}approve session` 在本会话剩余时间内允许此模式"
     text_choice_always: "`{prefix}approve always` 永久允许"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: "，"
     text_choice_last: "，或 {choice}。\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}：{reason}\n\n"
+    truncated_full_above: "预览已截断：完整命令（{total} 个字符）在上面的消息中。"
+    truncated_deny_only: "预览已截断（{total} 个字符），且无法在此显示完整命令，因此只提供拒绝。请在 CLI 或桌面应用中查看。"
+    text_prompt_deny_only: "完整的批准提示对此平台而言过长，因此只提供拒绝。请在 CLI 或桌面应用中查看。"
   notify:
     media_kind:
       audio: "音频"

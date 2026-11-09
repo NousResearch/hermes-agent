@@ -19,7 +19,9 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
-from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
+from gateway.platforms.base_image_sniff import _looks_like_image
+from gateway.platforms.base_media_flags import pad_inline_flags
 
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -369,7 +371,7 @@ def _aiohttp_socks_connector(proxy_url: str):
     except ImportError:
         if proxy_url.lower().startswith("socks"):
             logger.warning("aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                           "Use an HTTP proxy instead.", proxy_url)
+                           "Use an HTTP proxy instead.", safe_proxy_url_for_log(proxy_url))
         return None
 
 
@@ -435,7 +437,8 @@ from gateway.platforms.helpers import fence_state_after, typing_metadata_for_tur
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
-    ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
+    ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
+    card_shows_whole_command, render_exec_approval)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -559,13 +562,6 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
 
 get_image_cache_dir, cleanup_image_cache = _cache_dir_accessors(
     "image", "IMAGE_CACHE_DIR", "cache/images", "image_cache")
-
-
-def _looks_like_image(data: bytes) -> bool:
-    """Return True if *data* starts with a known image magic-byte sequence."""
-    return len(data) >= 4 and (data[:8] == b"\x89PNG\r\n\x1a\n" or data[:3] == b"\xff\xd8\xff"
-               or data[:6] in {b"GIF87a", b"GIF89a"} or data[:2] == b"BM"
-               or (data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP"))
 
 
 def _secure_media_cache_dir(cache_dir: Path) -> None:
@@ -1706,13 +1702,10 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         both_photo = existing_is_photo and incoming_is_photo
         incoming_has_media = bool(event.media_urls)
 
-        def _padded_inline_flags(msg: MessageEvent) -> list[Optional[bool]]:
-            flags = list(getattr(msg, "media_text_inlined", []) or [])
-            return flags + [None] * (len(msg.media_urls) - len(flags))
         incoming_inline_flags: list[Optional[bool]] = []
         if incoming_has_media:
-            existing.media_text_inlined = _padded_inline_flags(existing)
-            incoming_inline_flags = _padded_inline_flags(event)
+            existing.media_text_inlined = pad_inline_flags(existing)
+            incoming_inline_flags = pad_inline_flags(event)
         # A photo burst always absorbs; otherwise merge only when media is involved on either
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
@@ -2485,6 +2478,7 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             if event.media_urls:
+                existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
                 existing.extend_media(event)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
@@ -2698,6 +2692,7 @@ class BasePlatformAdapter(ABC):
     _EA_CODE_CLOSE: str = "\n```\n"
     _EA_DEADLINE_PREFIX: str = "\n\n"  # separates the deadline line from the reason line
     _EA_CMD_BUDGET: int = 3000
+    _EA_CARD_CAP: int = 0  # >0: the whole card must fit this cap, so the preview gets what the rest leaves
     _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
 
     @property
@@ -2731,29 +2726,20 @@ class BasePlatformAdapter(ABC):
         return fit_prefix(str(text or ""), budget, lambda s: self.message_len_fn(escape(s)), suffix)
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
-        """Chars of command preview that fit; platforms with a hard message cap compute it."""
-        return self._EA_CMD_BUDGET
+        """Chars of command preview that fit; platforms with a hard message cap set ``_EA_CARD_CAP``."""
+        return exec_approval_cmd_budget(self, description, smart_denied)
 
     def _ea_deadline_line(self) -> str:
         """The "doing nothing means it will NOT run" line, with the configured approvals.timeout."""
         return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
 
     def _format_exec_approval(
-        self, command: str, description: Optional[str] = None, smart_denied: bool = False) -> str:
-        """Shared exec-approval prompt text: header + fenced (truncated) command + why it was
-        flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
-        platform-local. ``description=None`` renders the localized default reason."""
-        if description is None:
-            description = ea_default_reason_text()
-        if self._EA_REASON_BUDGET:
-            description = self._ea_fit(str(description or ""), self._EA_REASON_BUDGET)
-        cmd_preview = self._ea_fit(
-            str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
-        text = (f"{self._EA_HEADER}"
-                f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
-                f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"
-                f"{self._ea_deadline_line()}")
-        return text + self._EA_SMART_DENY_LINE if smart_denied else text
+        self, command: str, description: Optional[str] = None, smart_denied: bool = False,
+        full_command_shown: bool = False) -> str:
+        """Shared exec-approval prompt text: header + fenced (truncated) command + why it was flagged +
+        the deadline line, plus the smart-deny line (``base_exec_approval.render_exec_approval``)."""
+        return render_exec_approval(self, str(command or ""), ea_default_reason_text() if description is None
+                                    else description, smart_denied, full_command_shown)[0]
 
     # ── Exec-approval prompt (template method). The choice set is one rule for every button
     # surface — three separate "same fix × N adapters" commits motivated lifting it here.
@@ -2788,16 +2774,21 @@ class BasePlatformAdapter(ABC):
         smart_denied: bool = False, request_id: Optional[str] = None,
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via ``tools.approval.resolve_gateway_approval``.
-        Text and choice set are shared; adapters render them natively in ``_send_exec_approval_prompt``."""
-        if description is None:
-            description = ea_default_reason_text()
-        prompt = ExecApprovalPrompt(
-            chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
-            description=description, smart_denied=smart_denied, request_id=request_id,
-            text=self._format_exec_approval(command, description, smart_denied),
-            actions=self._exec_approval_actions(
-                allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
-        return await self._send_exec_approval_prompt(prompt)
+        Text and choice set are shared; adapters render them natively in ``_send_exec_approval_prompt``.
+        A preview that cannot hold the whole command is preceded by the full command; when that cannot
+        be sent, the card offers Deny only — nobody approves a command they could not read."""
+        description = ea_default_reason_text() if description is None else description
+        command = str(command or "")
+        actions = self._exec_approval_actions(
+            allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied)
+        text, truncated = render_exec_approval(self, command, description, smart_denied, True)
+        # The request was created Deny-only; Approve goes live once the card or the full command shows it whole.
+        if not await card_shows_whole_command(self, chat_id, session_key, request_id, command, metadata, truncated):
+            text = render_exec_approval(self, command, description, smart_denied, False)[0]
+            actions = [row for row in actions if row[1] == "deny"]
+        return await self._send_exec_approval_prompt(ExecApprovalPrompt(
+            chat_id=chat_id, session_key=session_key, metadata=metadata, command=command, description=description,
+            smart_denied=smart_denied, request_id=request_id, text=text, actions=actions))
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Render ``prompt`` with the platform's native buttons; the default has none."""
@@ -4778,7 +4769,7 @@ class BasePlatformAdapter(ABC):
         _len = len_fn or len
         if _len(content) <= max_length:
             return [content]
-        INDICATOR_RESERVE = 10   # room for " (XX/XX)"
+        INDICATOR_RESERVE = 12   # room for " (XXX/XXX)" once MarkdownV2-escaped to " \(XXX/XXX\)"
         FENCE_CLOSE = "\n```"
         chunks: list[str] = []
         remaining = content

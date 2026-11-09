@@ -37,3 +37,13 @@ def coerce_list(value: Any) -> list[str]:
         return []
     items = value.split(",") if isinstance(value, str) else value if isinstance(value, (list, tuple, set)) else [value]
     return [s for s in (str(item).strip() for item in items) if s]
+
+
+def describe_connect_proxy_error(exc: BaseException, ws_proxy: str | None) -> str | None:
+    """``describe_proxy_error`` for a connect/reconnect failure, which may come from either client:
+    the httpx token/gateway-URL client reads the proxy environment itself (httpx's own
+    ``trust_env``, NO_PROXY applied) while the WebSocket dials the explicit *ws_proxy*. A clean
+    WSS_PROXY beside a secret HTTPS_PROXY must still redact httpx's ``Invalid port: '<pw>'``."""
+    from gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction
+    from .constants import API_BASE, TOKEN_URL
+    return describe_proxy_error(exc, env_proxy_for_redaction(TOKEN_URL, API_BASE)) or describe_proxy_error(exc, ws_proxy)

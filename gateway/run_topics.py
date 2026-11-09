@@ -183,6 +183,18 @@ class GatewayTopicThreadsMixin:
         if title:
             await self._rename_telegram_topic_for_session_title(source, session_entry.session_id, title)
 
+    async def _telegram_topic_switch_conflict(self, source: SessionSource, target_session_id: str) -> Optional[str]:
+        """Refusal text when ``target_session_id`` is bound to ANOTHER topic: a session links to one
+        topic only, so after the route moved the binding write would fail and the next message's heal
+        would snap the topic back. Checked before the switch; None = this lane may take it."""
+        if self._session_db is None or not await asyncio.to_thread(self._is_telegram_topic_lane, source):
+            return None
+        bound = await self._session_db.get_telegram_topic_binding_by_session(session_id=target_session_id)
+        here = (self._telegram_topic_profile_name(source), str(source.chat_id), str(source.thread_id))
+        if bound and (str(bound.get("profile_name")), str(bound.get("chat_id")), str(bound.get("thread_id"))) != here:
+            return t("gateway.topic.already_linked")
+        return None
+
     def _recover_telegram_topic_thread_id(self, source: SessionSource) -> Optional[str]:
         """Adapter-ingress recovery hook (sync, called off-loop before session keying): lobby recovery,
         except when ``dm_topic_auto_transfer`` is on — then the root-DM source is left alone so

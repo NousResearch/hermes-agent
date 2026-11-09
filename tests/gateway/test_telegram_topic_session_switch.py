@@ -108,3 +108,19 @@ async def test_resume_rename_obeys_receiving_bot_kill_switch(tmp_path):
 
     assert _bound_session(db) == "earlier"
     adapter.rename_dm_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resume_of_session_bound_to_another_topic_is_refused_before_switching(tmp_path):
+    """A session links to one topic only: /resume of one bound elsewhere must refuse up front, not
+    switch the route, fail the binding write and snap back to the old conversation next message."""
+    db, runner = _bound_topic(tmp_path, "elsewhere")
+    db.set_session_title("elsewhere", "Other Topic Work")
+    db.bind_telegram_topic(chat_id=CHAT, thread_id="999", user_id=CHAT, session_key="other-key",
+                           session_id="elsewhere")
+
+    reply = await runner._handle_resume_command(_make_event("/resume Other Topic Work", thread_id=THREAD))
+
+    assert "already linked" in reply
+    runner.async_session_store.switch_session.assert_not_awaited()
+    assert _bound_session(db) == "parent"

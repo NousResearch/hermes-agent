@@ -1359,6 +1359,7 @@ In some restricted networks, `api.telegram.org` may resolve to an IP that is unr
 3. Known IPv4 Telegram API IPs are tried **before** the dual-stack `api.telegram.org` hostname. A blackholed IPv6 path can sit in `connect()` without erroring, which used to pin the event loop so the 30s init deadline never fired.
 4. A hardcoded IPv4 seed list (`149.154.166.110`, `149.154.167.220`) always follows the DoH answers (DoH often returns a single edge, which would otherwise be the only fallback), and is the whole list when DoH is blocked or times out. The hostname remains last resort.
 5. Once a path succeeds, it becomes "sticky" — subsequent requests use it directly. The hostname is kept as a last resort for IPv6-only networks.
+6. One request's walk across these paths shares a 15s connect budget, half the 30s send deadline. The first path keeps its full connect timeout and later paths split the rest. If every path hangs, the send fails with a connect timeout before the deadline. The gateway retries it, because the message never left.
 
 Sends made outside the gateway process (`hermes send`, the `send_message` tool, standalone cron delivery) use the same transport with your configured IPs or the seed list. They skip DoH discovery so a one-shot send stays fast. They also use the gateway's `HERMES_TELEGRAM_HTTP_*` timeouts and its 60s media-upload write timeout. A connect or pool timeout is retried there, because the request never left. Any other timeout is not retried: Telegram may already have delivered the message.
 

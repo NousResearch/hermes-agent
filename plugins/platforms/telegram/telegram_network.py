@@ -9,6 +9,7 @@ import logging
 import os
 import socket
 import sys
+import time
 from typing import Iterable, Optional
 
 import httpx
@@ -62,6 +63,10 @@ _DOH_PROVIDERS: list[dict] = [
 # first-try connect targets so a blackholed IPv6 AAAA for the hostname can't pin initialize().
 SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
 _UNSET = object()
+# One request's whole fallback walk shares this CONNECT budget: half the adapter's 30s telegram-send
+# deadline, so the walk ends with its own (safely retryable) ConnectTimeout before that deadline fires
+# and masks it as an ambiguous, non-retryable TimeoutError (#136412).
+_WALK_CONNECT_BUDGET_S = 15.0
 
 
 def _env_number(key: str, default, cast):
@@ -104,8 +109,9 @@ def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optio
     CLOSE_WAIT fd leak (#31599, #18451): PTB builds its httpx client with only
     ``max_connections`` and httpx's default 5s keepalive, so behind an HTTP proxy a peer FIN can
     sit in CLOSE_WAIT and leak fds; ``platform_httpx_limits()`` keepalive tuning is injected while
-    keeping PTB's pool size. getUpdates keeps ``getupdates_keepalive_connections()`` sockets
-    (see there for the per-OS reason). httpx ignores client ``limits`` when a custom
+    keeping PTB's pool size. Both fallback transports bound their path walk's total connect time
+    (``_WALK_CONNECT_BUDGET_S``) so failover finishes inside the send deadline. getUpdates keeps
+    ``getupdates_keepalive_connections()`` sockets (see there for the per-OS reason). httpx ignores client ``limits`` when a custom
     ``transport`` is supplied (#58790), so the fallback branch hands them to the transport."""
     from gateway.platforms._http_client_limits import platform_httpx_limits
     verify = platform_ssl_context() if verify is None else verify
@@ -127,7 +133,8 @@ def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optio
         return {"limits": limits} if limits is not None else {}
 
     if fallback_ips and not proxy_url:
-        transport_kwargs = {"socket_options": tcp_keepalive_socket_options(), "verify": verify}
+        transport_kwargs = {"socket_options": tcp_keepalive_socket_options(), "verify": verify,
+                            "connect_budget": _WALK_CONNECT_BUDGET_S}
         return pair({"transport": TelegramFallbackTransport(fallback_ips, **transport_kwargs, **limited(pool))},
                     {"transport": TelegramFallbackTransport(fallback_ips, **transport_kwargs, **limited(updates))})
     return pair(limited(pool), limited(updates), **({"proxy": proxy_url} if proxy_url else {}))
@@ -164,7 +171,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     # See #63311.
     _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
 
-    def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
+    def __init__(self, fallback_ips: Iterable[str], *, connect_budget: Optional[float] = None, **transport_kwargs):
+        # Seconds of CONNECT time one request's whole walk may spend; ``None`` leaves each path the
+        # client's full per-request connect timeout.
+        self._connect_budget = connect_budget
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
@@ -229,12 +239,29 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             order.append(None)
         return order
 
+    def _connect_share(self, order: list, index: int, walk_started: float) -> float:
+        """This path's slice of the remaining walk budget. The first (sticky / last-known-good) path
+        keeps all but one average share, so at stock defaults (10s connect, 15s budget, 3 paths) it
+        keeps its full 10s; later paths split what is left evenly."""
+        remaining = self._connect_budget - (time.monotonic() - walk_started)
+        paths_left = len(order) - index
+        return remaining - remaining / paths_left if index == 0 and paths_left > 1 else remaining / paths_left
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._primary.handle_async_request(request)
         last_error: Exception | None = None
-        for ip in self._attempt_order():
-            candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
+        order = self._attempt_order()
+        walk_started = time.monotonic()
+        for index, ip in enumerate(order):
+            candidate = request
+            if self._connect_budget is not None:
+                share = self._connect_share(order, index, walk_started)
+                if share <= 0 and last_error is not None:
+                    break  # budget spent: surface the last ConnectTimeout before the send deadline masks it
+                candidate = _request_with_connect_budget(request, share)
+            if ip is not None:
+                candidate = _rewrite_request_for_ip(candidate, ip)
             transport = self._primary if ip is None else await self._get_fallback(ip)
             try:
                 response = await transport.handle_async_request(candidate)
@@ -392,6 +419,18 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
     extensions = dict(request.extensions)
     extensions["sni_hostname"] = original_host
     return httpx.Request(method=request.method, url=url, headers=headers, stream=request.stream, extensions=extensions)
+
+
+def _request_with_connect_budget(request: httpx.Request, connect_budget: float) -> httpx.Request:
+    """``request`` with its httpx ``timeout`` extension's connect phase narrowed to ``connect_budget``
+    (the transport honours it per request). A tighter configured connect, or a request with no
+    timeout dict, is returned unchanged."""
+    timeout = request.extensions.get("timeout")
+    if not isinstance(timeout, dict) or (timeout.get("connect") is not None and timeout["connect"] <= connect_budget):
+        return request
+    extensions = {**request.extensions, "timeout": {**timeout, "connect": max(connect_budget, 0.0)}}
+    return httpx.Request(method=request.method, url=request.url, headers=request.headers, stream=request.stream,
+                         extensions=extensions)
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:

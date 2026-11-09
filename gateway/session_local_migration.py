@@ -9,6 +9,7 @@ from dataclasses import asdict, replace
 from datetime import datetime
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
@@ -95,13 +96,11 @@ def legacy_launch_params(row):
         # an endpoint left without a provider is a custom route, never one to pair with the
         # profile's provider.
         route.setdefault('provider', 'custom')
-    from hermes_cli.runtime_provider_backends import _is_external_process_provider
-    if _is_external_process_provider(route.get('provider', '')):
-        # An external-process provider's address (``process://<name>``) is its profile's own, which
-        # the runtime reads there (``_external_process_spec``), never a route the session picked; the
-        # old surfaces persisted it anyway. Replayed, it is an endpoint override that can only be
-        # http(s), so the chat would never open. The provider alone is the saved route.
-        route.pop('base_url', None)
+    if (route.get('provider', 'custom') != 'custom'
+            and urlsplit(route.get('base_url', '')).scheme not in ('', 'http', 'https')):
+        # A provider's own pseudo-address (process://, moa://) is not an endpoint the session picked,
+        # and replayed as a launch override it is refused (#142779, #147676). The provider is the route.
+        route.pop('base_url')
     if row['source'] == 'acp' and 'cwd' not in params and Path(str(saved.get('cwd') or '')).is_absolute():
         params['cwd'] = saved['cwd']
     params.update({key: route[key] for key in ('provider', 'base_url') if key in route})

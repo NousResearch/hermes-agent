@@ -40,9 +40,9 @@ def _profile(home, **model):
     (home / 'config.yaml').write_text(json.dumps({'model': {'provider': PROVIDER, 'default': 'profile-model', **model}}))
 
 
-def _legacy(db, home, sid, title=None, **model_config):
+def _legacy(db, home, sid, title=None, provider=PROVIDER, address=ADDRESS, **model_config):
     db.create_session(sid, cwd=str(home), source='gui', model='picked-model', model_config={
-        'provider': PROVIDER, 'base_url': ADDRESS, 'api_mode': 'chat_completions', **model_config})
+        'provider': provider, 'base_url': address, 'api_mode': 'chat_completions', **model_config})
     if title:
         db.set_session_title(sid, title)
     db.end_session(sid, 'tui_close')
@@ -77,18 +77,19 @@ async def test_a_bot_chat_with_a_held_pick_on_a_process_provider_adopts(home, pr
 
 
 @pytest.mark.asyncio
-async def test_an_old_desktop_chat_on_a_process_provider_keeps_its_provider_and_opens(home):
+@pytest.mark.parametrize('provider, address', [(PROVIDER, ADDRESS), ('moa', 'moa://local')], ids=['process', 'moa'])
+async def test_an_old_desktop_chat_on_a_process_provider_keeps_its_provider_and_opens(home, provider, address):
     """Not a Bot Chat: the row keeps its saved route, the provider. The address is not part of it."""
     from gateway.session_local_migration import resolve_local_target
     _profile(home, provider='custom', base_url='http://127.0.0.1:1/v1', api_key='k1')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
-    _legacy(authority.db, home, 'old-desktop')
+    _legacy(authority.db, home, 'old-desktop', provider=provider, address=address)
     authority._native_legacy_transports = {owner.actor.transport_id: owner.actor}
     try:
         live = authority.sessions[resolve_local_target(authority, owner.actor, 'old-desktop').session_id]
         model = _model(runner, live)
-        assert model.get('provider') == PROVIDER
+        assert model.get('provider') == provider
         assert not model.get('base_url')
         assert model.get('api_key') != 'k1'  # the profile's custom key never follows the saved provider
     finally:

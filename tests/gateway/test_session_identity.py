@@ -145,3 +145,21 @@ def test_replace_source_keeps_identity_and_transport_where_dataclasses_replace_d
     assert isinstance(copied._transport_adapter_ref, weakref.ref)
     assert Path(copied._authorization_profile_home) == mux.home
     assert mux.primary._source_session_key(copied) == "agent:ops:telegram:dm:72719239:7"
+
+
+def test_ingress_bound_source_key_ignores_later_ambient_profile_changes(mux, monkeypatch):
+    """#83346: canonical ingress, not an explicitly changed profile argument, owns the key."""
+    from gateway.session_identity import canonical_identity
+
+    source = mux.team_b.build_source(chat_id="12345", chat_type="dm", user_id="u1")
+    identity = canonical_identity(source, runner=mux.runner, adapter=mux.team_b)
+    assert identity.runtime_profile == "team_b"
+    keys = []
+    for ambient in ("default", "ops", "unserved"):
+        monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: ambient)
+        assert canonical_identity(source, runner=mux.runner) is identity
+        adapter_key = mux.team_b._source_session_key(source)
+        runner_key = mux.runner._session_key_for_source(source)
+        assert runner_key == adapter_key == "agent:team_b:telegram:dm:12345"
+        keys.append(runner_key)
+    assert len(set(keys)) == 1

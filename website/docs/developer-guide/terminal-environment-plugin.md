@@ -134,6 +134,18 @@ interface as `tools.environments.base.BaseEnvironment`:
 Subclassing `BaseEnvironment` is recommended (you inherit the shared file-sync
 and background-process plumbing) but not required.
 
+### Profile-bound subprocess environments
+
+Backend plugins may import `build_subprocess_env` from `tools.environments.local`
+when launching their local client executable. Supply the captured owner as
+`profile_home`, the launch owner as `source_profile_home`, and
+`enforce_profile_boundary=True` for a cross-profile launch. The builder applies
+core credential filtering and profile/generation admission; generic `extra`
+values do not acquire target-profile provenance. Do not re-add ambient credentials
+afterward. This helper builds an environment mapping; it does not authorize an
+arbitrary process, filesystem mount, or container operation. Other private names
+in that module are not part of this plugin API.
+
 ## File tools and the host filesystem
 
 `read_file`, `write_file`, `patch` and `search_files` go through your

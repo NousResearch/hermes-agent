@@ -180,7 +180,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_audio_meta import (
     _coerce_duration_seconds, _probe_voice_duration_seconds, audio_player_fields, fit_thumbnail_jpeg)
 from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, direct_topic_retry_kwargs, private_chat, topic_gone
-from plugins.platforms.telegram.telegram_entities import expand_link_entities, rich_message_filter, rich_message_text
+from plugins.platforms.telegram.telegram_entities import expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
 from plugins.platforms.telegram.telegram_intake import effective_update_message
@@ -196,6 +196,8 @@ from plugins.platforms.telegram.telegram_network import (
     proxy_target_hosts)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_errors import is_entity_parse_error
+from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, shared_sender_suffix
+from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
 from utils import env_float, env_int
 
@@ -316,13 +318,7 @@ def check_telegram_requirements() -> bool:
     return True
 
 
-# Every char MarkdownV2 requires backslash-escaped outside code spans/fences.
-_MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
-
-
-def _escape_mdv2(text: str) -> str:
-    """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
-    return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
+from plugins.platforms.telegram.telegram_markdown import escape_rich_currency_dollars, to_markdown_v2
 
 
 def _strip_mdv2(text: str) -> str:
@@ -347,7 +343,7 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
+    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns)
 
 # Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
 # fenced code blocks OR GFM pipe-table blocks (header row, delimiter row, data rows).
@@ -1342,8 +1338,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
-        escaping destroys table pipes."""
-        payload: dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        escaping destroys table pipes. Currency ``$`` is escaped so two amounts never pair as inline math."""
+        payload: dict[str, Any] = {"markdown": escape_rich_currency_dollars(_rich_normalize_linebreaks(content))}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload
@@ -3654,13 +3650,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             self._bot.edit_message_text(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
 
     async def _edit_markdown_or_plain(self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str) -> bool:
-        """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
-        skip further work); the fallback edit's exceptions propagate."""
+        """MarkdownV2 edit, plain fallback on a parse error; True on a "not modified" no-op. Errors propagate."""
         try:
             await self._edit_text(chat_id, message_id, formatted, ParseMode.MARKDOWN_V2)
         except Exception as fmt_err:
             if "not modified" in str(fmt_err).lower():
                 return True
+            if getattr(fmt_err, "retry_after", None) is not None or "retry after" in str(fmt_err).lower():
+                raise  # flood, not formatting: a plain re-edit is one more call into the penalty (#76494)
             logger.warning(warn_fmt, self.name, _redact_telegram_error_text(fmt_err))
             await self._edit_text(chat_id, message_id, plain)
         return False
@@ -3757,8 +3754,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 await self._edit_text(chat_id, message_id, truncated)
                 self._last_overflow_preview[_preview_key] = truncated
                 return SendResult(success=True, message_id=message_id)
-            # Flood control: short waits retry inline; long waits fail immediately so streaming falls back
-            # to a normal final send instead of a clipped partial.
+            # Flood control: short waits retry inline; long ones fail closed (``flood_control:<s>``) to the caller.
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
                 wait = retry_after if retry_after else 1.0
@@ -4063,18 +4059,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         return "\n\n" + _bold_label_html(t("gateway.exec_approval.smart_deny_line"))
 
     _EA_REASON_BUDGET = 500  # escaped chars; the reason shares the 4096 cap with the command
+    # Telegram rejects the whole card ("Message is too long") and the gateway then falls back to the text
+    # /approve prompt, so the preview is budgeted in UTF-16 units against what the framing leaves of the cap.
+    _EA_CARD_CAP = MAX_MESSAGE_LENGTH
 
     def _ea_escape(self, text: str) -> str:
         return _html.escape(text)
-
-    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
-        # Telegram rejects the whole card ("Message is too long") and the gateway then falls back to
-        # the text /approve prompt, so budget the preview against what the framing leaves of the cap.
-        fixed = utf16_len(  # UTF-16 units, like the 4096 chunker in send()
-            self._EA_HEADER + self._EA_CODE_OPEN + self._EA_CODE_CLOSE + self._EA_REASON_LABEL
-            + self._ea_escape(description) + "..." + self._ea_deadline_line()
-            + (self._EA_SMART_DENY_LINE if smart_denied else ""))
-        return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
     @property
     def _EA_ACTION_LABELS(self) -> dict[str, str]:
@@ -4249,8 +4239,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
     def _picker_back_cancel_row() -> list:
         return [InlineKeyboardButton(t("platform.telegram.picker.back"), callback_data="mb"), InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")]
 
-    def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list) -> tuple:
-        rows = self._rows_of_two(buttons)
+    def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list, columns: int = 2) -> tuple:
+        rows = self._rows_of_two(buttons) if columns == 2 else [[b] for b in buttons]
         if page_meta["total_pages"] > 1:
             rows.append(self._picker_nav_row(page_meta["page"], page_meta["total_pages"], nav_prefix))
         rows.append(tail_row)
@@ -4263,7 +4253,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             from hermes_cli.models_catalog_static import group_providers
         except Exception:
             group_providers = None
-        by_slug = {p.get("slug"): p for p in providers}
+        by_slug = {str(p.get("slug") or "").lower(): p for p in providers}  # group_providers lowercases (#149672)
         buttons: list = []
         if group_providers is not None:
             for row in group_providers([p.get("slug") for p in providers]):
@@ -4288,18 +4278,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         carries the plan word (``model-b · Large``) from the provider row; other accounts are unchanged."""
         from hermes_cli.model_picker_usage import picker_row_suffix
         page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
-        start = page_meta["start"]
-        buttons: list = []
-        for i, model_id in enumerate(page_models):
-            short = model_id.split("/")[-1] if "/" in model_id else model_id
-            suffix = picker_row_suffix(provider, model_id)
-            room = 38 - (len(suffix) + 3 if suffix else 0)
-            if len(short) > room:
-                short = short[:max(room - 3, 8)] + "..."
-            if suffix:
-                short = f"{short} · {suffix}"
-            buttons.append(InlineKeyboardButton(short, callback_data=f"mm:{start + i}"))
-        return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
+        labels = model_button_labels([str(m) for m in models], lambda m: picker_row_suffix(provider, m))
+        buttons = [InlineKeyboardButton(labels[page_meta["start"] + i], callback_data=f"mm:{page_meta['start'] + i}") for i in range(len(page_models))]
+        return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row(), columns=1)
 
     async def _picker_edit(self, query, text_md: str, keyboard, *, toast: Optional[str] = None) -> None:
         """Ack first, then re-render in place (MarkdownV2): a refused edit must not leave the tap spinning."""
@@ -4320,7 +4301,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         keyboard, page_info = self._build_model_keyboard(models, page, provider)
         total = provider.get("total_models", len(models)) if provider else len(models)
         shown = len(models)
-        extra = f"\n_{t('platform.telegram.picker.more_available', count=str(total - shown))}_" if total > shown else ""
+        extra = f"\n*{t('platform.telegram.picker.more_available', count=str(total - shown))}*" if total > shown else ""
         # Window plans: the limit line under the provider (absent for every other account).
         plan_line = f"\n⚠️ {provider['plan_line']}" if provider and provider.get("plan_line") else ""
         await self._picker_edit(
@@ -4440,7 +4421,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                 _label, _desc, member_slugs = PROVIDER_GROUPS.get(group_id, ("", "", []))
             except Exception:
                 _label, member_slugs = "", []
-            by_slug = {p["slug"]: p for p in state["providers"]}
+            by_slug = {str(p["slug"]).lower(): p for p in state["providers"]}  # PROVIDER_GROUPS slugs are lowercase
             members = [by_slug[m] for m in member_slugs if m in by_slug]
             if not members:
                 await answer_callback(query, _toast("platform.telegram.picker.group_not_found"))
@@ -4592,23 +4573,24 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         try:
             approval_id = int(parts[2])
         except (ValueError, IndexError):
-            await answer_callback(query, _toast("platform.telegram.approval.toast_invalid_data"))
+            return await answer_callback(query, _toast("platform.telegram.approval.toast_invalid_data"))
+        resolved = _toast("platform.telegram.approval.toast_already_resolved")
+        if not (session_key := await self._claim_callback_state(
+                query, cb, self._approval_state, approval_id, _unauthorized(), resolved, pop=False)):
             return
-        session_key = await self._claim_callback_state(
-            query, cb, self._approval_state, approval_id, _unauthorized(),
-            _toast("platform.telegram.approval.toast_already_resolved"))
-        if not session_key:
-            return
-        request_id = self._approval_request_ids.pop(approval_id, None)
+        from gateway.approval_actor import approval_refusal, refusal_text
+        request_id = self._approval_request_ids.get(approval_id)
+        if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra, request_id=request_id):
+            return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
+        if not self._approval_state.pop(approval_id, None):  # a concurrent tap claimed it first
+            return await answer_callback(query, resolved)
+        self._approval_request_ids.pop(approval_id, None)
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
-        try:
-            # Rendering happens after so the message reflects what actually occurred: a tap that lands after
-            # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
-            # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
+        try:  # resolve FIRST, render after: a tap after the wait timed out (count == 0) is not "Approved" (#63501)
             from tools.approval import resolve_gateway_approval_card
-            count = resolve_gateway_approval_card(session_key, choice, request_id)
-            logger.info(
-                "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
+            count = resolve_gateway_approval_card(session_key, choice, request_id,
+                                                  actor_id=getattr(query.from_user, "id", ""), extra=self.config.extra)
+            logger.info("Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             count = 0
@@ -5428,129 +5410,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
 
     def format_message(self, content: str) -> str:
-        """Convert standard markdown to Telegram MarkdownV2: code is stashed behind placeholders first (never
-        modified), markdown constructs become MarkdownV2 syntax, everything else is escaped."""
-        if not content:
-            return content
-        placeholders: dict = {}
-        counter = [0]
+        """Convert standard markdown to Telegram MarkdownV2 (``telegram_markdown.to_markdown_v2``)."""
+        return to_markdown_v2(content)
 
-        def _ph(value: str) -> str:
-            """Stash *value* behind a placeholder token that survives escaping."""
-            key = f"\x00PH{counter[0]}\x00"
-            counter[0] += 1
-            placeholders[key] = value
-            return key
-
-        def _ph_wrap(open_: str, close: str):
-            return lambda m: _ph(f"{open_}{_escape_mdv2(m.group(1))}{close}")
-
-        # 0) Rewrite GFM-style pipe tables into Telegram-friendly row groups
-        #    before the normal MarkdownV2 conversions run.
-        text = _wrap_markdown_tables(content)
-
-        # 1) Protect fenced code blocks (``` ... ```)
-        #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
-        #    A fence still opens on its own line — the opening ``` must be the
-        #    first triple-backtick run on that line and must end it — but the
-        #    line may carry arbitrary leading whitespace (list/blockquote-
-        #    nested code indents fences by 4+ spaces) or lead-in prose
-        #    ("Here is the code: ```"), both of which the line-start-only
-        #    anchor silently downgraded from <pre> to escaped literal text.
-        #    Requiring the rest of the opening line to be backtick-free is
-        #    what keeps *inline* triple backticks (e.g. "the syntax is
-        #    ```x``` inline") out of the match: a closing run can never sit
-        #    on the same line as the opener, and the tempered prefix cannot
-        #    skip past an earlier run to a later one.  The closing fence must
-        #    sit on its own line (any indent), with optional trailing
-        #    whitespace and an optional ``\r`` so CRLF-terminated fences
-        #    (Windows-authored content) match too.
-        def _protect_fenced(m):
-            prefix = m.group(1)   # lead-in text / indent before the opening fence
-            opening = m.group(2)  # opening ``` (with optional language) and newline
-            body = m.group(3)     # code body (may be empty)
-            closing = m.group(4)   # closing fence (with its indent)
-            body = body.replace('\\', '\\\\').replace('`', '\\`')
-            return prefix + _ph(opening + body + closing)
-
-        text = re.sub(
-            r'(?m)^((?:(?!```)[^\n])*)(```[^`\n]*\n)([\s\S]*?)(^[ \t]*```)[ \t]*\r?$',
-            _protect_fenced,
-            text,
-        )
-
-        # 2) Protect inline code (`...`)
-        #    Escape \ inside inline code per MarkdownV2 spec.
-        text = re.sub(
-            r'(`[^`]+`)',
-            lambda m: _ph(m.group(0).replace('\\', '\\\\')),
-            text,
-        )
-
-        # 3) Convert markdown links – escape the display text; inside the URL
-        #    only ')' and '\' need escaping per the MarkdownV2 spec.
-        def _convert_link(m):
-            url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
-            return _ph(f'[{_escape_mdv2(m.group(1))}]({url})')
-
-        text = re.sub(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)', _convert_link, text)
-        # 4) Headers (## Title) → bold *Title*, stripping redundant ** inside the header
-        def _convert_header(m):
-            inner = re.sub(r'\*\*(.+?)\*\*', r'\1', m.group(1).strip())
-            return _ph(f'*{_escape_mdv2(inner)}*')
-
-        text = re.sub(r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE)
-        # 5) Bold **text** → *text*; 6) Italic *text* → _text_ ([^*\n]+ keeps matches on one line, or *
-        # bullet lists corrupt); 7) Strikethrough ~~text~~ → ~text~; 8) Spoiler ||text|| kept as-is.
-        text = re.sub(r'\*\*(.+?)\*\*', _ph_wrap('*', '*'), text)
-        text = re.sub(r'\*([^*\n]+)\*', _ph_wrap('_', '_'), text)
-        text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
-        text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
-        # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, trailing || ends).
-        def _convert_blockquote(m):
-            prefix, content = m.group(1), m.group(2)  # prefix: >, >>, >>>, **>, **>> …
-            if prefix.startswith('**') and content.endswith('||'):
-                return _ph(f'{prefix} {_escape_mdv2(content[:-2])}||')
-            return _ph(f'{prefix} {_escape_mdv2(content)}')
-
-        text = re.sub(r'^((?:\*\*)?>{1,3}) (.+)$', _convert_blockquote, text, flags=re.MULTILINE)
-        # 10) Escape remaining special characters in plain text
-        text = _escape_mdv2(text)
-        # 11) Restore placeholders in reverse insertion order so nested placeholders resolve.
-        for key in reversed(list(placeholders.keys())):
-            text = text.replace(key, placeholders[key])
-        # 12) Safety net: escape bare ( ) { } that slipped through, but never inside ``` or ` spans.
-        _safe_parts = []
-        for _idx, _seg in enumerate(re.split(r'(```[\s\S]*?```|`[^`]+`)', text)):
-            if _idx % 2 == 1:
-                _safe_parts.append(_seg)  # inside code — untouched
-            else:
-                _safe_parts.append(re.sub(r'[(){}]', lambda m, _seg=_seg: TelegramAdapter._escape_bare_bracket(m, _seg), _seg))
-        return ''.join(_safe_parts)
-
-    @staticmethod
-    def _escape_bare_bracket(m, seg: str) -> str:
-        """Escape a bare ( ) { } unless it is already escaped or delimits a ``[text](url)`` link."""
-        s = m.start()
-        ch = m.group(0)
-        if s > 0 and seg[s - 1] == '\\':  # already escaped
-            return ch
-        if ch == '(' and s > 0 and seg[s - 1] == ']':  # opens a link [text](url)
-            return ch
-        if ch == ')':  # closes a link URL? walk back matching depth
-            before = seg[:s]
-            if '](http' in before or '](' in before:
-                depth = 0
-                for j in range(s - 1, max(s - 2000, -1), -1):
-                    if seg[j] == '(':
-                        depth -= 1
-                        if depth < 0:
-                            if j > 0 and seg[j - 1] == ']':
-                                return ch
-                            break
-                    elif seg[j] == ')':
-                        depth += 1
-        return '\\' + ch
 
     # ── Group mention gating ──────────────────────────────────────────────
 
@@ -5998,7 +5860,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     def _telegram_group_observe_shared_source(self, source):
         """Return a chat/topic-scoped source for observed Telegram group context."""
-        return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
+        return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None, shared_session=True)
 
     def _telegram_group_observe_attributed_text(self, event: MessageEvent) -> str:
         user_id = event.source.user_id or "unknown"
@@ -6016,23 +5878,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             "and use observed context only when the current message asks for it.")
 
     def _apply_telegram_group_observe_attribution(self, event: MessageEvent) -> MessageEvent:
-        """Align triggered group turns with observed-history attribution."""
-        if not self._telegram_observe_unmentioned_group_messages():
-            return event
-        raw_message = getattr(event, "raw_message", None)
-        if not raw_message or not self._is_group_chat(raw_message):
-            return event
-        allowed = self._telegram_observe_allowed_chats()
-        if not allowed or self._chat_id_str(raw_message) not in allowed:
-            return event
-        observe_prompt = self._telegram_group_observe_channel_prompt()
-        channel_prompt = f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
-        if event.message_type == MessageType.COMMAND:
-            # Commands keep the original source (user_id) so _check_slash_access can identify the sender.
-            return dataclasses.replace(event, channel_prompt=channel_prompt)
-        return dataclasses.replace(
-            event, text=self._telegram_group_observe_attributed_text(event),
-            source=self._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt)
+        return apply_group_observe_attribution(self, event)
 
     def _media_message_type(self, msg: Message) -> MessageType:
         """Classify a Telegram media message into a MessageType (first present attachment wins)."""
@@ -6359,6 +6205,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     # -- Text message aggregation (handles Telegram client-side splits) --
 
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """The mixin's batching key (topic recovery included) plus the sender, so two observed-group members never merge."""
+        return super()._text_batch_key(event) + shared_sender_suffix(event)
+
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text chunk, or hold it while delayed delivery must be dropped."""
         if self._should_drop_delayed_delivery():
@@ -6436,6 +6286,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         """Return a batching key for Telegram photos/albums."""
         session_key = self._event_session_key(event)
         media_group_id = getattr(msg, "media_group_id", None)
+        session_key += shared_sender_suffix(event)
         return f"{session_key}:album:{media_group_id}" if media_group_id else f"{session_key}:photo-burst"
 
     async def _flush_photo_batch(self, batch_key: str) -> None:
@@ -6798,15 +6649,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     def _reply_context(self, message: Message) -> tuple:
         """``(reply_to_id, reply_to_text)`` for the replied-to message: Telegram's native partial quote
-        first, then text/caption, rich echo, then the sent index."""
+        first, then text/caption (hidden link URLs inlined), rich echo, then the sent index."""
         if not message.reply_to_message:
             return None, None
         reply_to_id = str(message.reply_to_message.message_id)
         quote = getattr(message, "quote", None)
-        quote_text = getattr(quote, "text", None) if quote is not None else None
+        quote_text = expand_quote_link_entities(quote, message.reply_to_message) if quote is not None else None
         if quote_text:
             return reply_to_id, quote_text
-        reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+        reply_to_text = expand_link_entities(message.reply_to_message) or None
         if not reply_to_text:
             reply_to_text = rich_message_text(message.reply_to_message) or None
         if not reply_to_text:
@@ -6863,6 +6714,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         return MessageEvent(
             text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
+            user_id=source.user_id, user_name=source.user_name,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt), reply_expected=group_reply_expected(self, message, chat_type),
             edit_revision=self._edit_revision(message, update_id), timestamp=message.date)
@@ -7050,7 +6902,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from .adapter_hint import PLATFORM_HINT
+    from .adapter_hint import PLATFORM_HINT, PLATFORM_HINT_TOOL_NOTES
     from .dashboard_card import DASHBOARD_CARD
     from .standalone import standalone_send
     from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
@@ -7060,7 +6912,7 @@ def register(ctx) -> None:
         ensure_deps_fn=check_telegram_requirements, is_connected=_is_connected, required_env=["TELEGRAM_BOT_TOKEN"],
         install_hint=t("platform.telegram.install_hint"), setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
         standalone_sender_fn=standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True,
-        platform_hint=PLATFORM_HINT,
+        platform_hint=PLATFORM_HINT, platform_hint_tool_notes=PLATFORM_HINT_TOOL_NOTES,
         display_tier="high",
         # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats.
         display_overrides={"tool_progress": "off", "busy_ack_detail": False},

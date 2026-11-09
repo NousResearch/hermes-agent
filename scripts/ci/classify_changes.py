@@ -108,6 +108,9 @@ _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # do
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
+# CI configuration outside .github/: workflows run their commands as just recipes
+# through this wrapper, so a change here can break any lane, as a workflow edit can.
+_CI_CONFIG_FILES = {"justfile", "scripts/hermes-python"}
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
 _PY_SKIP = ("docs/", "website/") + _FRONTEND
 # Published artifacts that live under website/ but that Python asserts about.
@@ -679,7 +682,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         inherited = classify(consumers)
         for lane in _FIXTURE_CONSUMER_LANES:
             ret[lane] = ret[lane] or inherited[lane]
-    if not files or any(f.startswith(".github/") for f in files):
+    if not files or any(f.startswith(".github/") or f in _CI_CONFIG_FILES for f in files):
         ret["python"] = True
         ret["python_prod"] = True
         ret["docker_meta"] = True

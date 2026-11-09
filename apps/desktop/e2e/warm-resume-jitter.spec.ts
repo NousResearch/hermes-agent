@@ -30,6 +30,8 @@
  * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
+import type { Page } from '@playwright/test'
+
 import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
@@ -169,7 +171,7 @@ test.afterAll(async () => {
  *   add/remove nodes.
  */
 async function installRenderCounter(
-  page: import('@playwright/test').Page,
+  page: Page,
   transcriptText?: string,
 ): Promise<void> {
   await page.evaluate(([visibleSelector, allSelector, expected]: [string, string, string | undefined]) => {
@@ -214,7 +216,9 @@ async function installRenderCounter(
     }
 
     const observer = new MutationObserver(records => {
-      if (state.stopped) return
+      if (state.stopped) {
+        return
+      }
       let batchAdded = 0
       for (const record of records) {
         state.mutations += 1
@@ -224,7 +228,9 @@ async function installRenderCounter(
       }
       if (batchAdded > 0) {
         currentBatch += batchAdded
-        if (flushTimer) clearTimeout(flushTimer)
+        if (flushTimer) {
+          clearTimeout(flushTimer)
+        }
         flushTimer = setTimeout(flush, 5)
       }
     })
@@ -266,7 +272,7 @@ async function installRenderCounter(
 
 /** Wait until the ACTIVE chat surface's transcript contains `text`. */
 async function waitForActiveTranscriptText(
-  page: import('@playwright/test').Page,
+  page: Page,
   text: string,
   timeout = 30_000,
 ): Promise<void> {
@@ -283,7 +289,7 @@ async function waitForActiveTranscriptText(
 }
 
 async function waitForActiveTranscriptWithoutText(
-  page: import('@playwright/test').Page,
+  page: Page,
   text: string,
 ): Promise<void> {
   await page.waitForFunction(
@@ -299,13 +305,13 @@ async function waitForActiveTranscriptWithoutText(
 }
 
 /** Stack an empty tab while leaving the current transcript mounted and warm. */
-async function openNewSessionTab(page: import('@playwright/test').Page, priorText: string): Promise<void> {
+async function openNewSessionTab(page: Page, priorText: string): Promise<void> {
   await page.locator('[data-slot="sidebar"] button[aria-label="New session"]').first().click()
   await waitForActiveTranscriptWithoutText(page, priorText)
 }
 
 /** Stop the render counter and return the recorded burst/reconcile counts. */
-async function readRenderCount(page: import('@playwright/test').Page): Promise<{
+async function readRenderCount(page: Page): Promise<{
   bursts: number
   mutations: number
   timeline: number[]
@@ -322,7 +328,7 @@ async function readRenderCount(page: import('@playwright/test').Page): Promise<{
   })
 }
 
-async function observedViewportIsActive(page: import('@playwright/test').Page): Promise<boolean> {
+async function observedViewportIsActive(page: Page): Promise<boolean> {
   return page.evaluate((surfaceSelector: string) => {
     const surfaces = document.querySelectorAll(surfaceSelector)
     const activeViewport = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')
@@ -346,7 +352,8 @@ function assertNoRepaint(result: { bursts: number; mutations: number; timeline: 
   ).toBe(0)
 }
 
-test('tab reactivation preserves the mounted transcript without repainting', async ({}, testInfo) => {
+test('tab reactivation preserves the mounted transcript without repainting', async () => {
+  const testInfo = test.info()
   const page = fixture!.page
 
   // Wait for the sidebar to populate with our seeded session.

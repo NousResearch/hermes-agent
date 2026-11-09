@@ -9,19 +9,20 @@
  * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
-import {
-  type MockBackendFixture,
-  setupMockBackend,
-  waitForAppReady,
-} from './fixtures'
 import {
   createBackgroundReleaseHandle,
   restartMockServer,
   SIDEBAR_CROSS_TEXTS,
   SIDEBAR_TEXTS,
 } from '../../../tests-js/scripts/mock-server'
+
+import {
+  type MockBackendFixture,
+  setupMockBackend,
+  waitForAppReady,
+} from './fixtures'
 
 /** Background-running dot aria-label (from i18n en.ts). */
 const BG_DOT_LABEL = 'Background task running'

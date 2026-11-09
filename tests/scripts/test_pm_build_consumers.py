@@ -28,7 +28,7 @@ def test_ci_setup_exports_python_first_and_no_installer_policy(tmp_path, monkeyp
     from types import SimpleNamespace
     from scripts.ci import setup_toolchain
 
-    monkeypatch.setattr(setup_toolchain, "packages", lambda toolchain, extra=None: ["python", "uv"])
+    monkeypatch.setattr(setup_toolchain, "packages", lambda toolchain, extra=None, lock=None: ["just", "python", "uv"])
     manager = importlib.import_module("pm.install")
     ensured = []
     monkeypatch.setattr(manager, "ensure", lambda name, **kwargs: ensured.append((name, kwargs["explicit"])))
@@ -41,8 +41,11 @@ def test_ci_setup_exports_python_first_and_no_installer_policy(tmp_path, monkeyp
 
     uv_binary = Path(shutil.which("uv"))
 
+    just_binary = tmp_path / "just-entry" / "just"
+
     def package(name):
-        return SimpleNamespace(binary=lambda *args: uv_binary if name == "uv" else Path(sys.executable))
+        binaries = {"uv": uv_binary, "just": just_binary}
+        return SimpleNamespace(binary=lambda *args: binaries.get(name, Path(sys.executable)))
 
     monkeypatch.setattr(manager, "env_for", environment)
     monkeypatch.setattr("pm.registry.get_package", package)
@@ -51,11 +54,12 @@ def test_ci_setup_exports_python_first_and_no_installer_policy(tmp_path, monkeyp
     for name, path in files.items():
         monkeypatch.setenv(name, str(path))
     setup_toolchain.install(SimpleNamespace(toolchain="python", packages=[], home=tmp_path / "ci"))
-    assert ensured == [("uv", True)]  # ensure already walks uv's Python dependency.
-    assert composed == [("python",)]
+    assert ensured == [("uv", True), ("just", True)]  # ensure already walks uv's Python dependency.
+    assert composed == [("just", "python")]
     outputs = dict(line.split("=", 1) for line in files["GITHUB_OUTPUT"].read_text(encoding="utf-8").splitlines())
     exported = dict(line.split("=", 1) for line in files["GITHUB_ENV"].read_text(encoding="utf-8").splitlines())
     assert outputs["uv-path"] == str(uv_binary)
+    assert outputs["just-path"] == str(just_binary)
     assert not any(name.startswith("UV_") for name in exported)
     assert exported["HERMES_PYTHON"] == outputs["python-path"]
     path_entries = files["GITHUB_PATH"].read_text(encoding="utf-8").replace("\\", "/").splitlines()

@@ -625,6 +625,7 @@ gateway:
     action_always: "Дозволяти завжди"
     action_deny: "Відхилити"
     deadline: "Якщо ви не відповісте протягом {window}, команду НЕ буде виконано."
+    not_requester: "Відповісти на цей запит може лише {requester}."
     text_choice_once: "Відповідайте `{prefix}approve`, щоб виконати один раз"
     text_choice_session: "`{prefix}approve session`, щоб дозволити цей шаблон до кінця сеансу"
     text_choice_always: "`{prefix}approve always`, щоб дозволити назавжди"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", або {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Попередній перегляд скорочено: повна команда ({total} символів) — у повідомленні вище."
+    truncated_deny_only: "Попередній перегляд скорочено ({total} символів), і повну команду не вдалося показати тут, тому доступно лише «Відхилити». Перегляньте її в CLI або в настільному застосунку."
+    text_prompt_deny_only: "Повний запит на підтвердження задовгий для цієї платформи, тому доступно лише «Відхилити». Перегляньте його в CLI або в настільному застосунку."
   notify:
     media_kind:
       audio: "аудіо"

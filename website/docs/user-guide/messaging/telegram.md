@@ -276,7 +276,7 @@ telegram:
   observe_unmentioned_group_messages: true
 ```
 
-With this mode enabled, unmentioned group messages from explicitly allowlisted chats/topics are appended to the shared chat/topic session transcript as observed context, but they do not dispatch the agent. `allowed_chats` gates where the bot responds; `group_allowed_chats` authorizes the shared group session used for observed context, so use the same chat IDs for this mode. A later `@botname` mention, reply to the bot, or configured mention pattern in that same allowlisted chat/topic can use that observed context. The triggered message is also tagged with `[nickname|user_id]` and gets a per-turn safety prompt so the model treats prior observed lines as context, not instructions addressed to the bot.
+With this mode enabled, unmentioned group messages from explicitly allowlisted chats/topics are appended to the shared chat/topic session transcript as observed context, but they do not dispatch the agent. `allowed_chats` gates where the bot responds; `group_allowed_chats` authorizes the shared group session used for observed context, so use the same chat IDs for this mode. A later `@botname` mention, reply to the bot, or configured mention pattern in that same allowlisted chat/topic can use that observed context. The triggered message is also tagged with `[nickname|user_id]` and gets a per-turn safety prompt so the model treats prior observed lines as context, not instructions addressed to the bot. Slash commands sent in that chat/topic (`/new`, `/model`, `/undo`, skill commands) act on the same shared session, while admin-only commands are still checked against the sender.
 
 Equivalent environment variable:
 
@@ -1483,6 +1483,8 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 > [✏️ Other (type answer)]
 
 Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
+
+When `clarify` is in the session's tools (not in cron jobs or profiles that disable it), the Telegram platform hint tells the agent to use it for small fixed-choice decisions, so it does not improvise numbered lists or copy-to-clipboard buttons, which never send an answer back. Persistent agent-authored action buttons are not a generic Hermes feature yet.
 
 Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `90` seconds). If you don't respond within the timeout, the agent unblocks with `"outcome": "timed_out"` and adapts rather than hanging. Reply `skip` to skip a question.
 

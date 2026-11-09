@@ -47,11 +47,13 @@ def is_stale_query_error(exc: BaseException) -> bool:
     return isinstance(exc, BadRequest)
 
 
-async def answer_callback(query: Any, text: Optional[str] = None) -> bool:
+async def answer_callback(query: Any, text: Optional[str] = None, *, show_alert: bool = False) -> bool:
     """Ack a button tap; ``False`` when Telegram refused it because the query expired."""
     try:
         if text is None:
             await query.answer()
+        elif show_alert:
+            await query.answer(text=text, show_alert=True)
         else:
             await query.answer(text=text)
     except Exception as exc:

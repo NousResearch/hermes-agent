@@ -28,6 +28,8 @@
 import { expect, type Page, test } from '@playwright/test'
 import { type ElectronApplication } from '@playwright/test'
 
+import { restartMockServer } from '../../../tests-js/scripts/mock-server'
+
 import {
   buildAppEnv,
   launchDesktop,
@@ -35,7 +37,6 @@ import {
   setupMockBackend,
   waitForAppReady,
 } from './fixtures'
-import { restartMockServer } from '../../../tests-js/scripts/mock-server'
 
 /** Finished-unread dot aria-label (from i18n en.ts). */
 const UNREAD_DOT_LABEL = 'Finished — unread'

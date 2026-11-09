@@ -17,12 +17,26 @@ from gateway.config import PlatformConfig
 # ---------------------------------------------------------------------------
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
-from plugins.platforms.telegram.adapter import (
-    TelegramAdapter,
-    _escape_mdv2,
-    _strip_mdv2,
-    _wrap_markdown_tables,
-)
+from plugins.platforms.telegram.adapter import TelegramAdapter, _strip_mdv2
+from plugins.platforms.telegram.telegram_markdown import _escape_mdv2, _wrap_markdown_tables
+
+
+def _assert_balanced_mdv2_code_entities(text: str) -> None:
+    """Assert that every unescaped MarkdownV2 code delimiter is closed."""
+    delimiter = None
+    index = 0
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text.startswith("```", index):
+            delimiter = None if delimiter == "```" else "```"
+            index += 3
+            continue
+        if text[index] == "`":
+            delimiter = None if delimiter == "`" else "`"
+        index += 1
+    assert delimiter is None, f"unclosed {delimiter} code entity in {text!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +242,33 @@ class TestFormatMessageCodeBlocks:
         # ...and exactly the one real block's two fences remain.
         assert result.count("```") == 2
 
+    def test_nested_backticks_preserve_markdownv2_formatting(self, adapter):
+        text = (
+            "**Раздел**\n"
+            "- `**жирный**`, `*курсив*`, `~~зачёркнутый~~`, `||спойлер||`\n"
+            "- `` `код` `` и ``` блоки кода ```\n"
+            "- `[ссылка](url)`, заголовки `##`\n"
+            "**Вывод**\n"
+            "5. Не мешай `**` и эмодзи внутри одной строки — каша."
+        )
+
+        result = adapter.format_message(text)
+
+        assert "*Раздел*" in result
+        assert r"\`\` `код` \`\`" in result
+        assert r"`**`" in result
+        _assert_balanced_mdv2_code_entities(result)
+
+    def test_double_backtick_span_collapses_to_telegram_inline_code(self, adapter):
+        result = adapter.format_message("Use ``value`` now")
+
+        assert result == "Use `value` now"
+
+    def test_inline_code_does_not_span_newlines(self, adapter):
+        result = adapter.format_message("`orphan\n(foo)`")
+
+        assert result == "\\`orphan\n\\(foo\\)\\`"
+
 
 @pytest.mark.asyncio
 async def test_final_send_does_not_retrigger_typing(adapter):
@@ -258,6 +299,49 @@ class TestFormatMessageBoldItalic:
         assert "*bold*" in result
         # Original ** should be gone
         assert "**" not in result
+
+    def test_bold_italic_combined(self, adapter):
+        """***bold italic*** resolves both delimiter families, not a corrupted literal."""
+        assert adapter.format_message("***bold italic***") == "_*bold italic*_"
+
+    def test_bold_with_inner_italic(self, adapter):
+        """Inner *italic* markers inside **bold** stay emphasis instead of being escaped."""
+        assert adapter.format_message("**bold *italic* text**") == "*bold _italic_ text*"
+
+    def test_bold_spans_single_newline(self, adapter):
+        """Bold may cross one newline within a paragraph."""
+        assert adapter.format_message("**bold\ntext**") == "*bold\ntext*"
+
+    def test_bold_does_not_span_paragraph(self, adapter):
+        """** across a blank line stays unmatched literal text."""
+        result = adapter.format_message("**para one\n\npara two**")
+        assert "bold" not in result.strip("*") and result.startswith("\\*")
+
+    def test_nested_double_emphasis(self, adapter):
+        """**outer *mid **deep** mid* outer** keeps the italic; the inner bold merges into the outer
+        one because MarkdownV2 reads a * inside bold as its closer."""
+        assert (
+            adapter.format_message("**outer *mid **deep** mid* outer**")
+            == "*outer _mid deep mid_ outer*"
+        )
+
+    def test_italic_wrapping_bold(self, adapter):
+        """*a **b** c* keeps the inner bold."""
+        assert adapter.format_message("*a **b** c*") == "_a *b* c_"
+
+    def test_quad_asterisk_bold(self, adapter):
+        """****bold**** collapses to a single valid bold (MarkdownV2 cannot nest bold in bold)."""
+        assert adapter.format_message("****bold****") == "*bold*"
+
+    def test_spaced_asterisks_stay_literal(self, adapter):
+        """Multiplication-style 'a * b * c' must not become fake italic."""
+        assert adapter.format_message("a * b * c") == "a \\* b \\* c"
+
+    def test_unmatched_markers_preserved_as_text(self, adapter):
+        """Lone asterisk runs survive as escaped literals, never stripped or balanced."""
+        assert adapter.format_message("****") == "\\*\\*\\*\\*"
+        assert adapter.format_message("a**b") == "a\\*\\*b"
+        assert adapter.format_message("unmatched * star") == "unmatched \\* star"
 
 
     def test_reload_mcp_summary_escapes_dynamic_server_names(self, adapter):
@@ -395,6 +479,36 @@ class TestFormatMessageBlockquote:
         assert "> not expandable" in result
         assert "\\|" in result
         assert "\\>" not in result
+
+
+    def test_expandable_blockquote_single_line(self, adapter):
+        result = adapter.format_message("**> Only line||")
+        assert result == "**> Only line||"
+
+
+    def test_expandable_blockquote_multiline_keeps_closing_mark(self, adapter):
+        """Telegram's documented form: **> opens, || ends the LAST line of the block."""
+        text = "**> First line\n> Second line\n> Last line||"
+        result = adapter.format_message(text)
+        assert result == "**> First line\n> Second line\n> Last line||"
+
+
+    def test_expandable_blockquote_mark_escaped_before_last_line(self, adapter):
+        """A raw || before the block's last line is rejected by Telegram as an unterminated spoiler."""
+        result = adapter.format_message("**> First line||\n> Second line")
+        assert result == "**> First line\\|\\|\n> Second line"
+
+
+    def test_expandable_blockquote_ends_at_next_opener(self, adapter):
+        """A **> line starts a new quote block, so each block keeps its own closing mark."""
+        text = "> Plain quote\n**> Hidden one\n> Hidden two||"
+        result = adapter.format_message(text)
+        assert result == "> Plain quote\n**> Hidden one\n> Hidden two||"
+
+
+    def test_expandable_blockquote_escapes_content(self, adapter):
+        result = adapter.format_message("**> Step 1.\n> Done (ok)!||")
+        assert result == "**> Step 1\\.\n> Done \\(ok\\)\\!||"
 
 
 # =========================================================================

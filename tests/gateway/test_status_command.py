@@ -224,6 +224,7 @@ async def test_status_command_prefers_rehydrated_session_model_override(tmp_path
             api_mode=None,
             request_overrides={},
             runtime_capabilities={},
+            alias_endpoint_applied=False,
         )
         switch_ctx = SimpleNamespace(
             session_key=session_entry.session_key,

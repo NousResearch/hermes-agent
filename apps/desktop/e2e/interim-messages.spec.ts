@@ -39,12 +39,13 @@
 
 import { expect, type Page, test } from '@playwright/test'
 
+import { INTERIM_TEXTS, restartMockServer } from '../../../tests-js/scripts/mock-server'
+
 import {
   type MockBackendFixture,
   setupMockBackend,
   waitForAppReady,
 } from './fixtures'
-import { INTERIM_TEXTS, restartMockServer } from '../../../tests-js/scripts/mock-server'
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 

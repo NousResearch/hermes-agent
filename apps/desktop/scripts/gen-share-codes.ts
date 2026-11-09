@@ -2,9 +2,8 @@
 // (runs the actual encoder, so every string round-trips). Run with `pnpm exec tsx`.
 import { writeFileSync } from 'node:fs'
 
-import type { StarmapEdge, StarmapGraph, StarmapMemoryCard, StarmapNode } from '../src/types/hermes'
-
 import { decodeShareCode, encodeShareCode } from '../src/app/starmap/share-code'
+import type { StarmapEdge, StarmapGraph, StarmapMemoryCard, StarmapNode } from '../src/types/hermes'
 
 const DAY = 86_400
 const END = Math.floor(Date.UTC(2026, 5, 29) / 1000)

@@ -381,7 +381,14 @@ def _unaddressed_member_mentions(
 
 
 def _require_gateway_actor(actor: Mapping[str, Any], room: DiscussionRoom, message: str) -> None:
-    if actor.get("kind") != "gateway" or actor.get("id") != room.gateway_id:
+    # Historical gateway-actor events carry the PREVIOUS authority's id: the two-step
+    # standalone -> gateway handoff changes the id space (install:<id> vs
+    # install:<id>:gateway-store), so a replay of the log must accept both. The write path
+    # is CAS-fenced to the current authority, so only the replay side needs this. #148257.
+    if actor.get("kind") != "gateway":
+        raise DiscussionValidationError(message)
+    actor_id, room_id = str(actor.get("id") or ""), str(room.gateway_id)
+    if actor_id != room_id and actor_id.split(":gateway-store")[0] != room_id.split(":gateway-store")[0]:
         raise DiscussionValidationError(message)
 
 
@@ -495,8 +502,14 @@ def _validate_event(raw: Any, *, room: DiscussionRoom, previous_seq: int) -> _Va
         (payload, Mapping, "event payload must be an object")):
         if not isinstance(value, expected):
             raise DiscussionValidationError(message)
-    if kind in _EPOCH_STAMPED_KINDS and raw.get("authority_epoch") != room.authority_epoch:
-        raise DiscussionValidationError(f"{kind} authority epoch does not match the room")
+    if kind in _EPOCH_STAMPED_KINDS:
+        # Events are append-only and CAS-fenced to the room's CURRENT authority at append
+        # time; after an authority handoff (standalone -> gateway store) the log legitimately
+        # spans older epochs. A replay of that history must validate, so only a FUTURE epoch
+        # (one no current authority could have committed) is a violation. Upstream: #148257.
+        epoch = raw.get("authority_epoch")
+        if epoch is not None and int(epoch) > room.authority_epoch:
+            raise DiscussionValidationError(f"{kind} authority epoch is newer than the room")
     if (validator := _EVENT_VALIDATORS.get(kind)) is not None:
         payload = validator(kind, payload, actor, room)
     return _ValidatedEvent(raw=raw, seq=seq, event_id=event_id, kind=kind, actor=actor, payload=payload)
@@ -546,9 +559,10 @@ def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[s
                 raise DiscussionValidationError("turn.settled references no matching member message")
             discussion_seq = next((candidate.seq for candidate in events
                                    if candidate.event_id == event.payload["discussion_event_id"]), None)
-            if discussion_seq is None:
-                raise DiscussionValidationError("turn.settled references no matching user discussion")
-            if watermark >= discussion_seq:
+            # A settled turn may reference a user discussion that snapshot compaction has
+            # already pruned from the active window: the watermark still advances, the replay
+            # must not fail forever. Upstream: #148627.
+            if discussion_seq is not None and watermark >= discussion_seq:
                 watermark = max(watermark, message.seq)
         watermarks[key] = max(watermarks.get(key, 0), watermark)
     return watermarks

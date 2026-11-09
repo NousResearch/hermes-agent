@@ -1,0 +1,44 @@
+name: hermes-business-brain
+repo: https://github.com/unsulabs/hermes-business-brain
+sha: 3f10f53ba30b74c8e84915020859a692c603c867
+description: >
+  Offline, privacy-first business-brain engine for Hermes: 18 local tools
+  (brain_doctor, brain_create_vault, brain_validate_vault, brain_status,
+  brain_register_vault, brain_resolve_vault, brain_query, brain_capture,
+  brain_knowledge_map, brain_relations, brain_references, brain_naming,
+  brain_transcript_cycle, brain_propose, brain_card, brain_document,
+  brain_knowledge_plan, brain_dx_apply) backed by a native English in-process
+  engine that creates, validates and queries Obsidian knowledge vaults on
+  user-provided paths, plus 19 bundled workflow skills. Disclosure: no network
+  calls, no telemetry, no stored credentials; all operations run locally;
+  the engine invokes the git CLI (argv-only, no shell) for local vault-bank
+  probing and product archive export; every other operation is plain file I/O
+  on paths the user passes; bundled templates and schemas are synthetic.
+maintainer: unsulabs
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.2.0"
+capabilities:
+  provides_tools:
+    - brain_doctor
+    - brain_create_vault
+    - brain_validate_vault
+    - brain_status
+    - brain_register_vault
+    - brain_resolve_vault
+    - brain_query
+    - brain_capture
+    - brain_knowledge_map
+    - brain_relations
+    - brain_references
+    - brain_naming
+    - brain_transcript_cycle
+    - brain_propose
+    - brain_card
+    - brain_document
+    - brain_knowledge_plan
+    - brain_dx_apply
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

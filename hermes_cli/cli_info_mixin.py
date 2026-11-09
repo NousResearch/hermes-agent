@@ -625,10 +625,25 @@ class CLIInfoMixin:
             return
         self._show_usage()
 
-    def _on_nous_route(self) -> bool:
-        """The Nous balance and /topup CTA apply only to a Nous route, not to another provider's session."""
+    def _account_usage_view(self) -> tuple[list[str], bool]:
+        """``(plan-limit lines, nous_route)`` for `/usage`. On a gateway session the owner answers for the
+        route the session runs (``session.account_usage``): this process's provider/base_url pair is not
+        that route once /model or a fallback moved the provider (the launch base_url stays). Off the
+        gateway, or on an owner older than the read, the CLI's own route."""
         from agent.billing_links import is_nous_inference_route
-        return is_nous_inference_route(self._agent_or_self("provider") or "", self._agent_or_self("base_url") or "")
+        from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+        from hermes_cli.gateway_side import connection_for
+        if (connection := connection_for(self)) is not None:
+            try:
+                view = connection.call("session.account_usage", session_id=self.session_id, timeout=15) or {}
+                return list(view.get("lines") or []), view.get("nous_route") is True
+            except GatewayRPCError as exc:
+                if exc.code != -32601 and str(exc) != "unknown_method":
+                    return [], False  # a refusal says nothing about the route: no Nous balance
+            except GatewayClientError:
+                return [], False
+        provider, base_url = self._agent_or_self("provider") or "", self._agent_or_self("base_url") or ""
+        return self._local_account_limit_lines(), is_nous_inference_route(provider, base_url)
 
     def _agent_or_self(self, name: str):
         """Provider-ish attribute from the live agent, falling back to the CLI's own value."""
@@ -730,8 +745,9 @@ class CLIInfoMixin:
         def _credits_or(fallback: str) -> None:
             # Account limits (e.g. Codex subscription windows) need only the configured provider
             # plus on-disk credentials, so they render without a live agent too (#42904).
-            shown = self._print_account_limits()
-            if self._on_nous_route() and self._print_nous_credits_block():
+            lines, nous_route = self._account_usage_view()
+            shown = self._print_account_limits(lines)
+            if nous_route and self._print_nous_credits_block():
                 self._print_usage_cta()
             elif not shown:
                 print(fallback)
@@ -786,9 +802,10 @@ class CLIInfoMixin:
         print(f"  {t('cli.usage.label_messages'):<17} {len(self.conversation_history)}")
         print(f"  {t('cli.usage.label_compressions'):<17} {compressor.compression_count}")
 
-        self._print_account_limits()
+        lines, nous_route = self._account_usage_view()
+        self._print_account_limits(lines)
 
-        if self._on_nous_route() and self._print_nous_credits_block():
+        if nous_route and self._print_nous_credits_block():
             self._print_usage_cta()
 
         if self.verbose:
@@ -798,33 +815,31 @@ class CLIInfoMixin:
         else:
             logging.getLogger().setLevel(logging.INFO)
 
-    def _print_account_limits(self) -> bool:
-        """Provider account limits block for `/usage`; True if anything printed.
-
-        Uses the live agent's route when present, else the CLI's own configured provider (the
-        TUI/Desktop slash-worker runs without an agent). Fetched off-thread with a hard timeout so
+    def _local_account_limit_lines(self) -> list[str]:
+        """This process's route's provider account limits: the live agent's, else the CLI's configured
+        provider (the TUI/Desktop slash-worker runs without an agent). Off-thread with a hard timeout so
         slow provider APIs don't hang the prompt; failures are non-fatal. Lazy import: pulls the
-        OpenAI SDK chain.
-        """
+        OpenAI SDK chain."""
         provider = self._agent_or_self("provider")
         if not provider:
-            return False
+            return []
         from agent.account_usage import account_limit_lines
-        raw_lines: list[str] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
             try:
-                raw_lines = _pool.submit(
+                return _pool.submit(
                     account_limit_lines, provider, base_url=self._agent_or_self("base_url"),
                     api_key=self._agent_or_self("api_key"),
                 ).result(timeout=10.0)
             except (concurrent.futures.TimeoutError, Exception):
-                raw_lines = []
-        account_lines = [f"  {line}" for line in raw_lines]
-        if not account_lines:
+                return []
+
+    def _print_account_limits(self, lines: list[str]) -> bool:
+        """The provider account limits block of `/usage`; True if anything printed."""
+        if not lines:
             return False
         print()
-        for line in account_lines:
-            print(line)
+        for line in lines:
+            print(f"  {line}")
         return True
 
     def _show_insights(self, command: str = "/insights"):

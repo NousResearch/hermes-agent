@@ -169,7 +169,7 @@ class TestFallbackIsLabelledOnSurfaces:
             context_compressor=SimpleNamespace(last_prompt_tokens=9_000, context_length=context_length,
                                                compression_count=0, _config_context_length=None),
         )
-        cli_obj._print_account_limits = lambda: False
+        cli_obj._account_usage_view = lambda: ([], False)
         cli_obj._print_nous_credits_block = lambda: False
         cli_obj.verbose = False
         return cli_obj

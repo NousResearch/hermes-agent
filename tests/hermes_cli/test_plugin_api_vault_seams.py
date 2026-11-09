@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -97,19 +96,18 @@ def test_login_backend_subclassed_as_documented_serves_vault_item_meta_through_c
     lease = _bundled_context(tmp_path, monkeypatch, "keepass-vault").register_login_backend(plugin_backend)
     assert lease is not None
     try:
-        with patch("agent.vault_backends.base._cfg", return_value={"keepass": {"enabled": True}}), \
-             patch("agent.vault_backends.base.is_enabled", return_value=False), \
-             patch("agent.vault_backends.base._browser_profile_enabled", return_value=False):
-            backend = backend_for_handle("keepass:1")
-            assert backend is not None and backend.name == "keepass"
-            [listed] = backend.list_items()
-            assert isinstance(listed, VaultItemMeta) and listed == item and listed is not item
-            assert backend.get_meta("keepass:1") == item
-            assert backend.resolve_password("keepass:1") == "pw-for-keepass:1"
+        assert backend_for_handle("keepass:1") is None  # off until the profile opts in
+        (tmp_path / "home" / "config.yaml").write_text("vault:\n  keepass:\n    enabled: true\n", encoding="utf-8")
+        backend = backend_for_handle("keepass:1")
+        assert backend is not None and backend.name == "keepass"
+        [listed] = backend.list_items()
+        assert isinstance(listed, VaultItemMeta) and listed == item and listed is not item
+        assert backend.get_meta("keepass:1") == item
+        assert backend.resolve_password("keepass:1") == "pw-for-keepass:1"
 
-            plugin_backend.items = [item.to_dict()]
-            with pytest.raises(PluginBackendError):
-                backend.list_items()
+        plugin_backend.items = [item.to_dict()]
+        with pytest.raises(PluginBackendError):
+            backend.list_items()
     finally:
         lease.dispose()
 

@@ -1,8 +1,8 @@
 name: hermes-manas-aegis
 title: Manas Aegis
 repo: https://github.com/elianjuan-g/hermes-manas-aegis
-sha: 4f252e25f18774eed30a5835c7ee0c4bd1464d80
-version: "2.5.2"
+sha: 33b147bb721a3cde2710fceb2a876bd40ea20c2c
+version: "2.6.0"
 description: >-
   [ALPHA] Experimental Hermes guardrail (prototype, not standalone security):
   pattern-based pre-tool checks that can block or rewrite some risky tool
@@ -11,9 +11,18 @@ description: >-
   Disclosure — no network call to third parties, no LLM call, no subprocess,
   no credentials read, no telemetry out. Intercepts pre_tool_call and
   pre_llm_call to scan arguments with 10 defined rules mapped to CWE / CAPEC /
-  MITRE ATT&CK / OWASP Top 10 / CVSS / CWSS / EPSS / SSVC (8 experimental,
-  2 planned); on a match it blocks the call or rewrites the arguments
-  (honeypot redirect to a sandboxed decoy, or a safe-flag rewrite for git).
+  MITRE ATT&CK / OWASP Top 10 / CVSS / CWSS / EPSS / SSVC (10 experimental,
+  0 planned — all enforced since v2.6.0); on a match it blocks the call or
+  rewrites the arguments (honeypot redirect to a sandboxed decoy, or a
+  safe-flag rewrite for git). v2.6.0 adds per-session taint tracking
+  (credential read -> egress blocked), a real shell parser (chained
+  commands split per segment, dangerous python -c blocked), SSRF
+  fail-closed on DNS error (with an allowlist), a Posture Score (0-100 +
+  grade), a Guard Arena (10 attack scenarios run against the live
+  enforcement path on a disposable core), a time-travel audit (re-checks
+  stored events against the new rules), and HUD hardening (CSRF token on
+  all POSTs, 20/60s rate limit, opt-in token auth). CI runs unit + contract
+  tests with a 70% coverage gate (measured 79%).
   Serves a loopback-only HUD (http://127.0.0.1:18777) shown as an iframe in
   the Desktop Manas Aegis tab; writes redacted interception telemetry
   (manas_telemetry.json, live file + append-only archive, unlimited) and a

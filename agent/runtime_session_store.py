@@ -16,11 +16,22 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
 from hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)
 
 _worker_process = False
+
+# How long one persistence call waits for the owner's receipt. The owner is a single event loop that
+# also serves chat, platforms, cron and every other worker, and under load it stalls past 10 s
+# (``ws write slow (loop stalled >10.0s)``). At the old 20 s budget such a stall made the worker give up
+# and exit: 8 Nov 2026 had zero worker_receipt_timeout losses until the 21:50 restart that raised
+# kanban concurrency from 2 to 4, then 14-20 an hour. A blocked worker loses nothing by waiting;
+# a worker that gives up loses its whole run. The turn lease (300 s) stays well above this budget.
+_RECEIPT_BUDGET_S = 120.0
+# A receipt slower than this is logged with its measured wait, so owner stalls are measured, not guessed.
+_SLOW_RECEIPT_LOG_S = 10.0
 
 
 def is_worker_process():
@@ -194,7 +205,14 @@ class WorkerRPC:
                     self._drop()
                     link = self._connection()
                     link.send(request_id, message)
-                response = link.receive(20)
+                sent_at = time.monotonic()
+                try:
+                    response = link.receive(_RECEIPT_BUDGET_S)
+                finally:
+                    waited = time.monotonic() - sent_at
+                    if waited >= _SLOW_RECEIPT_LOG_S:
+                        logger.warning('slow owner receipt: %s waited %.1fs (budget %.0fs)',
+                                       method, waited, _RECEIPT_BUDGET_S)
             except BaseException:
                 # Outcome unknown once sent: surface the error and never resend; the next call redials.
                 self._drop()

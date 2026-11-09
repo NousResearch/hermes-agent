@@ -219,7 +219,7 @@ def test_idle_broadcasts_past_the_receive_high_water_mark_keep_the_connection(ow
 
 
 def test_owner_stall_shorter_than_the_receipt_budget_does_not_fail_on_a_ping_deadline(owner, tmp_path, monkeypatch):
-    """The receipt budget (20 s) is the only per-call deadline: a library keepalive whose pong is held
+    """The receipt budget (``_RECEIPT_BUDGET_S``) is the only per-call deadline: a keepalive whose pong is held
     by the same stall must not close the connection first. The library defaults (20 s / 20 s) are
     scaled down so an inherited keepalive would fire inside the stall."""
     from websockets.sync import client
@@ -238,6 +238,28 @@ def test_owner_stall_shorter_than_the_receipt_budget_does_not_fail_on_a_ping_dea
     assert time.monotonic() - started >= 1.4
     assert rpc('worker.persist')['n'] == 3
     assert owner.connections == 1
+
+
+def test_receipt_budget_outlasts_an_owner_stall_and_the_wait_is_logged(owner, tmp_path, monkeypatch, caplog):
+    """An owner stall longer than the slow-receipt mark is waited out, not fatal, and its measured
+    wait is logged so owner stalls can be sized from evidence."""
+    import agent.runtime_session_store as store
+    monkeypatch.setattr(store, '_SLOW_RECEIPT_LOG_S', 0.5)
+    rpc = store.WorkerRPC(tmp_path)
+    with caplog.at_level('WARNING', logger='agent.runtime_session_store'):
+        assert rpc('stall', seconds=1.0) == {'n': 1, 'seconds': 1.0}
+    assert any('slow owner receipt: stall waited' in r.getMessage() for r in caplog.records)
+    assert rpc('worker.persist')['n'] == 2
+
+
+def test_a_stall_past_the_receipt_budget_still_fails_closed(owner, tmp_path, monkeypatch):
+    """The budget is still a deadline: past it the call raises worker_receipt_timeout and never resends."""
+    import agent.runtime_session_store as store
+    monkeypatch.setattr(store, '_RECEIPT_BUDGET_S', 0.5)
+    rpc = store.WorkerRPC(tmp_path)
+    with pytest.raises(TimeoutError, match='worker_receipt_timeout'):
+        rpc('stall', seconds=1.5)
+    assert rpc.link is None
 
 
 def test_concurrent_callers_are_serialized_and_each_gets_its_own_reply(owner, tmp_path):

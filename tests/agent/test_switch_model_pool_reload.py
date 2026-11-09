@@ -110,6 +110,50 @@ class TestSwitchModelReloadsCredentialPool:
         # load_pool MUST have been called with the new provider.
         load_pool_mock.assert_called_once_with("groq")
 
+    def test_successful_switch_clears_pre_agent_primary_restore_intent(self):
+        """#119238: a manual switch must cancel startup-primary auto-restore."""
+        existing_pool = _make_pool("opencode-go")
+        agent = _make_agent("opencode-go", "qwen-coder", existing_pool)
+        agent._pre_agent_primary = {
+            "model": "claude-opus-5",
+            "resolve_kwargs": {"requested": "anthropic", "target_model": "claude-opus-5"},
+        }
+
+        with patch("agent.credential_pool.load_pool", return_value=_make_pool("groq")):
+            switch_model(
+                agent,
+                new_model="llama-3.3-70b",
+                new_provider="groq",
+                api_key="groq-key-new",
+                base_url="https://api.groq.com/openai/v1",
+                api_mode="chat_completions",
+            )
+
+        assert agent._pre_agent_primary is None
+
+    def test_internal_switch_can_preserve_pre_agent_primary_restore_intent(self):
+        """Automatic runtime rebuilds must not cancel startup-primary recovery."""
+        existing_pool = _make_pool("opencode-go")
+        agent = _make_agent("opencode-go", "qwen-coder", existing_pool)
+        intent = {
+            "model": "claude-opus-5",
+            "resolve_kwargs": {"requested": "anthropic", "target_model": "claude-opus-5"},
+        }
+        agent._pre_agent_primary = intent
+
+        with patch("agent.credential_pool.load_pool", return_value=_make_pool("groq")):
+            switch_model(
+                agent,
+                new_model="llama-3.3-70b",
+                new_provider="groq",
+                api_key="groq-key-new",
+                base_url="https://api.groq.com/openai/v1",
+                api_mode="chat_completions",
+                supersede_pre_agent_primary=False,
+            )
+
+        assert agent._pre_agent_primary is intent
+
     def test_switch_to_same_provider_does_not_reload_pool(self):
         """Re-selecting the current provider must NOT churn the pool reference."""
         existing_pool = _make_pool("opencode-go")

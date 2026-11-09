@@ -67,6 +67,7 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
+import { prepareVoiceAttachment } from "./voice-send.mjs";
 import {
   classifyProbeRejection,
   createProbeMessageId,
@@ -1113,7 +1114,7 @@ const server = http.createServer(async (req, res) => {
       if (mimeType) opts.mimeType = mimeType;
       const builder =
         kind === "voice"
-          ? voice(path, Object.keys(opts).length ? opts : undefined)
+          ? await prepareVoiceAttachment(path, voice)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
       const result = await space.send(builder);

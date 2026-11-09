@@ -43,8 +43,15 @@ class StreamFallbackMixin:
     def _visible_prefix(self) -> str:
         """Return the visible text already shown in the streamed message."""
         prefix = self._last_sent_text or ""
-        if self.cfg.cursor and prefix.endswith(self.cfg.cursor):
-            prefix = prefix[:-len(self.cfg.cursor)]
+        cursor = self.cfg.cursor
+        if cursor and prefix.endswith(cursor):
+            prefix = prefix[:-len(cursor)]
+        elif cursor and cursor in prefix:
+            # The display fence was closed after the cursor: the user saw the raw text, closed.
+            # Compared raw, a decoration never reads as unseen text that must be sent again.
+            raw = prefix[:prefix.rfind(cursor)]
+            if ensure_closed_code_fences(raw + cursor) == prefix:
+                prefix = ensure_closed_code_fences(raw)
         return self._clean_for_display(prefix)
 
     def _continuation_text(self, final_text: str) -> str:

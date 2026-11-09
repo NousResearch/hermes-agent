@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.config import DEFAULT_STREAMING_CURSOR
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from tests.waiting import async_wait_until
 
@@ -119,18 +120,21 @@ async def test_timed_out_preview_with_no_more_text_is_not_sent_again_on_telegram
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cursor", ["", DEFAULT_STREAMING_CURSOR], ids=["no_cursor", "default_cursor"])
 @pytest.mark.parametrize("rest,expected", [
     ("y = 2\n```\nDone.", "```python\ny = 2\n```\nDone."),
     ("```", None),  # only the closing fence follows: the closed preview already showed it all
+    ("", None),  # nothing follows: the preview was the whole answer
 ])
-async def test_timed_out_preview_inside_open_code_block_sends_only_the_unseen_code(rest, expected):
-    """The preview was shown with a display-only closing fence; more code streamed after it. The
-    unseen tail is all that follows, never the whole answer again, and a bare closing fence is
-    never a message of its own."""
+async def test_timed_out_preview_inside_open_code_block_sends_only_the_unseen_code(
+        rest, expected, cursor):
+    """The preview was shown with a display-only closing fence (the cursor, when on, sits inside
+    it); more code may stream after it. The unseen tail is all that follows, never the whole
+    answer again, and a bare closing fence is never a message of its own."""
     delivered: list = []
     consumer = GatewayStreamConsumer(
         _telegram_flagged(_landing_adapter(delivered)), "chat",
-        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
+        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=cursor))
     consumer.on_delta("Code:\n```python\nx = 1\n")
     task = asyncio.create_task(consumer.run())
     await async_wait_until(lambda: delivered, timeout=5)

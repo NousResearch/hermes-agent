@@ -284,7 +284,11 @@ def _api_down(path):
     raise OSError("api down")
 
 
-@pytest.mark.parametrize("fetch", [_api_down, lambda path: {}, lambda path: None])
+@pytest.mark.parametrize("fetch", [
+    _api_down, lambda path: {}, lambda path: None,
+    # a non-object runs page: AttributeError on .get must still print the report
+    lambda path: _OWN if path.endswith("runs/1") else [],
+])
 def test_lookup_error_fails_closed(monkeypatch, capsys, fetch):
     code, out = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--allow-superseded"], fetch)
     assert code == 1

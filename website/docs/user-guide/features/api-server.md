@@ -742,6 +742,27 @@ curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
   -d '{"input": "what files changed in the last hour?"}'
 ```
 
+## Session relay (start a turn in a Discord thread)
+
+`POST /api/relay` lets a trusted local process start an agent turn in a Discord thread, the way a Kanban wake or a handoff does, without posting as a user. It is off by default and served on the owner listener only (a `/p/<profile>/` request gets 403).
+
+```yaml
+gateway:
+  session_relay:
+    enabled: true
+    allowed_parents: ["<parent channel id>"]
+```
+
+| Body field | Meaning |
+|------------|---------|
+| `text` | Required. Reaches the model prefixed with `[Relayed from session <id>; not typed by the user]` |
+| `thread_id` | Run a turn in this existing thread's session |
+| `parent_chat_id` + `title` | Instead of `thread_id`: open a new thread there and run its first turn |
+| `user_id` | Optional. Added to a new thread |
+| `from_session` | Optional. Origin shown in the prefix |
+
+The thread's profile follows `gateway.profile_routes`, so a thread under a channel routed to a route-only profile runs in that profile. In a thread that already has a human turn, the relayed turn is committed to the session queue behind any running turn; it never interrupts or steers one. A later human reply continues the same session. The response reports `thread_id`, `profile`, `session_key`, `created` and `mode` (`queued` or `direct`).
+
 ## Skills and toolsets discovery
 
 `GET /v1/skills` and `GET /v1/toolsets` let external clients enumerate the agent's capabilities deterministically over REST instead of asking the model. Both are read-only and gated by `API_SERVER_KEY`.

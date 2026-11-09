@@ -2,7 +2,7 @@ name: agent-music-jam
 title: Agent Music Jam
 repo: https://github.com/vdimarco/agent-music-jam
 sha: 009c918b89e7ba98550de0755b47d1e5e7bc96a0
-description: Conduct a live synthesized band, play along on keys or MIDI, and export your performance.
+description: "Conduct a live synthesized band, play along on keys or MIDI, and export your performance. Disclosure — `jam_start` runs a local web server on 127.0.0.1 (random port, bearer token in the launch link) for the life of the session; each direction sends the music state and your text to your configured Hermes model, and from tool calls launches up to eight toolless subagent sessions per direction (`use_subagents`, on by default), which uses model credits."
 maintainer: vdimarco
 tier: community
 category: tools

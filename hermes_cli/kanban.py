@@ -600,8 +600,12 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
 
 def _cmd_reclaim(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        ok = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None))
-    return _ok_or_err(ok, f"cannot reclaim {args.task_id} (not running or unknown id)",
+        ok = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None),
+                             force=bool(getattr(args, "force", False)))
+    return _ok_or_err(ok,
+                      f"cannot reclaim {args.task_id} (not running, unknown id, or its worker is "
+                      f"still alive: see the reclaim_deferred event; re-run with --force to "
+                      f"release the claim anyway)",
                       f"Reclaimed {args.task_id}")
 
 
@@ -985,6 +989,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
     author = _profile_author()
     ids = _bulk_ids(args)
     suffix = f": {reason}" if reason else ""
+    fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def ok_msg(tid):
             # Report where it landed: dependency blocks -> todo, tripped unblock-loop breaker -> triage.
@@ -1001,9 +1006,20 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
             return f"Blocked {tid}{suffix}"
 
-        op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
-        return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
+        def _block_one(tid):
+            try:
+                return kb.block_task(conn, tid, reason=reason, kind=kind,
+                                     expected_run_id=_worker_run_id_for(tid),
+                                     force=bool(getattr(args, "force", False)))
+            except kb.LiveClaimError:
+                fail_msg[tid] = (f"cannot block {tid}: a live worker is running it. Wait for the "
+                                 f"worker, `hermes kanban reclaim {tid}` to release it, or re-run "
+                                 f"with --force to close its run and block anyway.")
+                return False
+
+        op = _commented(conn, reason, author, "BLOCKED", _block_one)
+        return _bulk_apply(ids, op, ok_msg,
+                           lambda tid: fail_msg.get(tid, f"cannot block {tid}"))
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:

@@ -257,7 +257,13 @@ _SPECS = [
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
-    _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
+    _cmd("reclaim", [
+        _TASK_ID, _RECLAIM_REASON,
+        _arg("--force", action="store_true",
+             help="Release the claim even if the worker survived termination. "
+                  "By default the reclaim is deferred while the worker is still "
+                  "alive, because releasing it spawns a duplicate alongside it."),
+    ], help="Release an active worker claim on a running task"),
     _cmd("reassign", [
         _TASK_ID,
         _arg("profile", help="New profile name (or 'none' to unassign)"),
@@ -322,6 +328,9 @@ _SPECS = [
                   "blocked for a human; 'transient' marks a maybe-flaky failure. "
                   "Repeated same-kind re-blocks after unblock route the task to "
                   "triage to break unblock loops. Omit for a generic block."),
+        _arg("--force", action="store_true",
+             help="Override the live-claim guard: block a running, claimed task "
+                  "even without owning its run (closes the worker's run)."),
     ], help="Mark one or more tasks blocked"),
     _cmd("schedule", [
         _TASK_ID,

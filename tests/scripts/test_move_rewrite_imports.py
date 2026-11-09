@@ -119,6 +119,32 @@ def test_strings_the_strict_finder_cannot_see_are_rewritten(before, after, kind)
     assert check_transformed(before, after).counts == {kind: 1}
 
 
+@pytest.mark.parametrize("before, after", [
+    ('mock.patch("watchdog.arm")\n', 'mock.patch("hermes_agent.watchdog.arm")\n'),
+    ('with patch("tui_gateway.entry.main.x") as m:\n    pass\n',
+     'with patch("hermes_agent.tui_gateway.entry.main.x") as m:\n    pass\n'),
+    ('monkeypatch.setattr("tui_gateway.entry.main", f)\n', 'monkeypatch.setattr("hermes_agent.tui_gateway.entry.main", f)\n'),
+    ('monkeypatch.delattr("watchdog.arm", raising=False)\n', 'monkeypatch.delattr("hermes_agent.watchdog.arm", raising=False)\n'),
+    ('importlib.import_module("watchdog")\n', 'importlib.import_module("hermes_agent.watchdog")\n'),
+    ('m = __import__("tui_gateway.entry")\n', 'm = __import__("hermes_agent.tui_gateway.entry")\n'),
+    ('importlib.util.find_spec("watchdog")\n', 'importlib.util.find_spec("hermes_agent.watchdog")\n'),
+    ('pytest.importorskip("watchdog")\n', 'pytest.importorskip("hermes_agent.watchdog")\n'),
+    ('pkgutil.resolve_name("tui_gateway.entry:main")\n', 'pkgutil.resolve_name("hermes_agent.tui_gateway.entry:main")\n'),
+    ('setattr(obj, "watchdog.arm", 1)\n', 'setattr(obj, "watchdog.arm", 1)\n'),
+])
+def test_string_targets_that_resolve_in_the_moved_tree_are_rewritten(before, after):
+    out, result = _rewrite(before)
+    assert out == dedent(after)
+    assert (before == after) == (not result.counts)
+
+
+def test_a_string_target_whose_moved_prefix_is_not_a_module_is_flagged():
+    plan = rw.Plan({"ns": "hermes_agent.ns"}, [], {})
+    source = 'mock.patch("ns.x.y")\n'
+    result = rw.rewrite_source(source, "x.py", plan)
+    assert result.source is None and result.flags[0].split("  ")[1:3] == [rw.STRING_REF, "ns.x.y"]
+
+
 @pytest.mark.parametrize("source", [
     "def run(agent):\n    agent.watchdog.arm()\n",
     "watchdog = make()\nwatchdog.arm()\n",
@@ -136,12 +162,11 @@ def test_names_that_are_not_the_moved_modules_stay(source):
 
 
 @pytest.mark.parametrize("source, kind, name", [
-    ('mock.patch("watchdog.arm")\n', rw.STRING_REF, "watchdog.arm"),
-    ('monkeypatch.setattr("tui_gateway.entry.main", f)\n', rw.STRING_REF, "tui_gateway.entry.main"),
-    ('importlib.import_module("watchdog")\n', rw.STRING_REF, "watchdog"),
     ('importlib.import_module(f"tui_gateway.{name}")\n', rw.DYNAMIC, 'f"tui_gateway.{name}"'),
     ('sys.modules.pop("tui_gateway." + name)\n', rw.DYNAMIC, '"tui_gateway." + name'),
     ('TARGETS = ["watchdog:arm"]\n', rw.OTHER, "watchdog:arm"),
+    ('importlib.import_module("tui_gateway.entry.main")\n', rw.STRING_REF, "tui_gateway.entry.main"),
+    ('importlib.util.find_spec("tui_gateway.entry.main")\n', rw.STRING_REF, "tui_gateway.entry.main"),
     ('SKIP = ("tui_gateway/entry.py",)\n', rw.BY_PATH, "tui_gateway/entry.py"),
     ('SKIP = ["tui_gateway/"]\n', rw.BY_PATH, "tui_gateway/"),
     ('p = ROOT / "watchdog.py"\n', rw.BY_PATH, "watchdog.py"),

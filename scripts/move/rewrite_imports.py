@@ -37,10 +37,8 @@ _PYTHON_SHEBANG = re.compile(r"#!.*\bpython")
 _SYS_MODULES = re.compile(r"(?:(?:^|\.)_*sys_*\.)?modules$")
 _ASSERT_LOGS = {"assertLogs", "assertNoLogs"}
 _SYS_MODULES_METHODS = {"pop", "get", "setdefault"}
-_STRICT_REASON = "left for the strict compat finder, which fails the test that runs it"
-_FLAGGED_CALLS = {"patch": "patch target", "object": None, "setattr": "patch target",
-                  "delattr": "patch target", "import_module": "dynamic import",
-                  "__import__": "dynamic import", "resolve_name": "dynamic import", "find_spec": "spec lookup"}
+_ATTRIBUTE_TARGETS = {"patch", "setattr", "delattr", "resolve_name"}
+_MODULE_TARGETS = {"import_module", "__import__", "find_spec", "importorskip"}
 
 
 @dataclass
@@ -62,6 +60,15 @@ class Plan:
             if old_dir not in (".", new_dir):
                 pairs[old_dir + "/"] = new_dir + "/"
         return sorted(pairs.items(), key=lambda item: -len(item[0]))
+
+    def resolves(self, text: str, attribute_allowed: bool) -> bool:
+        """``text`` starts with a moved module; what follows it is an attribute only when ``attribute_allowed``."""
+        name, colon, _ = text.partition(":")
+        parts = name.split(".")
+        for size in range(len(parts), 0, -1):
+            if ".".join(parts[:size]) in self.names:
+                return size == len(parts) or (attribute_allowed and not colon)
+        return False
 
     def names_module(self, text: str) -> bool:
         """``text`` is a moved module, ``module:attr`` or ``module.attr`` of a name that module defines."""
@@ -88,8 +95,8 @@ class Result:
 @dataclass
 class _Sink:
     kind: str
-    reason: str | None = None
-    """None: rewrite a literal; otherwise flag the site with this reason."""
+    attribute_allowed: bool | None = None
+    """None: rewrite any literal; otherwise rewrite only a name that resolves in the moved tree."""
 
 
 class _Rewriter(cst.CSTTransformer):
@@ -224,8 +231,8 @@ class _Rewriter(cst.CSTTransformer):
                         self._mark(element.key, "sys-modules")
             elif method in ("setitem", "delitem") and len(positional) > 1:
                 self._mark(positional[1], "sys-modules")
-        elif (method or func) in _FLAGGED_CALLS and _FLAGGED_CALLS[method or func] and positional:
-            self._mark(positional[0], STRING_REF, f"{_FLAGGED_CALLS[method or func]}; {_STRICT_REASON}")
+        elif positional and method in _ATTRIBUTE_TARGETS | _MODULE_TARGETS:
+            self._mark(positional[0], STRING_REF, method in _ATTRIBUTE_TARGETS)
 
     def visit_Expr(self, node: cst.Expr) -> None:
         if isinstance(node.value, (cst.SimpleString, cst.ConcatenatedString)):
@@ -243,8 +250,8 @@ class _Rewriter(cst.CSTTransformer):
             if isinstance(flag.value, cst.SimpleString) and flag.value.evaluated_value == "-m":
                 self._mark(module.value, "argv")
 
-    def _mark(self, node: cst.BaseExpression, kind: str, reason: str | None = None) -> None:
-        self.sinks[id(node)] = _Sink(kind, reason)
+    def _mark(self, node: cst.BaseExpression, kind: str, attribute_allowed: bool | None = None) -> None:
+        self.sinks[id(node)] = _Sink(kind, attribute_allowed)
 
     # Strings, at the string node.
 
@@ -263,8 +270,8 @@ class _Rewriter(cst.CSTTransformer):
         if isinstance(updated, cst.SimpleString) and isinstance(text := updated.evaluated_value, str):
             if self._new(text.partition(":")[0]) is None:
                 return updated
-            if sink.reason is not None:
-                self._flag(original, sink.kind, text, sink.reason)
+            if sink.attribute_allowed is not None and not self.plan.resolves(text, sink.attribute_allowed):
+                self._flag(original, sink.kind, text, "string target does not resolve in the moved tree; fix by hand")
                 return updated
             rewritten = _with_text(updated, self._whole)
             if rewritten is None:

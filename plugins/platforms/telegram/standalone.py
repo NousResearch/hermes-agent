@@ -119,23 +119,25 @@ def _telegram_bot(token, extra=None):
     server actually reached, else the fallback-IP transport on api.telegram.org. Falls back to PTB
     defaults (same URLs) on failure."""
     from telegram import Bot
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, safe_proxy_url_for_log
+    proxy = None
     extra = extra or {}
     base_url = extra.get("base_url")
     urls = {"base_url": base_url, "base_file_url": extra.get("base_file_url") or base_url} if base_url else {}
     try:
         from telegram.request import HTTPXRequest
-        from gateway.platforms.base import resolve_proxy_url
         from plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts
         fallback_ips = [] if base_url else _telegram_fallback_ips(extra)  # a custom server is reached directly
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_target_hosts(base_url, fallback_ips),
                                   configured=extra.get("proxy_url"))
         if proxy:
-            logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
+            logger.info("send_message: standalone Telegram send routed through proxy %s", safe_proxy_url_for_log(proxy))
         request, updates_request = build_ptb_requests(HTTPXRequest, fallback_ips=fallback_ips, proxy_url=proxy)
         return Bot(token=token, request=request, get_updates_request=updates_request, **urls)
     except Exception as request_err:
         logger.warning("send_message: failed to build the Telegram request (%s), using PTB defaults",
-                       _sanitize_error_text(request_err), exc_info=True)
+                       describe_proxy_error(request_err, proxy) or _sanitize_error_text(request_err),
+                       exc_info=describe_proxy_error(request_err, proxy) is None)
     return Bot(token=token, **urls)
 
 

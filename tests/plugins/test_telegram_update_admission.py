@@ -918,28 +918,37 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_slow_topic_does_not_block_other_topic_in_same_private_chat():
-    """DM forum topics are independent lanes even though Telegram gives them one chat id."""
-    processor, order, gate = PerChatUpdateProcessor(32), [], asyncio.Event()
+    """DM forum topics are independent lanes even though Telegram gives them one chat id; a reply
+    anchor (``is_topic_message`` unset) and a topic-creation service message stay on the chat lane."""
+    def update(thread_id, **fields):
+        fields.setdefault("is_topic_message", True)
+        return SimpleNamespace(effective_chat=SimpleNamespace(id=42),
+                               effective_message=SimpleNamespace(message_thread_id=thread_id, **fields))
 
-    async def handler(name):
-        order.append(f"start {name}")
-        if name == "A":
-            await gate.wait()
-        order.append(f"end {name}")
+    async def second_waits(first_update, second_update):
+        processor, order, gate = PerChatUpdateProcessor(32), [], asyncio.Event()
 
-    def topic(thread_id):
-        return SimpleNamespace(
-            effective_chat=SimpleNamespace(id=42),
-            effective_message=SimpleNamespace(message_thread_id=thread_id),
-        )
+        async def handler(name):
+            order.append(f"start {name}")
+            if name == "A":
+                await gate.wait()
+            order.append(f"end {name}")
 
-    first = asyncio.create_task(processor.process_update(topic(100), handler("A")))
-    await asyncio.sleep(0.01)
-    other = asyncio.create_task(processor.process_update(topic(200), handler("B")))
-    await asyncio.wait_for(other, timeout=1)
-    assert order == ["start A", "start B", "end B"]
-    gate.set()
-    await first
+        first = asyncio.create_task(processor.process_update(first_update, handler("A")))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        other = asyncio.create_task(processor.process_update(second_update, handler("B")))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        waited = order == ["start A"]
+        gate.set()
+        await asyncio.gather(first, other)
+        return waited
+
+    assert not await second_waits(update(100), update(200))
+    assert await second_waits(update(100), update(100))  # FIFO inside one topic
+    assert await second_waits(update(None), update(77, is_topic_message=False))  # reply anchor
+    assert await second_waits(update(600, forum_topic_created=object()), update(None, is_topic_message=False))
 
 
 @pytest.mark.asyncio

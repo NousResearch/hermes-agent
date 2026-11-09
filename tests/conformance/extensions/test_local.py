@@ -158,6 +158,34 @@ def test_removing_an_entry_drops_only_its_own_switch(tmp_path, monkeypatch):
         assert reg.agent_enabled("dup") is True             # the tenant row's switch survived
 
 
+def test_opening_rewrites_switch_rows_keyed_by_the_bare_name(tmp_path, monkeypatch):
+    """A registry file written before a switch row carried its entry's identity keyed the
+    switch by its entry's bare name, and the head's keying would read such a row as off:
+    an extension an existing user had switched on would silently turn off. Opening the
+    registry rewrites those keys to the owner-level one — a local entry is always
+    owner-wide, so a bare name always means the owner level — atomically like every other
+    write, and once: a second open writes nothing. The file below is the old writer's own
+    shape: the same entry rows it stored, and a switch keyed by the bare name."""
+    _mutant(monkeypatch)
+    home = tmp_path / "a"
+    home.mkdir()
+    entry = {"name": "existing", "kind": "plugin", "version": "1.0", "content_hash": "h1",
+             "manifest": {}, "scan_result": None, "enabled": True, "level": "owner",
+             "owner": {"kind": "principal", "id": LOCAL_OWNER.id}}
+    registry_file = home / REGISTRY_FILE
+    registry_file.write_text(json.dumps({"entries": [entry], "switches": {"existing": True}}),
+                             encoding="utf-8")
+    reg = LocalExtensionRegistryProvider().open(home)
+    with bind_profile_scope(home):
+        assert reg.agent_enabled("existing") is True  # what the old file said, unchanged
+        assert [r["name"] for r in reg.enabled_extensions()] == ["existing"]
+    data = json.loads(registry_file.read_text(encoding="utf-8"))
+    assert data["switches"] == {"owner:existing": True}  # migrated to the entry's identity
+    before = registry_file.read_text(encoding="utf-8")
+    LocalExtensionRegistryProvider().open(home)  # nothing left to rewrite: no second write
+    assert registry_file.read_text(encoding="utf-8") == before
+
+
 def test_the_offered_list_resolves_one_name_as_get_does(tmp_path, monkeypatch):
     """The offered list says what ``get`` says: one entry per name, by the same precedence —
     never both levels of one name, however both are switched on. The local install refuses

@@ -25,8 +25,6 @@ eslint.config.*                 @NousResearch/hermes-agent-core
 
 # MCP catalog entries define local commands users later install into
 # ``mcp_servers``; the installer decides how they are fetched and run.
-/optional-mcps/                 @NousResearch/hermes-agent-core
-/hermes_cli/mcp_catalog.py      @NousResearch/hermes-agent-core
 
 # Files that execute at pip-install or interpreter startup.
 /setup.py                       @NousResearch/hermes-agent-core

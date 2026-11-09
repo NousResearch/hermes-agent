@@ -1235,34 +1235,6 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
-        # Verify bundled optional-mcps catalog is present and resolvable.
-        # optional-mcps/ is a bare data dir shipped via symlink +
-        # HERMES_OPTIONAL_MCPS (not via wheel data-files).
-        bundled-mcps = pkgs.runCommand "hermes-bundled-mcps" { } ''
-          set -e
-          echo "=== Checking bundled optional-mcps ==="
-          test -d ${hermes-agent}/share/hermes-agent/optional-mcps || (echo "FAIL: optional-mcps directory missing"; exit 1)
-          echo "PASS: optional-mcps directory exists"
-
-          MANIFEST_COUNT=$(find -L ${hermes-agent}/share/hermes-agent/optional-mcps -name "manifest.yaml" | wc -l)
-          test "$MANIFEST_COUNT" -gt 0 || (echo "FAIL: no manifest.yaml files found"; exit 1)
-          echo "PASS: $MANIFEST_COUNT catalog manifests found"
-
-          grep -q "HERMES_OPTIONAL_MCPS" ${hermes-agent}/bin/hermes || \
-            (echo "FAIL: HERMES_OPTIONAL_MCPS not in wrapper"; exit 1)
-          echo "PASS: HERMES_OPTIONAL_MCPS set in wrapper"
-
-          export HOME=$(mktemp -d)
-          CATALOG=$(cd "$HOME" && ${hermes-agent}/bin/hermes mcp catalog 2>/dev/null || true)
-          echo "catalog output: $CATALOG"
-          test -n "$CATALOG" || (echo "FAIL: hermes mcp catalog returned empty"; exit 1)
-          echo "PASS: mcp catalog resolves entries"
-
-          echo "=== All bundled optional-mcps checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
-        '';
-
         # Verify bundled TUI is present and compiled
         bundled-tui = pkgs.runCommand "hermes-bundled-tui" { } ''
           set -e

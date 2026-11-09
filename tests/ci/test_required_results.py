@@ -97,3 +97,101 @@ def test_cli_stdin_exit_codes_and_output(tmp_path, release, results, code, repor
     assert f"{key}={value}" in child.stdout
     for name, result in results.items():
         assert f"{name}: {result}" in child.stdout
+
+
+# --allow-superseded: a cancelled duplicate pull_request run of one push.
+_OWN = {"id": 1, "workflow_id": 7, "head_sha": "abc", "event": "pull_request",
+        "status": "in_progress", "conclusion": None}
+_CANCELLED_DETECT = {"detect": {"result": "cancelled", "outputs": {}}, "tests": {"result": "skipped"}}
+
+
+def _fake_fetch(runs, own=_OWN):
+    calls = []
+
+    def fetch(path):
+        calls.append(path)
+        if path == "repos/o/r/actions/runs/1":
+            return own
+        if path == "repos/o/r/actions/workflows/7/runs?head_sha=abc&per_page=100":
+            return {"workflow_runs": [own, *runs]}
+        raise AssertionError(path)
+    return fetch, calls
+
+
+def _run_main(monkeypatch, capsys, needs, argv, fetch):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_RUN_ID", "1")
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(sys, "stdin", __import__("io").StringIO(json.dumps(needs)))
+    code = required_results.main(argv, fetch=fetch)
+    return code, capsys.readouterr().out
+
+
+def _dup(**over):
+    return {**_OWN, "id": 2, **over}
+
+
+@pytest.mark.parametrize("other", [
+    _dup(status="queued"), _dup(status="in_progress"),
+    _dup(status="completed", conclusion="success"),
+])
+def test_cancelled_duplicate_passes_when_twin_run_is_live(monkeypatch, capsys, other):
+    fetch, calls = _fake_fetch([other])
+    code, out = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--allow-superseded"], fetch)
+    assert code == 0
+    assert "run 2 on the same head SHA" in out
+    assert "::error::" not in out
+    assert "detect: cancelled" in out
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("other", [
+    None,  # the cancelled run is alone (manual cancel, or superseded by a newer SHA)
+    _dup(status="completed", conclusion="cancelled"),
+    _dup(status="completed", conclusion="failure"),
+    _dup(head_sha="def"), _dup(workflow_id=8), _dup(event="push"),
+])
+def test_cancelled_run_without_live_twin_still_fails(monkeypatch, capsys, other):
+    fetch, _ = _fake_fetch([] if other is None else [other])
+    code, out = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--allow-superseded"], fetch)
+    assert code == 1
+    assert "::error::1 job(s) failed: detect" in out
+
+
+@pytest.mark.parametrize("needs", [
+    {"detect": {"result": "cancelled"}, "tests": {"result": "failure"}},
+    {"detect": {"result": "success", "outputs": {"python": "true"}}, "tests-os": {"result": "cancelled"}},
+    {},
+])
+def test_real_failures_never_consult_the_api(monkeypatch, capsys, needs):
+    def fetch(path):
+        raise AssertionError(f"unexpected API call {path}")
+    code, out = _run_main(monkeypatch, capsys, needs, ["--allow-superseded"], fetch)
+    assert code == 1
+    assert "::error::" in out
+
+
+def _api_down(path):
+    raise OSError("api down")
+
+
+@pytest.mark.parametrize("fetch", [_api_down, lambda path: {}, lambda path: None])
+def test_lookup_error_fails_closed(monkeypatch, capsys, fetch):
+    code, out = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--allow-superseded"], fetch)
+    assert code == 1
+    assert "keeping the failure" in out
+    assert "::error::1 job(s) failed: detect" in out
+
+
+def test_without_flag_cancelled_duplicate_still_fails(monkeypatch, capsys):
+    def fetch(path):
+        raise AssertionError(path)
+    code, _ = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, [], fetch)
+    assert code == 1
+
+
+def test_release_rejects_allow_superseded(monkeypatch, capsys):
+    with pytest.raises(SystemExit) as exc:
+        _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--release", "--allow-superseded"],
+                  lambda path: None)
+    assert exc.value.code == 2

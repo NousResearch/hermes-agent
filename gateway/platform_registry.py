@@ -265,6 +265,22 @@ class PlatformRegistry:
         with self._lock:
             self._activation_env[name] = self._activation_env.get(name, frozenset()) | names
 
+    def drop_pending_deferred(self) -> list[str]:
+        """Drop every deferred loader still pending (process-wide and every scope), without
+        loading anything. The hosted boot calls this before it freezes the registries: it serves
+        only the adapters its config connects, and a loader left pending could never register
+        after the freeze, silently losing that platform instead. A later lookup of a dropped name
+        finds no entry and no loader, as if the plugin were absent. Returns the dropped names
+        (``name`` process-wide, ``name@scope`` scoped), in sorted order."""
+        dropped: list[str] = []
+        with self._lock:
+            dropped.extend(self._deferred)
+            self._deferred.clear()
+            for scope, loaders in self._scoped_deferred.items():
+                dropped.extend(f"{name}@{scope}" for name in loaders)
+                loaders.clear()
+        return sorted(dropped)
+
     def activation_env(self, name: str) -> frozenset[str]:
         with self._lock:
             return self._activation_env.get(name, frozenset())

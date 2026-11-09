@@ -749,6 +749,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if profile_homes and not getattr(resolved_config, 'multiplex_profiles', False):
         profile_homes = []  # implicit default downgraded: this named launch serves only itself
 
+    # Hosted boot: every tenancy condition must hold before anything binds a port, claims a PID or
+    # loads a tenant-reachable file. The check is a no-op on a local install (hosted.enabled false).
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    from hermes_cli.hosted_mode import HostedBootRefused, assert_hosted_boot
+    try:
+        assert_hosted_boot(resolved_config,
+                           profile_homes=tuple(home for _name, home in profile_homes))
+    except HostedBootRefused as refusal:
+        logger.error("Hosted boot refused: %s", refusal)
+        print(f"Hosted boot refused: {refusal}", flush=True)
+        raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE) from refusal
+
     # Multiplex-only: the ONE host gateway decides first. Attach to it, make it serve this profile,
     # replace it (--replace) or refuse — before anything below binds a port or claims a PID file.
     _host_decision = await _host_attach_or_none(replace, force)
@@ -876,6 +888,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # which stops the cron ticker and housekeeping before the adapters they deliver through close.
         from gateway.run_runtime import publish_gateway_runtime_ready, wait_gateway_runtime
         try:
+            # The end of hosted boot: everything the process serves is loaded, so the registries
+            # freeze (a no-op on a local install — plugins and providers keep loading at runtime).
+            from hermes_cli.hosted_mode import finish_hosted_boot
+            finish_hosted_boot()
             # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
             publish_gateway_runtime_ready(runner)
             runner._start_systemd_watchdog()

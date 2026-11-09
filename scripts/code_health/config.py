@@ -83,6 +83,9 @@ HOSTED_ENTRY: tuple[str, ...] = (
     "tools.mcp_tool",
     "providers",
     "hermes_cli.plugins",
+    # The hosted boot profile: the switch and the boot refusals the gateway runs before it serves,
+    # and the registry freeze at the end of hosted boot (hermes_cli/hosted_mode.py).
+    "hermes_cli.hosted_mode",
     # Imported inside functions of the audited roots below and run while the process serves
     # (the turn path, GatewayRunner methods, housekeeping ticks, agent construction): the graph
     # does not follow function-body imports, so each is a root. tests/scripts/

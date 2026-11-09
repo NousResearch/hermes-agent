@@ -532,7 +532,7 @@ class Venv(StatePackage):
         """
         import uuid
         from pm.environments import install_state_dir, runtime_facts_path
-        from pm.environment import managed_environment
+        from pm.environment import managed_environment  # noqa: TID251
         from pm.lock import Facts
         from pm.native_build import source_build_environment
         from pm.workspace import build_member_dirs, lock_and_sync

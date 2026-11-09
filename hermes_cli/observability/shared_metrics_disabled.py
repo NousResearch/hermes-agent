@@ -69,9 +69,9 @@ def current_surface() -> str | None:
 
 @functools.cache
 def _bundled_plugin_names() -> frozenset[str]:
-    from .shared_metrics_catalog import _REPO_ROOT
+    from hermes_cli.plugins import get_bundled_plugins_dir
 
-    root = _REPO_ROOT / "plugins"
+    root = get_bundled_plugins_dir()
     try:
         return frozenset(
             p.parent.name.lower() for p in [*root.glob("*/plugin.yaml"), *root.glob("*/*/plugin.yaml")]

@@ -1,0 +1,26 @@
+name: meeting-copilot-live
+title: Meeting Copilot
+repo: https://github.com/adam4788/meeting-copilot
+sha: eb7d4cdac46260e7b1cd9629ce548db5aa8d0d9f
+version: "0.1.0"
+requires_hermes: ">=0.22.7"
+description: "Read-only meeting answers with cited project evidence. Disclosure — explicit answers send bounded transcript/context to selected OpenAI/OpenRouter APIs; optional Meta ASR sends audio off-device; optional web queries leave the profile through host search; reads selected project files and opt-in session SQLite; consented capture launches native/worker children; separate macOS setup installs SHA-256-pinned PyPI wheels and compiles/signs native helpers; local transcription may download model weights; clipboard exports may contain confidential context."
+maintainer: adam4788
+tier: community
+category: desktop
+docs_url: https://github.com/adam4788/meeting-copilot/blob/eb7d4cdac46260e7b1cd9629ce548db5aa8d0d9f/docs/getting-started.md
+screenshots:
+  - https://raw.githubusercontent.com/adam4788/meeting-copilot/eb7d4cdac46260e7b1cd9629ce548db5aa8d0d9f/docs/assets/overlay-controls.png
+readme: true
+platforms:
+  - macos
+known_issues:
+  - "Developer preview: live provider account responses and sustained native capture are not established; audio may lose frames."
+  - "macOS audio preparation targets Apple Silicon, preinstalled CPython 3.12 and the macOS 26 SDK; rerun it after runtime updates."
+  - "Inspected isolated plugin-host routes lack request-bound secret handoff; BYOK fails closed there and in affected secondary-profile routes."
+  - "Overlay recording exclusion is best effort. Hide it and verify it is gone when it must not appear."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

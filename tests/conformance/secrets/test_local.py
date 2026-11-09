@@ -20,7 +20,7 @@ from agent.secret_scope import load_env_file
 from hermes_cli.auth import _load_auth_store
 from hermes_conformance.secrets import Backend, SecretPinningConformance
 from hermes_conformance.secrets.suite import (
-    NEW_NAME, SEED_PROVIDER, _plaintext_forms, assert_no_frame_holds,
+    NEW_NAME, SEED_PROVIDER, WRITE_FAILURES, _plaintext_forms, assert_no_frame_holds,
 )
 from hermes_scope import LOCAL_OWNER, Group, Principal, Scope
 from hermes_secret_port import SecretAdminRefused, SecretWriteFailed
@@ -71,24 +71,59 @@ def local_backend(tmp_path, monkeypatch):
                 monkeypatch.setenv("HERMES_MANAGED_DIR", previous)
 
     @contextmanager
-    def fail_writes():
-        """While active, the seeded agent's ``.env`` and ``auth.json`` are unreadable
-        directories, so today's writers fail part-way through the write — after the caller's
-        value (or record) is bound on their frames — with a plain ``OSError``."""
-        broken = []
-        for filename in (".env", "auth.json"):
-            path = homes["a"] / filename
-            if path.is_dir():
-                path.rmdir()
-            elif path.exists():
-                path.unlink()
-            path.mkdir()
-            broken.append(path)
-        try:
-            yield
-        finally:
-            for path in broken:
-                path.rmdir()
+    def fail_writes(kind: str):
+        """While active, the seeded agent's writes fail part-way through at the failure point
+        *kind* names (``hermes_conformance.secrets.suite.WRITE_FAILURES``) — after the caller's
+        value (or record) is bound on their frames — with a plain error, never the store's
+        refusal. ``"write"`` breaks the files themselves (today's unreadable directories: an
+        ``OSError`` at the write, and today's auth loader logs the failed load with its live
+        exception); ``"encode"`` breaks the serialization of the value or record into what
+        gets written (today's env-line quoter with a ``ValueError``, today's JSON dumper with
+        a ``TypeError``); ``"replace"`` breaks the atomic rename of the written file (an
+        ``OSError`` in today's replace, both writers')."""
+        if kind == "write":
+            broken = []
+            for filename in (".env", "auth.json"):
+                path = homes["a"] / filename
+                if path.is_dir():
+                    path.rmdir()
+                elif path.exists():
+                    path.unlink()
+                path.mkdir()
+                broken.append(path)
+            try:
+                yield
+            finally:
+                for path in broken:
+                    path.rmdir()
+            return
+        import utils
+        from hermes_cli import config as env_writer
+        if kind == "encode":
+            def quoted(value: str):
+                raise ValueError("the value cannot be written as an env line")
+
+            def dumped(data, f, *, indent, ensure_ascii, dump_kwargs):
+                raise TypeError("the record cannot be written as JSON")
+
+            saved = (env_writer._quote_env_value, utils._dump_json)
+            env_writer._quote_env_value, utils._dump_json = quoted, dumped
+            try:
+                yield
+            finally:
+                env_writer._quote_env_value, utils._dump_json = saved
+        elif kind == "replace":
+            def replaced(tmp_path, target):
+                raise OSError("the written file could not be replaced atomically")
+
+            saved = (env_writer.atomic_replace, utils.atomic_replace)
+            env_writer.atomic_replace, utils.atomic_replace = replaced, replaced
+            try:
+                yield
+            finally:
+                env_writer.atomic_replace, utils.atomic_replace = saved
+        else:
+            raise LookupError(f"no such failure point: {kind!r}")
 
     backend = Backend(open=lambda agent: provider.open(homes[agent]),
                       bind=lambda agent: bind_profile_scope(homes[agent]),
@@ -174,14 +209,16 @@ class _KeepingHandler(logging.Handler):
             self.exceptions.append(exc)
 
 
+@pytest.mark.parametrize("kind", WRITE_FAILURES)
 @pytest.mark.parametrize("operation", ["set", "set_auth"])
-def test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception(tmp_path, monkeypatch, operation):
+def test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception(tmp_path, monkeypatch, operation, kind):
     """Today's loaders log the failures they handle while a write is in flight: the local auth
     loader logs an unreadable store with the live exception, ``exc_info`` and all. A log handler
     that keeps that record keeps the exception itself, whose traceback grew through every frame
     the failure unwound — rendered later with frame locals, it must hold no trace of the value
     (or record) the caller asked to store: every load and validation that can fail runs before
-    any frame binds it, and the write that does bind it calls nothing that logs."""
+    any frame binds it, and the write that does bind it calls nothing that logs, at whichever
+    of its failure points the fixture breaks (the write, the serialization, the replace)."""
     from tests.conformance.secrets.mutants import apply_mutant
     apply_mutant(monkeypatch)  # only under test_mutants.py, which names a broken backend
     backend, _homes, _provider = local_backend(tmp_path, monkeypatch)
@@ -191,7 +228,7 @@ def test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception(tmp
     kept = _KeepingHandler()
     logging.getLogger().addHandler(kept)
     try:
-        with backend.bind("a"), backend.fail_writes():
+        with backend.bind("a"), backend.fail_writes(kind):
             if operation == "set":
                 with pytest.raises(OSError):
                     store.set(NEW_NAME, marker, level="agent")
@@ -200,9 +237,11 @@ def test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception(tmp
                     store.set_auth(SEED_PROVIDER, record)
     finally:
         logging.getLogger().removeHandler(kept)
-    if operation == "set_auth":
+    if operation == "set_auth" and kind == "write":
         # Today's auth loader logs the unreadable store with its live exception: the kept record
-        # this test renders is the real artifact the fix answers, not a hypothesis.
+        # this test renders is the real artifact the fix answers, not a hypothesis. The other
+        # failure points keep no record on the unbroken backend — nothing there logs — so a
+        # passing check on them is exactly what the mutants that do log there must break.
         assert kept.exceptions, "the auth loader no longer logs the load failure with its exception"
     for kept_exc in kept.exceptions:
         rendered = traceback.TracebackException.from_exception(kept_exc, capture_locals=True)

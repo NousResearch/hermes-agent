@@ -26,7 +26,10 @@ and filename into the error the caller reads, and
 exc_info and all — from a frame that still binds the value, so a log handler that keeps the
 record renders the plaintext from it later; ``local_loads_the_auth_store_after_binding_the_record``
 binds the record in a helper frame that then loads and parses the store, putting the record in
-every frame a load failure — logged with its live exception — unwinds. Against the
+every frame a load failure — logged with its live exception — unwinds. One more, against the
+suite's own coverage: ``local_logs_exc_info_only_on_an_encode_failure`` logs the failed write
+with the live exception only when the serialization itself fails, so a suite whose failure
+hook can break the write at one point alone never reaches it. Against the
 leveled reference backend: ``reference_reads_ignore_tenant`` drops the tenant half of the pin,
 ``reference_writes_skip_the_administration_check`` drops the administration check,
 ``reference_owner_wide_resolves_everywhere`` resolves another owner's entries,
@@ -107,7 +110,8 @@ def local_accepts_undeclared_levels(monkeypatch):
 
     def _require_agent_level(self, level):
         if level not in LEVELS:
-            raise ValueError(f"not a secret level: {level!r}")
+            del level
+            raise ValueError("not a secret level; the secret levels are 'agent', 'owner' and 'tenant'")
     monkeypatch.setattr(LocalSecretStore, "_require_agent_level", _require_agent_level)
 
 
@@ -383,6 +387,24 @@ def local_loads_the_auth_store_after_binding_the_record(monkeypatch):
     monkeypatch.setattr(LocalSecretStore, "set_auth", set_auth)
 
 
+def local_logs_exc_info_only_on_an_encode_failure(monkeypatch):
+    """The failed write logs the failure — exc_info and all — from a frame that still binds
+    the record, but only when the failure is the serialization's own ``TypeError``: a suite
+    whose failure hook breaks the write at one point alone never reaches that path, and a
+    backend that logs there passes it untouched."""
+    from hermes_secret_port_local import LocalSecretStore
+    original = LocalSecretStore._write_auth_record
+
+    def _write_auth_record(self, store, provider, record):
+        try:
+            return original(self, store, provider, record)
+        except TypeError:
+            logging.getLogger(__name__).error("the credential write failed", exc_info=True)
+            raise
+
+    monkeypatch.setattr(LocalSecretStore, "_write_auth_record", _write_auth_record)
+
+
 def reference_reads_ignore_tenant(monkeypatch):
     """The reference pin keeps the agent half but drops the tenant: another tenant naming the
     agent reads its secrets."""
@@ -534,30 +556,34 @@ MUTANTS = {
         _local("test_no_refusal_traceback_frame_holds_the_value_or_record")),
     "local_managed_key_refusal_keeps_the_value": (
         local_managed_key_refusal_keeps_the_value,
-        _local("test_no_failure_traceback_frame_holds_the_value_or_record")),
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record[write]")),
     "local_write_failure_keeps_the_value_in_the_writer_frames": (
         local_write_failure_keeps_the_value_in_the_writer_frames,
-        _local("test_no_failure_traceback_frame_holds_the_value_or_record")),
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record[write]")),
     "local_failure_clears_the_callers_own_binding": (
         local_failure_clears_the_callers_own_binding,
         _local("test_a_failed_write_from_an_error_handler_leaves_the_callers_bindings_untouched")),
     "local_failure_keeps_the_escaped_secret": (
         local_failure_keeps_the_escaped_secret,
-        _local("test_no_failure_traceback_frame_holds_the_value_or_record")),
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record[write]")),
     "local_failure_keeps_the_original_failure_as_context": (
         local_failure_keeps_the_original_failure_as_context,
-        _local("test_no_failure_traceback_frame_holds_the_value_or_record")),
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record[write]")),
     "local_keeps_strerror_in_the_fresh_error": (
         local_keeps_strerror_in_the_fresh_error,
         "tests/conformance/secrets/test_local.py::test_a_failed_writes_fresh_error_names_none_of_the_writers_text[strerror]"),
     "local_logs_exc_info_while_holding_the_value": (
         local_logs_exc_info_while_holding_the_value,
         "tests/conformance/secrets/test_local.py::"
-        "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set]"),
+        "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set-write]"),
     "local_loads_the_auth_store_after_binding_the_record": (
         local_loads_the_auth_store_after_binding_the_record,
         "tests/conformance/secrets/test_local.py::"
-        "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set_auth]"),
+        "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set_auth-write]"),
+    "local_logs_exc_info_only_on_an_encode_failure": (
+        local_logs_exc_info_only_on_an_encode_failure,
+        "tests/conformance/secrets/test_local.py::"
+        "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set_auth-encode]"),
     "reference_reads_ignore_tenant": (
         reference_reads_ignore_tenant,
         _reference("TestReferencePinning::test_every_read_is_refused_for_any_pin_but_its_agents[get]")),

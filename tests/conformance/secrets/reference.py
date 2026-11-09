@@ -26,6 +26,11 @@ MANAGED_KEY = "ZZ_ADMINISTRATOR_PINNED_KEY"
 OWNERS: dict[str, Owner] = {
     "a": Principal("p1"), "b": Principal("p1"), "c": Group("g2"), "d": Group("g2"),
 }
+#: How the fixture's injected mid-write failure fails at each named failure point: the write
+#: itself and the atomic replace with a plain ``OSError``, the serialization with a
+#: ``TypeError``. The in-memory store has one write step, so every named point fails there —
+#: the nearest point it has to each.
+_INJECTED = {"write": OSError, "encode": TypeError, "replace": OSError}
 
 
 def _owner_key(owner: Owner) -> tuple[str, str]:
@@ -129,9 +134,10 @@ class MemorySecretStore(SecretStore):
         fixture's injected mid-write failure ahead of it. *where* and *key* are the placement
         the checks already resolved (``None`` only when the write never runs)."""
         if self.provider.fail_writes:
-            # The fixture's injected mid-write failure: the caller's value is already bound
-            # in this frame, and must not outlive the error in any frame below the caller.
-            raise OSError("the store's write path failed part-way through")
+            # The fixture's injected mid-write failure at its named point: the caller's value
+            # is already bound in this frame, and must not outlive the error in any frame
+            # below the caller.
+            raise _INJECTED[self.provider.fail_writes]("the store's write path failed part-way through")
         self.state[where].setdefault(key, {})[name] = value
 
     def delete(self, name: str, *, level: str) -> bool:
@@ -183,8 +189,9 @@ class MemorySecretStore(SecretStore):
         """The write itself — the only code that binds the record (see :meth:`set_auth`), with
         the fixture's injected mid-write failure ahead of it."""
         if self.provider.fail_writes:
-            # As _write_secret: the fixture's injected mid-write failure, record bound here.
-            raise OSError("the store's write path failed part-way through")
+            # As _write_secret: the fixture's injected mid-write failure at its named point,
+            # record bound here.
+            raise _INJECTED[self.provider.fail_writes]("the store's write path failed part-way through")
         self.state["auth"]["agent"].setdefault(key, {})[provider] = dict(record)
 
 
@@ -196,8 +203,9 @@ class MemorySecretStoreProvider(SecretStoreProvider):
     def __init__(self, state: Optional[dict] = None, agents: Optional[dict[str, str]] = None):
         self.state = state or {"agent": {}, "owner": {}, "tenant": {}, "auth": {"agent": {}, "owner": {}, "tenant": {}}}
         self.agents = agents or {}
-        #: While true (the fixture's ``fail_writes`` hook), every write fails part-way through.
-        self.fail_writes = False
+        #: The failure point the fixture's ``fail_writes`` hook names while it fails every
+        #: write (``None``: writes succeed).
+        self.fail_writes: Optional[str] = None
         #: The keys an administrator has pinned (the fixture's ``managed_key`` hook): the
         #: store's own write lock refuses changing them with a plain error.
         self.locked_keys: set[str] = set()
@@ -243,15 +251,18 @@ def reference_backend() -> Backend:
         yield  # a hosted backend binds nothing: no scope must be a refusal, not a default
 
     @contextmanager
-    def fail_writes():
-        """While active, every write fails part-way through with a plain ``OSError`` — the
-        suite's mid-write failure path, with the caller's value (or record) already bound on
-        the store's own frame."""
-        provider.fail_writes = True
+    def fail_writes(kind: str):
+        """While active, every write fails part-way through at the failure point *kind* names
+        (``hermes_conformance.secrets.suite.WRITE_FAILURES``): the in-memory store has one
+        write step, so each named point fails there — the nearest point it has — with its
+        kind of error (a plain ``OSError`` for the write and the replace, a ``TypeError`` for
+        the encode), with the caller's value (or record) already bound on the store's own
+        frame."""
+        provider.fail_writes = kind
         try:
             yield
         finally:
-            provider.fail_writes = False
+            provider.fail_writes = None
 
     @contextmanager
     def managed_key():

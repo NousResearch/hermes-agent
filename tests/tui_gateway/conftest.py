@@ -32,16 +32,20 @@ def _join_leaked_turn_workers(monkeypatch):
     under load). Depending on ``monkeypatch`` makes this teardown run first, so
     the worker ends against the fakes of the test that started it.
     """
+    # A worker wedged by an earlier test is that test's failure, not every later test's.
+    inherited = set(threading.enumerate())
     yield
+
+    def own_workers():
+        return [
+            t
+            for t in threading.enumerate()
+            if t not in inherited and t.name.startswith(_TURN_WORKER_PREFIXES) and t.is_alive()
+        ]
+
     deadline = time.monotonic() + DEFAULT_TIMEOUT
-    while workers := [
-        t
-        for t in threading.enumerate()
-        if t.name.startswith(_TURN_WORKER_PREFIXES) and t.is_alive()
-    ]:
+    while workers := own_workers():
         for thread in workers:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        if time.monotonic() >= deadline:
-            pytest.fail(
-                f"turn workers still running at teardown: {[t.name for t in workers]}"
-            )
+        if time.monotonic() >= deadline and (still := own_workers()):
+            pytest.fail(f"turn workers still running at teardown: {[t.name for t in still]}")

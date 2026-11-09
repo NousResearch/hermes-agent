@@ -543,11 +543,14 @@ def test_stored_session_route_heals_an_empty_provider_to_the_entry_serving_the_m
     """#132648, CLI twin of the TUI heal: a row with a model but no provider resumes on the custom
     entry that declares the model, never on the main slot."""
     from hermes_cli.cli_model_switch_mixin import stored_session_route
-    _custom_config(monkeypatch, {"name": "glm", "base_url": GLM_NEW, "api_key": "***", "model": "GLM-5.3"})
+    _custom_config(monkeypatch, {"name": "glm", "base_url": GLM_NEW, "api_key": "***", "model": "GLM-5.3"},
+                   {"name": "main", "base_url": GLM_OLD, "api_key": "***", "model": "claude-opus-5-5"})
 
-    route = stored_session_route(_row(model="GLM-5.3"), current_model="claude-opus-5-5", current_provider="anthropic")
+    for model_config in (None, {"base_url": GLM_OLD}):  # GLM_OLD: the main slot's URL from turns that went wrong
+        route = stored_session_route(_row(model="GLM-5.3", model_config=model_config),
+                                     current_model="claude-opus-5-5", current_provider="anthropic")
 
-    assert route[:2] == ("GLM-5.3", "custom:glm")
+        assert route[:2] == ("GLM-5.3", "custom:glm")
 
 
 def test_stored_session_route_keeps_a_row_the_main_slot_still_serves(monkeypatch):

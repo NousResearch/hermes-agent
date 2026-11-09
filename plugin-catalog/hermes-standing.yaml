@@ -11,6 +11,12 @@ requires_hermes: ">=0.22.5"
 docs_url: https://github.com/percyhendrux123-prog/hermes-standing/blob/8c8126ee85073d9ef8cfaf6ed935ce68dcae42d8/README.md
 readme: true
 platforms: [linux, macos]
+image: https://raw.githubusercontent.com/percyhendrux123-prog/hermes-standing/f8ae42db52c3190a1f4a88034fd3c43b04fb50e8/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-standing/f8ae42db52c3190a1f4a88034fd3c43b04fb50e8/docs/media/1-blocked-without-proof.png
+  - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-standing/f8ae42db52c3190a1f4a88034fd3c43b04fb50e8/docs/media/2-proof-passes.png
+  - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-standing/f8ae42db52c3190a1f4a88034fd3c43b04fb50e8/docs/media/3-false-claim-demoted.png
+  - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-standing/f8ae42db52c3190a1f4a88034fd3c43b04fb50e8/docs/media/4-shared-record.png
 capabilities:
   provides_tools: [standing_proof]
   provides_hooks: [pre_tool_call, post_tool_call, pre_llm_call, on_session_finalize, on_session_reset]

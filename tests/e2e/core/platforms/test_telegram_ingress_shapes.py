@@ -65,4 +65,5 @@ def test_contact_card_reaches_model_and_stop_drops_buffered_photo(tmp_path) -> N
         assert bodies_with("old photo caption") == []
     finally:
         gw.stop()
+        llm.stop()
         drv.stop()

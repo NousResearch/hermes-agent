@@ -737,6 +737,8 @@ def _parse_chat_messages(messages: list[Any]) -> tuple:
             entry: dict[str, Any] = {"role": role, "content": content}
             if role == "assistant" and isinstance(msg.get("tool_calls"), list):
                 entry["tool_calls"] = msg["tool_calls"]
+            if role == "tool" and "tool_call_id" in msg:
+                entry["tool_call_id"] = msg["tool_call_id"]
             conversation_messages.append(entry)
     return system_prompt, conversation_messages, None
 

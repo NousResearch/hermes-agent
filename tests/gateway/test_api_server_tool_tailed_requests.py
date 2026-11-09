@@ -136,3 +136,12 @@ def test_empty_user_content_with_tool_tail_still_400s():
     assert err is None
     user_message, _ = _select_current_turn(conversation)
     assert user_message is None
+
+def test_tool_tailed_history_keeps_result_paired_with_assistant_call():
+    """Replayed tool output must keep the ID required by strict OpenAI providers."""
+    _, conversation, err = _parse_chat_messages(_owui_tool_tailed_messages())
+    assert err is None
+    _, history = _select_current_turn(conversation)
+    carrier, tool_result = history
+    assert tool_result["role"] == "tool"
+    assert tool_result["tool_call_id"] == carrier["tool_calls"][0]["id"]

@@ -68,6 +68,8 @@ async def test_reset_runs_memory_cleanup_and_session_hooks_under_the_owning_prof
     seen: dict = {}
     monkeypatch.setattr("hermes_cli.lifecycle.finalize_session",
                         lambda **_kw: seen.__setitem__("finalize", str(get_hermes_home())))
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda name, **_kw: seen.__setitem__(name, (
+        str(get_hermes_home()), (secret_scope.current_secret_scope() or {}).get("HINDSIGHT_LLM_API_KEY"))))
     runner = _runner({key: prof_b})
     runner._agent_cache[key] = (_RecordingAgent(seen, prof_b), "sig")
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", user_id="1", chat_type="dm")
@@ -76,12 +78,14 @@ async def test_reset_runs_memory_cleanup_and_session_hooks_under_the_owning_prof
         assert secret_scope.current_secret_scope() is None  # the reset path is unscoped
         await runner._cleanup_old_agent_for_reset(key)
         await runner._fire_session_reset_hooks(source, key, "old", "new")
+        await runner._fire_plugin_session_reset(source, key, "old", "new")
     finally:
         secret_scope.set_multiplex_active(False)
         runner._housekeeping_executor.shutdown(wait=True)
     assert (seen["cleanup"], seen["secret"]) == (str(prof_b), "key-of-b")
     assert seen["guard"] is not None, "on_session_end refused: the old session's memory is lost (#151672)"
     assert seen["finalize"] == str(prof_b)
+    assert seen["on_session_reset"] == (str(prof_b), "key-of-b")
 
 
 @pytest.mark.asyncio

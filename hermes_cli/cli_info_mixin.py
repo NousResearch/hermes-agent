@@ -625,43 +625,46 @@ class CLIInfoMixin:
             return
         self._show_usage()
 
-    def _account_usage_view(self) -> tuple[list[str], list[str] | None, bool]:
-        """``(plan-limit lines, Nous section lines, nous_route)`` for `/usage`. On a gateway session the owner
-        answers for the route the session runs (``session.account_usage``): this process's provider/base_url
-        pair is not that route once /model or a fallback moved the provider (the launch base_url stays).
-        Off the gateway, or on an owner older than the read, the CLI's own route; its Nous lines are then
-        ``None`` (read on demand by ``_print_usage_account_blocks``)."""
+    def _account_usage_view(self) -> tuple[list[str], list[str], bool, Any]:
+        """``(plan-limit lines, Nous section lines, nous_route, Nous dollar model or None)`` for `/usage`, from
+        one Nous account read. On a gateway session the owner answers for the route the session runs
+        (``session.account_usage``): this process's provider/base_url pair is not that route once /model or a
+        fallback moved the provider (the launch base_url stays). Off the gateway, or on an owner older than
+        the read, the CLI's own route."""
         from agent.billing_links import is_nous_inference_route
         from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:
             try:
                 view = connection.call("session.account_usage", session_id=self.session_id, timeout=25) or {}
-                return list(view.get("lines") or []), list(view.get("nous_lines") or []), view.get("nous_route") is True
+                from agent.billing_usage import usage_model_from_wire
+                return (list(view.get("lines") or []), list(view.get("nous_lines") or []), view.get("nous_route") is True,
+                        usage_model_from_wire(view.get("nous_usage")))
             except GatewayRPCError as exc:
                 if exc.code != -32601 and str(exc) != "unknown_method":
-                    return [], [], False  # a refusal says nothing about the route: no Nous CTA
+                    return [], [], False, None  # a refusal says nothing about the route: no Nous CTA
             except GatewayClientError:
-                return [], [], False
+                return [], [], False, None
+        from agent.account_usage_nous import nous_usage_view
         provider, base_url = self._agent_or_self("provider") or "", self._agent_or_self("base_url") or ""
-        return self._local_account_limit_lines(), None, is_nous_inference_route(provider, base_url)
+        nous_route = is_nous_inference_route(provider, base_url)
+        nous_lines, usage = nous_usage_view(nous_route=nous_route,
+                                            credits_state=getattr(self.agent, "_credits_state", None) if self.agent else None)
+        return self._local_account_limit_lines(), nous_lines, nous_route, usage
 
     def _print_usage_account_blocks(self) -> bool:
         """`/usage`'s account blocks: the active provider's limits, then the Nous section whenever Nous is
         signed in (its own heading off a Nous route), then the `/topup` CTA on a Nous route only. True if
         anything printed."""
-        lines, nous_lines, nous_route = self._account_usage_view()
+        lines, nous_lines, nous_route, usage = self._account_usage_view()
         shown = self._print_account_limits(lines)
-        if nous_route:
-            # The Nous route keeps main's two-bar balance block and its call to action.
-            if self._print_nous_credits_block():
-                self._print_usage_cta()
-                return True
-            return shown
-        if nous_lines is None:
-            from agent.account_usage_nous import nous_usage_lines
-            nous_lines = nous_usage_lines(nous_route=False)
-        return self._print_account_limits(nous_lines) or shown
+        if not nous_route:
+            return self._print_account_limits(nous_lines) or shown
+        # The Nous route keeps main's two-bar balance block and its call to action.
+        if self._print_nous_balance(usage, nous_lines):
+            self._print_usage_cta()
+            return True
+        return shown
 
     def _agent_or_self(self, name: str):
         """Provider-ish attribute from the live agent, falling back to the CLI's own value."""

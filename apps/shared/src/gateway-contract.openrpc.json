@@ -25643,6 +25643,154 @@
         "title": "NotificationShowPayload",
         "type": "object"
       },
+      "NousUsageBar": {
+        "additionalProperties": false,
+        "description": "``agent.billing_usage.UsageBar``: one dollar bar (``topup`` has no cap, so total == remaining).",
+        "properties": {
+          "kind": {
+            "enum": [
+              "plan",
+              "topup"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "remaining_usd": {
+            "title": "Remaining Usd",
+            "type": "number"
+          },
+          "total_usd": {
+            "title": "Total Usd",
+            "type": "number"
+          },
+          "spent_usd": {
+            "default": 0.0,
+            "title": "Spent Usd",
+            "type": "number"
+          }
+        },
+        "required": [
+          "kind",
+          "remaining_usd",
+          "total_usd"
+        ],
+        "title": "NousUsageBar",
+        "type": "object"
+      },
+      "NousUsageDollars": {
+        "additionalProperties": false,
+        "description": "``agent.billing_usage.UsageModel`` in numbers: the classic CLI's two-bar Nous balance block.",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "status": {
+            "default": "free",
+            "title": "Status",
+            "type": "string"
+          },
+          "plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan Name"
+          },
+          "renews_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Renews At"
+          },
+          "renews_display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Renews Display"
+          },
+          "subscription_remaining_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Subscription Remaining Usd"
+          },
+          "topup_remaining_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Topup Remaining Usd"
+          },
+          "total_spendable_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total Spendable Usd"
+          },
+          "plan_bar": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NousUsageBar"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "topup_bar": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NousUsageBar"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "NousUsageDollars",
+        "type": "object"
+      },
       "OkResult": {
         "additionalProperties": false,
         "properties": {
@@ -36154,7 +36302,7 @@
       },
       "SessionAccountUsage": {
         "additionalProperties": false,
-        "description": "``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the\nroute's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the\nprofile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is\nNous inference, so the ``/topup`` CTA applies.",
+        "description": "``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the\nroute's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the\nprofile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is\nNous inference, so the ``/topup`` CTA applies. ``nous_usage``: on a Nous route, the same account\nread's dollar model, so the CLI draws its two bars without reading the account again.",
         "properties": {
           "lines": {
             "items": {
@@ -36174,6 +36322,17 @@
           "nous_route": {
             "title": "Nous Route",
             "type": "boolean"
+          },
+          "nous_usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NousUsageDollars"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

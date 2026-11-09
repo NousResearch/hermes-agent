@@ -264,15 +264,41 @@ class SessionAccountUsageParams(Params):
     session_id: str
 
 
+class NousUsageBar(Result):
+    """``agent.billing_usage.UsageBar``: one dollar bar (``topup`` has no cap, so total == remaining)."""
+
+    kind: Literal["plan", "topup"]
+    remaining_usd: float
+    total_usd: float
+    spent_usd: float = 0.0
+
+
+class NousUsageDollars(Result):
+    """``agent.billing_usage.UsageModel`` in numbers: the classic CLI's two-bar Nous balance block."""
+
+    available: bool
+    status: str = "free"
+    plan_name: str | None = None
+    renews_at: str | None = None
+    renews_display: str | None = None
+    subscription_remaining_usd: float | None = None
+    topup_remaining_usd: float | None = None
+    total_spendable_usd: float | None = None
+    plan_bar: NousUsageBar | None = None
+    topup_bar: NousUsageBar | None = None
+
+
 class SessionAccountUsage(Result):
     """``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the
     route's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the
     profile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is
-    Nous inference, so the ``/topup`` CTA applies."""
+    Nous inference, so the ``/topup`` CTA applies. ``nous_usage``: on a Nous route, the same account
+    read's dollar model, so the CLI draws its two bars without reading the account again."""
 
     lines: list[str]
     nous_lines: list[str] = []
     nous_route: bool
+    nous_usage: NousUsageDollars | None = None
 
 
 canonical_method("session.account_usage", params=SessionAccountUsageParams, result=SessionAccountUsage,

@@ -4900,11 +4900,32 @@ export interface SessionStats {
 export interface SessionAccountUsageParams {
   session_id: string
 }
-/** ``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the route's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the profile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is Nous inference, so the ``/topup`` CTA applies. */
+/** ``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the route's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the profile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is Nous inference, so the ``/topup`` CTA applies. ``nous_usage``: on a Nous route, the same account read's dollar model, so the CLI draws its two bars without reading the account again. */
 export interface SessionAccountUsage {
   lines: string[]
   nous_lines?: string[]
   nous_route: boolean
+  nous_usage?: NousUsageDollars | null
+}
+/** ``agent.billing_usage.UsageModel`` in numbers: the classic CLI's two-bar Nous balance block. */
+export interface NousUsageDollars {
+  available: boolean
+  status?: string
+  plan_name?: string | null
+  renews_at?: string | null
+  renews_display?: string | null
+  subscription_remaining_usd?: number | null
+  topup_remaining_usd?: number | null
+  total_spendable_usd?: number | null
+  plan_bar?: NousUsageBar | null
+  topup_bar?: NousUsageBar | null
+}
+/** ``agent.billing_usage.UsageBar``: one dollar bar (``topup`` has no cap, so total == remaining). */
+export interface NousUsageBar {
+  kind: 'plan' | 'topup'
+  remaining_usd: number
+  total_usd: number
+  spent_usd?: number
 }
 export interface RollbackSessionDiffParams {
   session_id: string

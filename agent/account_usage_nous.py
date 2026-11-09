@@ -269,6 +269,14 @@ def nous_credits_view(*, markdown: bool = False, timeout: float = 10.0, credits_
     """``nous_credits_lines`` plus whether they are the usage-window layout (callers keep today's
     presentation for everyone else). ``nous_route=False`` (a session on another provider): the stored
     token only, never refreshed, and no top-up lines. Fail-open → ``([], False)``."""
+    lines, is_window, _account = _nous_account_view(markdown=markdown, timeout=timeout, credits_state=credits_state,
+                                                    nous_route=nous_route)
+    return lines, is_window
+
+
+def _nous_account_view(*, markdown: bool, timeout: float, credits_state: Any,
+                       nous_route: bool) -> tuple[list[str], bool, Any]:
+    """``nous_credits_view`` plus the account it read (None: the dev fixture, signed out or a failed read)."""
     from agent.account_usage import render_account_usage_lines
     try:
         from agent.credits_tracker import dev_fixture_credits_state
@@ -278,19 +286,17 @@ def nous_credits_view(*, markdown: bool = False, timeout: float = 10.0, credits_
         fixture = None
     if fixture is not None:
         snapshot = _snapshot_from_credits_state(fixture)
-        return render_account_usage_lines(snapshot, markdown=markdown), bool(snapshot and snapshot.usage_window)
+        return render_account_usage_lines(snapshot, markdown=markdown), bool(snapshot and snapshot.usage_window), None
     if not _nous_logged_in():
-        return [], False
+        return [], False, None
     try:
-        snapshot = apply_header_gauge(
-            build_nous_credits_snapshot(_fetch_portal_account(timeout, stored_token_only=not nous_route),
-                                        cta=nous_route), credits_state,
-        )
-        return render_account_usage_lines(snapshot, markdown=markdown), bool(snapshot and snapshot.usage_window)
+        account = _fetch_portal_account(timeout, stored_token_only=not nous_route)
+        snapshot = apply_header_gauge(build_nous_credits_snapshot(account, cta=nous_route), credits_state)
+        return render_account_usage_lines(snapshot, markdown=markdown), bool(snapshot and snapshot.usage_window), account
     except Exception:
         # Fail-open; breadcrumb so a dead /usage credits block is diagnosable.
         logger.debug("credits ▸ /usage portal fetch/render failed (fail-open)", exc_info=True)
-        return [], False
+        return [], False, None
 
 
 def nous_credits_usage_fields(agent: Any = None, *, nous_route: bool = True) -> dict[str, Any]:
@@ -320,6 +326,17 @@ def nous_usage_lines(*, nous_route: bool, markdown: bool = False, credits_state:
     if nous_route or not lines:
         return lines
     return [f"**{NOUS_OTHER_ROUTE_HEADING}**" if markdown else NOUS_OTHER_ROUTE_HEADING, *lines]
+
+
+def nous_usage_view(*, nous_route: bool, credits_state: Any = None) -> tuple[list[str], Any]:
+    """:func:`nous_usage_lines` and, on a Nous route, the same read's dollar model
+    (``agent.billing_usage.UsageModel``: the classic CLI's two-bar block), so ``/usage`` reads the account once."""
+    lines, _window, account = _nous_account_view(markdown=False, timeout=10.0, credits_state=credits_state,
+                                                 nous_route=nous_route)
+    if not nous_route:
+        return ([NOUS_OTHER_ROUTE_HEADING, *lines] if lines else []), None
+    from agent.billing_usage import _dev_fixture_usage_model, usage_model_from_account
+    return lines, _dev_fixture_usage_model() or usage_model_from_account(account)
 
 
 def _snapshot_from_credits_state(state) -> Optional[AccountUsageSnapshot]:

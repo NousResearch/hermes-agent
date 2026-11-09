@@ -250,11 +250,10 @@ class CLIBillingMixin:
 
     # ── /usage — Nous balance block ──
 
-    def _print_nous_credits_block(self) -> bool:
-        """Nous dollar balance block (two bars); True if anything printed. Shared dollar model first, then
-        legacy ``nous_credits_lines``. Agent-independent (TUI slash-worker has no live agent). Fail-open."""
+    def _print_nous_balance(self, usage, lines: list[str]) -> bool:
+        """Nous dollar balance block (two bars) from *usage* (``UsageModel`` or None), else *lines* (the
+        usage-window layout, or an owner that sent no model); True if anything printed. Reads nothing."""
         from cli import _cprint, _b, _d
-        usage = self._try_usage_model()
         if usage is not None and usage.available:
             from agent.billing_usage import format_renews
             plan = usage.plan_name or (t("cli.billing.plan_free") if usage.status == "free" else None)
@@ -279,10 +278,6 @@ class CLIBillingMixin:
                 _cprint(ln)
             if head or tail:
                 return True
-        from agent.account_usage_nous import nous_credits_lines
-        lines = nous_credits_lines(
-            credits_state=getattr(getattr(self, "agent", None), "_credits_state", None),
-        )
         if not lines:
             return False
         print()

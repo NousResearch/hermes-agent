@@ -14,11 +14,13 @@ CLAUDE_LIMITS = ["📈 Claude plan limits", "Current session: 99% remaining (1% 
 def _usage(monkeypatch, capsys, provider: str, *, signed_in: bool) -> str:
     cli_obj = _make_cli()
     cli_obj.provider, cli_obj.base_url, cli_obj.api_key = provider, None, None
-    cli_obj._print_nous_credits_block = lambda: signed_in and (print("  NOUS-BALANCE-BARS") or True)
+    cli_obj._print_nous_balance = lambda usage, lines: bool(lines) and (print("  NOUS-BALANCE-BARS") or True)
     monkeypatch.setattr("agent.account_usage.account_limit_lines",
                         lambda p, **kw: CLAUDE_LIMITS if p != "nous" else [])
-    monkeypatch.setattr("agent.account_usage_nous.nous_credits_lines",
-                        lambda **kw: ["📈 Nous credits", "Top-up credits: $7.75"] if signed_in else [])
+    from agent.account_usage_nous import NOUS_OTHER_ROUTE_HEADING
+    nous = ["📈 Nous credits", "Top-up credits: $7.75"] if signed_in else []
+    monkeypatch.setattr("agent.account_usage_nous.nous_usage_view", lambda *, nous_route, **kw: (
+        (nous if nous_route or not nous else [NOUS_OTHER_ROUTE_HEADING, *nous]), None))
     cli_obj._show_usage()
     return capsys.readouterr().out
 

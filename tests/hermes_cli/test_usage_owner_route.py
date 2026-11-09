@@ -32,7 +32,8 @@ def _usage(monkeypatch, capsys, owner) -> str:
     cli_obj.provider, cli_obj.base_url, cli_obj.api_key = "openrouter", "https://openrouter.ai/api/v1", None
     # After `/model ... --provider openrouter` on a Nous launch: provider moved, base_url did not.
     cli_obj.agent = SimpleNamespace(provider="openrouter", base_url=NOUS_URL, api_key="", session_api_calls=0)
-    cli_obj._print_nous_credits_block = lambda: print("  NOUS-BALANCE-BARS") or True
+    cli_obj._print_nous_balance = lambda usage, lines: print("  NOUS-BALANCE-BARS") or True
+    monkeypatch.setattr("agent.account_usage_nous.nous_usage_view", lambda **kw: ([], None))
     monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: owner)
     monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda *a, **kw: None)
     cli_obj._show_usage()

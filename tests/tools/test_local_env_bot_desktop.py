@@ -94,3 +94,55 @@ def test_both_child_env_lanes_apply_the_same_overlay(monkeypatch):
     foreground = _make_run_env({})
     background = ProcessRegistry._spawn_env({})
     assert {k: foreground.get(k) for k in _SCREEN} == {k: background.get(k) for k in _SCREEN}
+
+
+# The launcher publishes its own private XDG_CONFIG_HOME/XDG_DATA_HOME/XDG_CACHE_HOME next to the
+# display keys (tools/bot_desktop/launcher.sh). Those must not reach a terminal child: a CLI would read
+# and write the Bot Desktop profile's config/data/cache instead of the session's (#131495; the allowlist
+# is dskwe's #131502).
+_SESSION_XDG = {
+    "XDG_CONFIG_HOME": "/home/u/.config",
+    "XDG_DATA_HOME": "/home/u/.local/share",
+    "XDG_CACHE_HOME": "/home/u/.cache",
+}
+_DESKTOP_XDG = {
+    "XDG_CONFIG_HOME": "/run/hermes/bot-desktop/xdg",
+    "XDG_DATA_HOME": "/run/hermes/bot-desktop/xdg/.local-share",
+    "XDG_CACHE_HOME": "/run/hermes/bot-desktop/xdg/.cache",
+}
+
+
+def _published_with_xdg():
+    return {**_SCREEN, **_DESKTOP_XDG}
+
+
+def _lane_env(lane):
+    if lane == "foreground":
+        return _make_run_env({})
+    from tools.process_registry import ProcessRegistry
+
+    return ProcessRegistry._spawn_env({})
+
+
+@pytest.mark.parametrize("lane", ["foreground", "background"])
+def test_screen_overlay_preserves_session_xdg_directories(monkeypatch, lane):
+    for key, value in _SESSION_XDG.items():
+        monkeypatch.setenv(key, value)
+    _publish(monkeypatch, _published_with_xdg())
+
+    env = _lane_env(lane)
+    assert env["DISPLAY"] == ":20", "display parity is the point of the overlay"
+    assert {k: env.get(k) for k in _SESSION_XDG} == _SESSION_XDG, (
+        "the published XDG dirs are the desktop's private ones; the session's own must survive")
+
+
+@pytest.mark.parametrize("lane", ["foreground", "background"])
+def test_screen_overlay_never_adds_the_desktop_xdg_dirs(monkeypatch, lane):
+    for key in _SESSION_XDG:
+        monkeypatch.delenv(key, raising=False)
+    _publish(monkeypatch, _published_with_xdg())
+
+    env = _lane_env(lane)
+    assert env["DISPLAY"] == ":20"
+    leak = {k: env.get(k) for k in _DESKTOP_XDG if k in env}
+    assert leak == {}, "a terminal command must not inherit the desktop's private XDG dirs"

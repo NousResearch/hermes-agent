@@ -773,21 +773,30 @@ def _path_env_key(run_env: dict) -> str | None:
     return next((k for k in run_env if k.upper() == "PATH"), None) if _IS_WINDOWS else "PATH"
 
 
+# The only published Bot Desktop values a terminal child may inherit. The launcher also publishes the
+# screen's private XDG_CONFIG_HOME/XDG_DATA_HOME/XDG_CACHE_HOME; forwarding those sent every terminal
+# command's config, data and cache into the desktop profile (#131495, whose allowlist is dskwe's #131502).
+_BOT_DESKTOP_SCREEN_KEYS = ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS")
+
+
 def apply_bot_desktop_screen_env(env: dict) -> dict:
     """Send a GUI launch from *env* to this profile's running Bot Desktop screen; returns *env*.
 
     One producer for BOTH terminal child-env lanes — a foreground command (``_make_run_env``) and a
     background spawn (``ProcessRegistry._spawn_env``) — so the two cannot drift: a background GUI launch
-    without the overlay died with ``cannot open display`` (#150076, the background half of #125830). The
-    values are the launcher's published DISPLAY/XAUTHORITY/DBUS; ``published_env()`` is the pure read (no
-    activity stamp, so a plain ``ls`` must not keep the screen alive past idle_stop_minutes), and they win
+    without the overlay died with ``cannot open display`` (#150076, the background half of #125830). Only
+    the display/auth/bus values cross (``_BOT_DESKTOP_SCREEN_KEYS``): the screen's published XDG dirs are
+    its own private ones, and a terminal child that inherited them would read and write the desktop's
+    config, data and cache instead of the session's. ``published_env()`` is the pure read (no activity
+    stamp, so a plain ``ls`` must not keep the screen alive past idle_stop_minutes), and the values win
     over the seat env the way an inline ``DISPLAY=:0 cmd`` prefix does for bash. Screen down, module
     missing, unreadable state dir → *env* passes through untouched. ``WAYLAND_DISPLAY`` is dropped because
     the screen is X11: a leaked Wayland socket flips GTK/Chromium backends.
     """
     published = _published_bot_desktop_env()
-    if published:
-        env.update(published)
+    screen = {key: published[key] for key in _BOT_DESKTOP_SCREEN_KEYS if key in published}
+    if screen:
+        env.update(screen)
         env.pop("WAYLAND_DISPLAY", None)
     return env
 

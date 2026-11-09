@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 COMMANDS: dict[str, tuple[str, str | None]] = {
     "help": ("List available commands", None),
     "model": ("Show current model and provider, or switch models", "model name to switch to"),
+    "reasoning": ("Show or change reasoning effort for this session", "level"),
+    "fast": ("Show or change fast mode for this session", "normal|fast|ultrafast|auto|cold|status"),
+    "goal": ("Set or control this session’s persistent goal", "text|status|pause|resume|clear"),
     "tools": ("List available tools", None),
     "context": ("Show conversation context usage", None),
     "reset": ("Clear conversation history", None),
@@ -133,7 +136,7 @@ def model_state(info: dict) -> SessionModelState | None:
     model = str(info.get("model") or "").strip()
     provider = info.get("provider") or detect_provider() or "openrouter"
     try:
-        picker = build_model_state(model, provider, "")
+        picker = build_model_state(model, provider, str(info.get("base_url") or ""))
         if picker is not None:
             return picker
     except Exception:

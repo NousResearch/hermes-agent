@@ -321,17 +321,15 @@ def parse_contract(text: str) -> tuple[str, GoalContract]:
     fields: dict[str, list[str]] = {f: [] for f in _CONTRACT_FIELDS}
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line:
-            continue
         if ":" in line:
             prefix, _, value = line.partition(":")
             key = _CONTRACT_ALIASES.get(prefix.strip().lower())
             if key is not None and value.strip():
                 fields[key].append(value.strip())
                 continue
-        headline_parts.append(line)
+        headline_parts.append(raw_line)
     contract = GoalContract(**{f: " ".join(v).strip() for f, v in fields.items()})
-    return " ".join(headline_parts).strip(), contract
+    return "\n".join(headline_parts).strip(), contract
 
 
 def _render_extra_criteria(subgoals: list[str]) -> str:

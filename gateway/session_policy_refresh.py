@@ -60,6 +60,7 @@ def _settings(policy, config, live, picked):
     # The session's own record (a pick, or a reset back to the profile) wins over the receipt history.
     chosen = session_pinned(config, 'reasoning', 'reasoning' in request or 'reasoning' in picked)
     keys += [] if chosen else ['reasoning_effort', 'reasoning_overrides']
+    keys += [] if session_pinned(config, 'service_tier', 'service_tier' in request) else ['service_tier']
     toolsets = policy.toolsets
     if 'toolsets' not in request and policy.editor_mcp_json is None:
         keys.append('disabled_toolsets')

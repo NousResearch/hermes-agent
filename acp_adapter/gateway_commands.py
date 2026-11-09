@@ -56,9 +56,19 @@ async def _title(agent, session_id, command, arg):
 async def _info(agent, session_id, command, arg):
     client = await agent._client()
     if command == 'model' and arg:
-        return await _mutate(agent, client, session_id, command, arg), None
+        from acp_adapter.config_options import text_selection
+        return await _mutate(agent, client, session_id, command, text_selection(arg)), None
     info = await client.rpc('session.info', session_id=session_id)
     return (_tools_text(info) if command == 'tools' else _model_text('Current model', info)), None
+
+
+async def _fast(agent, session_id, command, arg):
+    from acp_adapter.config_options import text_selection
+    value = text_selection(arg)
+    if value and value != 'status':
+        await agent.set_config_option('service_tier', session_id, value)
+    result = await (await agent._client()).rpc('config.get', session_id=session_id, key='fast')
+    return f"Fast mode: {result['value']} (this session)", None
 
 
 async def _mutation(agent, session_id, command, arg):
@@ -91,7 +101,13 @@ async def _forward(agent, client, session_id, command, arg):
     """The owner's ``slash.exec`` answer: its report, a turn to submit (a skill body or the turn a
     command built, after its notice), or the shared refusal for a command it does not serve."""
     import acp
+    from acp_adapter.config_options import command_body
     from hermes_cli.gateway_chat_commands import refusal
+    if command == 'reasoning':
+        from acp_adapter.config_options import text_selection
+        arg = text_selection(arg)
+    elif command == 'goal':
+        arg = command_body(arg)
     try:
         reply = await client.rpc('slash.exec', session_id=session_id, command=f'/{command} {arg}'.strip())
     except GatewayRPCError as exc:
@@ -280,6 +296,7 @@ def _tools_text(info):
 # "new session + clear screen"; here it is ``/new``'s reset of this session.
 ROUTES = {
     'branch': ('ACP fork_session', _branch),
+    'fast': ('config.set fast', _fast),
     'discard': ('prompt.resolve_unknown', _discard_unknown),
     'help': ('local', _help),
     'steer': ('session.steer', _prompt),

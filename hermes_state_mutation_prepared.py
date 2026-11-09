@@ -104,6 +104,13 @@ def editor_mcp_in_transaction(db, conn, session_id, payload, prepared):
                                               'mcp_servers': prepared['mcp_servers'], 'execution_generation': generation}
 
 
+def service_tier_in_transaction(db, conn, session_id, payload, prepared):
+    from agent.fast_mode import parse_exact_service_tier
+    snapshot, generation = _commit_policy(db, conn, session_id, prepared)
+    return {session_id, snapshot['target']}, {'service_tier': parse_exact_service_tier(payload['service_tier']) or '',
+                                              'execution_generation': generation}
+
+
 def edit_policy_in_transaction(db, conn, session_id, payload, prepared):
     snapshot, generation = _commit_policy(db, conn, session_id, prepared)
     return {session_id, snapshot['target']}, {'edit_approval_policy': payload['policy'],
@@ -111,6 +118,7 @@ def edit_policy_in_transaction(db, conn, session_id, payload, prepared):
 
 
 POLICY_HANDLERS = {'model': model_in_transaction, 'reasoning': reasoning_in_transaction,
+                   'service_tier': service_tier_in_transaction,
                    'workspace': workspace_in_transaction, 'editor_mcp': editor_mcp_in_transaction,
                    'edit_policy': edit_policy_in_transaction}
 

@@ -152,6 +152,12 @@ def encode_model_choice(provider: str | None, model: str | None) -> str:
     return f"{raw_provider}:{raw_model}" if raw_provider else raw_model
 
 
+def _model_choice_label(model: str, provider: str, provider_name: str) -> str:
+    # Narrow dropdowns need the model first; keep provider names elsewhere unchanged.
+    label = "Codex" if provider == "openai-codex" else provider_name
+    return f"{model} · {label}"
+
+
 @dataclass
 class _ModelCatalog:
     """Deduplicated ACP model rows from the inventory + named endpoints.
@@ -217,7 +223,8 @@ class _ModelCatalog:
                     self.semantic(encoded_provider) == self.semantic(self.current_choice_provider)
                 )
                 self.add(
-                    encoded_provider, rendered_model, f"{provider_name} · {rendered_model}",
+                    encoded_provider, rendered_model,
+                    _model_choice_label(rendered_model, encoded_provider, provider_name),
                     f"Provider: {provider_name}" + (" • current" if is_current else ""),
                 )
 
@@ -232,7 +239,8 @@ class _ModelCatalog:
             for named_model, named_desc in named_catalog:
                 is_current = named_slug.lower() == current_choice_provider and named_model == self.current_model
                 parts = [f"Provider: {named_label}", str(named_desc or "").strip(), "current" if is_current else ""]
-                self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
+                self.add(named_slug, named_model, _model_choice_label(named_model, named_slug, named_label),
+                         " • ".join(part for part in parts if part))
 
 
 def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:
@@ -298,7 +306,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     if current_model_id and current_model_id not in {item.model_id for item in available_models}:
         provider_name = provider_label(normalized_provider)
         available_models.insert(0, ModelInfo(
-            model_id=current_model_id, name=f"{provider_name} · {model}",
+            model_id=current_model_id, name=_model_choice_label(model, cat.current_choice_provider, provider_name),
             description=f"Provider: {provider_name} • current",
         ))
 

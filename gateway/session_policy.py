@@ -207,7 +207,7 @@ class LocalSessionPolicy:
             pinned = {'platform_toolsets', 'disabled_toolsets'} if 'toolsets' in request else set()
             chosen = session_pinned(config, 'reasoning', 'reasoning' in request)
             pinned |= {'reasoning_effort', 'reasoning_overrides'} if chosen else set()
-            pinned |= {'service_tier'} if 'service_tier' in request else set()
+            pinned |= {'service_tier'} if session_pinned(config, 'service_tier', 'service_tier' in request) else set()
             for key in FOLLOW_SECTIONS:
                 if key in pinned:
                     continue

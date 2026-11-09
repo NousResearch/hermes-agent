@@ -57,7 +57,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/discard` | refused | HermesCLI._handle_discard_command | slash.exec: refused | slash.exec: refused | prompt.resolve_unknown |  |
 | `/egress` | control | HermesCLI._cmd_egress | slash.exec | slash.exec | slash.exec |  |
 | `/export` | refused | HermesCLI._handle_export_command | slash.exec: refused | action: export | slash.exec: refused | client-local (cli_only) |
-| `/fast` | control | HermesCLI._handle_fast_command | config.get, config.set | unavailable: advanced | slash.exec | per-session setting (gateway handler) |
+| `/fast` | control | HermesCLI._handle_fast_command | config.get, config.set | unavailable: advanced | config.set fast | per-session setting (gateway handler) |
 | `/focus` | refused | HermesCLI._handle_focus_command | local (preference not saved) | slash.exec: refused | slash.exec: refused | client-local (cli_only) |
 | `/footer` | control | HermesCLI._handle_footer_command | slash.exec | unavailable: terminal | slash.exec | per-session setting (gateway handler) |
 | `/goal` | control | HermesCLI._handle_goal_command | slash.exec | slash.exec | slash.exec |  |

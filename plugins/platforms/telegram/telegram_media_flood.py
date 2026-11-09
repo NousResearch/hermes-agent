@@ -135,6 +135,11 @@ class TelegramMediaFloodMixin:
         if wait is None:
             return None
         stage = _FLOOD_STAGE.get()
+        if stage >= 2:  # refused again, or out of window waits (already armed): wait it out, the caller reports
+            if not isinstance(error, _KnownFloodWindow):
+                self._record_send_flood_cooldown(chat_id, wait)
+            await asyncio.sleep(wait)
+            return None
         if isinstance(error, _KnownFloodWindow):  # refused locally: the window is already armed
             return await self._defer_media_upload(redo, source, wait, _flood_cap_result(wait), what, (chat_id, metadata))
         if stage == 0 and wait <= _FLOOD_INLINE_WAIT_CAP_SECS:
@@ -148,9 +153,6 @@ class TelegramMediaFloodMixin:
             finally:
                 _FLOOD_STAGE.reset(token)
         refused = self._record_send_flood_cooldown(chat_id, wait)
-        if stage >= 2:
-            await asyncio.sleep(wait)
-            return None
         return await self._defer_media_upload(redo, source, wait, refused, what, (chat_id, metadata))
 
     @contextlib.asynccontextmanager
@@ -160,17 +162,18 @@ class TelegramMediaFloodMixin:
         this one queued. A fresh upload inside a window raises ``_KnownFloodWindow`` without a request,
         so its caller's flood recovery defers it. A retry waits the window out with the lock released,
         without spending its remaining attempt: the inline one only up to the inline cap (past it, it
-        is deferred too), the deferred re-upload at most ``_MAX_WINDOW_WAITS`` times."""
+        is deferred too), the deferred re-upload at most ``_MAX_WINDOW_WAITS`` times, then it is refused
+        without a request (never sent inside a known window)."""
         from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS
         stage = _FLOOD_STAGE.get()
         waits = 0
         while True:
             async with self._chat_send_lock(chat_id):
                 wait = self._send_flood_cooldown_remaining(chat_id)
-                if wait is None or (stage >= 2 and waits >= _MAX_WINDOW_WAITS):
+                if wait is None:
                     yield
                     return
-                if stage == 0 or (stage == 1 and (wait > _FLOOD_INLINE_WAIT_CAP_SECS or waits >= _MAX_WINDOW_WAITS)):
+                if stage == 0 or waits >= _MAX_WINDOW_WAITS or (stage == 1 and wait > _FLOOD_INLINE_WAIT_CAP_SECS):
                     raise _KnownFloodWindow(wait)
             waits += 1
             await asyncio.sleep(wait)

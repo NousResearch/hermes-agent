@@ -49,7 +49,7 @@ _CAPABILITY_ROWS = (
      "whole session, including memory, and spends your main model's tokens."),
     ("gateway.platform_actions", ("allow_platform_actions",),
      "Act on connected chat platforms as the gateway bot "
-     "(add reactions, rename threads) via ctx.platform_actions"))
+     "(add reactions, rename threads, send Telegram widgets) via ctx.platform_actions"))
 CAPABILITY_REGISTRY: dict[str, CapabilitySpec] = {
     cid: CapabilitySpec(cid, path, desc) for cid, path, desc in _CAPABILITY_ROWS
 }

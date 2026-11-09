@@ -55,6 +55,9 @@ def _telegram_adapter(connected=True):
     a.is_connected = connected
     a._set_reaction = AsyncMock(return_value=True)
     a.rename_dm_topic = AsyncMock(return_value=None)
+    a.send_widget = AsyncMock(return_value={"message_id": 501, "date": 0})
+    a.edit_widget_data = AsyncMock(return_value=True)
+    a.answer_widget_query = AsyncMock(return_value=None)
     return a
 
 
@@ -261,6 +264,98 @@ class TestVerbRouting:
                 actions.add_reaction("discord", "not-a-number", "456", "x")
             )
         assert result["error"] == "invalid_argument"
+
+
+class TestTelegramWidgetVerbs:
+    """Bot API 10.4 HTML widgets: the verbs route to the Telegram adapter's widget calls, carry the
+    identifiers a plugin needs next, and refuse malformed input before touching the adapter."""
+
+    def test_send_widget_returns_the_message_id_as_text(self):
+        actions = PlatformActions("p")
+        adapter = _telegram_adapter()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(actions.send_widget(
+                "telegram", "88", "<b>hi</b>", chat_data='{"n":1}', caption="Dashboard", disable_notification=True))
+        assert result == {"ok": True, "action": "send_widget", "message_id": "501"}
+        adapter.send_widget.assert_awaited_once_with(
+            "88", "<b>hi</b>", chat_data='{"n":1}', public_data=None, caption="Dashboard",
+            allow_queries=True, disable_notification=True, thread_id=None)
+
+    def test_send_widget_without_a_message_back_is_action_failed(self):
+        actions = PlatformActions("p")
+        adapter = _telegram_adapter()
+        adapter.send_widget = AsyncMock(return_value=True)
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(actions.send_widget("telegram", "88", "<b>hi</b>"))
+        assert result["error"] == "action_failed"
+
+    @pytest.mark.parametrize("bad", ["", "   ", None, 123])
+    def test_send_widget_needs_html(self, bad):
+        actions = PlatformActions("p")
+        adapter = _telegram_adapter()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(actions.send_widget("telegram", "88", bad))
+        assert result["error"] == "invalid_argument"
+        adapter.send_widget.assert_not_awaited()
+
+    def test_optional_packets_must_be_text(self):
+        actions = PlatformActions("p")
+        adapter = _telegram_adapter()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(actions.send_widget("telegram", "88", "<b>hi</b>", chat_data={"n": 1}))
+        assert result["error"] == "invalid_argument"
+        adapter.send_widget.assert_not_awaited()
+
+    def test_edit_widget_data_routes_and_reports_a_change(self):
+        actions = PlatformActions("p")
+        adapter = _telegram_adapter()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(actions.edit_widget_data("telegram", "88", "472", chat_data='{"n":2}'))
+        assert result == {"ok": True, "action": "edit_widget_data", "modified": True}
+        adapter.edit_widget_data.assert_awaited_once_with("88", "472", chat_data='{"n":2}', public_data=None)
+
+    def test_edit_widget_data_with_the_same_packet_is_success_not_modified(self):
+        actions = PlatformActions("p")
+        adapter = _telegram_adapter()
+        adapter.edit_widget_data = AsyncMock(return_value=False)
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(actions.edit_widget_data("telegram", "88", "472", public_data=""))
+        assert result == {"ok": True, "action": "edit_widget_data", "modified": False}
+
+    def test_edit_widget_data_needs_a_packet(self):
+        actions = PlatformActions("p")
+        adapter = _telegram_adapter()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(actions.edit_widget_data("telegram", "88", "472"))
+        assert result["error"] == "invalid_argument"
+        adapter.edit_widget_data.assert_not_awaited()
+
+    def test_answer_widget_query_routes(self):
+        actions = PlatformActions("p")
+        adapter = _telegram_adapter()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(actions.answer_widget_query("telegram", "q1", data='{"ok":1}'))
+        assert result == {"ok": True, "action": "answer_widget_query"}
+        adapter.answer_widget_query.assert_awaited_once_with("q1", '{"ok":1}')
+
+    def test_widget_verbs_are_telegram_only(self):
+        actions = PlatformActions("p")
+        adapter = _discord_adapter()
+        with _grant(True), _runner_with({Platform.DISCORD: adapter}):
+            results = [asyncio.run(call) for call in (
+                actions.send_widget("discord", "1", "<b>x</b>"),
+                actions.edit_widget_data("discord", "1", "2", chat_data="{}"),
+                actions.answer_widget_query("discord", "q1"),
+            )]
+        assert [result["error"] for result in results] == ["unsupported_platform_action"] * 3
+
+    def test_widget_verbs_are_gated_like_the_others(self):
+        actions = PlatformActions("p")
+        adapter = _telegram_adapter()
+        with _grant(False), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(actions.send_widget("telegram", "88", "<b>hi</b>"))
+        assert result["error"] == "capability_not_granted"
+        adapter.send_widget.assert_not_awaited()
 
 
 class TestMultiplexProfileRouting:

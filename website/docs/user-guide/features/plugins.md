@@ -693,10 +693,34 @@ Platforms supported in v1: Telegram and Discord. Telegram's `add_reaction`
 than stacking). Every action — allowed or denied — is written to the log with
 the plugin id, verb, platform, and outcome.
 
+Telegram HTML widgets (Bot API 10.4) have three verbs of their own, Telegram
+only (other platforms answer `unsupported_platform_action`). `send_widget` sends
+a message with a widget and returns its `message_id`; the HTML is fixed once
+sent. `edit_widget_data` rewrites the widget's `chat_data` / `public_data`
+packets (up to 1024 bytes each) without touching the HTML: an omitted packet
+stays, an empty string removes it, and `modified` is `False` when Telegram
+already had the same data. A tap in the widget reaches the plugin as the
+`widget_query` [platform event](hooks.md#gateway_platform_event);
+`answer_widget_query` answers it within Telegram's 15 seconds. Telegram
+currently delivers widgets to private chats only.
+
+```python
+sent = await ctx.platform_actions.send_widget(
+    platform="telegram", chat_id="123", html="<div>…</div>", chat_data='{"n":1}',
+)
+await ctx.platform_actions.edit_widget_data(
+    platform="telegram", chat_id="123", message_id=sent["message_id"], chat_data='{"n":2}',
+)
+# inside a gateway_platform_event callback, for event_type == "widget_query":
+await ctx.platform_actions.answer_widget_query(
+    platform="telegram", query_id=payload["query_id"], data='{"n":2}',
+)
+```
+
 :::warning Security note
 Platform actions are a **messaging-as-the-bot power**: a granted plugin can
-react and rename threads in any chat the gateway bot can reach, not just the
-chat that triggered the hook. Grant `gateway.platform_actions` only to plugins
+react, rename threads and send widgets in any chat the gateway bot can reach,
+not just the chat that triggered the hook. Grant `gateway.platform_actions` only to plugins
 you trust, and prefer plugins that document exactly which actions they take.
 Raw platform SDK payload/handle access is deliberately **not** part of this
 surface — per the #64176 round-2 design correction it requires its own

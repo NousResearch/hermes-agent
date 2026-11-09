@@ -211,6 +211,7 @@ from plugins.platforms.telegram.telegram_typing_gate import typing_may_fire
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
+from plugins.platforms.telegram import telegram_widgets
 from utils import env_float, env_int
 
 # Max seconds a send/edit may sleep inline on a flood-control RetryAfter; longer penalties fail
@@ -1681,7 +1682,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             # helper and abandon the partial updater (caller rebuilds).
             await _await_with_thread_deadline(
                 app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES, drop_pending_updates=drop_pending_updates, error_callback=_generation_error_callback),
+                    allowed_updates=telegram_widgets.allowed_updates(Update), drop_pending_updates=drop_pending_updates,
+                    error_callback=_generation_error_callback),
                 timeout=_UPDATER_START_TIMEOUT,
                 on_abandon=((lambda app=app: _shutdown_abandoned_app(app)) if abandon_app_on_timeout else None))
         finally:
@@ -2628,7 +2630,23 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             if not source.user_id or not source.chat_id:
                 raise ValueError("gateway_platform_event message_edited requires editor and chat identities")
             return source
+        query = telegram_widgets.widget_query_of(update)
+        if query is not None:
+            return self._source_from_widget_query_for_auth(query)
         raise ValueError("gateway_platform_event source extraction has no extractor for this update type")
+
+    def _source_from_widget_query_for_auth(self, query: dict[str, Any]):
+        """SessionSource for a ``widget_query`` (a tap in a widget message): its sender in the widget's chat.
+
+        Raises ``ValueError`` when sender, chat or message identity is absent (an inline-message widget has no
+        chat) so the post-auth boundary fails closed."""
+        ids = telegram_widgets.identities(query)
+        if not ids["user_id"] or not ids["chat_id"] or not ids["message_id"]:
+            raise ValueError("gateway_platform_event widget_query requires sender, chat, and message identities")
+        chat_type = self._normalize_chat_type(ids["chat_type"], is_forum=ids["is_forum"])
+        return self.build_source(
+            chat_id=ids["chat_id"], chat_type=chat_type, user_id=ids["user_id"], user_name=ids["user_name"],
+            thread_id=None, message_id=ids["message_id"])
 
     def _normalize_platform_event(self, update) -> Optional[dict[str, Any]]:
         """Map a PTB update to a ``{platform, event_type, payload}`` envelope (hooks.md contracts), or
@@ -2637,6 +2655,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return self._normalize_reaction_event(update)
         if getattr(update, "edited_message", None) is not None:
             return self._normalize_message_edited_event(update)
+        query = telegram_widgets.widget_query_of(update)
+        if query is not None:
+            return telegram_widgets.normalize_event(query)
         return None
 
     @staticmethod
@@ -2706,6 +2727,33 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 "chat_id": str(chat_id)[:128], "message_id": str(message_id)[:128], "thread_id": thread_id,
                 "text": text[:8192] if text is not None else None, "edited_at": edited_at},
         }
+
+    # -- Bot API 10.4 HTML widgets: the Telegram half of the ``send_widget`` / ``edit_widget_data`` /
+    # ``answer_widget_query`` platform actions (hermes_cli/platform_actions.py). A tap in a widget arrives as the
+    # ``widget_query`` platform event above. PTB 22.8 has no methods for these, so they go through
+    # ``do_api_request`` like ``sendRichMessage``.
+
+    async def send_widget(
+        self, chat_id: str, html: str, *, chat_data: Optional[str] = None, public_data: Optional[str] = None,
+        caption: Optional[str] = None, allow_queries: bool = True, disable_notification: bool = False,
+        thread_id: Optional[str] = None) -> dict[str, Any]:
+        """``sendWidget``: the raw message dict Telegram returns (its ``message_id`` addresses later edits)."""
+        return await telegram_widgets.send_widget(
+            self._bot, normalize_telegram_chat_id(chat_id), html, chat_data=chat_data, public_data=public_data,
+            caption=caption, allow_queries=allow_queries, disable_notification=disable_notification,
+            thread_id=thread_id)
+
+    async def edit_widget_data(
+        self, chat_id: str, message_id: str, *, chat_data: Optional[str] = None,
+        public_data: Optional[str] = None) -> bool:
+        """``editMessageWidgetData``: True when the data changed, False when Telegram already had it."""
+        return await telegram_widgets.edit_widget_data(
+            self._bot, normalize_telegram_chat_id(chat_id), int(message_id), chat_data=chat_data,
+            public_data=public_data)
+
+    async def answer_widget_query(self, query_id: str, data: Optional[str] = None) -> None:
+        """``answerWidgetQuery``: the reply to one ``widget_query`` event (Telegram waits 15 seconds for it)."""
+        await telegram_widgets.answer_widget_query(self._bot, query_id, data)
 
     def _accept_update(self) -> None:
         """Handoff is irreversible for replay purposes, even if later work raises/cancels."""
@@ -2905,7 +2953,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         webhook_path = urlparse(webhook_url).path or "/telegram"
         await self._app.updater.start_webhook(
             listen=webhook_host, port=webhook_port, url_path=webhook_path, webhook_url=webhook_url,
-            secret_token=webhook_secret, allowed_updates=Update.ALL_TYPES,
+            secret_token=webhook_secret, allowed_updates=telegram_widgets.allowed_updates(Update),
             drop_pending_updates=self._cold_boot_drop_pending(is_reconnect=is_reconnect),
             bootstrap_retries=1,  # one transient delete/set failure must not leave the webhook unset
        )

@@ -7,7 +7,7 @@ Every verb returns a structured result dict — ``{"ok": True, ...}`` on success
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +64,56 @@ async def _discord_set_thread_title(adapter, chat_id, thread_id, title):
     return _err("action_failed", "discord thread rename failed")
 
 
+def _optional_text(**values: Any) -> Optional[dict[str, Any]]:
+    """``invalid_argument`` for an optional parameter that is given but is not text; ``None`` when all are fine."""
+    for name, value in values.items():
+        if value is not None and not isinstance(value, str):
+            return _err("invalid_argument", f"{name} must be a string when given")
+    return None
+
+
+# -- Telegram HTML widgets (Bot API 10.4): the adapter does the Bot API calls -------------------------
+
+
+async def _telegram_send_widget(
+        adapter, chat_id, html, chat_data, public_data, caption, allow_queries, disable_notification, thread_id):
+    error = _optional_text(chat_data=chat_data, public_data=public_data, caption=caption, thread_id=thread_id)
+    if error is not None:
+        return error
+    sent = await adapter.send_widget(
+        chat_id, html, chat_data=chat_data, public_data=public_data, caption=caption,
+        allow_queries=bool(allow_queries), disable_notification=bool(disable_notification), thread_id=thread_id)
+    message_id = sent.get("message_id") if isinstance(sent, dict) else None
+    if message_id is None:
+        return _err("action_failed", "telegram sendWidget returned no message id")
+    return _ok(action="send_widget", message_id=str(message_id))
+
+
+async def _telegram_edit_widget_data(adapter, chat_id, message_id, chat_data, public_data):
+    error = _optional_text(chat_data=chat_data, public_data=public_data)
+    if error is not None:
+        return error
+    if chat_data is None and public_data is None:
+        return _err("invalid_argument", "chat_data or public_data is required")
+    modified = await adapter.edit_widget_data(chat_id, message_id, chat_data=chat_data, public_data=public_data)
+    return _ok(action="edit_widget_data", modified=bool(modified))
+
+
+async def _telegram_answer_widget_query(adapter, query_id, data):
+    error = _optional_text(data=data)
+    if error is not None:
+        return error
+    await adapter.answer_widget_query(query_id, data)
+    return _ok(action="answer_widget_query")
+
+
 _VERBS = {
     "add_reaction": {"telegram": _telegram_add_reaction, "discord": _discord_add_reaction},
     "set_thread_title": {"telegram": _telegram_set_thread_title, "discord": _discord_set_thread_title},
+    # HTML widgets are a Telegram surface (Bot API 10.4); other platforms get unsupported_platform_action.
+    "send_widget": {"telegram": _telegram_send_widget},
+    "edit_widget_data": {"telegram": _telegram_edit_widget_data},
+    "answer_widget_query": {"telegram": _telegram_answer_widget_query},
 }
 
 
@@ -190,6 +237,38 @@ class PlatformActions:
             "set_thread_title", platform, chat_id, thread_id, title,
             chat_id=chat_id, thread_id=thread_id, title=title,
         )
+
+    # -- Telegram HTML widgets (Bot API 10.4) ------------------------------------
+
+    async def send_widget(
+            self, platform: str, chat_id: str, html: str, *, chat_data: Optional[str] = None,
+            public_data: Optional[str] = None, caption: Optional[str] = None, allow_queries: bool = True,
+            disable_notification: bool = False, thread_id: Optional[str] = None) -> dict[str, Any]:
+        """Send a message with an HTML widget; ``message_id`` in the result addresses later data edits.
+
+        The HTML is fixed once sent; ``chat_data`` and ``public_data`` (up to 1024 bytes each) are what
+        ``edit_widget_data`` rewrites. With ``allow_queries`` a tap in the widget reaches the plugin as a
+        ``widget_query`` platform event. Telegram currently delivers widgets to private chats only."""
+        return await self._run(
+            "send_widget", platform, chat_id, html, chat_data, public_data, caption, allow_queries,
+            disable_notification, thread_id, chat_id=chat_id, html=html,
+        )
+
+    async def edit_widget_data(
+            self, platform: str, chat_id: str, message_id: str, *, chat_data: Optional[str] = None,
+            public_data: Optional[str] = None) -> dict[str, Any]:
+        """Rewrite a widget message's data without touching its HTML: an omitted packet stays, an empty
+        string removes it. ``modified`` is False when Telegram already had the same data."""
+        return await self._run(
+            "edit_widget_data", platform, chat_id, message_id, chat_data, public_data,
+            chat_id=chat_id, message_id=message_id,
+        )
+
+    async def answer_widget_query(
+            self, platform: str, query_id: str, *, data: Optional[str] = None) -> dict[str, Any]:
+        """Answer a ``widget_query`` platform event (its ``payload["query_id"]``) within Telegram's 15 seconds;
+        ``data`` (up to 1024 bytes) reaches only the widget that asked."""
+        return await self._run("answer_widget_query", platform, query_id, data, query_id=query_id)
 
     def _audit(self, verb: str, platform: str, result: dict[str, Any]) -> None:
         """Every platform action is logged (the #64176 'all actions logged' rule)."""

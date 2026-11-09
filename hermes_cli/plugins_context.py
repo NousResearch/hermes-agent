@@ -93,7 +93,8 @@ class PluginContext(PluginCapabilityCtxMixin):
 
     @cached_property
     def platform_actions(self):
-        """Capability-gated platform action facade (``add_reaction``, ``set_thread_title``). Every call
+        """Capability-gated platform action facade (``add_reaction``, ``set_thread_title``, and the Telegram
+        widget verbs ``send_widget`` / ``edit_widget_data`` / ``answer_widget_query``). Every call
         re-checks ``gateway.platform_actions`` (legacy ``plugins.entries.<id>.allow_platform_actions``,
         default OFF) and returns ``{"ok": bool, ...}`` — verbs never raise into hook dispatch; no adapter
         handles or raw SDK objects."""

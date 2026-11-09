@@ -364,10 +364,13 @@ def _flush_continues_marked_turn(session_db, session_id, mark) -> bool:
     """Whether *session_id* carries the claimed turn *mark*'s own transcript continued by a
     mid-turn compression: the claim stays on its session while the physical transcript moves
     to a child of its compression lineage."""
+    import sqlite3
+
+    from hermes_state_errors import StateDbReplacedError
     try:
         lineage = session_db.get_compression_lineage(session_id)
-    except Exception:
-        return False
+    except (sqlite3.Error, StateDbReplacedError):
+        return False  # transient store trouble: this flush keeps the store's own append
     return bool(lineage) and lineage[0] == mark.session
 
 

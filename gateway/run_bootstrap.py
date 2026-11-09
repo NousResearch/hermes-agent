@@ -208,6 +208,8 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             # The replacing gateway serves this home on: telling its home chats "shutting down" is
             # false, and two services fighting over one home would repeat it every few seconds.
             runner._planned_takeover_shutdown = True
+            # Expose the clean stop intent before stop() gets its first event-loop turn.
+            runner._draining = True
             logger.info("Received %s as a planned --replace takeover — exiting cleanly", sig_name or "SIGTERM")
         elif planned_stop:
             logger.info("Received %s as a planned gateway stop — exiting cleanly", sig_name or "SIGTERM/SIGINT")

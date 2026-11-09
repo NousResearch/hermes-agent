@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import signal
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -182,3 +183,65 @@ async def test_real_ordinary_stop_suspended_at_async_boundary(supervised, monkey
         release.set()
         await asyncio.wait_for(stop, 5)
     assert runner._exit_code == 0
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.asyncio
+async def test_planned_takeover_rejects_deferred_restart_before_stop_starts(supervised, monkeypatch, tmp_path):
+    from gateway import run as run_mod, shutdown_forensics, status
+    from gateway.run_bootstrap import _start_gateway_make_shutdown_signal_handler
+    from gateway.run_shutdown import _resolve_gateway_exit_verdict
+
+    runner, _ = make_restart_runner()
+    runner._restart_drain_timeout = 180.0
+    runner._launchd_exit_timeout_s = 60.0
+    runner._stop_requested_by_signal = False
+    runner._restart_task = None
+    runner._exit_with_failure = False
+    runner.request_restart = Mock(wraps=runner.request_restart)
+    drain = AsyncMock(wraps=run_mod.GatewayRunner._stop_drain_active_work)
+    monkeypatch.setattr(run_mod.GatewayRunner, "_stop_drain_active_work", drain)
+    monkeypatch.setattr(run_mod, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(shutdown_forensics, "snapshot_shutdown_context", lambda *_: None)
+    status.write_takeover_marker(os.getpid())
+    signal_shutdown = [False]
+    shutdown = _start_gateway_make_shutdown_signal_handler(runner, signal_shutdown)
+    loop = asyncio.get_running_loop()
+    stop_tasks_at_request = []
+
+    def before_stop(callback):
+        stop_tasks_at_request.append(runner._stop_task)
+        callback()
+
+    def enqueue_request(callback):
+        # Both callbacks enter the real loop's ready queue before the signal handler
+        # can append its stop task: signal -> deferred callback -> stop's first step.
+        loop.call_soon(shutdown, signal.SIGTERM)
+        loop.call_soon(before_stop, callback)
+
+    callback_loop = SimpleNamespace(
+        call_soon_threadsafe=lambda callback: loop.call_soon_threadsafe(enqueue_request, callback)
+    )
+    try:
+        result = await asyncio.to_thread(deferred.deferred_restart_verb(runner, callback_loop))
+        await asyncio.wait_for(runner._shutdown_event.wait(), 10)
+        await asyncio.wait_for(runner._stop_task, 10)
+        assert stop_tasks_at_request == [None]
+        assert result == {"accepted": False, "reason": "already_stopping", "pid": os.getpid(),
+                          "supervisor": "external", "drain_timeout": 180.0}
+        runner.request_restart.assert_not_called()
+        assert runner._restart_task is None and runner._restart_task_started is False
+        assert (runner._restart_requested, runner._restart_via_service, runner._restart_detached) == (False, False, False)
+        assert signal_shutdown == [False]
+        assert runner._signal_initiated_shutdown is False and runner._stop_requested_by_signal is False
+        assert runner._restart_drain_timeout == restart.effective_stop_drain_timeout(runner) == 180.0
+        drain.assert_awaited_once()
+        assert drain.await_args.args[1] == 180.0
+        assert runner.exit_code is None
+        assert _resolve_gateway_exit_verdict(runner, signal_shutdown[0]) is True
+        runner._update_runtime_status.assert_called_with("stopped", None)
+    finally:
+        if runner._restart_task is not None:
+            runner._restart_task.cancel()
+            await asyncio.gather(runner._restart_task, return_exceptions=True)

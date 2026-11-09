@@ -88,15 +88,17 @@ def _oversized_named_video(name):
 
 
 @pytest.mark.asyncio
-async def test_each_too_large_album_item_keeps_its_own_note():
+@pytest.mark.parametrize("names", [("a.zip", "b.zip", "c.mp4", "d.mp4"), ("r.zip", "r.zip", None, None)],
+                         ids=["distinct-names", "same-name-and-unnamed"])
+async def test_each_too_large_album_item_keeps_its_own_note(names):
     """Two too-large documents and two same-size oversized videos: the agent is told about all four (#151871),
-    and the caption still arrives once."""
+    even when the documents share a name and the videos have none, and the caption still arrives once."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={"media_group_wait_seconds": 0.05}))
     adapter.handle_message = AsyncMock()
     adapter._is_callback_user_authorized = lambda user_id, **_kw: True
     items = [_make_message(document=_make_document(name, "application/zip", file_size=TOO_BIG),
-                           caption="see" if name == "a.zip" else None, media_group_id="mg") for name in ("a.zip", "b.zip")]
-    items += [_oversized_named_video("c.mp4"), _oversized_named_video("d.mp4")]
+                           caption="see" if index == 0 else None, media_group_id="mg") for index, name in enumerate(names[:2])]
+    items += [_oversized_named_video(names[2]), _oversized_named_video(names[3])]
 
     for item in items:
         await adapter._handle_media_message(_make_update(item), MagicMock())

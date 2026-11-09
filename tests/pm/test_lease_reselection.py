@@ -60,16 +60,17 @@ def test_unlocked_reader_releases_a_lease_the_installer_moved_away_from(generati
     activate_dependencies(repo)
 
     assert leased[0] == first and leased[-1] == state / "environments" / "second" / "venv"
-    assert not any((first.parent / ".leases").iterdir()), "the stale lease must be released"
-    assert len(list((state / "environments" / "second" / ".leases").iterdir())) == 1
+    assert not any(runtime_state.lease_dirs(first.parent)[0].iterdir()), "the stale lease must be released"
+    assert len(list(runtime_state.lease_dirs(state / "environments" / "second")[0].iterdir())) == 1
 
 
 def test_release_removes_the_lease_file(generations):
-    from hermes_cli.runtime_state import lease_generation
+    from hermes_cli.runtime_state import lease_dirs, lease_generation
 
     _, _state, select = generations
     environment = select("first")
     release = lease_generation(environment)
-    assert list((environment.parent / ".leases").iterdir())
+    leases = lease_dirs(environment.parent)[0]
+    assert list(leases.iterdir())
     release()
-    assert not list((environment.parent / ".leases").iterdir())
+    assert not list(leases.iterdir())

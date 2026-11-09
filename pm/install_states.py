@@ -19,8 +19,8 @@ A checkout elsewhere (``~/.cache/review-1/head``, a scratch clone outside the da
 be proved deleted, so its missing checkout alone would keep the state forever. It is reclaimed
 once the state has also gone unused for ``worktrees.install_state_retention_days``: every sync
 recreates ``inputs/`` and every launch takes a generation lease (moving its
-``.leases`` dir), so a checkout that still exists behind a mount boundary and is used at all keeps
-its state. One unused for longer is rebuilt by ``hermes pm repair`` / the next activation.
+dir under ``leases/``), so a checkout that still exists behind a mount boundary and is used at all
+keeps its state. One unused for longer is rebuilt by ``hermes pm repair`` / the next activation.
 """
 
 from __future__ import annotations
@@ -43,9 +43,10 @@ def _provably_deleted(root: Path, data_root: Path) -> bool:
 
 def _last_used(state: Path) -> float:
     """Newest mtime among what a sync (``inputs/`` is recreated, ``facts.json`` rewritten) or a
-    launch (a generation's ``.leases`` dir) moves. Not the state dir itself: a part-way removal
-    moves it, and that must not restart the clock for the retry."""
-    paths = [state / "inputs", state / "facts.json"]
+    launch (a generation's lease dir, under ``leases/`` or an earlier release's ``.leases``)
+    moves. Not the state dir itself: a part-way removal moves it, and that must not restart the
+    clock for the retry."""
+    paths = [state / "inputs", state / "facts.json", *state.glob("leases/*/*")]
     for generations in (state / "environments", state / "pm-runtime" / "generations"):
         if generations.is_dir():
             paths += [generation / ".leases" for generation in generations.iterdir()]
@@ -100,19 +101,15 @@ def orphan_install_states(installs: Path) -> list[Path]:
 def _install_lock(state: Path):
     """Hold the state's install lock (``runtime_lock``'s) without waiting: yields False while
     another process holds it, or when it cannot even be opened."""
-    from pm.filesystem import lock_path
+    from hermes_cli.runtime_state import install_lock_paths
+    from pm.filesystem import moved_lock
 
-    try:
-        fd = lock_path(state / ".install.lock", timeout=0)
-    except OSError:
-        fd = None
-    if fd is None:
-        yield False
-        return
-    try:
-        yield True
-    finally:
-        os.close(fd)
+    with contextlib.ExitStack() as stack:
+        try:
+            held = stack.enter_context(moved_lock(*install_lock_paths(state), timeout=0))
+        except OSError:
+            held = False
+        yield held
 
 
 def _leased(state: Path) -> bool:
@@ -122,12 +119,20 @@ def _leased(state: Path) -> bool:
     for generations in (state / "environments", state / "pm-runtime" / "generations"):
         if generations.is_dir():
             for generation in generations.iterdir():
-                if generation.is_dir() and (generation / ".leases").is_dir() and leases_held(generation):
+                if generation.is_dir() and leases_held(generation):
                     return True
     return False
 
 
-_KEPT_UNTIL_LAST = frozenset({"inputs", ".install.lock"})
+_KEPT_UNTIL_LAST = frozenset({"inputs", ".install.lock", "locks"})
+
+
+def _unlink_locks(state: Path) -> None:
+    for lock in (state / ".install.lock", *(state / "locks").glob("*")):
+        with contextlib.suppress(OSError):
+            lock.unlink()
+    with contextlib.suppress(OSError):
+        (state / "locks").rmdir()
 
 
 def _remove_contents(state: Path) -> bool:
@@ -169,16 +174,15 @@ def collect_orphan_install_states(installs: Path) -> list[Path]:
                 # then sees it gone once it gets the lock and retries on a fresh one (lock_path);
                 # unlinked after release, the path could be a file that launcher just made.
                 if os.name != "nt":
-                    with contextlib.suppress(OSError):
-                        (state / ".install.lock").unlink()
+                    _unlink_locks(state)
         if not emptied:
             logger.debug("orphan install state %s only partly removed; retried next pass", state.name)
             continue
         # Non-recursive: a launch from a checkout recreated at the same path may have taken the
         # lock the moment it was released and written here; its files make rmdir fail, not vanish.
+        if os.name == "nt":  # an open file cannot be unlinked: a waiting launcher keeps it
+            _unlink_locks(state)
         with contextlib.suppress(OSError):
-            if os.name == "nt":  # an open file cannot be unlinked: a waiting launcher keeps it
-                (state / ".install.lock").unlink()
             state.rmdir()
         if not state.exists():
             removed.append(state)

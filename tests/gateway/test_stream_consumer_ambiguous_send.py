@@ -70,6 +70,8 @@ async def test_timed_out_stream_send_is_shown_once_and_nothing_is_lost(shape, fa
 
     assert consumer.final_content_delivered is True
     assert consumer.delivered_final_matches(final) is not False
+    # Counted as shown on a guess: the gateway hands it to the ledger's marked redelivery.
+    assert consumer.delivery_uncertain is True
 
 
 @pytest.mark.asyncio

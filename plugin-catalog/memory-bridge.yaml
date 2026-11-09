@@ -19,7 +19,7 @@ description: >-
   closed if it moves.
 maintainer: summero
 tier: community
-category: memory
+category: tools
 requires_hermes: ">=0.22.7"
 docs_url: https://github.com/summero/memory-bridge/blob/d166fbe72493050ef2651f37f8b2c267ee5f18d2/README.md
 readme: true

@@ -1730,6 +1730,7 @@ def _run_conversation_turn(
     # pool refresh tallies cap same-entry refreshes on a persistent 401 (#26080); usage
     # for on_turn_complete() stays None on turns that never reach a response.
     agent._delivered_interim_texts = set()
+    agent._public_status_fallback_sent = False
     agent._incremental_persistence_failed = False
     agent._last_persistence_error_cause = None
     agent._compression_adoption_failed = False

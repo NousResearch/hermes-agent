@@ -1020,6 +1020,11 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
     agent._current_tool = function_name
     agent._touch_activity(f"executing tool: {function_name}")
     _set_worker_activity_callback(agent)
+    if getattr(agent, "api_mode", None) == "codex_responses":
+        emit_status = getattr(agent, "emit_public_status_fallback", None)
+        if callable(emit_status):
+            with contextlib.suppress(Exception):
+                emit_status(request_id=getattr(agent, "_current_api_request_id", None))
 
     if agent.tool_progress_callback:
         try:

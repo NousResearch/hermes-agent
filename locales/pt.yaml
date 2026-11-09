@@ -2655,6 +2655,7 @@ cli:
     busy_reload_mcp: "Recarregando servidores MCP..."
     busy_reload_skills: "Recarregando skills..."
     processing_command: "Processando comando..."
+    public_status_fallback: "Estou avançando na análise e verificando os próximos dados."
     thinking_label: "[pensando]"
     thinking_more_lines: "... ({count} linhas a mais)"
     preview_more_lines_one: "... (+{count} linha a mais)"

@@ -120,6 +120,9 @@ COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE = "🗜️ Compressed ~{before:,} → ~
 COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = (
     "🗜️ Context reduced to {new_ctx:,} tokens (was {old_ctx:,}), retrying..."
 )
+# No-op refusal (nothing dropped): chat surfaces suppress it; manual /compress feedback words it differently.
+COMPRESSION_REFUSED_WOULD_GROW_WARNING = ("⚠️ Compression refused: the generated summary would have GROWN the conversation "
+                                          "instead of shrinking it. No messages were dropped — conversation continues unchanged.")
 
 # FAILURE-class notice: compression blocked, so the session grows until the provider limit kills it. Must stay visible
 # on gateways: never add it to ROUTINE_COMPRESSION_STATUS_SAMPLES or _TELEGRAM_NOISY_STATUS_RE.
@@ -3149,10 +3152,7 @@ def _salvage_or_refuse_grown_transcript(
         with contextlib.suppress(Exception):
             agent.context_compressor._last_compress_refused_would_grow = True
         with contextlib.suppress(Exception):
-            agent._emit_warning(
-                "⚠️ Compression refused: the generated summary would have GROWN the conversation instead of "
-                "shrinking it. No messages were dropped — conversation continues unchanged."
-            )
+            agent._emit_warning(COMPRESSION_REFUSED_WOULD_GROW_WARNING)
         _existing_sp = _existing_system_prompt(agent, system_message)
         _emit_aborted_attempt_telemetry(agent, attempt.started_at, "would_grow", attempt.seed)
         # Count the refusal as an ineffective-compaction strike so the anti-thrash

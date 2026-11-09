@@ -21,7 +21,6 @@ from telegram.ext import Application, ApplicationHandlerStop, ConversationHandle
 
 from gateway.platforms._shared import coerce_port
 from gateway.platforms.helpers import bounded_put
-from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -162,42 +161,24 @@ class PerChatUpdateProcessor(SimpleUpdateProcessor):
     without a chat (inline queries) run unchained.
     """
 
-    __slots__ = ("_created_topics", "_tails")
+    __slots__ = ("_adopt", "_tails")
 
-    def __init__(self, max_concurrent_updates: int):
+    def __init__(self, max_concurrent_updates: int, adopt=None):
         super().__init__(max_concurrent_updates)
         self._tails: dict[tuple, asyncio.Future] = {}
-        # (chat, creator) -> (created thread id, last follow send stamp): mirrors the adapter's opener
-        # adoption (telegram_topic_routing) so an adopted thread-less opener queues in that topic too.
-        self._created_topics: dict[tuple, tuple] = {}
+        # The adapter's _admit_topic_follow: called here, in arrival order, it is the single decision
+        # on which client-created DM topic a thread-less opener belongs to (telegram_topic_routing).
+        self._adopt = adopt
 
     def _lane_keys(self, chat, message) -> tuple:
-        """FIFO lanes this update waits on and holds. A thread-less private-chat message the adapter will
-        adopt into a just-created topic holds the chat lane (behind the creation service message) AND
-        that topic's lane, so a later explicitly-threaded message cannot overtake a slow opener. Errs
-        toward adding a wait (never a reorder): the adapter's authorization checks are not repeated."""
+        """FIFO lanes this update waits on and holds. A thread-less private-chat message adopted into a
+        just-created topic holds the chat lane (behind the creation service message) AND that topic's
+        lane, so a later explicitly-threaded message cannot overtake a slow opener."""
         lane = _topic_lane(message)
-        follow = TelegramTopicRoutingMixin
-        date = getattr(message, "date", None)
-        sent_at = date.timestamp() if hasattr(date, "timestamp") else None
-        thread_id = getattr(message, "message_thread_id", None)
-        if sent_at is None or str(getattr(chat, "type", "")).split(".")[-1].lower() != "private":
-            return ((chat.id, lane),)
-        creator = (chat.id, getattr(getattr(message, "from_user", None), "id", None))
-        created = self._created_topics
-        if getattr(message, "forum_topic_created", None) is not None and thread_id is not None:
-            while len(created) >= follow._NEW_TOPIC_OPENER_MAX_PENDING:
-                del created[next(iter(created))]
-            created[creator] = (thread_id, sent_at)
-            return ((chat.id, lane),)
-        record = created.get(creator)
-        if record is None or sent_at < record[1]:
-            return ((chat.id, lane),)
-        del created[creator]
-        if thread_id is not None or sent_at - record[1] > follow._NEW_TOPIC_FOLLOW_SECONDS:
-            return ((chat.id, lane),)
-        created[creator] = (record[0], sent_at)
-        return ((chat.id, None), (chat.id, record[0]))
+        adopted = self._adopt(message) if self._adopt is not None and message is not None else None
+        if adopted is not None:
+            return ((chat.id, None), (chat.id, adopted))
+        return ((chat.id, None if lane is None else str(lane)),)
 
     async def do_process_update(self, update, coroutine) -> None:
         chat = getattr(update, "effective_chat", None)
@@ -238,15 +219,16 @@ class PerChatUpdateProcessor(SimpleUpdateProcessor):
                 prev.add_done_callback(release)
 
 
-def build_update_processor(extra, name: str) -> PerChatUpdateProcessor:
+def build_update_processor(adapter) -> PerChatUpdateProcessor:
     """``platforms.telegram.extra.max_concurrent_updates`` (default 32); bad values warn and fall back."""
-    raw = extra.get("max_concurrent_updates", DEFAULT_MAX_CONCURRENT_UPDATES)
+    name = adapter.name
+    raw = adapter.config.extra.get("max_concurrent_updates", DEFAULT_MAX_CONCURRENT_UPDATES)
     limit = coerce_port(raw, 0)
     if limit < 1:
         logger.warning("[%s] Invalid max_concurrent_updates=%r; using %d",
                        name, raw, DEFAULT_MAX_CONCURRENT_UPDATES)
         limit = DEFAULT_MAX_CONCURRENT_UPDATES
-    return PerChatUpdateProcessor(limit)
+    return PerChatUpdateProcessor(limit, adopt=adapter._admit_topic_follow)
 
 
 class TelegramApplication(Application):

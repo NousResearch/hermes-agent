@@ -3036,7 +3036,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
             # PTB's default processor awaits each update inline, so one slow turn deafens every chat.
             # Concurrent across chats, FIFO within a chat; the builder keeps this instance, so the
             # connect-retry rebuild in _initialize_app_with_retries gets it too.
-            builder = builder.concurrent_updates(build_update_processor(self.config.extra, self.name))
+            builder = builder.concurrent_updates(build_update_processor(self))
             self._app = builder.build()
             self._bot = self._app.bot
             # Plugin PTB handlers go BEFORE core: PTB dispatches the first matching handler per group.

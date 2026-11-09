@@ -1,0 +1,19 @@
+name: claw-messenger
+repo: https://github.com/tin-computer/hermes-imessage
+sha: 3e6e175d48aa1bc47bbaa9dbc156ecf0a009cb07
+description: iMessage, RCS and SMS for Hermes through Claw Messenger. Your agent texts real phones and gets
+  replies, with no Mac or SIM; send, receive, group chats and attachments.
+maintainer: tin-computer
+tier: community
+category: platform
+title: Claw Messenger
+requires_hermes: ">=0.23.0"
+version: "0.1.4"
+docs_url: https://www.clawmessenger.com/blog/hermes-imessage-setup
+capabilities:
+  provides_tools:
+  - claw_messenger_create_group
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - CLAW_MESSENGER_API_KEY

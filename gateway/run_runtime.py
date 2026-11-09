@@ -51,12 +51,13 @@ async def _build_profile_authority(runner, name, home, *, register):
         if (await asyncio.to_thread(Path(store_location(persistence.scope)).resolve)).parent != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
-        # The authority's own reference on its store, held until it retires: the stop closes the runner's handles
-        # while startup recovery may still read through the authority, and the store must answer it then.
+        # The authority reads and writes through its own reference on its store, held until it retires: the stop
+        # closes the runner's handles while startup recovery may still read through the authority, and the store
+        # must answer it then.
         reference = open_persistence(persistence.scope)
         try:
             authority = await initialize_session_authority(
-                runner, profile_id=str(home), instance_id=instance_id, persistence=persistence,
+                runner, profile_id=str(home), instance_id=instance_id, persistence=reference,
                 register=register)
         except BaseException:
             reference.close()

@@ -535,7 +535,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float | None = 
     except TimeoutError:
         return GatewayDiscovery("starting", reason_code="deadline")
     except RuntimeStartError as exc:
-        return GatewayDiscovery(exc.state, reason_code=exc.reason)
+        return GatewayDiscovery(exc.state, reason_code=exc.reason, detail=exc.detail)
     except PermissionError:
         return _refused(home)
     except OSError:

@@ -22,9 +22,11 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 
 
 class RuntimeStartError(RuntimeError):
-    def __init__(self, reason: str, state: RuntimeState = "inaccessible"):
+    def __init__(self, reason: str, state: RuntimeState = "inaccessible", *, detail: str | None = None):
         super().__init__(reason)
         self.reason, self.state = reason, state
+        # One line, bounded: Desktop prints the first line of ``detail`` after the reason code.
+        self.detail = " ".join(detail.split())[:500] if detail else None
 
 
 def remaining(deadline: float) -> float:
@@ -76,9 +78,18 @@ def _verify_binding(verify, *args, **kwargs):
         return verify(*args, **kwargs)
     except (ValueError, TypeError, KeyError, AttributeError, ExpatError) as exc:
         reason = str(exc)
-        raise RuntimeStartError(reason if reason in {
-            "profile_mismatch", "service_account_mismatch", "service_disabled"
-        } else "service_identity_unverified") from None
+        if reason in {"profile_mismatch", "service_account_mismatch", "service_disabled"}:
+            raise RuntimeStartError(reason) from None
+        raise RuntimeStartError("service_identity_unverified", detail=_unverified_detail(exc)) from None
+
+
+def _unverified_detail(exc: Exception) -> str:
+    return getattr(exc, "check", None) or f"{type(exc).__name__} while reading the service definition: {exc}"
+
+
+def _child_failure(argv: list[str] | tuple[str, ...], code: int, output: str) -> str:
+    first = next((line.strip() for line in (output or "").splitlines() if line.strip()), "no output")
+    return f"{' '.join(argv)} exited {code}: {first}"
 
 
 def _exists(path: Path) -> bool:
@@ -129,7 +140,8 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
             raise RuntimeStartError("service_failed")
         environment = _run([*command, "show-environment"], deadline)
         if environment.returncode:
-            raise RuntimeStartError("service_identity_unverified")
+            raise RuntimeStartError("service_identity_unverified", detail=_child_failure(
+                [*command, "show-environment"], environment.returncode, environment.stderr or environment.stdout))
         try:
             verify_systemd(props, environment.stdout, home, system=system)
         except ForeignRoot:
@@ -139,9 +151,9 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
             continue
         except ValueError as exc:
             reason = str(exc)
-            raise RuntimeStartError(reason if reason in {
-                "profile_mismatch", "service_account_mismatch"
-            } else "service_identity_unverified") from None
+            if reason in {"profile_mismatch", "service_account_mismatch"}:
+                raise RuntimeStartError(reason) from None
+            raise RuntimeStartError("service_identity_unverified", detail=_unverified_detail(exc)) from None
         found.append(ExistingService("systemd", tuple([*command, "--no-ask-password", "start", unit]),
                                      state != "inactive"))
     if len(found) > 1:
@@ -163,10 +175,11 @@ def _s6(home: Path, deadline: float) -> ExistingService | None:
     # client may have selected a named profile or a different install root.
     try:
         container_home = Path("/run/s6/container_environment/HERMES_HOME").read_text(encoding="utf-8-sig").strip()
-    except (OSError, UnicodeError):
-        raise RuntimeStartError("service_identity_unverified") from None
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeStartError("service_identity_unverified",
+                                detail=f"cannot read the container's HERMES_HOME: {exc}") from None
     if not container_home:
-        raise RuntimeStartError("service_identity_unverified")
+        raise RuntimeStartError("service_identity_unverified", detail="the container's HERMES_HOME is empty")
     root = Path(container_home).resolve()
     home = home.resolve()
     if home != root and home.parent != root / "profiles":
@@ -228,7 +241,8 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
         # decode like the drift check does (#116193) instead of the locale codec or raw bytes (#139083).
         result = _run(list(argv), deadline, encoding=None)
         if result.returncode:
-            raise RuntimeStartError(refusal)
+            output = _decode_schtasks_output(result.stderr or result.stdout or b"")
+            raise RuntimeStartError(refusal, detail=_child_failure(argv, result.returncode, output))
         return _decode_schtasks_output(result.stdout or b"")
 
     rows = csv.reader(io.StringIO(query("service_manager_unavailable", "schtasks.exe", "/Query", "/FO", "CSV", "/NH")))
@@ -240,7 +254,9 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
         definition = query(unverified, "schtasks.exe", "/Query", "/TN", name, "/XML")
         accounts = list(csv.reader(io.StringIO(query(unverified, "whoami.exe", "/USER", "/FO", "CSV", "/NH"))))
         if len(accounts) != 1 or len(accounts[0]) != 2:
-            raise RuntimeStartError("service_identity_unverified")
+            raise RuntimeStartError("service_identity_unverified", detail=(
+                f"whoami.exe /USER printed {len(accounts)} row(s) of {[len(row) for row in accounts]} field(s), "
+                "expected one account and SID"))
         _verify_binding(verify_windows_task, definition, home, *accounts[0])
         return ExistingService("windows", ("schtasks.exe", "/Run", "/TN", name))
     # A Startup-folder entry (the fallback when Scheduled Task install was declined/blocked) is login

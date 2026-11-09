@@ -188,6 +188,14 @@ class GatewaySessionCommandsMixin:
         await self.hooks.emit("session:end", dict(hook_payload))
         await self.hooks.emit("session:reset", dict(hook_payload))
 
+    async def _fire_plugin_session_reset(self, source: SessionSource, session_key: str, old_sid, new_sid) -> None:
+        """Plugin ``on_session_reset`` for the session /new opened: off-loop, bounded, and under the
+        profile owning ``session_key`` (#151672), as the viewer-close /new path does."""
+        await self._reset_session_off_loop(
+            session_key=session_key, session_id=new_sid, reason="new_session",
+            platform=source.platform.value if source.platform else "",
+            old_session_id=old_sid, new_session_id=new_sid)
+
     async def _handle_discard_command(self, event: MessageEvent) -> str:
         """``/discard``: drop this chat's turn lost in a gateway restart so its queue runs again."""
         from gateway.session_authorities import active_authority
@@ -264,12 +272,8 @@ class GatewaySessionCommandsMixin:
             except Exception:
                 logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
         _new_sid = new_entry.session_id if new_entry else None
-        # Plugin on_session_reset hook (new session guaranteed to exist); best-effort, off-loop and
-        # under the profile owning session_key (#151672), as the viewer-close /new path does.
-        await self._reset_session_off_loop(
-            session_key=session_key, session_id=_new_sid, reason="new_session",
-            platform=source.platform.value if source.platform else "",
-            old_session_id=_old_sid, new_session_id=_new_sid)
+        # Plugin on_session_reset hook (new session guaranteed to exist); best-effort.
+        await self._fire_plugin_session_reset(source, session_key, _old_sid, _new_sid)
         try:
             from hermes_cli.tips import get_random_tip
             _tip_line = t("gateway.reset.tip", tip=get_random_tip())

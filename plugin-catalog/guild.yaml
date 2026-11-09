@@ -1,23 +1,22 @@
 name: guild
 repo: https://github.com/Nnadijoshuac/hermes-guild
-sha: e50991f88bef35833811a0949b8307de8ecd67ac
+sha: ca2d91c221cda90122219428a5d088bbb6c2e6fd
 description: >-
-  One reviewed skill library for a whole team's Hermes agents (or one person's laptops and
-  profiles). Skills an agent learns are scrubbed of secrets, home paths, e-mails and private IPs
-  and proposed to a git repository the team controls; a human reviewer approves them from the
-  CLI, TUI or Desktop; every member's agent then loads the approved version read-only. A
-  pre_tool_call guard stops any agent from overwriting a team skill and steers it to propose the
-  change instead; on_skill_lifecycle notices newly learned skills, and pre_llm_call tells agents
-  once about new team skills. `hermes guild init|join|propose|review|show|approve|reject|revert|log`
-  and `/guild`. Disclosure — runs local `git` subprocesses (hooks disabled, no terminal prompts)
-  that fetch from and push to the remote you configure, using your existing git credentials;
-  nothing else is contacted and no credentials are stored. Only the files of a skill you (or
-  your agent, after Hermes' approval prompt) propose leave the machine, after scrubbing, with your
-  guild member name in the commit. Optional background sync thread at session start
-  (auto_sync_minutes, default 15, 0 = off). `init`/`join` add the library folder to this
-  profile's skills.external_dirs and `leave` removes it. The read-only guard is a policy check,
-  not a sandbox; reviewer lists are advisory, so use branch protection on the remote for a hard
-  boundary.
+  Shared skill library for a team's Hermes agents, or for one person's machines and profiles,
+  kept in a git repository the team controls. A skill an agent saved is scrubbed of API keys,
+  home folder paths, e-mail addresses and private IPs, pushed as a proposal branch, and merged
+  only after a teammate approves it from the CLI, TUI or Desktop. Each member's agent then loads
+  approved skills read-only. If an agent tries to edit a team skill, a pre_tool_call hook refuses
+  the edit and tells it to use guild_propose. Commands: `hermes guild
+  init|join|propose|review|show|approve|reject|revert|log` and `/guild`. Disclosure: runs local
+  `git` subprocesses (repository hooks disabled, no terminal prompts) that fetch from and push to
+  the remote you configure, using your existing git credentials; contacts nothing else and stores
+  no credentials. Only the files of a skill you propose, or that your agent proposes after the
+  approval prompt, leave the machine, with your member name in the commit. Optional background
+  sync at session start (auto_sync_minutes, default 15, 0 turns it off). `init` and `join` add
+  the library folder to the profile's skills.external_dirs and `leave` removes it. The write
+  check reads tool arguments and does not inspect execute_code. The reviewer list is enforced by
+  the plugin only; use branch protection on the git host for a server-side guarantee.
 maintainer: Nnadijoshuac
 tier: community
 category: tools

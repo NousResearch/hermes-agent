@@ -6,7 +6,7 @@ description: >
   search notes, list notes, and delete notes. All data stored locally in JSON.
 maintainer: Adebisi1111
 tier: community
-category: productivity
+category: tools
 requires_hermes: ">=0.21"
 platforms: [linux, macos, windows]
 capabilities:

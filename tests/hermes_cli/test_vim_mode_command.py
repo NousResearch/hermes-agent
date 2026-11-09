@@ -1,6 +1,5 @@
 """display.vim_mode: config-only vi keybindings for the CLI composer."""
 
-from typing import Any, cast
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -48,7 +47,8 @@ class TestVimModeCursor(unittest.TestCase):
             return RealApplication(*args, **kwargs)
 
         with patch("hermes_cli.cli_tui_runtime_mixin.Application", side_effect=spy_application):
-            stub = cast(Any, SimpleNamespace(_vim_mode=True))
+            stub = cli_mod.HermesCLI.__new__(cli_mod.HermesCLI)
+            stub._vim_mode = True
             layout = Layout(Window())
             app = cli_mod.HermesCLI._tui_build_application(stub, layout, None, None)
 
@@ -95,7 +95,8 @@ class TestVimModeCursor(unittest.TestCase):
             return RealApplication(*args, **kwargs)
 
         with patch("hermes_cli.cli_tui_runtime_mixin.Application", side_effect=spy_application):
-            stub = cast(Any, SimpleNamespace(_vim_mode=False))
+            stub = cli_mod.HermesCLI.__new__(cli_mod.HermesCLI)
+            stub._vim_mode = False
             layout = Layout(Window())
             app = cli_mod.HermesCLI._tui_build_application(stub, layout, None, None)
 
@@ -118,7 +119,8 @@ class TestVimModeCursor(unittest.TestCase):
 
         with patch.object(cli_mod, "_STEADY_CURSOR", None):
             with patch("hermes_cli.cli_tui_runtime_mixin.Application", side_effect=spy_application):
-                stub = cast(Any, SimpleNamespace(_vim_mode=False))
+                stub = cli_mod.HermesCLI.__new__(cli_mod.HermesCLI)
+                stub._vim_mode = False
                 layout = Layout(Window())
                 _ = cli_mod.HermesCLI._tui_build_application(stub, layout, None, None)
 

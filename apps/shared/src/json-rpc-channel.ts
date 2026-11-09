@@ -74,6 +74,11 @@ export class JsonRpcGatewayError extends Error {
   }
 }
 
+/** The `reason` a gateway refusal carries in its structured error data, if any. */
+export function jsonRpcErrorReason(error: unknown): unknown {
+  return error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
+}
+
 /** Refusals `session.steer` / `session.redirect` answer before the text reaches any agent
  *  (gateway/session_busy_controls.py::correct): the turn the client believed busy is gone or cannot
  *  take a correction, so the words are safe to admit as the next prompt — never retried as a control. */

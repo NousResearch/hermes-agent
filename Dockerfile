@@ -319,7 +319,7 @@ FROM runtime_base AS frontend_build
 # the build stages (this one and webapp_build) stage it.
 RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
     pnpm --version
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
@@ -347,7 +347,7 @@ RUN node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui && \
 FROM runtime_base AS webapp_build
 RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
     pnpm --version
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY apps/desktop/package.json apps/desktop/
 COPY apps/desktop/scripts/build-webapp.mjs apps/desktop/scripts/
 COPY apps/shared/package.json apps/shared/

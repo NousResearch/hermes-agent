@@ -801,11 +801,13 @@ class Pnpm(BinaryPackage):
     deps = ("node",)
     binary_rel = {"win32": "pnpm.exe", "posix": "pnpm"}
     flatten = False
-    gaps = {"linux-arm64-bionic": "Termux ships a prebuilt TUI; nothing installs JS workspaces on device"}
+    # pnpm names its Termux build after the OS, not the libc: a bionic-linked executable.
+    exe_platforms = {"linux-arm64-bionic": "android-arm64"}
 
     def fetch_urls(self, version: str, target: str) -> list[str]:
+        exe = self.exe_platforms.get(target, target)
         return [
-            f"https://registry.npmjs.org/@pnpm/exe.{target}/-/exe.{target}-{version}.tgz",
+            f"https://registry.npmjs.org/@pnpm/exe.{exe}/-/exe.{exe}-{version}.tgz",
             f"https://registry.npmjs.org/pnpm/-/pnpm-{version}.tgz",
         ]
 
@@ -1056,6 +1058,33 @@ class Ripgrep(BinaryPackage):
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         return github_release_tags("BurntSushi/ripgrep")
+
+
+@register
+class Just(BinaryPackage):
+    """The developer command runner. Activation installs it; user installs and desktop bundles never do."""
+
+    name = "just"
+    optional = True
+    binary_rel = {"win32": "just.exe", "posix": "just"}
+
+    def verify(self, entry: Path, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            return Package.verify(self, entry, target)
+        return super().verify(entry, target)
+
+    def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            target = "linux-arm64"  # This upstream artifact is a static musl executable.
+        triple = _RUST_TRIPLE[target].replace("-unknown-linux-gnu", "-unknown-linux-musl")
+        ext = "zip" if target.startswith("win32") else "tar.gz"
+        return f"https://github.com/casey/just/releases/download/{version}/just-{version}-{triple}.{ext}"
+
+    def known_sha256(self, version: str, url: str) -> Optional[str]:
+        return _github_release_digests("casey/just", version).get(url.rsplit("/", 1)[-1])
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("casey/just")
 
 
 @register

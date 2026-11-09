@@ -100,3 +100,57 @@ class TelegramTopicRoutingMixin:
         logger.info("[%s] Thread-less message %s adopted by new Telegram topic %s (chat=%s)",
                     self.name, getattr(message, "message_id", "?"), created_thread_id, key[0])
         return created_thread_id
+
+    def _text_batch_key(self, event: Any) -> str:
+        """Session-scoped batching key; topic recovery first so DM-topic batches coalesce on the recovered lane."""
+        self._apply_topic_recovery(event)
+        return super()._text_batch_key(event)
+
+    def _apply_topic_recovery(self, event: Any) -> None:
+        """Topic recovery plus the recovered topic's own prompt inputs (#131232)."""
+        from plugins.platforms.telegram.telegram_topic_transfer import apply_topic_recovery_with_inputs
+        apply_topic_recovery_with_inputs(self, event, super()._apply_topic_recovery)
+
+    def configured_channels(self) -> list[dict[str, Any]]:
+        """Channel-directory targets from ``extra.dm_topics`` / ``extra.group_topics`` that carry a thread_id,
+        so configured topics stay sendable after their sessions are pruned (#52629). A topic name used in
+        more than one chat is qualified with its chat id so a by-name send cannot pick the wrong chat."""
+        group_topics = self.config.extra.get("group_topics") or []
+        if isinstance(group_topics, dict):
+            group_topics = [{"chat_id": cid, "topics": topics} for cid, topics in group_topics.items()]
+        rows = [(entry, "dm") for entry in self._dm_topics_config or ()] + [(entry, "group") for entry in group_topics]
+        found = []
+        for entry, kind in rows:
+            chat_id = entry.get("chat_id") if isinstance(entry, dict) else None
+            for topic in (entry.get("topics") or []) if chat_id is not None else ():
+                if isinstance(topic, dict) and topic.get("thread_id"):  # group-topic ``name`` is optional
+                    tid = str(topic["thread_id"])
+                    found.append((str(chat_id), tid, str(topic.get("name") or f"{chat_id} / topic {tid}"), kind))
+
+        def _match_key(name: str) -> str:  # resolve_channel_name's normalisation: a "#x" label resolves as "x"
+            return name.lstrip("#").strip().lower()
+        chats_per_name: dict[str, set] = {}
+        for chat_id, _tid, name, _kind in found:
+            chats_per_name.setdefault(_match_key(name), set()).add(chat_id)
+        return [{"id": f"{chat_id}:{tid}", "thread_id": tid, "type": kind,
+                 "name": name if len(chats_per_name[_match_key(name)]) == 1 else f"{chat_id} / {name}"}
+                for chat_id, tid, name, kind in found]
+
+    def _merge_saved_dm_topic_ids(self) -> None:
+        """Fill thread_ids saved since boot into this adapter's ``dm_topics``: a rebuilt adapter's boot-time
+        snapshot predates them (#132522). Read from where ``_persist_dm_topic_thread_id`` writes and merged,
+        never swapped in: the gateway loader also accepts ``dm_topics`` in a top-level ``telegram:`` block
+        or under ``gateway.platforms``, which that path does not hold."""
+        try:
+            from hermes_cli.config import load_config_readonly
+            saved = load_config_readonly().get("platforms", {}).get("telegram", {}).get("extra", {}).get("dm_topics") or []
+        except Exception as e:
+            logger.debug("[%s] Could not read saved DM topic thread_ids: %s", self.name, e, exc_info=True)
+            saved = []
+        ids = {(str(chat.get("chat_id")), topic.get("name")): topic["thread_id"]
+               for chat in saved if isinstance(chat, dict)
+               for topic in chat.get("topics") or () if isinstance(topic, dict) and topic.get("thread_id")}
+        for chat in self._dm_topics_config or ():
+            for topic in chat.get("topics") or ():
+                if saved_id := ids.get((str(chat.get("chat_id")), topic.get("name"))):
+                    topic["thread_id"] = saved_id

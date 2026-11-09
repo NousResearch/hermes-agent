@@ -1,0 +1,18 @@
+name: getyoutubetranscript
+title: GetYouTubeTranscript
+repo: https://github.com/tubeagentkit/youtube-transcript-hermes-plugin
+sha: b2a09f488620fdbc07e3ec2f45c2cbda39f3161f
+version: "1.0.0"
+description: "YouTube transcripts (optionally with timestamps), video search, and channel and playlist browsing through the GetYouTubeTranscript remote MCP server (Streamable HTTP at https://getyoutubetranscript.com/api/mcp). Bundles four skills: fetch a transcript, search YouTube, summarize a video, and research a channel or playlist. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration and Markdown only. Disclosure — hosted-only connector with no local code; every tool call goes to getyoutubetranscript.com, which receives the video URL or search text and the user's API key (YOUTUBE_TRANSCRIPT_API_KEY, sent as a bearer header from the user's environment). The bundled skills can also call the same host's REST API with that key via curl, and can create an account for the user by sending the email address they give to getyoutubetranscript.com's signup endpoint. All tools are annotated read-only. Transcript fetches use account credits (100 free on sign-up, no card). The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: TubeAgentKit
+tier: community
+category: tools
+docs_url: https://github.com/tubeagentkit/youtube-transcript-hermes-plugin
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [YOUTUBE_TRANSCRIPT_API_KEY]

@@ -430,6 +430,20 @@ def load_skin(name: str) -> SkinConfig:
     return _build_skin_config(data or _BUILTIN_SKINS.get(name) or _BUILTIN_SKINS["default"])
 
 
+def user_skin_file_signature(name: str) -> tuple[bool, int, int]:
+    """``(exists, mtime_ns, size)`` for ``<home>/skins/<name>.yaml``.
+
+    Built-in skins have no file and report ``(False, 0, 0)`` — they can only
+    change via a ``display.skin`` name switch, which the CLI watcher tracks
+    as part of its own signature.
+    """
+    try:
+        st = (_skins_dir() / f"{name}.yaml").stat()
+    except OSError:
+        return (False, 0, 0)
+    return (True, st.st_mtime_ns, st.st_size)
+
+
 def get_active_skin() -> SkinConfig:
     """Currently active skin config (cached)."""
     global _active_skin

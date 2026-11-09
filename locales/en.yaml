@@ -3221,7 +3221,8 @@ cli:
       unavailable: "Skin engine not available."
       current: "Current skin: {name}"
       available_header: "Available skins:"
-      usage: "Usage: /skin <name>"
+      usage: "Usage: /skin <name> [--window]"
+      window_suffix: " (this window only — the default is unchanged)"
       custom_hint: "Custom skins: drop a YAML file in {dir}/skins/"
       unknown: "Unknown skin: {name}"
       available: "Available: {names}"
@@ -3374,6 +3375,9 @@ cli:
     not_applied_run: "New settings are NOT applied yet. To apply them now, run:"
     cache_note: "⚠️  Note: /reload-mcp rebuilds the tool set and invalidates the provider prompt cache (next message re-sends full input tokens)."
     changed_reloading: "🔄 MCP server config changed — reloading connections..."
+  skin_watch:
+    changed: "🎨 Skin changed — reloaded '{name}'."
+    unknown_skin: "⚠️  Skin '{name}' not found — keeping the current skin."
   plugin:
     command_error: "Plugin command error: {error}"
   quick:

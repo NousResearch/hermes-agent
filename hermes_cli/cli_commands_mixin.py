@@ -1780,13 +1780,22 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     # ---- /skin, /prompt -------------------------------------------------------------------
     def _handle_skin_command(self, cmd: str):
-        """Handle /skin [name] — show or change the display skin."""
+        """Handle /skin [name] [--window] — show or change the display skin.
+
+        Plain ``/skin NAME`` sets the default skin for every window (saved to
+        config.yaml; the watcher repaints the windows that follow it).
+        ``/skin NAME --window`` pins only this window to NAME for the life of
+        the process — config.yaml is untouched, so other windows keep
+        following the default.
+        """
         from cli import _ACCENT
         try:
             from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
         except ImportError:
             return print(_t("skin.unavailable"))
-        new_skin = _command_arg(cmd).lower()
+        parts = _command_arg(cmd).split()
+        window_only = "--window" in parts
+        new_skin = " ".join(p for p in parts if p != "--window").lower()
         if not new_skin:  # show current skin and list available
             current = get_active_skin_name()
             _pr(f"\n  {_t('skin.current', name=current)}", f"  {_t('skin.available_header')}")
@@ -1802,7 +1811,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                        f"  {_t('skin.available', names=', '.join(sorted(available)))}")
         set_active_skin(new_skin)
         _ACCENT.reset()  # re-resolve ANSI color for the new skin (_DIM is a fixed escape)
-        saved = _t("skin.saved_suffix") if _save("display.skin", new_skin) else ""
+        if window_only:
+            self._session_skin_override = new_skin
+            saved = _t("skin.window_suffix")
+        else:
+            self._session_skin_override = None
+            saved = _t("skin.saved_suffix") if _save("display.skin", new_skin) else ""
         _pr(f"  {_t('skin.set_to', name=new_skin, saved=saved)}", f"  {_t('skin.banner_note')}")
         if self._apply_tui_skin_style():
             print(f"  {_t('skin.colors_updated')}")

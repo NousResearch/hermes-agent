@@ -1,18 +1,21 @@
 name: sourcebind
 title: SourceBind
 repo: https://github.com/blucca/hermes-sourcebind
-sha: "e1782a96f9ad12301024e14af2449b5c06e6e316"
-version: "0.1.1"
+sha: "66d22478ae1526b269f968872b865e2a43843ec1"
+version: "0.1.2"
 description: >-
-  Bind one explicit business job to its current local JSON customer ID and
-  check job/customer_id at a selected tool's native execution boundary.
-  Rereads the selected source for each protected call; carries the originating
-  scope through explicit native delegation and compaction events.
+  Bind one explicit business job to its current local JSON customer ID at one
+  selected native tool's execution boundary. Default mode checks job and
+  customer_id arguments; opt-in ID-only mode checks customer_id for registered
+  customer-only tools while retaining the source-job and native-scope checks.
+  Both modes reread the selected source for each protected call and retain the
+  originating scope through public delegation and compaction events.
   Disclosure — reads the user-selected local JSON with the process's OS
-  permissions; stores the binding, absolute source path, native scope aliases
-  and fictional demo records in profile-scoped Hermes plugin state. Tools with
-  source-file write permission can change the authoritative values. Plugin-initiated network requests, shell commands, background processes, telemetry
-  and credentials: 0.
+  permissions; stores the binding, check mode, absolute source path, native
+  scope aliases and fictional demo records in profile-scoped Hermes plugin
+  state. Source-file writers can change authoritative values. Plugin-initiated
+  network requests, shell commands, background processes, telemetry and
+  credentials: 0.
 maintainer: blucca
 tier: community
 category: tools
@@ -20,7 +23,7 @@ requires_hermes: ">=0.23.0"
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/blucca/hermes-sourcebind/e1782a96f9ad12301024e14af2449b5c06e6e316/demo/cover-native.png
+  - https://raw.githubusercontent.com/blucca/hermes-sourcebind/66d22478ae1526b269f968872b865e2a43843ec1/demo/cover-native.png
 known_issues:
   - >-
     The opt-in standalone examples/native-demo.py harness imports four Hermes

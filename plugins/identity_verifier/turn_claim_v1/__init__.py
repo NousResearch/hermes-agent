@@ -9,11 +9,17 @@ turn, bound to the frame's event by a hash — exactly as the shared wire contra
   (``hosted.turn_claim_issuer``) and fetches keys ONLY from that issuer's JWKS
   (``GET <configured issuer>/.well-known/hermes-turn-claim-jwks.json``, unauthenticated) — the
   claim's own ``iss`` never locates a key; after the payload's checks it must equal the pinned
-  issuer. Keys are cached honouring the response's ``max-age`` (default 300 s), a failed refresh
+  issuer. The well-known path is the only hop: a redirect — to another origin, or to the
+  issuer's own — is a failed fetch, never followed, so no origin the pin never named can
+  introduce a key. The pinned issuer itself must be an https URL, or an http one on loopback
+  (a deployment's own test connector); a plaintext issuer across a network is no trust root
+  at all. Keys are cached honouring the response's ``max-age`` (default 300 s), a failed refresh
   keeps the last good keys for at most an hour past their expiry (then every key is unknown),
   and fetches are single-flight and at most one per 30 s whatever the outcome — an unknown
   ``kid`` shares that budget, so rotation is picked up without any frame being able to hammer
-  the connector;
+  the connector. Single-flight means join: a frame arriving while a fetch runs awaits it
+  (bounded by the fetch timeout) and answers from its result, so a cold burst of frames is
+  admitted by the one fetch behind them, not refused for an empty cache;
 - the payload's keys and types exactly the contract's, its value rules (a claim's lifetime is
   at most 120 s, the ``jti`` a lowercase canonical UUIDv4, the tenant, agent, actor and owner
   id non-empty, ``v == 1``), and ``aud == "hermes-relay:" + agt``; the audience must equal the
@@ -34,10 +40,13 @@ import asyncio
 import base64
 import hashlib
 import heapq
+import ipaddress
 import json
 import logging
 import re
 import time
+import urllib.parse
+import urllib.request
 from typing import Any, Callable, Mapping, Optional
 
 from cryptography.exceptions import InvalidSignature
@@ -95,14 +104,51 @@ def _b64u_decode(part: str) -> bytes:
     return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
 
 
-def _http_fetch_jwks(url: str) -> _FetchResult:
-    """One unauthenticated JWKS GET (the connector serves it publicly). Raises whatever the
-    transport raises; the verifier turns a failure into an unknown key, never into a served
-    frame."""
-    import urllib.request
+def _issuer_is_fetchable(issuer: Optional[str]) -> bool:
+    """Whether the pinned issuer is a URL keys may ever be fetched from: https, or http on
+    loopback (a deployment's own test connector). Anything else — plaintext http across a
+    network, another scheme, no host at all — is refused: its keys would cross the network
+    in the clear (or not be fetchable at all), so it is no trust root."""
+    split = urllib.parse.urlsplit(issuer or "")
+    if not split.hostname:
+        return False
+    if split.scheme == "https":
+        return True
+    if split.scheme != "http":
+        return False
+    host = split.hostname.lower()
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
 
+
+class _NoHopRedirect(urllib.request.HTTPRedirectHandler):
+    """The well-known path is the only source of keys: a redirect — to another origin, or to
+    the issuer's own — is refused, never followed. Returning ``None`` is the handler's
+    documented refusal, which surfaces the 3xx as an HTTPError."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# The one opener every JWKS fetch goes through (built on first use; a test seam can pin it).
+_jwks_opener: Optional[urllib.request.OpenerDirector] = None
+
+
+def _http_fetch_jwks(url: str) -> _FetchResult:
+    """One unauthenticated JWKS GET (the connector serves it publicly), answered only by the
+    URL it was pointed at: any 3xx — followed or bare — is a failed fetch, never a hop.
+    Raises whatever the transport raises; the verifier turns a failure into an unknown key,
+    never into a served frame."""
+    global _jwks_opener
+    if _jwks_opener is None:
+        _jwks_opener = urllib.request.build_opener(_NoHopRedirect())
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=_JWKS_TIMEOUT_S) as response:
+    with _jwks_opener.open(request, timeout=_JWKS_TIMEOUT_S) as response:
+        if 300 <= response.status < 400:
+            raise OSError(f"the well-known document at {url} answered {response.status}; a "
+                          "redirected JWKS is never fetched")
         return response.read(), str(response.headers.get("Cache-Control") or "")
 
 
@@ -144,11 +190,11 @@ class TurnClaimV1Verifier(IdentityVerifier):
         self._fetch_jwks = fetch_jwks or _http_fetch_jwks
         # The pinned issuer's key cache: the keys by kid from the last good fetch, when they
         # stop being fresh (fetch time + max-age), when a fetch last ran (any outcome — the
-        # throttle), and the single-flight gate every fetch goes through.
+        # throttle), and the one in-flight fetch every concurrent frame joins.
         self._keys: dict[str, Ed25519PublicKey] = {}
         self._keys_fresh_until: float = 0.0
         self._last_fetch_at: float = float("-inf")
-        self._fetch_gate = asyncio.Lock()
+        self._in_flight_fetch: Optional[asyncio.Task] = None
         # jti -> when it stops being a replay (exp + skew); pruned only past that, never
         # evicted to make room. The heap orders the pruning.
         self._seen_jti: dict[str, float] = {}
@@ -160,8 +206,8 @@ class TurnClaimV1Verifier(IdentityVerifier):
 
     def is_available(self) -> bool:
         """The relay id this process serves and the connector's pinned issuer must both be
-        configured: without either, no audience and no trust root could be checked, so no
-        claim could be admitted."""
+        configured — and the issuer fetchable (https, or http on loopback): without either,
+        no audience and no trust root could be checked, so no claim could be admitted."""
         try:
             return self._expected_audience() is not None and self._pinned_issuer() is not None
         except Exception:  # health: allow BLE001 -- the relay id and the issuer come from the config backends, whose read errors are many and varied; none of them make a verifier available, and boot must report unavailability rather than enumerate every backend's failure
@@ -176,12 +222,18 @@ class TurnClaimV1Verifier(IdentityVerifier):
 
     def _pinned_issuer(self) -> Optional[str]:
         """The deployment's trust root (``hosted.turn_claim_issuer``): the one issuer whose
-        well-known document is ever fetched. A claim never chooses it."""
+        well-known document is ever fetched. A claim never chooses it. Only a fetchable URL
+        is a trust root — https, or http on loopback — so a plaintext issuer across a
+        network is as good as none."""
         if self._issuer is not None:
-            return self._issuer
-        from hermes_cli.hosted_mode import _boot_or_effective_config, _hosted_setting
-        configured = _hosted_setting(_boot_or_effective_config(), "turn_claim_issuer")
-        return str(configured).strip() if isinstance(configured, str) and configured.strip() else None
+            configured = self._issuer
+        else:
+            from hermes_cli.hosted_mode import _boot_or_effective_config, _hosted_setting
+            configured = _hosted_setting(_boot_or_effective_config(), "turn_claim_issuer")
+            if not isinstance(configured, str) or not configured.strip():
+                return None
+            configured = configured.strip()
+        return configured if _issuer_is_fetchable(configured) else None
 
     # ── the check, in the contract's order; each step is its own method so a test can break one ──
 
@@ -251,16 +303,34 @@ class TurnClaimV1Verifier(IdentityVerifier):
     async def _jwks(self, now: float, *, refresh: bool = False) -> dict[str, Ed25519PublicKey]:
         """The pinned issuer's keys by kid. Keys fetched at T are trusted until T + max-age; a
         refresh is fetched single-flight, at most one per fetch window whatever the outcome; a
-        failed refresh keeps the last good keys for at most an hour past their expiry."""
+        failed refresh keeps the last good keys for at most an hour past their expiry. One
+        fetch serves every concurrent frame: a frame that arrives while a fetch is running
+        awaits it and answers from its result, never from the cache the fetch has not filled
+        yet."""
         if self._keys and not refresh and now < self._keys_fresh_until:
             return self._keys
+        in_flight = self._in_flight_fetch
+        if in_flight is not None:
+            return await self._await_fetch(in_flight, now)
         if now - self._last_fetch_at < _JWKS_FETCH_MIN_INTERVAL_S:
             return self._trusted_keys(now)
-        async with self._fetch_gate:  # single-flight: one fetch serves every concurrent frame
-            if self._keys and not refresh and now < self._keys_fresh_until:
-                return self._keys  # a concurrent frame fetched while this one waited
-            if now - self._last_fetch_at < _JWKS_FETCH_MIN_INTERVAL_S:
-                return self._trusted_keys(now)
+        self._in_flight_fetch = asyncio.ensure_future(self._fetch(now))
+        return await self._await_fetch(self._in_flight_fetch, now)
+
+    async def _await_fetch(self, fetch: asyncio.Future,
+                           now: float) -> dict[str, Ed25519PublicKey]:
+        """Await the single-flight fetch, bounded by the fetch timeout: a waiter is never
+        stuck behind a hung fetch — it answers with what the last good fetch left (nothing,
+        on a cold cache) while the fetch itself keeps running and still lands in the cache."""
+        try:
+            return await asyncio.wait_for(asyncio.shield(fetch), timeout=_JWKS_TIMEOUT_S)
+        except Exception:  # health: allow BLE001 -- the fetch logs its own failure where it happens; a waiter answers from the last good keys whether the fetch failed or outran the timeout, and no traceback of either would change that answer
+            return self._trusted_keys(now)
+
+    async def _fetch(self, now: float) -> dict[str, Ed25519PublicKey]:
+        """The one fetch behind the single-flight gate, run by the first frame that needs it
+        and awaited by every frame that arrives before it lands."""
+        try:
             self._last_fetch_at = now
             url = (self._pinned_issuer() or "").rstrip("/") + _JWKS_PATH
             try:
@@ -273,6 +343,8 @@ class TurnClaimV1Verifier(IdentityVerifier):
             self._keys = keys
             self._keys_fresh_until = now + _parse_max_age(cache_control)
             return keys
+        finally:
+            self._in_flight_fetch = None
 
     def _trusted_keys(self, now: float) -> dict[str, Ed25519PublicKey]:
         """What the last good fetch left, while it may still answer: fresh keys, or stale ones

@@ -1,8 +1,8 @@
 name: hermes-manas-aegis
 title: Manas Aegis
 repo: https://github.com/elianjuan-g/hermes-manas-aegis
-sha: 33b147bb721a3cde2710fceb2a876bd40ea20c2c
-version: "2.6.0"
+sha: d7069f8d79522e39a9b845a5b9035f67941fbba4
+version: "2.6.1"
 description: >-
   [ALPHA] Experimental Hermes guardrail (prototype, not standalone security):
   pattern-based pre-tool checks that can block or rewrite some risky tool
@@ -23,6 +23,11 @@ description: >-
   stored events against the new rules), and HUD hardening (CSRF token on
   all POSTs, 20/60s rate limit, opt-in token auth). CI runs unit + contract
   tests with a 70% coverage gate (measured 79%).
+  v2.6.1 moves the Posture Score card into a compact minimalist box
+  shown only on the Activity tab, moves all Activity content (KPIs,
+  history, scope, scans) into the Activity panel so each tab shows
+  fully different content, and adds a 180ms fade transition on tab
+  switch.
   Serves a loopback-only HUD (http://127.0.0.1:18777) shown as an iframe in
   the Desktop Manas Aegis tab; writes redacted interception telemetry
   (manas_telemetry.json, live file + append-only archive, unlimited) and a

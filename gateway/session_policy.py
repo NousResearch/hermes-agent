@@ -990,6 +990,7 @@ def route_launch_key(authority, policy, config):
 
 
 _POLICY_FIELDS = frozenset(field.name for field in fields(LocalSessionPolicy))
+_ADOPTED_KEY_SETS: set = set()
 
 
 def _adopt_stored_policy(data):
@@ -1004,11 +1005,14 @@ def _adopt_stored_policy(data):
     genuinely incomplete receipt still refuses, because a missing required field raises below."""
     if not isinstance(data, dict):
         return data
-    unknown = sorted(set(data) - _POLICY_FIELDS)
+    unknown = tuple(sorted(set(data) - _POLICY_FIELDS))
     if not unknown:
         return data
-    logger.warning("restore_policy: adopting a stored receipt whose keys this build dropped: %s",
-                   ", ".join(unknown))
+    # Every turn, claim and metadata read restores the policy: name each dropped key set once per process.
+    if unknown not in _ADOPTED_KEY_SETS:
+        _ADOPTED_KEY_SETS.add(unknown)
+        logger.warning("restore_policy: adopting a stored receipt whose keys this build dropped: %s",
+                       ", ".join(unknown))
     return {key: value for key, value in data.items() if key in _POLICY_FIELDS}
 
 

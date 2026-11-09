@@ -60,3 +60,20 @@ def test_delegate_child_merge_keeps_lineage_marker(reserved_board):
     config = json.loads(db.get_session('child-row')['model_config'])
     assert config['_delegate_from'] == 'parent'
     assert config['reasoning_config'] == {'enabled': True, 'effort': 'medium'}
+
+
+def test_constructor_receipt_replaces_stale_reasoning_and_keeps_null(reserved_board):
+    """An occupied row stores the effective constructor snapshot, including nulls."""
+    db, reserve = reserved_board
+    scope = reserve('cron-row', 'cron', model_config={
+        '_usage_anchor': USAGE_ANCHOR,
+        'reasoning_config': {'enabled': False, 'effort': 'high', 'stale': 'old'},
+        'max_tokens': 2048,
+    })
+    mutate_worker_execution(db, **scope, sequence=1, operation='session.create',
+                            payload={'source': 'cron', 'model_config': dict(CONSTRUCTOR_KEYS)})
+    config = json.loads(db.get_session('cron-row')['model_config'])
+    assert config['reasoning_config'] == CONSTRUCTOR_KEYS['reasoning_config']
+    assert 'max_tokens' in config and config['max_tokens'] is None
+    assert config['max_iterations'] == 500
+    assert config['_usage_anchor'] == USAGE_ANCHOR

@@ -32,13 +32,14 @@ def worker_create(db, conn, session_id, payload):
         raise RuntimeStoreError('invalid_params')
     insert_session_row_in_transaction(db, conn, session_id, **payload)
     if config:
-        # The keep-existing upsert already filled a row whose model_config was still NULL, so
-        # this merge only matters for rows holding an earlier blob — a delegate child's lineage
-        # marker, or a sidecar (`_usage_anchor`) a receipt wrote first. Merge beside whatever is
-        # there (keys are the constructor set only); json_patch(NULL, ?) would return NULL, so
-        # the NULL rows the upsert already covered stay out.
-        conn.execute("UPDATE sessions SET model_config=json_patch(model_config,?) WHERE id=? "
-                     "AND json_type(model_config) IS NOT NULL", (json.dumps(config), session_id))
+        # json_patch deletes explicit JSON nulls and merges nested objects, which can
+        # retain stale reasoning options. Replace only the allowed constructor keys,
+        # preserving existing sidecars and each value's exact shape.
+        fields = ", ".join(f"'$.{key}', json(?)" for key in config)
+        conn.execute(
+            f"UPDATE sessions SET model_config=json_set(model_config, {fields}) "
+            "WHERE id=? AND json_type(model_config) IS NOT NULL",
+            (*[json.dumps(value) for value in config.values()], session_id))
     return {'value': session_id}
 
 

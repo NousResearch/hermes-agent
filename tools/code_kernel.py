@@ -412,6 +412,13 @@ def shutdown_all_kernels() -> None:
     _REGISTRY.shutdown()
 
 
+def sandbox_qualified_owner_matcher(owner: str) -> Callable[[str], bool]:
+    """Owners are qualified with the bound sandbox key inside a hosted scope (``_resolve_owner``),
+    so a session boundary's bare key matches any agent's kernel for that session: the suffix alone
+    cannot name another session unless one session key is a colon-suffix of another."""
+    return lambda candidate: candidate.endswith(f":{owner}")
+
+
 def shutdown_kernels_for_owner(owner: str) -> None:
     """Dispose every kernel a session owns — wired into ``tools.approval.clear_session``
     so kernels die at the same boundary that clears approval/yolo state (/new, session close).
@@ -419,7 +426,7 @@ def shutdown_kernels_for_owner(owner: str) -> None:
     See #88637.
     """
     if owner:
-        _REGISTRY.shutdown(owner)
+        _REGISTRY.shutdown(owner, owner_matches=sandbox_qualified_owner_matcher(owner))
 
 
 def delegated_child_owner_matcher(child_session_id: str) -> Callable[[str], bool]:

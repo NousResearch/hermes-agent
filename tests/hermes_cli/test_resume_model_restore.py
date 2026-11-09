@@ -537,3 +537,14 @@ def test_restore_session_model_restores_billing_provider_fallback():
     })
     assert stub.model == "glm-4.7"
     assert stub.provider == "minimax"
+
+
+def test_stored_session_route_heals_an_empty_provider_to_the_entry_serving_the_model(monkeypatch):
+    """#132648, CLI twin of the TUI heal: a row with a model but no provider resumes on the custom
+    entry that declares the model, never on the main slot."""
+    from hermes_cli.cli_model_switch_mixin import stored_session_route
+    _custom_config(monkeypatch, {"name": "glm", "base_url": GLM_NEW, "api_key": "***", "model": "GLM-5.3"})
+
+    route = stored_session_route(_row(model="GLM-5.3"), current_model="claude-opus-5-5", current_provider="anthropic")
+
+    assert route[:2] == ("GLM-5.3", "custom:glm")

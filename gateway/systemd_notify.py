@@ -28,6 +28,11 @@ def notify(message: str) -> bool:
         return False
 
 
+def extend_start_timeout(seconds: float) -> bool:
+    """Ask systemd for ``seconds`` more start time (from now) while a Type=notify boot is still progressing."""
+    return seconds > 0 and notify(f"EXTEND_TIMEOUT_USEC={int(seconds * 1_000_000)}")
+
+
 def watchdog_interval_seconds() -> float | None:
     try:
         interval = float(os.environ.get("WATCHDOG_USEC", "") if _notify_socket() else "") / 1e6

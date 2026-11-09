@@ -71,9 +71,10 @@ class StreamFallbackMixin:
             if opener is None:
                 return final_text[cut:].lstrip()
             # The tail starts inside a code block the user saw closed: reopen it, and keep the
-            # code's indentation.
+            # code's indentation. A tail that is only the closing fence adds nothing the closed
+            # preview did not already show.
             tail = final_text[cut:].lstrip("\n")
-            return f"{opener}\n{tail}" if tail.strip() else tail
+            return f"{opener}\n{tail}" if tail.replace("```", "").strip() else ""
         return final_text
 
     @staticmethod

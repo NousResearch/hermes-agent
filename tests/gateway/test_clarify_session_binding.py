@@ -12,12 +12,16 @@ async def _telegram_reply(clarify_id, session_key):
     from tests.gateway.test_telegram_clarify_buttons import _make_adapter
 
     adapter = _make_adapter()
-    adapter._bot.send_message.return_value.message_id = 1
+    mock_msg = MagicMock()
+    mock_msg.message_id = 1
+    mock_msg.chat_id = 42
+    mock_msg.message_thread_id = None
+    adapter._bot.send_message = AsyncMock(return_value=mock_msg)
     result = await adapter.send_clarify("42", "Pick", ["A", "B"], clarify_id, session_key)
     assert result.success
     query = SimpleNamespace(
         data=f"cl:{clarify_id}:1", from_user=SimpleNamespace(id=42, first_name="Owner"),
-        message=SimpleNamespace(chat_id=42, chat=SimpleNamespace(type="private"),
+        message=SimpleNamespace(chat_id=42, chat=SimpleNamespace(type="private"), message_id=1,
                                 message_thread_id=None, text="Pick"),
         answer=AsyncMock(), edit_message_text=AsyncMock(),
     )

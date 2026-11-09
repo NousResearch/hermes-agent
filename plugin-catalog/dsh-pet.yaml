@@ -1,0 +1,32 @@
+name: dsh-pet
+repo: https://github.com/yucode-kk/dsh-pet
+sha: 3bca070df444e749d98cf4216cb9c2c9cbed0c81
+subdir: "hermes"
+description: >-
+  Desktop pet for Hermes: runs the upstream dsh-pet standalone pet (Node + Electron window),
+  maps session/tool activity onto its work status, and adds start/stop/uninstall commands.
+  Catalog installs fetch a pinned dsh-pet@0.4.7 runtime on first start (~80 MB, one time) and
+  dsh-pet downloads Electron (~350 MB) unless a local copy is reused; the pet listens on
+  127.0.0.1:3080-3089 and keeps its data in the plugin data directory.
+maintainer: yucode-kk
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+version: "0.2.0"
+docs_url: https://github.com/yucode-kk/dsh-pet/blob/3bca070df444e749d98cf4216cb9c2c9cbed0c81/docs/hermes-plugin.md
+screenshots: []
+readme: true
+platforms: [windows]
+title: "dsh-pet"
+known_issues:
+  - "Windows is the only verified platform; macOS and Linux are untested."
+  - "First start downloads ~80 MB of runtime and ~350 MB of Electron; on slow networks it looks hung — the launch log shows progress."
+  - "Electron userData is shared with a DSH install (%APPDATA%\\dsh-pet-electron-helper); settings and chat memory are not."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - post_tool_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

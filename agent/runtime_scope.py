@@ -103,8 +103,7 @@ def bind_state(
     piece is computed before anything is installed, so a failure leaves nothing bound.
 
     Inside a hosted scope, only a bind of the same tenant, agent, actor, owner and administration
-    right is
-    allowed; anything else raises :class:`~hermes_scope.ScopeSwitchRefused`."""
+    right is allowed; anything else raises :class:`~hermes_scope.ScopeSwitchRefused`."""
     _refuse_inside_hosted("a bind of another scope", unless=scope)
     home = scope.home()
     if home is None:
@@ -179,9 +178,8 @@ def claim_fence(row: Mapping[str, Any]) -> Fence:
 def bind_turn(session_id: str, turn_id: str, fence: Fence) -> Iterator[Scope | None]:
     """Mark the body as one turn of the bound scope, claimed under *fence*: the scope becomes a
     :class:`~hermes_scope.TurnScope` with the same tenant, agent, actor, owner and administration
-    right; nothing
-    else changes. With no scope bound (a single-profile gateway keeps its ambient scope) this
-    binds nothing."""
+    right; nothing else changes. With no scope bound (a single-profile gateway keeps its ambient
+    scope) this binds nothing."""
     current = current_scope()
     if current is None:
         yield None

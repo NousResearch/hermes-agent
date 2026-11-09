@@ -586,20 +586,35 @@ _PRINTENV_RE = re.compile(r'(?<![A-Za-z0-9_])printenv\b')
 # A shell command ends at ``&&``/``||``, a pipe, ``;``, a subshell paren, a backtick or ``$(`` — a bare
 # ``&`` too, but not the one inside ``&>`` or ``2>&1``.
 _COMMAND_SEGMENT_END_RE = re.compile(r'\|\||(?<![>&])&(?!>)|[|;()]|`|\$\(')
-# Stdout discarded to /dev/null. The ``2>`` form is excluded on purpose: it hides stderr only, so the
-# value still prints.
-_STDOUT_TO_NULL_RE = re.compile(r'(?:^|[\s;|&(])(?:1|&)?>>?\s*[\'"]?/dev/null')
+# Stdout discarded to ``/dev/null``, and NOT restored afterwards: a later ``>file`` or ``>&2`` re-points
+# stdout, so the value still escapes (``printenv HOME >/dev/null > out.txt`` writes it to ``out.txt``).
+# Only the last stdout-affecting redirect decides; ``2>`` and ``2>&1`` are stderr and leave stdout alone.
+_STDOUT_REDIRECT_RE = re.compile(r"(?P<fd>\d*)(?P<op>&>>?|>>?|>&)(?P<target>\s*['\"]?[^\s;|&<>'\"]*['\"]?)")
 _REDIRECTION_RE = re.compile(r'\d?&?>>?\s*[\'"]?[^\s;|&<>]+[\'"]?|\d?>&\d')
 
 
+def _stdout_destination(segment: str) -> str:
+    """Where *segment* leaves stdout: a path, ``fd:<n>`` for a duplication, or ``""`` when unparsed."""
+    destination = ""
+    for redirect in _STDOUT_REDIRECT_RE.finditer(segment):
+        fd, op, target = redirect.group("fd"), redirect.group("op"), redirect.group("target")
+        if not op.startswith("&") and fd not in ("", "1"):
+            continue  # another descriptor, or a duplication out of one: stdout is untouched
+        if op == ">&" and target.strip().isdigit():
+            destination = f"fd:{target.strip()}"
+        else:
+            destination = target.strip().strip("'\"")
+    return destination
+
+
 def _suppressed_named_printenv(line: str) -> bool:
-    """Every ``printenv`` on *line* names at least one variable and discards stdout to ``/dev/null``."""
+    """Every ``printenv`` on *line* names at least one variable and leaves stdout on ``/dev/null``."""
     invocations = list(_PRINTENV_RE.finditer(line))
     for invocation in invocations:
         rest = line[invocation.end():]
         boundary = _COMMAND_SEGMENT_END_RE.search(rest)
         segment = rest[:boundary.start()] if boundary else rest
-        if not _STDOUT_TO_NULL_RE.search(segment):
+        if _stdout_destination(segment) != "/dev/null":
             return False
         if not any(not word.startswith("-") for word in _REDIRECTION_RE.sub(" ", segment).split()):
             return False

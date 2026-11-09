@@ -1,8 +1,13 @@
 import json, sys, time
 from hermes_cli.plugins import discover_plugins, invoke_hook
-
 discover_plugins(force=True)
 mod = sys.modules["hermes_plugins.model_doctor.model_doctor"]
+
+# 0) start from a clean slate — the snapshot is real operator state, not test state
+mod._snapshot_path().unlink(missing_ok=True)
+mod.RECORDS.clear()
+mod._load_snapshot()
+
 
 # 1) hook-driven recording through the REAL loader
 invoke_hook("post_api_request", model="live/probe", provider="p",

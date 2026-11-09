@@ -260,9 +260,16 @@ def register(ctx) -> None:
         name="model_doctor_status",
         toolset="model-doctor",
         schema={
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
+            "name": "model_doctor_status",
+            "description": (
+                "Report per-model uptime, latency and recent failure classes "
+                "from the passive request log."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
         },
         handler=tool_status,
     )
@@ -270,9 +277,15 @@ def register(ctx) -> None:
         name="model_doctor_refresh",
         toolset="model-doctor",
         schema={
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
+            "name": "model_doctor_refresh",
+            "description": (
+                "Re-sort the most recent events (passive refresh; no live network call)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
         },
         handler=tool_refresh,
     )

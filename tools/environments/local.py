@@ -30,6 +30,7 @@ from tools.environments.local_env_policy import (
     strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
+from hermes_cli._startup_fast import project_root_str
 
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -668,7 +669,7 @@ def _resolve_hermes_bin_dir() -> str | None:
 
     # A payload's venv also holds a `hermes`, but on Windows its redirector names the
     # build machine's interpreter, so PATH order must not decide which copy children get.
-    payload_dir = payload_command_dir(Path(__file__).resolve().parents[2])
+    payload_dir = payload_command_dir(Path(project_root_str()))
     if payload_dir is not None and payload_dir.is_dir():
         _HERMES_BIN_DIR, _HERMES_BIN_DIR_IS_PAYLOAD = str(payload_dir), True
         return _HERMES_BIN_DIR
@@ -821,7 +822,7 @@ def _make_run_env(env: dict) -> dict:
 # tools``; other subprocesses must not inherit it. Aliases: launchers may emit other
 # spellings — the Windows gateway launcher renders Hermes-owned paths under the
 # configured HERMES_HOME spelling (possibly a junction to another drive).
-_hermes_repo_root: Path = Path(__file__).resolve().parents[2]
+_hermes_repo_root: Path = Path(project_root_str())
 _hermes_repo_root_aliases: tuple[Path, ...] = _build_hermes_repo_root_aliases(
     _hermes_repo_root, Path(__file__).absolute().parents[2], get_process_hermes_home())
 _in_venv: bool = (getattr(sys, "base_prefix", sys.prefix) != sys.prefix

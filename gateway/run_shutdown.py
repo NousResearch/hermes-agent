@@ -1420,12 +1420,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             inherited = os.environ.get("VIRTUAL_ENV")
             if inherited:
                 watcher_env["VIRTUAL_ENV"] = inherited
-        project_root = Path(__file__).resolve().parent.parent
-        # Console python under CREATE_NO_WINDOW: nothing flashes. NOT pythonw.exe — a console-less
-        # watcher makes every console-subsystem descendant allocate a visible conhost (#54220/#56747).
-        # The watcher runs sys.executable (console python) under the CREATE_NO_WINDOW detach kwargs below:
-        # it owns one hidden console, inherited by the `hermes gateway restart` child, so nothing flashes.
-        # See #54220, #56747.
+        from hermes_cli._startup_fast import project_root_str
+        project_root = Path(project_root_str())
+        # Console python (NOT pythonw.exe) under CREATE_NO_WINDOW: the watcher owns one hidden console its
+        # `hermes gateway restart` child inherits; a console-less watcher makes every descendant allocate a
+        # visible conhost (#54220/#56747).
         from hermes_cli._launchers import runtime_command
         watcher_argv = runtime_command(project_root,
             [str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart"],

@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 
 import hermes_yaml as yaml
 from datetime import UTC
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ class PluginCatalogEntry:
 
 def get_catalog_dir() -> Path:
     """The ``plugin-catalog/`` directory shipped with this checkout."""
-    return Path(__file__).resolve().parent.parent / "plugin-catalog"
+    return Path(project_root_str()) / "plugin-catalog"
 
 
 # ── Parsing ──────────────────────────────────────────────────────────────────

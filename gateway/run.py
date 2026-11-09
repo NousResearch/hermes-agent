@@ -420,7 +420,7 @@ def _ensure_windows_gateway_venv_imports() -> None:
     if sys.platform != "win32":
         return
 
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(project_root_str())
     from pm.environments import committed_venv, venv_python_version
 
     # A PM install's store Python was already activated onto the committed generation by
@@ -1567,8 +1567,9 @@ _hermes_home = get_process_hermes_home()
 
 # Load ~/.hermes/.env first: user-managed env files must override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli._startup_fast import project_root_str
 _env_path = _hermes_home / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
 
 
 def _reload_runtime_env_preserving_config_authority() -> None:
@@ -1578,8 +1579,7 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     every profile; it still honors the max_turns bridge."""
     from agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
-        load_hermes_dotenv(
-            hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+        load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
     _bridge_max_turns_from_config(_hermes_home)
 
 
@@ -2819,7 +2819,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 
         # Check optional skills (shipped with repo but not installed)
         from hermes_constants import get_optional_skills_dir
-        repo_root = Path(__file__).resolve().parent.parent
+        repo_root = Path(project_root_str())
         optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
             for skill_md in optional_dir.rglob("SKILL.md"):

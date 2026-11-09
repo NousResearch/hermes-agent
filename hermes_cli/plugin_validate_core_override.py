@@ -22,6 +22,7 @@ import ast
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Set, Tuple
+from hermes_cli._startup_fast import project_root_str
 
 _SKIP_DIRS = frozenset({"tests", "test", "node_modules", ".git", "__pycache__", ".venv", "venv", "site-packages"})
 
@@ -29,7 +30,7 @@ _SKIP_DIRS = frozenset({"tests", "test", "node_modules", ".git", "__pycache__", 
 @lru_cache(maxsize=1)
 def _hermes_top_level() -> frozenset:
     """Top-level importable names shipped by this Hermes checkout (packages and root modules)."""
-    root = Path(__file__).resolve().parents[1]
+    root = Path(project_root_str())
     names = {p.name for p in root.iterdir() if p.is_dir() and (p / "__init__.py").is_file()}
     names |= {p.stem for p in root.glob("*.py")}
     # ``hermes_plugins.*`` is where the loader imports plugins (bundled platform adapters included):

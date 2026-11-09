@@ -32,6 +32,7 @@ from gateway.slash_commands_login import GatewayLoginCommandsMixin
 from gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger("gateway.run")
 
@@ -1354,7 +1355,7 @@ class GatewaySlashCommandsMixin(
         if is_managed():
             return f"✗ {format_managed_message(t('gateway.update.managed_action'))}"
 
-        project_root = Path(__file__).parent.parent.resolve()
+        project_root = Path(project_root_str())
 
         # Not a git-managed install (docker/nix/desktop-app/source): refuse
         # with the steward's own update mechanism instead of git-pulling a

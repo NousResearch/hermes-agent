@@ -1,6 +1,6 @@
 name: qbo-ops
 repo: https://github.com/blackghostosint/qbo-ops
-sha: 639555dc21aafbb30871ffff06bfae80e84bcffb
+sha: ed693466ad1b9ae5171ca587332253fe316c07be
 description: 'QuickBooks Online operations for Hermes: connection health, P&L reports,
   close audits, deposit tracing and a guarded read-only SQL query tool — with a desktop
   status pane (local-mode desktop installs) and a bundled reconciliation skill. 5 registered
@@ -21,7 +21,7 @@ maintainer: blackghostosint
 tier: community
 category: tools
 docs_url: https://github.com/blackghostosint/qbo-ops
-version: "0.1.0"
+version: "0.2.0"
 platforms: []
 capabilities:
   provides_tools:

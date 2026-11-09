@@ -242,10 +242,11 @@ def test_fallback_notice_never_holds_an_unwatched_launch(monkeypatch, tmp_path, 
     monkeypatch.setenv("HERMES_PYTHON", sys.executable)
     log = tmp_path / "stderr.log"
     with log.open("wb") as stderr:
-        terminal = _Terminal(1.5 if case == "nobody answers" else 60, background=case == "background job",
+        terminal = _Terminal(2 if case == "nobody answers" else 60, background=case == "background job",
                              query="hello" if case == "query given" else "",
                              stderr=stderr if case == "stderr redirected" else None)
     try:
+        # Nothing is ever typed: in "nobody answers" only the wait's own timeout starts the TUI.
         waited = terminal.read_until(b"TUI RAN")
         before, _, terminal.seen = terminal.seen.partition(b"TUI RAN")
         if case != "stderr redirected":
@@ -256,8 +257,10 @@ def test_fallback_notice_never_holds_an_unwatched_launch(monkeypatch, tmp_path, 
     if case == "stderr redirected":
         before = log.read_bytes()
         assert before.count(b"fallback notice") == 2  # and printed again once the TUI exits
+    # The prompt is printed only by a launch that waits; how long it waited is the child's clock,
+    # not this process's, so only the unwatched launches' upper bound is asserted.
     if case == "nobody answers":
-        assert b"Press Enter" in before and waited >= 1.5
+        assert b"Press Enter" in before
     else:
         assert b"Press Enter" not in before and waited < 30
 

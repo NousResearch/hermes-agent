@@ -82,3 +82,39 @@ def test_copies_and_pickles_are_plain_and_leave_the_original(frozen):
     deep["l"].append("b")
     assert frozen["l"] == ["a"] and frozen["d"] == {"k": "v"}
     assert isinstance(frozen["l"], SealedList) and isinstance(frozen["s"], SealedSet)
+
+
+def test_seal_instance_seals_slots_and_declared_fields(monkeypatch):
+    """A ``@dataclass(slots=True)`` record keeps its fields out of ``__dict__``, so walking only
+    the dictionary left the payload writable. Every stored name is sealed: the dictionary, the
+    declared dataclass fields and each class's slots; identity is kept and the containers the
+    registering module supplied stay its own."""
+    from dataclasses import dataclass, field
+    from registry_sealed import seal_instance
+
+    monkeypatch.setattr(registry_freeze, "_frozen", False)
+
+    @dataclass
+    class Plain:
+        table: dict = field(default_factory=dict)
+
+    @dataclass(slots=True)
+    class Slotted(Plain):
+        headers: dict = field(default_factory=dict)
+        names: list = field(default_factory=list)
+
+    supplied = {"k": ["v"]}
+    record = Slotted(table={"seed": [1]}, headers=supplied, names=["x"])
+    assert seal_instance(record) is record
+    assert record.headers is not supplied  # the sealed copy is detached from the module's dict
+    registry_freeze.freeze_registries()
+    with pytest.raises(RegistryFrozen):
+        record.headers["k"].append("w")  # a slot, through the sealed copy's contents
+    with pytest.raises(RegistryFrozen):
+        record.table["seed"].append(2)  # the parent's field, still in __dict__
+    with pytest.raises(RegistryFrozen):
+        record.names.append("y")
+    with pytest.raises(RegistryFrozen):
+        record.headers = {}  # rebinding is refused too
+    assert record.table == {"seed": [1]} and record.names == ["x"]
+    seal_instance(record)  # idempotent

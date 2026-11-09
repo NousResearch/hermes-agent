@@ -90,11 +90,20 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     return stored_model, provider, base_url, api_mode, provider_changed
 
 
+def _main_slot_serves(model) -> bool:
+    """An empty provider means the row ran on the profile's route; it is lost only once that route
+    targets another model (#132648)."""
+    from hermes_cli.runtime_provider import _get_model_config
+    return str(_get_model_config().get("default") or "").strip() == str(model or "").strip()
+
+
 def _heal_bare_custom_provider(provider, *, base_url, model):
     """Bare ``custom`` is a billing class, not a routable identity, and an empty provider names none
     (#132648): recover the durable ``custom:<name>`` menu key from the endpoint or model, else None."""
     if str(provider or "").strip().lower() not in ("", "custom"):
         return provider
+    if not str(provider or "").strip() and _main_slot_serves(model):
+        return None
     try:
         # Heal bare "custom" persisted by older builds / gateway turns: it's the resolved billing class, not
         # a routable identity. (Stricter than the TUI gateway's recovery, which keeps bare "custom" when a

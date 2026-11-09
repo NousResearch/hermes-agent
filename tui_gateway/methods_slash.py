@@ -131,29 +131,38 @@ def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> s
     )
 
 
-def _usage_on_nous_route(session: dict, provider: str | None = None) -> bool:
+def _usage_route(session: dict) -> dict:
+    """``provider`` / ``base_url`` / ``api_key`` that /usage reports for: the agent's, else the route its
+    build resolves (``_resolve_agent_model_runtime`` over the session's pick or stored route, so
+    ``provider: auto`` is the saved login). Call inside ``_session_profile_runtime_scope(session)``."""
+    if (agent := session.get("agent")) is not None:
+        return {key: getattr(agent, key, None) for key in ("provider", "base_url", "api_key")}
+    build = _deferred_build_agent_kwargs(session, None)
+    try:
+        return _resolve_agent_model_runtime(build.get("model_override"), build.get("provider_override"))[1]
+    except (RuntimeError, ValueError):  # signed out or unconfigured (AuthError is a RuntimeError): no route
+        return {}
+
+
+def _usage_on_nous_route(route: dict) -> bool:
     """The Nous balance and /topup CTA apply to a Nous route only, never another provider's session."""
     from agent.billing_links import is_nous_inference_route
-    agent = session.get("agent")
-    provider = provider or getattr(agent, "provider", None) or _config_model_target()[1]
-    return is_nous_inference_route(provider or "", getattr(agent, "base_url", None) or "")
+    return is_nous_inference_route(route.get("provider") or "", route.get("base_url") or "")
 
 
 def _usage_account_blocks(session: dict) -> list[str]:
-    """Provider limits then Nous credits, as CLI/messaging /usage show them; neither needs an agent.
-    Both read the session profile's credentials, unreadable outside its scope when multiplexed (#132422).
-    Before the first turn the route is the session's composer pick, else the profile's provider.
-    The Nous block shows only on a Nous route."""
+    """Provider limits then Nous credits (Nous route only), as CLI/messaging /usage show them; neither
+    needs an agent. Both read the session profile's credentials, unreadable outside its scope when
+    multiplexed (#132422)."""
     from agent.account_usage import account_limit_lines, nous_credits_lines
     agent = session.get("agent")
-    pick = session.get("model_override") or {}
     lines: list[str] = []
     with _session_profile_runtime_scope(session):
-        provider = getattr(agent, "provider", None) or pick.get("provider") or _config_model_target()[1]
+        route = _usage_route(session)
         with contextlib.suppress(Exception):
-            lines += account_limit_lines(provider, base_url=getattr(agent, "base_url", None),
-                                         api_key=getattr(agent, "api_key", None))
-        if not _usage_on_nous_route(session, provider):
+            lines += account_limit_lines(route.get("provider"), base_url=route.get("base_url"),
+                                         api_key=route.get("api_key"))
+        if not _usage_on_nous_route(route):
             return lines
         with contextlib.suppress(Exception):
             # Window plans: the last reply's gauges lift the portal's lagging percents (``is True``: a

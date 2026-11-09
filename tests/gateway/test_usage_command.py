@@ -176,7 +176,8 @@ class TestUsageAccountSection:
             return fn(*args, **kwargs)
 
         monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
-        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"model": {"provider": "openai-codex"}})
+        # The route the session's first turn resolves (a profile on Codex).
+        runner._resolve_session_agent_runtime = lambda **kw: ("gpt-5.5", {"provider": "openai-codex"})
         monkeypatch.setattr(
             "gateway.slash_commands_status.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),

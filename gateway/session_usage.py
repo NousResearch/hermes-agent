@@ -228,28 +228,28 @@ def snapshot_usage(authority, ref, agent) -> dict | None:
 
 
 async def account_usage(connection, ref, params):
-    """``session.account_usage {session_id}``: the CLI's /usage plan-limits block for this session's route
-    (its agent, else the frozen policy), fetched off the loop in the owning profile's scope."""
+    """``session.account_usage {session_id}``: the CLI's /usage plan-limits block for the route this
+    session runs (``_session_runtime``: its agent's, else the one its next turn resolves, so
+    ``provider: auto`` is the saved login), fetched off the loop in the owning profile's scope."""
     import asyncio
     from agent.account_usage import account_limit_lines
+    from agent.billing_links import is_nous_inference_route
     from gateway.session_authorities import owner_scope
-    from gateway.session_policy import policy_for_source
+    from gateway.session_llm_oneshot import _session_runtime
+    from hermes_cli.auth import AuthError
     await connection.authority.resolve(connection.actor, ref)
     authority = connection.authority
-    agent = authority.agent(ref)
+    runtime = _session_runtime(authority, ref)
 
     def fetch():
-        from agent.billing_links import is_nous_inference_route
         with owner_scope(authority):
-            if agent is not None:
-                provider, base_url = getattr(agent, "provider", None), getattr(agent, "base_url", None)
-                lines = account_limit_lines(provider, base_url=base_url, api_key=getattr(agent, "api_key", None))
-            else:
-                policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
-                model = (policy.config(authority) if policy is not None else {}).get("model") or {}
-                provider, base_url = model.get("provider"), model.get("base_url")
-                lines = account_limit_lines(provider, base_url=base_url)
-        return {"lines": lines, "nous_route": is_nous_inference_route(provider or "", base_url or "")}
+            try:
+                route = runtime() or {}
+            except AuthError:  # signed out: no route to report limits or a Nous balance for
+                route = {}
+            provider, base_url = route.get("provider") or "", route.get("base_url") or ""
+            lines = account_limit_lines(provider, base_url=base_url or None, api_key=route.get("api_key"))
+        return {"lines": lines, "nous_route": is_nous_inference_route(provider, base_url)}
     return await asyncio.to_thread(fetch)
 
 

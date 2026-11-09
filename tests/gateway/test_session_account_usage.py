@@ -56,3 +56,42 @@ async def test_account_usage_returns_the_plugin_plan_limits_for_the_session_agen
         assert reply["result"]["nous_route"] is False  # a process provider: no Nous balance or /topup CTA
     finally:
         await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cold_session_reports_the_route_its_first_turn_resolves(tmp_path, monkeypatch):
+    """No agent yet and ``model.provider: auto``: the plan limits are fetched for the provider the
+    first turn resolves (OpenRouter, from its key here), never for the raw ``auto``."""
+    import json
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'config.yaml').write_text(json.dumps({'model': {'provider': 'auto', 'default': 'm'},
+                                                  'platform_toolsets': {'cli': []}}))
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setattr(run, '_hermes_home', home)
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'sk-or-test')
+    fetched = []
+    monkeypatch.setattr('agent.account_usage.fetch_account_usage',
+                        lambda provider, **kw: fetched.append((provider, kw.get('base_url'))))
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = await initialize_session_authority(runner, profile_id=str(home), instance_id='first')
+    connection = AuthorityConnection(authority, object(), {'user_id': 'human'})
+    try:
+        created = await connection.dispatch({'id': 1, 'method': 'session.create', 'params': {
+            'request_id': 'cold', 'source': 'gui', 'cwd': str(tmp_path), 'toolsets': []}})
+        sid = created['result']['session_id']
+        reply = await connection.dispatch({'id': 2, 'method': 'session.account_usage', 'params': {'session_id': sid}})
+    finally:
+        await connection.close()
+        store.close_all_db_handles()
+    assert reply.get('result') == {'lines': [], 'nous_route': False}, reply
+    assert [provider for provider, _url in fetched] == ['openrouter'], fetched

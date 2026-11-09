@@ -79,14 +79,6 @@ def history_unreadable() -> str:
     return t("gateway.shared.history_unreadable")
 
 
-def _configured_provider() -> str:
-    """``model.provider`` from the gateway config ("" when unset)."""
-    from gateway.run import _load_gateway_config
-    user_config = _load_gateway_config()
-    model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
-    return _clean_str(model_cfg.get("provider")) if isinstance(model_cfg, dict) else ""
-
-
 def _quiet_sync(call, default=None):
     """Sync twin of ``_quiet``."""
     try:
@@ -585,10 +577,13 @@ class GatewayStatusCommandsMixin:
         if not provider and getattr(self, "_session_db", None) is not None:
             provider, base_url = await self._persisted_billing_route(source)
         if not provider:
-            # Fresh or evicted session with no persisted route (e.g. /usage right after login):
-            # fall back to the configured provider, as /status does, so account limits such as
-            # Codex subscription windows still render from on-disk credentials (#15167).
-            provider = await _quiet(lambda: asyncio.to_thread(_configured_provider)) or None
+            # Fresh or evicted session with no persisted route (e.g. /usage right after login): the
+            # route its first turn resolves (``provider: auto`` is the saved login), so account limits
+            # such as Codex subscription windows render from on-disk credentials (#15167).
+            _model, route = await _quiet(lambda: asyncio.to_thread(
+                self._resolve_session_agent_runtime, source=source, session_key=session_key, fallback=False,
+            ), (None, {}))
+            provider, base_url, api_key = (route.get(k) or None for k in ("provider", "base_url", "api_key"))
         if wants_reset:
             if str(provider or "").strip().lower() != "openai-codex":
                 return t("gateway.usage.reset_wrong_provider")

@@ -196,9 +196,11 @@ class ExtensionRegistry(ABC):
 
     @abstractmethod
     def enabled_extensions(self, *, kind: Optional[str] = None) -> list[dict[str, Any]]:
-        """The entries this agent offers next session: visible, entry-``enabled`` and switched
-        on, sorted by name; *kind* narrows it. The caller still re-checks ``content_hash`` and
-        ``scan_result`` before running anything. Any bound scope may read this."""
+        """The entries this agent offers next session: one entry per name — the one
+        :meth:`get` resolves to, by the same precedence, never both levels of one name —
+        narrowed by *kind*, offered when it is entry-``enabled`` and switched on, sorted by
+        name. The caller still re-checks ``content_hash`` and ``scan_result`` before running
+        anything. Any bound scope may read this."""
 
 
 class ExtensionRegistryProvider(ABC):

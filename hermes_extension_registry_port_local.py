@@ -221,9 +221,20 @@ class LocalExtensionRegistry(ExtensionRegistry):
         scope = self._pin()
         owner = LOCAL_OWNER if scope is None or scope.owner is None else scope.owner
         data = self._load()
-        # ``_visible`` returns converted rows already, so the filter runs on the port's shape.
-        return [r for r in self._visible(data, owner, kind=kind)
-                if r["enabled"] and data["switches"].get(self._switch_key(r))]
+        # One entry per name, resolved exactly as ``get`` resolves it, then offered when it is
+        # enabled and this agent's switch for that entry is on.
+        offered = []
+        for name in sorted({e.get("name") for e in data["entries"]
+                            if entry_visible_to(owner, _owner_from_json(e.get("owner")))}):
+            row = self._resolve(data, name, owner)
+            if row is None or not row.get("enabled"):
+                continue
+            if kind is not None and row.get("kind") != kind:
+                continue
+            if not data["switches"].get(self._switch_key(row)):
+                continue
+            offered.append(self._row(row))
+        return offered
 
 
 class LocalExtensionRegistryProvider(ExtensionRegistryProvider):

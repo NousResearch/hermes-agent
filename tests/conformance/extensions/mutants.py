@@ -12,8 +12,12 @@ its resolution ignores the owner
 switch forgets its agent (``reference_switch_forgets_agent``: one switch shared by every
 agent), owner-wide entries resolve by the actor instead of the agent's owner
 (``reference_resolves_by_actor``: a member's own entries reach a group agent), and its view pin
-forgets the agent, the tenant or the owner. Each mutant is applied by the fixtures when
-``HERMES_EXTENSION_REGISTRY_MUTANT`` names it.
+forgets the agent, the tenant or the owner. The offered list of either backend offers every
+visible entry of a name instead of the one ``get`` resolves to
+(``reference_offers_every_visible_entry``, ``local_offers_every_visible_entry``), and the
+switch rows forget the entry's identity (``reference_switch_forgets_entry_identity``,
+``local_switch_forgets_entry_identity``: keyed by the name alone). Each mutant is applied by
+the fixtures when ``HERMES_EXTENSION_REGISTRY_MUTANT`` names it.
 """
 
 from hermes_extension_registry_port import RegistryPinRefused, owner_key
@@ -117,6 +121,33 @@ def _local_switch_forgets_entry_identity(monkeypatch):
     monkeypatch.setattr(LocalExtensionRegistry, "_switch_key", lambda self, entry: entry["name"])
 
 
+def _reference_offers_every_visible_entry(monkeypatch):
+    """The offered list offers every visible entry of a name — both levels — reading the
+    switch by the name alone, instead of the one entry ``get`` resolves to."""
+    from hermes_conformance.extensions.reference import ReferenceExtensionRegistry
+
+    def _enabled_extensions(self, kind=None):
+        scope = self._pin()
+        with self.store.lock:
+            return [self._row(r) for r in self._visible_rows(scope, kind=kind)
+                    if r["enabled"] and self.store.switches.get((self.agent, r["name"]))]
+    monkeypatch.setattr(ReferenceExtensionRegistry, "enabled_extensions", _enabled_extensions)
+
+
+def _local_offers_every_visible_entry(monkeypatch):
+    """The local offered list offers every visible entry of a name — both levels — reading
+    the switch by the name alone, instead of the one entry ``get`` resolves to."""
+    from hermes_extension_registry_port_local import LocalExtensionRegistry
+
+    def _enabled_extensions(self, kind=None):
+        scope = self._pin()
+        owner = LOCAL_OWNER if scope is None or scope.owner is None else scope.owner
+        data = self._load()
+        return [r for r in self._visible(data, owner, kind=kind)
+                if r["enabled"] and data["switches"].get(r["name"])]
+    monkeypatch.setattr(LocalExtensionRegistry, "enabled_extensions", _enabled_extensions)
+
+
 def _reference_resolves_by_actor(monkeypatch):
     """Owner-wide entries resolve for the actor that installed them, not for the agent's owner:
     a member's own entries reach a group agent."""
@@ -180,10 +211,12 @@ MUTANTS = {
     "local_admin_not_required": _local_admin_not_required,
     "local_accepts_tenant_entries": _local_accepts_tenant_entries,
     "local_switch_forgets_entry_identity": _local_switch_forgets_entry_identity,
+    "local_offers_every_visible_entry": _local_offers_every_visible_entry,
     "reference_tenant_writes_without_provisioning": _reference_tenant_writes_without_provisioning,
     "reference_owner_blind": _reference_owner_blind,
     "reference_switch_forgets_agent": _reference_switch_forgets_agent,
     "reference_switch_forgets_entry_identity": _reference_switch_forgets_entry_identity,
+    "reference_offers_every_visible_entry": _reference_offers_every_visible_entry,
     "reference_resolves_by_actor": _reference_resolves_by_actor,
     "reference_pin_forgets_agent": _reference_pin_forgets_agent,
     "reference_pin_forgets_tenant": _reference_pin_forgets_tenant,

@@ -285,6 +285,132 @@ def test_request_review_stamps_the_class(fleet):
         assert (task.status, task.task_class) == ("review", "code-review")
 
 
+# --- the review return restores the work class ------------------------------------------------
+
+
+def _code_review_round_trip(conn, tid):
+    """Claim -> hand to review as ``code-review`` -> return with changes.
+
+    Returns the card after ``request_changes``. The implementer ``probe`` may serve
+    ``execution`` but not ``code-review``, so any leftover review class refuses it.
+    """
+    kb.claim_task(conn, tid)
+    assert kb.request_review(
+        conn, tid, summary="ready", reviewer="reviewer",
+        expected_run_id=kb.get_task(conn, tid).current_run_id,
+        task_class="code-review",
+    ) is True
+    assert kb.get_task(conn, tid).task_class == "code-review"
+    review = kb.claim_review_task(conn, tid, claimer="reviewer:1")
+    assert review is not None
+    assert kb.request_changes(
+        conn, tid, reason="found 3 issues", expected_run_id=review.current_run_id,
+    ) == (True, "probe")
+    return kb.get_task(conn, tid)
+
+
+def test_request_changes_restores_the_implementers_work_class(fleet):
+    """t_fe130245: returning a reviewed card to execution must restore the card's work class,
+    not leave the review class that refuses the implementer on the ready lane."""
+    with connect() as conn:
+        tid = kb.create_task(conn, title="defect to review", assignee="probe",
+                             task_class="execution")
+        rework = _code_review_round_trip(conn, tid)
+        assert (rework.status, rework.assignee, rework.task_class) == ("ready", "probe", "execution")
+        # The implementer is dispatchable under its restored class on the ready lane.
+        assert fr.assessment("probe", rework.task_class, lane="ready").allowed is True
+        # ...while the review class it left would have refused it.
+        assert fr.assessment("probe", "code-review", lane="ready").allowed is False
+
+
+def test_request_changes_round_trip_is_dispatchable_to_the_implementer(fleet, no_profile_gate):
+    """The auto-router must not re-hand a changes-requested card to the reviewer: the card's
+    restored class routes to the implementer, and no reroute event is written."""
+    with connect() as conn:
+        tid = kb.create_task(conn, title="defect to review", assignee="probe",
+                             task_class="execution")
+        _code_review_round_trip(conn, tid)
+
+    spawned: list[str] = []
+
+    def spawn(task, workspace, board=None):
+        spawned.append(task.id)
+        return 4242
+
+    with connect() as conn:
+        res = kbd.dispatch_once(conn, spawn_fn=spawn, failure_limit=3)
+    assert spawned == [tid], "the implementer must be dispatched, not re-routed to the reviewer"
+    with connect() as conn:
+        assert [e for e in kb.list_events(conn, tid) if e.kind == "rerouted"] == []
+        assert [e for e in kb.list_events(conn, tid) if e.kind == "routing_refused"] == []
+
+
+def test_reopen_review_restores_the_implementers_work_class(fleet):
+    """t_fe130245: the reopen-review return path must restore the work class too."""
+    with connect() as conn:
+        tid = kb.create_task(conn, title="reopen me", assignee="probe",
+                             task_class="execution")
+        kb.claim_task(conn, tid)
+        assert kb.request_review(
+            conn, tid, summary="v1", reviewer="reviewer",
+            expected_run_id=kb.get_task(conn, tid).current_run_id,
+            task_class="code-review",
+        ) is True
+        assert kb.get_task(conn, tid).task_class == "code-review"
+        assert kb.reopen_review_task(conn, tid) is True
+        reopened = kb.get_task(conn, tid)
+        assert (reopened.status, reopened.assignee, reopened.task_class) == (
+            "ready", "probe", "execution")
+        assert fr.assessment("probe", reopened.task_class, lane="ready").allowed is True
+
+
+def test_request_changes_clears_a_legacy_review_class_with_no_recorded_prior(fleet):
+    """A card that entered review before the fix carries a review class but no recorded work
+    class; the return path clears it to NULL so the implementer is reachable, instead of
+    leaving a class that refuses it."""
+    with connect() as conn:
+        tid = kb.create_task(conn, title="legacy", assignee="probe", task_class="code-review")
+        kb.claim_task(conn, tid)
+        assert kb.request_review(
+            conn, tid, summary="v1", reviewer="reviewer",
+            expected_run_id=kb.get_task(conn, tid).current_run_id,
+            task_class="code-review",
+        ) is True
+        # Rewrite the handoff payload to the pre-fix shape: review class, no prior recorded.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_events SET payload = ? "
+                "WHERE task_id = ? AND kind = 'review_requested'",
+                (json.dumps({"summary": "v1", "implementer": "probe",
+                             "reviewer": "reviewer", "task_class": "code-review"}), tid),
+            )
+        review = kb.claim_review_task(conn, tid, claimer="reviewer:1")
+        assert review is not None
+        assert kb.request_changes(
+            conn, tid, reason="fix", expected_run_id=review.current_run_id,
+        ) == (True, "probe")
+        assert kb.get_task(conn, tid).task_class is None
+        assert fr.assessment("probe", None, lane="ready").allowed is True
+
+
+def test_request_review_without_a_class_leaves_the_work_class_on_return(fleet):
+    """A handoff that never overwrites the class must not touch it on return."""
+    with connect() as conn:
+        tid = kb.create_task(conn, title="no class", assignee="probe", task_class="execution")
+        kb.claim_task(conn, tid)
+        assert kb.request_review(
+            conn, tid, summary="v1", reviewer="reviewer",
+            expected_run_id=kb.get_task(conn, tid).current_run_id,
+        ) is True
+        assert kb.get_task(conn, tid).task_class == "execution"  # untouched by a classless handoff
+        review = kb.claim_review_task(conn, tid, claimer="reviewer:1")
+        assert review is not None
+        assert kb.request_changes(
+            conn, tid, reason="fix", expected_run_id=review.current_run_id,
+        ) == (True, "probe")
+        assert kb.get_task(conn, tid).task_class == "execution"
+
+
 def test_create_task_refuses_a_class_outside_the_vocabulary(fleet):
     with connect() as conn:
         with pytest.raises(ValueError):

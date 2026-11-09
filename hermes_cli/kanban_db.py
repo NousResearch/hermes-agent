@@ -3467,7 +3467,7 @@ def request_review(
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
                 "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
-                "worker_started_at FROM tasks WHERE id = ?", (task_id,),
+                "worker_started_at, task_class FROM tasks WHERE id = ?", (task_id,),
             ).fetchone()
             if trow is None:
                 return _ret(False, "task not found")
@@ -3592,6 +3592,35 @@ def request_review(
                 "reviewer": reviewer,
                 "task_class": task_class,
             }
+            # When this handoff overwrites the card's class with the class of review being
+            # handed over, record the work class it displaced so the return paths
+            # (request_changes / reopen-review) can restore it. Leaving the review class on a
+            # card headed back to execution makes the implementer unreachable: the routing
+            # gate reads the review class as the card's *work* class on the ready lane and
+            # refuses the implementer (t_fe130245).
+            if task_class is not None:
+                if reroute:
+                    # The card is already in review; its column holds a review class, so the
+                    # work class to restore is whatever the earlier handoff recorded.
+                    earlier = _json_dict(_row_get(
+                        conn.execute(
+                            "SELECT payload FROM task_events "
+                            "WHERE task_id = ? AND kind = 'review_requested' "
+                            "ORDER BY id DESC LIMIT 1", (task_id,),
+                        ).fetchone(),
+                        "payload",
+                    ))
+                    if "prior_task_class" in earlier:
+                        prior_work_class = earlier.get("prior_task_class")
+                    elif earlier.get("task_class") is None:
+                        # Never overwritten: the column still carries the work class.
+                        prior_work_class = trow["task_class"]
+                    else:
+                        # Legacy review class, no recorded work class: clear on return.
+                        prior_work_class = None
+                else:
+                    prior_work_class = trow["task_class"]
+                payload["prior_task_class"] = prior_work_class
             staged = _cleaned_artifact_paths(metadata)
             if staged:
                 payload["artifacts"] = staged
@@ -3621,6 +3650,23 @@ def _prior_reviewer(conn: sqlite3.Connection, task_id: str):
 
 def _nonblank_str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value.strip() else None
+
+
+def _restored_task_class(payload: dict) -> tuple[bool, Optional[str]]:
+    """The class to write back onto a card returning from review, as ``(touch, value)``.
+
+    ``request_review`` records ``prior_task_class`` whenever it overwrites the card's class
+    with the class of review being handed over; the presence of that key is the signal the
+    class was overwritten and should be restored (``value`` may be ``None`` to clear it). A
+    legacy handoff written before that recording has no such key: if it stamped a review
+    class, clear it so the implementer is not refused on the ready lane; if it stamped
+    nothing, leave the card's class alone.
+    """
+    if "prior_task_class" in payload:
+        return True, payload.get("prior_task_class")
+    if payload.get("task_class") is not None:
+        return True, None
+    return False, None
 
 
 def request_changes(
@@ -3653,43 +3699,52 @@ def request_changes(
         requested_event = _latest_event(conn, task_id, "review_requested")
         if requested_event is None:
             return False, "no prior review_requested event"
-        implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
+        requested_payload = _json_dict(requested_event["payload"])
+        implementer = _nonblank_str(requested_payload.get("implementer"))
         if implementer is None:
             return False, "review handoff has no valid implementer provenance"
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
+
+        # Restore the class the card carried before review, so the implementer is routable on
+        # the ready lane rather than refused under the stale review class (t_fe130245).
+        touch_class, restored_class = _restored_task_class(requested_payload)
+        class_sql = ", task_class = ?" if touch_class else ""
 
         new_status = _landing_status_after_parents(conn, task_id)
         # consecutive_failures deliberately PRESERVED: a review transition is
         # not evidence the pathology cleared; only complete_task resets it.
         cur = conn.execute(
-            """
+            f"""
             UPDATE tasks
                SET status = ?,
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL, worker_started_at = NULL
+                   worker_pid = NULL, worker_started_at = NULL{class_sql}
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
-            (new_status, implementer, task_id, int(current_run_id)),
+            (
+                new_status,
+                implementer,
+                *((restored_class,) if touch_class else ()),
+                task_id,
+                int(current_run_id),
+            ),
         )
         if cur.rowcount != 1:
             return False, "task changed during review handoff"
         run_id = _end_run(
             conn, task_id, outcome="changes_requested", status=new_status, summary=reason,
         )
-        _append_event(
-            conn,
-            task_id,
-            "changes_requested",
-            {
-                "reason": reason,
-                "implementer": implementer,
-                "reviewer": reviewer,
-                "status": new_status,
-            },
-            run_id=run_id,
-        )
+        changes_payload: dict = {
+            "reason": reason,
+            "implementer": implementer,
+            "reviewer": reviewer,
+            "status": new_status,
+        }
+        if touch_class:
+            changes_payload["task_class"] = restored_class
+        _append_event(conn, task_id, "changes_requested", changes_payload, run_id=run_id)
     return True, implementer
 
 
@@ -3831,13 +3886,24 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         review_event = _latest_event(conn, task_id, "review_requested")
         handoff = _json_dict(_row_get(review_event, "payload"))
         implementer = _nonblank_str(handoff.get("implementer"))
-        params: tuple[Any, ...] = (new_status, *((implementer,) if implementer else ()), task_id)
+        # Restore the card's pre-review work class on the way back to execution too
+        # (t_fe130245): reopen-review is the other return path that leaves a review class
+        # behind, which refuses the implementer on the ready lane.
+        touch_class, restored_class = _restored_task_class(handoff)
+        class_frag = ", task_class = ?" if touch_class else ""
+        params: tuple[Any, ...] = (
+            new_status,
+            *((implementer,) if implementer else ()),
+            *((restored_class,) if touch_class else ()),
+            task_id,
+        )
         cur = conn.execute(
             # consecutive_failures deliberately PRESERVED: review reopen is not
             # a success signal; only complete_task resets the breaker (#35072).
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
             + (", assignee = ?" if implementer else "")
+            + class_frag
             + " WHERE id = ? AND status = 'review'",
             params,
         )
@@ -3846,6 +3912,8 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         payload: dict[str, Any] = {"status": new_status}
         if implementer:
             payload["implementer"] = implementer
+        if touch_class:
+            payload["task_class"] = restored_class
         _append_event(
             conn, task_id, "review_reopened", payload if payload != {"status": "ready"} else None,
         )

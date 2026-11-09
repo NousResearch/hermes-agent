@@ -168,6 +168,48 @@ def test_hard_link_alias_opened_after_scan_keeps_probe(tmp_path, monkeypatch):
 
 
 @pytest.mark.platforms("posix")
+def test_spillover_reader_starting_after_the_final_scan_waits_for_the_probe_close(tmp_path, monkeypatch):
+    """Session auto-prune's spillover reader can start between the final scan and the close.
+    Closing the probe under an open reader would drop the reader's SQLite lock mid-query, so the
+    reader must not open SQLite until the probe is closed."""
+    from tools.tool_result_storage import referenced_spillover_names
+
+    home, db_path = _home(tmp_path, "pruning")
+    _probe(db_path)
+    started = threading.Event()
+    probe_open_at_sqlite_open: list = []
+    result: list = []
+    real_sqlite_connect = sqlite3.connect
+
+    def _sqlite_connect(*args, **kwargs):
+        if threading.current_thread() is reader:
+            probe_open_at_sqlite_open.append(str(db_path) in dbfile._HEADER_PROBE_FDS)
+        return real_sqlite_connect(*args, **kwargs)
+
+    def _read():
+        started.set()
+        result.append(referenced_spillover_names(home / "cache" / "spillover"))
+
+    reader = threading.Thread(target=_read, daemon=True)
+    real_close = dbfile.close_header_probe_if_unchanged
+
+    def _start_reader_then_close(key, entry):  # runs after the final scan, before the close
+        reader.start()
+        assert started.wait(5.0)
+        reader.join(0.5)  # an unguarded reader opens SQLite (and starts its query) in here
+        return real_close(key, entry)
+
+    monkeypatch.setattr(sqlite3, "connect", _sqlite_connect)
+    monkeypatch.setattr(dbfile, "close_header_probe_if_unchanged", _start_reader_then_close)
+    registry.close_all_under(home)
+    reader.join(10.0)
+    assert not reader.is_alive()
+    assert str(db_path) not in dbfile._HEADER_PROBE_FDS
+    assert probe_open_at_sqlite_open == [False], "the reader opened SQLite while the probe was still open"
+    assert result == [set()]
+
+
+@pytest.mark.platforms("posix")
 def test_probe_kept_when_a_writer_is_published_after_the_sweep(tmp_path, monkeypatch):
     """The #127811 shape: a caller acquires the path after the sweep tore it down."""
     home, db_path = _home(tmp_path, "reopened")

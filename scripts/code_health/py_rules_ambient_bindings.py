@@ -190,6 +190,9 @@ def _targets(target: ast.AST, line: int, aug: bool = False) -> Iterator[Write]:
         yield Write(target, True, line, aug=aug)
 
 
+_MUTATOR_NAMES = frozenset({"setattr", "delattr", "builtins.setattr", "builtins.delattr"})
+
+
 def _node_writes(node: ast.AST) -> Iterator[Write]:
     if isinstance(node, (ast.Assign, ast.Delete)):
         for target in node.targets:
@@ -209,7 +212,7 @@ def _node_writes(node: ast.AST) -> Iterator[Write]:
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr in MUTATORS:
             yield Write(func.value, False, node.lineno)
-        elif _call_name(node) in ("setattr", "delattr") and len(node.args) >= 2:
+        elif _call_name(node) in _MUTATOR_NAMES and len(node.args) >= 2:
             key = node.args[1]
             name = key.value if isinstance(key, ast.Constant) and isinstance(key.value, str) else ""
             yield Write(node.args[0], True, node.lineno, attr=name)

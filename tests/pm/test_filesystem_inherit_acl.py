@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from pm.filesystem import inherit_parent_acl
+from tests.pm._fixtures import windows_account
 
 
 def _entries(path: Path) -> list[str]:
@@ -34,9 +35,10 @@ def test_a_tree_moved_out_of_a_temporary_directory_inherits_from_its_new_parent(
     assert inherit_parent_acl(target) is True
 
     assert all("(I)" in line for line in _entries(target)), _entries(target)
+    users, guests = windows_account("S-1-5-32-545"), windows_account("S-1-5-32-546")
     for path in (target, target / "pkg", target / "pkg" / "mod.py"):
-        assert any(line.startswith("BUILTIN\\Users:(I)") for line in _entries(path)), (path, _entries(path))
-    assert any(line.startswith("BUILTIN\\Guests:(R)") for line in _entries(target / "pkg" / "mod.py"))
+        assert any(line.startswith(f"{users}:(I)") for line in _entries(path)), (path, _entries(path))
+    assert any(line.startswith(f"{guests}:(R)") for line in _entries(target / "pkg" / "mod.py"))
 
 
 def test_never_raises(tmp_path):

@@ -83,6 +83,7 @@ export type BotsMessages = {
     search: string
     searchPlaceholder: string
     newBotOrGroup: string
+    browseMarketplace: string
     groupChats: string
     emptyTitle: string
     emptyDesc: string

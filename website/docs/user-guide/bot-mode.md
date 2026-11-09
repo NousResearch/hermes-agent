@@ -101,6 +101,27 @@ A Bot's look, title, and description are stored in the profile's metadata on the
 
 A Bot speaks with its **own profile's** TTS settings (`tts.*` in that profile's `config.yaml`) on its **own gateway**. Read Aloud, auto-speak and voice conversation in a Bot chat — in a split tile or opened in the main pane — all synthesize through the Bot's (connection, profile), so two Bots with different voices sound different and two Bots with the same profile name on different gateways never share a voice. A Bot profile with no `tts.*` of its own uses that profile's server defaults; only a chat with no known owner (a plain session) uses the active profile's voice. Speech-to-text in a Bot chat still uses the active profile's STT settings.
 
+## Community bot catalogs
+
+The Bots tab lists the reviewed Hermes catalog. To also list bots from a community catalog you trust, add its feed to `config.yaml`:
+
+```yaml
+bots:
+  catalog_sources:
+    - id: hermesmade
+      url: https://hermesmade.lol/api/hermes/bot-catalog.json
+```
+
+Each entry needs a short lowercase `id` (`official`, `nous` and `hermes` are reserved) and an `https://` URL. A source publishes the same closed blueprint format as the reviewed catalog, so adding one never runs code:
+
+- A community bot may only reference skills that ship with Hermes and the toolsets it declares. It runs with exactly those toolsets, without the platform's default tool set, so it has no terminal, file-write, code or delegation tools unless it declares them.
+- Every entry from a source is shown as community, labelled with its source, and the review dialog warns that Hermes did not review it.
+- A source cannot replace a reviewed bot, or one served by an earlier source, with the same name.
+- Records that fail validation are skipped one by one; an unreachable source leaves the rest of the catalog intact.
+- A source's `removed` list hides its own entries.
+
+`hermes://bot/install?catalog=<name>` opens the review dialog for any bot a configured source serves. A link cannot add a source, so a web page can only offer bots you already chose to trust.
+
 ## Routines
 
 The **Routines** pane attaches recurring tasks to the Bot that does them — "summarize my inbox every morning" lives next to the Bot responsible for it. The pane docks beside the chat only while the Bots tab is active and steps aside when you switch back to Sessions (older desktop builds keep it always visible). Closing it with its ✕ hides it until you next leave and re-enter the Bots tab, when it comes back as the collapsed right-edge tab. A structured schedule picker builds the schedule (frequency first, then only the detail that matters), with an Advanced field exposing the raw Hermes schedule string.

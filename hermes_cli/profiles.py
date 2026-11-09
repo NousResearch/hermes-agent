@@ -1367,6 +1367,47 @@ def create_profile(
     if clone_channels and not cloning:
         raise ValueError("--clone-channels only applies to a clone (--clone, --clone-from or --clone-all).")
     canon = _canon_valid(name)
+    source_dir = _resolve_clone_source(clone_from) if cloning else None
+    if source_dir is not None and clone_channels:
+        from hermes_cli.profile_channels import clone_channels_refusal
+        refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")
+        if refusal:
+            raise ValueError(refusal)
+    from hermes_cli.profiles_initialization import finish_profile_layout
+    clone_key: list = [None]  # the keychain entry made for this clone's vault, if any
+
+    def prepare(staging: Path) -> None:
+        if clone_all and source_dir:
+            clone_key[0] = _clone_all_into(source_dir, staging, canon)
+        else:
+            _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
+        if source_dir is not None and not clone_channels:
+            from hermes_cli.profile_channels import strip_channel_settings
+            stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
+            if stripped:
+                logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
+        finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul)
+
+    def discard() -> None:
+        from hermes_cli.profiles_initialization import discard_unpublished_vault_key
+        discard_unpublished_vault_key(clone_key[0])
+
+    return _publish_staged_profile(canon, prepare, on_discard=discard)
+
+
+def _publish_staged_profile(name: str, prepare_staging, *, on_discard=None) -> Path:
+    """Build a complete profile under a hidden sibling, then publish it with one rename.
+
+    This is the shared filesystem transaction for ordinary profile creation and reviewed bot
+    installs. ``prepare_staging`` must do every fallible tree mutation; no profile enumerator can
+    observe the hidden directory, and every pre-publish failure removes it. ``on_discard`` runs
+    before the staging tree is removed (e.g. to drop a keychain entry made for a cloned vault).
+
+    A running multiplexer rescans profiles/ on every create and every 30 s, and
+    ``_iter_named_profile_dirs`` only lists valid ids (no leading dot), so it can never adopt the
+    half-copied tree and start adapters on credentials a later strip has not removed yet.
+    """
+    canon = _canon_valid(name)
     if canon == "default":
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
@@ -1386,34 +1427,18 @@ def create_profile(
             )
     if profile_dir.exists():
         raise _profile_exists_error(canon)
-    source_dir = _resolve_clone_source(clone_from) if cloning else None
-    if source_dir is not None and clone_channels:
-        from hermes_cli.profile_channels import clone_channels_refusal
-        refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")
-        if refusal:
-            raise ValueError(refusal)
     clear_named_profile_deleted(profile_dir)
-    # Build in a hidden sibling and publish with one rename: a running multiplexer rescans profiles/
-    # on every create and every 30 s, and ``_iter_named_profile_dirs`` only lists valid ids (no leading
-    # dot), so it can never adopt the half-copied tree and start adapters on credentials the strip
-    # below has not removed yet.
-    from hermes_cli.profiles_initialization import clone_staging_dir, discard_unpublished_vault_key, finish_profile_layout
+    from hermes_cli.profiles_initialization import clone_staging_dir
     staging = clone_staging_dir(profile_dir)
-    clone_key = None  # the keychain entry made for this clone's vault, if any
     try:
-        if clone_all and source_dir:
-            clone_key = _clone_all_into(source_dir, staging, canon)
-        else:
-            _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
-        if source_dir is not None and not clone_channels:
-            from hermes_cli.profile_channels import strip_channel_settings
-            stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
-            if stripped:
-                logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
-        finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul)
+        prepare_staging(staging)
+        if not named_profile_has_identity(staging):
+            raise ValueError("staged profile has no identity marker")
         os.rename(staging, profile_dir)
     except BaseException:
-        discard_unpublished_vault_key(clone_key)
+        if on_discard is not None:
+            with contextlib.suppress(Exception):
+                on_discard()
         shutil.rmtree(staging, ignore_errors=True)
         raise
     from hermes_cli.profile_memory_config import notify_memory_provider

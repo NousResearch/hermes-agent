@@ -12,6 +12,9 @@ export type DeepLinkAction =
    *  catalog by the caller; the raw name is never treated as a git identifier. */
   | { type: 'plugin-catalog-install'; name: string }
   | { type: 'skill-install'; identifier: string }
+  /** `hermes://bot/install?catalog=<name>` — the catalog key is the only
+   * accepted input; every other query field is intentionally discarded. */
+  | { type: 'bot-catalog-install'; name: string }
   | { type: 'composer-blueprint'; name: string; params: Record<string, string> }
   | { type: 'connection-done'; op: string; status: string }
   | { type: 'ignore' }
@@ -42,6 +45,12 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
     const op = (payload.params?.op || '').trim()
 
     return op ? { type: 'connection-done', op, status: (payload.params?.status || '').trim() } : { type: 'ignore' }
+  }
+
+  if (payload.kind === 'bot' && payload.name === 'install') {
+    const catalog = (payload.params?.catalog || '').trim()
+
+    return catalog ? { type: 'bot-catalog-install', name: catalog } : { type: 'ignore' }
   }
 
   // A `catalog` param claims the link outright: even when a `repo` rides along

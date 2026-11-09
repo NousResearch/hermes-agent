@@ -1209,6 +1209,14 @@ streaming:
 # Skills are reusable procedures the agent can load and follow. The agent can
 # also create new skills after completing complex tasks.
 #
+# Community Bot Marketplace catalogs (Desktop Bots tab). Each feed uses the reviewed catalog's
+# closed blueprint format; bots from it are labelled community and run with only the toolsets
+# they declare. See website/docs/user-guide/bot-mode.md#community-bot-catalogs.
+# bots:
+#   catalog_sources:
+#     - id: hermesmade
+#       url: https://hermesmade.lol/api/hermes/bot-catalog.json
+
 skills:
   # Nudge the agent to create skills after complex tasks.
   # Every N tool-calling iterations, remind the model to consider saving a skill.

@@ -842,6 +842,11 @@ def test_external_server_on_a_configured_detect_port_is_used(tmp_path, monkeypat
 
 
 
+def test_local_runtime_context_window_default_is_unset():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["local_runtime"]["context_window"] is None
+
 
 # ── bootstrap contracts ──────────────────────────────────────
 

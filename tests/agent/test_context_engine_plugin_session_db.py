@@ -2,6 +2,7 @@
 handed it as ``session_db``, and gets the agent's store as ``persistence`` in each hook that accepts that keyword; the
 built-in compressor keeps the agent's store handle."""
 
+import warnings
 from unittest.mock import patch
 
 import pytest
@@ -75,8 +76,12 @@ def store():
 def test_a_plugin_engine_binds_the_deprecated_session_db_and_reads_mains_answer(monkeypatch, store):
     monkeypatch.setattr(hermes_state, "_warned", False)
     engine = _PluginEngine()
-    with pytest.warns(DeprecationWarning, match=r"hermes_state\.SessionDB is deprecated and is removed in v0\.27\.0"):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         agent = _agent(store, "s1", engine)
+    [warning] = [w for w in caught if w.category is DeprecationWarning]
+    text = str(warning.message)
+    assert f"{__name__}._PluginEngine" in text and "persistence=" in text and "v0.27.0" in text
     try:
         [(session_db, row)] = engine.bound
         assert isinstance(session_db, hermes_state.SessionDB)
@@ -117,6 +122,20 @@ def test_compression_adoption_binds_an_engine_without_on_session_start_with_the_
         assert _adopt_live_compression_child(agent, store, "s1", store)
         assert engine.bound[-1][1]["id"] == "s1-child"
         assert engine.stores[-1] is store
+    finally:
+        agent.close()
+
+
+def test_a_plugin_engine_whose_hooks_take_persistence_is_not_warned(monkeypatch, store):
+    monkeypatch.setattr(hermes_state, "_warned", False)
+    engine = _StorePluginEngine()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        agent = _agent(store, "s1", engine)
+    try:
+        assert [w for w in caught if w.category is DeprecationWarning] == []
+        assert hermes_state._warned is False
+        assert isinstance(engine.bound[0][0], hermes_state._SessionDB)
     finally:
         agent.close()
 

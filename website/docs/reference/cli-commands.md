@@ -322,6 +322,7 @@ Subcommands:
 | `start` | Start the installed systemd/launchd background service. |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
+| `defer-restart` | Request restart acceptance from the gateway serving this profile; returns before drain or readiness. POSIX systemd, launchd, or external supervision only. |
 | `status` | Show service status. |
 | `list` | List **all profiles** and whether each profile's gateway is currently running (with PID where available). Handy when you run multiple profiles side-by-side and want a single overview. |
 | `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
@@ -350,6 +351,30 @@ relaunch the gateway after that nonzero exit. For systemd, use
 `RestartPreventExitStatus`; for launchd, configure `KeepAlive` to relaunch after
 unsuccessful exits. Without that policy, a requested restart leaves the gateway
 stopped.
+
+`hermes gateway defer-restart` accepts no command-specific arguments (no delay,
+force, all-profiles, or wait-ready). Exit 0 confirms only that the receiving
+runner newly accepted the request and reports its PID, supervisor and loaded
+drain timeout. That timeout is a drain budget, not a fixed restart delay. The
+existing active-work wait and restart flow determine when shutdown proceeds.
+All profiles served by the accepting gateway are affected, including when the
+selected profile is a satellite of a shared multiplexer. Unconfirmed ownership,
+standalone exclusions, and unsupported supervisors are refused. Native Windows,
+manual, desktop and s6 contexts are unsupported in this version.
+
+Exit 1 means a rejection/non-new acceptance or **UNKNOWN**. UNKNOWN means the
+gateway may already be processing the request: inspect `hermes gateway status`
+before deciding whether to retry. The command never automatically retries or
+falls back to updater pause, signals, or ordinary restart; older gateways fail
+without fallback. Ordinary lifecycle guards and updater behavior are unchanged.
+
+Acceptance does not confirm completed drain, replacement readiness, platform-send
+completion, or exactly-once replies. Existing session recovery and delivery
+ledger rules apply: eligible persisted replies may be redelivered with ambiguity
+or duplication. There is no cross-process request deduplication or persisted
+request state. Marked `HERMES_CRON_SESSION` agent children are refused before
+resolution; current unmarked no-agent/pre-agent scheduler scripts are outside
+this misuse guard. It is not a same-user permission boundary.
 
 `hermes gateway enroll` accepts `--token`, `--connector-url`, `--gateway-id`, and `--wake-url`. It exchanges the enrollment token with the connector and writes the resulting `GATEWAY_RELAY_ID`, `GATEWAY_RELAY_SECRET`, `GATEWAY_RELAY_DELIVERY_KEY`, optional `GATEWAY_RELAY_URL`, and (when `--wake-url` is given) `GATEWAY_RELAY_WAKE_URL` values to the active profile's `.env`.
 

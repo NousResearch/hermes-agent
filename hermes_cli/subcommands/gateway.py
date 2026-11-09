@@ -67,6 +67,15 @@ def build_gateway_parser(
     gateway_subparsers = gateway_parser.add_subparsers(
         dest="gateway_command", parser_class=_GatewayCommandParser)
 
+    from hermes_cli.gateway_deferred_restart import cmd_gateway_defer_restart
+    deferred = gateway_subparsers.add_parser(
+        "defer-restart", help="Request supervised restart acceptance without waiting for completion",
+        description="Request restart on POSIX systemd, launchd, or an external supervisor. "
+                    "Affects all profiles served by the gateway. No delay or readiness wait.",
+        epilog="Exit 0 confirms new acceptance only; exit 1 means rejected or UNKNOWN. "
+               "For UNKNOWN, the gateway may already be processing the request: inspect status before retrying.")
+    deferred.set_defaults(func=cmd_gateway_defer_restart)
+
     gateway_run = gateway_subparsers.add_parser(
         "run", help="Run gateway in foreground (recommended for WSL and Docker)"
     )

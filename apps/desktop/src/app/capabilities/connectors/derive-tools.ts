@@ -180,7 +180,10 @@ export function facetSummary(tools: readonly ToolRowModel[], isOn: (slug: string
 const plainWords = (value: string) =>
   value
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
+    .normalize('NFC')
+    // Variation selectors count as marks but carry no words, so an emoji-only description stays redundant.
+    .replace(/[\uFE0E\uFE0F]/g, '')
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ')
     .trim()
 
 export function describesNothingNew(tool: ToolRowModel): boolean {

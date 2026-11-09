@@ -1,19 +1,19 @@
 name: nightstop
 repo: https://github.com/decentralpapi/nightstop
-sha: bd2ff7671c10d08a9ade4758f94725b2ebfcf2ac
+sha: f7cf1571b3f40ad6bf7fb61ff11c5313178858a0
 description: "Last-minute ride + room SOS — real OpenStreetMap stays near you ranked by OSRM drive time, with Uber/Lyft/Booking/Airbnb links prefilled (no checkout, no invented prices). Disclosure — sends the place names or coordinates you ask about to nominatim.openstreetmap.org (geocoding, max 1 req/s), overpass-api.de and fallback overpass.kumi.systems (nearby OSM lodging), router.project-osrm.org (driving) and routing.openstreetmap.de (walking). When use_current_location / 'my location' is requested, also contacts ipinfo.io or ipapi.co once for a city-level approximate location (never cached or stored). Returns (does not contact) m.uber.com, lyft.com, www.google.com/maps, www.booking.com, www.airbnb.com and www.openstreetmap.org links. No API keys, no credentials, no telemetry, no self-updater, no binaries. Cannot log in or pay: you finish booking in the third-party app. Map data © OpenStreetMap contributors (ODbL)."
 maintainer: Omimi
 tier: community
 category: tools
-version: "0.1.2"
+version: "0.1.3"
 title: Nightstop
 docs_url: https://github.com/decentralpapi/nightstop#readme
 platforms: [linux, macos, windows]
 screenshots:
-  - https://raw.githubusercontent.com/decentralpapi/nightstop/bd2ff7671c10d08a9ade4758f94725b2ebfcf2ac/previews/night-full.png
-  - https://raw.githubusercontent.com/decentralpapi/nightstop/bd2ff7671c10d08a9ade4758f94725b2ebfcf2ac/previews/stay-list.png
-  - https://raw.githubusercontent.com/decentralpapi/nightstop/bd2ff7671c10d08a9ade4758f94725b2ebfcf2ac/previews/stay-detail.png
-  - https://raw.githubusercontent.com/decentralpapi/nightstop/bd2ff7671c10d08a9ade4758f94725b2ebfcf2ac/previews/ride.png
+  - https://raw.githubusercontent.com/decentralpapi/nightstop/f7cf1571b3f40ad6bf7fb61ff11c5313178858a0/previews/night-full.png
+  - https://raw.githubusercontent.com/decentralpapi/nightstop/f7cf1571b3f40ad6bf7fb61ff11c5313178858a0/previews/stay-list.png
+  - https://raw.githubusercontent.com/decentralpapi/nightstop/f7cf1571b3f40ad6bf7fb61ff11c5313178858a0/previews/stay-detail.png
+  - https://raw.githubusercontent.com/decentralpapi/nightstop/f7cf1571b3f40ad6bf7fb61ff11c5313178858a0/previews/ride.png
 capabilities:
   provides_tools:
     - find_stay

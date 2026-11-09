@@ -1428,6 +1428,13 @@ gateway:
   # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
   # trust_env: true
 
+  # POST /api/relay: a local caller holding API_SERVER_KEY starts an agent turn in a
+  # Discord thread (new or existing) under one of these parent channels. The thread's
+  # profile follows profile_routes. Off unless enabled. Not `relay:`, which names a platform.
+  # session_relay:
+  #   enabled: false
+  #   allowed_parents: []   # parent channel ids
+
 # =============================================================================
 # Toolsets
 # =============================================================================

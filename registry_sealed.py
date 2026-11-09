@@ -17,6 +17,8 @@ install never freezes and never seals.
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterator
+from dataclasses import fields as _dataclass_fields
 from typing import Any
 
 from hermes_scope_cache import tenant_neutral
@@ -146,6 +148,25 @@ def _sealed_class(cls: type) -> type:
     return sealed
 
 
+def _stored_names(obj: Any) -> Iterator[str]:
+    """Every attribute *obj* stores by name, in a stable order: its instance dictionary (a plain
+    dataclass or any ordinary object), its declared dataclass fields (``@dataclass(slots=True)``
+    keeps them out of ``__dict__``), and each class's ``__slots__``."""
+    yield from getattr(obj, "__dict__", {})
+    try:
+        fields = _dataclass_fields(obj)
+    except TypeError:
+        fields = ()
+    yield from (f.name for f in fields)
+    for klass in type(obj).__mro__:
+        slots = getattr(klass, "__slots__", None)
+        if isinstance(slots, str):
+            slots = (slots,)
+        for name in slots or ():
+            if isinstance(name, str):
+                yield name
+
+
 def seal_instance(obj: Any) -> Any:
     """Seal a registered record (a provider profile) in place at the freeze: identity is kept
     (lookups and identity-keyed caches still match), every dict/list/set attribute becomes a detached
@@ -154,7 +175,11 @@ def seal_instance(obj: Any) -> Any:
     instance's attributes refuse rebinding. Idempotent."""
     if getattr(type(obj), "_registry_sealed", False):
         return obj
-    for name, value in list(getattr(obj, "__dict__", {}).items()):
+    for name in dict.fromkeys(_stored_names(obj)):
+        try:
+            value = getattr(obj, name)
+        except AttributeError:
+            continue  # a slot nothing ever stored in
         if isinstance(value, (dict, list, set, tuple)):
             object.__setattr__(obj, name, seal(value))
     obj.__class__ = _sealed_class(type(obj))

@@ -5,6 +5,8 @@ the fence are held only later, by their own flush or by teardown salvage. The re
 still replay the earlier update first.
 """
 
+import asyncio
+
 import pytest
 
 from gateway.config import Platform, PlatformConfig
@@ -83,3 +85,24 @@ async def test_interrupted_replay_keeps_its_remaining_updates_ahead_of_a_newer_o
 
     assert replayed == ["a"]
     assert [e.text for e in adapter._held_inbound_events] == ["b", "c", "d"]
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_replays_the_old_adapters_buffered_batch_before_its_teardown_finishes():
+    old, new = _adapter(), _adapter()
+    await _buffer(old, "text", "earlier")
+    old._mark_disconnected()  # fenced; its teardown salvage has not run yet (still closing the network)
+    replayed = []
+
+    async def handle(event):
+        replayed.append(event.text)
+    new.handle_message = handle
+
+    new.adopt_held_inbound(old)
+    assert [e.text for e in new._held_inbound_events or []] == ["earlier"]  # handed over before replay starts
+    await new._held_inbound_redispatch_task
+    assert replayed == ["earlier"]
+
+    await old._cancel_pending_delivery_tasks()  # the slow teardown finally salvages: nothing left to forward
+    await asyncio.sleep(0)
+    assert replayed == ["earlier"] and not new._held_inbound_events

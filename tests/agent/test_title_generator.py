@@ -935,7 +935,8 @@ class TestTitlesThroughTheStorageInterface:
             maybe_auto_title(store, "sess-1", "fix the flaky auth test in login", [], persistence=handle)
         assert handle.sessions.get_title("sess-1") == "fix the flaky auth test in login"
         assert handle.sessions.get_title_source("sess-1") is TitleSource.DERIVED
-        assert thread.call_args.kwargs["kwargs"]["persistence"] is handle
+        thread_handle = thread.call_args.kwargs["kwargs"]["persistence"]
+        assert thread_handle is not handle and thread_handle.scope == handle.scope
         assert store.method_calls == []
 
     def test_model_title_and_its_collision_suffix_go_through_the_handle(self, handle):

@@ -77,10 +77,14 @@ _GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # web` reaches the lifecycle verb again. Single-space commands match exactly as before.
 _CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # Git's global options sit between the binary and the subcommand: `git -C <path> push --force`,
-# `git --git-dir=<path> reset --hard`, `git -c key=val clean -fd`. Same grammar again — each option
-# takes at most ONE non-dash operand — so the git rules below match the SUBCOMMAND rather than the
-# literal `git <verb>` prefix, which no option-prefixed form ever has (#150744).
-_GIT_GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?:"[^"]*"|\'[^\']*\'|(?!-\S)\S++))?\s++)*'
+# `git --git-dir=<path> reset --hard`, `git -c key=val clean -fd`. Each option is ONE shell word that
+# may carry a JOINTED value (`-C'/tmp/my repo'`, `-c user.name='a b'`), so the value is matched whole —
+# quoted spans included — rather than split at its first space, which left an unmatched fragment before
+# the subcommand whenever the path held a space. A separate value is still at most one non-dash word.
+# The git rules below therefore match the SUBCOMMAND, which no literal `git <verb>` prefix ever is
+# (#150744).
+_GIT_OPTION_WORD = r"""(?:[^\s"']++|"[^"]*"|'[^']*')+"""
+_GIT_GLOBAL_FLAGS = rf'(?:-{_GIT_OPTION_WORD}(?:\s++(?!-\S){_GIT_OPTION_WORD})?\s++)*'
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'

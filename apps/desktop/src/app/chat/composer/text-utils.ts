@@ -190,15 +190,19 @@ export function extractClipboardText(clipboard: DataTransfer): { flavor: 'html' 
   if (html.trim()) {
     try {
       const doc = new DOMParser().parseFromString(html, 'text/html')
-      const href = doc.querySelector('a[href]')?.getAttribute('href')?.trim()
-
-      if (href) {
-        return { flavor: 'html', text: href }
-      }
-
+      const anchor = doc.querySelector('a[href]')
+      const href = anchor?.getAttribute('href')?.trim()
       // textContent drops <br> separators, merging separate pasted lines.
       doc.body?.querySelectorAll('br').forEach(br => br.replaceWith(doc.createTextNode('\n')))
       const body = doc.body?.textContent ?? ''
+      const onlyLinkText = doc.querySelectorAll('a[href]').length === 1 &&
+        body.trim() === anchor?.textContent?.trim()
+
+      // A lone linked label is a copied link; an excerpt containing a link
+      // must keep its surrounding prose instead of becoming just that URL.
+      if (href && (!body.trim() || onlyLinkText)) {
+        return { flavor: 'html', text: href }
+      }
 
       if (body.trim()) {
         return { flavor: 'html', text: body }

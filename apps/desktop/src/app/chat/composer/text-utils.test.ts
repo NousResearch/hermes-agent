@@ -291,6 +291,13 @@ describe('extractClipboardText', () => {
     expect(clip).toEqual({ flavor: 'html', text: 'first line\nsecond line' })
   })
 
+  it('keeps prose around a link in an HTML-only rich paste', () => {
+    const html = '<p>Read <a href="https://x.dev/docs">the docs</a> before deploying.</p>'
+    const clip = extractClipboardText(dt({ 'text/html': html }))
+
+    expect(clip).toEqual({ flavor: 'html', text: 'Read the docs before deploying.' })
+  })
+
   it('falls back to the HTML body text when no anchor exists', () => {
     const clip = extractClipboardText(dt({ 'text/html': '<div>plain prose &amp; more</div>' }))
 

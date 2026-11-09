@@ -1,6 +1,6 @@
 name: which-copy
 repo: https://github.com/Hazem-Samak/hermes-which-copy
-sha: 4769ac6eebc8976cdb74e813697d8fe196f89f24
+sha: 861e81b904235ad582c9b0076d6465c0ad585c4e
 description: >-
   Answers the question that silently decides everything else: which copy of a
   command is the Hermes process actually going to run? On a Mac the same tool can
@@ -39,7 +39,9 @@ description: >-
   executed — a file passed as a path, a copy found only in a PATH string the call
   supplies, and a copy behind a relative or empty PATH entry are described with
   their version left unchecked — so a prompt-injected repository cannot get its
-  own script run. probe_versions false skips every probe, and the login-shell
+  own script run. For a call that supplies `path`, every version probe still runs
+  with Hermes's own process PATH, never the raw supplied string. probe_versions
+  false skips every probe, and the login-shell
   check is separate, so pair it with check_login_shell false for a call that
   starts no process at all. When two version strings were never meant to be
   compared, it says it cannot order them instead of guessing.
@@ -48,7 +50,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/Hazem-Samak/hermes-which-copy#readme
-version: "1.2.0"
+version: "1.2.1"
 title: Which Copy
 platforms: [macos, linux]
 capabilities:

@@ -258,10 +258,8 @@ def _sessions_sig():
     unrelated state.db writes such as gateway heartbeats.
     """
     from persistence_assembly import profile_scope, store_location
-    return tuple(
-        _session_db_content_sig(store_location(profile_scope(home=root)))
-        for root in (_watcher_home(), *_served_profile_homes)
-    )
+    locations = (store_location(profile_scope(home=root)) for root in (_watcher_home(), *_served_profile_homes))
+    return tuple(None if location is None else _session_db_content_sig(location) for location in locations)
 
 
 def _projects_sig():

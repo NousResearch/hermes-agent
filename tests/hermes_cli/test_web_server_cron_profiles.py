@@ -1947,3 +1947,42 @@ def test_dashboard_create_keeps_an_explicit_empty_toolset_list(isolated_profiles
         profile="worker_alpha")
 
     assert job["enabled_toolsets"] == []
+
+
+@pytest.mark.asyncio
+async def test_dashboard_invalid_toolsets_cannot_widen_allowlist(isolated_profiles):
+    """A non-list-shaped form value must fail, not silently replace the restriction with None.
+
+    ``CronJobUpdate.updates`` is a free-form dict, so pydantic does not vet the field on this
+    route the way ``CronJobCreate`` does; ``_cron_string_list`` answered None for an object,
+    which update_job merges as "no restriction".
+    """
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job", name="web-only job",
+        prompt="format text", schedule="every 1h", enabled_toolsets=["web"])
+
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.update_cron_job(
+            job["id"],
+            _web_models.CronJobUpdate(updates={
+                "prompt": "edited text",
+                "enabled_toolsets": {"unexpected": "web"},
+            }),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 400
+    assert "enabled_toolsets" in str(exc.value.detail)
+    # The refused edit wrote nothing: the restriction and the prompt both survive.
+    stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert stored["enabled_toolsets"] == ["web"]
+    assert stored["prompt"] == "format text"
+
+
+def test_dashboard_normalizer_rejects_a_non_list_context_from(tmp_path):
+    """Same guard on the sibling list field: a malformed shape cannot clear a chained context."""
+    with pytest.raises(HTTPException) as exc:
+        _rt_cron._normalize_dashboard_cron_updates({"context_from": {"id": "other-job"}}, tmp_path)
+
+    assert exc.value.status_code == 400
+    assert "context_from" in str(exc.value.detail)

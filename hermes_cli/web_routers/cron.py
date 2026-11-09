@@ -63,6 +63,22 @@ _DASHBOARD_UPDATABLE_FIELDS = frozenset({
 })
 
 
+def _cron_list_form_field(value: Any, *, keep_empty: bool, field: str) -> Optional[list[str]]:
+    """Normalize one list-shaped form field, refusing a shape that would silently clear it.
+
+    ``CronJobUpdate.updates`` is a free-form dict, so the pydantic fields that vet the same
+    names on ``CronJobCreate`` never see this route: an object where a list belongs reached
+    ``_cron_string_list``, answered None and merged as "no restriction" / "no chain" — a
+    malformed payload silently WIDENING a stored allowlist (#148886 follow-up).
+    """
+    if value is not None and not isinstance(value, (str, list, tuple)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} must be a list, a delimited string, or null",
+        )
+    return _cron_string_list(value, keep_empty=keep_empty)
+
+
 def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Path) -> dict[str, Any]:
     """Normalize dashboard JSON into cron.jobs.update_job's storage shape.
 
@@ -93,10 +109,12 @@ def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Pat
         # fall back to deliver) rather than coalescing — the field is optional.
         normalized["failure_deliver"] = _normalize_deliver_param(normalized["failure_deliver"])
     if "context_from" in normalized:
-        normalized["context_from"] = _cron_string_list(normalized["context_from"])
+        normalized["context_from"] = _cron_list_form_field(
+            normalized["context_from"], keep_empty=False, field="context_from")
     if "enabled_toolsets" in normalized:
         # [] is the zero-tool allowlist, not a clear — only context_from's [] collapses to null.
-        normalized["enabled_toolsets"] = _cron_string_list(normalized["enabled_toolsets"], keep_empty=True)
+        normalized["enabled_toolsets"] = _cron_list_form_field(
+            normalized["enabled_toolsets"], keep_empty=True, field="enabled_toolsets")
     return normalized
 
 

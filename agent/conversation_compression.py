@@ -33,7 +33,7 @@ from agent.context_compressor_summary import _accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
 from agent.conversation_compression_deadline import resolve_context_compression_timeouts
-from agent.conversation_compression_scaffolding import _SYNTHETIC_USER_FLAGS, _message_text, is_user_role_scaffolding
+from agent.conversation_compression_scaffolding import _SYNTHETIC_USER_FLAGS, _is_real_user_message, _message_text
 from agent.conversation_compression_telemetry import (
     _emit_aborted_attempt_telemetry, _emit_blocked_attempt_telemetry, _emit_bypassed_attempt_telemetry,
     _emit_compression_attempt_telemetry, _record_committed_attempt_effect, _snapshot_compression_effect_input,
@@ -41,6 +41,7 @@ from agent.conversation_compression_telemetry import (
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
+from agent.turn_end_hooks import without_rejected_messages
 from agent.usage_anchor import set_usage_anchor
 from hermes_state_ids import new_session_id as mint_session_id
 from hermes_state_pidns import holder_namespace_token
@@ -2146,18 +2147,6 @@ def conversation_history_after_compression(
     return None
 
 
-def _is_real_user_message(message: Any) -> bool:
-    """Distinguish human intent from user-role runtime scaffolding.
-    A compaction summary flipped to ``role="user"`` for alternation is scaffolding and must not short-circuit
-    anchor restoration."""
-    if not isinstance(message, dict) or message.get("role") != "user":
-        return False
-    if is_user_role_scaffolding(message) or not _message_text(message).strip():
-        return False
-    from agent.context_compressor import ContextCompressor
-    return not ContextCompressor._is_synthetic_compression_user_turn(message)
-
-
 _STEER_FALLBACK_OPEN = "[OUT-OF-BAND USER MESSAGE"
 _STEER_FALLBACK_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
 
@@ -4099,8 +4088,8 @@ def compress_context(
     # finishes or closes in its daemon worker. Otherwise four timed-out streams retain all four shared
     # compression-pool slots until the auxiliary stream's longer absolute ceiling expires. See #23975.
     _hard_cancel_event = getattr(agent, "_hard_interrupt_requested", None)
-    phase = _run_summary_phase(
-        agent, messages, lease=lease, in_place=in_place, checkpoint_required=checkpoint_required,
+    phase = _run_summary_phase(  # rejected completion drafts and repair feedback never reach the summary
+        agent, without_rejected_messages(messages), lease=lease, in_place=in_place, checkpoint_required=checkpoint_required,
         approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, bypass_cooldown=bypass_cooldown,
         commit_fence=commit_fence, hard_cancel_event=_hard_cancel_event, system_message=system_message, attempt=attempt,
     )

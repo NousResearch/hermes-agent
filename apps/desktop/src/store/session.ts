@@ -5,7 +5,7 @@ import { setApiRequestLocalMode } from '@/api/client'
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
-import { browserPageBasePath, readBrowserDefaultProjectDir } from '@/lib/browser-settings'
+import { browserFolderBasePath, readBrowserDefaultProjectDir } from '@/lib/browser-settings'
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
   activeConnectionScopeSuffix,
@@ -1910,7 +1910,7 @@ export const workspaceCwdForNewSession = (profile?: string): string => {
   const owner = profile?.trim()
 
   if (owner && hostHas('originScopedPrefs')) {
-    return readBrowserDefaultProjectDir(browserPageBasePath(), owner)
+    return readBrowserDefaultProjectDir(browserFolderBasePath($connection.get()?.connectionId), owner)
   }
 
   return getConfiguredDefaultProjectDir()

@@ -227,5 +227,8 @@ def _(rid, params: dict) -> dict:
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server)
-    # Each fill round-trips page scripts through the renderer: keep it off the request reader.
-    server._LONG_HANDLERS = server._LONG_HANDLERS | {"vault.preview.fill"}
+    # ``vault.preview.fill`` round-trips page scripts through the renderer; ``vault.list`` can now
+    # prepare the real-profile snapshot and launch Chrome (up to ~30 s) the first time the browser
+    # login source is listed. Both must run on the RPC pool, never the socket's ordered request
+    # reader, or they hold later requests — Stop included — behind that work.
+    server._LONG_HANDLERS = server._LONG_HANDLERS | {"vault.preview.fill", "vault.list"}

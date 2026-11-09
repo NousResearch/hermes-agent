@@ -1,0 +1,17 @@
+name: gateway-guardian
+repo: https://github.com/kawsthingz/kawsthingz-hermes-gateway-guardian
+sha: "f9959e4b1006ced16d1c6d6647dabe7c99f5aeb1"
+description: "Telegram/gateway reliability guard for Hermes — detects 409 polling conflicts, duplicate pollers, freezes, stale locks and missed deliveries, shows one health state (OK/DEGRADED/BLOCKED) and an approved recovery plan. Disclosure — read-only status: it reads the last 256 KiB of the gateway.log of this Hermes home and of every profile under it, plus process command lines from /proc, and returns only pattern counts and file paths; recovery only prints a fixed checklist and appends the chosen action to a local intent log, and never restarts, kills or rebinds anything itself; no network calls, no credentials, no telemetry."
+maintainer: kawsthingz
+tier: community
+category: tools
+version: "1.0.0"
+platforms: [linux, macos]
+docs_url: https://github.com/kawsthingz/kawsthingz-hermes-gateway-guardian
+screenshots:
+  - https://raw.githubusercontent.com/kawsthingz/kawsthingz-hermes-gateway-guardian/f9959e4b1006ced16d1c6d6647dabe7c99f5aeb1/screenshots/gateway-guardian-blocked.png
+capabilities:
+  provides_tools: [gateway_guardian_status, gateway_guardian_recover]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

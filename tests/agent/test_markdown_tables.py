@@ -43,6 +43,26 @@ def test_split_strips_outer_pipes_and_trims():
     assert split_table_row("a | b | c") == ["a", "b", "c"]
 
 
+def test_split_keeps_pipes_inside_inline_code_spans():
+    assert split_table_row("| Feature | `| table |` |") == [
+        "Feature",
+        "`| table |`",
+    ]
+    assert split_table_row("| `a|b` | `c|d` |") == ["`a|b`", "`c|d`"]
+
+
+def test_split_keeps_escaped_pipes_in_their_cell():
+    assert split_table_row(r"| left\|right | next |") == [r"left\|right", "next"]
+
+
+def test_split_handles_code_spans_and_escaped_pipes_together():
+    assert split_table_row(r"| `left|middle` | right\|also-right | end |") == [
+        "`left|middle`",
+        r"right\|also-right",
+        "end",
+    ]
+
+
 
 
 def test_looks_like_table_row():

@@ -1,7 +1,7 @@
 name: hostbook
 title: hostbook
 repo: https://github.com/Timidan/hostbook
-sha: 3f63aec97acb7e4af6a827564b62e5b4ba0d1f77
+sha: 4d4630f0a60254ac6941103c3d028b2c1f994985
 description: >-
   A dashboard for the machines and services on your home network, inside Hermes, plus tools so
   Hermes can check and fix them from chat under a rule per machine (read only, asks before
@@ -14,15 +14,15 @@ maintainer: Timidan
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/Timidan/hostbook/blob/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/guide.md
-version: "0.2.0"
-image: https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/banner.png
+docs_url: https://github.com/Timidan/hostbook/blob/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/guide.md
+version: "0.2.1"
+image: https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/screenshots/machines.png
-  - https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/screenshots/services.png
-  - https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/screenshots/setup.png
-  - https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/screenshots/discover.png
-  - https://raw.githubusercontent.com/Timidan/hostbook/3f63aec97acb7e4af6a827564b62e5b4ba0d1f77/docs/screenshots/schedule-people.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/screenshots/machines.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/screenshots/services.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/screenshots/setup.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/screenshots/discover.png
+  - https://raw.githubusercontent.com/Timidan/hostbook/4d4630f0a60254ac6941103c3d028b2c1f994985/docs/screenshots/schedule-people.png
 platforms: [linux, macos]
 known_issues:
   - Machines must be Linux hosts that the Hermes machine can reach over SSH with a key (ssh-copy-id, ssh-agent or an SSH config Host); usage numbers need /proc.

@@ -194,6 +194,72 @@ def test_the_index_refuses_a_handle_that_is_not_today_directory(tmp_path):
         LocalSkillsIndexProvider().open(link)
 
 
+def _home_skill(home: Path, name: str, description: str) -> None:
+    skill_md = home / "skills" / name / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(_skill_md(name, description), encoding="utf-8")
+
+
+def test_an_open_index_refuses_a_root_retargeted_into_another_profile(tmp_path):
+    home_a, home_b = tmp_path / "a", tmp_path / "b"
+    _home_skill(home_a, "alpha", "A-owned")
+    _home_skill(home_b, "alpha", "B-owned")
+    index = LocalSkillsIndexProvider().open(home_a / "skills").index
+    with bind_profile_scope(home_a):
+        body = index.read_body("alpha")
+        assert body is not None and "A-owned" in body
+        (home_a / "skills").rename(home_a / "original-skills")
+        (home_a / "skills").symlink_to(home_b / "skills")  # a fresh open refuses this root
+        for call in (lambda: index.list(), lambda: index.get("alpha"),
+                     lambda: index.read_body("alpha"),
+                     lambda: index.put("alpha", _skill_md("alpha", "overwritten")),
+                     lambda: index.put_file("alpha", "references/x.md", "x"),
+                     lambda: index.delete("alpha")):
+            with pytest.raises(StoragePinRefused, match="no longer resolves"):
+                call()
+    # the refusal touched nothing: both profiles' skills are exactly as they were
+    assert "A-owned" in (home_a / "original-skills" / "alpha" / "SKILL.md").read_text()
+    assert "B-owned" in (home_b / "skills" / "alpha" / "SKILL.md").read_text()
+
+
+def test_an_open_index_refuses_a_root_replaced_in_place(tmp_path):
+    home = tmp_path / "a"
+    _home_skill(home, "alpha", "The first directory.")
+    index = LocalSkillsIndexProvider().open(home / "skills").index
+    with bind_profile_scope(home):
+        body = index.read_body("alpha")
+        assert body is not None and "The first directory." in body
+        (home / "skills").rename(home / "first-skills")
+        (home / "skills").mkdir()  # the same path, a different directory
+        with pytest.raises(StoragePinRefused, match="no longer resolves"):
+            index.read_body("alpha")
+        with pytest.raises(StoragePinRefused, match="no longer resolves"):
+            index.put("alpha", _skill_md("alpha", "overwritten"))
+    assert "The first directory." in (home / "first-skills" / "alpha" / "SKILL.md").read_text()
+    assert not list((home / "skills").iterdir())
+
+
+def test_a_root_created_after_open_stays_this_indexs_root(index, tmp_path):
+    """A profile with no skills directory yet: the first write creates it at that path, and a
+    link planted there before the write is refused (it would resolve elsewhere)."""
+    assert not (tmp_path / "skills").exists()  # the fixture opened over a missing root
+    elsewhere = tmp_path / "elsewhere" / "skills"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "alpha").mkdir()
+    (elsewhere / "alpha" / "SKILL.md").write_text(_skill_md("alpha", "Elsewhere."), encoding="utf-8")
+    with bind_profile_scope(tmp_path):
+        (tmp_path / "skills").symlink_to(elsewhere)
+        with pytest.raises(StoragePinRefused, match="no longer resolves"):
+            index.read_body("alpha")
+        with pytest.raises(StoragePinRefused, match="no longer resolves"):
+            index.put("alpha", _skill_md("alpha", "Written through the link."))
+        assert (elsewhere / "alpha" / "SKILL.md").read_text(
+            encoding="utf-8") == _skill_md("alpha", "Elsewhere.")  # untouched by both refusals
+        (tmp_path / "skills").unlink()
+        row = index.put("alpha", _skill_md("alpha", "Created at the root it opened."))
+        assert row["name"] == "alpha"
+
+
 # --- the pin
 
 

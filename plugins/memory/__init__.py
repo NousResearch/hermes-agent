@@ -242,8 +242,7 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
             return None
         return _load_provider_from_entry_point(entry_point, register_skills=register_skills)
 
-    return _loader.load_named(name, provider_dir, _load, kind="Memory provider", noun="provider",
-                              logger=logger, bundled_root=_MEMORY_PLUGINS_DIR)
+    return _loader.load_named(name, provider_dir, _load, kind="Memory provider", noun="provider", logger=logger)
 
 
 def import_memory_provider_module(name: Optional[str] = None) -> bool:
@@ -572,6 +571,11 @@ def discover_plugin_cli_commands() -> list[dict]:
     if not _is_bundled(plugin_dir):
         from hermes_cli.plugin_isolation import in_process_import_refusal
         if in_process_import_refusal(f"memory provider {active_provider!r} CLI commands"):
+            return []
+        from plugins.plugin_loader import hosted_inprocess_refusal
+        if hosted_inprocess_refusal(plugin_dir):
+            # The one hosted provenance rule: a CLI file under the deployment home is
+            # tenant-writable code, so a hosted process never imports it.
             return []
     try:
         cli_mod = sys.modules.get(module_name)

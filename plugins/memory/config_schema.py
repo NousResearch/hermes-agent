@@ -107,6 +107,14 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
         if host is not None:  # plugins.isolation: host — a user schema file is user code too
             schema = _schema_from_record(host.config_schema(path))
         else:
+            if not _is_bundled(path.parent):
+                from plugins.plugin_loader import hosted_inprocess_refusal
+                refusal = hosted_inprocess_refusal(path.parent)
+                if refusal:
+                    # A config schema is the provider plugin's own code: the one hosted rule refuses
+                    # everything under the deployment home, so the panel simply has no schema.
+                    _log.error("Memory provider %s: %s", name, refusal)
+                    return None
             spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)

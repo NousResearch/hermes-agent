@@ -207,8 +207,8 @@ def _refuse_direct_platform_adapters(gateway_config: Any) -> None:
 
 
 _HOSTED_INPROCESS_PLUGIN_RULE = (
-    "in-process plugins of a hosted process are accepted only from plugins bundled with Hermes "
-    "or installed from the Hermes plugin catalog at tier verified or official")
+    "in-process code of a hosted process is only what its deployment image ships: the plugins "
+    "bundled with Hermes, or a package installed into the image's environment")
 
 
 def _plugins_that_would_load_inprocess() -> list[Any]:
@@ -227,10 +227,13 @@ def _plugins_that_would_load_inprocess() -> list[Any]:
 
 
 def _refuse_uncurated_inprocess_code(config: Mapping[str, Any]) -> None:
-    """Refuse a plugin or MCP server that is neither bundled nor catalog-curated yet would load
-    in-process. User-added plugins and MCP servers run in the agent's sandbox, never in the shared
-    process; the operator's curated set is the bundled plugins plus catalog installs at tier
-    verified or official."""
+    """Refuse plugin or MCP-server code that is not what the deployment image ships yet would
+    load in this process. The one hosted provenance rule decides (:func:`plugins.plugin_loader.
+    hosted_inprocess_refusal`): bundled inside the installed Hermes package, or an entry point of
+    a package installed into the image's environment. Everything under the deployment home is
+    refused, whatever its install record says — user-added plugins and MCP servers run in the
+    agent's sandbox, and an operator's curated set is baked into the image, not installed into a
+    tenant-writable home."""
     servers = config.get("mcp_servers") if isinstance(config, Mapping) else None
     if isinstance(servers, Mapping) and servers:
         _refuse(
@@ -239,28 +242,32 @@ def _refuse_uncurated_inprocess_code(config: Mapping[str, Any]) -> None:
             "sandbox); remove the mcp_servers entries, and install operator MCP servers as "
             "catalog plugins")
     from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-    from hermes_cli.plugins_cmd_catalog import bundled_dir_is_genuine, login_backend_provenance_error
     from hermes_cli.plugins_discovery import IN_BOTH_LISTS, _get_disabled_plugins, _get_enabled_plugins, gate_manifest
+    from plugins.plugin_loader import hosted_inprocess_refusal
 
     out_of_process = isolation_mode() == ISOLATION_HOST
     disabled, enabled = _get_disabled_plugins(), _get_enabled_plugins()
+    refusals: list[str] = []
     for manifest in _plugins_that_would_load_inprocess():
-        if (manifest.source == "bundled" and bundled_dir_is_genuine(manifest.path)) or out_of_process:
-            # Bundled plugins ship with this process (a symlink that leaves the bundled tree is
-            # not one of them); under plugins.isolation: host every non-bundled plugin runs on the
-            # profile's host instead of in this process.
+        if out_of_process:
+            # Under plugins.isolation: host every non-bundled plugin runs on the profile's host
+            # instead of in this process.
             continue
         gate = gate_manifest(manifest, disabled, enabled)
         if gate.action == "placeholder" and gate.error is not None and (
                 "disabled via config" in gate.error or "not enabled in config" in gate.error
                 or gate.error == IN_BOTH_LISTS):
             continue  # config never runs it
-        provenance = login_backend_provenance_error(manifest, rule=_HOSTED_INPROCESS_PLUGIN_RULE)
-        if provenance:
-            _refuse(
-                f"plugin {manifest.name!r} would load in this process: {provenance}",
-                "User-added plugins run in the agent's sandbox, never in the shared process; remove "
-                "it, or install it from the Hermes plugin catalog at tier verified or official")
+        # An entry point has no directory to judge: it is a package the operator installed into
+        # the image's environment. Everything else answers the one rule.
+        refusal = hosted_inprocess_refusal(None if manifest.source == "entrypoint" else manifest.path)
+        if refusal:
+            refusals.append(f"plugin {manifest.name!r} would load in this process: {refusal}")
+    if refusals:
+        _refuse(
+            "; ".join(refusals),
+            "User-added code runs in the agent's sandbox, never in the shared process; a hosted "
+            f"deployment's own plugins are baked into its image. {_HOSTED_INPROCESS_PLUGIN_RULE}")
 
 
 def _require_hosted_backends(config: Mapping[str, Any]) -> None:

@@ -1209,6 +1209,14 @@ def _mount_one_plugin_api(app, plugin: dict[str, Any], enabled_set: set, disable
         return False
     dashboard_dir = Path(plugin["_dir"])
     api_path = dashboard_dir / api_file_name
+    from plugins.plugin_loader import hosted_inprocess_refusal
+    refusal = hosted_inprocess_refusal(dashboard_dir)
+    if refusal:
+        # The one hosted provenance rule: a backend api file under the deployment home is
+        # tenant-writable code, so a hosted process never imports it — the dashboard of a
+        # hosted deployment serves only the plugins its image bundles.
+        _log.warning("Plugin %s: refusing to import %s: %s", plugin["name"], api_file_name, refusal)
+        return False
     try:
         api_path.resolve().relative_to(dashboard_dir.resolve())
     except (OSError, RuntimeError, ValueError):

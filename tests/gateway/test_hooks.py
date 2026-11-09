@@ -53,6 +53,26 @@ class TestDiscoverAndLoad:
 
         assert len(reg.loaded_hooks) == 0
 
+    def test_skips_a_home_hook_in_a_hosted_process(self, tmp_path, monkeypatch):
+        """The one hosted provenance rule: a handler under the deployment home is
+        tenant-writable code, so a hosted process never imports it — a deployment's own
+        hooks ship inside its image, not installed into a tenant-writable home."""
+        from hermes_cli import hosted_mode
+
+        monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+        marker = tmp_path / "handler-imported"
+        _create_hook(tmp_path, "home-hook", '["agent:start"]',
+                     "from pathlib import Path\n"
+                     f"Path({str(marker)!r}).write_text('x')\n"
+                     "def handle(event_type, context): pass\n")
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+            reg.discover_and_load()
+
+        assert reg.loaded_hooks == []
+        assert not marker.exists()  # the handler never ran, in this process or any other
+
 
 class TestEmit:
 

@@ -20,24 +20,9 @@ from hermes_cli import hosted_mode
 import hermes_cli.plugins as plugins_mod
 import registry_freeze
 from hermes_constants import get_hermes_home
-from tests.hermes_cli import test_hosted_mode as boot_tests
 from tests.hermes_cli.test_hosted_mode import (
-    SANDBOX_PLUGIN, STORAGE_PLUGIN, _clean_hosted_config, _curated, _install_plugin, _write_config,
+    SANDBOX_PLUGIN, STORAGE_PLUGIN, _clean_hosted_config, _write_config,
 )
-
-
-@pytest.fixture(autouse=True)
-def _shipped_catalog(monkeypatch):
-    """The catalog entries the deployment image ships (the same state the boot-profile tests
-    curate into): the trust checks read an install's tier and reviewed pin from the shipped
-    entry, never from the record's own claims."""
-    from hermes_cli import plugin_catalog as pc_cat
-
-    boot_tests._SHIPPED_CATALOG.clear()
-    monkeypatch.setattr(pc_cat, "get_catalog_entry",
-                        lambda name, catalog_dir=None: boot_tests._SHIPPED_CATALOG.get(name))
-    yield boot_tests._SHIPPED_CATALOG
-    boot_tests._SHIPPED_CATALOG.clear()
 
 
 @pytest.fixture
@@ -47,9 +32,9 @@ def verdict(monkeypatch):
 
 @pytest.fixture
 def clean_hosted(verdict, monkeypatch, tmp_path):
-    """The deployment of the passing-boot test, with an empty bundled-plugins dir so the boot
-    judges the home's own stubs; the storage stub installs in the session-storage kind's bundled
-    dir (a hosted boot resolves named providers only from the bundled tree)."""
+    """The deployment of the passing-boot test, with its own empty bundled tree: both stubs are
+    baked into it (a hosted boot loads in-process only what the image ships; the storage stub
+    installs in the session-storage kind's bundled dir)."""
     from plugins import session_storage
 
     bundled = tmp_path / "bundled"
@@ -57,9 +42,10 @@ def clean_hosted(verdict, monkeypatch, tmp_path):
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
     monkeypatch.setattr(session_storage, "_PLUGINS_DIR", bundled / "session_storage")
     _write_config(_clean_hosted_config())
-    _install_plugin("stub-sandbox", SANDBOX_PLUGIN, manifest={"name": "stub-sandbox",
-                                                              "version": "1.0"})
-    _curated(get_hermes_home() / "plugins" / "stub-sandbox")
+    sandbox = bundled / "stub-sandbox"
+    sandbox.mkdir(parents=True)
+    (sandbox / "__init__.py").write_text(SANDBOX_PLUGIN, encoding="utf-8")
+    (sandbox / "plugin.yaml").write_text("name: stub-sandbox\nversion: '1.0'\n", encoding="utf-8")
     storage = session_storage._PLUGINS_DIR / "stub-storage"
     storage.mkdir(parents=True)
     (storage / "__init__.py").write_text(STORAGE_PLUGIN, encoding="utf-8")

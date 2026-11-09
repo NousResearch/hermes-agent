@@ -59,7 +59,7 @@ def load_computer_use_provider(name: str) -> Optional[ComputerUseProvider]:
     if provider_dir is None:
         return None
     return _loader.load_named(name, provider_dir, _load_provider_from_dir, kind="Computer-use provider",
-                              noun="provider", logger=logger, bundled_root=_CU_PLUGINS_DIR)
+                              noun="provider", logger=logger)
 
 
 def _load_provider_from_dir(provider_dir: Path) -> Optional[ComputerUseProvider]:

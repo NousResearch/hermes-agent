@@ -162,11 +162,10 @@ def test_concurrent_load_waits_for_the_first_load(tmp_path, monkeypatch):
                 sys.modules.pop(name, None)
 
 
-def test_load_named_refuses_a_user_dir_in_a_hosted_process(tmp_path, monkeypatch):
+def test_load_named_refuses_a_home_dir_in_a_hosted_process(tmp_path, monkeypatch):
     """The shared named-provider seam: in a hosted process a provider directory outside the
-    bundled tree is refused BEFORE its loader (which would import it) runs — the deployment
-    home's plugin directories are tenant-writable, so hosted named providers resolve only from
-    the bundled tree."""
+    tree bundled with Hermes is refused BEFORE its loader (which would import it) runs — the
+    one rule is that only what the deployment image ships loads in-process."""
     from hermes_cli import hosted_mode
     from plugins.plugin_loader import NamedProviderRefused, load_named
 
@@ -175,23 +174,75 @@ def test_load_named_refuses_a_user_dir_in_a_hosted_process(tmp_path, monkeypatch
     def _must_not_load(provider_dir):
         raise AssertionError("a refused provider's loader ran")
 
-    with pytest.raises(NamedProviderRefused, match="bundled with Hermes"):
+    with pytest.raises(NamedProviderRefused, match="deployment image"):
         load_named("probe", tmp_path / "user-dir", _must_not_load, kind="Probe provider",
                    noun="provider", logger=logging.getLogger(__name__))
 
 
 def test_load_named_loads_a_bundled_dir_in_a_hosted_process(tmp_path, monkeypatch):
-    """The same seam, bundled side: a provider inside the kind's bundled directory loads exactly
-    as before when the process is hosted."""
+    """The same seam, bundled side: a provider inside the tree the image bundles with Hermes
+    loads exactly as before when the process is hosted."""
+    import hermes_cli.plugins as plugins_mod
     from hermes_cli import hosted_mode
     from plugins.plugin_loader import load_named
 
     monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
     bundled = tmp_path / "bundled"
     bundled.mkdir()
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
 
     def _load(provider_dir):
         return object()
 
     assert load_named("probe", bundled, _load, kind="Probe provider", noun="provider",
-                      logger=logging.getLogger(__name__), bundled_root=bundled) is not None
+                      logger=logging.getLogger(__name__)) is not None
+
+
+def test_a_symlink_wearing_the_bundled_label_is_refused(tmp_path, monkeypatch):
+    """The bundled tree is resolved from Hermes's own installed code, and a directory that is
+    a symlink — or whose realpath leaves that tree — does not get the bundled trust, whatever
+    its label says."""
+    import hermes_cli.plugins as plugins_mod
+    from hermes_cli import hosted_mode
+    from plugins.plugin_loader import NamedProviderRefused, hosted_inprocess_refusal, load_named
+
+    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (bundled / "impostor").symlink_to(elsewhere)
+
+    assert "deployment image" in hosted_inprocess_refusal(bundled / "impostor")
+    assert hosted_inprocess_refusal(bundled) == ""  # the genuine tree itself is eligible
+
+    def _must_not_load(provider_dir):
+        raise AssertionError("a refused provider's loader ran")
+
+    with pytest.raises(NamedProviderRefused, match="deployment image"):
+        load_named("impostor", bundled / "impostor", _must_not_load, kind="Probe provider",
+                   noun="provider", logger=logging.getLogger(__name__))
+
+
+def test_the_plugin_managers_directory_loader_refuses_a_home_dir_in_a_hosted_process(tmp_path, monkeypatch):
+    """PluginManager's in-process import seam — a directory plugin's ``__init__.py`` — answers
+    the same one hosted rule: a directory outside the tree the image bundles with Hermes never
+    imports in a hosted process, whatever its install record says."""
+    from hermes_cli import hosted_mode
+    from hermes_cli.plugins_manifest import PluginManifest
+    from hermes_cli.plugins import PluginManager
+
+    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+    plugin_dir = tmp_path / "home-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(tmp_path / 'imported')!r}).write_text('x')\n",
+        encoding="utf-8",
+    )
+    manifest = PluginManifest(name="home-plugin", source="user", path=str(plugin_dir))
+
+    with pytest.raises(RuntimeError, match="deployment image"):
+        PluginManager()._load_directory_module(manifest)
+    assert not (tmp_path / "imported").exists()  # the plugin module never ran

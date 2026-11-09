@@ -45,6 +45,13 @@ def _load_hook_dir(hook_dir: Path) -> Optional[tuple]:
     manifest_path, handler_path = hook_dir / "HOOK.yaml", hook_dir / "handler.py"
     if not manifest_path.exists() or not handler_path.exists():
         return None
+    from plugins.plugin_loader import hosted_inprocess_refusal
+    refusal = hosted_inprocess_refusal(hook_dir)
+    if refusal:
+        # The one hosted provenance rule: a handler under the deployment home is tenant-writable
+        # code, so a hosted process never imports it — a deployment's own hooks are baked into
+        # its image (an installed package), not installed into a tenant-writable home.
+        return _skip(hook_dir.name, refusal)
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8-sig"))
     if not manifest or not isinstance(manifest, dict):
         return _skip(hook_dir.name, "invalid HOOK.yaml")

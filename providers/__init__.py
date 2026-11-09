@@ -625,6 +625,15 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     if not (plugin_dir / "__init__.py").exists():
         return
     if source != "bundled":
+        from plugins.plugin_loader import hosted_inprocess_refusal
+        refusal = hosted_inprocess_refusal(plugin_dir)
+        if refusal:
+            # The one hosted provenance rule: nothing under the deployment home loads
+            # in-process, whatever its install record says. A hosted deployment's
+            # providers ship bundled with Hermes or as installed packages (entry points).
+            logger.error("Provider plugin %s: %s", plugin_dir.name, refusal)
+            _note_load_result(plugin_dir, RuntimeError(refusal))
+            return
         from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
         if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
             _import_hosted_plugin_dir(plugin_dir, source, _user_module_name(plugin_dir, home_key))

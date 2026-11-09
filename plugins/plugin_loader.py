@@ -25,30 +25,56 @@ class NamedProviderRefused(RuntimeError):
     """A named provider that exists but may not load in this process (the reason is the message)."""
 
 
-def hosted_user_dir_refusal(provider_dir: Path, bundled_root: Optional[Path] = None) -> str:
-    """Why plugin code at *provider_dir* may not be imported in a hosted process (``""`` when it
-    may). A hosted process serves many tenants from one interpreter, and the deployment home's
-    plugin directories are tenant-writable, so a named provider resolves only from the tree
-    bundled with Hermes (hosted providers ship bundled or as installed packages).
-    *bundled_root* is the directory the kind's own providers ship in (a kind directory inside the
-    bundled plugin tree); the plugin tree's root when a caller names none. The check runs before
-    any import, so refused code never executes."""
+def bundled_dir_is_genuine(plugin_dir) -> bool:
+    """Whether a manifest that claims the ``bundled`` source really is a directory inside the
+    plugins tree shipped with Hermes: not a symlink, and its realpath stays inside the bundled
+    root (the tree resolved from Hermes's own installed code, never from the deployment home
+    or config). A symlink planted in the bundled dir (or a dir whose realpath leaves the tree)
+    is operator-unreviewed code wearing the bundled label, so every trust decision that consults
+    the bundled source must consult this, not the label alone."""
+    from hermes_cli.plugins import get_bundled_plugins_dir
+
+    if not plugin_dir:
+        return False
+    path = Path(plugin_dir)
+    try:
+        if path.is_symlink():
+            return False
+        resolved = path.resolve()
+        root = get_bundled_plugins_dir().resolve()
+    except OSError:
+        return False
+    return resolved == root or root in resolved.parents
+
+
+def hosted_inprocess_refusal(code_path) -> str:
+    """THE hosted provenance rule — the one function every loader that could import Python in
+    a hosted process consults before importing: ``""`` when *code_path* may be imported
+    in-process, else the reason it may not. The check runs before any import, so refused code
+    never executes.
+
+    A hosted process serves many tenants from one interpreter, so its in-process code is only
+    what the deployment image ships: the plugins bundled inside the installed Hermes package
+    (:func:`bundled_dir_is_genuine` resolves that tree from Hermes's own installed code, never
+    from the deployment home or config) or a package the operator installed into the image's
+    environment — an importlib entry point, which has no directory here (*code_path* ``None``).
+
+    Everything else — user plugins, catalog installs, provider and hook directories under the
+    deployment home — is refused, whatever its install record says: the home is tenant-writable,
+    so a record can never vouch for hosted trust; a catalog plugin a hosted deployment wants is
+    baked into its image by the operator."""
     from hermes_cli.hosted_mode import is_hosted
 
     if not is_hosted():
         return ""
-    root = Path(bundled_root) if bundled_root is not None else _PLUGINS_ROOT
-    try:
-        resolved = provider_dir.resolve()
-        root = root.resolve()
-    except OSError:
-        resolved = None  # a path that cannot be resolved is not provably bundled: refuse
-    if resolved is not None and (resolved == root or root in resolved.parents):
+    if code_path is None:
+        return ""  # an installed distribution's entry point: the operator controls the image's packages
+    if bundled_dir_is_genuine(code_path):
         return ""
-    return (
-        f"a hosted process loads named providers only from the plugins bundled with Hermes "
-        f"(installed hosted providers ship bundled or as installed packages); {provider_dir} is in "
-        f"the deployment home's writable plugin directories")
+    return ("a hosted process loads in-process code only from what its deployment image ships "
+            "(the plugins bundled with Hermes, or a package installed into the image's "
+            f"environment); {code_path} is in the deployment home's writable directories, and an "
+            "install record is never consulted for hosted trust")
 
 
 _MODULE_LOAD_LOCKS: dict[str, threading.RLock] = {}
@@ -289,14 +315,13 @@ def instance_from_module(mod: Any, *, collector: Any, collected_attr: str, base_
 
 
 def load_named(name: str, plugin_dir: Path, load_from_dir: Callable[[Path], Optional[Any]], *, kind: str,
-               noun: str, logger: logging.Logger, bundled_root: Optional[Path] = None) -> Optional[Any]:
+               noun: str, logger: logging.Logger) -> Optional[Any]:
     """Shared body of ``load_<kind>(name)``: load from *plugin_dir*, warn + None on failure.
 
-    A user-directory provider is refused in a hosted process BEFORE its module is imported —
-    the deployment home's plugin directories are tenant-writable, so hosted named providers
-    resolve only from the bundled tree (*bundled_root*, the kind's own directory; the plugin
-    tree's root when a caller names none). :exc:`NamedProviderRefused` names the reason."""
-    refusal = hosted_user_dir_refusal(plugin_dir, bundled_root=bundled_root)
+    A provider outside the deployment image's bundled tree is refused in a hosted process
+    BEFORE its module is imported — :func:`hosted_inprocess_refusal` is the one rule, and
+    :exc:`NamedProviderRefused` names its reason."""
+    refusal = hosted_inprocess_refusal(plugin_dir)
     if refusal:
         logger.error("%s %s: %s", kind, name, refusal)
         raise NamedProviderRefused(refusal)

@@ -69,7 +69,7 @@ def load_cron_scheduler(name: str) -> Optional[CronScheduler]:
         return None
     return _loader.load_named(
         name, provider_dir, _load_provider_from_dir,
-        kind="Cron provider", noun="provider", logger=logger, bundled_root=_CRON_PLUGINS_DIR)
+        kind="Cron provider", noun="provider", logger=logger)
 
 
 def _load_provider_from_dir(provider_dir: Path) -> Optional[CronScheduler]:

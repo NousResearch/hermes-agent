@@ -108,27 +108,6 @@ NON_ISOLATING_STORAGE_PLUGIN = STORAGE_PLUGIN.replace(
 
 HOSTED = {"enabled": True, "identity_verifier": "stub-verifier", "session_storage": "stub-storage"}
 
-# The reviewed pin the shipped catalog entry records for every curated stub in this file.
-_REVIEWED_PIN = "a" * 40
-# The catalog entries the deployment's image ships, by plugin name: the boot's curated check reads
-# the entry's tier and pin from here, never from the install record's own claims.
-_SHIPPED_CATALOG: dict = {}
-
-
-@pytest.fixture(autouse=True)
-def _shipped_catalog(monkeypatch):
-    """The catalog shipped with the deployment image: entries registered by ``_curated``. The
-    provenance check looks its entry up by name (tier and reviewed pin come from the shipped
-    entry — a fabricated install record's claims decide nothing)."""
-    from hermes_cli import plugin_catalog as pc_cat
-
-    _SHIPPED_CATALOG.clear()
-    monkeypatch.setattr(pc_cat, "get_catalog_entry",
-                        lambda name, catalog_dir=None: _SHIPPED_CATALOG.get(name))
-    yield _SHIPPED_CATALOG
-    _SHIPPED_CATALOG.clear()
-
-
 def _write_config(settings: dict) -> None:
     """The home's config.yaml, through the repo's own YAML writer."""
     get_hermes_home().mkdir(parents=True, exist_ok=True)
@@ -148,20 +127,17 @@ def _install_plugin(name: str, body: str, *, manifest: dict | None = None) -> Pa
 
 
 def _curated(plugin: Path, *, tier: str = "verified") -> None:
-    """The installer-owned catalog record a curated install carries (an operator installing the
-    deployment's backends from the Hermes plugin catalog at its reviewed pin): the shipped
-    entry's name, tier and pin, plus the code digest of the tree the installer published."""
-    from hermes_cli import plugin_catalog as pc_cat
-    from hermes_cli.plugins_cmd_catalog import installed_code_digest
-
+    """The installer-owned catalog record a curated local install carries (an operator installing
+    a backend from the Hermes plugin catalog at its reviewed pin). A hosted boot never consults
+    it — in hosted mode nothing under the deployment home loads in-process, whatever its record
+    says — so this is the shape a LOCAL install's trust still reads."""
     repo = f"https://github.com/NousResearch/{plugin.name}"
-    _SHIPPED_CATALOG[plugin.name] = pc_cat.PluginCatalogEntry(
-        name=plugin.name, repo=repo, sha=_REVIEWED_PIN, description="d", maintainer="op", tier=tier)
+    sha = "a" * 40
     metadata_path = get_hermes_home() / "plugins" / ".install-metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig")) if metadata_path.exists() else {}
-    metadata[plugin.name] = {"catalog": {"name": plugin.name, "repo": repo,
-                                         "tier": tier, "pin": _REVIEWED_PIN},
-                            "tree_digest": installed_code_digest(plugin)}
+    metadata[plugin.name] = {"source": repo, "revision": sha, "pinned": True,
+                             "catalog": {"name": plugin.name, "repo": repo,
+                                         "tier": tier, "pin": sha, "sha": sha}}
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
 
@@ -247,6 +223,17 @@ def test_a_local_boot_consults_none_of_the_checks(verdict, empty_bundled, tmp_pa
 # One refusal per boot condition
 
 
+def _bundled_plugin(name: str, body: str) -> Path:
+    """A plugin installed in the image's bundled plugins tree — the only plugins a hosted boot
+    accepts in-process (a deployment's own plugins are baked into its image by the operator)."""
+    plugin = plugins_mod.get_bundled_plugins_dir() / name
+    plugin.mkdir(parents=True, exist_ok=True)
+    (plugin / "__init__.py").write_text(textwrap.dedent(body), encoding="utf-8")
+    (plugin / "plugin.yaml").write_text(
+        yaml.safe_dump({"name": name, "version": "1.0"}, sort_keys=False), encoding="utf-8")
+    return plugin
+
+
 def _bundled_provider(name: str, body: str) -> Path:
     """A named session-storage provider installed in the kind's BUNDLED directory — where a
     hosted boot resolves its providers from (the deployment home's own dirs are refused)."""
@@ -260,11 +247,10 @@ def _bundled_provider(name: str, body: str) -> Path:
 
 def _clean_boot(**kwargs):
     """A hosted deployment that passes every check: the stub sandbox and storage plugins are
+    baked into the image's bundled tree (where a hosted deployment's own plugins live) and are
     discovered for real, and the boot call sees a clean environment."""
     _write_config(_clean_hosted_config())
-    _install_plugin("stub-sandbox", SANDBOX_PLUGIN,
-                    manifest={"name": "stub-sandbox", "version": "1.0"})
-    _curated(get_hermes_home() / "plugins" / "stub-sandbox")
+    _bundled_plugin("stub-sandbox", SANDBOX_PLUGIN)
     _bundled_provider("stub-storage", STORAGE_PLUGIN)
     boot(env={"PATH": "/usr/bin", "HOME": "/home/op", "LC_ALL": "C"}, **kwargs)
 
@@ -331,9 +317,7 @@ def test_an_unknown_terminal_backend_refuses_hosted_boot(clean_hosted):
 
 
 def test_a_plugin_backend_without_the_hosted_declaration_refuses_hosted_boot(clean_hosted):
-    _install_plugin("plain-backend", PLAIN_SANDBOX_PLUGIN.replace('"stub-sandbox"', '"plain-backend"'),
-                    manifest={"name": "plain-backend", "version": "1.0"})
-    _curated(get_hermes_home() / "plugins" / "plain-backend")
+    _bundled_plugin("plain-backend", PLAIN_SANDBOX_PLUGIN.replace('"stub-sandbox"', '"plain-backend"'))
     config = _clean_hosted_config() | {"terminal": {"backend": "plain-backend"},
                                       "plugins": {"enabled": ["plain-backend"]}}
     _write_config(config)
@@ -366,17 +350,17 @@ def test_a_configured_mcp_server_refuses_hosted_boot(clean_hosted):
         boot(config=config, env={"PATH": "/usr/bin"})
 
 
-def test_a_user_plugin_refuses_hosted_boot_until_it_is_catalog_curated(clean_hosted):
-    """The sandbox stub is curated by the record in the fixtures above; here the operator's record
-    is missing, so the same enabled plugin is a user install and refuses."""
-    (get_hermes_home() / "plugins" / ".install-metadata.json").unlink()
-    with pytest.raises(HostedBootRefused, match="stub-sandbox"):
-        boot(env={"PATH": "/usr/bin"})
-
-
-def test_a_catalog_plugin_off_the_curated_tier_refuses_hosted_boot(clean_hosted):
-    _curated(get_hermes_home() / "plugins" / "stub-sandbox", tier="community")
-    with pytest.raises(HostedBootRefused, match="tier community"):
+def test_a_home_plugin_refuses_hosted_boot_whatever_its_install_record(clean_hosted):
+    """The same sandbox plugin, this time as a home install carrying a perfectly curated catalog
+    record (verified tier, at its reviewed pin): the boot still refuses it. An install record
+    lives in the tenant-writable home, so it is never consulted for hosted trust — a hosted
+    deployment's own plugins are baked into its image, and a home plugin is a user plugin."""
+    home_copy = _install_plugin("home-sandbox", SANDBOX_PLUGIN,
+                                manifest={"name": "home-sandbox", "version": "1.0"})
+    _curated(home_copy)
+    config = _clean_hosted_config() | {"plugins": {"enabled": ["stub-sandbox", "home-sandbox"]}}
+    _write_config(config)
+    with pytest.raises(HostedBootRefused, match="home-sandbox"):
         boot(env={"PATH": "/usr/bin"})
 
 
@@ -482,57 +466,19 @@ def test_a_user_dir_session_storage_provider_is_refused_before_import(clean_host
 
 
 # --------------------------------------------------------------------------------------------------
-# Provenance: the shipped catalog and the tree's own digest corroborate an install record
+# Provenance: one rule — only what the deployment image ships loads in-process
 
 
-def _stub_sandbox_record() -> dict:
-    metadata_path = get_hermes_home() / "plugins" / ".install-metadata.json"
-    return json.loads(metadata_path.read_text(encoding="utf-8-sig"))["stub-sandbox"]
-
-
-def _write_stub_sandbox_record(record: dict) -> None:
-    metadata_path = get_hermes_home() / "plugins" / ".install-metadata.json"
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
-    metadata["stub-sandbox"] = record
-    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-
-
-def test_a_record_naming_an_entry_the_shipped_catalog_does_not_pin_refuses(clean_hosted):
-    """The install record lives in the tenant-writable home, so its claims decide nothing on
-    their own: a record naming an entry the shipped catalog has no pin for is a fabricated
-    record, and the boot refuses the plugin it vouches for."""
-    _SHIPPED_CATALOG.pop("stub-sandbox")
-    with pytest.raises(HostedBootRefused, match="stub-sandbox"):
+def test_the_boot_lists_every_refused_plugin_in_one_refusal(clean_hosted):
+    """Two uncurated home plugins would load: the preflight refuses once, naming each — an
+    operator reading the boot error sees everything the process refuses, not just the first."""
+    for name in ("probe-a", "probe-b"):
+        _install_plugin(name, SANDBOX_PLUGIN, manifest={"name": name, "version": "1.0"})
+    config = _clean_hosted_config() | {"plugins": {"enabled": ["stub-sandbox", "probe-a", "probe-b"]}}
+    _write_config(config)
+    with pytest.raises(HostedBootRefused) as refusal:
         boot(env={"PATH": "/usr/bin"})
-
-
-def test_a_record_off_the_shipped_pin_refuses(clean_hosted):
-    """The record's pin must be the reviewed pin the SHIPPED catalog entry records; a record that
-    pins anything else does not vouch for the code that is installed."""
-    record = _stub_sandbox_record()
-    record["catalog"]["pin"] = "b" * 40
-    _write_stub_sandbox_record(record)
-    with pytest.raises(HostedBootRefused, match="reviewed pin"):
-        boot(env={"PATH": "/usr/bin"})
-
-
-def test_a_record_without_the_installed_tree_digest_refuses(clean_hosted):
-    """An install record that pins no code digest cannot vouch for the tree on disk (a fabricated
-    record never carries one): the boot refuses the plugin it claims to have installed."""
-    record = _stub_sandbox_record()
-    record.pop("tree_digest")
-    _write_stub_sandbox_record(record)
-    with pytest.raises(HostedBootRefused, match="digest"):
-        boot(env={"PATH": "/usr/bin"})
-
-
-def test_a_tree_edited_after_install_refuses(clean_hosted):
-    """The record pins the code digest of the tree the installer published: edit one file of a
-    curated install afterwards and it is no longer the code the catalog reviewed."""
-    with (get_hermes_home() / "plugins" / "stub-sandbox" / "__init__.py").open("a") as handle:
-        handle.write("\n# a tenant's edit\n")
-    with pytest.raises(HostedBootRefused, match="digest"):
-        boot(env={"PATH": "/usr/bin"})
+    assert "probe-a" in str(refusal.value) and "probe-b" in str(refusal.value)
 
 
 def test_a_symlink_in_the_bundled_dir_is_not_a_bundled_plugin(clean_hosted, tmp_path):

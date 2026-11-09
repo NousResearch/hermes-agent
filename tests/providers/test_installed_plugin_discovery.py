@@ -76,3 +76,41 @@ def test_other_plugins_in_the_flat_directory_are_left_to_the_plugin_manager(herm
 
     assert not [p for p in list_providers() if p.name in ("other-standalone", "manifestless", "broken-manifest")]
     assert get_provider_profile("openrouter") is not None  # bundled set still intact
+
+
+# --------------------------------------------------------------------------------------------------
+# The one hosted provenance rule: a hosted process loads provider code only from what its
+# deployment image ships (the tree bundled with Hermes, or an installed package's entry point)
+
+
+def test_a_home_dir_provider_is_refused_before_import_in_a_hosted_process(hermes_home, monkeypatch, caplog):
+    """The home's plugin directories are tenant-writable, so a hosted process never imports a
+    provider from them: neither a nested model-providers dir nor a flat catalog install. The
+    refusal happens before any plugin code can run (the module never lands in sys.modules)."""
+    from hermes_cli import hosted_mode
+
+    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+    _write_plugin(hermes_home / "plugins" / "model-providers" / "nested-acp", name="nested-acp",
+                  manifest="name: nested-acp\nkind: model-provider\n")
+    _write_plugin(hermes_home / "plugins" / "installed-acp", name="installed-acp",
+                  manifest='name: installed-acp\nkind: "model-provider"\n')
+
+    from providers import get_provider_profile
+
+    with caplog.at_level("ERROR"):
+        assert get_provider_profile("nested-acp") is None
+        assert get_provider_profile("installed-acp") is None
+
+    assert not [m for m in sys.modules if m.startswith("_hermes_user_provider")]
+    assert "deployment image" in caplog.text
+
+
+def test_bundled_providers_still_load_in_a_hosted_process(hermes_home, monkeypatch):
+    """The tree bundled with Hermes is the image's own: hosted or not, its providers register
+    exactly as before (the refusal above touches only the home's directories)."""
+    from hermes_cli import hosted_mode
+
+    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+    from providers import get_provider_profile
+
+    assert get_provider_profile("openrouter") is not None

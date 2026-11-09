@@ -35,7 +35,7 @@ def with_pre_pm_baseline(package, extras, *, carried, automatic, plugins):
     if not added:
         return extras, carried, automatic
     if plugins is None:
-        carried = [*(carried or ()), *(extra for extra in added if extra != "all")] or carried
+        carried = [*(carried or ()), *(extra for extra in added if extra != "all")]
     return sorted({*(extras or ()), *added}), carried, [*(automatic or ()), *added]
 
 

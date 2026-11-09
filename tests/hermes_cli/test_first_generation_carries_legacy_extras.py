@@ -22,6 +22,7 @@ import pytest
 from pm import paths
 from pm.environments import install_state_dir, runtime_facts_path
 from pm.lock import Facts
+from tests.fakes.main_era_venv import main_era_venv, pm_built_venv
 
 
 class _Venv:
@@ -55,9 +56,7 @@ def legacy_tree(monkeypatch, tmp_path):
     (root / "pyproject.toml").write_text(
         '[project]\nname="hermes-agent"\nversion="1"\n[project.optional-dependencies]\n'
         'all=[]\ntelegram=[]\ndiscord=[]\nfal=[]\nslack=[]\n', encoding="utf-8")
-    site = root / "venv" / "lib" / "python3.11" / "site-packages"
-    for anchor in ("telegram", "discord", "fal_client"):
-        (site / anchor).mkdir(parents=True)
+    main_era_venv(root, "telegram", "discord", "fal_client")
     monkeypatch.setattr(paths, "repo_root", lambda: root)
     package = _Venv(root)
     monkeypatch.setattr(install, "get_package", lambda name: package)
@@ -197,6 +196,62 @@ def test_a_narrow_request_on_a_tree_without_an_old_venv_records_only_the_request
     import pm
 
     shutil.rmtree(legacy_tree / "venv")
+
+    pm.sync_venv(["slack"], explicit=True)
+
+    assert _recorded(legacy_tree) == ["slack"]
+
+
+@pytest.fixture()
+def developer_tree(legacy_tree):
+    """The same checkout with no main-era venv, but the test env CONTRIBUTING.md has a contributor
+    build into it (``pm.build_env --source . --out .venv --group dev --group test``): Hermes is
+    installed from a tree with ``pm``, beside the same SDKs the main-era venv held."""
+    import shutil
+
+    shutil.rmtree(legacy_tree / "venv")
+    pm_built_venv(legacy_tree, "telegram", "discord", "fal_client")
+    return legacy_tree
+
+
+def test_a_pm_built_checkout_venv_is_not_an_old_install(developer_tree):
+    """A data root with no recorded selection (a test's or a borrowing launch's HERMES_HOME) on a
+    checkout with a developer ``.venv``: that venv is not the install's old state, so a sync
+    records only what was asked for."""
+    import pm
+
+    pm.sync_venv(["slack"], explicit=True)
+
+    assert _recorded(developer_tree) == ["slack"]
+
+
+def test_a_core_only_sync_with_a_checkout_venv_stays_core_only(developer_tree):
+    """CI's `setup_toolchain dependencies --extras '[]'`: an empty request with an empty plugin set."""
+    import pm
+    from pm.plugin_inputs import Members
+
+    pm.sync_venv([], explicit=True, plugins=Members([]))
+
+    assert _recorded(developer_tree) == []
+
+
+@pytest.mark.parametrize("first_sync", [_completion_bootstrap, _venv_sync_entry],
+                         ids=lambda entry: entry.__name__.strip("_"))
+def test_a_whole_selection_sync_beside_a_developer_venv_selects_the_default(developer_tree, tmp_path,
+                                                                            monkeypatch, first_sync):
+    first_sync(developer_tree, tmp_path, monkeypatch)
+
+    assert _recorded(developer_tree) == ["all"]
+
+
+def test_a_bare_venv_holds_no_old_install(legacy_tree):
+    """`uv venv .venv` with nothing installed: no Hermes, so nothing of an old install to carry."""
+    import shutil
+
+    import pm
+
+    shutil.rmtree(legacy_tree / "venv")
+    (legacy_tree / ".venv" / "lib" / "python3.14" / "site-packages").mkdir(parents=True)
 
     pm.sync_venv(["slack"], explicit=True)
 

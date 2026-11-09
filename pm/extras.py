@@ -377,10 +377,29 @@ def droppable_extras(project_root: Path) -> list[str]:
 
 
 def _pre_pm_site_packages(root: Path) -> list[Path]:
-    """The site-packages of the checkout's own main-era ``venv/`` or ``.venv/`` (POSIX or Windows layout)."""
+    """The site-packages of the checkout's own main-era ``venv/`` or ``.venv/`` (POSIX or Windows layout).
+
+    Only a venv a main-era installer built counts. Those installers always installed the checkout
+    into it (``uv sync``, ``pip install -e``) from a tree that had no ``pm`` package. A developer's or
+    test environment built from a PM tree (``pm.build_env --out .venv``, ``uv sync``) lists ``pm``,
+    and a bare ``uv venv`` holds no Hermes at all. Neither is an install's old state: reading one
+    would union its contents into every sync of a data root with no recorded selection.
+    """
     return [tree for venv in (root / "venv", root / ".venv")
             for tree in (*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages")
-            if tree.is_dir()]
+            if tree.is_dir() and _holds_pre_pm_hermes(tree)]
+
+
+def _holds_pre_pm_hermes(site_packages: Path) -> bool:
+    """Is Hermes installed under ``site_packages`` from a tree without PM?"""
+    for dist in site_packages.glob("hermes_agent-*.dist-info"):
+        try:
+            top_level = (dist / "top_level.txt").read_text(encoding="utf-8").split()
+        except FileNotFoundError:
+            top_level = []
+        if "pm" not in top_level:
+            return True
+    return False
 
 
 def legacy_selection(project_root: Path) -> list[str]:

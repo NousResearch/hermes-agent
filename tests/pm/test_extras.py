@@ -12,6 +12,7 @@ import pytest
 import pm
 from pm import client
 from pm import extras
+from tests.fakes.main_era_venv import main_era_venv
 
 
 # ---- per-extra platform gates ([tool.hermes.extras-platforms]) ----
@@ -256,9 +257,7 @@ def test_legacy_selection_carries_extras_the_main_era_venv_lazily_installed(monk
     image generation, a messaging SDK), or the first PM launch prompts to
     reinstall them. Umbrella and gated-off extras are never carried."""
     monkeypatch.setattr(extras, "_PLATFORM_GATES", {"piper": "python_version < '0'"})
-    site = tmp_path / "venv" / "lib" / "python3.11" / "site-packages"
-    (site / "fal_client").mkdir(parents=True)
-    (site / "telegram").mkdir()
+    site = main_era_venv(tmp_path, "fal_client", "telegram")
     (site / "piper").mkdir()
     (site / "google").mkdir()
     (site / "google" / "auth").mkdir()

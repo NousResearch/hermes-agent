@@ -204,6 +204,10 @@ once the build is fixed. A carried extra that fails only for the moment (a
 download or a missing tool) is never dropped: the update fails before it
 publishes anything, so the next update scans the old venv again and retries
 it. An extra you request yourself still fails the install when it cannot build.
+Only a venv a pre-PM installer built counts as the old install: one with Hermes
+installed from a tree without `pm`. A developer `.venv` built by
+`pm.build_env` or `uv sync` from a PM checkout, or an empty `uv venv`, is
+never carried.
 
 ### Lazy-install policy
 

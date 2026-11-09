@@ -16,6 +16,7 @@ import pm.cli
 from pm import extras, install
 from pm.package import InstallError
 from pm.paths import repo_root
+from tests.fakes.main_era_venv import main_era_venv
 
 
 @pytest.fixture()
@@ -40,9 +41,7 @@ def test_without_drops_a_recorded_extra_from_every_later_selection(synced, tmp_p
     # The update's sync carries recorded extras forward; the dropped one stays out, others stay.
     assert _next_selection(["all", "fal", "matrix"]) == ["all", "fal"]
     # A data root without facts re-scans the main-era venv, which is never deleted.
-    site = tmp_path / "venv" / "lib" / "python3.11" / "site-packages"
-    for anchor in (*extras._anchors("matrix"), "fal_client"):
-        (site / anchor).mkdir(parents=True)
+    main_era_venv(tmp_path, *extras._anchors("matrix"), "fal_client")
     assert extras.legacy_selection(tmp_path) == ["all", "fal", "matrix"]
     extras.record_declined_extras(add=["matrix"], project_root=tmp_path)
     assert extras.legacy_selection(tmp_path) == ["all", "fal"]
@@ -205,9 +204,7 @@ def test_without_after_a_failed_first_migration_keeps_the_other_legacy_extras(mo
     root = Path(os.environ["HERMES_HOME"]) / "checkout"
     (root / "pyproject.toml").parent.mkdir(parents=True)
     (root / "pyproject.toml").write_bytes((repo_root() / "pyproject.toml").read_bytes())
-    site = root / "venv" / "lib" / "python3.11" / "site-packages"
-    for anchor in (*extras._anchors("matrix"), "fal_client"):
-        (site / anchor).mkdir(parents=True)
+    main_era_venv(root, *extras._anchors("matrix"), "fal_client")
     monkeypatch.setattr(importlib.import_module("pm.paths"), "repo_root", lambda: root)
 
     assert pm.cli.cmd_install(argparse.Namespace(names=None, tools_only=False, without=["matrix"])) == 0

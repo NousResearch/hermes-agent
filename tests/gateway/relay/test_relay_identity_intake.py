@@ -250,6 +250,42 @@ async def test_a_verifier_that_crash_drops_the_frame_fail_closed(transport, host
     assert "identity verifier failed" in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_the_frame_is_verified_before_its_event_decodes(transport, hosted, caplog):
+    """The verifier reads the RAW frame: an event this process could not even decode is
+    refused on its (missing) claim and acknowledged — the reader survives it — and the next
+    frame on the same connection is handled normally. Decoding happens after admission."""
+    malformed = _frame(event={"source": "not-an-object"})  # no claim, undecodable event
+    with caplog.at_level(logging.WARNING):
+        await transport._on_inbound(malformed)
+    assert transport._seen["events"] == []  # never decoded, never routed
+    assert transport._seen["acks"] == ["buf-1"]
+    assert "identity verifier (no_claim)" in caplog.text
+    await transport._on_inbound(_frame(mint(claim_payload())))
+    [scope] = transport._seen["scopes"]
+    assert (scope.tenant, scope.agent) == ("tenant_acme", "inst_agent_a")
+
+
+@pytest.mark.asyncio
+async def test_an_undecodable_event_after_a_valid_claim_drops_and_acks_the_frame(transport, hosted, caplog):
+    """A claim that verifies but an event that cannot be decoded into Hermes types is dropped
+    and acknowledged like any refusal — counted and logged, never routed anywhere, and the
+    reader keeps reading: the frame after it on the same connection is handled."""
+    malformed = {"source": "not-an-object"}  # decodes nowhere, but its raw binding is computable
+    import uuid as _uuid
+
+    claim = mint(claim_payload(jti=str(_uuid.uuid4()), evb=event_binding(malformed)))
+    with caplog.at_level(logging.WARNING):
+        await transport._on_inbound(_frame(claim, event=malformed))
+    assert transport._seen["events"] == []
+    assert transport._seen["acks"] == ["buf-1"]
+    assert hosted.drop_counts() == {"undecodable_event": 1}
+    assert "could not be decoded" in caplog.text
+    await transport._on_inbound(_frame(mint(claim_payload())))
+    [scope] = transport._seen["scopes"]
+    assert (scope.tenant, scope.agent) == ("tenant_acme", "inst_agent_a")
+
+
 # ── local mode: nothing changes ──────────────────────────────────────────────────────────────
 
 

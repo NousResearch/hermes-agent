@@ -82,6 +82,18 @@ def note_drop(reason: str) -> None:
                    reason)
 
 
+UNDECODABLE_EVENT = "undecodable_event"
+
+
+def note_undecodable_event() -> None:
+    """Count and log one frame whose event could not be decoded into Hermes types after a valid
+    claim: dropped and acknowledged like any refusal, and the reader keeps reading (a replay
+    would fail the same way). Bounded and content-free, like every other drop count."""
+    _DROPS[UNDECODABLE_EVENT] = int(_DROPS.get(UNDECODABLE_EVENT, 0)) + 1
+    logger.warning("relay inbound refused after a verified claim: its event could not be decoded "
+                   "(%s); acknowledged, not replayed", UNDECODABLE_EVENT)
+
+
 def drop_counts() -> dict[str, int]:
     """The per-reason drop counts so far (a deployment's own intake signal; a read, not a reset)."""
     return {reason: int(count) for reason, count in _DROPS.items()}

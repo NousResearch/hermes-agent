@@ -852,7 +852,7 @@ def _pick(updates: dict[str, Any], job: dict[str, Any], key: str) -> Any:
 def _resolve_update_deliver(job: dict[str, Any], deliver: Optional[str]) -> Optional[str]:
     """Keep literal 'origin' when the edited job already owns one; else resolve as on create."""
     owned = job.get("origin") or any(
-        "origin" in [p.strip().lower() for p in str(job.get(k) or "").split(",")]
+        "origin" in [p.strip().lower() for p in (_normalize_deliver_param(job.get(k)) or "").split(",")]
         for k in ("deliver", "failure_deliver"))
     return deliver if owned else _resolve_cron_context_deliver(deliver)
 

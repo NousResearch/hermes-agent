@@ -49,3 +49,18 @@ def test_job_with_captured_origin_keeps_it(temp_cron_home):
     finally:
         _exit_cron_context(tokens, extra)
     assert get_job(created["job_id"])["deliver"] == "origin"
+
+
+def test_list_valued_stored_origin_is_recognised(temp_cron_home):
+    """A hand-edited jobs.json may store ``deliver`` as a list; the scheduler accepts it, so the
+    ownership check must read it the same way (not ``str(["origin"])``)."""
+    from cron.jobs import get_job, update_job
+
+    created = _create(deliver="local")
+    update_job(created["job_id"], {"deliver": ["origin"]})
+    tokens, extra = _enter_cron_context("telegram", "-100999")
+    try:
+        _update(created["job_id"], deliver="origin")
+    finally:
+        _exit_cron_context(tokens, extra)
+    assert get_job(created["job_id"])["deliver"] == "origin"

@@ -188,9 +188,10 @@ class MCPServerTransportMixin:
     async def _negotiate_session(self, session, connect_timeout: float):
         """Negotiate the protocol era (``initialize`` vs ``server/discover``; both expose
         ``.capabilities``). ``auto`` tries the legacy handshake FIRST, falling back to discover only
-        on a modern-only signal (-32022 / initialize -32601) — the reverse of the SDK's discover-first
-        mode, so handshake-era servers pay zero extra round-trips. ``stateless`` probes discover first
-        (one legacy retry on any error); ``legacy`` is handshake only. A TIMEOUT never falls back."""
+        on a modern-only signal (-32022, -32602 missing ``_meta`` envelope, or initialize -32601) — the
+        reverse of the SDK's discover-first mode, so handshake-era servers pay zero extra round-trips.
+        ``stateless`` probes discover first (one legacy retry on any error); ``legacy`` is handshake only.
+        A TIMEOUT never falls back."""
         def call(method: str):
             return asyncio.wait_for(getattr(session, method)(), timeout=connect_timeout)
 

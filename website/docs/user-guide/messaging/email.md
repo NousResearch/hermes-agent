@@ -99,7 +99,8 @@ EMAIL_SMTP_HOST=smtp.gmail.com
 # Security (recommended)
 EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
 # Required: exact authserv-id on your receiving server's topmost
-# Authentication-Results header (Gmail: mx.google.com).
+# Authentication-Results header (Gmail: mx.google.com). Providers that
+# stamp several headers take a comma-separated list (see iCloud below).
 # That server must strip inbound headers claiming this id before adding its own.
 EMAIL_AUTHSERV_ID=mx.google.com
 
@@ -181,9 +182,38 @@ Email access is stricter by default than chat-style platforms:
 
 Allowlist entries match whole addresses. A bare entry such as `alice` (a chat username in `GATEWAY_ALLOWED_USERS`, say) never admits `alice@` at any domain, and mail from such an address is dropped rather than paired or declined.
 
-Hermes acts on a message only when the `Authentication-Results` header stamped by your receiving server authenticates its `From:` domain (DMARC, or aligned SPF/DKIM). This applies with open access (`EMAIL_ALLOW_ALL_USERS` / `GATEWAY_ALLOW_ALL_USERS`) too: open access admits any sender, but each conversation and every reply is keyed on `From:`, so a forged `From:` would put the attacker's text into that address's session and make Hermes mail it. Pairing codes and declines likewise need an authenticated `From:`, so neither is mailed to a forged address. If your mail server does not stamp that header, set `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) to accept the risk; otherwise mail from an admitted sender that carries no such header is dropped with a `Dropping sender with unauthenticated From` warning in the gateway log. The same warning, pointing at `platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`) instead, fires when the topmost `Authentication-Results` header (the one your server prepends; lower ones are never consulted) does not name exactly the pinned `authserv_id`. `authserv_id` must equal exactly the authserv-id your server writes before the first `;` of that header. Mail from an address listed in `EMAIL_ALLOWED_USERS` / `GATEWAY_ALLOWED_USERS` that fails authentication otherwise (for example a sender whose DKIM is broken, or a forwarder that breaks alignment) is dropped with the same warning and its verdict, with no opt-out hint. Other senders' failing mail, such as forged `From:` under open access, is dropped quietly, logged at debug level only.
+Hermes acts on a message only when the `Authentication-Results` header stamped by your receiving server authenticates its `From:` domain (DMARC, or aligned SPF/DKIM). This applies with open access (`EMAIL_ALLOW_ALL_USERS` / `GATEWAY_ALLOW_ALL_USERS`) too: open access admits any sender, but each conversation and every reply is keyed on `From:`, so a forged `From:` would put the attacker's text into that address's session and make Hermes mail it. Pairing codes and declines likewise need an authenticated `From:`, so neither is mailed to a forged address. If your mail server does not stamp that header, set `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) to accept the risk; otherwise mail from an admitted sender that carries no such header is dropped with a `Dropping sender with unauthenticated From` warning in the gateway log. The same warning, pointing at `platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`) instead, fires when none of the `Authentication-Results` headers names a pinned `authserv_id` (for each pinned id, only the first, topmost header carrying it is consulted; later ones are never used). Each pinned id must equal exactly the authserv-id your server writes before the first `;` of its header. Mail from an address listed in `EMAIL_ALLOWED_USERS` / `GATEWAY_ALLOWED_USERS` that fails authentication otherwise (for example a sender whose DKIM is broken, or a forwarder that breaks alignment) is dropped with the same warning and its verdict, with no opt-out hint. Other senders' failing mail, such as forged `From:` under open access, is dropped quietly, logged at debug level only.
 
 **The `authserv_id` pin is required while sender authentication is on.** Without `platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`), Hermes cannot tell your server's `Authentication-Results` header from one the sender wrote (a self-hosted MTA that adds none of its own leaves the sender's on top), so it trusts none: every message that needs an authenticated `From:` is dropped, and the gateway log says so once, with the fix. To find the value, open a message your server delivered ("show original" / raw source) and copy the token before the first `;` of the **topmost** `Authentication-Results` header, for example `mx.google.com` for Gmail. If that token seems to change between messages, it is a per-relay hostname rather than an authserv-id: RFC 8601 defines the authserv-id as a stable name for the administrative domain, so configure your MTA to stamp one (for example `AuthservID` in OpenDKIM / OpenDMARC) and pin that. A matching id is a pin, not proof of provenance: confirm your MTA strips inbound `Authentication-Results` headers claiming its id before it prepends its own. If you cannot pin a stable id, opt out explicitly with `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) and accept that `From:` is then trusted as written.
+
+#### Multiple authserv-ids (iCloud)
+
+`platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`) accepts a comma-separated list of authserv-ids, compared case-insensitively with surrounding whitespace ignored. A single id (for example Gmail's `mx.google.com`) works exactly as described above.
+
+With a list, Hermes handles the `Authentication-Results` headers as follows:
+
+1. For each pinned id, only the **first** (topmost, receiver-stamped) header with that id is used. Later headers with the same id are ignored, because they may have been forged by the sender.
+2. Headers whose id is not pinned are ignored.
+3. The result clauses of the selected headers are merged, then the usual checks run: DMARC pass, or an aligned SPF pass, or an aligned DKIM pass for the `From:` domain.
+4. If none of the pinned ids is found, the message fails closed and is treated as unauthenticated.
+
+iCloud stamps a separate `Authentication-Results` header for each check, each with its own authserv-id, so a single id would see only one verdict and typically miss the DKIM or SPF result needed for alignment. List all of them:
+
+```bash
+EMAIL_AUTHSERV_ID=bimi.icloud.com,arc.icloud.com,dmarc.icloud.com,dkim-verifier.icloud.com,spf.icloud.com
+```
+
+or in `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    authserv_id: "bimi.icloud.com,arc.icloud.com,dmarc.icloud.com,dkim-verifier.icloud.com,spf.icloud.com"
+```
+
+:::note Why not accept `dmarc=pass` from any header?
+`Authentication-Results` is an ordinary header, so a sender can include their own copy claiming `dmarc=pass`. Only headers stamped by your receiving server are trustworthy, which is why Hermes requires pinned ids and takes only the topmost header for each. A forged header placed below the receiver's stamp, or one using an unpinned id, can never satisfy the check. As before, confirm that your provider strips inbound headers claiming its ids before adding its own.
+:::
 
 :::warning
 **Use a dedicated inbox and configure `EMAIL_ALLOWED_USERS` for normal operation.** Email pairing is opt-in because shared inboxes often contain unrelated unread messages, and Hermes should not reply to those contacts by default.
@@ -231,6 +261,6 @@ Hermes acts on a message only when the `Authentication-Results` header stamped b
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
-| `EMAIL_AUTHSERV_ID` | Yes, unless sender authentication is off | — | Exact authserv-id on your receiving server's topmost `Authentication-Results` header; without it every message needing an authenticated `From:` is dropped |
+| `EMAIL_AUTHSERV_ID` | Yes, unless sender authentication is off | — | Exact authserv-id on your receiving server's topmost `Authentication-Results` header, or a comma-separated list of ids (e.g. iCloud); without it every message needing an authenticated `From:` is dropped |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |

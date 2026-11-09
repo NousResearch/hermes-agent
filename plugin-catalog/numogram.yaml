@@ -8,7 +8,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.7"
 version: "0.1.0"
-image: https://github.com/user-attachments/assets/d8caed4d-b43b-4260-9918-03ba14e14ad2
+image: https://github.com/user-attachments/assets/17a79988-4bcf-428f-bb96-9a06b30780db
 docs_url: https://github.com/zblauser/numogram-hermes-plugin/blob/c780610bbf322220f3a9bbbe6732ef653e103c8e/README.md
 readme: true
 platforms: [linux, macos]

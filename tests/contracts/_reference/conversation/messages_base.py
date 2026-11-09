@@ -115,5 +115,5 @@ class MessageBase:
             if value is None:
                 row["model_config"].pop(key, None)
             else:
-                row["model_config"][key] = value
+                row["model_config"][key] = copy.deepcopy(value)
         sync_lineage_markers(row)

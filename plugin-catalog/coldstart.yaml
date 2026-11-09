@@ -1,7 +1,7 @@
-name: cite-or-abstain
-repo: https://github.com/zvporter-ops/cite-or-abstain
-sha: "730a44d1be754008513d4160efb35839247b0ebc"
-title: Cite or Abstain
+name: coldstart
+repo: https://github.com/zvporter-ops/coldstart
+sha: "24848d56ba438ed5d3697d7279e003a104e21bed"
+title: Coldstart
 description: >-
   Evidence-gated answering with a provenance hierarchy, for any local AI deployment.
   Material you feed it (internal: transcripts, contracts, code, spreadsheets, PDFs, emails)
@@ -22,7 +22,7 @@ description: >-
   chip, mode switch, audit button) over the plugin's own `/api/plugins/` backend. Stdlib
   only -- no embeddings, no third-party dependency, no model call for retrieval.
   Disclosure -- reads only the directories configured in `corpus_roots` / `public_roots`
-  plus its own index under `$HERMES_HOME/plugin-data/cite-or-abstain/`; makes model calls
+  plus its own index under `$HERMES_HOME/plugin-data/coldstart/`; makes model calls
   through Hermes's configured model or the OpenAI-compatible `endpoint` the user sets;
   shells out to `pdftotext` and `tesseract` only when present and only for the user's own
   files; optional `COA_API_KEY` is read through Hermes's secret scope, never from a file; no
@@ -32,8 +32,8 @@ maintainer: zvporter-ops
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/zvporter-ops/cite-or-abstain#readme
-version: "0.2.1"
+docs_url: https://github.com/zvporter-ops/coldstart#readme
+version: "0.3.0"
 readme: true
 platforms: []
 capabilities:

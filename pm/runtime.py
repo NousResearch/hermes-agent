@@ -29,6 +29,10 @@ def runtime_environment() -> dict[str, str]:
     env = _base_environment()
     env["HERMES_HOME"] = str(get_hermes_home())
     env["HERMES_RUNTIME_DIR"] = native(store_root())
+    # PM runs on its own interpreter; a Nix package admits against what the application imports.
+    from pm.nix_admission import export_application_path
+
+    export_application_path(env)
     return env
 
 

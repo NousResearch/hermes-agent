@@ -719,6 +719,11 @@ def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candi
     from pm.packages import Venv
 
     root = paths.repo_root() if project_root is None else Path(project_root).absolute()
+    if project_root is None or root.resolve() == paths.repo_root().resolve():
+        from pm import nix_admission
+
+        if nix_admission.is_nix_package():
+            return not nix_admission.missing(extras or (), _nix_members(plugins))
     package = get_package("venv") if project_root is None else Venv(root)
     fact = Facts(runtime_facts_path(root), strict=True).get("venv")
     if fact is None:
@@ -795,8 +800,8 @@ def _publication(plugins: PluginInput | None):
     return None
 
 
-def _publish_inactive(change) -> None:
-    """A disabled plugin's code changes without touching the dependency environment."""
+def _publish_unbuilt(change, reason: str) -> None:
+    """A plugin change that builds nothing: a disabled plugin's code, or any change on a Nix package."""
     from pm import receipt
     from hermes_cli.runtime_state import finish_publication, recover_publication
 
@@ -806,7 +811,7 @@ def _publish_inactive(change) -> None:
     except BaseException:
         recover_publication(paths.repo_root())
         raise
-    receipt.record_venv_rebuild(False, "inactive plugin")
+    receipt.record_venv_rebuild(False, reason)
 
 
 def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool, shipped, frozen):
@@ -901,6 +906,59 @@ def decline_extras(names: list[str]) -> None:
         record_declined_extras(add=names, project_root=paths.repo_root())
 
 
+def _nix_members(plugins: PluginInput | None):
+    """The plugin members a Nix package must already satisfy; config discovery when unnamed."""
+    named = _member_inputs(plugins).get("plugin_dirs")
+    if named is not None:
+        return named
+    from pm.publication import candidate_members
+
+    return candidate_members()
+
+
+def _nix_changed_members(change):
+    """The members a plugin change adds or replaces.
+
+    A plugin that was already enabled is not this change's doing: one the package cannot satisfy
+    (enabled by hand, or before a package downgrade) must not keep every other plugin from being
+    enabled or disabled, itself included.
+    """
+    from collections.abc import Mapping
+    from pm.publication import candidate_members
+
+    if isinstance(change.members, Mapping):  # a staged update: only the plugin being replaced
+        target = change.target.resolve()
+        return {identity: source for identity, source in change.members.items() if Path(identity).resolve() == target}
+    before = {Path(directory).resolve() for directory in candidate_members()}
+    return [directory for directory in change.members if Path(directory).resolve() not in before]
+
+
+def _sync_nix(extras, *, plugins: PluginInput | None, repair: bool) -> None:
+    """sync_venv on a Nix package, under the held dependency lock (see pm.nix_admission).
+
+    The environment is the package's store closure, so no generation is built and no dependency
+    state is recorded. A plugin change is published when the running environment already
+    satisfies what it brings in; a missing package refuses it by name.
+    """
+    from pm import nix_admission, receipt
+    from pm.publication import StagedPlugin
+
+    if repair:
+        raise InstallError("venv", "this install's dependency environment is part of its Nix package",
+                           "rebuild or reinstall the package")
+    change = _publication(plugins)
+    members = _nix_changed_members(change) if change is not None else _nix_members(plugins)
+    lacking = nix_admission.missing(extras or (), members)
+    if lacking:
+        raise InstallError("venv", "the Nix package's dependency environment lacks " + ", ".join(lacking),
+                           nix_admission.REMEDY)
+    if change is None:
+        receipt.record_venv_rebuild(False, "nix package")
+    else:
+        _publish_unbuilt(change, "inactive plugin" if isinstance(change, StagedPlugin) and not change.active
+                         else "nix package")
+
+
 def _sync_locked(extras, *, package, plugins, repair: bool, explicit: bool, shipped, frozen,
                  evict_incompatible_plugins: bool) -> None:
     """sync_venv's body under the held dependency lock."""
@@ -909,7 +967,7 @@ def _sync_locked(extras, *, package, plugins, repair: bool, explicit: bool, ship
 
     change = _publication(plugins)
     if isinstance(change, StagedPlugin) and not change.active:
-        _publish_inactive(change)
+        _publish_unbuilt(change, "inactive plugin")
     elif evict_incompatible_plugins:
         from pm.plugin_eviction import sync_evicting
 
@@ -974,9 +1032,17 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
             raise ValueError("only an explicit sync of the discovered plugin selection may disable plugins")
         if carried and (repair or plugins is not None or not set(carried) <= set(extras or ())):
             raise ValueError("carried extras belong to a feature sync of the discovered selection")
+        from hermes_cli.runtime_state import recover_publication
+        from pm import nix_admission
+
+        if nix_admission.is_nix_package():
+            with _venv_install_lock(patient=explicit or repair):
+                recover_publication(paths.repo_root())
+                _sync_nix(extras, plugins=plugins, repair=repair)
+            outcome = "ok"
+            return
         shipped, frozen = _feature_policy(extras, repair=repair)
         package = get_package("venv")
-        from hermes_cli.runtime_state import recover_publication
         from functools import partial
         sync = partial(_sync_locked, package=package, plugins=plugins, repair=repair, explicit=explicit,
                        shipped=shipped, frozen=frozen, evict_incompatible_plugins=evict_incompatible_plugins)

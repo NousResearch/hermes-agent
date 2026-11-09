@@ -321,7 +321,10 @@ def _install_python_environments(extras: list[str], *, sync: bool, test_environm
             # any lazy extras already recorded survive this; it only makes
             # a fresh bootstrap match what the first update would do. Before a selection is
             # recorded, sync_venv carries the main-era venv's extras too (pm.carried_extras).
-            sync_venv(extras or ["all"], explicit=True)
+            # A Nix package's variant chose its extras; [all] is a request only when the user names it.
+            from pm.nix_admission import is_nix_package
+
+            sync_venv(extras or ([] if is_nix_package() else ["all"]), explicit=True)
             print(f"✓ venv{' +' + ' +'.join(extras) if extras else ''}")
         except InstallError as e:
             print(f"✗ {e}")

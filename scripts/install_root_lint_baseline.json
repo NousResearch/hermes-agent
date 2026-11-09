@@ -54,6 +54,7 @@
     "plugins/platforms/whatsapp/adapter.py": 1,
     "pm/environments.py": 1,
     "pm/launch.py": 1,
+    "pm/nix_admission.py": 1,
     "pm/paths.py": 1,
     "pm/worker.py": 1,
     "providers/__init__.py": 1,

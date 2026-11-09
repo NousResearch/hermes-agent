@@ -1,6 +1,6 @@
 name: patch-sentinel
 repo: https://github.com/thebangarang/Patch-Sentinel
-sha: "7057497318c3c46c709fec7cde17da2a2338c71b"
+sha: "8c10f7c81e4c6c73d986fcca516f56944f6605ef"
 subdir: ""
 description: >-
   Measures the host, not the source tree: code review asks "can an attacker exploit this code?" and
@@ -23,7 +23,7 @@ requires_hermes: ">=0.19"
 docs_url: "https://github.com/thebangarang/Patch-Sentinel#readme"
 version: "0.1.0"
 title: "Patch Sentinel"
-image: "https://raw.githubusercontent.com/thebangarang/Patch-Sentinel/7057497318c3c46c709fec7cde17da2a2338c71b/docs/banner.png"
+image: "https://raw.githubusercontent.com/thebangarang/Patch-Sentinel/8c10f7c81e4c6c73d986fcca516f56944f6605ef/docs/banner.png"
 platforms: [linux]
 capabilities:
   provides_tools:

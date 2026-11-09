@@ -11,6 +11,7 @@ Uses discord.py library for:
 """
 
 import asyncio
+import dataclasses
 import datetime as dt
 import hashlib
 import inspect
@@ -557,6 +558,7 @@ def _clean_discord_id(entry: str) -> str:
 _GATE_ENV_KEYS = (
     "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES", "DISCORD_ALLOWED_CHANNELS",
     "DISCORD_IGNORED_CHANNELS", "DISCORD_NO_THREAD_CHANNELS", "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_SHARED_SESSION_CHANNELS",
     "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "DISCORD_ALLOW_ALL_USERS", "DISCORD_ALLOW_BOTS",
     "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
 )
@@ -4980,6 +4982,31 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         """This adapter's DISCORD_NO_THREAD_CHANNELS list (per-profile)."""
         return self._gate_csv_set(self._gate_raw("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS"))
 
+    def _get_shared_session_channels(self) -> set:
+        """This adapter's DISCORD_SHARED_SESSION_CHANNELS list (per-profile).
+
+        Channels listed here key ONE session for every participant: the source carries
+        ``shared_session`` and ``build_session_key`` drops the participant slot, so members
+        see and continue the same transcript. A lone ``"*"`` means every guild channel.
+        """
+        return self._gate_csv_set(self._gate_raw("shared_session_channels", "DISCORD_SHARED_SESSION_CHANNELS"))
+
+    def _apply_shared_session_scope(self, source, effective_channel, parent_channel_id, chat_type):
+        """Flag *source* shared when its channel is listed in ``shared_session_channels``.
+
+        ``build_session_key`` already drops the participant slot for ``shared_session`` (Telegram
+        observe mode uses the same switch), so no downstream keying logic changes. DMs never share.
+        """
+        shared_channels = self._get_shared_session_channels()
+        if not shared_channels or chat_type == "dm":
+            return source
+        shared_keys = {str(effective_channel.id)}
+        if parent_channel_id:
+            shared_keys.add(str(parent_channel_id))
+        if "*" in shared_channels or (shared_keys & shared_channels):
+            return dataclasses.replace(source, shared_session=True)
+        return source
+
     def _get_allowed_users(self) -> set:
         """This adapter's DISCORD_ALLOWED_USERS entries (per-profile, cleaned)."""
         raw = self._gate_raw("allow_from", "DISCORD_ALLOWED_USERS")
@@ -6085,6 +6112,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
+        #   discord.shared_session_channels: Channel IDs where every participant shares ONE session
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
         #   discord.free_response_auto_thread: Free-response channels also auto-thread (default: false)
         thread_id = None
@@ -6234,6 +6262,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
+        source = self._apply_shared_session_scope(
+            source, effective_channel, parent_channel_id, chat_type)
         media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
             all_attachments)
         event_text = normalized_content
@@ -7235,6 +7265,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("ignored_channels", "DISCORD_IGNORED_CHANNELS", from_platform_extra=False)
     _gate("allowed_channels", "DISCORD_ALLOWED_CHANNELS", from_platform_extra=False)
     _gate("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS", from_platform_extra=False)
+    _gate("shared_session_channels", "DISCORD_SHARED_SESSION_CHANNELS", from_platform_extra=False)
     # history_backfill: recover mention-gated channel messages between bot turns.
     if "history_backfill" in discord_cfg:
         seeded_extra["history_backfill"] = discord_cfg["history_backfill"]

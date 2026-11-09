@@ -60,6 +60,23 @@ Set it to `false` only if you explicitly want one shared conversation for the en
 group_sessions_per_user: false
 ```
 
+That switch is gateway-wide. To share one session in *specific* channels only — and leave every other channel per-user — use `discord.shared_session_channels`:
+
+```yaml
+discord:
+  shared_session_channels: "1234567890,9876543210"   # or "*" for every guild channel
+```
+
+Channels listed there key one session for every participant (DMs and unlisted channels keep per-user isolation), so `/new` and the running-agent slot are shared inside them. Threads inherit their parent channel's entry.
+
+With `auto_thread: true` each message in a text channel opens its own thread, which is its own session — so a channel meant to be fully shared belongs in `no_thread_channels` too:
+
+```yaml
+discord:
+  shared_session_channels: "1234567890"
+  no_thread_channels: "1234567890"
+```
+
 Shared sessions can be useful for a collaborative room, but they also mean:
 
 - users share context growth and token costs
@@ -611,6 +628,21 @@ group_sessions_per_user: true
 ```
 
 See the [Session Model](#session-model-in-discord) section above for the full implications of each mode.
+
+#### `discord.shared_session_channels`
+
+**Type:** string (comma-separated channel IDs) or list — **Default:** `""` (per-user everywhere)
+
+Channel IDs whose participants share ONE session, leaving every other channel per-user. The env override is `DISCORD_SHARED_SESSION_CHANNELS`; a lone `"*"` shares every guild channel. Threads fall back to their parent channel's entry, and DMs are never affected.
+
+```yaml
+discord:
+  shared_session_channels:
+    - 1234567890
+    - 9876543210
+```
+
+Nothing else changes: mention rules, `no_thread_channels` and `free_response_channels` still decide *whether* and *where* the bot replies — this key only decides whose transcript the reply lands in. `group_sessions_per_user: false` still shares every group channel at once; use this key when you want one collaborative room and isolation everywhere else.
 
 #### `display.tool_progress`
 

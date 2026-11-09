@@ -237,3 +237,118 @@ def test_config_bridges_ignored_channels(monkeypatch, tmp_path):
     assert os.getenv("DISCORD_IGNORED_CHANNELS") == "111,222"
 
 
+
+
+# ── shared_session_channels ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_shared_session_channel_flags_source(adapter, monkeypatch):
+    """Channels in shared_session_channels key one session for every participant."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "900")
+    monkeypatch.setenv("DISCORD_SHARED_SESSION_CHANNELS", "900")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=900), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.shared_session is True
+
+
+@pytest.mark.asyncio
+async def test_unlisted_channel_keeps_per_user_sessions(adapter, monkeypatch):
+    """A channel absent from shared_session_channels stays per-user."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "901")
+    monkeypatch.setenv("DISCORD_SHARED_SESSION_CHANNELS", "900")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=901), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.shared_session is False
+
+
+@pytest.mark.asyncio
+async def test_shared_session_wildcard_covers_guild_channels_only(adapter, monkeypatch):
+    """A lone "*" shares every guild channel but never DMs."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_SHARED_SESSION_CHANNELS", "*")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    message = make_message(channel=FakeTextChannel(channel_id=902), content="hello")
+    await adapter._handle_message(message)
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].source.shared_session is True
+
+    adapter.handle_message.reset_mock()
+    dm = make_message(channel=FakeDMChannel(channel_id=903), content="hello")
+    await adapter._handle_message(dm)
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].source.shared_session is False
+
+
+@pytest.mark.asyncio
+async def test_thread_inherits_parent_channel_shared_session(adapter, monkeypatch):
+    """A thread whose parent is listed shares the parent's session scope."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_SHARED_SESSION_CHANNELS", "904")
+    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL", "false")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    parent = FakeTextChannel(channel_id=904)
+    message = make_message(channel=FakeThread(channel_id=905, parent=parent), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].source.shared_session is True
+
+
+def test_shared_session_keys_one_session_for_two_users():
+    """build_session_key drops the participant slot for a shared_session source."""
+    from gateway.session import SessionSource, build_session_key
+    from gateway.config import Platform
+
+    def key(user_id: str, shared: bool) -> str:
+        return build_session_key(
+            SessionSource(
+                platform=Platform.DISCORD, chat_id="900", chat_type="group",
+                user_id=user_id, user_name=user_id, scope_id="1", shared_session=shared,
+            ),
+            group_sessions_per_user=True,
+        )
+
+    assert key("42", shared=False) != key("43", shared=False)
+    assert key("42", shared=True) == key("43", shared=True)
+
+
+def test_config_bridges_shared_session_channels(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.shared_session_channels to env var."""
+    import hermes_yaml as yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.safe_dump({
+        "discord": {
+            "shared_session_channels": ["900", "901"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_SHARED_SESSION_CHANNELS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_SHARED_SESSION_CHANNELS") == "900,901"

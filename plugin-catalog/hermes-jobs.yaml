@@ -1,0 +1,19 @@
+name: hermes-jobs
+repo: https://github.com/CrowBe/hermes-jobs
+sha: 68e41bd25fe02c8a7c509a3820e72ae79567283c
+description: "Automation: bidirectional sync between Hermes cron (system of record) and ONE Google Calendar job board. discover/status are read-only; sync plans both directions and is dry-run unless --confirm on the CLI."
+maintainer: "Benjamin Crow (CrowBe) / Hermes Plugin Builder"
+tier: community
+category: automation
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/CrowBe/hermes-jobs/blob/68e41bd25fe02c8a7c509a3820e72ae79567283c/README.md
+version: "0.3.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - hermes_jobs_discover
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - HERMES_JOBS_GOOGLE_CLIENT_ID
+    - HERMES_JOBS_GOOGLE_CLIENT_SECRET

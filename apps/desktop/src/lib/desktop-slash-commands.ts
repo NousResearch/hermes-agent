@@ -1,4 +1,4 @@
-import { atom } from 'nanostores'
+import { map } from 'nanostores'
 
 import { translateNow } from '@/i18n/runtime'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
@@ -474,14 +474,20 @@ const ALIAS_TO_CANONICAL = new Map<string, string>(
 
 let rememberedCatalog: CommandsCatalogLike | undefined
 
-/** Reactive mirror of the last catalog the composer saw (panes that render catalog-driven actions). */
-export const $desktopCommandsCatalog = atom<CommandsCatalogLike | undefined>(undefined)
-
 /** Last catalog the composer saw — used so Space/Enter know argument mode
  *  without waiting for another `/` keystroke. */
 export function rememberDesktopCommandsCatalog(catalog: CommandsCatalogLike | undefined): void {
   rememberedCatalog = catalog
-  $desktopCommandsCatalog.set(catalog)
+}
+
+/** Each composer's OWN catalog, keyed by composer target (`main`, `tile:<id>`):
+ *  the scope (profile, session) that composer's chat runs in. Panes acting on
+ *  one chat (the Review pane's prompt buttons) read their target's entry, so a
+ *  catalog another profile's tile fetched later never relabels or reroutes them. */
+export const $composerCommandsCatalogs = map<Record<string, CommandsCatalogLike | undefined>>({})
+
+export function rememberComposerCommandsCatalog(target: string, catalog: CommandsCatalogLike | undefined): void {
+  $composerCommandsCatalogs.setKey(target, catalog)
 }
 
 export interface ReviewPromptButton {
@@ -489,13 +495,18 @@ export interface ReviewPromptButton {
   label: string
 }
 
-/** `type: prompt` quick commands marked `review_button` in config.yaml, sorted by label. */
+/** `type: prompt` quick commands marked `review_button` in config.yaml, sorted by label. A name the
+ *  desktop handles itself (`/new`, `/help`, any local or registry spec) is skipped: submitting it
+ *  would run that action, not the saved prompt the button names. */
 export function reviewPromptButtons(catalog: CommandsCatalogLike | undefined): ReviewPromptButton[] {
   return Object.entries(catalog?.commands ?? {})
     .flatMap(([command, meta]) => {
       const label = meta?.review_button?.trim()
+      const name = normalizeCommand(command)
 
-      return label ? [{ command: command.startsWith('/') ? command : `/${command}`, label }] : []
+      return label && !SPEC_BY_NAME.has(ALIAS_TO_CANONICAL.get(name) ?? name)
+        ? [{ command: command.startsWith('/') ? command : `/${command}`, label }]
+        : []
     })
     .sort((a, b) => a.label.localeCompare(b.label))
 }

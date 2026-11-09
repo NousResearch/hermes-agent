@@ -199,6 +199,8 @@ def _runner_command(name):
     entry = (_load_gateway_config().get('quick_commands') or {}).get(name)
     if isinstance(entry, dict) and entry.get('type') == 'exec':
         return 'exec', str(entry.get('command') or '')
+    if isinstance(entry, dict) and entry.get('type') == 'prompt':
+        return None  # a saved prompt beats a same-named plugin, as in the CLI and messaging
     return next((('plugin', registered) for registered in dict.fromkeys((name, name.replace('_', '-')))
                  if get_plugin_command_handler(registered)), None)
 

@@ -9,7 +9,8 @@ from tui_gateway import server
 def test_prompt_quick_command_reaches_the_agent_and_marks_review_button(monkeypatch):
     """slash.exec answers a send directive (never the slash worker's dead CLI queue); the catalog flags
     ``review_button`` so the Desktop Review pane can render it."""
-    cfg = {"quick_commands": {"rn": {"type": "prompt", "prompt": "Notes for {args}", "review_button": "Release notes"}}}
+    cfg = {"quick_commands": {"rn": {"type": "prompt", "prompt": "Notes for {args}", "review_button": "Release notes"},
+                              "new": {"type": "prompt", "prompt": "Shadowed", "review_button": "Fresh start"}}}
     monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
     server._sessions["sid"] = {"agent": types.SimpleNamespace(), "session_key": "session-key", "history": [],
                                "history_lock": threading.Lock(), "slash_worker": None, "cols": 80}
@@ -19,5 +20,7 @@ def test_prompt_quick_command_reaches_the_agent_and_marks_review_button(monkeypa
         assert resp["result"] == {"type": "send", "message": "Notes for v2.3"}
         catalog = server.handle_request({"id": "2", "method": "commands.catalog", "params": {}})["result"]
         assert catalog["commands"]["/rn"]["review_button"] == "Release notes"
+        # A built-in's name keeps the built-in's meta: /new runs the built-in, so it gets no button.
+        assert "review_button" not in catalog["commands"]["/new"]
     finally:
         server._sessions.pop("sid", None)

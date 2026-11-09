@@ -5,7 +5,7 @@ import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { $desktopCommandsCatalog, reviewPromptButtons } from '@/lib/desktop-slash-commands'
+import { $composerCommandsCatalogs, reviewPromptButtons } from '@/lib/desktop-slash-commands'
 import { notifyError } from '@/store/notifications'
 import { $reviewFiles, $reviewScopeTarget } from '@/store/review'
 
@@ -16,9 +16,11 @@ import { $reviewFiles, $reviewScopeTarget } from '@/store/review'
 export function ReviewPromptButtons() {
   const { t } = useI18n()
   const c = t.statusStack.coding
-  const catalog = useStore($desktopCommandsCatalog)
+  const catalogs = useStore($composerCommandsCatalogs)
   const files = useStore($reviewFiles)
   const scopeTarget = useStore($reviewScopeTarget)
+  // The owning chat's own catalog (its profile's quick commands), never whichever composer fetched last.
+  const catalog = catalogs[scopeTarget]
   const buttons = useMemo(() => reviewPromptButtons(catalog), [catalog])
 
   if (!buttons.length || !files.length) {

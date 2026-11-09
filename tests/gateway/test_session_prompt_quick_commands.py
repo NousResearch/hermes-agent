@@ -26,11 +26,16 @@ def test_resolve_alias_admits_prompt_and_follows_an_alias_to_it(cfg):
     assert sc._resolve_alias('rn-alias', 'v2') == ('rn', 'v2')
 
 
-def test_prompt_quick_command_renders_args_and_flags_an_empty_prompt(cfg):
+def test_prompt_quick_command_renders_args_and_flags_an_empty_prompt(cfg, monkeypatch):
     assert sc._prompt_quick_command('rn', 'v2.3') == 'Notes for v2.3'
     assert sc._prompt_quick_command('empty', '') == ''
     assert sc._prompt_quick_command('rn-alias', '') is None
     assert sc._prompt_quick_command('missing', '') is None
+    # CLI and messaging precedence: a saved prompt beats a same-named plugin command.
+    from hermes_cli import plugins
+    monkeypatch.setattr(plugins, 'get_plugin_command_handler', lambda name: (lambda _arg: 'plugin ran'))
+    assert sc._runner_command('rn') is None
+    assert sc._runner_command('other') == ('plugin', 'other')
 
 
 def _runner(denied=None):

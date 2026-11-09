@@ -17,6 +17,20 @@ logger = logging.getLogger(__name__)
 _SWEEP_SETTLE_SECONDS = 1.0
 
 
+class TelegramSendPathRecoveryMixin:
+    """Closes the window the settle delay cannot: a final refused while degraded whose ``failed``
+    row commits only AFTER the healthy edge's sweep ran (``_send_with_retry`` first awaits the
+    delivery-failure notice, which can outlast the delay). Healthy polling raises no second edge,
+    so the row's own write re-arms the sweep."""
+
+    async def _finalize_delivery_obligation(self, obligation_id, result, event, delivery_adapter) -> None:
+        await super()._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+        if (not getattr(result, "success", False) and getattr(result, "error", None) == "send_path_degraded"
+                and isinstance(delivery_adapter, TelegramSendPathRecoveryMixin)
+                and not delivery_adapter.send_path_degraded and getattr(delivery_adapter, "_running", False)):
+            _schedule_recovery_sweep(delivery_adapter)
+
+
 def mark_send_path_recovered(adapter) -> None:
     """First proof getUpdates is flowing for this generation: flip a published "retrying" (degraded
     connect, reconnect stamp, mid-session recovery) back to "connected" (#101391) and replay the

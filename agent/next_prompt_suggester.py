@@ -6,6 +6,7 @@ the conversation, system prompt or toolsets, so the main prompt cache is unaffec
 
 import json
 import logging
+import re
 from typing import Any, Optional
 
 from agent.auxiliary_client import call_llm
@@ -40,12 +41,29 @@ _PROMPT = (
     "- Reply NONE only when nothing useful and plausible fits.\n"
     "- Never describe, explain or refer to 'the user' or 'the assistant'; if you can't write the "
     "message itself, reply NONE.\n"
+    "- Write the literal words the user would type (e.g. 'nothing yet'), not a description of "
+    "what they will do or see.\n"
     "- Output only the message: no quotes, no labels, no explanation."
 )
 
 # A rambling answer is a model slip (usually the assistant's voice), better shown as nothing.
 MAX_SUGGESTION_WORDS = 20
 MAX_SUGGESTION_CHARS = 120  # covers languages written without spaces
+
+# Narration rule: "the assistant"/"the user" is a party reference unless it modifies a noun
+# ("the assistant module", "the user's table"). "the AI/model/bot" are also ordinary objects
+# ("switch the model", "restart the bot"), so they count only as a clause subject.
+_PARTY_NOUNS = (
+    r"module|model|class|table|id|service|config|name|file|record|object|schema|profile|"
+    r"account|session|prompt|message|interface|api|endpoint|type|field|settings?|"
+    r"permissions?|data|database|code|test|tests|agent|plugin|handler|function|view|page"
+)
+_PARTY_REF = re.compile(
+    rf"\bthe\s+(?:assistant|user)\b(?!['’]s)(?!\s+(?:{_PARTY_NOUNS})\b)"
+    rf"|(?:^|[,;:.]\s*|\b(?:so|and|then|that|because)\s+)the\s+(?:ai|model|bot)\b"
+    rf"(?!['’]s)(?!\s+(?:{_PARTY_NOUNS})\b)",
+    re.IGNORECASE,
+)
 
 _QUOTE_PAIRS = {'"': '"', "'": "'", "`": "`", "“": "”", "‘": "’"}
 
@@ -59,6 +77,8 @@ def clean_suggestion(raw: Any) -> Optional[str]:
     if not line or line.rstrip(".").upper() == "NONE":
         return None
     if len(line.split()) > MAX_SUGGESTION_WORDS or len(line) > MAX_SUGGESTION_CHARS:
+        return None
+    if _PARTY_REF.search(line):  # narrating about the parties instead of writing as the user
         return None
     return line
 

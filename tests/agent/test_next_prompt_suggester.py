@@ -62,6 +62,32 @@ def test_output_over_the_char_limit_shows_nothing(n, kept):
     assert nps.clean_suggestion(text) == (text if kept else None)
 
 
+@pytest.mark.parametrize("line", [
+    "Nothing has appeared yet, so I'll ask the assistant to check the Haiku call",
+    "The user wants to see the turn-settle hook",
+    "Ask the assistant to retry",
+    "the AI should answer first",
+    "It failed, so the model needs another try",
+    "The bot is not responding",
+])
+def test_narration_about_the_parties_is_dropped(line):
+    assert nps.clean_suggestion(line) is None
+
+
+@pytest.mark.parametrize("line", [
+    "rename the assistant module",
+    "add a test for the user model",
+    "show the user's profile page",
+    "switch the model to opus",
+    "restart the bot",
+    "yes, go ahead",
+    "nothing yet",
+    "done",
+])
+def test_real_user_requests_pass(line):
+    assert nps.clean_suggestion(line) == line
+
+
 def test_input_is_clipped_to_the_tail():
     _, m = _suggest("x", user="u" * 50_000, assistant="a" * 50_000)
     sent = "".join(msg["content"] for msg in m.call_args.kwargs["messages"])

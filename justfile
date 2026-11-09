@@ -223,3 +223,9 @@ move-generate:
 [positional-arguments]
 move-chunk *args:
     python3 scripts/move/build_chunk.py "$@"
+
+# Rewrite moved paths and module names in docs and comments (--from-commit A; --help lists the rest)
+[group('move')]
+[positional-arguments]
+move-docs *args:
+    scripts/hermes-python scripts/move/rewrite_docs.py "$@"

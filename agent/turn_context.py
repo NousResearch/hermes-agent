@@ -1289,8 +1289,11 @@ def build_turn_context(
     # user turn is user-initiated; tool-loop follow-ups are agent-initiated.
     agent._is_user_initiated_turn = True
 
-    # Preserve the original user message (no nudge injection).
+    # Preserve the original user message (no nudge injection). A multimodal turn's context is appended to its
+    # live parts below, so the ask is copied first: memory providers sync it, not their own recall.
     original_user_message = persist_user_message if persist_user_message is not None else user_message
+    if isinstance(original_user_message, list):
+        original_user_message = list(original_user_message)
     should_review_memory = _tick_memory_nudge(agent)
     _emit_reaction(agent, original_user_message, persist_user_display_kind)
 

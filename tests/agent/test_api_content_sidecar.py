@@ -632,6 +632,27 @@ class TestWireInvariant:
         replayed = _build_gateway_agent_history(self._stored_multimodal_turn(wire_env))[0]
         assert _previous_user_message_text(replayed) == "what is this"
 
+    def test_memory_providers_sync_a_multimodal_turn_without_its_injected_context(self, wire_env):
+        """#151826: the model gets recalled memory and plugin context as a part on an image turn, but
+        providers sync the ask; storing their own recall back re-extracts it as new facts."""
+        from agent.message_content import flatten_message_text
+        from run_agent import AIAgent
+        make_agent, handler, *_ = wire_env
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        agent = make_agent()
+        agent._memory_manager = mm = MagicMock()
+        mm.build_system_prompt.return_value = mm.describe_recall.return_value = ""
+        mm.prefetch_all.return_value = "likes tea"
+        with patch.object(AIAgent, "_model_supports_vision", return_value=True):
+            agent.run_conversation([{"type": "text", "text": "what is this"}, image],
+                                   conversation_history=[], task_id="t1")
+
+        sent = flatten_message_text(_user_messages(_chat_requests(handler)[0])[0]["content"])
+        assert "likes tea" in sent and "PLUGIN-CTX" in sent  # the model still gets both
+        for synced in (mm.sync_all.call_args.args[0], mm.queue_prefetch_all.call_args.args[0]):
+            assert "what is this" in synced
+            assert "likes tea" not in synced and "PLUGIN-CTX" not in synced
+
 
 # ---------------------------------------------------------------------------
 # Review fixes: re-anchoring, MoA, in-place compaction backfill, override

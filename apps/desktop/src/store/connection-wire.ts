@@ -5,8 +5,8 @@ import type { GatewaySessionWire } from '@/api/client'
 import type { HermesConnection } from '@/global'
 import type { PrimaryGatewayRoute } from '@/store/gateway-primary-route'
 
-/** The session wire each connection's gateway negotiated on its last `gateway.ready`. A connection
- *  is one backend, so every socket to it (the primary and its profile secondaries) agrees. */
+/** Negotiated wires for connections and exact profile routes: a profile override may
+ *  reach a different backend from the connection's primary socket. */
 export const $connectionWires = map<Record<string, GatewaySessionWire>>({})
 
 // A remote reached without a registry id (`HERMES_DESKTOP_REMOTE_URL`) is not the local source,
@@ -17,6 +17,7 @@ export const UNNAMED_REMOTE_WIRE_KEY = '\u0000unnamed-remote'
 export interface WireSource {
   connectionId?: null | string
   mode?: null | string
+  profile?: null | string
 }
 
 function wireKey(source: null | string | undefined | WireSource): string {
@@ -37,7 +38,11 @@ export function recordConnectionWire(source: null | string | undefined | WireSou
 
 /** Null until a socket to that connection has become ready. */
 export function connectionWire(source: null | string | undefined | WireSource): GatewaySessionWire | null {
-  return $connectionWires.get()[wireKey(source)] ?? null
+  const key = wireKey(source)
+  const profile = typeof source === 'object' && source ? source.profile : null
+  const wires = $connectionWires.get()
+
+  return (profile ? wires[JSON.stringify([key, profile])] : null) ?? wires[key] ?? null
 }
 
 /** The connection the primary socket serves. An established route speaks for itself, even without
@@ -53,8 +58,11 @@ export function primaryWireSource(route: PrimaryGatewayRoute, windowConnection: 
  *  id, else the one its profile's descriptor resolved to (a profile's remote override resolves to
  *  that remote, not the local source). A resolved remote without a registry id has no key of its
  *  own, so it publishes nothing rather than overwrite the local source's wire. */
-export function recordSecondaryWire(connectionId: null | string, resolved: null | Pick<HermesConnection, 'connectionId' | 'mode'>, wire: GatewaySessionWire | null): void {
+export function recordSecondaryWire(connectionId: null | string, resolved: null | Pick<HermesConnection, 'connectionId' | 'mode'>, wire: GatewaySessionWire | null, profile?: string): void {
   const key = connectionId || resolved?.connectionId || (resolved?.mode === 'local' ? LOCAL_CONNECTION_ID : null)
+
+  // This socket may serve a profile override rather than the connection's primary backend.
+  if (key && profile && wire) { $connectionWires.setKey(JSON.stringify([key, profile]), wire) }
 
   // A profile's remote override (`connection.json` → `profiles.<name>.mode: remote`) is dialed
   // under the local scope, so both ids still say `local`. It is a different backend: recording

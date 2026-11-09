@@ -976,7 +976,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
   // sockets prove it through this closure. Stamp before registry fan-in,
   // never promote an arbitrary wire `profile` field into ownership.
   entry.offEvent = gateway.onEvent(event => {
-    if (event.type === 'gateway.ready') { recordSecondaryWire(connectionId, entry.connection, gateway.sessionWire) }
+    if (event.type === 'gateway.ready') { recordSecondaryWire(connectionId, entry.connection, gateway.sessionWire, entry.profile) }
     const scopedEvent = stampSecondaryProfileOwner({ ...event, ...(connectionId ? { connectionId } : {}) }, canonicalOwnerProfile(event) ?? profile)
 
     g.config?.onEvent(scopedEvent)

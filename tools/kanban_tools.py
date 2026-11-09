@@ -1099,6 +1099,12 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
+    # Same contract as the reviewer check (#106163): a profile nobody can spawn
+    # would park the card in `skipped_nonspawnable` rust. ValueError →
+    # tool_error via the generic wrapper, nothing written.
+    from hermes_cli.kanban_assignee_gate import validate_assignee_exists
+
+    validate_assignee_exists(str(assignee))
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing

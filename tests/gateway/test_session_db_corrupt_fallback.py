@@ -11,6 +11,7 @@ import sqlite3
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from tests.fixtures.storage_seed import seed_session
+from tests.fixtures.storage_holder import raw_holder
 
 
 class _MalformedConn:
@@ -49,7 +50,7 @@ def test_corrupt_state_db_diverts_pending_without_fts_rebuild(tmp_path, monkeypa
     store.append_to_transcript(
         sid, {"role": "user", "content": "before", "timestamp": 1.0}
     )
-    holder = store.persistence.holder()  # the handle the transcript writes go through
+    holder = raw_holder(store.persistence)  # the handle the transcript writes go through
     real_conn = holder._conn
     holder._conn = _MalformedConn(real_conn)
     try:

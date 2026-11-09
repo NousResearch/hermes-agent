@@ -7,6 +7,7 @@ import time
 from unittest.mock import patch, MagicMock
 
 import pytest
+from tests.fixtures.storage_holder import raw_holder
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -272,14 +273,14 @@ class TestSessionDbCacheAfterProfileDelete:
         token = set_hermes_home_override(profile)
         try:
             save_goal("s1", GoalState(goal="before delete"))
-            stale = _get_session_db().holder()
+            stale = raw_holder(_get_session_db())
             assert close_stores_under(profile) == 1
             shutil.rmtree(profile)
             profile.mkdir(parents=True)
 
             save_goal("s2", GoalState(goal="after recreate"))
 
-            assert _get_session_db().holder() is not stale
+            assert raw_holder(_get_session_db()) is not stale
             assert (profile / "state.db").exists()
             assert load_goal("s2").goal == "after recreate"
         finally:
@@ -941,7 +942,7 @@ def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
     db = goals._get_session_db()
     assert db is not None
     try:
-        assert any(shared is db.holder() for shared in registry.live_shared_session_dbs())
+        assert any(shared is raw_holder(db) for shared in registry.live_shared_session_dbs())
         assert goals._get_session_db() is db
     finally:
         goals._DB_CACHE.clear()

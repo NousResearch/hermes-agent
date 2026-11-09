@@ -11,6 +11,7 @@ from agent.turn_facade_lease import (
     DurableTurnLease,
     admit_durable_turn_lease,
 )
+from tests.fixtures.storage_holder import raw_holder
 
 
 class _Db:
@@ -280,7 +281,7 @@ def test_lock_tolerance_never_outlives_the_committed_row_expiry(tmp_path, monkey
     admitted_expiry = row_expiry()
     blocker = write_lock()
     refused = threading.Event()
-    holder = handle.holder()
+    holder = raw_holder(handle)
     real_retry_sleep = holder._sleep_before_write_retry
 
     def retry_sleep(deadline, patience_s):

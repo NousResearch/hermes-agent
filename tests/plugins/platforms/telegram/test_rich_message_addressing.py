@@ -67,3 +67,20 @@ def _trigger_text(extra, msg):
 def test_rich_only_group_message_is_addressed_like_plain_text(probe, extra, plain, rich, expected):
     assert probe(extra, plain) == expected
     assert probe(extra, rich) == expected
+
+def test_rich_linked_foreign_command_does_not_override_our_mention():
+    """A rich hyperlink label is text_link, not Telegram's bot_command entity (#151730)."""
+    linked = "/status@other_bot"
+    plain = _group_message(
+        f"{linked} @hermes_bot",
+        entities=[
+            SimpleNamespace(type="text_link", offset=0, length=len(linked),
+                            url="https://example.com/status"),
+            SimpleNamespace(type="mention", offset=len(linked) + 1, length=len("@hermes_bot")),
+        ],
+    )
+    rich = _rich([{"type": "url", "text": linked, "url": "https://example.com/status"}, " @hermes_bot"])
+
+    # The user deliberately mentions us; a clickable command-shaped label cannot veto that.
+    assert _gate({"require_mention": True}, plain) is True
+    assert _gate({"require_mention": True}, rich) is True

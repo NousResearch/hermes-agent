@@ -73,7 +73,8 @@ def test_clear_session_finds_a_hosted_agents_local_kernels():
                                   "teardown": lambda self: torn.append(key)})()
     _KERNELS[key] = stub
     try:
-        shutdown_kernels_for_owner("session-key")
+        with bind_state(A):
+            shutdown_kernels_for_owner("session-key")
         assert torn == [key] and not _KERNELS, "the session boundary missed a hosted agent's kernel"
     finally:
         _KERNELS.pop(key, None)
@@ -88,10 +89,70 @@ def test_clear_session_finds_a_hosted_agents_remote_kernels():
                                   "kill": lambda self: killed.append(key)})()
     _REMOTE_KERNELS[key] = stub
     try:
-        shutdown_remote_kernels_for_owner("session-key")
+        with bind_state(A):
+            shutdown_remote_kernels_for_owner("session-key")
         assert killed == [key] and not _REMOTE_KERNELS, "the session boundary missed a hosted agent's remote kernel"
     finally:
         _REMOTE_KERNELS.pop(key, None)
+
+
+def test_local_shutdown_does_not_kill_colon_suffix_owner():
+    """A session close matches its owner exactly: ``room`` is not ``telegram:room``, locally or
+    inside a sandbox (where the sandbox key, not a bare suffix, qualifies the owner)."""
+    from tools.code_kernel import _KERNELS, shutdown_kernels_for_owner
+
+    torn: list[str] = []
+    keys = []
+    for owner in ("room", "telegram:room"):
+        key = (owner, "probe")
+        keys.append(key)
+        _KERNELS[key] = type("Stub", (), {"teardown": lambda self, o=owner: torn.append(o)})()
+    try:
+        shutdown_kernels_for_owner("room")
+        assert torn == ["room"], torn
+    finally:
+        for key in keys:
+            _KERNELS.pop(key, None)
+
+
+def test_session_close_does_not_touch_another_agents_kernel(provider):
+    """Two hosted agents share a session key; a session close under one agent resolves that
+    agent's sandbox-qualified owner and must not run teardown in the other agent's sandbox."""
+    from tools.code_kernel_remote import (RemoteKernel, _REMOTE_KERNELS, _kernel_key,
+                                          shutdown_remote_kernels_for_owner)
+    from tools.environments.sandbox_scope import ScopedEnvironment, sandbox_identity
+
+    reached = []
+
+    class Backend:
+        def execute(self, command, cwd=None, timeout=30, scope=None):
+            reached.append((getattr(scope, "agent", None), command))
+            return {"output": ""}
+
+    keys = []
+    try:
+        for scope in (A, B):
+            from tools.approval_context import reset_current_session_key, set_current_session_key
+            from tools.code_kernel import _resolve_owner
+            token = set_current_session_key("shared-session")
+            try:
+                with bind_state(scope):
+                    owner = _resolve_owner("t")
+            finally:
+                reset_current_session_key(token)
+            key = _kernel_key(owner, "recording", "t", frozenset())
+            keys.append(key)
+            _REMOTE_KERNELS[key] = RemoteKernel(
+                env=ScopedEnvironment(Backend(), sandbox_identity(scope), owner=scope),
+                env_type="recording", kernel_dir="/workspace/k", pid="4242",
+                rpc_token="tok", owner=owner, owner_scope=scope)
+        with bind_state(B):
+            shutdown_remote_kernels_for_owner("shared-session")
+        assert not any(agent == "agent-a" for agent, _ in reached), reached
+        assert "agent-b" in {agent for agent, _ in reached}, reached
+    finally:
+        for key in keys:
+            _REMOTE_KERNELS.pop(key, None)
 
 
 def test_another_agents_eviction_still_stops_the_owning_kernels_service(provider):

@@ -126,9 +126,13 @@ class TestProviderModelsSWR:
             }), encoding="utf-8")
             os.utime(auth_path, ns=(mtime_ns, mtime_ns))
 
+        def seed(models):
+            fp = mod._credential_fingerprint("openai-codex")
+            mod._store_cache_entry("openai-codex", mod._cache_entry(fp, models))
+
         write_auth(jwt("account-a", "user-a", "first"), 0, 1_000_000_000)
         astra_models = ["gpt-6-astra", "gpt-6-astra-900k"]
-        mod.update_provider_cache_entry("openai-codex", astra_models)
+        seed(astra_models)
 
         # Routine OAuth rotation and pool counters rewrite auth.json, but the
         # account-scoped catalog is still authoritative for the same principal.
@@ -143,7 +147,7 @@ class TestProviderModelsSWR:
             assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
         spawn.assert_called_once_with("openai-codex")
 
-        mod.update_provider_cache_entry("openai-codex", astra_models)
+        seed(astra_models)
         write_auth(jwt("account-b", "user-b", "new-account"), 0, 4_000_000_000)
         with patch.object(mod, "_spawn_swr_refresh") as spawn:
             assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
@@ -152,7 +156,7 @@ class TestProviderModelsSWR:
         # An expired token only ever yields the static fallback (no Astra); the refresh to a live
         # token for the same principal must bust that row instead of serving it for the whole TTL.
         write_auth(jwt("account-b", "user-b", "stale", exp=time.time() - 60), 0, 5_000_000_000)
-        mod.update_provider_cache_entry("openai-codex", ["gpt-5.6-sol"])
+        seed(["gpt-5.6-sol"])
         write_auth(jwt("account-b", "user-b", "fresh", exp=time.time() + 3600), 0, 6_000_000_000)
         with patch.object(mod, "_spawn_swr_refresh") as spawn:
             assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []

@@ -19,7 +19,7 @@ import pytest
 
 from gateway.config import Platform
 from tests.gateway.restart_test_helpers import make_restart_runner
-from tools import browser_tool_lifecycle as bt_lifecycle
+from tools import browser_session_lifecycle as bt_lifecycle
 
 @pytest.fixture(autouse=True)
 def _reset_cron_running_set():

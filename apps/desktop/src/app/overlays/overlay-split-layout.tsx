@@ -116,9 +116,9 @@ export const OverlayNavItem = memo(function OverlayNavItem({
   id,
   label,
   nested,
-  onClick,
   leading,
   pressed,
+  onClick,
   trailing
 }: OverlayNavItemProps) {
   return (
@@ -129,10 +129,14 @@ export const OverlayNavItem = memo(function OverlayNavItem({
         'row-hover flex h-7 w-full shrink-0 items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
         nested
           ? active
-            ? 'border-transparent bg-(--ui-row-active-background) font-medium text-foreground'
+            ? current
+              ? 'border-transparent bg-(--chrome-action-hover) font-medium text-foreground'
+              : // Ancestor of the current page (a plugin whose sub-page is open):
+                // named, not filled, so exactly one nested row reads as selected.
+                'border-transparent bg-transparent font-medium text-foreground hover:bg-(--chrome-action-hover)'
             : 'border-transparent bg-transparent text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
           : active
-            ? 'border-(--ui-stroke-tertiary) bg-(--ui-row-active-background) text-foreground'
+            ? 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) text-foreground'
             : 'border-transparent bg-transparent text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
       )}
       // Names the row by its own id, so a tour can address one link
@@ -163,6 +167,9 @@ export interface OverlayNavLink {
   id: string
   label: string
   onSelect: () => void
+  /** Third level (a group child's own sub-pages, e.g. Settings ▸ Plugins ▸
+   *  <plugin> ▸ <sub-page>): listed under the child while it is active. */
+  children?: OverlayNavLink[]
 }
 
 export interface OverlayNavGroup extends OverlayNavLink {
@@ -265,15 +272,32 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
                   id={childrenId}
                 >
                   {group.children?.map(child => (
-                    <OverlayNavItem
-                      active={child.active}
-                      icon={child.icon}
-                      id={child.id}
-                      key={child.id}
-                      label={child.label}
-                      nested
-                      onClick={child.onSelect}
-                    />
+                    <Fragment key={child.id}>
+                      <OverlayNavItem
+                        active={child.active}
+                        current={child.active && !child.children?.some(grandchild => grandchild.active)}
+                        icon={child.icon}
+                        id={child.id}
+                        label={child.label}
+                        nested
+                        onClick={child.onSelect}
+                      />
+                      {child.active && Boolean(child.children?.length) && (
+                        <div className="ml-3 flex flex-col gap-0.5 pl-1.5">
+                          {child.children?.map(grandchild => (
+                            <OverlayNavItem
+                              active={grandchild.active}
+                              icon={grandchild.icon}
+                              id={grandchild.id}
+                              key={grandchild.id}
+                              label={grandchild.label}
+                              nested
+                              onClick={grandchild.onSelect}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </Fragment>
                   ))}
                 </div>
               )}
@@ -306,14 +330,24 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
                 onSelect: group.onSelect,
                 separatorBefore: group.gapBefore
               },
-              ...(group.children ?? []).map(child => ({
-                active: child.active,
-                icon: child.icon,
-                id: child.id,
-                indent: true,
-                label: child.label,
-                onSelect: child.onSelect
-              }))
+              ...(group.children ?? []).flatMap(child => [
+                {
+                  active: child.active && !child.children?.some(grandchild => grandchild.active),
+                  icon: child.icon,
+                  id: child.id,
+                  indent: true,
+                  label: child.label,
+                  onSelect: child.onSelect
+                },
+                ...(child.children ?? []).map(grandchild => ({
+                  active: grandchild.active,
+                  icon: grandchild.icon,
+                  id: grandchild.id,
+                  indent: true,
+                  label: `${child.label} › ${grandchild.label}`,
+                  onSelect: grandchild.onSelect
+                }))
+              ])
             ])}
           />
         </div>

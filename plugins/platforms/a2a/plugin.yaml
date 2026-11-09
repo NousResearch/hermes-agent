@@ -48,6 +48,10 @@ optional_env:
     description: "Shared bearer token for inbound A2A calls (identity falls back to caller IP). With no token of any kind => bind to 127.0.0.1 only (no remote access)."
     prompt: "A2A shared bearer token (or empty for localhost-only)"
     password: true
+  - name: A2A_PUSH_SECRET
+    description: "HMAC secret for signing push notifications (default: the shared bearer token)."
+    prompt: "A2A push signing secret (or empty)"
+    password: true
   - name: A2A_HOST
     description: "Inbound bind host. Defaults to 127.0.0.1; only widens to 0.0.0.0 when a bearer token is set AND you opt in here."
     prompt: "A2A bind host (default 127.0.0.1)"

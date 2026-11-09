@@ -34,6 +34,14 @@ class DisplayLease(Result):
     reason: str = ""
 
 
+class DisplayImageSwitch(Result):
+    """A persisted Docker sandbox kept on the previous default image; the user decides the switch."""
+
+    current_image: str
+    target_image: str
+    containers: int
+
+
 class DisplayStatus(Result):
     """``tools/bot_desktop/runtime.py::DesktopStatus`` plus the lease and the profile it speaks for."""
 
@@ -51,6 +59,8 @@ class DisplayStatus(Result):
     blocker: str | None = None  # why display.start would refuse now (host memory); the pane shows it instead of Start
     memory_available_mb: int | None = None
     memory_limit_mb: int | None = None
+    placement: str = "gateway"  # "gateway" | "terminal:<backend>" — where Xvnc runs (bot_desktop.placement)
+    image_switch: DisplayImageSwitch | None = None  # a default-image switch the pane may approve (docker placement)
     lease: DisplayLease
     profile_key: str
 
@@ -107,6 +117,18 @@ class DisplayInstallResult(Result):
     started: bool
     command: str | None = None
     profile_key: str
+
+
+class DisplaySwitchSandboxImageParams(ProfileParams):
+    approve: bool = True  # true: pin the new image (container recreated on next use); false: keep the current one
+
+
+class DisplaySwitchSandboxImageResult(DisplayStatus):
+    docker_image: str  # the image now pinned in terminal.docker_image
+
+
+method("display.switchSandboxImage", params=DisplaySwitchSandboxImageParams, result=DisplaySwitchSandboxImageResult,
+       doc="Decide the pending default sandbox image switch for this profile; refused when none is pending.")
 
 
 method("display.install", params=ProfileParams, result=DisplayInstallResult,

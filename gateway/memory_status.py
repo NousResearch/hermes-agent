@@ -9,7 +9,7 @@ coarse numbers (MB), enums and booleans.  A missing/corrupt file degrades to
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -44,7 +44,7 @@ def _parse_iso(value: Any) -> Optional[datetime]:
         parsed = datetime.fromisoformat(value) if isinstance(value, str) and value else None
     except ValueError:
         return None
-    return parsed.replace(tzinfo=timezone.utc) if parsed is not None and parsed.tzinfo is None else parsed
+    return parsed.replace(tzinfo=UTC) if parsed is not None and parsed.tzinfo is None else parsed
 
 
 def classify_pressure(available_kib: Any, total_kib: Any) -> str:
@@ -75,12 +75,12 @@ def collect_memory_status(
     home: Optional[Path] = None,
     *,
     now: Optional[datetime] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """``memory`` block for ``/api/status``; ``home`` scopes to a profile (``None`` =
     active), ``now`` is injectable.  Never raises — a down gateway or corrupt files
     yield ``pressure="unknown"`` plus whatever fields could be recovered."""
-    moment = now or datetime.now(timezone.utc)
-    status: Dict[str, Any] = {
+    moment = now or datetime.now(UTC)
+    status: dict[str, Any] = {
         "pressure": "unknown", "gateway_rss_mb": None, "system_total_mb": None, "system_available_mb": None,
         "swap_used_mb": None, "sampled_at": None, "last_boot_unclean": False, "last_boot_suspected_oom": False,
         # Identity of the CURRENT life (sentinel started_at): the dashboard keys
@@ -110,26 +110,3 @@ def collect_memory_status(
         status["boot_id"] = started_at if isinstance(started_at, str) and started_at else None
 
     return status
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import logging  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'logger': ('gateway.run', 'logger'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

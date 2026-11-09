@@ -127,6 +127,7 @@ class TestHandleResumeCommand:
         }
 
         await runner._handle_resume_command(event)
+        assert runner.session_store.switch_session.call_args.kwargs["preserve_prompt_pin"] is False
         # The resumed chat's override + pending note are cleared...
         assert key not in runner._session_model_overrides
         assert key not in runner._pending_model_notes
@@ -152,14 +153,12 @@ class TestHandleResumeCommand:
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
                               event=event)
         key = _session_key_for_event(event)
-        runner._last_resolved_model = {
-            key: "gpt-5",
-            "agent:main:telegram:dm:other": "keep-me",
-        }
+        runner._session_state(key).conversation.last_resolved_model = "gpt-5"
+        runner._session_state("agent:main:telegram:dm:other").conversation.last_resolved_model = "keep-me"
 
         await runner._handle_resume_command(event)
-        assert key not in runner._last_resolved_model
-        assert runner._last_resolved_model["agent:main:telegram:dm:other"] == "keep-me"
+        assert not runner._session_state(key).conversation.last_resolved_model
+        assert runner._session_state("agent:main:telegram:dm:other").conversation.last_resolved_model == "keep-me"
         db.close()
 
 

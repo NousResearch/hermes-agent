@@ -1,0 +1,26 @@
+name: hermes-agent-mixer
+repo: https://github.com/Sahil-SS9/hermes-agent-mixer
+sha: f1da4ced08326cac33ba7a9fd0d5c1b6acd19f35
+title: Agent Mixer
+maintainer: Sahil-SS9
+tier: community
+category: general
+version: "0.2.0"
+description: "A mixing desk for how much a coding agent may change: four enforced dials (edits, write-scope globs, per-turn line budget, new-dependency policy) with /mixer, live presets, a Desktop dial panel in the composer, a web-dashboard saved-defaults bar and a steering-console page. Also drives Claude Code, Codex and Gemini CLI through the agent-mixer hook command. Disclosure — enforces edit/scope/line-budget/new-dependency dials in pre_tool_call (blocks, or escalates \"ask\" to Hermes approval, which /yolo skips) and adds a one-line rules context via pre_llm_call when a dial is off its default; per-session dial state is stored under HERMES_HOME/plugin-data/hermes-agent-mixer/sessions/, and the Desktop panel and dashboard bar write the plugin's own saved defaults into config.yaml (plugins.entries.hermes-agent-mixer.settings); the separately installed agent-mixer CLI keeps its own state in ~/.config/agent-mixer and ~/.local/state/agent-mixer, writes hook entries into ~/.claude/settings.json, ~/.claude/commands/mixer.md, ~/.codex/hooks.json or ~/.gemini/settings.json only when run as `agent-mixer install <harness> --yes`, and `agent-mixer ui` serves a token-guarded console on 127.0.0.1:8377."
+docs_url: https://github.com/Sahil-SS9/hermes-agent-mixer
+image: https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/f1da4ced08326cac33ba7a9fd0d5c1b6acd19f35/docs/screenshots/dial-panel-open.png
+screenshots:
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/f1da4ced08326cac33ba7a9fd0d5c1b6acd19f35/docs/screenshots/dial-panel-open.png
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/f1da4ced08326cac33ba7a9fd0d5c1b6acd19f35/docs/screenshots/console-page.png
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/f1da4ced08326cac33ba7a9fd0d5c1b6acd19f35/docs/screenshots/dashboard-tab.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"

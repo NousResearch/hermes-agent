@@ -111,7 +111,6 @@ def test_corrupt_store_as_status_maps_replaced_store_errors_to_503_without_fix_n
         sessions._resolve_session_id(_RetiredDb(), "abc")
     assert (info.value.status_code, info.value.detail["error"]) == (503, "state_db_deleted_wal")
 
-    monkeypatch.setattr(sessions, "_maybe_auto_archive_for_profile", lambda profile: None)
     monkeypatch.setattr(sessions, "_session_db_path_for_profile", lambda profile: db_path)
     monkeypatch.setattr(sessions, "_open_session_db_for_profile", lambda profile, read_only: _RetiredDb())
     app = FastAPI()

@@ -225,9 +225,11 @@ def read_commit_receipt(commit: str, name: str, *, public_base: str | None = Non
 
 
 def fetch(tag: str, commit: str, names: list[str], root: Path,
-          includes: list[str] | None = None, *, public_base: str | None = None) -> list[dict]:
+          includes: list[str] | None = None, *, public_base: str | None = None,
+          require_files: bool = True) -> list[dict]:
     receipts = [read_receipt(tag, commit, name, public_base=public_base) for name in names]
-    return _fetch_receipts(receipts, root, includes, public_base=public_base)
+    return _fetch_receipts(receipts, root, includes, public_base=public_base,
+                           require_files=require_files)
 
 
 def fetch_commit_build(commit: str, names: list[str], root: Path,
@@ -238,7 +240,8 @@ def fetch_commit_build(commit: str, names: list[str], root: Path,
 
 
 def _fetch_receipts(receipts: list[dict], root: Path,
-                    includes: list[str] | None = None, *, public_base: str | None = None) -> list[dict]:
+                    includes: list[str] | None = None, *, public_base: str | None = None,
+                    require_files: bool = True) -> list[dict]:
     """Download exact receipt-bound bytes before writing local receipt copies."""
     root = root.resolve()
     selected = {}
@@ -255,11 +258,16 @@ def _fetch_receipts(receipts: list[dict], root: Path,
             if not target.resolve().is_relative_to(root):
                 raise ValueError("Release artifact path escapes its download root")
             selected[row["path"].casefold()] = item
-    if not selected:
+    if not selected and require_files:
         raise ValueError("No files selected from release handoff")
     root.mkdir(parents=True, exist_ok=True)
     credentials = r2.credentials() if public_base is None else None
-    for row, key in selected.values():
+    from scripts.releases.progress import log
+
+    total = sum(row["size"] for row, _key in selected.values())
+    log(f"Downloading {len(selected)} receipt-bound files ({total / 1e9:.1f} GB)")
+    for number, (row, key) in enumerate(selected.values(), start=1):
+        log(f"  [{number}/{len(selected)}] {key} ({row['size'] / 1e6:.0f} MB)")
         if credentials is not None:
             creds, base, bucket = credentials
             r2.download_object(creds, base, bucket, key,

@@ -22,7 +22,7 @@ import sys
 _EXPORTS = {
     "pm.install": (
         "activate", "check", "drift", "enabled_extras", "env_for", "is_installed",
-        "installed_package", "lazy_installs_allowed",
+        "installed_package", "lazy_installs_allowed", "store_first_path", "uv_launcher",
     ),
     "pm.client": (
         "ensure", "sync_venv", "build_environment", "lock_project", "stage_manager_runtime",

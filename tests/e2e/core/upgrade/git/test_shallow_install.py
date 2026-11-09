@@ -1,7 +1,7 @@
 """Shallow and stale installs through the real ``hermes update``.
 
-N-1's ``scripts/install.sh`` clones ``--depth 1 --single-branch``: that is the checkout every
-N-1 user has. Three installs run concurrently over smart HTTP:
+The handoff generation's ``scripts/install.sh`` (to v2026.9.24) clones ``--depth 1 --single-branch``:
+that is the checkout every user of those releases has. Three installs run concurrently over smart HTTP:
 
 * ``depth1``: N-1's own depth-1 install, updated to HEAD and then to one more release. The first
   update must not download the whole project history to move one release (#123254: on a real
@@ -28,11 +28,14 @@ from tests.e2e.core.upgrade.git import _git_world as G
 
 pytestmark = G.PYTESTMARK
 
+# The depth-1 clone is the handoff generation's installer (to v2026.9.24); later installers clone blobless.
+SHALLOW_INSTALLER = "handoff"
+
 ORPHAN = "orphan divergence"
 
 
 def _depth1(root) -> dict:
-    cm, w = G.start_world(root / "depth1", base=G.n1_base(), installer_ref=G.n1_tag())
+    cm, w = G.start_world(root / "depth1", base=G.n1_base(SHALLOW_INSTALLER), installer_ref=G.n1_tag(SHALLOW_INSTALLER))
     run = {"cm": cm, "w": w, "shape0": w.install_shape}
     w.set_main(I.head_sha())
     run["mark1"] = w.srv.mark()
@@ -46,9 +49,10 @@ def _depth1(root) -> dict:
 
 
 def _checked(root) -> dict:
-    cm, w = G.start_world(root / "checked", base=G.n1_base(), installer_ref=G.n1_tag())
+    cm, w = G.start_world(root / "checked", base=G.n1_base(SHALLOW_INSTALLER), installer_ref=G.n1_tag(SHALLOW_INSTALLER))
     run = {"cm": cm, "w": w, "shape0": w.install_shape, "checks": []}
-    between = I.git("rev-list", "--first-parent", f"{G.n1_base()}..{I.head_sha()}", cwd=I.H.WORKTREE).split()
+    between = I.git("rev-list", "--first-parent", f"{G.n1_base(SHALLOW_INSTALLER)}..{I.head_sha()}",
+                    cwd=I.H.WORKTREE).split()
     for k in (len(between) * 3 // 4, len(between) // 2, len(between) // 4):
         w.set_main(between[k])
         run["checks"].append(w.sb.cli("update", "--check", timeout=600))
@@ -100,9 +104,9 @@ def test_stale_depth1_install_updates_without_fetching_the_whole_history(runs):
     main_fetch = run["fetches1"][0].body_bytes if run["fetches1"] else 0
     bound = 2 * w.install_bytes
     with known_failure(r"downloaded .* the depth-1 install itself",
-                       "gated on #123254: on a depth-1 install the updater's plain `git fetch origin main` "
-                       "negotiates away the shallow boundary and downloads ~the whole history (N-1's pre-swap "
-                       "fetch: flips once a fixed release is N-1)"):
+                       "#123254: on a depth-1 install N-1's plain `git fetch origin main` downloads ~the whole "
+                       "history. HEAD unshallows (commits only) before that fetch; the fetch runs pre-swap, so "
+                       "this flips once a release carrying the fix is N-1"):
         assert main_fetch <= bound, (
             f"moving one release, the update's main fetch downloaded {main_fetch} bytes, more than twice the "
             f"{w.install_bytes} bytes of the depth-1 install itself:\n{w.diag(cp1, run['mark1'])}")
@@ -113,12 +117,9 @@ def test_second_update_after_the_unshallowing_update_succeeds(runs):
     w: G.World = run["w"]
     cp1, cp2 = run["cp1"], run["cp2"]
     assert cp1.returncode == 0 and run["head1"] == I.head_sha(), f"N-1 -> HEAD update failed:\n{w.diag(cp1, run['mark1'])}"
-    with known_failure(r"should_include_obj|pack-objects died",
-                       "gated on #124272: the first update's unshallow fetch applies --filter=tree:0 to a "
-                       "non-promisor clone; the next fetch crashes in pack-objects (HEAD's post-swap step)"):
-        assert cp2.returncode == 0 and run["head2"] == run["target2"], (
-            f"the update after the unshallowing update failed (rc={cp2.returncode}):\n"
-            f"{G.output(cp2)[-1500:]}\n{w.diag(cp2, run['mark2'])}")
+    assert cp2.returncode == 0 and run["head2"] == run["target2"], (
+        f"the update after the unshallowing update failed (rc={cp2.returncode}):\n"
+        f"{G.output(cp2)[-1500:]}\n{w.diag(cp2, run['mark2'])}")
     version = run["version"]
     assert version.returncode == 0 and G.TRACEBACK not in G.output(version), w.diag(version)
 
@@ -131,9 +132,10 @@ def test_passive_checks_do_not_push_the_next_update_into_orphan_divergence(runs)
         assert cp.returncode == 0 and G.TRACEBACK not in G.output(cp), f"`hermes update --check` failed:\n{w.diag(cp)}"
     assert cp1.returncode == 0 and run["head1"] == I.head_sha(), f"N-1 -> HEAD update failed:\n{w.diag(cp1)}"
     with known_failure(r"claims orphan divergence",
-                       "gated on #124645: each depth-1 `--check` still appends a graft the reflog pins "
-                       "(the #105951 prune restores them), and the next update resets as orphan divergence "
-                       "(N-1's own check and pull code: flips once a fixed release is N-1)"):
+                       "#124645: each depth-1 `--check` appends a graft the fetch reflog pins, and N-1's "
+                       "update resets as orphan divergence. HEAD's prune expires those reflogs and HEAD "
+                       "unshallows before the pull; it is N-1's own check and pull code, so this flips once "
+                       "a release carrying the fix is N-1"):
         assert ORPHAN not in G.output(cp1) and not w.refs("refs/hermes-update-backups/orphan-*"), (
             f"after {len(run['checks'])} passive checks ({run['grafts']} grafts in .git/shallow) the update "
             f"claims orphan divergence on a history it shares with upstream:\n{w.diag(cp1)}")
@@ -147,9 +149,6 @@ def test_depth1_prefetch_never_turns_shared_history_into_orphan_divergence(runs)
     assert cp1.returncode == 0 and run["head1"] == run["target"], f"update failed:\n{w.diag(cp1)}"
     keepers = w.refs_containing(run["local"])
     assert keepers, f"local commit {run['local'][:12]} is reachable only from the reflog:\n{w.diag(cp1)}"
-    with known_failure(r"claims orphan divergence",
-                       "gated on #123346: after a --depth pre-fetch the grafted tip has no ancestry, and the "
-                       "update resets as orphan divergence instead of deepening and re-testing"):
-        assert ORPHAN not in G.output(cp1) and not w.refs("refs/hermes-update-backups/orphan-*"), (
-            f"after a --depth 1 pre-fetch the update claims orphan divergence and force-resets main "
-            f"(local commit {run['local'][:12]} shares history with upstream):\n{w.diag(cp1)}")
+    assert ORPHAN not in G.output(cp1) and not w.refs("refs/hermes-update-backups/orphan-*"), (
+        f"after a --depth 1 pre-fetch the update claims orphan divergence and force-resets main "
+        f"(local commit {run['local'][:12]} shares history with upstream):\n{w.diag(cp1)}")

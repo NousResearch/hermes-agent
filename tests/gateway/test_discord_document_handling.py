@@ -7,7 +7,7 @@ to download, cache, and optionally inject text from non-image/audio files.
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -57,8 +57,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+import plugins.platforms.discord.adapter as discord_platform
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ def make_message(attachments: list, content: str = "") -> SimpleNamespace:
         attachments=attachments,
         mentions=[],
         reference=None,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         channel=FakeDMChannel(),
         author=SimpleNamespace(id=42, display_name="Tester", name="Tester"),
     )
@@ -223,9 +223,6 @@ class TestIncomingDocumentHandling:
         """Two text file attachments should both be injected into event.text in order."""
         content1 = b"First file content"
         content2 = b"Second file content"
-
-        call_count = 0
-        responses = [content1, content2]
 
         def make_session(_responses):
             idx = 0

@@ -14,7 +14,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import IO
 
-from pm.filesystem import is_junction
+from pm.filesystem import is_junction, long_root, retry_held
+
+# Inert desktop metadata that must never decide a package's layout or digest.
+JUNK_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini", ".localized"})
 
 
 
@@ -37,7 +40,7 @@ def _native_machine() -> str:
     try:
         from hermes_platform.host.facts import native_arch
     except ModuleNotFoundError as exc:
-        if exc.name != "hermes_platform":
+        if exc.name != "hermes_platform" and not "hermes_platform".startswith(f"{exc.name}."):
             raise
     else:
         return native_arch()
@@ -210,13 +213,10 @@ def _tar_filter(member, dest: str):
         return member.replace(deep=False, uid=None, gid=None, uname=None, gname=None, mode=None)
     return tarfile.data_filter(member, dest)
 
-def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False) -> None:
+def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     """Extract a tarball (a path, or an open stream such as a .deb's data.tar)
     with the one containment policy every PM tar consumer shares. Unsafe
     members raise tarfile.FilterError.
-
-    MSYS Git ships dev/fd links and etc/mtab into /proc; those aren't usable
-    on Windows. Skip only those known links, never a filter error or failed file write.
     """
     import tarfile
 
@@ -224,15 +224,7 @@ def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False
     real_dest = os.path.realpath(dest)
     opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)
     with opened as tf:
-        if git_msys:
-            members = (m for m in tf if not (m.issym() and (
-                (m.name.lstrip("./").startswith("dev/") and m.linkname.startswith("/proc/"))
-                or (m.name == "etc/mtab" and m.linkname == "/proc/mounts")
-            )))
-            for member in members:
-                tf.extract(member, dest, filter=lambda item, path: _tar_filter(item, real_dest))
-        else:
-            tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+        tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
 
 
 def extract(archive: Path, dest: Path) -> None:
@@ -281,20 +273,41 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
         link.write_text(target, encoding="utf-8")
 
 
+def _is_os_metadata(path: Path) -> bool:
+    """Only inert regular metadata files are excluded, never links or directories.
+
+    A directory or executable that happens to carry one of these names is
+    payload, not metadata: skipping it would hide real package bytes and let a
+    tree digest change under a caller that only added a .DS_Store.
+    """
+    if path.name not in JUNK_NAMES and not path.name.startswith("._"):
+        return False
+    mode = path.lstat().st_mode
+    return stat.S_ISREG(mode) and not mode & 0o111
+
+
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
-    (bin/, cmd/, lib/...). Refuses on name collisions."""
+    (bin/, cmd/, lib/...). Refuses on name collisions. The tree was extracted
+    seconds ago, when a Windows scanner still holds it (#131884)."""
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
-    entries = list(dest.iterdir())
+    entries = [entry for entry in dest.iterdir() if not _is_os_metadata(entry)]
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
         return
     inner = entries[0]
-    for item in list(inner.iterdir()):
+    items = list(inner.iterdir())
+    # Check the whole move before modifying the layout. Duplicate desktop
+    # metadata is harmless; every other collision must preserve both trees.
+    for item in items:
         target = dest / item.name
-        if target.exists():
+        if os.path.lexists(target) and not (_is_os_metadata(item) and _is_os_metadata(target)):
             return
-        item.rename(target)
-    inner.rmdir()
+    for item in items:
+        target = dest / item.name
+        if os.path.lexists(target):
+            retry_held(target.unlink)  # both entries were verified as regular metadata
+        retry_held(lambda: item.rename(target))
+    retry_held(inner.rmdir)
 
 
 def merge_tree(src: Path, dst: Path) -> None:
@@ -309,10 +322,20 @@ def merge_tree(src: Path, dst: Path) -> None:
         if target.exists():
             raise FileExistsError(f"archives disagree about {rel}")
         target.parent.mkdir(parents=True, exist_ok=True)
-        item.replace(target)
+        retry_held(lambda: item.replace(target))
 
 
 def tree_digest(root: Path) -> str:
+    return _tree_digest(root, skip_metadata=True)
+
+
+def digest_matches(root: Path, recorded: str | None) -> bool:
+    """Facts recorded before desktop metadata was skipped hashed it as payload."""
+    return recorded is not None and (
+        tree_digest(root) == recorded or _tree_digest(root, skip_metadata=False) == recorded)
+
+
+def _tree_digest(root: Path, *, skip_metadata: bool) -> str:
     """Deterministic sha256 over a directory tree: walk every file, sort
     by posix relpath, hash `relpath\\0<content>` per entry. No mtimes, no
     mode bits. Symlinks contribute their LINK TARGET TEXT (os.readlink),
@@ -337,6 +360,8 @@ def tree_digest(root: Path) -> str:
         dirnames[:] = descend
         for fname in filenames:
             path = Path(dirpath) / fname
+            if skip_metadata and _is_os_metadata(path):
+                continue
             files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])
 
@@ -358,7 +383,7 @@ class Store:
     Hash-keyed archives survive failed installs. Publication releases them."""
 
     def __init__(self, root: Path):
-        self.root = root
+        self.root = long_root(root)
 
     def entry(self, name: str) -> Path:
         return self.root / name
@@ -397,7 +422,8 @@ class Store:
                 destination = scratch / entry_name / url.rsplit("/", 1)[-1]
             sources.append(pinned_source(url, destination, digest))
 
-        urls = {str(source.dest): source.url for source in sources}
+        # Progress keeps the lockfile URL even when the transport is a mirror (#123132).
+        urls = {str(source.dest): artifact["url"] for source, artifact in zip(sources, artifacts)}
 
         def tick(done, total, ranges):
             if progress is not None:

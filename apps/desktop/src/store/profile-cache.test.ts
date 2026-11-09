@@ -8,7 +8,7 @@ import type { ProfileInfo } from '@/types/hermes'
 
 vi.mock('@/store/gateway', () => ({ $gateway: atom(null) }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph: vi.fn() }))
 
 const { $profiles, $profilesByConnection, invalidateProfileListFetches, refreshActiveProfile, refreshProfiles } =
   await import('./profile')

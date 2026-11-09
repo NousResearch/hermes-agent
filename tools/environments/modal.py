@@ -4,16 +4,15 @@
 import asyncio
 import base64
 import io
-import itertools
 import logging
 import shlex
 import tarfile
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
+from tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
@@ -31,8 +30,8 @@ def _load_snapshots() -> dict:
     return _load_json_store(_snapshot_store())
 
 
-def _save_snapshots(data: dict) -> None:
-    _save_json_store(_snapshot_store(), data)
+def _update_snapshots(update: Callable[[dict], None]) -> None:
+    _update_json_store(_snapshot_store(), update)
 
 
 def _get_snapshot_restore_candidate(task_id: str) -> tuple[str | None, bool]:
@@ -46,20 +45,21 @@ def _get_snapshot_restore_candidate(task_id: str) -> tuple[str | None, bool]:
 
 
 def _store_direct_snapshot(task_id: str, snapshot_id: str) -> None:
-    snapshots = _load_snapshots()
-    snapshots[f"direct:{task_id}"] = snapshot_id
-    snapshots.pop(task_id, None)
-    _save_snapshots(snapshots)
+    def update(snapshots: dict) -> None:
+        snapshots[f"direct:{task_id}"] = snapshot_id
+        snapshots.pop(task_id, None)
+
+    _update_snapshots(update)
 
 
 def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> None:
-    snapshots = _load_snapshots()
-    stale = [k for k in (f"direct:{task_id}", task_id)
-             if snapshots.get(k) is not None and snapshot_id in (None, snapshots[k])]
-    for key in stale:
-        snapshots.pop(key)
-    if stale:
-        _save_snapshots(snapshots)
+    def update(snapshots: dict) -> None:
+        stale = [k for k in (f"direct:{task_id}", task_id)
+                 if snapshots.get(k) is not None and snapshot_id in (None, snapshots[k])]
+        for key in stale:
+            snapshots.pop(key)
+
+    _update_snapshots(update)
 
 
 def _resolve_modal_image(image_spec: Any) -> Any:
@@ -152,24 +152,12 @@ class ModalEnvironment(BaseEnvironment):
             logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
         ensure_lazy_dep("modal")
         import modal as _modal
-        cred_mounts = []
-        try:
-            from tools.credential_files import get_credential_file_mounts, iter_skills_files, iter_cache_files
-            # from_iterable keeps each source lazy so a failure mid-way leaves the earlier mounts in place
-            for entry in itertools.chain.from_iterable(
-                    fn() for fn in (get_credential_file_mounts, iter_skills_files, iter_cache_files)):
-                cred_mounts.append(
-                    _modal.Mount.from_local_file(entry["host_path"], remote_path=entry["container_path"]))
-        except Exception as e:
-            logger.debug("Modal: could not load credential file mounts: %s", e)
         self._worker.start()
 
         def _create(image_spec: Any) -> None:
             async def _create_sandbox():
                 app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True)
                 create_kwargs = dict(modal_sandbox_kwargs or {})
-                if cred_mounts:
-                    create_kwargs["mounts"] = list(create_kwargs.pop("mounts", [])) + cred_mounts
                 sandbox = await _modal.Sandbox.create.aio(
                     "sleep", "infinity", image=image_spec, app=app,
                     timeout=int(create_kwargs.pop("timeout", 3600)), **create_kwargs)
@@ -272,7 +260,9 @@ class ModalEnvironment(BaseEnvironment):
             self._sync_manager.sync_back()
         if self._persistent:
             async def _snapshot():
-                return (await self._sandbox.snapshot_filesystem.aio()).object_id
+                # ttl=None: the SDK default (30 days) would silently expire an idle
+                # persistent sandbox's snapshot; Hermes owns its lifetime.
+                return (await self._sandbox.snapshot_filesystem.aio(ttl=None)).object_id
             try:
                 snapshot_id = self._worker.run_coroutine(_snapshot(), timeout=60)
             except Exception:

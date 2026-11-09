@@ -2,14 +2,14 @@
 
 The web/desktop search endpoint turns every unquoted token into ``token*`` so
 partial English words match. None of the CJK routes can honour that star: the
-bigram and trigram routes quote each token before ``MATCH`` (so ``*`` is matched
+trigram route quotes each token before ``MATCH`` (so ``*`` is matched
 literally) and the LIKE route has no ``*`` wildcard at all (only ``%``/``_``).
 Left in place, every CJK search typed into the desktop/web search box becomes
 a search for a term ending in a literal asterisk and returns nothing, while
 the identical query without the star returns rows.
 
 Runs against a real SessionDB in a temp HERMES_HOME, on the trigram and LIKE
-routes only — no ``cjk_unicode61`` tokenizer toolchain is required.
+routes.
 """
 
 from hermes_state import SessionDB

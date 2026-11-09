@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.git import _git_world as G
 
@@ -70,12 +69,9 @@ def test_conflicting_patch_is_recoverable_and_never_reported_complete(w):
     parked = any(USER_LINE.strip() in t for t in _stash_texts(w, "README.md"))
     assert in_tree or parked, f"the user's patch is neither in the tree nor in any stash:\n{w.diag(cp)}"
     if parked and not in_tree:
-        with known_failure(r"reported 'Update complete' .*while the user's patch is parked",
-                           "gated on #122557: a conflicting autostash is parked and the update still exits 0 "
-                           "with 'Update complete!'"):
-            assert not G.reported_success(cp), (
-                f"reported 'Update complete' (rc={cp.returncode}) while the user's patch is parked in a stash:\n"
-                f"{w.diag(cp)}")
+        assert not G.reported_success(cp), (
+            f"reported 'Update complete' (rc={cp.returncode}) while the user's patch is parked in a stash:\n"
+            f"{w.diag(cp)}")
 
 
 def test_untracked_file_colliding_with_a_new_upstream_file_is_not_lost(w):

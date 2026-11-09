@@ -9,8 +9,8 @@ imports in the generation selected after it:
 * an extra the user installed with the documented command (``hermes pm install --extra telegram``);
 * the MCP client (an HTTP MCP server in config.yaml must still connect: ``hermes mcp test``
   against a real local streamable-HTTP server);
-* a gateway platform enabled in config.yaml (Discord) — gated on #124228: PM never reads
-  ``platforms:`` from config, so the rebuilt environment has no SDK and the updater only warns;
+* a gateway platform enabled in config.yaml (Discord): the update installs the platform's extra
+  instead of only warning that the SDK is missing (#124228);
 * extras a main-era venv carried (``[all]`` plus ``[messaging]``) across the
   legacy-venv migration to the first PM generation.
 
@@ -28,13 +28,15 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.mcp_plugins._helpers import HttpMcpServer
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.pm import _pm as P
 from tests.e2e.core.upgrade.test_upgrade_path import _RETRY_PREFIX, _refs, make_leg
 from tests.fakes.fake_llm_provider import FakeLLMServer
+
+# A main-era install is a release from before PM shipped (pm/ first appears in v0.21.6).
+PRE_PM_GENERATION = "handoff"
 
 pytestmark = [
     pytest.mark.platforms("linux"),
@@ -120,11 +122,9 @@ def test_repair_keeps_installed_extra_and_mcp(rebuilt):
 def test_configured_gateway_platform_has_its_sdk_after_update(rebuilt):
     sb, up, after = rebuilt["sb"], rebuilt["update"], rebuilt["after_update"]
     assert up.returncode == 0, P.diagnostics(sb, up)
-    with known_failure(r"configured discord platform has no SDK after `hermes update`: ModuleNotFoundError",
-                       "gated on #124228: PM builds ignore configured gateway platforms"):
-        assert after["imports"]["discord"] == "ok", (
-            f"configured discord platform has no SDK after `hermes update`: {after['imports']['discord']}\n"
-            + P.diagnostics(sb, up))
+    assert after["imports"]["discord"] == "ok", (
+        f"configured discord platform has no SDK after `hermes update`: {after['imports']['discord']}\n"
+        + P.diagnostics(sb, up))
 
 
 # ---------------------------------------------------------------------------
@@ -134,12 +134,13 @@ def test_configured_gateway_platform_has_its_sdk_after_update(rebuilt):
 
 @pytest.fixture(scope="module")
 def migrated(tmp_path_factory, provider):
-    """Release N-1 installed main-era style (``venv/`` from N-1's own uv.lock with ``[all]``) plus
+    """The newest pre-PM release installed main-era style (``venv/`` from N-1's own uv.lock with ``[all]``) plus
     the ``[messaging]`` extra (Telegram, Discord, Slack SDKs) the main-era docs installed, then
     updated to HEAD."""
-    if not _refs().base_tag:
+    pre_pm = I.upgrade_base(PRE_PM_GENERATION)
+    if pre_pm is None:
         pytest.skip("no release tag reachable before HEAD (fetch tags)")
-    leg = make_leg(tmp_path_factory.mktemp("pm-legacy") / "leg", None)
+    leg = make_leg(tmp_path_factory.mktemp("pm-legacy") / "leg", None, base=pre_pm.commit)
     no_cfg = leg.root / "uv-config"
     uv_env = {k: v for k, v in os.environ.items() if k not in ("VIRTUAL_ENV", "UV_NO_CONFIG", "UV_CONFIG_FILE")}
     uv_env.update(UV_PROJECT_ENVIRONMENT=str(leg.install / "venv"), XDG_CONFIG_HOME=str(no_cfg),
@@ -148,7 +149,7 @@ def migrated(tmp_path_factory, provider):
     assert uv is not None
     cp = subprocess.run([uv, "sync", "-q", "--locked", "--extra", "all", "--extra", "messaging",
                          "--python", str(leg.install / "venv" / "bin" / "python")],
-                        cwd=str(leg.install), env=uv_env, capture_output=True, text=True, timeout=1800)
+                        cwd=str(leg.install), env=uv_env, capture_output=True, text=True, timeout=1800, check=False)
     assert cp.returncode == 0, f"harness: messaging install into the N-1 venv failed:\n{cp.stderr[-4000:]}"
     with (leg.install / "pyproject.toml").open("rb") as fh:
         assert "messaging" in tomllib.load(fh)["project"]["optional-dependencies"], "harness: N-1 has no messaging extra"

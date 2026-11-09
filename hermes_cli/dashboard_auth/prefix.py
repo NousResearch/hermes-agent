@@ -106,7 +106,7 @@ def _load_dashboard_section() -> dict:
         return {}
     try:
         cfg = load_config()
-    except Exception as exc:  # noqa: BLE001 — broad catch is intentional
+    except Exception as exc:
         _log.debug("dashboard-auth.prefix: load_config() raised %s; "
                    "falling back to env-only configuration", exc)
         return {}
@@ -114,10 +114,17 @@ def _load_dashboard_section() -> dict:
     return section if isinstance(section, dict) else {}
 
 
-def resolve_public_url() -> str:
+def resolve_public_url(state=None) -> str:
     """Operator-declared dashboard public URL, or ``""`` (reconstruct from request). Precedence:
     ``HERMES_DASHBOARD_PUBLIC_URL`` env (blank counts as unset so a provisioned-but-blank secret
-    cannot shadow config.yaml), then ``dashboard.public_url``; malformed warns and falls through."""
+    cannot shadow config.yaml), then ``dashboard.public_url``; malformed warns and falls through.
+
+    *state* is the serving app's state. A listener that declares its own public URL there
+    (``listener_public_url``, ``""`` for none: the gateway's Webapp listener, from ``webapp.public_url``)
+    gets that, and the dashboard's setting is never read for it."""
+    own = getattr(state, "listener_public_url", None)
+    if own is not None:
+        return own
     env_raw = os.environ.get("HERMES_DASHBOARD_PUBLIC_URL", "")
     env_clean = _normalise_public_url(env_raw)
     if env_clean:

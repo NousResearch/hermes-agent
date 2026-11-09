@@ -65,7 +65,7 @@ def s6_host(tmp_path, monkeypatch):
 def test_parked_named_slots_do_not_veto_the_unset_default(s6_host):
     """The user's exact scenario: boot parked alpha+beta down, key unset → the guard must let the
     default apply (only an UP named slot is a second gateway). Base refused with 'Restart the container'."""
-    root, fake = s6_host
+    _root, fake = s6_host
     from gateway.config import GatewayConfig
     decision = mode.resolve_multiplex_mode(GatewayConfig.from_dict({}))
     assert (decision.enabled, decision.source) == (True, "default"), decision

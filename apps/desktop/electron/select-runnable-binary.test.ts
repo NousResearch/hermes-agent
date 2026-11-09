@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { describeGitSpawnFailure, selectRunnableBinary } from './select-runnable-binary'
+import { selectRunnableBinary } from './select-runnable-binary'
 
 const yes = () => true
 const no = () => false
@@ -55,28 +55,4 @@ test('missing candidates are never probed, and nothing existing yields null for 
 
   assert.equal(selectRunnableBinary({ candidates: ['/opt/homebrew/bin/gh'], fileExists: no, binaryRuns: no }), null)
   assert.equal(selectRunnableBinary({ candidates: [], fileExists: yes, binaryRuns: yes }), null)
-})
-
-test.each([
-  {
-    // The reported machine: Darwin errno 86 (Bad CPU type) reaches Node as a
-    // bare `errno: -86` with no `code` — "spawn Unknown system error -86".
-    name: 'EBADARCH via errno -86 names the binary and the CPU-type cause',
-    error: { errno: -86, syscall: 'spawn', message: 'spawn Unknown system error -86' },
-    expected: /\/usr\/local\/bin\/git.*Bad CPU type/
-  },
-  {
-    name: 'ENOENT reads as a missing binary',
-    error: { code: 'ENOENT', errno: -2, syscall: 'spawn /usr/local/bin/git' },
-    expected: /\/usr\/local\/bin\/git: not found/
-  }
-])('$name', ({ error, expected }) => {
-  assert.match(describeGitSpawnFailure(error, '/usr/local/bin/git') ?? '', expected)
-})
-
-test('a git that ran and exited nonzero is not a spawn failure and keeps its own wording', () => {
-  // Nonzero exits never fire the child 'error' event; only spawn-level
-  // failures (binary missing / not executable / wrong architecture) do.
-  assert.equal(describeGitSpawnFailure(new Error('fatal: not a git repository'), '/usr/bin/git'), null)
-  assert.equal(describeGitSpawnFailure({ code: 'ETIMEDOUT' }, '/usr/bin/git'), null)
 })

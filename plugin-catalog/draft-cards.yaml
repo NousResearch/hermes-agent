@@ -1,0 +1,25 @@
+name: draft-cards
+repo: https://github.com/arsiktech/hermes-draft-cards
+sha: 6e6ca659ece59b0ce1c28b3b188393491ee5a415
+version: "0.1.0"
+title: Draft Cards
+description: "Email and chat-message drafts as reviewable cards in the Hermes Desktop chat. The agent's draft_card tool stores each draft and its revisions; the card shows recipients, subject and body, highlights the words each revision changed (removed text on demand), supports inline editing, and offers Copy and Open in Mail. The plugin never sends anything: pressing Send records approval of that exact version and posts it to the chat, then the agent sends it with the user's existing mail or messaging tools and reports the outcome with draft_card_status. Disclosure — stores draft text (recipients, subject, body, versions) in the profile's plugin-data/draft-cards/drafts.db (the 500 most recent drafts are kept); the desktop half appends one scoped stylesheet, removed on disable; no network calls, no credentials, no shell commands, no background processes, no telemetry."
+maintainer: arsiktech
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/arsiktech/hermes-draft-cards/blob/6e6ca659ece59b0ce1c28b3b188393491ee5a415/README.md
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/arsiktech/hermes-draft-cards/6e6ca659ece59b0ce1c28b3b188393491ee5a415/docs/revised-dark.png
+  - https://raw.githubusercontent.com/arsiktech/hermes-draft-cards/6e6ca659ece59b0ce1c28b3b188393491ee5a415/docs/draft-light.png
+  - https://raw.githubusercontent.com/arsiktech/hermes-draft-cards/6e6ca659ece59b0ce1c28b3b188393491ee5a415/docs/edited-dark.png
+  - https://raw.githubusercontent.com/arsiktech/hermes-draft-cards/6e6ca659ece59b0ce1c28b3b188393491ee5a415/docs/removed-dark.png
+  - https://raw.githubusercontent.com/arsiktech/hermes-draft-cards/6e6ca659ece59b0ce1c28b3b188393491ee5a415/docs/sent-light.png
+known_issues:
+  - "After installing, switch on the Draft Cards desktop half in Capabilities → Plugins, then start a new chat so the agent sees the draft_card tools."
+capabilities:
+  provides_tools: [draft_card, draft_card_read, draft_card_status]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

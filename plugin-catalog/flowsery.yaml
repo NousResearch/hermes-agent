@@ -1,0 +1,18 @@
+name: flowsery
+title: Flowsery
+repo: https://github.com/Flowsery/claude-plugin
+sha: 0bdafe7529c4bfe5107c657c43a72f6569472f77
+version: "1.4.0"
+description: "Privacy-first web analytics through Flowsery's hosted MCP server (Streamable HTTP at https://mcp.flowsery.com/mcp, OAuth sign-in, no keys in config): visitors, sessions, bounce rate, time series, real-time visitors, breakdowns by page, referrer, channel, campaign, country and device, goals and revenue attribution, single visitor journeys, and the bugs and UX problems Flowsery found in session recordings. Bundles the flowsery workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Flowsery's hosted server (mcp.flowsery.com) and acts on the user's Flowsery account with their own workspace role; the tool set is served by that server at runtime and is not covered by the pinned sha. Most tools are read-only; track_goal and track_payment record goal and payment events in the user's analytics (no money moves), delete_goals and delete_payments permanently remove those events, and update_issue_status changes an issue. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: Flowsery
+tier: community
+category: tools
+docs_url: https://github.com/Flowsery/claude-plugin#install-in-hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

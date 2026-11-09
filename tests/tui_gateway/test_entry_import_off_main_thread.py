@@ -63,6 +63,7 @@ def _spawn_worker_import_entry():
         text=True,
         timeout=60,
         env={**__import__("os").environ},
+        check=False,
     )
     return proc.returncode, proc.stdout, proc.stderr
 

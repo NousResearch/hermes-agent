@@ -184,15 +184,16 @@ def _check_s6_supervision(issues: list[str]) -> None:
     """Under our s6 /init, report static services and the ONE host gateway slot; no-op elsewhere.
     Counterpart to :func:`_check_gateway_service_linger` (systemd-on-host)."""
     try:
-        from hermes_cli.service_manager import S6ServiceManager, detect_service_manager
+        from hermes_cli.service_manager import (
+            S6_STATIC_SCANDIR, S6ServiceManager, detect_service_manager, s6_service_up)
     except Exception:
         return
     if detect_service_manager() != "s6":
         return
     _section("s6 Supervision")
     mgr = S6ServiceManager()
-    for static in ("main-hermes", "dashboard"):  # s6-rc symlinks under /run/service/, same s6-svstat probe
-        up = mgr.is_running(static)
+    for static in ("main-hermes", "dashboard"):  # s6-rc symlinks in the root scandir, not the gateway one
+        up = s6_service_up(S6_STATIC_SCANDIR / static)
         (check_ok if up else check_info)(f"{static}: up" if up else f"{static}: down (expected if not enabled via env)")
     _report_host_gateway_slot(mgr, issues)
 
@@ -221,7 +222,7 @@ def _report_host_gateway_slot(mgr, issues: list[str]) -> None:
                       "hermes --profile default gateway migrate --multiplex")
 
 
-def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
+def check_certificates(should_fix: bool = False, issues: list | None = None) -> None:
     """Verify the actual TLS policy is usable before the first HTTPS call tracebacks.
 
     The policy is ``agent.ssl_verify``: the platform verifier (truststore) is
@@ -330,7 +331,7 @@ def _macos_desktop_dr(app: Path) -> str | None:
     """Return the bundle's designated requirement string, or None on failure (a hanging codesign must never abort doctor)."""
     codesign = shutil.which("codesign")
     try:
-        proc = subprocess.run([codesign, "-d", "--requirements", "-", str(app)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15) if codesign else None
+        proc = subprocess.run([codesign, "-d", "--requirements", "-", str(app)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False) if codesign else None
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     return None if proc is None or proc.returncode != 0 else (proc.stdout or "") + (proc.stderr or "")
@@ -405,7 +406,7 @@ def _check_security_advisories(should_fix: bool, f: Finding) -> None:
             check_warn(f"{h.package}=={h.installed_version} still installed (advisory {h.advisory.id} acknowledged)")
 
 
-def _staged_venv_dir() -> "Path | None":
+def _staged_venv_dir() -> Path | None:
     """pm's provisioned runtime venv, or None when nothing is staged.
 
     ``pm.packages.Venv().venv_dir()`` is pm's public authority for where
@@ -416,7 +417,7 @@ def _staged_venv_dir() -> "Path | None":
     doctor must not read an empty directory as staged dependencies.
     """
     try:
-        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        import pm
         from pm.packages import Venv
 
         venv_dir = Venv().venv_dir()
@@ -523,6 +524,58 @@ def _check_windows_gateway_autostart(should_fix: bool, f: Finding) -> None:
         f.fixed += 1
     if warnings:
         f.manual_issues.extend(warnings)
+
+
+@doctor_check()
+def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
+    """Import the dashboard web surface in a subprocess so an import-time crash lands in the report.
+
+    When starlette is updated past the fastapi pinned beside it (the CVE starlette pin ships in
+    several extras on its own), ``hermes dashboard`` dies constructing ``FastAPI(...)`` with a
+    TypeError — not an ImportError — so the module's own lazy-install fallback never fires and the
+    process exits before a single log line. Importing in a subprocess keeps a dead web surface
+    from taking the doctor down with it; lazy installs stay off so the probe never mutates the
+    environment it is diagnosing.
+    """
+    from hermes_cli.doctor import PROJECT_ROOT
+
+    env = dict(os.environ, HERMES_DISABLE_LAZY_INSTALLS="1")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import hermes_cli.web_server"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _fail_and_issue(
+            "Dashboard web surface",
+            "(import probe timed out)",
+            "Repair the dashboard dependencies: `hermes pm repair`, then restart Hermes",
+            f.issues,
+        )
+        return
+    stderr = (proc.stderr or "").strip()
+    if proc.returncode == 0:
+        return check_ok("Dashboard web surface", "(imports cleanly)")
+    if "Web UI requires fastapi and uvicorn" in stderr:
+        # The optional web extra is simply absent; anyone who never opens the dashboard
+        # should not be told their install is broken.
+        return check_warn("Dashboard web surface", "(optional web extra not installed)")
+    detail = (
+        stderr.splitlines()[-1] if stderr else f"(exited with code {proc.returncode})"
+    )
+    _fail_and_issue(
+        "Dashboard web surface",
+        detail,
+        "Repair the dashboard dependencies: `hermes pm repair`, then restart Hermes",
+        f.issues,
+    )
 
 
 @doctor_check()

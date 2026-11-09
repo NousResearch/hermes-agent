@@ -5,7 +5,7 @@ import path from 'node:path'
 import { type ConsoleMessage, expect, type Locator, type Page } from '@playwright/test'
 import { z } from 'zod'
 
-import { validateMockUrl } from './mock-provider-config.ts'
+import { MOCK_MODEL_ID, validateMockUrl } from './mock-provider-config.ts'
 import { MOCK_REPLY } from './mock-server.ts'
 
 export type ChatPhase = 'old' | 'new' | 'installed'
@@ -16,6 +16,8 @@ export interface DesktopChatSmokeOptions {
   outDir: string
   expectCommit?: string
   provenanceCommit?: string
+  /** A commit the running app may report instead of expectCommit: the build a reused packaged app came from. */
+  reusedBuildCommit?: string
   observePrompts?: () => Promise<readonly string[]>
 }
 
@@ -75,9 +77,10 @@ export async function readChatIdentity(page: Page): Promise<ChatIdentity> {
   return { ...identity, commit: identity.commit ?? null }
 }
 
-/** Old desktops do not report a commit; their caller must verify the installed runtime. */
-export function assertChatCommit(identity: ChatIdentity, expected: string, provenanceCommit?: string): void {
-  if (identity.commit !== null && identity.commit !== expected) {
+/** Old desktops do not report a commit; their caller must verify the installed runtime.
+ * A reused packaged app reports the commit it was built from (`reusedBuildCommit`). */
+export function assertChatCommit(identity: ChatIdentity, expected: string, provenanceCommit?: string, reusedBuildCommit?: string): void {
+  if (identity.commit !== null && identity.commit !== expected && identity.commit !== reusedBuildCommit) {
     throw new Error(`Running commit ${identity.commit} does not equal expected ${expected}`)
   }
 
@@ -119,8 +122,15 @@ export async function waitForChatReady(page: Page, timeoutMs = 120_000): Promise
   try {
     await composer.waitFor({ state: 'visible', timeout: timeoutMs })
     await expect(composer).toBeEditable({ timeout: timeoutMs })
-    // Trial input checks hit testing, not merely a non-zero box behind the boot overlay.
-    await composer.click({ trial: true, timeout: timeoutMs })
+    // Hit-test without scrolling: the composer's centre must reach the composer,
+    // not the boot/onboarding overlay. Never use a Playwright pointer action on
+    // the composer: its actionability step calls scrollIntoView (and its retries
+    // cycle end/center/start alignment), which scrolls the app's overflow-hidden
+    // ancestors. The v0.19.1 desktop's chat surface scrolled that way stays
+    // displaced, so its composer was never hittable again (every retry hit
+    // <html>, the chat surface or the composer dock, with this poll already true).
+    await expect.poll(async (): Promise<boolean> => composer.evaluate(composerIsTopmost), { timeout: timeoutMs })
+      .toBe(true)
   } catch (error) {
     throw new Error(`${(error as Error).message} -- composer not interactable `
       + `(composer-root=${await root.count()}, contenteditable=${await root.locator('[contenteditable]').count()}): `
@@ -128,6 +138,35 @@ export async function waitForChatReady(page: Page, timeoutMs = 120_000): Promise
   }
 
   return composer
+}
+
+/** Runs in the page: the composer's centre hits the composer, not an overlay. */
+function composerIsTopmost(el: Element): boolean {
+  const box = el.getBoundingClientRect()
+  const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+
+  return hit !== null && el.contains(hit)
+}
+
+/** Runs in the page: keyboard input will reach the composer. */
+function composerHasFocus(el: Element): boolean {
+  return document.activeElement !== null && el.contains(document.activeElement)
+}
+
+/**
+ * Focus the hit-tested composer without scrolling. A pointer click (page.mouse
+ * or locator.click) did not reliably focus the v0.19.1 editor, and locator
+ * actions scroll the app (see waitForChatReady); focus({ preventScroll }) does
+ * neither, and the topmost check still proves a user could reach it.
+ */
+async function focusComposer(composer: Locator): Promise<void> {
+  await expect.poll(async (): Promise<boolean> => composer.evaluate(composerIsTopmost), {
+    timeout: 15_000, message: 'The composer must be the topmost element at its centre before typing',
+  }).toBe(true)
+  await composer.evaluate((el: Element): void => { (el as HTMLElement).focus({ preventScroll: true }) })
+  await expect.poll(async (): Promise<boolean> => composer.evaluate(composerHasFocus), {
+    timeout: 15_000, message: 'The composer must hold focus before typing',
+  }).toBe(true)
 }
 
 /** What the composer actually contains, for a failure that explains itself. */
@@ -215,6 +254,34 @@ async function rendererEvidence(page: Page, consoleLines: readonly string[]): Pr
   return ['--- renderer state ---', JSON.stringify(state, null, 2), '--- renderer console ---', ...consoleLines].join('\n')
 }
 
+/** Apps prettify a model id ("mock-model" renders as "Mock Model"), so compare with case and separators folded. */
+function foldModelName(text: string): string {
+  return text.toLowerCase().replace(/[\s_-]+/g, ' ')
+}
+
+/**
+ * Wait until the page shows the seeded mock model. Older desktops keep the
+ * composer's model as renderer state and ship it as the session override on
+ * session.create, so a send before the configured model has loaded goes to the
+ * app's default provider and the mock never sees the prompt (v2026.7.1 sent to
+ * openrouter and got a 401). The name is searched in the page text rather than
+ * a selector because the chip's markup differs between app versions. An app
+ * that never renders the name proceeds after the timeout and the
+ * mock-received assertion still decides; the note lands in the renderer log.
+ */
+async function waitForMockModel(page: Page, notes: string[], timeoutMs: number = 30_000): Promise<void> {
+  const wanted = foldModelName(MOCK_MODEL_ID)
+
+  try {
+    await expect.poll(
+      async (): Promise<boolean> => foldModelName(await page.evaluate((): string => document.body.innerText)).includes(wanted),
+      { timeout: timeoutMs },
+    ).toBe(true)
+  } catch {
+    notes.push(`[smoke] the page never showed "${MOCK_MODEL_ID}" within ${timeoutMs}ms; sending anyway`)
+  }
+}
+
 /** Lifecycle belongs to the caller, so this also runs inside the OLD update window. */
 export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeOptions): Promise<DesktopChatReceipt> {
   const { phase, outDir, expectCommit } = options
@@ -246,30 +313,35 @@ export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeO
 
   try {
     const composer = await waitForChatReady(page)
+
+    await waitForMockModel(page, consoleLines)
+
     const identity = await readChatIdentity(page)
 
-    if (expectCommit) { assertChatCommit(identity, expectCommit, options.provenanceCommit) }
+    if (expectCommit) { assertChatCommit(identity, expectCommit, options.provenanceCommit, options.reusedBuildCommit) }
     const beforeIds = (await readTranscript(page)).map((message: TranscriptMessage): string => message.id)
     const before = (await observe()).length
-    await composer.click()
+    await focusComposer(composer)
     // The app persists its composer draft across launches, so a checkpoint that
     // types on top of a restored draft can submit the PREVIOUS checkpoint's text
     // (proved: the update window's turn carried the root checkpoint's prompt) and
     // the witness never matches. Clear it deliberately and refuse to type until
     // the composer is provably empty.
-    await composer.press('ControlOrMeta+A')
-    await composer.press('Delete')
+    // page.keyboard types into the focused composer; locator.press/pressSequentially
+    // would call element.focus() first, which can scroll the old layout too.
+    await page.keyboard.press('ControlOrMeta+A')
+    await page.keyboard.press('Delete')
     await expect.poll(async (): Promise<string> => composerText(composer), {
       timeout: 15_000, message: 'The composer must be empty before the checkpoint types (a restored draft must not survive)',
     }).toBe('')
-    await composer.pressSequentially(prompt)
+    await page.keyboard.type(prompt)
     // The composer clears on submit whether or not a turn was ever started, so
     // the clear-poll below passes vacuously when the editor refused the input.
     // Prove the typing landed before trusting anything downstream of Enter.
     await expect.poll(async (): Promise<string> => composerText(composer), {
       timeout: 15_000, message: 'The composer must hold the typed prompt before Enter (did the editor accept input?)',
     }).toContain(prompt)
-    await composer.press('Enter')
+    await page.keyboard.press('Enter')
     await expect.poll(async (): Promise<string> => composerText(composer),
     { timeout: 90_000, message: 'The submitted draft must clear before the idle control proves completion' }).toBe('')
     let witnessIndex = -1

@@ -1,6 +1,7 @@
 """Tests for automatic MCP reload when config.yaml mcp_servers section changes."""
 from unittest.mock import MagicMock, patch
 
+from tests.waiting import wait_for_ctime_tick
 from utils import file_signature
 
 
@@ -222,6 +223,7 @@ def test_pinned_mtime_same_size_replacement_triggers_reload(tmp_path):
     obj, cfg_file = _make_cli(tmp_path, mcp_servers={"bb": {"command": "b"}})
     cfg_file.write_text("mcp_servers:\n  bb: {command: b}\n")
     obj._config_sig = file_signature(cfg_file.stat())
+    wait_for_ctime_tick(tmp_path, cfg_file.stat().st_ctime_ns)
     other = tmp_path / "other.yaml"
     other.write_text("mcp_servers:\n  aa: {command: a}\n")
     shutil.copy2(other, cfg_file)

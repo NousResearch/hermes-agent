@@ -18,9 +18,7 @@ logger = logging.getLogger(__name__)
 
 UNDELIVERED = "[clarify prompt could not be delivered]"
 UNDELIVERED_DECLINED = "[clarify prompt could not be delivered: destination refused]"
-# No status adapter (a run whose chat surface is gone): shares the ``[clarify prompt could not be
-# delivered`` prefix every consumer already treats as a non-answer
-# (agent/context_compressor.py::_CLARIFY_NON_RESPONSE_PREFIXES).
+# No status adapter (a run whose chat surface is gone).
 UNDELIVERED_NO_SURFACE = "[clarify prompt could not be delivered: no chat surface]"
 
 # Seconds a scheduled card send may take before it is classified ``ambiguous`` (possibly posted).
@@ -36,7 +34,9 @@ def text_fallback_coro(adapter, **send_kwargs):
     if not isinstance(adapter, BasePlatformAdapter) \
             or type(adapter).send_clarify is BasePlatformAdapter.send_clarify:
         return None
-    return BasePlatformAdapter.send_clarify(adapter, **send_kwargs)
+    # A human-decision prompt: Telegram's "important" mode must push it, not deliver it silently (#132516).
+    metadata = {**(send_kwargs.pop("metadata", None) or {}), "is_approval_prompt": True}
+    return BasePlatformAdapter.send_clarify(adapter, metadata=metadata, **send_kwargs)
 
 
 def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod) -> Optional[str]:
@@ -110,6 +110,8 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     late.disarm()
     if late.undeliverable:
         return late.undeliverable, False
+    if response == clarify_mod.CANCELLED:
+        return response, False
     if response is None or response == "":
         return f"[user did not respond within {int(timeout / 60)}m]", False
     return response, True

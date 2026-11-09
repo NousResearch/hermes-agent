@@ -101,7 +101,7 @@ class CodexAppServerClient:
         # Modal/Daytona infra tokens, the dashboard session token, AUXILIARY_* side-LLM keys,
         # GATEWAY_RELAY_* auth — none of which a coding subprocess has any use for. Route through the
         # centralized helper so Tier-1 + dynamic-internal secrets are always stripped while provider creds
-        # still flow, matching copilot_acp_client (#29157 sibling spawn-site gap).
+        # still flow, matching the ACP client (#29157 sibling spawn-site gap).
         spawn_env = hermes_subprocess_env(inherit_credentials=True)
         if env:
             spawn_env.update(env)
@@ -219,10 +219,10 @@ class CodexAppServerClient:
         for _rid, pending in pending_items:
             pending.put_nowait(synthetic)
 
-    def __enter__(self) -> "CodexAppServerClient":
+    def __enter__(self) -> CodexAppServerClient:
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.close()
 
     def request(self, method: str, params: Optional[dict] = None, timeout: float = 30.0) -> dict:
@@ -364,6 +364,7 @@ def check_codex_binary(
         proc = subprocess.run(
             [codex_bin, "--version"], capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=10, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except FileNotFoundError:
         return False, f"codex CLI not found at {codex_bin!r}. Install with: npm i -g @openai/codex"
@@ -378,12 +379,3 @@ def check_codex_binary(
     if version < min_version:
         return False, f"codex {have} is older than required {'.'.join(map(str, min_version))}. Run: npm i -g @openai/codex"
     return True, have
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import field  # noqa: F401,E402
-import time  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

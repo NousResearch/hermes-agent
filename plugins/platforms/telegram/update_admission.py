@@ -17,14 +17,16 @@ from dataclasses import dataclass
 from functools import wraps
 
 from telegram import Update
-from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler
+from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler, SimpleUpdateProcessor
 
+from gateway.platforms._shared import coerce_port
 from gateway.platforms.helpers import bounded_put
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BLOCK = object()
+DEFAULT_MAX_CONCURRENT_UPDATES = 32
 _SEEN_CAP = 4096
 # The Bot API keeps an unconfirmed update for at most 24 hours (getUpdates), so an older
 # receipt can never match a redelivery. That is also well inside the week of silence after
@@ -63,6 +65,19 @@ def _load_receipts(adapter, bot_id) -> None:
             bounded_put(seen, key, ts, _SEEN_CAP)
 
 
+def _field_names(update: Update) -> str:
+    """Field names of an update and of its objects (e.g. its message), never values.
+
+    PTB serializes unset service flags as False; those are left out as absent.
+    """
+    def names(data):
+        return [name for name, value in sorted(data.items()) if value is not False]
+
+    data = update.to_dict()
+    return ", ".join(f"{name}({','.join(names(data[name]))})" if isinstance(data[name], dict) else name
+                     for name in names(data))
+
+
 def _record_receipt(adapter, key: str) -> None:
     bounded_put(adapter._seen_update_ids, key, time.time(), _SEEN_CAP)
     adapter._update_receipts_dirty.add(key.split(":", 1)[0])
@@ -94,6 +109,7 @@ async def _flush_receipts(adapter) -> None:
 class _Claim:
     key: str
     dispatch_task: asyncio.Task | None
+    update: Update
     accepted: bool = False
     completed: bool = False
     failed: bool = False
@@ -124,27 +140,87 @@ class _ErrorCallback:
         return await self.__wrapped__(update, context)
 
 
+class PerChatUpdateProcessor(SimpleUpdateProcessor):
+    """Concurrent across chats, FIFO within one chat.
+
+    PTB's default processor (max_concurrent_updates=1) awaits every update inline, so one slow
+    handler deafens all chats; plain concurrency fixes that but lets a chat's second update finish
+    before its first. Each update here waits for the previous update of the same chat; updates
+    without a chat (inline queries) run unchained.
+    """
+
+    __slots__ = ("_tails",)
+
+    def __init__(self, max_concurrent_updates: int):
+        super().__init__(max_concurrent_updates)
+        self._tails: dict[int, asyncio.Future] = {}
+
+    async def do_process_update(self, update, coroutine) -> None:
+        chat = getattr(update, "effective_chat", None)
+        if chat is None:
+            await coroutine
+            return
+        prev = self._tails.get(chat.id)
+        done = asyncio.get_running_loop().create_future()
+        self._tails[chat.id] = done
+        try:
+            if prev is not None:
+                # shield: cancelling this waiter must not cancel the predecessor's tail future.
+                try:
+                    await asyncio.shield(prev)
+                except BaseException:
+                    # Cancelled before handler entry: the coroutine still belongs to this waiter (#146716).
+                    if asyncio.iscoroutine(coroutine):
+                        coroutine.close()
+                    raise
+            await coroutine
+        finally:
+            def release(_prev=None):
+                done.set_result(None)
+                if self._tails.get(chat.id) is done:
+                    del self._tails[chat.id]
+
+            # A cancelled waiter hands its turn on only once its predecessor finishes (per-chat FIFO).
+            if prev is None or prev.done():
+                release()
+            else:
+                prev.add_done_callback(release)
+
+
+def build_update_processor(extra, name: str) -> PerChatUpdateProcessor:
+    """``platforms.telegram.extra.max_concurrent_updates`` (default 32); bad values warn and fall back."""
+    raw = extra.get("max_concurrent_updates", DEFAULT_MAX_CONCURRENT_UPDATES)
+    limit = coerce_port(raw, 0)
+    if limit < 1:
+        logger.warning("[%s] Invalid max_concurrent_updates=%r; using %d",
+                       name, raw, DEFAULT_MAX_CONCURRENT_UPDATES)
+        limit = DEFAULT_MAX_CONCURRENT_UPDATES
+    return PerChatUpdateProcessor(limit)
+
+
 class TelegramApplication(Application):
-    __slots__ = ("adapter", "_current_claim")
+    __slots__ = ("_claim_completions", "_current_claim", "adapter")
 
     def __init__(self, *, adapter, **kwargs):
         super().__init__(**kwargs)
         self.adapter = adapter
+        self._claim_completions: set[asyncio.Future] = set()
         if adapter._update_admission is None:
             adapter._update_admission = ContextVar[_Claim | None]("telegram_update_claim", default=None)
         self._current_claim: ContextVar[_Claim | None] = adapter._update_admission
 
     def add_handler(self, handler, group=0):
         super().add_handler(handler, group)
-        self._admit_callbacks(handler)
+        # Core handlers live in group 0; the adapter's group-99 observer only watches.
+        self._admit_callbacks(handler, observer=group != 0)
 
-    def _admit_callbacks(self, handler):
+    def _admit_callbacks(self, handler, observer=False):
         # ConversationHandler has no callback. Keep its identity (including persistence,
         # state transitions and block resolution) and instrument its selected children.
         if isinstance(handler, ConversationHandler):
             for child in [*handler.entry_points, *handler.fallbacks,
                           *(child for handlers in handler.states.values() for child in handlers)]:
-                self._admit_callbacks(child)
+                self._admit_callbacks(child, observer)
             return
         callback = getattr(handler, "callback", None)
         if callback is None or getattr(callback, "_telegram_admitted", False):
@@ -168,7 +244,8 @@ class TelegramApplication(Application):
                     # groups already scheduled via block=False; their outcomes settle below.
                     if asyncio.current_task() is claim.dispatch_task:
                         raise ApplicationHandlerStop
-                else:
+                elif not observer:
+                    # An observer returning is not service: unserved updates stay unreceipted.
                     claim.completed = True
             return result
 
@@ -193,15 +270,26 @@ class TelegramApplication(Application):
         if claim is not None and claim.owners:
             # Pin scheduled work before callback entry, including cancellation before entry.
             claim.owners += 1
+            completion = asyncio.get_running_loop().create_future()
+            self._claim_completions.add(completion)
 
             def finished(done):
                 # PTB's task wrapper may never start, leaving its callback unawaited.
                 if done.cancelled() and asyncio.iscoroutine(coroutine):
                     coroutine.close()
                 self._release_claim(claim, done)
+                self._claim_completions.discard(completion)
+                completion.set_result(None)
 
             task.add_done_callback(finished)
         return task
+
+    async def stop(self):
+        await super().stop()
+        # Gathering already-done PTB tasks need not have run their done callbacks yet: wait for the
+        # claim releases themselves (shielded, so a cancelled stop waiter cannot strand them) (#146716).
+        while self._claim_completions:
+            await asyncio.gather(*(asyncio.shield(c) for c in tuple(self._claim_completions)))
 
     def _release_claim(self, claim, task=None):
         if task is not None and task.cancelled():
@@ -212,6 +300,10 @@ class TelegramApplication(Application):
         del self.adapter._inflight_update_ids[claim.key]
         if claim.accepted or (claim.completed and not claim.failed):
             _record_receipt(self.adapter, claim.key)
+        elif not claim.failed:
+            # No receipt, so a redelivery is not suppressed. Names only: no content or ids.
+            logger.info("[Telegram] Update %s matched no core handler; not receipted (fields: %s)",
+                        claim.update.update_id, _field_names(claim.update))
 
     async def process_error(self, update, error, job=None, coroutine=None):
         claim = self._current_claim.get()
@@ -233,7 +325,7 @@ class TelegramApplication(Application):
         pending = self.adapter._inflight_update_ids
         if key in seen or key in pending:
             return
-        claim = _Claim(key, asyncio.current_task())
+        claim = _Claim(key, asyncio.current_task(), update)
         # Atomic on PTB's event loop: no await between lookup and claim. Dispatch and its
         # PTB tasks share ownership; completed-history pressure cannot evict active work.
         pending[key] = claim

@@ -91,12 +91,14 @@ class TestEmptyProviderHealsFromModel:
 
 def test_an_empty_provider_row_with_the_main_slots_url_resumes_on_the_entry_serving_its_model(monkeypatch):
     config = _config(_entry("entry-a", A, "sk-a", "model-a"), _entry("entry-b", B, "sk-b", "model-b"))
-    # The row carries the main slot's URL, stamped by the turns that already went there.
-    override = {"model": "model-b", "provider": None, "base_url": A, "api_mode": None}
+    # The row carries the main slot's URL and wire, stamped by the turns that already went there; entry-a
+    # lists no models, so only the declared model can identify the entry.
+    config["custom_providers"][0].pop("models")
+    override = {"model": "model-b", "provider": None, "base_url": A, "api_mode": "anthropic_messages"}
 
     kwargs = _make_agent_with_override(override, monkeypatch, config, model_cfg=config["model"])
 
-    assert (kwargs["base_url"], kwargs["api_key"]) == (B, "sk-b")
+    assert (kwargs["base_url"], kwargs["api_key"], kwargs["api_mode"]) == (B, "sk-b", "chat_completions")
 
 
 def test_an_empty_provider_row_reaches_its_entrys_current_endpoint(monkeypatch):

@@ -565,8 +565,8 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         resolve_kwargs.update(requested=requested_provider, target_model=model or None)
         overrides = {k: model_override.get(k) for k in ("base_url", "api_key", "api_mode")}
         if not provider_norm and requested_provider:
-            # The healed entry resolves its own current endpoint; the row's URL may be retired.
-            overrides["base_url"] = None
+            # The healed entry supplies its own endpoint and wire; the row's may be stamps from misrouted turns.
+            overrides["base_url"] = overrides["api_mode"] = None
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:

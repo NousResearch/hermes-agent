@@ -68,7 +68,8 @@ def stored_session_route(session_meta, *, current_model, current_provider):
         # A healed entry resolves its own current endpoint. A route that didn't heal is gone with its
         # endpoint and wire, which must not ride on the ambient provider.
         base_url = None
-        if provider is None:
+        if provider is None or not stored_provider:
+            # An empty provider's saved wire came from turns that went to the wrong provider (#132648).
             api_mode = None
     provider_changed = bool(provider) and provider != current_provider
     if stored_model == current_model and not provider_changed:

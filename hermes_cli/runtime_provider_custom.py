@@ -403,17 +403,14 @@ def _endpoint_identity(base_url: str) -> Optional[str]:
 
 
 def empty_provider_identity(base_url: Optional[str], model: Optional[str]) -> Optional[str]:
-    """The entry a row with a model but no provider ran on (#132648): the endpoint's owner when it can
-    serve the model, else the entry that declares the model. A row can carry the main slot's URL from
-    the turns that already went to the wrong provider."""
+    """The entry a row with a model but no provider ran on (#132648). Its saved URL/api_mode may be
+    stamps from turns that already went to the wrong provider, so an entry that declares the model wins;
+    the URL's owner is the fallback for entries that list no models."""
     target = str(model or "").strip().lower()
+    if target and (identity := find_custom_provider_identity_by_model(target)):
+        return identity
     url = _route_key(base_url)
-    if url:
-        identity = _find_custom_identity(lambda entry: _route_key(_entry_url(entry)) == url and (
-            _entry_serves_model(entry, target) or not any(entry.get(k) for k in ("model", "default_model", "models"))))
-        if identity:
-            return identity
-    return find_custom_provider_identity_by_model(target) if target else None
+    return _find_custom_identity(lambda entry: _route_key(_entry_url(entry)) == url) if url else None
 
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,

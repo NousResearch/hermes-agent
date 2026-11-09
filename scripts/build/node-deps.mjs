@@ -360,14 +360,19 @@ function breakLock(lock, token, text, mtime) {
 // The tree is the child's descendants: stopped first, so none forks while it is read, then
 // killed. A process that left the tree (daemonized, so re-parented away) is out of reach.
 // Windows has no job control; the watcher ends the tree with taskkill /T /F.
-// A relay starts both, since this thread blocks, and the watcher ends with the relay. A signal to
-// the caller's group (Ctrl-C, a caller's killpg) reaches the child itself, so the relay only
-// waits; a signal aimed at this process alone kills it, and the relay, unsignalled and orphaned,
-// passes SIGTERM on to the child, which used to be left running.
+// A relay starts both, since this thread blocks: the watcher first, and the child only once the
+// watcher has started (one that cannot start, at a process or descriptor limit, fails the run
+// before anything writes the trees); the watcher gets the child's pid on stdin and ends with the
+// relay. A signal to the caller's group (Ctrl-C, a caller's killpg) reaches the child itself, so
+// the relay only waits; a signal aimed at this process alone kills it, and the relay, unsignalled
+// and orphaned, passes SIGTERM on to the child, which used to be left running.
 const WATCHER = `
 const { execFileSync, spawnSync } = require('node:child_process');
 const { readFileSync, readdirSync } = require('node:fs');
-const [lock, token, every, root] = process.argv.slice(1);
+const [lock, token, every] = process.argv.slice(1);
+// The child's pid arrives on stdin once the relay has started it.
+let root;
+let pending = false;
 const lost = () => { try { return !readFileSync(lock, 'utf8').includes(token) } catch (error) { return error.code === 'ENOENT' } };
 function parents() {
   const table = new Map();
@@ -410,10 +415,14 @@ function end() {
   }
   process.exit(0);
 }
-const tick = () => { if (lost()) end() };
+const tick = () => { if (lost()) { if (root) end(); else pending = true } };
 tick();
 setInterval(tick, Number(every));
-process.stdin.on('end', () => process.exit(0)).resume();
+let input = '';
+process.stdin.on('data', data => {
+  input += data;
+  if (root === undefined && input.includes('\\n')) { root = input.split('\\n')[0]; if (pending) end() }
+}).on('end', () => process.exit(0));
 `
 const RELAY = `
 const { spawn } = require('node:child_process');
@@ -422,14 +431,22 @@ const [watcher, lock, token, every, file, ...args] = process.argv.slice(1);
 let signalled = false;
 for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(name, () => { signalled = true });
 const parent = process.ppid;
-const child = spawn(file, args, { stdio: 'inherit' });
-setInterval(() => { if (!signalled && process.ppid !== parent) { signalled = true; child.kill('SIGTERM') } }, 200);
-child.on('error', error => { console.error(error.message); process.exit(127) });
-if (child.pid) {
-  spawn(process.execPath, ['-e', watcher, '--', lock, token, every, String(child.pid)],
-    { stdio: ['pipe', 'ignore', 'inherit'], detached: process.platform !== 'win32', windowsHide: true });
-}
-child.on('exit', (code, signal) => process.exit(code ?? 128 + (constants.signals[signal] ?? 0)));
+// The watcher starts first: a child that writes the trees never runs unwatched.
+const watch = spawn(process.execPath, ['-e', watcher, '--', lock, token, every],
+  { stdio: ['pipe', 'ignore', 'inherit'], detached: process.platform !== 'win32', windowsHide: true });
+watch.on('error', error => {
+  console.error('node-deps: cannot start the lock watcher, so ' + file + ' did not run (' + error.message + ')');
+  process.exit(127);
+});
+watch.on('spawn', () => {
+  const child = spawn(file, args, { stdio: 'inherit' });
+  setInterval(() => { if (!signalled && process.ppid !== parent) { signalled = true; child.kill('SIGTERM') } }, 200);
+  child.on('error', error => { console.error(error.message); process.exit(127) });
+  // A watcher that has died since (EPIPE) must not crash the relay and leave the child unreaped.
+  watch.stdin.on('error', () => {});
+  if (child.pid) watch.stdin.write(child.pid + '\\n');
+  child.on('exit', (code, signal) => process.exit(code ?? 128 + (constants.signals[signal] ?? 0)));
+});
 `
 
 // Ctrl-C and a closed terminal signal the whole job, so the child gets them too and exits: this run

@@ -597,6 +597,36 @@ test.skipIf(process.platform === 'win32').each([['SIGINT', 130], ['SIGHUP', 129]
   expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
 }, 30000)
 
+// The installer starts only once its lock watcher has: a watcher that cannot start (a process or
+// descriptor limit) must not leave pnpm writing into the trees the failed run restores.
+test.skipIf(process.platform === 'win32')('an install whose lock watcher cannot start never runs pnpm', async () => {
+  const { source, env } = fixture()
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env })
+  addExtraOnly(source, env)
+  // Loaded by the relay: starting the watcher (node, given the lock's path) fails as a spawn would.
+  const fault = join(dirname(source), 'watcher-spawn-fault.cjs')
+  writeFileSync(fault, `
+    const cp = require('node:child_process')
+    const spawn = cp.spawn
+    cp.spawn = (file, args = [], ...rest) => file === process.execPath && args.some(arg => String(arg).endsWith('node-deps.lock'))
+      ? spawn('/nonexistent/node-for-the-watcher', args, ...rest)
+      : spawn(file, args, ...rest)
+  `)
+  const pnpm = slowPnpm(1)
+  const run = background(source, { ...pnpm.env(env), NODE_OPTIONS: `--require ${JSON.stringify(fault)}` }, '--workspace', 'web', '--reuse')
+  const { code, output } = await run.exit
+  try {
+    expect(code).not.toBe(0)
+    expect(output).toMatch(/cannot start the lock watcher/)
+    expect(existsSync(pnpm.started)).toBe(false)
+    expect(output).toMatch(/restored the previously installed dependencies/)
+    expect(readdirSync(join(source, '.cache'))).toEqual([])
+    expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
+  } finally {
+    if (run.alive()) run.kill()
+  }
+}, 30000)
+
 // A heartbeat that fails once (an antivirus or indexer handle on Windows, ESTALE on NFS, EMFILE)
 // keeps beating: a waiter must not break the lock of an install that is still running.
 test.skipIf(process.platform === 'win32')('a transient heartbeat error does not let another run break a live lock', async () => {

@@ -3,6 +3,8 @@ writing a second one (#111868: a Desktop freeze during a slow first agent build 
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.turn_context import _stage_turn_user_message
 from hermes_state import SessionDB
 from run_agent import AIAgent
@@ -212,3 +214,50 @@ def test_the_staged_submit_row_carries_the_uid_its_db_row_was_written_with(monke
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def test_submit_persists_the_client_send_time_as_the_row_timestamp(monkeypatch, tmp_path):
+    """A valid ``submitted_at`` becomes the staged row's timestamp and is echoed as ``user_timestamp``,
+    so a hydrated transcript keeps the bubble where the user saw it, not at gateway receipt time."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+
+    class InlineThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(server.threading, "Thread", InlineThread)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
+    monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *args: False)
+    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args: session.pop("_submit_user_row", None))
+    monkeypatch.setattr(server.time, "time", lambda: 1_790_594_550.0)
+    try:
+        response = server.handle_request({"id": "p", "method": "prompt.submit", "params": {
+            "session_id": sid, "text": "send time probe", "submitted_at": 1_790_594_548.125}})
+
+        assert response["result"]["user_timestamp"] == 1_790_594_548.125
+        rows = db.get_messages_as_conversation(key, include_row_ids=True)
+        assert rows[0]["content"] == "send time probe"
+        assert rows[0]["timestamp"] == 1_790_594_548.125
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "submitted_at",
+    [None, True, float("nan"), float("inf"), 946_684_799.999, 1_790_000_300.001, "1790000000"],
+)
+def test_invalid_or_absent_client_send_time_is_ignored(submitted_at):
+    """No envelope, no change: the row takes the write time and the result carries no ``user_timestamp``."""
+    assert server._prompt_submitted_at({"submitted_at": submitted_at}, 1_790_000_000.0) is None
+
+
+def test_client_send_time_within_clock_lead_is_kept():
+    received_at = 1_790_000_000.0
+
+    assert server._prompt_submitted_at({"submitted_at": 1_790_000_299.0}, received_at) == 1_790_000_299.0

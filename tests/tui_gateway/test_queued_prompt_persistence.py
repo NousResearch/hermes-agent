@@ -297,3 +297,41 @@ def test_merge_after_in_place_compaction_updates_the_live_queued_row(monkeypatch
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def test_busy_accept_keeps_the_client_send_time_through_the_drain(monkeypatch, tmp_path):
+    """The accept-time row carries ``submitted_at``, the queued ack echoes it, and the drained turn
+    runs (and re-places the row) with the same timestamp instead of a fresh one."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    sent_at = 1_790_000_000.5
+    try:
+        server._ensure_session_db_row(session)
+        db.append_message(key, "user", content="prompt A")
+        _busy(session)
+        accepted = server._handle_busy_submit("r1", sid, session, "prompt B", "ws-1", queued=True,
+                                              display_kind=None, user_timestamp=sent_at)["result"]
+        assert accepted == {"status": "queued", "user_timestamp": sent_at}
+        queued_row = [r for r in db.get_messages_as_conversation(key, include_row_ids=True) if r["content"] == "prompt B"]
+        assert queued_row and queued_row[0]["timestamp"] == sent_at
+        assert server._queued_prompt_snapshot(session) == {"user": "prompt B", "user_timestamp": sent_at}
+
+        db.append_message(key, "assistant", content="reply A")
+        with session["history_lock"]:
+            session["running"] = False
+            server._clear_inflight_turn(session)
+        seen = {}
+
+        def run(rid, s, sess, text, **kw):
+            seen.update(kw)
+            return _run_turn(sess, db, key, text, "reply B")
+
+        monkeypatch.setattr(server, "_run_prompt_submit", run)
+        assert server._drain_queued_prompt("r2", sid, session) is True
+        assert seen["user_timestamp"] == sent_at
+        replaced = [r for r in db.get_messages_as_conversation(key, include_row_ids=True) if r["content"] == "prompt B"]
+        assert replaced and all(r["timestamp"] == sent_at for r in replaced)
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()

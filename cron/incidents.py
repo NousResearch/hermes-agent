@@ -47,10 +47,12 @@ _DURATION_RE = re.compile(
     r"\b\d+(?:\.\d+)?\s*(?:ms|s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?)\b"
 )
 # A log line's clock value is the other thing that reliably differs between runs of one failure
-# ("[2026-09-07 02:00:03] error: ..."), so a full date+time is masked the same way. A BARE date is
-# deliberately kept: it can name which backup set, certificate or billing period failed.
+# ("[2026-09-07 02:00:03] error: ..."), so a full date+time is masked the same way. Both fractional
+# separators count: Python's default `logging` formatter writes comma milliseconds
+# ("2026-09-07 02:00:03,005"), while ISO-8601 writes a dot. A BARE date is deliberately kept: it can
+# name which backup set, certificate or billing period failed.
 _TIMESTAMP_RE = re.compile(
-    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?![0-9A-Za-z])",
+    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?![0-9A-Za-z])",
     re.IGNORECASE,
 )
 

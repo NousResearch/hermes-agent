@@ -381,6 +381,28 @@ def test_timestamp_mask_covers_iso_forms_without_merging_distinct_failures(monke
     assert mount_id != sum_id, "different failures on the same clock value stay distinct"
 
 
+def test_python_logging_comma_milliseconds_do_not_split_an_incident(monkeypatch, tmp_path):
+    """The stdlib `logging` default ``%(asctime)s`` writes COMMA milliseconds, and those digits
+    change on every run while the failure does not, so that form must be masked too."""
+    inc = _point_db(monkeypatch, tmp_path)
+
+    first, _ = inc.upsert_incident(
+        "job-1", "[2026-09-07 02:00:03,005] ERROR backup: external drive not mounted",
+    )
+    second, _ = inc.upsert_incident(
+        "job-1", "[2026-09-14 02:00:34,987] ERROR backup: external drive not mounted",
+    )
+    assert first == second, "comma milliseconds must be masked like dot fractions"
+
+    iso_comma, _ = inc.upsert_incident("job-1", "failed at 2026-09-07T02:00:03,005Z: disk full")
+    iso_dot, _ = inc.upsert_incident("job-1", "failed at 2026-09-14T02:00:34.512Z: disk full")
+    assert iso_comma == iso_dot
+
+    miss, _ = inc.upsert_incident("job-1", "backup window 2026-09-07 02:00:03, retry later")
+    other, _ = inc.upsert_incident("job-1", "backup window 2026-09-14 09:11:22, retry later")
+    assert miss == other, "a comma with no fraction digits must not defeat the mask"
+
+
 def test_mark_incident_alerted_sets_state_never_resurrects(monkeypatch, tmp_path):
     """The post-delivery 'alerted' transition records that a ping went out,
     and is a no-op on a closed (acked) incident — it can never resurrect one."""

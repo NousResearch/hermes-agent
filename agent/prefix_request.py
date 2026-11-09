@@ -26,6 +26,7 @@ import threading
 import time
 
 from agent.message_metadata import without_persistence_fields
+from utils import base_url_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +456,10 @@ class PrefixRequest:
         self._text_messages(body["messages"])
         body["stream"] = False
         body.pop("stream_options", None)
+        # OpenAI's guide: set tool_choice to "none" and keep the tools, so the handoff cannot be a tool call. Only on
+        # OpenAI's endpoint: Anthropic documents a cache miss for this change, and a template can drop the tools.
+        if body.get("tools") and base_url_hostname(agent.base_url) == "api.openai.com":
+            body["tool_choice"] = "none"
         # llama-server sends prompt progress only in a stream (upstream with_prompt_progress).
         body.pop("return_progress", None)
         # A stop sequence of the main request could cut the handoff after its headings.

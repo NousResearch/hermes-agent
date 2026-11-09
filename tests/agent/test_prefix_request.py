@@ -567,6 +567,40 @@ def test_the_llamacpp_prompt_progress_option_is_not_sent():
         client.close()
 
 
+@pytest.mark.parametrize("base_url,expected", [
+    ("https://api.openai.com/v1", "none"),
+    ("https://openrouter.ai/api/v1", "auto"),
+    ("https://api.anthropic.com/v1", "auto"),
+    ("http://127.0.0.1:8080/v1", "auto"),
+])
+def test_only_the_openai_endpoint_forces_tool_choice_none(base_url, expected):
+    # OpenAI's guide keeps the prefix with tool_choice none. On other routes the change can cost the cache:
+    # Anthropic documents it, and a templated server can drop the tools from the prompt.
+    agent, calls, ordinary, client, history = make_agent()
+    agent.base_url = agent._client_kwargs["base_url"] = base_url
+    try:
+        ordinary_turn(agent, ordinary, history)
+        PrefixRequest(agent, history)("Write the handoff.", timeout_s=30)
+        assert calls[0]["tool_choice"] == "auto" and calls[1]["tool_choice"] == expected
+        assert calls[1]["tools"] == calls[0]["tools"]
+    finally:
+        client.close()
+
+
+def test_no_tool_choice_is_added_without_tools():
+    # OpenAI refuses a tool_choice on a request without tools.
+    agent, calls, ordinary, client, history = make_agent()
+    agent.base_url = agent._client_kwargs["base_url"] = "https://api.openai.com/v1"
+    agent.tools = None
+    ordinary.pop("tools"), ordinary.pop("tool_choice")
+    try:
+        ordinary_turn(agent, ordinary, history)
+        PrefixRequest(agent, history)("Write the handoff.", timeout_s=30)
+        assert "tool_choice" not in calls[1] and "tools" not in calls[1]
+    finally:
+        client.close()
+
+
 def test_capacity_is_checked_again_after_the_request_middleware(monkeypatch):
     def expand(request=None, **context):
         # The rows after the capture can change; the instruction (the last row) cannot.

@@ -16,6 +16,7 @@ from persistence.sqlite.conversation._store.core import (
     _is_background_review_harness_message,
     _strip_background_review_harness,
 )
+from tests.fixtures.storage_holder import raw_holder
 
 
 class TestIsBackgroundReviewHarnessMessage:
@@ -142,6 +143,6 @@ class TestPersistDisabledHardStop:
                 )
 
                 # Nothing written: the hard-stop fired before any append.
-                assert get_messages(db.holder(), "s-review") == []
+                assert get_messages(raw_holder(db), "s-review") == []
             finally:
                 db.close()

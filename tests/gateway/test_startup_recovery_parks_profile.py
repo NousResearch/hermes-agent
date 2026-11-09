@@ -13,6 +13,7 @@ import pytest
 from gateway import run_runtime
 from gateway.config import Platform
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tests.fixtures.storage_holder import raw_holder
 
 
 def _runtime(tmp_path, monkeypatch, failing):
@@ -157,7 +158,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
             authority.db._read_one = unreadable if authority is beta else (lambda *_a: None)
             authority.persistence = storage_handle(authority.profile_id)
         for read in ("_read_ctx", "_read_all"):  # the retained store's own reads fail the same way
-            monkeypatch.setattr(beta.persistence.holder(), read, unreadable)
+            monkeypatch.setattr(raw_holder(beta.persistence), read, unreadable)
         api_read = []
 
         def collect(store):

@@ -383,6 +383,23 @@ def finish_text_response(
     if _sg.continue_turn:
         final_response = None
         return _verdict("continue")
+    if _sg.kanban_handoff_failed:
+        # A dispatcher-owned worker ended on prose after its terminal-call nudges were
+        # exhausted. Never mark that narrative as a clean completion: fail the turn so the
+        # one-shot exit code is non-zero and the dispatcher books a crash, not a protocol
+        # violation. Mirrors the repetition-abort path (persist without the prose, return a
+        # failed partial result). No auto-complete: the terminal board call is never forged.
+        agent._cleanup_task_resources(effective_task_id)
+        agent._persist_session(messages, conversation_history)
+        _handoff_failure = (
+            "This kanban task could not be handed off: the worker ended without a terminal "
+            "board call (kanban_complete / kanban_request_review / kanban_block) after "
+            "repeated nudges. Nothing was auto-completed."
+        )
+        return _verdict("return", stamp_failure(
+            partial_result(messages, api_call_count, _handoff_failure, failed=True),
+            "loop_error", False,
+        ))
 
     # Plugins rewrite the reply BEFORE it is appended and flushed: SQLite treats a non-blank
     # assistant row as settled, so a transform after this write would reach the user but never

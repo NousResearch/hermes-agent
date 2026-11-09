@@ -98,4 +98,28 @@ def build_kanban_stop_nudge(
     )
 
 
-__all__ = ["build_kanban_stop_nudge", "kanban_stop_nudge_enabled", "session_called_kanban_terminal"]
+def kanban_handoff_exhausted(
+    messages: Iterable[dict] | None, *, attempts: int, max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
+) -> bool:
+    """True when the stop gate has already nudged ``max_attempts`` times and this worker still
+    made no terminal board call.
+
+    This is the boundary where a prose-only exit must NOT be accepted as a clean completion:
+    the worker's narrative answer is a protocol violation the dispatcher would otherwise have to
+    book, so the caller fails the turn honestly (non-zero exit) instead of letting the card stay
+    ``running`` behind a clean ``rc=0``. ``False`` when this is not a dispatcher-owned worker,
+    when the worker already made a terminal call, or when nudges remain.
+    """
+    return (
+        kanban_stop_nudge_enabled()
+        and attempts >= max_attempts
+        and not session_called_kanban_terminal(messages)
+    )
+
+
+__all__ = [
+    "build_kanban_stop_nudge",
+    "kanban_handoff_exhausted",
+    "kanban_stop_nudge_enabled",
+    "session_called_kanban_terminal",
+]

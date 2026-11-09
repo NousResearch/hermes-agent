@@ -25,12 +25,16 @@ logger = logging.getLogger("agent.conversation_loop")
 @dataclass
 class StopGateVerdict:
     """``continue_turn`` True → a nudge was appended; re-enter the turn loop with
-    ``final_response=None`` and the pending-verification fields updated."""
+    ``final_response=None`` and the pending-verification fields updated.
+    ``kanban_handoff_failed`` True → a dispatcher-owned worker ended on prose after its
+    terminal-call nudges were exhausted; the caller must fail the turn, never accept the
+    narrative as a clean completion."""
 
     continue_turn: bool
     final_response: Any
     pending_verification_response: Any
     pending_verification_response_previewed: Any
+    kanban_handoff_failed: bool = False
 
 
 def _verify_on_stop_nudge(agent) -> Optional[str]:
@@ -216,8 +220,22 @@ def apply_stop_gates(
             "(kanban_complete/kanban_request_review/kanban_block) — nudging to finish"
         )
         return verdict
+    # Nudges exhausted without a terminal board call: a prose answer here is not a valid
+    # handoff, so the turn must fail honestly rather than exit clean and leave the card
+    # ``running`` behind a protocol violation the dispatcher has to book.
+    from agent.kanban_stop import kanban_handoff_exhausted
+
+    _kanban_failed = kanban_handoff_exhausted(
+        messages, attempts=getattr(agent, "_kanban_stop_nudges", 0)
+    )
+    if _kanban_failed:
+        logger.info(
+            "kanban worker exhausted stop nudges without a terminal call task=%s — failing the turn",
+            os.environ.get("HERMES_KANBAN_TASK", ""),
+        )
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,
         pending_verification_response=pending_verification_response,
         pending_verification_response_previewed=pending_verification_response_previewed,
+        kanban_handoff_failed=_kanban_failed,
     )

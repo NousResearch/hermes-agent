@@ -750,7 +750,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.TELEGRAM:
         sender, err = _plugin_standalone_sender(platform_name)
         return err or await sender(pconfig, chat_id, message, thread_id=thread_id, media_files=media_files,
-                                   force_document=force_document, **_optional_sender_kwargs(sender, notify=notify))
+                                   force_document=force_document, **_optional_sender_kwargs(sender, notify=notify,
+                                                                                            subject=subject))
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
@@ -775,7 +776,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
     if policy is not None and policy.text_direct:
         # Text-only straight to the plugin's standalone sender (media dropped with the warning above).
-        send_one = lambda chunk, is_last: _registry_standalone_send(platform_name, pconfig, chat_id, chunk, thread_id)
+        send_one = lambda chunk, is_last: _registry_standalone_send(platform_name, pconfig, chat_id, chunk, thread_id,
+                                                                    subject=subject)
     else:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)
@@ -788,7 +790,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             except Exception as e:
                 return {"error": f"Plugin send_message handler failed: {e}"}
         # Plugin platform: live gateway adapter if available, else standalone_sender_fn.
-        send_one = lambda chunk, is_last: _via_adapter_route(  # noqa: E731
+        send_one = lambda chunk, is_last: _via_adapter_route(
             platform, pconfig, chat_id, chunk, media_files if is_last else [], thread_id, force_document,
             subject)
     last_result = await _send_chunks(chunks, send_one)

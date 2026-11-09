@@ -1,7 +1,8 @@
 """The catalog admission gate must validate the pinned clone's own files only.
 
-These tests execute the real ``run:`` blocks of plugin-catalog-ci.yml against
-fixture git repos: the changed-entries step against a PR merge commit, and the
+These tests execute the real ``run:`` lines of plugin-catalog-ci.yml (each calls a
+``scripts/ci/catalog_*.py`` script under ``$GITHUB_WORKSPACE``) against fixture git
+repos: the changed-entries step against a PR merge commit, and the
 pinned-source step against an origin repo served under an https URL through a
 git ``url.insteadOf`` rewrite. One case per closed bypass, plus the legitimate
 flows that must keep passing.
@@ -316,8 +317,9 @@ def test_changed_entries_step(tmp_path, change, rc, listed, text):
     _git(repo, "update-ref", "refs/remotes/origin/main", base)
     out = tmp_path / "gh-output.txt"
     out.touch()
-    res = _run(_step("Find changed catalog"), tmp_path, repo,
-               {**os.environ, "GITHUB_OUTPUT": str(out)})
+    res = _run(_step("Find changed catalog"), tmp_path, repo, {
+        **os.environ, "GITHUB_OUTPUT": str(out), "GITHUB_WORKSPACE": str(ROOT),
+        "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}"})
     assert res.returncode == rc, res.stdout + res.stderr
     lines = out.read_text(encoding="utf-8").splitlines()
     assert [f for f in lines if f and "__EOF__" not in f and f != "files<<__EOF__"] == listed

@@ -14,7 +14,9 @@ leveled reference backend: ``reference_reads_ignore_tenant`` drops the tenant ha
 ``reference_owner_wide_resolves_everywhere`` resolves another owner's entries,
 ``reference_owner_wide_keys_on_the_actor`` keys an owner-wide write on the acting principal, and
 ``reference_drops_level_precedence`` reads the tenant-wide value over the agent's own. Each
-mutant is applied by the ``backend`` fixtures when ``HERMES_SECRETS_MUTANT`` names it.
+mutant declares, next to how it is applied, the suite test that must kill it; the harness
+(``test_mutants.py``) asserts that test is among the failures. Each mutant is applied by the
+``backend`` fixtures when ``HERMES_SECRETS_MUTANT`` names it.
 """
 
 import logging
@@ -246,20 +248,60 @@ def reference_refusal_keeps_the_value_in_frame_locals(monkeypatch):
     monkeypatch.setattr(MemorySecretStore, "set_auth", set_auth)
 
 
+def _local(node: str) -> str:
+    """The node id of a local-suite test (``TestLocalSecrets``)."""
+    return f"tests/conformance/secrets/test_local.py::TestLocalSecrets::{node}"
+
+
+def _reference(node: str) -> str:
+    """The node id of a reference-suite test (``TestReferencePinning``/``TestReferenceLeveled``)."""
+    return f"tests/conformance/secrets/test_reference.py::{node}"
+
+
+#: Each entry: how to apply the broken backend, and the suite test that must kill it (its node
+#: id). The harness asserts that declared test is among the failures with the mutant applied —
+#: a mutant the suite rejects for some other reason alone has not been shown killed for the
+#: reason it exists.
 MUTANTS = {
-    "local_reads_ignore_tenant": local_reads_ignore_tenant,
-    "local_reads_ignore_the_bound_agent": local_reads_ignore_the_bound_agent,
-    "local_writes_skip_the_administration_check": local_writes_skip_the_administration_check,
-    "local_accepts_undeclared_levels": local_accepts_undeclared_levels,
-    "local_refusal_leaks_the_value": local_refusal_leaks_the_value,
-    "local_logs_the_value_on_a_refusal": local_logs_the_value_on_a_refusal,
-    "local_refusal_keeps_the_value_in_frame_locals": local_refusal_keeps_the_value_in_frame_locals,
-    "reference_reads_ignore_tenant": reference_reads_ignore_tenant,
-    "reference_writes_skip_the_administration_check": reference_writes_skip_the_administration_check,
-    "reference_owner_wide_resolves_everywhere": reference_owner_wide_resolves_everywhere,
-    "reference_owner_wide_keys_on_the_actor": reference_owner_wide_keys_on_the_actor,
-    "reference_drops_level_precedence": reference_drops_level_precedence,
-    "reference_refusal_keeps_the_value_in_frame_locals": reference_refusal_keeps_the_value_in_frame_locals,
+    "local_reads_ignore_tenant": (
+        local_reads_ignore_tenant,
+        _local("test_every_read_is_refused_for_any_pin_but_its_agents[get]")),
+    "local_reads_ignore_the_bound_agent": (
+        local_reads_ignore_the_bound_agent,
+        _local("test_every_read_is_refused_for_any_pin_but_its_agents[get]")),
+    "local_writes_skip_the_administration_check": (
+        local_writes_skip_the_administration_check,
+        _local("test_every_write_is_refused_without_administration_and_changes_nothing[set]")),
+    "local_accepts_undeclared_levels": (
+        local_accepts_undeclared_levels,
+        _local("test_a_write_at_a_level_the_backend_does_not_hold_is_refused")),
+    "local_refusal_leaks_the_value": (
+        local_refusal_leaks_the_value,
+        _local("test_no_secret_value_appears_in_log_lines_or_exception_messages")),
+    "local_logs_the_value_on_a_refusal": (
+        local_logs_the_value_on_a_refusal,
+        _local("test_no_secret_value_appears_in_log_lines_or_exception_messages")),
+    "local_refusal_keeps_the_value_in_frame_locals": (
+        local_refusal_keeps_the_value_in_frame_locals,
+        _local("test_no_refusal_traceback_frame_holds_the_value_or_record")),
+    "reference_reads_ignore_tenant": (
+        reference_reads_ignore_tenant,
+        _reference("TestReferencePinning::test_every_read_is_refused_for_any_pin_but_its_agents[get]")),
+    "reference_writes_skip_the_administration_check": (
+        reference_writes_skip_the_administration_check,
+        _reference("TestReferencePinning::test_every_write_is_refused_without_administration_and_changes_nothing[set]")),
+    "reference_owner_wide_resolves_everywhere": (
+        reference_owner_wide_resolves_everywhere,
+        _reference("TestReferenceLeveled::test_an_owner_wide_secret_reaches_no_agent_the_owner_does_not_own")),
+    "reference_owner_wide_keys_on_the_actor": (
+        reference_owner_wide_keys_on_the_actor,
+        _reference("TestReferenceLeveled::test_an_owner_wide_write_on_a_group_agent_keys_on_the_owners_scope_not_the_actors")),
+    "reference_drops_level_precedence": (
+        reference_drops_level_precedence,
+        _reference("TestReferenceLeveled::test_the_agent_level_shadows_the_owner_and_tenant_levels")),
+    "reference_refusal_keeps_the_value_in_frame_locals": (
+        reference_refusal_keeps_the_value_in_frame_locals,
+        _reference("TestReferencePinning::test_no_refusal_traceback_frame_holds_the_value_or_record")),
 }
 
 
@@ -267,4 +309,4 @@ def apply_mutant(monkeypatch):
     import os
     name = os.environ.get("HERMES_SECRETS_MUTANT")
     if name:
-        MUTANTS[name](monkeypatch)
+        MUTANTS[name][0](monkeypatch)

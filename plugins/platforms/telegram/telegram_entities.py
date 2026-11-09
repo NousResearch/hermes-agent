@@ -17,12 +17,14 @@ from typing import Any
 # (valid JSON thousands of levels deep) cannot hit the recursion limit and drop the whole update.
 _MAX_RICH_DEPTH = 64
 _CODE_TYPES = frozenset({"code", "pre"})
+# Stands in for skipped code: leading content like the code in plain text, never whitespace, a separator or a handle.
+_CODE_PLACEHOLDER = "\ufffc"
 
 
 def _rich_inline(value: Any, depth: int = 0, skip_code: bool = False, urls: bool = True) -> str:
     """Plain text of a rich ``text`` value: a string, a list of runs, or a span dict (bold, link…)
     whose content sits in ``text`` or ``children``, falling back to a link's ``url``, a math
-    ``expression`` or a custom emoji's ``alternative_text``. ``skip_code`` blanks ``code``/``pre`` spans;
+    ``expression`` or a custom emoji's ``alternative_text``. ``skip_code`` replaces ``code``/``pre`` spans with a placeholder;
     ``urls`` inlines a hidden link's URL after its anchor."""
     if depth > _MAX_RICH_DEPTH:
         return ""
@@ -32,7 +34,7 @@ def _rich_inline(value: Any, depth: int = 0, skip_code: bool = False, urls: bool
         return "".join(_rich_inline(part, depth + 1, skip_code, urls) for part in value)
     if isinstance(value, Mapping):
         if skip_code and value.get("type") in _CODE_TYPES:
-            return " "
+            return _CODE_PLACEHOLDER
         for key in ("text", "children"):
             if value.get(key) is not None:
                 text = _rich_inline(value[key], depth + 1, skip_code, urls)
@@ -51,7 +53,11 @@ def _rich_lines(blocks: Any, prefix: str = "", depth: int = 0, skip_code: bool =
     if depth > _MAX_RICH_DEPTH:
         return lines
     for block in blocks if isinstance(blocks, list) else []:
-        if not isinstance(block, Mapping) or (skip_code and block.get("type") in _CODE_TYPES):
+        if not isinstance(block, Mapping):
+            continue
+        if skip_code and block.get("type") in _CODE_TYPES:
+            lines.append(prefix + _CODE_PLACEHOLDER)
+            prefix = ""
             continue
         for key in ("text", "summary", "expression"):  # paragraph-like, details summary, math block
             if key in block:
@@ -73,7 +79,7 @@ def _rich_lines(blocks: Any, prefix: str = "", depth: int = 0, skip_code: bool =
 
 def rich_message_text(message: Any, skip_code: bool = False, urls: bool | None = None) -> str:
     """Flattened text of a ``rich_message`` payload ("" when there is none), for inbound messages and
-    the replied-to message alike; ``skip_code`` leaves out ``code``/``pre`` spans, ``urls`` (default: not
+    the replied-to message alike; ``skip_code`` replaces ``code``/``pre`` spans with a placeholder, ``urls`` (default: not
     ``skip_code``) inlines hidden link URLs. PTB keeps the Bot API field in ``api_kwargs``, a
     ``mappingproxy`` (not a ``dict``), when it has no attribute for it."""
     rich = getattr(message, "rich_message", None)
@@ -99,7 +105,7 @@ def _rich_addressing_entities(text: str) -> list[SimpleNamespace]:
 
 def addressing_sources(message: Any) -> list[tuple[str, list]]:
     """``(text, entities)`` every mention / command / addressee check reads: the text and the caption, or for a
-    text-less ``rich_message`` its blocks with code blanked and hidden URLs left out, carrying the
+    text-less ``rich_message`` its blocks with code as a placeholder and hidden URLs left out, carrying the
     ``mention``/``bot_command`` entities Telegram would have sent for that text as plain text (#151730)."""
     text, caption = getattr(message, "text", None) or "", getattr(message, "caption", None) or ""
     sources = [(text, getattr(message, "entities", None) or []), (caption, getattr(message, "caption_entities", None) or [])]

@@ -1558,6 +1558,8 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 
 Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation or block the turn before it reaches the model, and `pre_tool_call`, which can return a block/approve directive.
 
+Each `pre_tool_call` callback receives its own copy of the tool arguments. Use the explicit `modify` directive to change arguments; in-place edits do not affect other callbacks or execution. If the combined directives request approval and change the arguments, Hermes blocks before asking for approval. Submit the final arguments as a new call so policy hooks can evaluate that exact input. JSON-identical modifiers retain the ordinary approval flow. The host capability `hermes_cli.plugins.PLUGIN_APPROVAL_ARGUMENTS_FINAL` identifies this pre-tool-call contract; it is not a sandbox or a guarantee about later execution middleware.
+
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.

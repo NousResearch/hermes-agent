@@ -1162,6 +1162,14 @@ def _get_pre_tool_call_directive_details(
         if first_approve is None:
             rule_key = result.get("rule_key")
             first_approve = (message, (rule_key.strip() or None) if isinstance(rule_key, str) else None)
+    if modified_args is not None:
+        try:
+            if (json.dumps(modified_args, sort_keys=True, allow_nan=False) ==
+                    json.dumps(args if isinstance(args, dict) else {}, sort_keys=True, allow_nan=False)):
+                modified_args = None
+        except (TypeError, ValueError):
+            pass  # Unknown payloads keep the conservative changed-argument gate.
+
     if first_approve is not None:
         return _PreToolCallDirective(action="approve", message=first_approve[0], rule_key=first_approve[1],
                                      modified_args=modified_args)
@@ -1193,6 +1201,11 @@ def resolve_pre_tool_block(
     return _dispatch_pre_tool_call_hooks(tool_name, args, **hook_kwargs)[0]
 
 
+# A plugin approval can only authorize the hook inputs its message/rule key names.
+# Consumers may rely on this capability only together with the guard below.
+PLUGIN_APPROVAL_ARGUMENTS_FINAL = True
+
+
 def _resolve_block_from_details(
     details: _PreToolCallDirective, tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
     session_id: str = "",
@@ -1203,6 +1216,13 @@ def _resolve_block_from_details(
         return details.message
     if details.action != "approve":
         return None
+    if details.modified_args is not None:
+        # Hooks saw the original args; approving before a modify merge would
+        # authorize an action different from the one the person reviewed.
+        # Do not ask or execute it. The caller must submit the final args anew.
+        return ("BLOCKED: plugin approval requires unchanged tool arguments; "
+                "a pre_tool_call hook modified this call. Submit the final "
+                "arguments as a new call for policy evaluation and approval.")
     try:
         from tools.approval import request_tool_approval
         from tools.approval_context import reset_current_observability_context, set_current_observability_context

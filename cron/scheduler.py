@@ -1544,10 +1544,12 @@ def _run_no_agent_job(
     # wakeAgent=false is a silent signal, same as empty stdout.
     if not _parse_wake_gate(output):
         logger.info("Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id)
+        job["_suppressed_tick"] = True
         return True, f"{header}**Status:** silent (wakeAgent=false)\n", SILENT_MARKER, None
 
     if not output.strip():
         logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
+        job["_suppressed_tick"] = True
         return True, f"{header}**Status:** silent (empty output)\n", SILENT_MARKER, None
 
     return True, f"{header}\n---\n\n{output}\n", output, None

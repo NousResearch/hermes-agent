@@ -100,3 +100,28 @@ def test_key_spelled_like_a_builtin_stays_on_the_builtin_as_the_runtime_does(key
         assert _get_named_custom_provider(requested, config=cfg, resolve_credentials=False) is None
         pdef = resolve_provider_full(requested, cfg["providers"])
         assert pdef is not None and pdef.source != "user-config", (requested, pdef)
+
+
+@pytest.mark.parametrize("key", ["Anthropic", "OpenRouter"])
+def test_typed_model_declared_by_builtin_named_key_keeps_custom_runtime(key):
+    """A typed model pick must use the same custom host/key on its next turn (#151775)."""
+    from hermes_cli.config import atomic_config_write, load_config
+    from hermes_cli.model_switch import model_selection_config_updates, switch_model
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    config_path, base_url = _write_config(key, provider="bedrock")
+    cfg = load_config()
+    result = switch_model("m1", "bedrock", "x", is_global=True,
+                          user_providers=cfg["providers"], custom_providers=[])
+    assert result.success, result.error_message
+    assert (result.base_url, result.api_key) == (base_url, "mixed-key-123456")
+
+    updates = model_selection_config_updates(result, cfg["model"])
+    assert updates["provider"] == f"custom:{key.lower()}"
+    new_model = {k: v for k, v in {**cfg["model"], **updates}.items() if v is not None}
+    atomic_config_write(config_path, {"model": new_model, "providers": cfg["providers"]})
+
+    runtime = resolve_runtime_provider(target_model="m1")
+    assert runtime["provider"] == "custom"
+    assert (runtime["base_url"].rstrip("/"), runtime["api_key"]) == (
+        base_url, "mixed-key-123456")

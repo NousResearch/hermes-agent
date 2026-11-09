@@ -1378,10 +1378,15 @@ def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | boo
     st.target_provider = match_slugs[0]
     st.new_model = cfg_matches[st.target_provider]
     logger.debug("Configured-provider detection routed '%s' to %s", st.new_model, st.target_provider)
-    # providers.<slug> endpoints resolve in the credential block via resolve_user_provider(),
-    # which is gated on explicit_provider; custom:* slugs resolve at runtime directly.
+    # A typed model on providers.Anthropic must not persist the bare builtin name:
+    # runtime would use Anthropic's host/key, not this user-configured endpoint (#151775).
     if isinstance(st.user_providers, dict) and st.target_provider in st.user_providers:
-        st.explicit_provider = st.target_provider
+        from hermes_cli.runtime_provider_custom import _shadowed_by_builtin
+        if _shadowed_by_builtin(st.target_provider.strip().lower()):
+            from hermes_cli.providers import custom_provider_slug
+            st.target_provider = custom_provider_slug(st.target_provider)
+        else:
+            st.explicit_provider = st.target_provider
     return True
 
 

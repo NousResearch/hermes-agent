@@ -49,12 +49,12 @@ from agent.model_metadata import (
 from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
 from agent.context_default_record import last_defaulted_context_length
 from agent.redact import redact_sensitive_text
+from session_rules import turns as _turns
 from session_rules.turns import drop_stale_api_content
 from persistence.core.errors import PersistenceError
 from tools.todo_tool import TODO_INJECTION_HEADER
 from session_rules.turns import (
-    _content_text_for_contains, _part_text, _with_part_text, is_compaction_summary_message,
-    user_originated_turn_view,
+    _content_text_for_contains, is_compaction_summary_message, user_originated_turn_view,
 )
 
 logger = logging.getLogger(__name__)
@@ -4163,28 +4163,23 @@ Write only the summary body. Do not include any preamble or prefix."""
     @staticmethod
     def _starts_with_summary_prefix(text: str) -> bool:
         """Return True if *text* begins with any known handoff prefix."""
-        return text.startswith((SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES))
+        return _turns._starts_with_summary_prefix(text)
 
     @classmethod
     def classify_summary_content(cls, content: Any) -> Optional[str]:
         """Classify how *content* relates to a compaction summary.
         Returns ``"standalone"`` (whole message is a handoff), ``"merged"`` (preserved content +
         delimiter + summary body), or None."""
-        text = _content_text_for_contains(content).lstrip()
-        # Merged summaries carry the handoff prefix after the delimiter; detect it there too.
-        if _MERGED_SUMMARY_DELIMITER in text:
-            after = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
-            return "merged" if cls._starts_with_summary_prefix(after) else None
-        return "standalone" if cls._starts_with_summary_prefix(text) else None
+        return _turns.classify_summary_content(content)
 
     @classmethod
     def _is_context_summary_content(cls, content: Any) -> bool:
-        return cls.classify_summary_content(content) is not None
+        return _turns._is_context_summary_content(content)
 
     @staticmethod
     def _has_compressed_summary_metadata(message: Any) -> bool:
         """Return True if *message* carries the in-process compressed-summary flag."""
-        return isinstance(message, dict) and bool(message.get(COMPRESSED_SUMMARY_METADATA_KEY))
+        return _turns._has_compressed_summary_metadata(message)
 
     @classmethod
     def _transcript_has_real_user_turn(cls, messages: list[dict[str, Any]]) -> bool:
@@ -4236,44 +4231,17 @@ Write only the summary body. Do not include any preamble or prefix."""
     @classmethod
     def _is_context_summary_message(cls, message: Any) -> bool:
         """Return True for summary handoff messages by metadata or content."""
-        if not isinstance(message, dict):
-            return False
-        return cls._has_compressed_summary_metadata(message) or cls._is_context_summary_content(message.get("content"))
+        return _turns._is_context_summary_message(message)
 
     @classmethod
     def _is_blank_user_turn(cls, message: Any) -> bool:
         """Return whether *message* is an empty, non-summary user-role echo."""
-        if not isinstance(message, dict) or message.get("role") != "user":
-            return False
-        if cls._is_context_summary_message(message):
-            return False
-        content = message.get("content")
-        if content is None or (isinstance(content, str) and not content.strip()):
-            return True
-        if not isinstance(content, list):
-            return False
-
-        def _blank_part(part: Any) -> bool:
-            if isinstance(part, str):
-                return not part.strip()
-            if isinstance(part, dict) and part.get("type") in {"text", "input_text"}:
-                return isinstance(part.get("text"), str) and not part["text"].strip()
-            return False
-
-        return all(map(_blank_part, content))
+        return _turns._is_blank_user_turn(message)
 
     @classmethod
     def _is_actionable_user_turn(cls, message: Any) -> bool:
         """Return whether *message* contains user input worth anchoring."""
-        if not isinstance(message, dict) or message.get("role") != "user":
-            return False
-        # display_kind rows (internal notifications, hidden scaffolding) are not human input
-        # and must not anchor the tail or seed auto-focus. Mirrors is_user_originated_turn.
-        # A /steer row is typed for the renderer and the alternation repair, but it IS human input.
-        display_kind = message.get("display_kind")
-        if (display_kind and display_kind != STEER_DISPLAY_KIND) or cls._is_context_summary_message(message):
-            return False
-        return not cls._is_blank_user_turn(message)
+        return _turns._is_actionable_user_turn(message)
 
     @classmethod
     def _blank_echo_indices_after(cls, messages: list[dict[str, Any]], user_idx: int) -> set[int]:
@@ -4393,62 +4361,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Drop stale handoff data while preserving merged prior-tail content.
         Returns a copy for non-handoff rows, the unwrapped prior-tail content for merged handoffs
         (delimiter form, or legacy end-marker form), and ``None`` for standalone ones."""
-        if not isinstance(message, dict):
-            return message
-        if not cls._is_context_summary_message(message):
-            return message.copy()
-        content = message.get("content")
-
-        def _unwrapped(new_content: Any) -> dict[str, Any]:
-            unwrapped = {**message, "content": new_content}
-            unwrapped.pop(COMPRESSED_SUMMARY_METADATA_KEY, None)
-            return unwrapped
-
-        if isinstance(content, str):
-            if _MERGED_SUMMARY_DELIMITER in content:
-                prior = content.split(_MERGED_SUMMARY_DELIMITER, 1)[0].strip()
-                if prior.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
-                    prior = prior[len(_MERGED_PRIOR_CONTEXT_HEADER):].lstrip()
-            elif _SUMMARY_END_MARKER in content:
-                prior = content.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
-            else:
-                prior = ""
-            return _unwrapped(prior) if prior else None
-        if isinstance(content, list):
-            prior_blocks: list[Any] = []
-            found_delimiter = False
-            for item in content:
-                text = _part_text(item)
-                if isinstance(text, str) and _MERGED_SUMMARY_DELIMITER in text:
-                    before = text.split(_MERGED_SUMMARY_DELIMITER, 1)[0]
-                    if before.strip():
-                        prior_blocks.append(_with_part_text(item, before))
-                    found_delimiter = True
-                    break
-                prior_blocks.append(item.copy() if isinstance(item, dict) else item)
-            if not found_delimiter:
-                # Legacy end-marker form: live content follows the marker inside/after one part.
-                for index, item in enumerate(content):
-                    text = _part_text(item)
-                    if isinstance(text, str) and _SUMMARY_END_MARKER in text:
-                        remainder = text.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
-                        legacy_blocks = [_with_part_text(item, remainder)] if remainder else []
-                        legacy_blocks += [later.copy() if isinstance(later, dict) else later for later in content[index + 1:]]
-                        return _unwrapped(legacy_blocks) if legacy_blocks else None
-                return None
-
-            # Strip the PRIOR CONTEXT header from the first block that carries it.
-            for index, item in enumerate(prior_blocks):
-                text = _part_text(item)
-                if isinstance(text, str) and text.lstrip().startswith(_MERGED_PRIOR_CONTEXT_HEADER):
-                    leading = text.lstrip()[len(_MERGED_PRIOR_CONTEXT_HEADER):].lstrip()
-                    if leading:
-                        prior_blocks[index] = _with_part_text(item, leading)
-                    else:
-                        prior_blocks.pop(index)
-                    break
-            return _unwrapped(prior_blocks) if prior_blocks else None
-        return None
+        return _turns._strip_context_summary_handoff_message(message)
 
     @staticmethod
     def _get_tool_call_id(tc) -> str:
@@ -4558,7 +4471,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         metadata-flagged scaffolding this pair cannot see; use that one when the question is
         "is this a genuine inbound user message".
         """
-        return cls._is_actionable_user_turn(message) and not cls._is_synthetic_compression_user_turn(message)
+        return _turns._is_real_user_turn(message)
 
     @classmethod
     def _real_user_indices_desc(cls, messages: list[dict[str, Any]], head_end: int) -> list[int]:

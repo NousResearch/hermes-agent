@@ -6,8 +6,11 @@ claimants both win the same occurrence; ``cross_agent_tick`` drops the pin from 
 ``claim_ignores_pin`` drops it from the fire claim alone; ``unpinned_reads`` drops it from every
 read; ``foreign_tenant_blind`` checks the bound agent but not the tenant; ``creator_not_recorded``
 leaves a job without its creating principal and ``creator_repointable`` lets an update change
-it; ``terminal_execution_rewritable`` rewrites a terminal audit row. Each mutant is applied by
-the ``backend`` fixture when ``HERMES_CRON_MUTANT`` names it.
+it; ``terminal_execution_rewritable`` rewrites a terminal audit row; ``administration_skipped``
+lets every job mutation land without the administration right; ``fence_entry_unpinned`` checks
+the fire fence's pin only when the fence is created, so entering it under another agent's scope
+runs on that agent's files. Each mutant is applied by the ``backend`` fixture when
+``HERMES_CRON_MUTANT`` names it.
 """
 
 
@@ -144,6 +147,26 @@ def _terminal_execution_rewritable(monkeypatch):
     monkeypatch.setattr(audit, "finish_execution", finish_execution)
 
 
+def _administration_skipped(monkeypatch):
+    """The administration gate is gone: a principal who may not administer the agent still
+    creates, re-points and removes its jobs."""
+    from cron_store_port_local import LocalCronStore
+    monkeypatch.setattr(LocalCronStore, "_require_administration", lambda self: None)
+
+
+def _fence_entry_unpinned(monkeypatch):
+    """The fire fence checks its pin only when it is created, never when it is entered: a fence
+    made under one agent's scope enters under another's and runs on that agent's files."""
+    from cron_store_port_local import LocalCronStore
+
+    def fire_claim_fence(self, job_id, *, expected_owner):
+        self._pin()
+        from cron import jobs
+        return jobs.fire_claim_fence(job_id, expected_owner=expected_owner)
+
+    monkeypatch.setattr(LocalCronStore, "fire_claim_fence", fire_claim_fence)
+
+
 MUTANTS = {
     "double_fire": _double_fire,
     "cross_agent_tick": _cross_agent_tick,
@@ -153,6 +176,8 @@ MUTANTS = {
     "creator_not_recorded": _creator_not_recorded,
     "creator_repointable": _creator_repointable,
     "terminal_execution_rewritable": _terminal_execution_rewritable,
+    "administration_skipped": _administration_skipped,
+    "fence_entry_unpinned": _fence_entry_unpinned,
 }
 
 

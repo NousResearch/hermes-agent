@@ -4,7 +4,9 @@
 Agents are profile homes under ``tmp_path``; a replica is a second store handle on the same home
 (another process's view of the same files). The suite's list of invariants it does NOT cover
 applies here too (``hermes_conformance.cron.suite``): the local store holds the agent level
-only, and the fixture cannot vary the owner or the administration right.
+only, so the fixture cannot vary the ownership levels above it. The administration right it DOES
+vary: a local profile's person administers, and the fixture withholds the right to prove every
+job mutation needs it.
 """
 
 from contextlib import contextmanager
@@ -14,7 +16,8 @@ import pytest
 from agent.runtime_scope import bind_profile_scope, bind_state
 from cron_store_port_local import LocalCronStorageProvider
 from hermes_conformance.cron import (
-    Backend, ExecutionConformance, FireClaimConformance, TickConformance,
+    AdministrationConformance, Backend, ExecutionConformance, FireClaimConformance,
+    TickConformance,
 )
 from hermes_scope import LOCAL_TENANT, Group, Principal, Scope
 
@@ -40,6 +43,14 @@ def local_backend(tmp_path, monkeypatch):
                 yield
 
     @contextmanager
+    def non_administering(agent, actor="jane"):
+        # The same agent's scope with the administration right withheld: a principal who may
+        # use the agent but never administer it.
+        with bind_state(Scope(LOCAL_TENANT, str(homes[agent]), Principal(actor),
+                              can_administer=False)):
+            yield
+
+    @contextmanager
     def unbound():
         # No scope: a local store's pin is the ambient profile, here one that owns no store.
         monkeypatch.setenv("HERMES_HOME", str(homes["unpinned"]))
@@ -50,7 +61,8 @@ def local_backend(tmp_path, monkeypatch):
                                 can_administer=False))
 
     return Backend(open=open_store, replica=open_store, bind=bind,
-                   foreign_tenant=foreign_tenant, unbound=unbound)
+                   non_administering=non_administering, foreign_tenant=foreign_tenant,
+                   unbound=unbound)
 
 
 @pytest.fixture
@@ -71,4 +83,8 @@ class TestLocalFires(FireClaimConformance):
 
 
 class TestLocalExecutions(ExecutionConformance):
+    pass
+
+
+class TestLocalAdministration(AdministrationConformance):
     pass

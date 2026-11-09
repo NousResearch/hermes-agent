@@ -7,7 +7,9 @@ same call the code makes today, after one check of the pin: the bound scope
 home. A local store holds one agent and only agent-level records, so any other pin (another
 tenant, another profile) is refused with :class:`CronPinRefused` before anything is read or
 written. With no scope bound, the pin is the ambient profile (``get_hermes_home()``), as every
-local caller has it today.
+local caller has it today. On top of the pin, every job mutation requires the bound scope's
+administration right (:class:`CronAdminRefused`): a local profile's person administers, so today's
+unbound caller is served as always, while a scope that explicitly withholds the right is refused.
 
 The store's identity is the profile home it was opened for, taken as one canonical absolute
 path at open (a relative path is refused: it cannot be established now which profile it names).
@@ -19,11 +21,12 @@ operations touch are the ones today's code resolves for that home under the boun
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 from typing import Any, Optional
 
-from cron_store_port import CronPinRefused, CronStorageProvider, CronStore
+from cron_store_port import CronAdminRefused, CronPinRefused, CronStorageProvider, CronStore
 
 # Job fields no update may change: the id is a path component under the output dir, and the
 # creating principal is a fact about the record, not a preference of whoever edits the job.
@@ -73,20 +76,25 @@ class LocalCronStore(CronStore):
             return f"system:{actor.reason}"
         return str(actor)
 
+    def _require_administration(self) -> None:
+        """Every job mutation is the agent's administration: the bound scope must carry the
+        administration right. Not gated: reads, the scheduler's own operations (the due scan,
+        dispatch claims, fire claims, claim heartbeats, the run outcome, the execution audit),
+        and a caller with no scope bound — today's local caller, who administers."""
+        from hermes_scope import current_scope
+        scope = current_scope()
+        if scope is not None and not scope.can_administer:
+            raise CronAdminRefused(
+                "the bound principal may not administer this profile's cron jobs")
+
     # --- jobs ------------------------------------------------------------------------------
 
     def create_job(self, prompt, schedule, **fields):
         self._pin()
-        jobs = _jobs()
-        job = jobs.create_job(prompt, schedule, **fields)
-        creator = self._creator()
-
-        def stamp(all_jobs, _i, record):
-            record["created_by"] = creator
-            jobs.save_jobs(all_jobs)
-        jobs._with_job(job["id"], stamp)
-        job["created_by"] = creator
-        return job
+        self._require_administration()
+        # The creator rides the same durable write as the job itself: an interruption can
+        # leave no job, never a runnable one without its creating principal.
+        return _jobs().create_job(prompt, schedule, created_by=self._creator(), **fields)
 
     def get_job(self, job_id):
         self._pin()
@@ -102,6 +110,7 @@ class LocalCronStore(CronStore):
 
     def update_job(self, job_id, updates):
         self._pin()
+        self._require_administration()
         bad_fields = _IMMUTABLE_JOB_FIELDS.intersection(updates or {})
         if bad_fields:
             raise ValueError(
@@ -110,26 +119,32 @@ class LocalCronStore(CronStore):
 
     def pause_job(self, job_id, reason=None):
         self._pin()
+        self._require_administration()
         return _jobs().pause_job(job_id, reason=reason)
 
     def resume_job(self, job_id):
         self._pin()
+        self._require_administration()
         return _jobs().resume_job(job_id)
 
     def trigger_job(self, job_id, extra_prompt=None):
         self._pin()
+        self._require_administration()
         return _jobs().trigger_job(job_id, extra_prompt=extra_prompt)
 
     def rearm_oneshot(self, job_id, run_at):
         self._pin()
+        self._require_administration()
         return _jobs().rearm_oneshot(job_id, run_at)
 
     def remove_job(self, job_id):
         self._pin()
+        self._require_administration()
         return _jobs().remove_job(job_id)
 
     def cancel_job_run(self, job_id, reason=None):
         self._pin()
+        self._require_administration()
         return _jobs().cancel_job_run(job_id, reason=reason)
 
     def get_due_jobs(self):
@@ -177,7 +192,18 @@ class LocalCronStore(CronStore):
 
     def fire_claim_fence(self, job_id, *, expected_owner):
         self._pin()
-        return _jobs().fire_claim_fence(job_id, expected_owner=expected_owner)
+        jobs = _jobs()
+
+        @contextlib.contextmanager
+        def fence():
+            # The fence is pinned when it is created AND when it is entered: the scope
+            # current at entry decides whose files the held fence runs on, never the one
+            # that happened to be bound when the fence was made.
+            self._pin()
+            with jobs.fire_claim_fence(job_id, expected_owner=expected_owner) as holds:
+                yield holds
+
+        return fence()
 
     # --- the execution audit ------------------------------------------------------------------
 

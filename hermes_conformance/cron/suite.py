@@ -11,14 +11,20 @@ Covered:
   agent can observe through the port (:func:`observe`: its jobs, their records, and its
   execution history); every read (:data:`ALL_READS`) is refused for the same pins; a foreign job
   or attempt reads like a missing one;
+- administration: every job mutation (:data:`JOB_ADMIN_MUTATIONS`) requires the bound scope's
+  administration right and is refused without it, before anything is looked up, changing
+  nothing, while every other operation (:data:`UNPRIVILEGED_OPERATIONS`) — reads, the
+  scheduler's own path and the execution audit — never needs it;
 - the creating principal: a job records who created it, from the bound scope's actor, and no
   update can re-point it;
 - the tick boundary: one agent cannot list, trigger, re-point or fire another agent's jobs, and
   a tick pinned to one agent never returns or fires another agent's due job;
 - the fire claim: a due job is claimed once, two racing claimants produce exactly one winner, a
   fresh claim blocks every later claimant for the lease, a claim is heartbeated while the run is
-  alive and released by its outcome, the fence holds a claim across a side effect, and a
-  completed occurrence never fires twice; the scan dispatches a due one-shot once;
+  alive and released by its outcome, the fence holds a claim across a side effect and is pinned
+  at entry — a fence created under one agent's scope is refused when it is entered under
+  another's — and a completed occurrence never fires twice; the scan dispatches a due one-shot
+  once;
 - the execution audit: an attempt is claimed, runs and finishes exactly once (a terminal attempt
   is never rewritten), a handoff is adopted once, the only post-terminal rewrite is a queued
   delivery outcome settling once, missed occurrences are booked, this owner's attempts are
@@ -26,10 +32,10 @@ Covered:
 
 NOT covered. A backend that passes this suite may still violate these, and must not claim them:
 
-- the ownership levels above agent (participant, owner-wide, tenant-wide), and the
-  administration right (``Scope.can_administer``): the local backend stores the agent level only
-  and its person always administers, so the fixture cannot vary them;
-- actor authority (which principal may create, trigger or re-point a job at all);
+- the ownership levels above agent (participant, owner-wide, tenant-wide): the local backend
+  stores the agent level only, so the fixture cannot vary them;
+- actor authority (which principal may create, trigger or re-point a job at all: the suite
+  varies the administration right, not per-principal authority);
 - cross-process recovery (receipt settlement after a departed owner, the dead-owner sweep of
   another process's attempts): the fixture owns every attempt it makes;
 - retention (completed one-shot records, terminal attempts and output files pruning);
@@ -50,7 +56,7 @@ from typing import Any, Callable, Optional
 
 import pytest
 
-from cron_store_port import CronPinRefused, CronStore
+from cron_store_port import CronAdminRefused, CronPinRefused, CronStore
 
 
 def _now() -> datetime:
@@ -75,6 +81,8 @@ class Backend:
     - ``bind(agent, actor=None)``: bind the agent's scope (its owner, administering). With
       *actor*, bind that named principal as the actor instead — the suite uses it to vary who
       creates a job.
+    - ``non_administering(agent)``: bind the same agent's scope with the administration right
+      withheld: a principal who may use the agent but never administer it.
     - ``foreign_tenant(agent)``: bind a scope of ANOTHER tenant that names the same agent id.
     - ``unbound()``: run with no scope pinned. A local backend's pin is then the ambient profile,
       so its ``unbound`` names a third profile; a hosted one binds nothing.
@@ -83,6 +91,7 @@ class Backend:
     open: Callable[[str], CronStore]
     replica: Callable[[str], CronStore]
     bind: Callable[..., AbstractContextManager]
+    non_administering: Callable[[str], AbstractContextManager]
     foreign_tenant: Callable[[str], AbstractContextManager]
     unbound: Callable[[], AbstractContextManager]
 
@@ -97,6 +106,13 @@ def _replica_thread(target: Callable[..., Any], *args: Any) -> threading.Thread:
 def _refused(call: Callable[[], Any]) -> str:
     """The refusal *call* raises (its message), asserting it is the store's pin refusal."""
     with pytest.raises(CronPinRefused) as refused:
+        call()
+    return str(refused.value)
+
+
+def _admin_refused(call: Callable[[], Any]) -> str:
+    """The refusal *call* raises (its message), asserting it is the administration refusal."""
+    with pytest.raises(CronAdminRefused) as refused:
         call()
     return str(refused.value)
 
@@ -225,6 +241,46 @@ ALL_READS: dict[str, Callable[[CronStore, World], Any]] = {
     "execution_owner_live": lambda st, w: st.execution_owner_live(w.execution, w.due),
 }
 
+
+def _fence_round_trip(store: CronStore, world: World) -> bool:
+    """Enter and exit the job's fire fence, returning what it yielded."""
+    with store.fire_claim_fence(world.due, expected_owner="not-the-owner") as holds:
+        return holds
+
+
+#: The job mutations that are the agent's administration: each one requires the bound scope's
+#: administration right, checked before any lookup, and a refusal changes nothing.
+JOB_ADMIN_MUTATIONS: dict[str, Callable[[CronStore, World], Any]] = {
+    "create_job": JOB_WRITES["create_job"],
+    "update_job": JOB_WRITES["update_job"],
+    "pause_job": JOB_WRITES["pause_job"],
+    "resume_job": JOB_WRITES["resume_job"],
+    "trigger_job": JOB_WRITES["trigger_job"],
+    "rearm_oneshot": JOB_WRITES["rearm_oneshot"],
+    "remove_job": JOB_WRITES["remove_job"],
+    "cancel_job_run": JOB_WRITES["cancel_job_run"],
+}
+
+#: Every operation that is NOT administration, with arguments that succeed in a
+#: :class:`World`: reads, the scheduler's own path (the due scan, dispatch claim, pre-dispatch
+#: advance, fire claim, run outcome, claim heartbeats, the fence) and the execution audit.
+#: None of them ever checks the administration right.
+UNPRIVILEGED_OPERATIONS: dict[str, Callable[[CronStore, World], Any]] = {
+    **ALL_READS,
+    "get_due_jobs": JOB_WRITES["get_due_jobs"],
+    "claim_dispatch": JOB_WRITES["claim_dispatch"],
+    "advance_next_run": JOB_WRITES["advance_next_run"],
+    "mark_job_run": JOB_WRITES["mark_job_run"],
+    "claim_job_for_fire": JOB_WRITES["claim_job_for_fire"],
+    "heartbeat_fire_claim": lambda st, w: st.heartbeat_fire_claim(
+        w.due, expected_owner="not-the-owner"),
+    "heartbeat_run_claim": lambda st, w: st.heartbeat_run_claim(
+        w.due, expected_owner="not-the-owner"),
+    "clear_run_claim": lambda st, w: st.clear_run_claim(w.due),
+    "fire_claim_fence": _fence_round_trip,
+    **EXECUTION_WRITES,
+}
+
 #: Operations that succeed in a :class:`World` without changing what :func:`observe` reads: a
 #: cancel that only asks the live run to stop, and the sweeps that find nothing to act on (every
 #: attempt the world made is this owner's and live).
@@ -317,6 +373,46 @@ class PinningConformance:
             with pytest.raises(ValueError):
                 world.store.update_job(world.due, {"created_by": "someone-else"})
             assert world.store.get_job(world.due)["created_by"] == creator
+
+
+class AdministrationConformance:
+    """Every job mutation is the agent's administration: it requires the bound scope's
+    administration right. Inherit and supply a ``backend`` fixture (with
+    ``non_administering``)."""
+
+    @pytest.mark.parametrize("operation", sorted(JOB_ADMIN_MUTATIONS))
+    def test_every_job_mutation_is_refused_without_the_administration_right_and_changes_nothing(
+            self, backend, operation):
+        world = make_world(backend)
+        before = observe(backend, world)
+        with backend.non_administering(world.agent):
+            # The check precedes every lookup: a missing job is refused the same way as a
+            # real one, and nothing the agent can observe changes.
+            _admin_refused(lambda: JOB_ADMIN_MUTATIONS[operation](world.store, world))
+            _admin_refused(lambda: world.store.update_job("absent", {"prompt": "x"}))
+            _admin_refused(lambda: world.store.remove_job("absent"))
+        assert observe(backend, world) == before
+
+    @pytest.mark.parametrize("operation", sorted(JOB_ADMIN_MUTATIONS))
+    def test_every_job_mutation_lands_with_the_administration_right(self, backend, operation):
+        """The positive control for the administration refusals: each mutation is one an
+        administering scope of the same agent may make, and it changes what the agent observes
+        (a cancel that only asks a live run to stop succeeds without a visible change)."""
+        world = make_world(backend)
+        before = observe(backend, world)
+        with backend.bind(world.agent):
+            JOB_ADMIN_MUTATIONS[operation](world.store, world)
+        if operation not in _NO_VISIBLE_CHANGE:
+            assert observe(backend, world) != before
+
+    @pytest.mark.parametrize("operation", sorted(UNPRIVILEGED_OPERATIONS))
+    def test_every_other_operation_needs_no_administration_right(self, backend, operation):
+        """The boundary: reads, the scheduler's own operations and the execution audit are not
+        administration, so a scope that may not administer the agent still makes each of them —
+        the same call its administering counterpart may make, not a weaker one."""
+        world = make_world(backend)
+        with backend.non_administering(world.agent):
+            UNPRIVILEGED_OPERATIONS[operation](world.store, world)
 
 
 class TickConformance:
@@ -443,6 +539,23 @@ class FireClaimConformance:
             with world.store.fire_claim_fence(world.due, expected_owner="not-the-owner") as holds:
                 assert holds is False
 
+    def test_a_fence_entered_under_a_foreign_pin_is_refused_whole(self, backend):
+        """The fence is pinned when it is ENTERED, not only when it is made: a fence created
+        under one agent's scope must never run on another's files, whatever scope is current
+        by the time it is entered."""
+        world = make_world(backend)
+        with backend.bind("a"):
+            claimed = world.store.claim_job_for_fire(world.due, return_job=True)
+            owner = claimed["fire_claim"]["by"]
+        for bind in _foreign_pins(backend).values():
+            with backend.bind("a"):
+                fence = world.store.fire_claim_fence(world.due, expected_owner=owner)
+            with bind():
+                _refused(fence.__enter__)
+        with backend.bind("a"):  # the claim is untouched, and the owner's own entry still holds
+            with world.store.fire_claim_fence(world.due, expected_owner=owner) as holds:
+                assert holds is True
+
     def test_the_scan_dispatches_a_due_one_shot_once(self, backend):
         store = backend.open("a")
         with backend.bind("a"):
@@ -552,7 +665,7 @@ class ExecutionConformance:
             assert store.execution_owner_live(world.finished, world.due) is False
 
 
-class CronConformance(PinningConformance, TickConformance, FireClaimConformance,
-                      ExecutionConformance):
+class CronConformance(AdministrationConformance, PinningConformance, TickConformance,
+                      FireClaimConformance, ExecutionConformance):
     """The whole suite. Inherit and supply a ``backend`` fixture (or inherit the parts
     separately, e.g. one test module each, to spread a slow backend over several runners)."""

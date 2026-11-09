@@ -3,8 +3,9 @@
 Each mutant (``mutants.py``) runs in two subprocesses. First its own-agent control — the world
 setup and the positive operation and resolution matrix, nothing adversarial — which must PASS: a
 mutant that crashes in its own-agent setup is a broken harness, not a kill the suite takes credit
-for. Then the whole suite, stopping at the first failure, which must fail: a mutant the suite
-passes is a hole in the suite.
+for. Then the whole suite, which must fail — and each mutant declares the suite test that must
+kill it (its node id in ``MUTANTS``), which the harness asserts is among the failures: a mutant
+the suite rejects for some other reason alone has not been shown killed for the reason it exists.
 """
 
 import os
@@ -44,7 +45,9 @@ def _collect(procs):
 @pytest.fixture(scope="module")
 def outcomes(tmp_path_factory):
     """``{(mutant, "control"|"suite"): (returncode, output)}``: the control wave first (it must
-    pass before any suite run is believed), then the suite wave, parallel within each wave."""
+    pass before any suite run is believed), then the suite wave, parallel within each wave. The
+    suite wave runs to the last failure (no early stop): the killing test the mutant declares
+    must be among them, wherever the mutant breaks the suite first."""
     controls = {}
     for name in MUTANTS:
         controls[(name, "control")] = _spawn(name, "control", tmp_path_factory.mktemp(name), *CONTROL)
@@ -52,9 +55,15 @@ def outcomes(tmp_path_factory):
     suites = {}
     for name in MUTANTS:
         suites[(name, "suite")] = _spawn(name, "suite", tmp_path_factory.mktemp(name + "-suite"),
-                                         "-x", *SUITE)
+                                         *SUITE, "-rf")
     outcomes.update(_collect(suites))
     return outcomes
+
+
+def _failed_ids(output):
+    """The node ids of the tests a suite run failed, from pytest's short summary."""
+    return {line[len("FAILED "):].split(" - ", 1)[0]
+            for line in output.splitlines() if line.startswith("FAILED ")}
 
 
 @pytest.mark.parametrize("mutant", sorted(MUTANTS))
@@ -64,4 +73,9 @@ def test_the_mutant_survives_its_own_agent_setup_and_the_suite_rejects_it(outcom
         f"harness error: mutant {mutant!r} does not survive its own-agent setup, so the suite "
         f"has not been shown to reject it for the right reason:\n{output[-2000:]}")
     code, output = outcomes[(mutant, "suite")]
-    assert code == 1 and " failed" in output, f"the suite passed broken backend {mutant!r}:\n{output[-2000:]}"
+    assert code == 1, f"the suite passed broken backend {mutant!r}:\n{output[-2000:]}"
+    declared = MUTANTS[mutant][1]
+    failed = _failed_ids(output)
+    assert declared in failed, (
+        f"the suite rejected mutant {mutant!r} without its declared killing test "
+        f"{declared!r} failing (failures: {sorted(failed)}):\n{output[-2000:]}")

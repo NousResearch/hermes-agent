@@ -1,0 +1,31 @@
+name: pit-crew
+repo: https://github.com/trevornk/pit-crew
+sha: "3400bf582adade721773e56f120e629ad60b02a4"
+title: Pit Crew
+description: "Proactive, safety-gated car agent: live state, a \"will I be ready?\" planner, a background watcher and approval-gated commands, with Home Assistant, Teslemetry/Tessie, TeslaMate or a built-in simulated car."
+readme: true
+maintainer: trevornk
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/trevornk/pit-crew#readme
+platforms: []
+known_issues:
+  - "Approval confirmation (approval_confirmation: strict) relies on Hermes' post_approval_response hook; if a surface does not fire it, set approval_confirmation: hermes_gate."
+  - "The BMW and Kia/Hyundai Home Assistant profiles are untested starters; only tesla_fleet is built from recordings of a real car, and no commands have been run on a real car yet."
+  - "The direct Tesla adapter (Teslemetry / Tessie) is tested with mocks of tesla-fleet-api only; no live account was available. Tesla Fleet API (own developer app) works through Home Assistant; a native Fleet-direct mode waits on a Hermes OAuth enhancement."
+capabilities:
+  provides_tools:
+    - car_status
+    - car_history
+    - car_readiness
+    - car_command
+    - car_alerts
+    - car_rules
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

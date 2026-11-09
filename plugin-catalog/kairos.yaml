@@ -1,6 +1,6 @@
 name: kairos
 repo: https://github.com/Gens-ai/Kairos
-sha: 7c12add89abb68e411b128d0aad8a85d93e9b69a
+sha: ea600ecfcbbe58f18f9bbfc65155e94fcb2d5126
 description: >-
   The god who put Zeus to sleep, installed in your terminal. Your agent was in
   the room at 3am — it knows whether you are at a clean stopping point, offers a
@@ -11,7 +11,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.21"
 docs_url: https://github.com/Gens-ai/Kairos#readme
-version: "0.5.0"
+version: "0.6.0"
 readme: true
 platforms: [linux, macos]
 title: Kairos

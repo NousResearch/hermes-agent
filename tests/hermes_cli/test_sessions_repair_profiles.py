@@ -329,35 +329,28 @@ def test_a_failing_row_moves_alone_and_its_lineage_waits_with_it(homes, monkeypa
             assert acme.get_session("kid") is None and acme.get_session("par") is None
             assert root.get_session("kid")["parent_session_id"] == "par"
             assert root.get_session("par")["parent_session_id"] == "gp"
+            assert acme.get_session("gp") is None
+            root.append_message("gp", "user", "usable after handled failure")
     finally:
         root.close()
         acme.close()
 
     monkeypatch.setattr(SessionDB, method, real)
-    assert _run(apply=True) == 1
-    out = capsys.readouterr().out
-    assert "explicit canonical-owner decision" in out
+    assert _run(apply=True) == 0
+    capsys.readouterr()
     root = SessionDB(homes["default"] / "state.db")
     acme = SessionDB(homes["acme"] / "state.db")
     try:
-        # The partial first attempt left a second copy of gp in the target. The report-only
-        # owner fence must not silently pick one or claim the stores are clean.
-        assert root.get_session("gp") is not None and acme.get_session("gp") is not None
-        assert root.get_session("lone") is None
-        assert root.get_session("par")["parent_session_id"] == "gp"
-        assert root.get_session("kid")["parent_session_id"] == "par"
-        assert acme.get_session("par") is None and acme.get_session("kid") is None
+        # The failed attempt compensated its newly imported grandparent. A fresh
+        # CLI run can move the original component without adjudicating a duplicate.
+        assert all(root.get_session(sid) is None for sid in ("gp", "par", "kid", "lone"))
+        assert acme.get_session("par")["parent_session_id"] == "gp"
+        assert acme.get_session("kid")["parent_session_id"] == "par"
     finally:
         root.close()
         acme.close()
-    # The duplicate holds its linked rows too; an automatic retry cannot elect an owner.
-    assert _run(apply=True) == 1
-    assert "No automatic repair" in capsys.readouterr().out
-    findings = _report()["findings"]
-    assert any(f["kind"] == "dual_home" and f["subject"] == "gp" for f in findings)
-    held = [f for f in findings if f["kind"] == "wrong_store"]
-    assert {f["subject"] for f in held} == {"par", "kid"}
-    assert all(f["action"] is None and "dual_home" in f["reason"] for f in held)
+    assert _run(apply=True) == 0
+    assert not _report()["findings"]
 
 
 def _admit(path: Path, sid: str, status: str) -> None:

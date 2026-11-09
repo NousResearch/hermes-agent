@@ -468,7 +468,8 @@ class _MoveBatch:
     """Every session moving from one store to another, moved together: export all, import all
     (parents before children, so a moved child keeps its moved parent), then delete from the source.
     The batch holds each lineage lock across export, import and source deletion, so writers cannot
-    race the transfer. A crash after import can still leave a duplicate; the cross-store fence then
+    race the transfer. Handled copy failures compensate confirmed new destination rows
+    in the held component before releasing its locks. A crash after import can still leave a duplicate; the cross-store fence then
     fails closed rather than guessing which copy is canonical. Row by row, deleting a parent would
     detach the children still waiting in the source. A row that fails is that row's failure alone:
     the rest of the batch still moves, and only its lineage (descendants, and the parent it still
@@ -546,6 +547,7 @@ class _MoveBatch:
         ordered = _parents_first([p for p in payloads.values() if p is not None])
         result: dict[str, dict[str, int]] = {sid: {"missing": 1} for sid, p in payloads.items()
                                              if p is None and sid not in self._errors}
+        imported: set[str] = set()
         for payload in ordered:
             sid, parent = payload["session"]["id"], payload["session"].get("parent_session_id")
             if parent in self._errors:
@@ -559,11 +561,12 @@ class _MoveBatch:
             except Exception as exc:
                 logger.warning("repair-profiles: moving %s into %s failed; source row kept",
                                sid, self.dst.profile, exc_info=True)
-                self._errors[sid] = exc
+                self._errors[sid] = _repair_import_failure(dst_db, sid, exc)
                 continue
             if outcome != "imported":
                 self._errors[sid] = RuntimeError("target copy appeared during repair; source row kept")
                 continue
+            imported.add(sid)
             try:
                 _verify_repair_copy(src_db, dst_db, sid, payload)
             except Exception as exc:
@@ -587,6 +590,7 @@ class _MoveBatch:
         changed = set(self._errors)
         if changed:
             self._hold_copies(sid for sid in active if groups.get(sid, {sid}) & changed)
+            _compensate_repair_components(dst_db, imported, groups, self._errors, result)
         # Deleting a row detaches its children still in the source; a child that did not move
         # must find its parent there on the next run.
         awaited = {p["session"].get("parent_session_id") for p in ordered if p["session"]["id"] in self._errors}
@@ -603,6 +607,60 @@ class _MoveBatch:
                 self._errors[sid] = exc
         self._result = result
         return result
+
+
+def _compensate_repair_components(dst_db, imported, groups, errors, result):
+    """Undo only this attempt's confirmed inserts, before any source deletion."""
+    pending = imported & errors.keys()
+    while pending:
+        sid = next(iter(pending))
+        component = groups.get(sid, {sid})
+        copies = imported & component
+        pending -= copies
+        for member in copies:
+            result.pop(member, None)
+        try:
+            _discard_repair_copies(dst_db, copies)
+        except Exception as exc:
+            logger.warning("repair-profiles: compensation failed; copies may remain", exc_info=True)
+            for member in component & errors.keys():
+                errors[member] = RuntimeError(
+                    f"{errors[member]}; compensation failed ({exc}); "
+                    "destination copies may remain; rescan and adjudicate")
+
+
+def _discard_repair_copies(dst_db, ids):
+    """Caller holds the complete component guard and has proof these rows are new.
+
+    One transaction avoids partially compensating a component. Do not use the normal
+    deletion API: it detaches other children, sweeps pre-existing prompt caches and
+    emits lifecycle hooks. A compensated import never became the canonical owner.
+    """
+    def discard(conn):
+        for sid in ids:
+            children = {row[0] for row in conn.execute(
+                "SELECT id FROM sessions WHERE parent_session_id = ?", (sid,))}
+            if children - ids:
+                raise RuntimeError("unconfirmed destination children reference an imported copy")
+        for sid in ids:
+            conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE id = ?", (sid,))
+        for sid in ids:
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+            conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (sid,))
+            conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+        # Content-addressed prompt caches are not session owners. Retain them rather
+        # than guessing whether this import or an earlier user created each hash.
+    dst_db._execute_write(discard)
+
+
+def _repair_import_failure(dst_db, sid, error):
+    try:
+        if dst_db._read_one("SELECT 1 FROM sessions WHERE id = ?", (sid,)) is None:
+            return error
+    except Exception:
+        logger.warning("repair-profiles: cannot inspect failed import settlement", exc_info=True)
+    return RuntimeError(
+        f"{error}; import outcome uncertain; destination copy may remain; rescan and adjudicate")
 
 
 def _repair_destination(session, store, existing):

@@ -18,6 +18,16 @@ Both had already happened here:
   surviving one omitted the recorded 400 ``invalid root_id`` state, so the
   case the name describes was never exercised.
 
+Classes shadow the same way, and the guard originally only looked at
+functions. Two had slipped through:
+
+* ``tests/agent/test_auxiliary_client.py`` carried an empty
+  ``class TestAuxiliaryMaxTokensParam: pass`` stub 4,000 lines above the real
+  class of that name. The real one happened to be defined last, so nothing was
+  lost; had a test been added to the stub it would have vanished silently.
+* ``tests/gateway/test_tts_media_routing.py`` defined the
+  ``_DiscordMediaFailureAdapter`` helper twice, byte for byte.
+
 This guard is cheap and catches the whole class at collection time.
 """
 
@@ -48,11 +58,14 @@ def _decorator_names(node: ast.AST) -> list[str]:
     return out
 
 
+_DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
 def _duplicates_in(body, scope: str, rel: str) -> list[str]:
     seen: dict[str, int] = {}
     problems: list[str] = []
     for node in body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(node, _DEFINITIONS):
             continue
         if node.name in _ALLOWED_REPEATS:
             continue
@@ -64,8 +77,9 @@ def _duplicates_in(body, scope: str, rel: str) -> list[str]:
             seen[node.name] = node.lineno
             continue
         if node.name in seen:
+            suffix = "" if isinstance(node, ast.ClassDef) else "()"
             problems.append(
-                f"{rel}:{node.lineno} {scope}.{node.name}() shadows the "
+                f"{rel}:{node.lineno} {scope}.{node.name}{suffix} shadows the "
                 f"definition at line {seen[node.name]}"
             )
         seen[node.name] = node.lineno
@@ -103,6 +117,39 @@ def test_guard_detects_a_known_duplicate_shape():
     )
     tree = ast.parse(src)
     assert _duplicates_in(tree.body, "<module>", "fake.py")
+
+
+def test_guard_detects_a_duplicate_class():
+    """A repeated class name deletes the earlier class, tests and all."""
+    src = (
+        "class TestThing:\n    def test_a(self):\n        pass\n\n"
+        "class TestThing:\n    pass\n"
+    )
+    tree = ast.parse(src)
+    problems = _duplicates_in(tree.body, "<module>", "fake.py")
+    assert problems == ["fake.py:5 <module>.TestThing shadows the definition at line 1"]
+
+
+def test_guard_detects_a_duplicate_nested_class():
+    src = (
+        "class TestOuter:\n"
+        "    class Inner:\n        pass\n"
+        "    class Inner:\n        pass\n"
+    )
+    tree = ast.parse(src)
+    cls = tree.body[0]
+    assert _duplicates_in(cls.body, "TestOuter", "fake.py") == [
+        "fake.py:4 TestOuter.Inner shadows the definition at line 2"
+    ]
+
+
+def test_guard_does_not_confuse_a_class_with_a_function_of_the_same_name():
+    """Same name, different kinds, is still a shadow: the later one wins."""
+    src = "def helper():\n    pass\n\nclass helper:\n    pass\n"
+    tree = ast.parse(src)
+    assert _duplicates_in(tree.body, "<module>", "fake.py") == [
+        "fake.py:4 <module>.helper shadows the definition at line 1"
+    ]
 
 
 @pytest.mark.parametrize("decorator", ["@property", "@x.setter", "@functools.singledispatch"])

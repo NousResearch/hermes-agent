@@ -1,0 +1,41 @@
+name: sourcebind
+title: SourceBind
+repo: https://github.com/blucca/hermes-sourcebind
+sha: "e1782a96f9ad12301024e14af2449b5c06e6e316"
+version: "0.1.1"
+description: >-
+  Bind one explicit business job to its current local JSON customer ID and
+  check job/customer_id at a selected tool's native execution boundary.
+  Rereads the selected source for each protected call; carries the originating
+  scope through explicit native delegation and compaction events.
+  Disclosure — reads the user-selected local JSON with the process's OS
+  permissions; stores the binding, absolute source path, native scope aliases
+  and fictional demo records in profile-scoped Hermes plugin state. Tools with
+  source-file write permission can change the authoritative values. Plugin-initiated network requests, shell commands, background processes, telemetry
+  and credentials: 0.
+maintainer: blucca
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/blucca/hermes-sourcebind/e1782a96f9ad12301024e14af2449b5c06e6e316/demo/cover-native.png
+known_issues:
+  - >-
+    The opt-in standalone examples/native-demo.py harness imports four Hermes
+    core symbols for its recorded demonstration: discover_plugins,
+    get_plugin_command_handler, handle_function_call and AIAgent. The Hermes
+    v0.23.0 validator flags those imports as version-sensitive. The installed
+    plugin entrypoint uses public ctx registration, hooks and state APIs.
+capabilities:
+  provides_tools:
+    - sourcebind_current
+    - sourcebind_demo_update
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+    - subagent_start
+    - post_compaction
+  provides_middleware: []
+  requires_env: []

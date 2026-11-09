@@ -41,6 +41,20 @@ const TRANSLATIONS: Record<Locale, Translations> = {
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
 
+// Browser locale tags identify Traditional Chinese by region or script, while
+// our translation catalogue uses the single `zh-hant` locale identifier.
+const BROWSER_LOCALE_ALIASES: Record<string, Locale> = {
+  "zh-tw": "zh-hant",
+  "zh-hk": "zh-hant",
+  "zh-mo": "zh-hant",
+  "zh-hant": "zh-hant",
+  "zh-hant-tw": "zh-hant",
+  "zh-hant-hk": "zh-hant",
+  "zh-cn": "zh",
+  "zh-hans": "zh",
+  "zh-hans-cn": "zh",
+};
+
 // Display metadata for the language picker — endonyms from @hermes/shared so the
 // desktop and web pickers can never disagree on a language's native name.
 export const LOCALE_META: Record<Locale, { name: string }> = Object.fromEntries(
@@ -57,6 +71,16 @@ function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored && isLocale(stored)) return stored;
+  } catch {
+    // SSR or privacy mode
+  }
+  try {
+    const browserLanguage = navigator.language.toLowerCase();
+    const alias = BROWSER_LOCALE_ALIASES[browserLanguage];
+    if (alias) return alias;
+    if (isLocale(browserLanguage)) return browserLanguage;
+    const baseLanguage = browserLanguage.split("-")[0];
+    if (isLocale(baseLanguage)) return baseLanguage;
   } catch {
     // SSR or privacy mode
   }

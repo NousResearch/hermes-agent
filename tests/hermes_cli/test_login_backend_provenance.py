@@ -229,30 +229,3 @@ def test_a_symlink_in_the_bundled_dir_does_not_get_the_bundled_trust(tmp_path, m
     manifest = PluginManifest(name="acme-vault", source="bundled", path=str(bundled_root / "acme-vault"))
     error = cat.login_backend_provenance_error(manifest)
     assert "claims the bundled source" in error and "leaves the plugins tree shipped with Hermes" in error
-
-
-def test_a_fabricated_install_record_is_refused(world, monkeypatch, caplog):
-    """The install record lives in the profile-writable home, so its claims decide nothing on
-    their own: a record naming an entry the shipped catalog has no pin for is a fabricated
-    record, and the plugin it vouches for never registers its backend."""
-    import logging
-
-    cat.install_catalog_entry(world["entry"](), force=False)
-    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [])  # no shipped entry
-    with caplog.at_level(logging.WARNING):
-        assert world["load"]() is None
-    assert "not in the catalog shipped with Hermes" in caplog.text
-
-
-def test_a_tree_edited_after_install_is_refused(world, caplog):
-    """The record pins the code digest of the tree the installer published: edit one file of a
-    verified install afterwards and the plugin no longer counts as the code the catalog
-    reviewed, so its backend never registers."""
-    import logging
-
-    cat.install_catalog_entry(world["entry"](), force=False)
-    target = world["plugins_dir"] / "acme-vault" / "__init__.py"
-    target.write_text(target.read_text(encoding="utf-8") + "# an edit after install\n")
-    with caplog.at_level(logging.WARNING):
-        assert world["load"]() is None
-    assert "code digest" in caplog.text

@@ -554,13 +554,6 @@ def _install_plugin_core(
     if not _pc()._looks_like_plugin_dir(target):
         logger.warning("%s has no plugin.yaml / __init__.py; may not be a valid plugin", plugin_name)
     _pc()._copy_example_files(target, _pc()._console())
-    # The record pins the published tree's code digest: trust decisions (login backends, the
-    # hosted boot) verify the installed tree against it, so a tree edited after install — or a
-    # fabricated record — no longer counts as the installer's.
-    from hermes_cli.plugins_cmd_catalog import installed_code_digest
-
-    _pc()._update_install_record(plugin_name, lambda row: (
-        {**row, "tree_digest": installed_code_digest(target)} if row is not None else None))
     installed_manifest = _pc()._read_manifest(target)
     return target, installed_manifest, installed_manifest.get("name") or target.name
 

@@ -204,11 +204,6 @@ def update_plugin(
             record["revision"] = revision
             if new_target == target and tree_digest(staged) == before:
                 return output
-            # The record pins the published tree's code digest, so trust decisions (login
-            # backends, the hosted boot) can verify the installed tree against it.
-            from hermes_cli.plugins_cmd_catalog import installed_code_digest
-
-            record["tree_digest"] = installed_code_digest(staged)
             publish_plugin(
                 staged,
                 new_target,

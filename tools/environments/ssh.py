@@ -29,6 +29,23 @@ _SSH_MULTIPLEX = os.name != "nt"
 _load_hermes_env_vars = load_hermes_env_vars
 
 
+def _windows_openssh(name: str) -> str:
+    """Prefer the in-box Windows OpenSSH client over the MSYS/MinGW build earlier on PATH.
+
+    The Git-for-Windows bundle shipped under tools/ ranks ahead of System32 in
+    git-bash PATH. The MSYS client only reaches ssh-agents via the SSH_AUTH_SOCK
+    unix socket, so keys served by a Windows named-pipe agent (Bitwarden,
+    ssh-agent.exe) are never presented and the connection dies with
+    'Permission denied (publickey)' — even though the same key connects fine
+    via the System32 client. See #152246.
+    """
+    if os.name == "nt":
+        candidate = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "OpenSSH", name + ".exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return name
+
+
 def _ensure_ssh_available() -> None:
     """Fail fast with a clear error when the SSH client is unavailable."""
     for tool in ("ssh", "scp"):
@@ -114,7 +131,7 @@ class SSHEnvironment(BaseEnvironment):
 
     def _build_ssh_command(self, extra_args: list | None = None, send_env: Iterable[str] = ()) -> list:
         send_env = tuple(sorted(send_env))
-        cmd = ["ssh"]
+        cmd = [_windows_openssh("ssh")]
         if _SSH_MULTIPLEX:
             cmd.extend(["-o", f"ControlPath={self._control_socket_for(send_env)}",
                         "-o", "ControlMaster=auto", "-o", "ControlPersist=300"])
@@ -170,7 +187,7 @@ class SSHEnvironment(BaseEnvironment):
     def _scp_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via scp over ControlMaster."""
         self._run_ssh(f"mkdir -p {shlex.quote(str(Path(remote_path).parent))}", timeout=10)
-        scp_cmd = ["scp"] + (["-o", f"ControlPath={self.control_socket}"] if _SSH_MULTIPLEX else [])
+        scp_cmd = [_windows_openssh("scp")] + (["-o", f"ControlPath={self.control_socket}"] if _SSH_MULTIPLEX else [])
         scp_cmd += self._target_flags("-P") + [host_path, f"{self.user}@{self.host}:{remote_path}"]
         result = run_capture(scp_cmd, timeout=30)
         if result.returncode != 0:
@@ -296,7 +313,7 @@ class SSHEnvironment(BaseEnvironment):
             if not socket.exists():
                 continue
             with contextlib.suppress(OSError, subprocess.SubprocessError):
-                cmd = ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", f"{self.user}@{self.host}"]
+                cmd = [_windows_openssh("ssh"), "-o", f"ControlPath={socket}", "-O", "exit", f"{self.user}@{self.host}"]
                 subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
             with contextlib.suppress(OSError):
                 socket.unlink()

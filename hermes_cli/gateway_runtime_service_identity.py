@@ -334,6 +334,13 @@ def launcher_text(raw: bytes) -> str:
         _unverified("the launcher is neither UTF-16 with a BOM nor UTF-8")
 
 
+def _masked_literals(line: str) -> str:
+    # A customised launcher line may assign an opaque credential the generic redactor can't recognise
+    # (``env.Item("S3_SECRET") = "..."``): keep the variable names, never the values.
+    return re.sub(r'"(?:[^"]|"")*(?:"|$)', lambda literal: literal[0] if line[:literal.start()].endswith(
+        ("Item(", "Environment(")) else '"***"', line)
+
+
 def _vbs_identity(script: str) -> tuple[str, list[str]]:
     # Recognize the vendor's complete template, not a HERMES_HOME substring
     # inside an arbitrary executable script. Doubled quotes are VB literals.
@@ -357,7 +364,7 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
         index += 1
     tail = lines[index:]
     if len(tail) != 8 or tail[:2] != ['existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then'] or tail[3] != 'Else' or tail[5] != 'End If':
-        line = lines[index] if index < len(lines) else "<end of file>"
+        line = _masked_literals(lines[index]) if index < len(lines) else "<end of file>"
         _unverified(f"launcher line {index + 1} is not the installer's: {line[:120]!r}")
     if not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal + r' & existing_pp', tail[2]) or not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal, tail[4]):
         _unverified("the launcher's PYTHONPATH lines are not the installer's")

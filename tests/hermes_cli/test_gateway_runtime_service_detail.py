@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 
-def _installed_vbs(home, configured, *, extra_env=""):
+def _installed_vbs(home, configured, *, extra_env="", extra_line=""):
     script = home / "gateway.vbs"
     script.write_text("\n".join([
         "' Hermes Agent Gateway", "Option Explicit", "Dim sh, env, existing_pp",
@@ -23,6 +23,7 @@ def _installed_vbs(home, configured, *, extra_env=""):
         f'env.Item("HERMES_HOME") = "{configured}"',
         'env.Item("HERMES_SUPERVISED_CHILD") = "1"',
         *([f'env.Item("{extra_env}") = "1"'] if extra_env else []),
+        *([extra_line] if extra_line else []),
         'env.Item("VIRTUAL_ENV") = "C:\\\\Hermes"',
         'existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then',
         '  env.Item("PYTHONPATH") = "C:\\\\Hermes;" & existing_pp', 'Else',
@@ -34,13 +35,13 @@ def _installed_vbs(home, configured, *, extra_env=""):
 
 
 def _windows_refusal(tmp_path, monkeypatch, *, xml_rc=0, whoami=None, launcher_env="", run_level="",
-                     launcher_home=None):
+                     launcher_home=None, launcher_line="", xml_error="ERROR: Access is denied.\r\n"):
     from hermes_cli import gateway_runtime_service as service
     from hermes_cli.gateway_windows import _build_scheduled_task_xml
 
     home = tmp_path / "profile"
     home.mkdir()
-    script = _installed_vbs(home, str(launcher_home or home), extra_env=launcher_env)
+    script = _installed_vbs(home, str(launcher_home or home), extra_env=launcher_env, extra_line=launcher_line)
     name = "Hermes_Gateway_" + service.service_suffix(home)
     account, sid = "DESKTOP-1\\owner", "S-1-5-21-123"
     xml = _build_scheduled_task_xml(name, script, account)
@@ -48,7 +49,7 @@ def _windows_refusal(tmp_path, monkeypatch, *, xml_rc=0, whoami=None, launcher_e
         xml = xml.replace("<RunLevel>LeastPrivilege</RunLevel>", f"<RunLevel>{run_level}</RunLevel>")
     answers = {
         "whoami.exe": (0, (whoami if whoami is not None else f'"{account}","{sid}"\r\n'), ""),
-        "/XML": (xml_rc, xml if xml_rc == 0 else "", "ERROR: Access is denied.\r\n" if xml_rc else ""),
+        "/XML": (xml_rc, xml if xml_rc == 0 else "", xml_error if xml_rc else ""),
         "/FO": (0, f'"\\{name}","N/A","Ready"\r\n', ""),
     }
 
@@ -89,6 +90,31 @@ def test_a_task_that_breaks_a_rule_names_the_rule(case, needles, tmp_path, monke
     assert refused.reason == "service_identity_unverified"
     assert all(needle in refused.detail for needle in needles), refused.detail
     assert "\n" not in refused.detail
+
+
+_OPAQUE = "q8Zr2LmX0vN4pT7wK1yB9cD3fG6hJ5sA"
+
+
+@pytest.mark.parametrize("line,kept", [
+    (f'env.Item("S3_SECRET") = "{_OPAQUE}"', 'env.Item("S3_SECRET") = '),
+    (f'env.Item("MY_TOKEN")="{_OPAQUE}"', 'env.Item("MY_TOKEN")='),
+    (f'sh.Run "cmd /c set KEY={_OPAQUE}", 0, False', "sh.Run "),
+])
+def test_a_rejected_launcher_line_names_the_line_not_its_values(line, kept, tmp_path, monkeypatch):
+    # A customised launcher may assign a credential; the detail reaches `gateway ensure` output
+    # and Desktop, where users paste it into reports.
+    refused = _windows_refusal(tmp_path, monkeypatch, launcher_line=line)
+    assert refused.reason == "service_identity_unverified"
+    assert "launcher line 8 is not the installer's" in refused.detail, refused.detail
+    assert _OPAQUE not in refused.detail and _OPAQUE[:8] not in refused.detail, refused.detail
+    assert kept in refused.detail, refused.detail
+
+
+def test_child_output_in_a_refusal_is_redacted(tmp_path, monkeypatch):
+    refused = _windows_refusal(tmp_path, monkeypatch, xml_rc=1,
+                               xml_error=f"HERMES_API_KEY={_OPAQUE} rejected\r\n")
+    assert "/XML exited 1" in refused.detail and "HERMES_API_KEY=" in refused.detail, refused.detail
+    assert _OPAQUE not in refused.detail, refused.detail
 
 
 @pytest.mark.platforms("linux")

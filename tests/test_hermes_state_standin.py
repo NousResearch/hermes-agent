@@ -5,6 +5,7 @@ not named ``state.db`` and a name outside the plugin guide's list are refused; a
 read-only one refuses; an agent given only a writable ``SessionDB`` saves its turn to that store; the stand-in is gone
 before the release its warning names."""
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -18,10 +19,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import hermes_constants
+import hermes_dir_acl
 import hermes_state
 import persistence
+import process_identity
 import sqlite_support
 import storage_errors
+import storage_limits
+import storage_user_copy
 from hermes_cli.session_export import to_legacy_export_dict
 from persistence.conversation.messages import ConversationRequest, ResumeTooLarge, TranscriptRead, TranscriptView
 from persistence.conversation.search import SearchSort
@@ -192,6 +197,45 @@ def test_module_names_are_their_replacements(quiet, store):
     assert hermes_state.DEFAULT_DB_PATH == db_path
     assert hermes_state.storage_state(db_path) == storage_health(profile_scope()).storage_state().value == "ok"
     assert hermes_state.storage_corrupt_reason(db_path) is None
+
+
+_MOVED = {
+    "format_session_db_unavailable": storage_user_copy, "get_last_init_error": storage_user_copy,
+    "holder_pid_checkable": process_identity, "make_user_dir": hermes_dir_acl,
+    "preflight_db_writability": sqlite_support, "read_only_db_uri": sqlite_support,
+    "resolved_max_export_messages": storage_limits, "resolved_max_resume_messages": storage_limits,
+}
+
+
+def test_the_moved_helpers_are_their_replacements(quiet):
+    for name, module in _MOVED.items():
+        assert getattr(hermes_state, name) is getattr(module, name), name
+
+
+def test_a_diverted_transcript_lands_in_the_profiles_sessions_folder(quiet):
+    path = hermes_state.divert_session_transcript_jsonl("s9", [{"role": "user", "content": "kept"}, None, "plain"])
+    assert path == hermes_constants.get_hermes_home() / "sessions" / "s9.jsonl"
+    assert [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] == [
+        {"role": "user", "content": "kept"}, {"content": "plain"}]
+    assert hermes_state.divert_session_transcript_jsonl("s9", []) is None
+
+
+def test_the_plugin_api_lists_each_carried_name_and_not_the_whole_module():
+    data = json.loads((REPO_ROOT / "hermes_cli" / "data" / "plugin_api.json").read_text(encoding="utf-8-sig"))
+    entries = {entry for group in data["groups"] for entry in group["entries"]}
+    assert "hermes_state" not in entries
+    assert {entry.partition(":")[2] for entry in entries if entry.startswith("hermes_state:")} == set(
+        hermes_state.__all__)
+
+
+def test_validate_flags_a_name_the_stand_in_does_not_carry(tmp_path):
+    from hermes_cli.plugin_validate_private_imports import private_import_findings
+
+    plugin = tmp_path / "legacy"
+    plugin.mkdir()
+    (plugin / "__init__.py").write_text("from hermes_state import SessionDB, resolved_max_resume_messages\n"
+                                        "from hermes_state import SessionMessagesMixin\n", encoding="utf-8")
+    assert private_import_findings(plugin) == ["__init__.py:2 hermes_state.SessionMessagesMixin"]
 
 
 def test_the_first_name_used_warns_once_naming_its_replacement_and_the_removal_release(monkeypatch):

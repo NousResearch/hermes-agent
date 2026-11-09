@@ -51,9 +51,18 @@ _REPLACEMENTS = {
     "storage_corrupt_reason": "persistence_assembly.storage_health(profile_scope()).storage_state()",
     "get_hermes_home": "hermes_constants.get_hermes_home",
     "mkdir_under_hermes_home": "hermes_constants.mkdir_under_hermes_home",
+    "divert_session_transcript_jsonl": "session_rescue.divert_session_transcript_jsonl(..., sessions_dir=...)",
+    "format_session_db_unavailable": "storage_user_copy.format_session_db_unavailable",
+    "get_last_init_error": "storage_user_copy.get_last_init_error",
+    "holder_pid_checkable": "process_identity.holder_pid_checkable",
+    "make_user_dir": "hermes_dir_acl.make_user_dir",
+    "preflight_db_writability": "sqlite_support.preflight_db_writability",
+    "read_only_db_uri": "sqlite_support.read_only_db_uri",
+    "resolved_max_export_messages": "storage_limits.resolved_max_export_messages",
+    "resolved_max_resume_messages": "storage_limits.resolved_max_resume_messages",
 }
 
-# Names that are another module's object under a new name.
+# Names that are another module's object, under a new name or the same one.
 _FORWARDED = {
     "StateDbCorruptError": ("persistence", "StoreQuarantined"),
     "StateDbReplacedError": ("persistence", "StoreReplaced"),
@@ -68,6 +77,14 @@ _FORWARDED = {
     "apply_database_pragmas": ("sqlite_support", "apply_database_pragmas"),
     "get_hermes_home": ("hermes_constants", "get_hermes_home"),
     "mkdir_under_hermes_home": ("hermes_constants", "mkdir_under_hermes_home"),
+    "format_session_db_unavailable": ("storage_user_copy", "format_session_db_unavailable"),
+    "get_last_init_error": ("storage_user_copy", "get_last_init_error"),
+    "holder_pid_checkable": ("process_identity", "holder_pid_checkable"),
+    "make_user_dir": ("hermes_dir_acl", "make_user_dir"),
+    "preflight_db_writability": ("sqlite_support", "preflight_db_writability"),
+    "read_only_db_uri": ("sqlite_support", "read_only_db_uri"),
+    "resolved_max_export_messages": ("storage_limits", "resolved_max_export_messages"),
+    "resolved_max_resume_messages": ("storage_limits", "resolved_max_resume_messages"),
 }
 
 __all__ = sorted(_REPLACEMENTS)
@@ -487,11 +504,21 @@ def _storage_corrupt_reason(db_path: "Any") -> "Optional[str]":
     return None if state == "ok" else state
 
 
+def _divert_session_transcript_jsonl(session_id: "str", messages: "Any") -> "Optional[Path]":
+    """Append pending messages to ``<HERMES_HOME>/sessions/<id>.jsonl``; the path, or None when there is nothing to
+    write."""
+    from hermes_constants import get_hermes_home
+    from session_rescue import divert_session_transcript_jsonl
+
+    return divert_session_transcript_jsonl(session_id, messages, sessions_dir=get_hermes_home() / "sessions")
+
+
 _LOCAL = {
     "SessionDB": _SessionDB,
     "AsyncSessionDB": _AsyncSessionDB,
     "storage_state": _storage_state,
     "storage_corrupt_reason": _storage_corrupt_reason,
+    "divert_session_transcript_jsonl": _divert_session_transcript_jsonl,
 }
 
 

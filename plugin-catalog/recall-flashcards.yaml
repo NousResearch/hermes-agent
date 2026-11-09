@@ -1,0 +1,23 @@
+name: recall-flashcards
+repo: https://github.com/nftboy07/hermes-recall-plugin
+sha: f2ae355ee3539c20cad11387b0ff4c2ac505edf3
+version: "1.0.0"
+description: "Spaced repetition inside Hermes Agent: anything worth remembering becomes a flashcard, scheduled with the SM-2 algorithm in a local SQLite store. Four tools (recall_add, recall_due, recall_grade, recall_stats), a /recall command, and a bundled card-hygiene skill. Disclosure: a pre_llm_call hook appends one short due-cards note to the first turn of a session, only when cards are due, at most once per session; no network, no telemetry, no credentials, zero dependencies."
+maintainer: nftboy07
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/nftboy07/hermes-recall-plugin#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - recall_add
+    - recall_grade
+    - recall_due
+    - recall_stats
+  provides_hooks:
+    - pre_llm_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

@@ -211,6 +211,10 @@ class RepairPlan:
         for row in crossed["mislabelled"]:
             if row["id"] in moving:
                 continue  # the move stamps the right label
+            if store.profile != "default" and row["session_key"].startswith("agent:main:"):
+                # The named profile may own this standalone gateway's legacy chat.
+                # Never relabel it to default without an explicit legacy-main decision.
+                continue
             self._add(Finding(
                 "mislabelled", store.profile, row["id"],
                 f"profile_name={row['profile_name']!r} but key {row['session_key']!r} belongs to "
@@ -305,6 +309,8 @@ class RepairPlan:
                         _fix=lambda s, st=store, r=row: {
                             "routing_deleted": s.db(st).delete_gateway_routing_rows([(r["scope"], r["session_key"])])}))
                 continue
+            if not row["scope"]:
+                continue  # un-scoped local/API routes live in the owning profile's store
             if key_profile == store.profile and not self.multiplexes:
                 continue  # a standalone gateway's own index lives in its own store
             routing_store = self.routing_store

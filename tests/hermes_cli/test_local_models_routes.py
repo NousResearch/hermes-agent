@@ -35,6 +35,21 @@ def client(tmp_path, monkeypatch):
     return test_client
 
 
+@pytest.fixture
+def engine_client(client, monkeypatch):
+    """The registry endpoint tests assume "nothing installed" for the managed engine.
+    Since 0.23.0 the managed installed state resolves through the pm store (the real
+    install stamp), so pin it like the quickstart tests do. save_config also gained a
+    first-stamp step in 0.23.0 that probes the pm store for the browser-env migration;
+    the registry tests only exercise the local_runtime section, so no-op the stamp."""
+    import hermes_cli.config as config_mod
+    from hermes_cli.local_runtime import binaries
+
+    monkeypatch.setattr(binaries, "installed_engine", lambda *args, **kwargs: None)
+    monkeypatch.setattr(config_mod, "note_first_stamp", lambda *args, **kwargs: None)
+    return client
+
+
 def test_local_models_routes_require_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli import web_server
@@ -789,19 +804,19 @@ def test_download_failure_releases_resume_handle(client, monkeypatch):
 # ── engine registry (Settings → Local models → Local engine) ─────────────
 
 
-def test_engines_list_shows_managed_first(client):
-    r = client.get("/api/local-models/engines")
+def test_engines_list_shows_managed_first(engine_client):
+    r = engine_client.get("/api/local-models/engines")
     assert r.status_code == 200
     engines = r.json()["engines"]
     assert engines[0]["id"] == "managed"
     assert engines[0]["builtin"] is True and engines[0]["active"] is True
 
 
-def test_engine_crud_select_and_fallback(client, tmp_path):
+def test_engine_crud_select_and_fallback(engine_client, tmp_path):
     binary = tmp_path / "llama-server.exe"
     binary.write_bytes(b"MZ")
 
-    r = client.post(
+    r = engine_client.post(
         "/api/local-models/engines",
         json={
             "name": "My Vulkan build",
@@ -815,22 +830,22 @@ def test_engine_crud_select_and_fallback(client, tmp_path):
     engine_id = r.json()["engine"]["id"]
     assert engine_id == "my-vulkan-build"
 
-    listing = client.get("/api/local-models/engines").json()["engines"]
+    listing = engine_client.get("/api/local-models/engines").json()["engines"]
     assert [e["id"] for e in listing] == ["managed", engine_id]
     assert listing[1]["installed"] is True  # path exists
     assert listing[1]["args"] == ["--flash-attn"]
 
     # Selecting makes it active and the status contract carries it.
-    r = client.post(f"/api/local-models/engines/{engine_id}/select", json={"engine_id": engine_id})
+    r = engine_client.post(f"/api/local-models/engines/{engine_id}/select", json={"engine_id": engine_id})
     assert r.status_code == 200
-    listing = client.get("/api/local-models/engines").json()["engines"]
+    listing = engine_client.get("/api/local-models/engines").json()["engines"]
     assert next(e for e in listing if e["id"] == engine_id)["active"] is True
-    status = client.get("/api/local-models/status").json()
+    status = engine_client.get("/api/local-models/status").json()
     assert status["active_engine_id"] == engine_id
     assert status["engine_kind"] == "external"
 
     # Edit keeps the id and replaces the launch parameters.
-    r = client.put(
+    r = engine_client.put(
         f"/api/local-models/engines/{engine_id}",
         json={"name": "Renamed build", "path": str(binary), "backend": "cpu", "args": [], "env": {}},
     )
@@ -841,10 +856,10 @@ def test_engine_crud_select_and_fallback(client, tmp_path):
     }
 
     # Deleting the ACTIVE engine falls back to managed.
-    r = client.delete(f"/api/local-models/engines/{engine_id}")
+    r = engine_client.delete(f"/api/local-models/engines/{engine_id}")
     assert r.status_code == 200 and r.json()["was_active"] is True
-    assert [e["id"] for e in client.get("/api/local-models/engines").json()["engines"]] == ["managed"]
-    assert client.get("/api/local-models/status").json()["active_engine_id"] == "managed"
+    assert [e["id"] for e in engine_client.get("/api/local-models/engines").json()["engines"]] == ["managed"]
+    assert engine_client.get("/api/local-models/status").json()["active_engine_id"] == "managed"
 
 
 def test_engine_validation_and_guards(client, tmp_path):
@@ -860,23 +875,23 @@ def test_engine_validation_and_guards(client, tmp_path):
     assert client.delete("/api/local-models/engines/ghost").status_code == 404
 
 
-def test_engine_probe_never_runs_a_non_binary(client):
+def test_engine_probe_never_runs_a_non_binary(engine_client):
     # Nothing installed: probing the managed engine says so instead of lying.
-    r = client.post("/api/local-models/engines/probe", json={"engine_id": "managed"})
+    r = engine_client.post("/api/local-models/engines/probe", json={"engine_id": "managed"})
     assert r.status_code == 422 and "managed" in r.json()["detail"].lower()
 
     # A registered path that cannot run --version is a 422 with the reason, not a 500.
-    r = client.post("/api/local-models/engines",
+    r = engine_client.post("/api/local-models/engines",
                     json={"name": "Junk", "path": "Z:/definitely/not/here.exe"})
     assert r.status_code == 200
-    r = client.post("/api/local-models/engines/probe", json={"engine_id": r.json()["engine"]["id"]})
+    r = engine_client.post("/api/local-models/engines/probe", json={"engine_id": r.json()["engine"]["id"]})
     assert r.status_code == 422
 
 
-def test_engine_probe_accepts_unsaved_path(client, tmp_path):
+def test_engine_probe_accepts_unsaved_path(engine_client, tmp_path):
     # The edit form probes what is on screen BEFORE registering it: a filled
     # `path` wins over engine_id, so users validate a binary first.
-    r = client.post("/api/local-models/engines/probe", json={"path": str(tmp_path / "nope.exe")})
+    r = engine_client.post("/api/local-models/engines/probe", json={"path": str(tmp_path / "nope.exe")})
     assert r.status_code == 422 and "no file" in r.json()["detail"].lower()
 
     if os.name == "nt":
@@ -886,11 +901,11 @@ def test_engine_probe_accepts_unsaved_path(client, tmp_path):
         script = tmp_path / "engine.sh"
         script.write_text("#!/bin/sh\necho 'version: 1 (TEST)'\n", encoding="ascii")
         script.chmod(0o755)
-    r = client.post("/api/local-models/engines/probe", json={"path": str(script)})
+    r = engine_client.post("/api/local-models/engines/probe", json={"path": str(script)})
     assert r.status_code == 200, r.text
     assert "version: 1" in r.json()["version"]
     # Probing never registers anything.
-    assert [e["id"] for e in client.get("/api/local-models/engines").json()["engines"]] == ["managed"]
+    assert [e["id"] for e in engine_client.get("/api/local-models/engines").json()["engines"]] == ["managed"]
 
 # ── engine mutation announce (bottom-left backend status) ──────────
 

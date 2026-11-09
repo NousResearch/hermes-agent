@@ -91,3 +91,20 @@ async def test_root_topic_activation_creates_no_extra_topic(tmp_path, monkeypatc
     adapter = runner.adapters[next(iter(runner.adapters))]
     adapter._create_dm_topic.assert_not_called()
     adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resume_rename_obeys_receiving_bot_kill_switch(tmp_path):
+    """``disable_topic_auto_rename`` is the RECEIVING bot's setting: a secondary bot that opted out
+    keeps its topic name on /resume even though the launch profile's Telegram config never set it."""
+    from gateway.config import PlatformConfig
+
+    db, runner = _bound_topic(tmp_path, "earlier")
+    db.set_session_title("earlier", "Earlier Topic Work")
+    adapter = runner.adapters[next(iter(runner.adapters))]
+    adapter.config = PlatformConfig(enabled=True, token="***", extra={"disable_topic_auto_rename": True})
+
+    await runner._handle_resume_command(_make_event("/resume Earlier Topic Work", thread_id=THREAD))
+
+    assert _bound_session(db) == "earlier"
+    adapter.rename_dm_topic.assert_not_awaited()

@@ -270,10 +270,11 @@ ones. OSV runs on a weekly schedule.
   stale review). The per-PR concurrency group cancels the older copy, and
   branch protection requires the gate of every check suite on the SHA. A gate
   whose only non-successes are `cancelled` jobs passes when the Actions API
-  shows a newer (higher run id) live or successful run of the same workflow,
-  event and head SHA; that run's gate is the real verdict. Delegation only
-  points forward, so the newest cancelled run always fails, and a rerun
-  (attempt > 1) never delegates. Otherwise it fails as before.
+  shows a later-started (`run_started_at`, then higher run id) live or
+  successful run of the same workflow, event and head SHA; that run's gate is
+  the real verdict. Delegation only points forward, so the last run to start
+  always fails, and a rerun never delegates (attempt 2 of a fork run approved
+  after `action_required` counts as its first). Otherwise it fails as before.
 - **Release mode:** every required job must be `success`. Only the deferred
   `e2e-desktop` may skip. The PR-only checks are steps of `repo-guards`, which
   runs on every event, so they never reach the gate as a skip.

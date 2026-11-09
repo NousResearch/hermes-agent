@@ -1,0 +1,28 @@
+name: genui
+repo: https://github.com/agenticatech/genui-hermes-hackathon
+sha: f8859ab13fca06b8217c78b96eaae3a0e2c5cc45
+subdir: plugin
+title: GenUI
+description: "Live cards for Hermes Desktop: the agent shows a long task as a pre-designed card (a pull request, a release, a slow machine, files to clean up, a study session), updates it in place after every tool result, and asks for a decision with a button only when one is needed; the click (and what you ticked or answered in the card) goes back to the agent as one turn. Disclosure: no network calls, no telemetry, no credentials; writes one small JSON file per shown card in the plugin's data directory; adds a short turn hint to Hermes Desktop turns only; cards run in a sandboxed frame and a click posts one visible message from the user."
+maintainer: agenticatech
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "0.2.0"
+docs_url: https://github.com/agenticatech/genui-hermes-hackathon/tree/f8859ab13fca06b8217c78b96eaae3a0e2c5cc45/plugin#readme
+image: https://raw.githubusercontent.com/agenticatech/genui-hermes-hackathon/f8859ab13fca06b8217c78b96eaae3a0e2c5cc45/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/agenticatech/genui-hermes-hackathon/f8859ab13fca06b8217c78b96eaae3a0e2c5cc45/docs/screenshots/pr_conflicts.png
+  - https://raw.githubusercontent.com/agenticatech/genui-hermes-hackathon/f8859ab13fca06b8217c78b96eaae3a0e2c5cc45/docs/screenshots/pr_merged.png
+  - https://raw.githubusercontent.com/agenticatech/genui-hermes-hackathon/f8859ab13fca06b8217c78b96eaae3a0e2c5cc45/docs/screenshots/release_rollback.png
+  - https://raw.githubusercontent.com/agenticatech/genui-hermes-hackathon/f8859ab13fca06b8217c78b96eaae3a0e2c5cc45/docs/screenshots/study_quiz.png
+readme: true
+platforms: []
+known_issues:
+  - "A click in a card shows up in the chat as a JSON message from you: the Desktop SDK has no hidden send."
+  - "Cards render in Hermes Desktop; on other platforms the agent works in text as usual."
+capabilities:
+  provides_tools: [show_component, update_component, ask_user]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

@@ -86,3 +86,29 @@ async def test_another_members_steer_into_a_queued_follow_up_fails_closed(monkey
 
     assert [(m.rsplit("] ", 1)[-1], uid) for m, uid, _ in _ApprovingAgent.calls] == [
         ("alice-task", "111"), ("bob-task", "")]
+
+
+_CARRY_OVER_PATHS = {
+    "compression-exhausted": lambda r, a, src: r._defer_past_exhaustion_reset(
+        {"pending_steer": "carol-steer"}, a, src, KEY, _event("queued-task", "111", "Alice", False)),
+    "depth-cap": lambda r, a, src: r._requeue_at_depth_cap(KEY, src, None, "carol-steer"),
+    "behind-eventless-follow-up": lambda r, a, src: r._merge_leftover_steer(
+        {"pending_steer": "carol-steer"}, a, src, KEY, None, "interrupt text"),
+}
+
+
+@pytest.mark.parametrize("path", list(_CARRY_OVER_PATHS))
+def test_another_members_leftover_steer_never_runs_as_the_opener(path):
+    """Carol's late steer into Alice's turn, re-queued as its own event, runs with no single
+    actor: its approval binds to approvers and admins, never to Alice alone."""
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    alice = _event("alice-task", "111", "Alice", False)
+    runner._session_state(KEY).turn.event = alice
+    runner._fold_into_running_turn(None, KEY, _event("carol-steer", "333", "Carol", False))
+
+    _CARRY_OVER_PATHS[path](runner, adapter, alice.source)
+
+    queued = adapter._pending_messages[KEY]
+    assert queued.text == "carol-steer"
+    assert build_session_context(queued.source, GatewayConfig(), event=queued).actor_user_id == ""

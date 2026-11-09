@@ -337,13 +337,13 @@ def _startup_staging_path() -> Path:
     return get_startup_entry_path().with_suffix(".tmp")
 
 
-def _stable_gateway_working_dir(project_root: Path) -> str:
-    """Stable cwd for detached/startup runs: anchor at HERMES_HOME when it exists (mirrors the POSIX
-    service invariant) so a moved checkout/worktree can't fail the ``cd`` step; else the checkout."""
+def _stable_gateway_working_dir(project_root: Path, home: Path | None = None) -> str:
+    """Stable cwd for detached/startup runs: anchor at ``home`` (default HERMES_HOME) when it exists (mirrors
+    the POSIX service invariant) so a moved checkout/worktree can't fail the ``cd`` step; else the checkout."""
     from hermes_cli.config import get_hermes_home
 
     try:
-        home = get_hermes_home()
+        home = home if home is not None else get_hermes_home()
         if home and Path(home).is_dir():
             return str(Path(home))
     except Exception:
@@ -370,7 +370,7 @@ def _launcher_settings(home: Path | None = None) -> tuple[str, str, str, str]:
     hermes_home = str(home if home is not None else _hermes_home())
     return (
         _preserve_hermes_home_path(get_python_path()),
-        _stable_gateway_working_dir(PROJECT_ROOT),
+        _stable_gateway_working_dir(PROJECT_ROOT, home),
         hermes_home,
         _profile_arg(hermes_home),
     )

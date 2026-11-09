@@ -85,6 +85,19 @@ def test_an_unreadable_cmd_helper_blocks_neither_discovery_nor_the_vbs(store_upd
     assert _interpreter(store_update.vbs) == str(store_update.new)
 
 
+def test_a_named_profile_client_renders_the_root_launcher_for_the_root(store_update, monkeypatch):
+    """A named profile's ensure discovers its multiplexer's service, so the repair runs for the root's
+    home from a process whose active home is the profile: the launcher must still be the root's own."""
+    installed = gateway_windows._render_launchers(gateway_windows._launcher_settings(store_update.home), store_update.cmd)
+    profile = store_update.home / "profiles" / "work"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    assert gateway_windows.refresh_dead_launcher(store_update.home, store_update.name)
+
+    assert [path.read_bytes() for path, _, _ in installed] == [content.encode(enc) for _, content, enc in installed]
+
+
 def test_a_live_or_foreign_launcher_is_left_alone(store_update, monkeypatch):
     assert gateway_windows.refresh_dead_launcher(store_update.home, store_update.name)
     before = store_update.vbs.read_bytes()

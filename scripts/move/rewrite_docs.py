@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import codecs
 import fnmatch
 import io
 import json
@@ -422,7 +423,7 @@ def default_config_keys(root: Path) -> frozenset[str]:
                 if isinstance(value, ast.Dict):
                     walk(value, path + ".")
 
-    for node in ast.walk(ast.parse(file.read_text())):
+    for node in ast.walk(ast.parse(file.read_text(encoding="utf-8-sig"))):
         if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "DEFAULT_CONFIG"
                                                 for t in node.targets) and isinstance(node.value, ast.Dict):
             walk(node.value, "")
@@ -457,7 +458,9 @@ def run(root: Path, plan: Plan, only: list[str], write: bool) -> Stats:
             continue
         file = root / path
         try:
-            source = file.read_text(encoding="utf-8")
+            source = file.read_text(encoding="utf-8-sig")
+            with file.open("rb") as fh:
+                bom = fh.read(3) == codecs.BOM_UTF8
         except (UnicodeDecodeError, OSError):
             continue
         one = Stats()
@@ -469,7 +472,7 @@ def run(root: Path, plan: Plan, only: list[str], write: bool) -> Stats:
                 if a != b:
                     one.samples.append((path, number, a, b))
             if write:
-                file.write_text(new, encoding="utf-8")
+                file.write_bytes((codecs.BOM_UTF8 if bom else b"") + new.encode("utf-8"))
         total.add(one)
     return total
 
@@ -494,7 +497,7 @@ def main(argv: list[str] | None = None) -> int:
                "skips": dict(stats.skips), "changed_lines": len(stats.samples), "unparsed": len(stats.unparsed)}
     print(json.dumps(summary, indent=2))
     if args.stats_json:
-        args.stats_json.write_text(json.dumps(summary, indent=2))
+        args.stats_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     if args.samples and stats.samples:
         step = max(1, len(stats.samples) // args.samples)
         for path, number, before, after in stats.samples[::step][:args.samples]:

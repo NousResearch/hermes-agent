@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import queue
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -291,6 +292,23 @@ async def test_post_turn_watch_drain_off_consumes_without_injecting(monkeypatch,
     adapter.handle_message.assert_not_awaited()
     assert completion_queue.qsize() == 1
     assert completion_queue.get_nowait() is async_event
+
+
+@pytest.mark.asyncio
+async def test_post_turn_watch_drain_off_discards_backoff_retry(monkeypatch, tmp_path):
+    """A disabled notice must not wait for its next admission retry to be discarded (#143720)."""
+    runner = _build_runner(monkeypatch, tmp_path, "off")
+    completion_queue = queue.Queue()
+    completion_queue.put({
+        **_watch_event("proc_retry"),
+        "_watch_next_retry_at": time.monotonic() + 60,
+        "_watch_retry_step": 5,
+    })
+
+    await runner._drain_watch_notifications(completion_queue)
+
+    assert completion_queue.empty()
+    runner.adapters[Platform.TELEGRAM].handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

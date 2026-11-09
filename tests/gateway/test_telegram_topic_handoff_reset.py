@@ -54,3 +54,24 @@ async def test_handoff_suspended_after_its_switch_does_not_undo_a_newer_reset(tm
         await asyncio.wait_for(handoff, 10)
     assert runner.session_store.peek_session_id(key) == _bound_session(db) == "fresh"
     runner._handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handoff_of_session_bound_to_another_topic_is_refused_and_topic_keeps_its_session(tmp_path):
+    """A session links to one topic only. Handing off one already bound elsewhere must fail like
+    /resume refuses it, before the switch: no synthetic "I'm working here" turn, and the topic keeps
+    its own conversation instead of reporting success and snapping back on the next message."""
+    db, runner = _bound_topic(tmp_path, "cli-session")
+    db.bind_telegram_topic(chat_id=CHAT, thread_id="999", user_id=CHAT, session_key="other-key",
+                           session_id="cli-session")
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id=CHAT, name="Test DM", thread_id=THREAD)
+    runner.adapters[Platform.TELEGRAM].create_handoff_thread = AsyncMock(return_value=None)
+    runner._handle_message = AsyncMock(return_value="handoff ok")
+
+    with pytest.raises(RuntimeError, match="already linked"):
+        await runner._process_handoff({"id": "cli-session", "title": "CLI work", "handoff_platform": "telegram"})
+    key = build_session_key(_make_source(thread_id=THREAD))
+    assert runner.session_store.peek_session_id(key) == _bound_session(db) == "parent"
+    runner.async_session_store.switch_session.assert_not_awaited()
+    runner._handle_message.assert_not_awaited()

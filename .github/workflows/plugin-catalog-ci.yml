@@ -339,7 +339,10 @@ jobs:
             # plugin may read the API, or manage its own data files).
             # NUL-delimited both ways: committed filenames with spaces or
             # newlines must not split into grep options or forged log lines.
-            SELF_UPDATE=$(grep -rlZE 'releases/latest|releases/download|raw\.githubusercontent\.com|codeload\.github\.com' \
+            # ajv's bundled `$data` meta-schema is identified by a
+            # raw.githubusercontent.com `$id`/`$ref` that ajv never fetches;
+            # any bundle shipping ajv carries it, so it is not a fetch.
+            SELF_UPDATE=$(grep -rlZP 'releases/latest|releases/download|raw\.githubusercontent\.com(?!/ajv-validator/ajv/master/lib/refs/)|codeload\.github\.com' \
                 --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.ts' \
                 --include='*.jsx' --include='*.tsx' --include='*.mts' --include='*.cts' \
                 "$PLUGIN_DIR" \

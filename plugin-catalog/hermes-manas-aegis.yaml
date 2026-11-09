@@ -1,15 +1,21 @@
 name: hermes-manas-aegis
 title: Manas Aegis
 repo: https://github.com/elianjuan-g/hermes-manas-aegis
-sha: bdc524df19469e2ebdf5a8a17e5c39df27fc5a00
+sha: 4aac490839ff961d7595468dbd7947f9df0356c0
 version: "2.6.2"
 description: >-
   [ALPHA] Experimental Hermes guardrail (prototype, not standalone security):
   pattern-based pre-tool checks that can block or rewrite some risky tool
   arguments, with a canary honeypot, local telemetry and a loopback HUD,
   plus STIX 2.1 export. Opt-in, test environments only.
-  Disclosure — no network call to third parties, no LLM call, no subprocess,
-  no credentials read, no telemetry out. Intercepts pre_tool_call and
+  Disclosure — the plugin makes HTTPS calls ONLY to two public, no-key
+  sources, for the global threat-intel panel: CISA KEV
+  (cisa.gov known_exploited_vulnerabilities.json) and the NVD CVE API 2.0
+  (20 most recent CVEs). Auto-refresh: the HUD server re-checks the cache
+  every 10 minutes and refetches when empty or older than 6 hours (max 40
+  items, 12s timeout, 2 MB cap); a manual refresh button exists; without
+  internet the last cache is kept and labelled possibly stale. No LLM call,
+  no subprocess, no credentials read, no telemetry out. Intercepts pre_tool_call and
   pre_llm_call to scan arguments with 10 defined rules mapped to CWE / CAPEC /
   MITRE ATT&CK / OWASP Top 10 / CVSS / CWSS / EPSS / SSVC (10 experimental,
   0 planned — all enforced since v2.6.0); on a match it blocks the call or
@@ -28,6 +34,14 @@ description: >-
   history, scope, scans) into the Activity panel so each tab shows
   fully different content, and adds a 180ms fade transition on tab
   switch.
+  v2.6.2 fixes nine Argon-audit items against v2.6.1: the shell parser
+  honours $(...)/backticks/newlines, argument inspection is recursive
+  (with ~/ expansion), SSRF blocks multicast/unspecified, packaging is
+  verified from real sdist/wheel contents, HUD writes are locked and
+  atomic, clear-history also clears findings, the sound button is removed
+  (no audio exists), the intel-refresh button shows a loading state, and
+  five doc contradictions are fixed. Tests: 83/83 unit + contract
+  (61 in v2.6.0 + 22 new).
   Serves a loopback-only HUD (http://127.0.0.1:18777) shown as an iframe in
   the Desktop Manas Aegis tab; writes redacted interception telemetry
   (manas_telemetry.json, live file + append-only archive, unlimited) and a

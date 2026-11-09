@@ -128,7 +128,7 @@ test('shellDriveToNativePath maps Git Bash/Cygwin/drvfs drive paths only when th
 })
 
 test('shellDriveToNativePath accepts the /E:/ drive spelling instead of bridging it to WSL', () => {
-  const existing = new Set(['E:/Users/alex/notes.txt', 'E:/'])
+  const existing = new Set(['E:/Users/alex/notes.txt', 'E:/', 'E:/Users/x.txt'])
   const exists = (path: string) => existing.has(path)
 
   // `/E:/...` (drive letter, colon, slash) used to miss the spelling above, so
@@ -139,6 +139,10 @@ test('shellDriveToNativePath accepts the /E:/ drive spelling instead of bridging
   // Bare drive root, with and without the trailing slash.
   assert.equal(shellDriveToNativePath('/E:', exists), 'E:/')
   assert.equal(shellDriveToNativePath('/E:/', exists), 'E:/')
+  // A colon without a separator is a POSIX filename, not a drive path.
+  assert.equal(shellDriveToNativePath('/E:Users/alex/notes.txt', exists), null)
+  // Repeated separators still collapse into a single one.
+  assert.equal(shellDriveToNativePath('/E://Users/x.txt', exists), 'E:/Users/x.txt')
   // Still gated by existence: no native twin means the path stays on the bridge.
   assert.equal(shellDriveToNativePath('/Z:/nope/x.txt', exists), null)
 })

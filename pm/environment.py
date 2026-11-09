@@ -89,7 +89,11 @@ _BYTECODE_COMPILE_MARKER = "failed to bytecode-compile"
 # to ride the same path or repair/bootstrap never sees the retry signal, and so
 # does the build marker: a failed native build's traceback runs far past 2000
 # characters, and without it the failure reads as a fetch error, not a verdict.
-_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER, *_BUILD_MARKERS)
+# The retrieval markers ride it too: a fetch failure followed by a verbose tail
+# would otherwise read as a plain tooling error, and the offline lock retry in
+# check_project_lock would never fire (reported by @kvnloo on #151231).
+_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER, *_BUILD_MARKERS,
+                                            *_RETRIEVAL_MARKERS)
 
 # Retries after purging corrupt cached packages. Each round must name a package
 # not purged before, so this bounds a cache with several damaged entries, never

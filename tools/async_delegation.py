@@ -228,12 +228,29 @@ def _prune_durable_records() -> None:
                    )""", (pending_count - _MAX_DURABLE_PENDING,))
 
 
+def _fence_ledger_write(conn: sqlite3.Connection) -> None:
+    """Refuse this ledger write once the turn it reports for no longer holds its lease, inside the
+    write's own transaction — the same rule a session write follows (``hermes_state_fence``): the
+    ledger shares ``state.db`` with the session store, and a completion arriving in a claimed
+    turn's context is that turn's write. Work designed to outlive the turn (a delegation unit)
+    keeps the owner-epoch half of the fence, so a takeover still refuses it while the session's
+    next claim does not. No turn bound (a local CLI dispatch, the owner's drains) or a fence
+    issued by another store: nothing to check, the ledger behaves as before."""
+    from hermes_state_fence import check_turn_lease, store_key, writing_turn
+    mark = writing_turn()
+    if mark is not None and mark.store is not None and store_key(_db_path()) == mark.store:
+        check_turn_lease(conn, mark)
+
+
 def _persist_completion(event: dict[str, Any], result: dict[str, Any]) -> None:
     event, result = redact_completion_event(event), redact_child_result(result)
     if remote := worker_ledger():
         return remote.complete(event, result)
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
+        # The dispatching turn's write reporting back: a superseded owner's delegation saves
+        # no result (hermes_state_fence).
+        _fence_ledger_write(conn)
         conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                event_json=?, result_json=?, delivery_state='pending'
                WHERE delegation_id=?""",
@@ -969,18 +986,19 @@ def _dispatch_admitted(
             if rec is not None:
                 # The stall clock starts when the runner starts; a unit queued behind a full pool is not stalled.
                 rec.update(_started=True, _progress_ts=time.time())
-        try:
-            # Background work designed to outlive the dispatching turn: a takeover still fences its
-            # writes, the parent session's next claim does not (``hermes_state_fence``).
-            from agent.runtime_scope import outlive_turn
-            with outlive_turn():
+        # The whole unit is background work designed to outlive the turn that dispatched it —
+        # the runner and the completion it reports back with alike: a takeover still fences
+        # their writes, the parent session's next claim does not (``hermes_state_fence``).
+        from agent.runtime_scope import outlive_turn
+        with outlive_turn():
+            try:
                 result = runner() or {}
-            status = classify(result)
-        except Exception as exc:
-            logger.exception(f"Async delegation{label} %s crashed", delegation_id)
-            result = crash_result(f"{type(exc).__name__}: {exc}", round(time.time() - dispatched_at, 2))
-        finally:
-            _finalize(delegation_id, result, status)
+                status = classify(result)
+            except Exception as exc:
+                logger.exception(f"Async delegation{label} %s crashed", delegation_id)
+                result = crash_result(f"{type(exc).__name__}: {exc}", round(time.time() - dispatched_at, 2))
+            finally:
+                _finalize(delegation_id, result, status)
 
     from hermes_cli.backend_retirement import retirement
 
@@ -1254,6 +1272,15 @@ def _call_interrupt(fn, msg: str, *args) -> bool:
         return False
 
 
+def _finalize_outliving_turn(delegation_id: str, result: Any, status: str) -> None:
+    """Report a forced stall outcome as the unit's own completion: work designed to outlive the
+    turn that dispatched it, so the session's next claim must not refuse the durable write (a
+    takeover still does)."""
+    from agent.runtime_scope import outlive_turn
+    with outlive_turn():
+        _finalize(delegation_id, result, status)
+
+
 def _stale_monitor_loop() -> None:
     """Sweep running delegations for stalled progress. A changed progress token refreshes the
     record's timestamp; a frozen token past the idle/in-tool threshold marks the record
@@ -1273,7 +1300,7 @@ def _stale_monitor_loop() -> None:
         for delegation_id in expired:
             with _records_lock:
                 ctx = (_records.get(delegation_id) or {}).get("_context") or contextvars.copy_context()
-            ctx.run(_finalize, delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
+            ctx.run(_finalize_outliving_turn, delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
         if not any_monitorable:
             return
 

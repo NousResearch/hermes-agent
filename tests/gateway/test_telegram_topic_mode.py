@@ -703,6 +703,46 @@ async def test_rowless_binding_repair_does_not_undo_concurrent_new(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rowless_binding_repair_does_not_recreate_a_binding_cleared_mid_lookup(tmp_path):
+    """A /topic off that clears the chat's bindings while the heal awaits the rowless-target
+    lookup wins too: the CAS refuses a missing row instead of inserting a fresh binding."""
+    import sqlite3
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(session_id="dead-session", source="telegram", user_id="208214988")
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988", thread_id="17585", user_id="208214988",
+        session_key=topic_key, session_id="dead-session",
+    )
+    conn = sqlite3.connect(tmp_path / "state.db")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DELETE FROM sessions WHERE id = 'dead-session'")
+    conn.commit()
+    conn.close()
+
+    runner = _make_runner(session_db=session_db)
+    snapshot = runner.session_store.get_or_create_session(topic_source)
+    session_db.create_session(session_id=snapshot.session_id, source="telegram", user_id="208214988")
+    real_get_session = runner._session_db.get_session
+
+    async def _get_session_racing_topic_off(session_id):
+        session_db.disable_telegram_topic_mode(chat_id="208214988")
+        return await real_get_session(session_id)
+
+    runner._session_db.get_session = _get_session_racing_topic_off
+    await runner._hmwa_heal_telegram_topic_binding(topic_source, snapshot, topic_key)
+
+    assert session_db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585") is None
+    assert session_db.bind_telegram_topic(
+        chat_id="208214988", thread_id="17585", user_id="208214988", session_key=topic_key,
+        session_id=snapshot.session_id, expected_session_id="dead-session",
+    ) is False
+
+
+@pytest.mark.asyncio
 async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 

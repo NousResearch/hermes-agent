@@ -385,9 +385,9 @@ jobs:
         # --allow-superseded (PR runs only): GitHub sometimes delivers one push
         # as two pull_request runs; the per-PR concurrency group cancels the
         # older copy. Its gate passes only when it failed solely on cancelled
-        # jobs AND the API shows a newer (higher id) live/successful run of this
+        # jobs AND the API shows a later-started live/successful run of this
         # workflow on the same head SHA, whose gate is the real verdict. Only a
-        # first attempt delegates, and only forward, so cycles are impossible.
+        # first executed attempt delegates, and only forward, so no cycles.
         env:
           NEEDS: ${{ toJSON(needs) }}
           RELEASE: ${{ inputs.release }}

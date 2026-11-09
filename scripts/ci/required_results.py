@@ -18,14 +18,15 @@ so the newer cancels the older. The older run's gate then fails on
 ``cancelled`` jobs, and branch protection requires the gate of *every* check
 suite on the head SHA, so the PR stays blocked even after the surviving run
 passes. With the flag, a gate whose only non-successes are ``cancelled`` jobs
-asks the Actions API whether a *newer* run (strictly greater run id) of the
-same workflow, event and head SHA is still live or succeeded. If so, that run's
-own gate carries the required verdict, and this one passes. Delegation only
-points forward, so it is acyclic: the newest cancelled run can never pass, and
-two cancelled duplicates cannot vouch for each other. Only a run's first
-attempt may delegate; a rerun (``run_attempt`` > 1) of a cancelled run fails as
-before. Any failure, missing job, API error or lack of such a run keeps the
-gate failing.
+asks the Actions API whether a run of the same workflow, event and head SHA
+that started *later* (``run_started_at``, ties broken by the higher run id) is
+still live or succeeded. If so, that run's own gate carries the required
+verdict, and this one passes. Delegation only points forward, so it is acyclic:
+the last run to start can never pass, and two cancelled duplicates cannot vouch
+for each other. Only a run's first executed attempt may delegate: attempt 1, or
+attempt 2 of a fork run whose attempt 1 only waited for approval. Any other
+rerun, failure, missing job, API error or lack of such a run keeps the gate
+failing.
 
     echo "$NEEDS" | python3 scripts/ci/required_results.py [--release | --allow-superseded]
 """
@@ -104,26 +105,33 @@ def only_cancellations(needs: dict[str, dict[str, Any]] | None, verdict: dict[st
     )
 
 
-def find_superseding_run(own: dict[str, Any], runs: list[dict[str, Any]]) -> int | None:
-    """Id of a newer live or successful run of ``own``'s workflow on its head SHA.
+def _entry_order(run: dict[str, Any]) -> tuple[str, int] | None:
+    """When the run's current attempt entered the concurrency group (ties: higher id)."""
+    started, run_id = run.get("run_started_at"), run.get("id")
+    return (started, run_id) if isinstance(started, str) and isinstance(run_id, int) else None
 
-    Only a strictly newer run id qualifies, so delegation is acyclic and the
-    newest cancelled run always fails. A rerun of ``own`` (``run_attempt`` other
-    than 1) never delegates: the newer twin may itself have been cancelled.
+
+def find_superseding_run(own: dict[str, Any], runs: list[dict[str, Any]]) -> int | None:
+    """Id of a later live or successful run of ``own``'s workflow on its head SHA.
+
+    Only a run whose current attempt started strictly later (``run_started_at``,
+    ties broken by the higher id) qualifies: the later entrant is the one that
+    cancels. An attempt's start never moves back, so delegation is acyclic and
+    the last run to start always fails.
     """
-    own_id = own.get("id")
-    if not isinstance(own_id, int) or own.get("run_attempt") != 1:
+    own_order = _entry_order(own)
+    if own_order is None:
         return None
     for run in runs:
-        run_id = run.get("id")
-        if not isinstance(run_id, int) or run_id <= own_id:
+        order = _entry_order(run)
+        if order is None or order <= own_order:
             continue
         if any(run.get(key) != own.get(key) for key in ("workflow_id", "head_sha", "event")):
             continue
         if run.get("status") in _LIVE_STATUSES or (
             run.get("status") == "completed" and run.get("conclusion") == "success"
         ):
-            return run_id
+            return order[1]
     return None
 
 
@@ -150,6 +158,13 @@ def superseding_run_id(fetch: Callable[[str], Any] = _github_get) -> int | None:
     """
     repo = os.environ["GITHUB_REPOSITORY"]
     own = fetch(f"repos/{repo}/actions/runs/{int(os.environ['GITHUB_RUN_ID'])}")
+    # Only the first attempt that ran may delegate: attempt 1, or attempt 2 when
+    # attempt 1 only waited for a maintainer to approve a fork run.
+    if own["run_attempt"] != 1 and not (
+        own["run_attempt"] == 2
+        and fetch(f"repos/{repo}/actions/runs/{own['id']}/attempts/1")["conclusion"] == "action_required"
+    ):
+        return None
     base = f"repos/{repo}/actions/workflows/{int(own['workflow_id'])}/runs"
     for page in range(1, _MAX_RUN_PAGES + 1):
         query = urllib.parse.urlencode({

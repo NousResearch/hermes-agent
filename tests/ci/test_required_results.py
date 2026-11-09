@@ -101,12 +101,12 @@ def test_cli_stdin_exit_codes_and_output(tmp_path, release, results, code, repor
 
 
 # --allow-superseded: a cancelled duplicate pull_request run of one push.
-_OWN = {"id": 1, "run_attempt": 1, "workflow_id": 7, "head_sha": "abc",
-        "event": "pull_request", "status": "in_progress", "conclusion": None}
+_OWN = {"id": 1, "run_attempt": 1, "workflow_id": 7, "head_sha": "abc", "event": "pull_request",
+        "status": "in_progress", "conclusion": None, "run_started_at": "2026-11-09T11:45:30Z"}
 _CANCELLED_DETECT = {"detect": {"result": "cancelled", "outputs": {}}, "tests": {"result": "skipped"}}
 
 
-def _fake_fetch(runs, own=_OWN):
+def _fake_fetch(runs, own=_OWN, attempt1="cancelled"):
     """Serve the runs API: filter by head_sha/event and paginate like GitHub."""
     calls = []
     listing = [own, *runs]
@@ -115,6 +115,8 @@ def _fake_fetch(runs, own=_OWN):
         calls.append(path)
         if path == f"repos/o/r/actions/runs/{own['id']}":
             return own
+        if path == f"repos/o/r/actions/runs/{own['id']}/attempts/1":
+            return {"conclusion": attempt1}
         route, _, query = path.partition("?")
         assert route == "repos/o/r/actions/workflows/7/runs", path
         params = dict(urllib.parse.parse_qsl(query))
@@ -140,7 +142,8 @@ def _dup(**over):
 
 
 @pytest.mark.parametrize("other", [
-    _dup(status="queued"), _dup(status="in_progress"),
+    # pending: the twin waits in the concurrency group until this run's always() gate ends
+    _dup(status="pending"), _dup(status="queued"), _dup(status="in_progress"),
     _dup(status="completed", conclusion="success"),
 ])
 def test_cancelled_duplicate_passes_when_twin_run_is_live(monkeypatch, capsys, other):
@@ -166,12 +169,44 @@ def test_cancelled_run_without_live_twin_still_fails(monkeypatch, capsys, other)
     assert "::error::1 job(s) failed: detect" in out
 
 
+@pytest.mark.parametrize("other", [_dup(head_sha="def"), _dup(workflow_id=8), _dup(event="push")])
+def test_find_superseding_run_ignores_a_twin_of_another_sha_workflow_or_event(other):
+    # The client re-checks every key, so a listing the API failed to filter still cannot delegate.
+    assert required_results.find_superseding_run(_OWN, [other]) is None
+
+
+# A fork run held for approval: attempt 1 ran nothing, and once approved the
+# lower-id twin can start later and cancel the higher-id one (#151184, #150842).
+_APPROVED = {**_OWN, "id": 2, "run_attempt": 2}
+
+
+@pytest.mark.parametrize("attempt1,other,code", [
+    ("action_required", _dup(id=1, run_attempt=2, run_started_at="2026-11-09T11:45:33Z"), 0),
+    # a real rerun of an attempt that ran never delegates
+    ("cancelled", _dup(id=1, run_attempt=2, run_started_at="2026-11-09T11:45:33Z"), 1),
+    # the twin started first, so it was the one cancelled (or cancelling nothing)
+    ("action_required", _dup(id=1, run_attempt=2, run_started_at="2026-11-09T11:45:29Z"), 1),
+])
+def test_approved_fork_duplicate_delegates_to_the_later_starter(monkeypatch, capsys, attempt1,
+                                                                 other, code):
+    fetch, _ = _fake_fetch([other], own=_APPROVED, attempt1=attempt1)
+    got, _ = _run_main(monkeypatch, capsys, _CANCELLED_DETECT, ["--allow-superseded"], fetch,
+                       run_id=2)
+    assert got == code
+
+
+def test_a_higher_id_twin_that_started_earlier_cannot_carry_the_verdict():
+    own = {**_OWN, "run_started_at": "2026-11-09T11:45:33Z"}
+    assert required_results.find_superseding_run(own, [_dup()]) is None
+
+
 @pytest.mark.parametrize("own,other", [
     # newer -> older: the older run cannot carry the verdict for the run that superseded it
     ({**_OWN, "id": 2}, _dup(id=1)),
     ({**_OWN, "id": 2}, _dup(id=1, status="completed", conclusion="success")),
     # a rerun of the cancelled run never delegates, even to a newer live twin
     ({**_OWN, "run_attempt": 2}, _dup()),
+    ({**_OWN, "run_attempt": 3}, _dup()),
     ({**_OWN, "run_attempt": None}, _dup()),
 ])
 def test_delegation_only_points_forward_from_a_first_attempt(monkeypatch, capsys, own, other):

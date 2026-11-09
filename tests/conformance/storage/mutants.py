@@ -2,7 +2,10 @@
 
 Each passed an earlier version of the suite. ``preflight_fence`` checks the turn fence before the
 write's transaction instead of inside it; ``unfenced_create``, ``auxiliary_committed_before_refusal``
-and ``preflight_gate`` are the create, accounting and admission-gate holes. Each mutant is applied
+and ``preflight_gate`` are the create, accounting and admission-gate holes; the reads and the owner
+lock leak through a tenant-blind pin (``reads_ignore_tenant``, ``unpinned_admission_reads``,
+``tenant_blind_owner``); ``epoch_committed_before_refusal`` commits state before refusing, and
+``resolve_unknown_current_epoch`` ignores the caller's epoch. Each mutant is applied
 by the ``backend`` fixture when ``HERMES_STORAGE_MUTANT`` names it.
 """
 
@@ -139,6 +142,121 @@ def _preflight_gate(monkeypatch):
     monkeypatch.setattr(LocalTurnAdmission, "claim_next", claim_next)
 
 
+def _agent_pin(self):
+    """The pin's agent half alone: another tenant naming the store's home passes."""
+    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_scope import current_scope
+    from hermes_state_port import StoragePinRefused
+    scope = current_scope()
+    agent = scope.agent if scope is not None else get_hermes_home()
+    if hermes_home_key(agent) != self._home_key:
+        raise StoragePinRefused("the bound agent is not this session store's profile")
+
+
+def _reads_ignore_tenant(monkeypatch):
+    """Every read checks the bound agent but not the tenant: another tenant naming the home
+    reads its rows and payload-bearing admissions."""
+    from hermes_state_port_local import LocalSessionStore, LocalTurnAdmission
+
+    def store_read(name):
+        db_call = {"get": lambda self, sid: self.db.get_session(sid),
+                   "get_title": lambda self, sid: self.db.get_session_title(sid),
+                   "read_conversation": lambda self, sid, include_row_ids=False: self.db.get_messages_as_conversation(
+                       sid, include_row_ids=include_row_ids),
+                   "list_sessions": lambda self, limit=20, offset=0: self.db.list_sessions_rich(
+                       limit=limit, offset=offset),
+                   "read_auxiliary_usage": lambda self, sid: self.db.auxiliary_usage_by_task(sid)}[name]
+
+        def method(self, *args, **kwargs):
+            _agent_pin(self)
+            return db_call[name](self, *args, **kwargs)
+        return method
+
+    def admission_read(name):
+        def get(self, admission_id):
+            from hermes_state_runtime import get_session_admission
+            return get_session_admission(self.db, admission_id=admission_id)
+
+        def find(self, *, principal_id, session_id, request_id):
+            from hermes_state_runtime import find_session_admission
+            return find_session_admission(self.db, principal_id=principal_id, session_id=session_id,
+                                          request_id=request_id)
+
+        def list_(self, session_id, *, pending_only=True):
+            from hermes_state_runtime import list_session_admissions
+            return list_session_admissions(self.db, session_id=session_id, pending_only=pending_only)
+
+        def generation(self, session_id):
+            row = self.db.get_session(session_id)
+            return None if row is None else row["runtime_generation"]
+        return {"get": get, "find": find, "list": list_, "generation": generation}[name]
+
+    for name in ("get", "get_title", "read_conversation", "list_sessions", "read_auxiliary_usage"):
+        monkeypatch.setattr(LocalSessionStore, name, store_read(name))
+    for name in ("get", "find", "list", "generation"):
+        monkeypatch.setattr(LocalTurnAdmission, name, admission_read(name))
+
+
+def _unpinned_admission_reads(monkeypatch):
+    """admission get, find and generation skip the pin check entirely."""
+    from hermes_state_runtime import find_session_admission, get_session_admission
+    from hermes_state_port_local import LocalTurnAdmission
+
+    def generation(self, session_id):
+        row = self.db.get_session(session_id)
+        return None if row is None else row["runtime_generation"]
+    monkeypatch.setattr(LocalTurnAdmission, "get",
+                        lambda self, admission_id: get_session_admission(self.db, admission_id=admission_id))
+    monkeypatch.setattr(LocalTurnAdmission, "find",
+                        lambda self, *, principal_id, session_id, request_id: find_session_admission(
+                            self.db, principal_id=principal_id, session_id=session_id, request_id=request_id))
+    monkeypatch.setattr(LocalTurnAdmission, "generation", generation)
+
+
+def _tenant_blind_owner(monkeypatch):
+    """acquire_owner checks the bound agent but not the tenant."""
+    from hermes_state_port_local import LocalTurnAdmission, _OwnerLock
+
+    def acquire_owner(self, *, purpose=None):
+        _agent_pin(self)
+        from gateway.runtime_ownership import ProfileOwnership
+        ownership = ProfileOwnership()
+        ownership.reserve([self.home], purpose=purpose)
+        return _OwnerLock(ownership, self.home)
+    monkeypatch.setattr(LocalTurnAdmission, "acquire_owner", acquire_owner)
+
+
+def _epoch_committed_before_refusal(monkeypatch):
+    """begin_epoch commits a new owner epoch even under a foreign pin, then raises the refusal."""
+    from hermes_state_port import StoragePinRefused
+    from hermes_state_port_local import LocalTurnAdmission
+    original = LocalTurnAdmission.begin_epoch
+
+    def begin_epoch(self, *, instance_id):
+        try:
+            self._pin()
+        except StoragePinRefused:
+            from hermes_state_runtime import begin_runtime_epoch
+            begin_runtime_epoch(self.db, instance_id=instance_id)
+            raise
+        return original(self, instance_id=instance_id)
+    monkeypatch.setattr(LocalTurnAdmission, "begin_epoch", begin_epoch)
+
+
+def _resolve_unknown_current_epoch(monkeypatch):
+    """resolve_unknown ignores the caller's epoch and resolves under the store's current one, so
+    a stale owner resolves its row as long as the row's own status allows it."""
+    from hermes_state_port_local import LocalTurnAdmission
+    original = LocalTurnAdmission.resolve_unknown
+
+    def resolve_unknown(self, *, epoch, admission_id, generation):
+        self._pin()
+        with self.db._read_ctx() as conn:
+            current = conn.execute("SELECT epoch FROM runtime_epoch WHERE singleton=1").fetchone()[0]
+        return original(self, epoch=current, admission_id=admission_id, generation=generation)
+    monkeypatch.setattr(LocalTurnAdmission, "resolve_unknown", resolve_unknown)
+
+
 MUTANTS = {
     "foreign_metadata": _foreign_metadata,
     "ignored_claim_preconditions": _ignored_claim_preconditions,
@@ -149,6 +267,11 @@ MUTANTS = {
     "unfenced_create": _unfenced_create,
     "auxiliary_committed_before_refusal": _auxiliary_committed_before_refusal,
     "preflight_gate": _preflight_gate,
+    "reads_ignore_tenant": _reads_ignore_tenant,
+    "unpinned_admission_reads": _unpinned_admission_reads,
+    "tenant_blind_owner": _tenant_blind_owner,
+    "epoch_committed_before_refusal": _epoch_committed_before_refusal,
+    "resolve_unknown_current_epoch": _resolve_unknown_current_epoch,
 }
 
 

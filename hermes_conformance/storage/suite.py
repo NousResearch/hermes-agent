@@ -9,7 +9,8 @@ Covered:
 - pinning: every mutating operation of both ports (:data:`SESSION_WRITES`, :data:`ADMISSION_WRITES`)
   is refused for another agent, another tenant and no pin, and a refusal changes nothing the
   agent can observe through the ports (:func:`observe`: rows, transcripts, titles, admissions,
-  generations, and auxiliary usage per task); a foreign row reads like a missing one;
+  generations, and auxiliary usage per task); every read (:data:`ALL_READS`) and the owner lock
+  are refused for the same pins; a foreign row reads like a missing one;
 - turn fences: every session write a turn makes (:data:`TURN_WRITES`, session creation and the
   upsert of an existing row included) is refused whole inside a claimed turn whose owner epoch or
   generation moved, with no accounting left behind, including a takeover that commits from
@@ -115,7 +116,7 @@ def _owned_claim(backend, agent, sid="s1", requests=("r1",)):
     """A session of *agent* with *requests* admitted under a fresh owner epoch, the head claimed."""
     storage = _session(backend, agent, sid)
     with backend.bind(agent):
-        epoch = storage.admission.begin_epoch(instance_id="owner")
+        epoch = _begin_epoch(storage.admission, instance_id="owner")
         for request in requests:
             storage.admission.admit(epoch=epoch, principal_id="human", session_id=sid, request_id=request,
                                     payload={"text": request})
@@ -128,11 +129,21 @@ def _texts(backend, agent, storage, sid="s1"):
         return [m["content"] for m in storage.sessions.read_conversation(sid)]
 
 
+def _begin_epoch(admission, *, instance_id):
+    """``begin_epoch``'s contract says the caller holds the owner lock, so the suite holds it: a
+    backend that enforces the precondition passes the setup instead of failing it."""
+    owner = admission.acquire_owner()
+    try:
+        return admission.begin_epoch(instance_id=instance_id)
+    finally:
+        owner.release()
+
+
 def _take_over(backend, agent="a"):
     """Another owner takes *agent* over from another replica, outside the caller's context."""
     def run():
         with backend.bind(agent):
-            return backend.replica(agent).admission.begin_epoch(instance_id="successor")
+            return _begin_epoch(backend.replica(agent).admission, instance_id="successor")
     return _elsewhere(run)
 
 
@@ -161,7 +172,7 @@ def make_world(backend) -> World:
         s.append("s1", [{"role": "user", "content": "question"}, {"role": "assistant", "content": "answer"}])
         s.create("s2", "cli")
         s.create("idle", "cli")
-        epoch = a.begin_epoch(instance_id="owner")
+        epoch = _begin_epoch(a, instance_id="owner")
         rows = [a.admit(epoch=epoch, principal_id="human", session_id="s1", request_id=r, payload={"text": r})
                 for r in ("r1", "r2", "r3", "r4")]
         claimed = a.claim_next(epoch=epoch, session_id="s1")
@@ -182,7 +193,7 @@ def observe(backend, storage):
     A refused operation must leave all of it unchanged."""
     s, a = storage.sessions, storage.admission
     with backend.bind("a"):
-        s.flush_usage()
+        assert s.flush_usage(), "queued usage did not finish before observation"
         state = {"listed": sorted(r["id"] for r in s.list_sessions(limit=100))}
         for sid in _OBSERVED_SESSIONS:
             row = s.get(sid)
@@ -252,6 +263,19 @@ ADMISSION_WRITES: dict[str, Callable[[SessionStorage, World], Any]] = {
 ALL_WRITES = {**{f"sessions.{k}": v for k, v in SESSION_WRITES.items()},
               **{f"admission.{k}": v for k, v in ADMISSION_WRITES.items()}}
 
+#: Every read of both ports, naming rows agent ``a`` holds in a :class:`World`.
+ALL_READS: dict[str, Callable[[SessionStorage, World], Any]] = {
+    "sessions.get": lambda st, w: st.sessions.get("s1"),
+    "sessions.get_title": lambda st, w: st.sessions.get_title("s1"),
+    "sessions.read_conversation": lambda st, w: st.sessions.read_conversation("s1"),
+    "sessions.list_sessions": lambda st, w: st.sessions.list_sessions(),
+    "sessions.read_auxiliary_usage": lambda st, w: st.sessions.read_auxiliary_usage("s1"),
+    "admission.get": lambda st, w: st.admission.get(w.claimed["admission_id"]),
+    "admission.find": lambda st, w: st.admission.find(principal_id="human", session_id="s1", request_id="r1"),
+    "admission.list": lambda st, w: st.admission.list("s1"),
+    "admission.generation": lambda st, w: st.admission.generation("s1"),
+}
+
 #: The session writes a claimed turn makes: all of them, creating a session (a child, a fork)
 #: included. A turn that lost its lease lands none of them.
 TURN_WRITES = dict(SESSION_WRITES)
@@ -282,8 +306,31 @@ class _Gate(AdmissionGate):
             raise PermissionError("admission closed")
 
 
+def _foreign_pins(backend):
+    """Every pin but agent ``a``'s own: another agent, another tenant naming ``a``, no pin."""
+    return {"other_agent": lambda: backend.bind("b"), "other_tenant": lambda: backend.foreign_tenant("a"),
+            "unbound": backend.unbound}
+
+
 class PinningConformance:
     """Every operation is pinned to its agent. Inherit and supply a ``backend`` fixture."""
+
+    @pytest.mark.parametrize("operation", sorted(ALL_READS))
+    def test_every_read_is_refused_for_any_pin_but_its_agents(self, backend, operation):
+        world = make_world(backend)
+        for bind in _foreign_pins(backend).values():
+            with bind():
+                _refused(lambda: ALL_READS[operation](world.storage, world))
+        with backend.bind("a"):
+            ALL_READS[operation](world.storage, world)
+
+    def test_the_owner_lock_is_refused_for_any_pin_but_its_agents(self, backend):
+        storage = _session(backend, "a")
+        for bind in _foreign_pins(backend).values():
+            with bind():
+                _refused(lambda: storage.admission.acquire_owner())
+        with backend.bind("a"):  # and no refusal left the lock held
+            storage.admission.acquire_owner().release()
 
     @pytest.mark.parametrize("operation", sorted(ALL_WRITES))
     @pytest.mark.parametrize("pin", ["other_agent", "other_tenant", "unbound"])
@@ -299,6 +346,8 @@ class PinningConformance:
             else:
                 _refused(lambda: ALL_WRITES[operation](world.storage, world))
         assert observe(backend, world.storage) == before
+        with backend.bind("a"):  # nor did it supersede the owner: an empty claim under its epoch still runs
+            assert not world.storage.admission.claim_next(epoch=world.epoch, session_id="idle")
 
     @pytest.mark.parametrize("operation", sorted(set(ALL_WRITES) - _NO_POSITIVE_CONTROL))
     def test_every_write_succeeds_for_its_own_agent(self, backend, operation):
@@ -515,7 +564,7 @@ class AdmissionConformance:
         producers = ["z-person", "a-cron", "m-api"]
         accepted, claimed_order = [], []
         with backend.bind("a"):
-            epoch = replicas[0].admission.begin_epoch(instance_id="owner")
+            epoch = _begin_epoch(replicas[0].admission, instance_id="owner")
             for n in range(9):
                 row = replicas[n % 3].admission.admit(epoch=epoch, principal_id=producers[(n * 2) % 3],
                                                       session_id="s1", request_id=f"req-{n}", payload={"n": n})
@@ -532,7 +581,7 @@ class AdmissionConformance:
         first = _session(backend, "a")
         second = backend.replica("a")
         with backend.bind("a"):
-            epoch = first.admission.begin_epoch(instance_id="owner")
+            epoch = _begin_epoch(first.admission, instance_id="owner")
             for request in ("r1", "r2"):  # work for both: only the one-writer rule stops the second
                 first.admission.admit(epoch=epoch, principal_id="human", session_id="s1", request_id=request,
                                       payload={"text": request})
@@ -555,7 +604,7 @@ class AdmissionConformance:
         storages = {"s1": first, "s2": backend.replica("a")}  # each session on its own replica
         claims = {}
         with backend.bind("a"):
-            epoch = first.admission.begin_epoch(instance_id="owner")
+            epoch = _begin_epoch(first.admission, instance_id="owner")
             for sid in storages:
                 first.admission.admit(epoch=epoch, principal_id="human", session_id=sid, request_id="r",
                                       payload={"text": sid})
@@ -641,6 +690,11 @@ class AdmissionConformance:
     @pytest.mark.parametrize("operation", sorted(EPOCH_FENCED))
     def test_a_superseded_owner_epoch_refuses_every_ledger_operation(self, backend, operation):
         world = make_world(backend)
+        if operation == "resolve_unknown":  # a wrong-status refusal must not be what catches it
+            with backend.bind("a"):
+                successor = backend.replica("a")
+                epoch = _begin_epoch(successor.admission, instance_id="recovering")
+                assert successor.admission.recover(epoch=epoch) == 1  # the claimed row is unknown now
         _take_over(backend)
         before = observe(backend, world.storage)
         with backend.bind("a"):
@@ -653,7 +707,7 @@ class AdmissionConformance:
         _storage, _epoch, claimed = _owned_claim(backend, "a", requests=("r1", "r2"))
         successor = backend.replica("a")
         with backend.bind("a"):
-            epoch = successor.admission.begin_epoch(instance_id="successor")
+            epoch = _begin_epoch(successor.admission, instance_id="successor")
             assert successor.admission.recover(epoch=epoch) == 1
             assert successor.admission.get(claimed["admission_id"])["status"] == "unknown"
             try:
@@ -667,7 +721,7 @@ class AdmissionConformance:
         _storage, _epoch, claimed = _owned_claim(backend, "a", requests=("r1", "r2"))
         successor = backend.replica("a")
         with backend.bind("a"):
-            epoch = successor.admission.begin_epoch(instance_id="successor")
+            epoch = _begin_epoch(successor.admission, instance_id="successor")
             successor.admission.recover(epoch=epoch)
             resolved = successor.admission.resolve_unknown(epoch=epoch, admission_id=claimed["admission_id"],
                                                            generation=claimed["generation"])

@@ -1,6 +1,6 @@
 name: pr-ready-checker
 repo: https://github.com/phon-t/pr-ready
-sha: 7ce1da68b4abd837ced875e84228d81aa88e6fcf
+sha: 76c08232e713d4c742fbe8d08d1367f3b41aa3ed
 description: Gate a branch before the PR exists: branch hygiene, clean tree, whitespace, secrets/debug scan, lint, scoped tests, Conventional Commits, PR-body draft, docs drift, CI status. FAIL blocks; a real git pre-push hook enforces it.
 maintainer: phon-t
 tier: community

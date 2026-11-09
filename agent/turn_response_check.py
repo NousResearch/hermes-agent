@@ -154,6 +154,39 @@ def check_api_response(
 
     # HTTP-200 refusals are deterministic: one fallback try, else return the refusal.
     if finish_reason == "content_filter":
+        # OpenAI-compatible translation proxies (e.g. CLIProxyAPI) can emit
+        # finish_reason=content_filter when the upstream stream drops mid-reasoning.
+        # Because a standards-compliant Chat Completions content_filter refusal may legitimately
+        # have content=None and refusal=None, only retry the same model when the transport/proxy
+        # positively flagged an incomplete stream drop (is_proxy_stream_drop).
+        from agent.turn_truncation import (
+            has_explicit_refusal,
+            is_proxy_stream_drop,
+            normalize_response_for_agent,
+        )
+        try:
+            _cf_norm = normalize_response_for_agent(agent, response)
+            _cf_text = (getattr(_cf_norm, "content", None) or "").strip()
+            _cf_explicit = has_explicit_refusal(response, _cf_norm)
+            _cf_drop = is_proxy_stream_drop(response, _cf_norm)
+        except Exception as _cf_exc:  # never let the guard break the upstream refusal path
+            logger.debug("content_filter guard could not inspect response: %s", _cf_exc, exc_info=True)
+            _cf_text, _cf_explicit, _cf_drop = "", True, False
+        if (
+            getattr(agent, "api_mode", "chat_completions") == "chat_completions"
+            and _cf_drop
+            and not _cf_text
+            and not _cf_explicit
+            and retry_count + 1 < max_retries
+        ):
+            retry_count += 1
+            logger.warning(
+                "%sReceived finish_reason=content_filter on a positively flagged proxy stream drop — "
+                "retrying same model (%d/%d).",
+                agent.log_prefix, retry_count, max_retries,
+            )
+            time.sleep(1)
+            return _verdict("continue")
         _rv = handle_content_policy_refusal(
             agent, response, _retry, thinking_spinner=thinking_spinner, messages=messages,
             api_messages=api_messages, api_kwargs=api_kwargs,

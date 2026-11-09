@@ -256,7 +256,7 @@ def _stamp_plugin_env(env_obj, provider, cwd):
     return env_obj
 
 
-def _build_kubernetes_env(*, cwd, timeout, cc, task_id, **_):
+def _build_kubernetes_env(*, cwd, timeout, cc, task_id, probe_only=False, **_):
     from tools.environments import kubernetes as k8s
     kcfg = k8s.merge_kubernetes_config(cc.get("kubernetes"))
     k8s.resolve_provisioner_kind(kcfg)
@@ -269,6 +269,7 @@ def _build_kubernetes_env(*, cwd, timeout, cc, task_id, **_):
     provisioner = k8s.PodProvisioner(kcfg, namespace, api=core_api, owner_reference=owner_ref)
     return k8s.KubernetesEnvironment(
         provisioner=provisioner, task_id=task_id, cwd=cwd, timeout=timeout, api=core_api,
+        probe_only=probe_only,
     )
 
 
@@ -314,8 +315,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         host_cwd: Optional[str] = None, probe_only: bool = False):
     """Create an execution environment (instance with ``execute()``) for *env_type*. ``image`` is ignored
     for local/ssh/vercel; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is
-    the host dir bound into Docker when cwd mounting is enabled. ``probe_only`` asks ssh for a throwaway
-    connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends.
+    the host dir bound into Docker when cwd mounting is enabled. ``probe_only`` skips session setup and
+    file sync for the SSH/Kubernetes prompt probe. Unknown types fall through to plugin backends.
     Inside a hosted scope the environment is always the bound agent's sandbox (:func:`_build_hosted_env`)."""
     from tools.environments.sandbox_scope import hosted_scope
     builder = _ENV_BUILDERS.get(env_type)

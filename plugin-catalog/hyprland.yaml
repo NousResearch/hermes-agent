@@ -1,6 +1,6 @@
 name: hyprland
 repo: https://github.com/mddragon18/hyprland-computer-use
-sha: 2296c77728113eca13395d34ad6784cf2626d7d6
+sha: eef766e18200338b772b14c20dbf03d603c84982
 subdir: plugin/hyprland
 description: >-
   Hyprland-native computer use for Hermes: grim capture, wlr-virtual-pointer
@@ -10,7 +10,7 @@ maintainer: mddragon18
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/mddragon18/hyprland-computer-use/blob/2296c77728113eca13395d34ad6784cf2626d7d6/plugin/hyprland/README.md
+docs_url: https://github.com/mddragon18/hyprland-computer-use/blob/eef766e18200338b772b14c20dbf03d603c84982/plugin/hyprland/README.md
 version: "0.3.0"
 title: "Hyprland Computer Use"
 platforms:

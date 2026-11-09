@@ -327,33 +327,3 @@ class VisionMessagePrepMixin:
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""
         return base_url_host_matches(self._base_url_lower, "portal.qwen.ai")
-
-    def _qwen_prepare_chat_messages(self, api_messages: list) -> list:
-        """Deep-copy ``api_messages`` and shape them for Qwen Portal (see the in-place variant)."""
-        prepared = copy.deepcopy(api_messages)
-        self._qwen_prepare_chat_messages_inplace(prepared)
-        return prepared
-
-    def _qwen_prepare_chat_messages_inplace(self, messages: list) -> None:
-        """Qwen Portal shaping, in place: every content becomes a list of parts (bare strings → text
-        dicts, dicts kept), then ``cache_control`` is injected on the last part of the system message."""
-        for msg in messages:
-            if not isinstance(msg, dict):
-                continue
-            content = msg.get("content")
-            if isinstance(content, str):
-                msg["content"] = [{"type": "text", "text": content}]
-            elif isinstance(content, list):
-                normalized_parts = [
-                    {"type": "text", "text": part} if isinstance(part, str) else part
-                    for part in content if isinstance(part, (str, dict))
-                ]
-                if normalized_parts:
-                    msg["content"] = normalized_parts
-
-        for msg in messages:
-            if isinstance(msg, dict) and msg.get("role") == "system":
-                content = msg.get("content")
-                if isinstance(content, list) and content and isinstance(content[-1], dict):
-                    content[-1]["cache_control"] = {"type": "ephemeral"}
-                break

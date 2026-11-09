@@ -1,20 +1,13 @@
 name: inline-platform
 repo: https://github.com/inline-chat/inline
-sha: 2d3b360da0430684eabab2d946eca0e725c08aa5
+sha: ec95e9296b83c13d2179b47019d915b16783c186
 subdir: plugins/hermes-agent/plugin/inline
-description: >-
-  Use Hermes Agent from Inline work-chat DMs, chats, and reply threads.
-  Disclosure — the setup wizard can, on explicit opt-in, download
-  https://inline.chat/cli/install.sh and pipe it to sh without a checksum,
-  then run the vendor inline CLI login; on connect the adapter publishes
-  your Hermes slash-command list and the names and descriptions of installed
-  skills to the Inline server (INLINE_SYNC_COMMANDS=false disables); error
-  telemetry is off unless a Sentry DSN is set.
+description: "Use Hermes Agent from Inline work-chat DMs, chats, and reply threads. Disclosure — the setup wizard can, on explicit opt-in, download https://inline.chat/cli/install.sh and pipe it to sh without a checksum, then run the vendor inline CLI login; on connect the adapter publishes your Hermes slash-command list and the names and descriptions of installed skills to the Inline server (INLINE_SYNC_COMMANDS=false disables); the inline tool lets the agent add participants to, rename, and permanently delete Inline chats the bot can manage, on the model's decision with no confirmation; error telemetry is off unless a Sentry DSN is set."
 maintainer: morajabi
 tier: community
 category: platform
 requires_hermes: ">=0.21.3"
-version: "0.0.21"
+version: "1.0.1"
 capabilities:
   provides_tools:
     - inline

@@ -86,9 +86,13 @@ this.
 The pattern repeats across files:
 
 - **Pull requests:** one run per PR per workflow. A new push cancels the older
-  run (`cancel-in-progress: true` only for `pull_request`).
-- **Pushes to `main` and dispatches:** keyed on `github.ref`. They are never
-  cancelled by a newer commit in `ci.yaml`. Some children (`tests.yml`,
+  run (`cancel-in-progress: true` for `pull_request`).
+- **Dispatches on a side branch** (`refs/heads/*` other than `main`): keyed on
+  `github.ref`; in `ci.yaml` a newer dispatch on the same branch cancels the
+  older run, so a re-dispatch never queues behind a stale one.
+- **Pushes to `main`, dispatches on `main` or a tag:** keyed on `github.ref`.
+  `ci.yaml` does not set `cancel-in-progress` for them (GitHub may still
+  replace a *pending* run in the group). Some children (`tests.yml`,
   `lint.yml`, …) still use `cancel-in-progress` for non-tag refs.
 - **Release / `commit`-pinned calls:** keyed on `github.run_id`, never
   cancelled. A parent rerun cannot kill a child that is still running.

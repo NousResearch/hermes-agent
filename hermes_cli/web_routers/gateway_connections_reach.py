@@ -38,7 +38,7 @@ _STATUS: tuple[tuple[type, int], ...] = (
 _NO_STORE = {"Cache-Control": "no-store"}
 
 
-def _http_error(exc: Exception) -> HTTPException | None:
+def http_error(exc: Exception) -> HTTPException | None:
     for kind, status in _STATUS:
         if isinstance(exc, kind):
             detail: Any = str(exc)
@@ -52,7 +52,7 @@ async def _call(fn: Callable[[], Any]) -> Any:
     try:
         return await run_in_threadpool(fn)
     except Exception as exc:
-        mapped = _http_error(exc)
+        mapped = http_error(exc)
         if mapped is None:
             raise
         raise mapped from exc

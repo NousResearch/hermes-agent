@@ -1217,6 +1217,7 @@ class GatewayBusySessionMixin:
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
                 internal=event.internal, timestamp=event.timestamp,
+                edit_revision=event.edit_revision,  # an edited /queue is its own input (admission id)
             )
             if await self._queue_command_turn(quick_key, event, queued, adapter, t("gateway.queue.queued")):
                 return None  # its commit sends the ack
@@ -1240,7 +1241,7 @@ class GatewayBusySessionMixin:
             if adapter and await self._queue_command_turn(quick_key, event, MessageEvent(
                 text=steer_text, message_type=MessageType.TEXT, source=event.source,
                 message_id=event.message_id, channel_prompt=event.channel_prompt,
-                channel_context=event.channel_context,
+                channel_context=event.channel_context, edit_revision=event.edit_revision,
             ), adapter, reply):
                 return None  # its commit sends the reply
             return reply
@@ -1257,6 +1258,10 @@ class GatewayBusySessionMixin:
         if not accepted:
             return t("gateway.steer.rejected_empty")
         self._fold_into_running_turn(running_agent, quick_key, event)
+        # A pending clarify owns the turn: the agent is parked inside that tool, so no iteration
+        # prep runs and the accepted steer cannot arrive until the prompt times out (#145161).
+        # Released only once the steer is queued: the woken agent must find it at its next prep.
+        await self._release_clarify_owning_turn(quick_key, source)
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
         target = (t("gateway.steer.target_subagents") if self._agent_has_active_subagents(running_agent)
                   else t("gateway.steer.target_run"))

@@ -54,8 +54,10 @@ def home(tmp_path, monkeypatch):
     reset_skill_view_dedup()
 
 
-def _run(home, monkeypatch, *batches) -> dict:
-    """Run one turn whose model calls each batch of skill_view calls in turn; tool rows by call id."""
+def _run(home, monkeypatch, *batches, dedup_reset_before: tuple[int, ...] = ()) -> dict:
+    """Run one turn whose model calls each batch of skill_view calls in turn; tool rows by call id.
+    ``dedup_reset_before`` lists model calls (0-based) before which the dedup bucket is reset, as a
+    mid-turn compaction does (the guardrail's per-turn counts survive it)."""
     tool_defs = [{"type": "function", "function": {
         "name": "skill_view", "description": "skill_view",
         "parameters": {"type": "object", "properties": {"name": {"type": "string"}}}}}]
@@ -66,7 +68,15 @@ def _run(home, monkeypatch, *batches) -> dict:
         agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
                         skip_context_files=True, skip_memory=True, max_iterations=len(batches) + 2)
     agent.client = MagicMock()
-    agent.client.chat.completions.create.side_effect = [*(_response(b) for b in batches), _response()]
+    responses = iter([*(_response(b) for b in batches), _response()])
+    model_calls = iter(range(len(batches) + 1))
+
+    def respond(*_args, **_kwargs):
+        if next(model_calls) in dedup_reset_before:
+            reset_skill_view_dedup(TASK)
+        return next(responses)
+
+    agent.client.chat.completions.create.side_effect = respond
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
     agent._disable_streaming = True
@@ -107,3 +117,17 @@ def test_view_after_a_turn_budget_spill_serves_only_the_spilled_skill_again(home
     assert PERSISTED_OUTPUT_TAG in rows["first_skill-c"]
     assert "Step for skill-c" in rows["again_skill-c"] and STUB_MARKER not in rows["again_skill-c"]
     assert STUB_MARKER in rows["again_skill-a"]
+
+
+def test_view_delivered_whole_with_a_guardrail_warning_keeps_its_entry(home, monkeypatch):
+    # The reset before the second model call stands in for a mid-turn compaction: the dedup bucket is
+    # cleared, the guardrail still counts skill-a's earlier identical result, so the next full view of
+    # skill-a reaches the model whole with a "[Tool loop warning ...]" suffix appended.
+    for name in ("skill-a", "skill-b"):
+        _write_skill(home, name, 2_000)
+
+    rows = _run(home, monkeypatch, _views("first", "skill-a", "skill-b"), _views("again", "skill-a"),
+                _views("third", "skill-a"), dedup_reset_before=(1,))
+
+    assert "Step for skill-a" in rows["again_skill-a"] and "Tool loop warning" in rows["again_skill-a"]
+    assert STUB_MARKER in rows["third_skill-a"]

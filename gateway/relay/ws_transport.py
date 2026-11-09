@@ -380,8 +380,9 @@ class WebSocketRelayTransport:
         # an unexpected close (fast re-dial): the socket closes WITHOUT _closing,
         # so the reader still arms the supervisor, but it polls on the dormant
         # cadence so it does not fight the platform's suspend window. Dormancy
-        # ends when the new connector has acknowledged the hellos.
+        # ends when the new connector acknowledges its first identity.
         self._dormant = False
+        self._wake_pending = False
         self._dormant_generation = 0
         self._wake_progress = asyncio.Event()
         self._dormant_redial_s = 1.0
@@ -661,6 +662,7 @@ class WebSocketRelayTransport:
             return False
         # Mark dormant BEFORE closing so the supervisor takes the dormant cadence.
         self._dormant = True
+        self._wake_pending = True
         self._dormant_generation = self._dial_generation
         self._wake_progress.clear()
         try:
@@ -683,7 +685,7 @@ class WebSocketRelayTransport:
             platform = self._identities[0][0]
         try:
             async with asyncio.timeout(_WAKE_RECONNECT_WAIT_S):
-                while self._dormant and not self._closing and not self._auth_revoked:
+                while self._wake_pending and not self._closing and not self._auth_revoked:
                     if (self._ws is not None and self._dial_generation != self._dormant_generation
                             and platform in self._descriptors_by_platform):
                         return True
@@ -691,13 +693,13 @@ class WebSocketRelayTransport:
                     await self._wake_progress.wait()
         except TimeoutError:
             return False
-        return not self._dormant
+        return not self._wake_pending
 
     async def _request_response(
         self, action: dict[str, Any], *, platform: Optional[str] = None
     ) -> dict[str, Any]:
         wake_ready = True
-        if not self._closing and self._dormant:
+        if not self._closing and self._wake_pending:
             wake_ready = self._reconnect and await self._wait_for_wake(platform)
         # Fail fast during teardown: the disconnect() fail-pending loop may already
         # have run, so a future registered now would never be settled.
@@ -992,9 +994,13 @@ class WebSocketRelayTransport:
         self._handshake_succeeded = True
         if self._descriptor_ready is not None and not self._descriptor_ready.done():
             self._descriptor_ready.set_result(descriptor)
-        if self._dormant and self._dial_generation != self._dormant_generation:
-            if all(platform in self._descriptors_by_platform for platform, _ in self._identities):
-                self._dormant = False
+        if self._wake_pending and self._dial_generation != self._dormant_generation:
+            # Any acknowledged identity proves this generation is awake. Each
+            # outbound still waits for its own identity's descriptor.
+            self._dormant = False
+            self._wake_pending = not all(
+                platform in self._descriptors_by_platform for platform, _ in self._identities
+            )
             self._wake_progress.set()
 
     async def _on_inbound(self, frame: dict[str, Any]) -> None:

@@ -113,3 +113,37 @@ def test_handoff_failure_still_logs_the_wait_side_boundary(monkeypatch, caplog):
     assert decision["notify_failed"] is True
     assert not [r for r in caplog.records if r.message.startswith("Approval prompt handed")]
     assert any(r.levelno == logging.WARNING and "notify failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize("text_ok, level", [(False, logging.WARNING), (True, logging.INFO)])
+def test_text_fallback_send_leaves_a_record(tmp_path, monkeypatch, caplog, text_ok, level):
+    """A failed card falls back to text; that send's own outcome must be logged, success or not."""
+    (tmp_path / "config.yaml").write_text("display: {}")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    class _FailingCardAdapter:
+        typed_command_prefix = "/"
+
+        def pause_typing_for_chat(self, chat_id: str) -> None:
+            return None
+
+        async def send_exec_approval(self, *a: Any, **k: Any) -> SendResult:
+            return SendResult(success=False, error="Not connected")
+
+        async def send(self, chat_id: str, message: str, **k: Any) -> SendResult:
+            return SendResult(success=True, message_id="t1") if text_ok else SendResult(success=False, error="Not connected")
+
+    monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+    runner = object.__new__(TurnRunner)
+    runner._ctx = SimpleNamespace(
+        _status_adapter=_FailingCardAdapter(), _status_chat_id="C1", _status_thread_metadata=None, session_key=SESSION)
+    runner._schedule = lambda coro, _label: SimpleNamespace(result=lambda timeout=None, _r=asyncio.run(coro): _r)
+    runner._close_native_stream_boundary = lambda _why: None
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        runner._approval_notify_sync(dict(APPROVAL, request_id="req-1"))
+
+    text = [r for r in caplog.records if r.message.startswith("Exec approval text prompt send")]
+    assert len(text) == 1 and text[0].levelno == level
+    assert f"success={text_ok}" in text[0].message and "request_id=req-1" in text[0].message
+    assert "rm -rf" not in text[0].message

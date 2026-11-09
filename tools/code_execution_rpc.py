@@ -59,7 +59,7 @@ def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
     (``check=True`` raises on failure via _execute_checked).
 
     The base64 payload always travels as ``stdin_data``: pipe-mode backends
-    (ssh, docker, local, singularity: the real shared-host ones) deliver it on
+    (ssh, docker, local: the real shared-host ones) deliver it on
     real stdin, so it never enters argv where a co-tenant can read it via
     ``/proc/*/cmdline``; ``BaseEnvironment.execute`` embeds it as a heredoc
     for heredoc-mode backends (modal, daytona, vercel), and managed_modal

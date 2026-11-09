@@ -6,6 +6,18 @@ from typing import Any, Callable, Optional
 from gateway.platforms._shared import platform_gate_env as _scoped_gate_env
 
 
+def component_chat_context(interaction, thread_cls) -> tuple[str, Optional[str], Optional[str]]:
+    """``(chat_type, chat_id, thread_id)`` of a click, labelled like message intake labels the
+    same channel: a click in a thread gets the thread's verdict, not a channel's."""
+    channel_id = getattr(interaction, "channel_id", None)
+    chat_id = str(channel_id) if channel_id is not None else None
+    if getattr(interaction, "guild", None) is None:
+        return "dm", chat_id, None
+    if isinstance(getattr(interaction, "channel", None), thread_cls):
+        return "thread", chat_id, chat_id
+    return "group", chat_id, None
+
+
 def _component_check_auth(
     interaction, allowed_user_ids: Optional[set], allowed_role_ids: Optional[set],
     live_auth: Optional[Callable[[Any], Optional[bool]]] = None,

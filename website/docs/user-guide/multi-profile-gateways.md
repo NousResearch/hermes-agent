@@ -614,8 +614,8 @@ per-bot behaviour written in a profile's `config.yaml` (`require_mention`,
 `ignored_channels`, Matrix `session_scope`, …): a secondary profile's YAML never
 lands in the shared process environment, so it cannot become the default
 profile's policy, and the default profile's YAML never governs a secondary
-bot. The `terminal.env_passthrough` allowlist, the Yuanbao auto-designated
-home channel, and the write guards protecting each profile's own `config.yaml`
+bot. The `terminal.env_passthrough` allowlist, auto-designated
+home channels, and the write guards protecting each profile's own `config.yaml`
 are resolved per profile as well. Kanban, profile-scoped skills/memory/SOUL, and
 model routing all behave per-profile exactly as they do with separate gateways.
 
@@ -677,8 +677,8 @@ profile and never shares with the default or any sibling:
 | Working directory of a turn (unset `terminal.cwd`) | Same rule as a standalone gateway: `$HOME` for the local backend, sandbox default otherwise | Never the directory the multiplexer process was launched from |
 | Command approvals (`command_allowlist`, "always" choices) | The profile's own `config.yaml` | A default-profile "always" never pre-approves a secondary's command; a secondary's choice is saved to its own config |
 | Sandbox credential-file mounts (`terminal.credential_files`), `security.redact_secrets`, `browser.*` engine/headed flags, `lsp.*`, auxiliary-provider health marks, `logs/mcp-stderr.log` | The profile's own `config.yaml` / `.env` | Documented default — never the launch profile's cached value |
-| Cloud-SDK credential clients (Bedrock boto3 clients + model discovery, Azure Entra credential), credential-fetched catalogs (DeepInfra, Copilot context limits, Nous reasoning caps, Ramp Router efforts, xAI / OpenRouter image models, custom-endpoint `/models`), Camofox VNC address, computer-use aux-vision routing, remote-backend probe text, learned image token costs, `display.skin`, guest-mint back-off, banner skills, Yuanbao "active" adapter, Langfuse client | The profile's own `.env` / `config.yaml` / `<home>/cache` | Documented default — never the launch profile's cached value or its credentials |
-| Session-search knobs (`sessions.cjk_fts`, `sessions.search_slow_ms`) | The profile's `config.yaml` | Documented default — never the default profile's bridged value |
+| Cloud-SDK credential clients (Bedrock boto3 clients + model discovery, Azure Entra credential), credential-fetched catalogs (DeepInfra, plugin-provider context limits, Nous reasoning caps, Ramp Router efforts, xAI / OpenRouter image models, custom-endpoint `/models`), computer-use aux-vision routing, remote-backend probe text, learned image token costs, `display.skin`, guest-mint back-off, banner skills, Yuanbao "active" adapter, Langfuse client | The profile's own `.env` / `config.yaml` / `<home>/cache` | Documented default — never the launch profile's cached value or its credentials |
+| Session-search knob (`sessions.search_slow_ms`) | The profile's `config.yaml` | Documented default — never the default profile's bridged value |
 | RoomLink capability catalog and the signed execution policy it advertises to a remote Bot (`approvals.mode`, `agent.max_turns`, `platform_toolsets.api_server`) | The served profile named by the request (`/p/<profile>/v1/room-members/...`, the RPC `profile` param); `target_profile` is **required** on every catalog — there is no `HERMES_PROFILE` fallback | Invitation/capabilities fail with the offending `target_profile` named; a profile that does not exist is refused, never resolved from the launch profile's config |
 | Platform proxies (`TELEGRAM_PROXY`, `DISCORD_PROXY`, `HTTPS_PROXY`, …) | The profile's own `.env` | Direct connection — never the default profile's proxy |
 | MCP discovery in the Desktop/dashboard backend | Once per served profile home | A profile selected after another has already built an agent still discovers its own `mcp_servers` |
@@ -1120,7 +1120,7 @@ the host gateway with `gateway.standalone: true` (see
 ### Docker / Hermes Cloud (s6-supervised container)
 
 Inside the official image every profile has an s6 slot
-(`/run/service/gateway-<profile>`). The container's boot registers every *named*
+(`/run/hermes-service/gateway-<profile>`). The container's boot registers every *named*
 slot down and folds its autostart intent into the root slot, so a fresh boot
 already multiplexes. An **in-place** update no longer needs a container restart
 to converge either: `hermes gateway migrate --multiplex` (and the hook `hermes

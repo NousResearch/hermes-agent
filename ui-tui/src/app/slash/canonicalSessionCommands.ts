@@ -4,9 +4,10 @@
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
 import type { SessionStats } from '@hermes/shared/gateway-events'
+import type { BillingStateResponse, RollbackListResponse } from '@hermes/shared/gateway-types'
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+import { CANONICAL_REASONING_EFFORTS } from '@hermes/shared/slash-input'
 
-import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
@@ -14,14 +15,14 @@ import { patchUiState } from '../uiStore.js'
 
 import { mutateCanonical, type MutationSnapshot } from './canonicalSessionControls.js'
 import type { SlashRunCtx } from './types.js'
-import { usageTotalsSections } from './usagePanel.js'
+import { planUsageLines, usageTotalsSections } from './usagePanel.js'
 
 const COMPACTION_MARKERS = ['[CONTEXT COMPACTION', '[CONTEXT SUMMARY]:', '[END OF PRIOR CONTEXT']
 
 /** A human-authored live user turn (`agent/context_compressor.py::split_user_originated_turn`): no
  * display-only kind other than a typed /steer, not a compaction handoff carrier, and not a row a
  * compression archived (history the snapshot shows, never a turn to rewind to). */
-const isUserTurn = (row: Record<string, unknown>) =>
+export const isUserTurn = (row: Record<string, unknown>) =>
   row.role === 'user' &&
   (!row.display_kind || row.display_kind === 'steer') &&
   Number.isSafeInteger(row.row_id) &&
@@ -39,7 +40,7 @@ const TEXT_PARTS = new Set(['input_text', 'output_text', 'text'])
 
 /** Lossless /retry text (agent/context_compressor_retry.py::retryable_user_text): '' when the turn has
  * no text, null when it carries media, unknown or annotated parts (no replay protocol: fail closed). */
-function retryText(content: unknown): null | string {
+export function retryText(content: unknown): null | string {
   let text = ''
 
   for (const part of typeof content === 'string' ? [content] : Array.isArray(content) ? content : [null]) {
@@ -165,9 +166,11 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
       ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
 
       if (intent === 'undo') {
-        return ctx.transcript.sys(
+        ctx.transcript.sys(
           t(removed === 1 ? 'slashCmd.core.undo.undidOne' : 'slashCmd.core.undo.undidOther', String(removed))
         )
+
+        return showUndoRollbackHint(ctx, sid, result.target_message as undefined | { id?: unknown; timestamp?: unknown })
       }
 
       // Main's /retry: the rewound user turn's own text, not whatever this view typed last.
@@ -188,8 +191,27 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
     })
 }
 
+/** `/undo`'s line naming the files the undone turns changed (and pointing at `/rollback`); silent when none. */
+function showUndoRollbackHint(ctx: SlashRunCtx, sid: string, target?: { id?: unknown; timestamp?: unknown }) {
+  if (typeof target?.timestamp !== 'number') {
+    return
+  }
+
+  // The rewound row's id pins the span to the rewind's own boundary: a turn started since cannot move it.
+  const undoMessageId = typeof target.id === 'number' ? { undo_message_id: target.id } : {}
+
+  void ctx.gateway
+    .rpc<RollbackListResponse>('rollback.list', { session_id: sid, undo_since: target.timestamp, ...undoMessageId })
+    .then(r => {
+      if (r?.undo_hint?.text && !ctx.stale()) {
+        ctx.transcript.sys(r.undo_hint.text)
+      }
+    })
+    .catch(() => undefined) // advisory: an older owner refuses `undo_since`, and main printed nothing
+}
+
 /** Main's busy text for a refused rewind: wait for a running /compress, else stop the reply; null otherwise. */
-function rewindBusyText(error: unknown, intent: 'retry' | 'undo'): null | string {
+export function rewindBusyText(error: unknown, intent: 'retry' | 'rewind' | 'undo'): null | string {
   if (!(error instanceof JsonRpcGatewayError)) {
     return null
   }
@@ -231,13 +253,21 @@ export function canonicalUsage(ctx: SlashRunCtx) {
       if (!usage?.calls) {
         ctx.transcript.sys(t('slashCmd.session.usage.noCalls'))
         ctx.transcript.sys(t('slashCmd.session.usage.cta'))
-
-        return
+      } else {
+        patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
+        ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
+        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
       }
 
-      patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
-      ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
-      ctx.transcript.sys(t('slashCmd.session.usage.cta'))
+      // Usage-window plans: the allowance bars, after the lines above (every other account: nothing).
+      void ctx.gateway
+        .rpc<BillingStateResponse>('billing.state', {})
+        .then(r => {
+          if (!ctx.stale()) {
+            planUsageLines(r?.plan_usage).forEach(line => ctx.transcript.sys(line))
+          }
+        })
+        .catch(() => undefined)
     })
     .catch(ctx.guardedErr)
 }

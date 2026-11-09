@@ -10,6 +10,7 @@ import {
   $currentCwd,
   $freshDraftReady,
   $messagingSessions,
+  $sessionProfilesFailed,
   $sessionProfilesTruncated,
   $sessions,
   $sessionsLoading,
@@ -19,6 +20,7 @@ import {
   setCurrentCwdTransient,
   setFreshDraftReady,
   setMessagingSessions,
+  setSessionProfilesFailed,
   setSessionProfilesTruncated,
   setSessions,
   setSessionsLoading
@@ -75,6 +77,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     $gatewaySwitching.set(false)
     setSessions([{ id: 's1', title: 'old', profile: 'default' } as never])
     setSessionProfilesTruncated({ default: true })
+    setSessionProfilesFailed([{ profile: 'work' }])
     setCronSessions([{ id: 'c1', title: 'cron', profile: 'default' } as never])
     setMessagingSessions([{ id: 'm1', title: 'tg', profile: 'default' } as never])
     $stalledSessionIds.set(['s1'])
@@ -86,6 +89,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
   afterEach(() => {
     resetSessionsLimit()
     setSessions([])
+    setSessionProfilesFailed([])
     setCronSessions([])
     setMessagingSessions([])
     $stalledSessionIds.set([])
@@ -109,6 +113,8 @@ describe('wipeSessionListsForGatewaySwitch', () => {
 
     expect($sessions.get()).toEqual([])
     expect($sessionProfilesTruncated.get()).toEqual({})
+    // The outgoing gateway's failed scans must not hide the next one's empty profile sections.
+    expect($sessionProfilesFailed.get()).toEqual([])
     expect($cronSessions.get()).toEqual([])
     expect($messagingSessions.get()).toEqual([])
     expect($stalledSessionIds.get()).toEqual([])

@@ -278,8 +278,7 @@ def x_search_tool(
 X_SEARCH_SCHEMA = {
     "name": "x_search",
     "description": (
-        "Search X (Twitter) posts, profiles, and threads using xAI's built-in "
-        "X Search tool. Read-only discovery only: use this for current "
+        "Search X (Twitter) posts, profiles and threads via xAI's built-in X Search. Read-only discovery only: use this for current "
         "discussion, reactions, or claims on public X rather than general web "
         "pages. Do not use it to post, reply, like, DM, upload media, delete, "
         "or inspect the user's authenticated X account — those require a "

@@ -57,6 +57,17 @@ class TestBuildToolPreview:
         assert build_tool_preview("memory", args) == '~memory: "port 8080"'
         assert '~memory: "port 8080"' in get_cute_tool_message("memory", args, 0.1)
 
+    def test_memory_operations_batch_previews_its_first_op_and_the_rest_count(self):
+        # operations[] is the memory tool's only advertised shape, so progress lines read it.
+        one = {"target": "user", "operations": [{"action": "add", "content": "Name: Alice"}]}
+        assert build_tool_preview("memory", one) == '+user: "Name: Alice"'
+        assert '+user: "Name: Alice"' in get_cute_tool_message("memory", one, 0.1)
+        three = {"target": "memory", "operations": [
+            {"action": "remove", "old_text": "port 8080"}, {"action": "add", "content": "a"},
+            {"action": "patch", "old_text": "b", "content": "c"}]}
+        assert build_tool_preview("memory", three) == '-memory: "port 8080" (2 more)'
+        assert '-memory: "port 8080" (2 more)' in get_cute_tool_message("memory", three, 0.1)
+
     def test_browser_type_preview_redacts_api_key(self):
         secret = "sk-proj-ABCD1234567890EFGH"
         result = build_tool_preview("browser_type", {"ref": "@e3", "text": secret})

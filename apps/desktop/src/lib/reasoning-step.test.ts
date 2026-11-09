@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
+import { $notifications } from '@/store/notifications'
 
 describe('stepReasoningEffort', () => {
   it('steps up and down through off and the normal levels, clamping at both ends', () => {
@@ -53,5 +54,16 @@ describe('writeSessionReasoningEffort', () => {
     // The gateway echoed something unrecognized: settle on the default level
     // rather than passing the stale string back into the store.
     await expect(writeSessionReasoningEffort(request, 'runtime-1', 'high')).resolves.toBe('medium')
+  })
+
+  it('says a level stepped while a reply streams applies from the next message', async () => {
+    $notifications.set([])
+    const request = vi.fn().mockResolvedValue({ status: 'deferred', value: 'high' })
+
+    await expect(writeSessionReasoningEffort(request, 'runtime-1', 'high')).resolves.toBe('high')
+
+    expect($notifications.get()).toContainEqual(
+      expect.objectContaining({ kind: 'info', message: 'high applies from your next message' })
+    )
   })
 })

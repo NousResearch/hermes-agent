@@ -24,6 +24,11 @@ const CASES: Array<[string, Record<string, unknown>, Record<string, unknown> | R
   ['composer effort', { ...BASE, cwd: '/w', cwd_explicit: false, reasoning_effort: 'high', fast: false }, { profile: 'default', cwd: '/w', reasoning: 'high', service_tier: 'normal' }],
   ['onboarding minimal effort', { ...BASE, reasoning_effort: 'minimal', fast: false, title: 'Welcome' }, { profile: 'default', reasoning: 'minimal', title: 'Welcome', service_tier: 'normal' }],
   ['Bot Chat', { ...BASE, title: 'Bot Chat', hidden: true, follow_profile_config: true }, { profile: 'default', follow_profile_config: true, hidden: true }],
+  // group-turns.ts: a Desktop-driven room's member session on this owner. `room_plumbing` is the
+  // serve socket's flag; the owner keys the same behaviour on hidden + follow_profile_config.
+  ['Desktop-driven room member', { ...BASE, title: 'Group: r-1 · t1', hidden: true, room_plumbing: true, follow_profile_config: true }, { profile: 'default', title: 'Group: r-1 · t1', follow_profile_config: true, hidden: true }],
+  // A caller sending only the serve flag still gets a hidden row that follows the profile config.
+  ['room plumbing flag alone', { ...BASE, title: 'Group: r-2 · t1', room_plumbing: true }, { profile: 'default', title: 'Group: r-2 · t1', follow_profile_config: true }],
   ['Fast speed', { ...BASE, cwd: '/w', cwd_explicit: false, fast: true }, { profile: 'default', cwd: '/w', service_tier: 'priority' }],
   ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, { profile: 'default', service_tier: 'ultrafast' }],
   // KoNit-K P1: a manual model pick ships its provider; the owner's create contract admits both.
@@ -39,6 +44,7 @@ test.each(CASES)('%s: the Desktop create frame is admitted by the owner contract
   server.on('connection', (socket: any) => {
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
+      if (frame.method === 'client.capabilities') { socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } })); return }
       sent.push(frame)
       const fields = Object.keys(frame.params).filter(key => !CREATE_KEYS.has(key))
 

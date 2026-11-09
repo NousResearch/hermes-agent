@@ -10,10 +10,11 @@ from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
-    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields, message_uid_or_none)
+    ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, RESTORED_FROM_STORE, TOOL_CALL_UIDS, TYPED_ASK,
+    copy_identity_fields, message_uid_or_none)
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
-from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
+from hermes_state_messages import _MESSAGE_WRITE_COLUMNS, SessionMessagesMixin
 
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
@@ -32,6 +33,13 @@ _METADATA_COLUMNS = frozenset(
 )
 # The ownership version: what we last committed for the payload the sanitizer / live edits change.
 _OWNED_COLUMNS = tuple(c for c in _REPAIR_COLUMNS if c not in _METADATA_COLUMNS)
+# What a replay of the row sends: the owned payload plus the two metadata columns the provider request reads back
+# (``api_content`` replaces the content bytes, ``codex_reasoning_items`` is replayed reasoning). A copy that equals
+# the row on these carries no new information; a metadata write stays outside the ownership version above.
+_REPLAY_COLUMNS = _OWNED_COLUMNS + ("api_content", "codex_reasoning_items")
+# The replayed reasoning carriers among them; a compaction claim checks these plus ``api_content`` (it compares
+# the content itself, and the compressor may rewrite the rest of a carry's columns).
+REPLAY_SIDECARS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items")
 # Presentation-only metadata a matched (ours) row may hand to a live dict that lacks it.
 _LIVE_MISSING_METADATA = ("display_kind", "display_metadata")
 # ``message_id`` is identity the flush derived from the live dict (int there, TEXT in SQLite): never synced.
@@ -107,6 +115,75 @@ def _active_logical_message_row(
     ).fetchone()
 
 
+def _active_uid_dedupe(
+    conn: sqlite3.Connection, session_id: str, messages: list[dict[str, Any]]
+) -> dict[str, list[sqlite3.Row]]:
+    """ACTIVE durable rows by uid among *messages*' restored, no-snapshot, no-``_row_id`` rows — the re-insert guard.
+
+    Only a row the agent flush marked ``RESTORED_FROM_STORE`` (it saw that uid durable in this session) is a
+    candidate: a copied uid alone is never proof, so a fresh identical message always inserts. A dict rebuilt
+    from durable rows (crash/failed-turn history restore, session resume, a repaired sequence, any
+    wire-crossing handoff) carries its durable ``message_uid`` — identity is restored on
+    EVERY projection — but neither the persistence marker (underscore-prefixed, stripped before the
+    wire) nor ``_row_id``/``DB_ROW_SNAPSHOT`` (same strip). Dicts that still carry a snapshot are
+    excluded: the CAS path below owns them — it rewrites the active row in place, so their live edits
+    must reach the row, never be skipped here. Runs INSIDE the caller's write transaction (the same
+    guarantee the repair path relies on: the active set cannot change between this read and the
+    INSERT). A probe error fails the write like any other statement in it.
+    """
+    candidate_uids = sorted({
+        uid
+        for msg in messages
+        if isinstance(msg, dict)
+        and msg.get(RESTORED_FROM_STORE) is True
+        and not isinstance(msg.get("_row_id"), int)
+        and not isinstance(msg.get(DB_ROW_SNAPSHOT), str)
+        and (uid := message_uid_or_none(msg))
+    })
+    durable: dict[str, list[sqlite3.Row]] = {}
+    for chunk in _id_chunks(candidate_uids):
+        for row in conn.execute(
+            f"SELECT * FROM messages WHERE session_id = ? AND active = 1 AND message_uid IN ({_placeholders(chunk)})",
+            (session_id, *chunk),
+        ).fetchall():
+            durable.setdefault(row["message_uid"], []).append(row)
+    return durable
+
+
+# Owned columns a restore projection may leave off the dict: ``token_count`` is never decoded, the summary
+# flag only on request, and the underscore identity maps are lost to any wire strip. A dict without a value
+# says nothing about the column, so the row's value stands (the flush row turns an absent summary flag into
+# False, so falsy is the absent case); a dict that carries a value is compared as usual.
+_RESTORE_MAY_OMIT = (
+    ("token_count", "token_count"), ("_compressed_summary", "_compressed_summary"),
+    ("tool_call_uids", TOOL_CALL_UIDS), ("absorbed_message_uids", ABSORBED_MESSAGE_UIDS))
+
+
+def _same_as_stored(
+    msg: dict[str, Any], rows: list[sqlite3.Row],
+    serialize_message_fn: Callable[[dict[str, Any], float], Mapping[str, Any]],
+    encode_content_fn: Callable[[Any], Any], decode_content_fn: Callable[[Any], Any],
+) -> bool:
+    """*msg* serializes to the replayed columns of one of its uid's active *rows*: the re-handed copy, not an edit.
+
+    The row is seen through the restore lens (``_loaded_view_content``: user/assistant text sanitized and
+    stripped on load), because that is what the dict was rebuilt from; the dict's own content is never
+    normalized, so text that differs after the lens is an edit and inserts.
+    """
+    for row in rows:
+        serialized = dict(serialize_message_fn(msg, float(row["timestamp"])))
+        for column, key in _RESTORE_MAY_OMIT:
+            if not msg.get(key):
+                serialized[column] = row[column]
+        if serialized["content"] == encode_content_fn(
+            SessionMessagesMixin._loaded_view_content(row["role"], decode_content_fn(row["content"]))
+        ):
+            serialized["content"] = row["content"]
+        if all(row[column] == serialized[column] for column in _REPLAY_COLUMNS):
+            return True
+    return False
+
+
 def resolve_and_repair_transcript_batch(
     conn: sqlite3.Connection,
     session_id: str,
@@ -122,9 +199,15 @@ def resolve_and_repair_transcript_batch(
     its physical ``_row_id``, the pair (logical ``message_uid``, stored-row snapshot) recovers the newest
     active generation without matching mutable payload. Watermark-compaction clones are matched by their
     copied payload identity, not timestamp alone. Legacy blank assistant rows retain the narrow interrupted-
-    stream content repair. Returns only rows that need fresh inserts.
+    stream content repair. A snapshot-less restored dict whose uid is already an ACTIVE durable row with the
+    same payload is that message re-handed to the flush — stamped durable and skipped, never re-INSERTed. Returns
+    only rows that need fresh inserts.
     """
+    # Late import: agent.session_persistence imports this module at load time.
+    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+
     inserted_rows: list[dict[str, Any]] = []
+    durable_uids = _active_uid_dedupe(conn, session_id, messages)
     for msg in messages:
         existing_row_id = msg.get("_row_id") if isinstance(msg, dict) else None
         role = msg.get("role", "unknown") if isinstance(msg, dict) else "unknown"
@@ -137,6 +220,19 @@ def resolve_and_repair_transcript_batch(
             # has neither proof, even when role/content/timestamp happen to equal an older message exactly.
             target_row = _active_logical_message_row(conn, session_id, role, message_uid_or_none(msg))
         if target_row is None:
+            if (
+                isinstance(msg, dict)
+                and (stored := durable_uids.get(message_uid_or_none(msg) or ""))
+                and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+                and _same_as_stored(msg, stored, serialize_message_fn, encode_content_fn, decode_content_fn)
+            ):
+                # Restored logical message, no row address and no CAS version (the wire strip removes
+                # every underscore-prefixed field): its uid already names an ACTIVE durable row holding
+                # the same payload, so this is the re-insert defect, not a new message. Stamp durable; a
+                # restored dict edited since (other content) inserts as before, and the row-addressed
+                # repair above keeps snapshot-carrying rewrites live.
+                msg[_DB_PERSISTED_MARKER] = True
+                continue
             inserted_rows.append(msg)
             continue
 
@@ -144,7 +240,7 @@ def resolve_and_repair_transcript_batch(
         msg["_row_id"] = target_id
         _fill_missing_tool_call_uids(target_row, msg)  # a dict that lost its uids must not rewrite them away
         canonical = None
-        adopt = wrote = False
+        adopt = wrote = hand_back = False
         if isinstance(expected, str):
             # The digest covers only the columns we own, so it answers "is the row still what we last
             # committed?". Match: the live dict is the source of truth (the DB holds its lossy durable
@@ -162,11 +258,7 @@ def resolve_and_repair_transcript_batch(
                 if any(target_row[column] != serialized[column] for column in _OWNED_COLUMNS):
                     _rewrite_row(conn, session_id, target_row, serialized)
                     wrote = True
-                missing = {c: target_row[c] for c in _LIVE_MISSING_METADATA if msg.get(c) is None}
-                if any(value is not None for value in missing.values()):
-                    decoded = decode_row_fn(target_row)
-                    canonical = {c: decoded[c] for c in missing if c in decoded}
-                    canonical[_METADATA_ONLY] = True
+                hand_back = True
         elif role == "assistant" and is_content_blank(decode_content_fn(target_row["content"])):
             # Legacy dict (no digest) over a blank assistant row: the interrupted-stream repair. Fill the row
             # from live content with a content-only CAS and never adopt the blank row onto the live dict.
@@ -185,6 +277,12 @@ def resolve_and_repair_transcript_batch(
         final_row = conn.execute(
             "SELECT * FROM messages WHERE id = ? AND session_id = ?", (target_id, session_id)
         ).fetchone() if wrote else target_row
+        if hand_back:  # metadata as written: the rewrite may have removed a stamp the content outlived
+            missing = {c: final_row[c] for c in _LIVE_MISSING_METADATA if msg.get(c) is None}
+            if any(value is not None for value in missing.values()):
+                decoded = decode_row_fn(final_row)
+                canonical = {c: decoded[c] for c in missing if c in decoded}
+                canonical[_METADATA_ONLY] = True
         msg["timestamp"] = final_row["timestamp"]
         # A row-addressed rewrite keeps the row's identity: the stored uid wins over whatever the live dict
         # carried (a restored dict without one, or a dict stamped before a rolled-back insert).
@@ -216,11 +314,18 @@ def _rewrite_row(
         ).fetchall()
     ] if old_identity is not None else []
 
-    # Owned columns only: same-process metadata writes (a reaction, a backfill) stay as committed.
+    # Owned columns only: same-process metadata writes (a reaction, a backfill) stay as committed. One exception:
+    # the typed-ask stamp names the content it was taken from, so new content whose live dict no longer carries it
+    # (a fold dropped it) removes it, or a reload would read the old ask for the merged row.
     assignments = ", ".join(f"{column} = ?" for column in _OWNED_COLUMNS)
+    ask = f"'$.{TYPED_ASK}'"
+    stamp_outlived_content = (f"json_valid(display_metadata) AND json_extract(display_metadata, {ask}) IS NOT NULL "
+                              f"AND content IS NOT ? AND json_extract(COALESCE(?, '{{}}'), {ask}) IS NULL")
     conn.execute(
-        f"UPDATE messages SET {assignments} WHERE id = ? AND session_id = ?",
-        [*(serialized[column] for column in _OWNED_COLUMNS), int(target_row["id"]), session_id],
+        f"UPDATE messages SET {assignments}, display_metadata = CASE WHEN {stamp_outlived_content} "
+        f"THEN json_remove(display_metadata, {ask}) ELSE display_metadata END WHERE id = ? AND session_id = ?",
+        [*(serialized[column] for column in _OWNED_COLUMNS), serialized["content"], serialized["display_metadata"],
+         int(target_row["id"]), session_id],
     )
     _restore_display_index(conn, session_id, target_row, serialized, old_identity, old_peer_ids)
 

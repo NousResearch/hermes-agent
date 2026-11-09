@@ -69,7 +69,13 @@ def owner(tmp_path, config=None):
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False}, 'display': {'busy_input_mode': 'steer'},
         'model': {'provider': 'custom', 'default': 'controls-fixture', 'base_url': url},
-        'auxiliary': {'title_generation': {'enabled': False}}, **(config or {}),
+        'auxiliary': {'title_generation': {'enabled': False}},
+        # The daemon builds the model picker on its RPC thread (model.options, session.create): keep it
+        # off the internet. A cold models.dev fetch blocks for up to 15 s and the catalog for ~8 s per
+        # URL, so a degraded runner network pushed model.options past the 20 s RPC bound.
+        'model_catalog': {'enabled': False},
+        'models_dev': {'url': url.removesuffix('/v1') + '/models-dev-offline'},
+        **(config or {}),
     }))
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),

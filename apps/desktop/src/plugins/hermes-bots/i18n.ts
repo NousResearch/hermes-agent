@@ -23,8 +23,8 @@
  *    English where it is WRITTEN (`group-chat-parts.tsx`, `group-rounds.ts`);
  *    the places that RENDER the reader's own lines use `group.you` instead.
  *
- * Legacy Bot Mode copy covers `en` / `ja` / `zh` / `zh-hant`; canonical hosted
- * groups additionally cover Arabic and Russian. Missing legacy keys still
+ * Legacy Bot Mode copy covers `en` / `ja` / `zh` / `zh-hant`; the group locale
+ * tables cover all nine registered locales. Missing legacy keys still
  * resolve through this plugin's English bundle. Nouns match core: ボット /
  * 机器人 / 機器人, プロファイル / 配置档案 / 設定檔, ゲートウェイ / 网关 / 閘道.
  */
@@ -33,12 +33,21 @@ import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@
 import { useMemo } from 'react'
 
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import { CROSS_GATEWAY_GROUP_LOCALES } from './cross-gateway-locales'
+import { GROUP_CHAT_LOCALES } from './group-chat-locales'
+import { GROUP_SURFACE_AR } from './group-surface-ar'
+import { GROUP_SURFACE_DE } from './group-surface-de'
+import { GROUP_SURFACE_ES } from './group-surface-es'
+import { GROUP_SURFACE_FR } from './group-surface-fr'
+import { GROUP_SURFACE_RU } from './group-surface-ru'
 import { bind, type Bound } from './i18n-bind'
 import { type BotsMessages } from './i18n-messages'
+import { ROSTER_CHROME } from './roster-chrome-locales'
 import { getPluginCtx } from './shared'
 
 const en: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.en,
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES.en,
   editor: {
     fullConfigHint: 'Full configuration needs a newer gateway (restart it after updating Hermes).',
     liveCapabilities: 'Capabilities (applies immediately — skills, tools, MCP)',
@@ -88,7 +97,7 @@ const en: BotsMessages = {
     mcpHint:
       'Configured servers copy from the main profile; catalog entries are the bundled MCP menu. Entries needing API keys route through setup first (credentials follow the shared keys setting).',
     creating: 'Creating…',
-    createBot: 'Create Bot',
+    createBot: 'Create bot',
     auto: 'Auto',
     autoHint: 'Auto — the name decides',
     unlock: 'Unlock',
@@ -113,6 +122,7 @@ const en: BotsMessages = {
     createdOn: (name, target) => `Bot "${name}" created on ${target}`
   },
   roster: {
+    ...ROSTER_CHROME['en'],
     search: 'Search bots and group chats',
     searchPlaceholder: 'Search bots and group chats…',
     newBotOrGroup: 'New bot or group chat',
@@ -180,7 +190,8 @@ const en: BotsMessages = {
     helpPromptPlaceholder: 'What should this bot help with?',
     descriptionHint: 'Leave blank to generate from the bot’s name and description.',
     newChatWith: 'New chat with this bot',
-    openBotChat: 'Open Bot Chat',
+    openBotChat: 'Open bot chat',
+    openBotChatInNewTab: 'Open bot chat in new tab',
     openingChat: 'Opening chat…',
     pinToTop: 'Pin to top',
     unpin: 'Unpin',
@@ -205,12 +216,12 @@ const en: BotsMessages = {
     duplicateFailed: 'Duplicate failed',
     deleteTitle: 'Delete bot and profile?',
     removeFromAllGroups: 'Remove from all groups',
-    createFirstHint: 'Open the Bots pane and hit “New Bot”.',
+    createFirstHint: 'Open the Bots pane and hit “New bot”.',
     createFailed: 'Could not create the profile yet',
     advanced: 'Advanced',
     advancedHint: 'Advanced — model, skills, toolsets, SOUL.md',
     advancedFailed: 'Advanced configuration failed',
-    openAnotherChatUnsupported: 'Update Hermes Desktop to open another Bot chat.',
+    openAnotherChatUnsupported: 'Update Hermes Desktop to open another bot chat.',
     remoteConnectionsUnsupported: 'Update Hermes Desktop to chat with bots on other connections.',
     openNeedsUpdateTitle: 'This bot lives on an older Hermes',
     openNeedsUpdateMessage: connectionLabel => `Update ${connectionLabel}, then try again.`,
@@ -246,29 +257,30 @@ const en: BotsMessages = {
     generating: 'Generating…'
   },
   group: {
+    ...GROUP_CHAT_LOCALES.en,
     newTitle: 'New group chat',
     manageDesc: 'A bot can join multiple group chats. Memberships sync to every machine.',
     manageTitle: 'Manage groups',
     settingsTitle: 'Group settings',
-    settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
+    settingsDesc: 'Rename the group or set a group chat picture. Members and history are kept.',
     nameLabel: 'Group name',
     holdDetection: 'Detect stop directives',
-    holdDetectionHint: 'Let room messages put addressed members on hold until they are mentioned again.',
+    holdDetectionHint: 'Let group chat messages put addressed members on hold until they are mentioned again.',
     compressHistory: 'Compress history',
     compressHistoryHint: (member: string) =>
-      `Compress ${member}'s hidden room history so the member stops failing with empty replies`,
-    compressing: (member: string) => `Compressing ${member}'s room history…`,
+      `Compress ${member}'s hidden group chat history so the member stops failing with empty replies`,
+    compressing: (member: string) => `Compressing ${member}'s group chat history…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `Compressed ${compressed} room session${compressed === 1 ? '' : 's'} for ${member}${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `Nothing to compress for ${member} — no room session yet`,
-    compressFailed: (member: string, error: string) => `Could not compress ${member}'s room history: ${error}`,
+      `Compressed ${compressed} group chat session${compressed === 1 ? '' : 's'} for ${member}${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `Nothing to compress for ${member} — no group chat session yet`,
+    compressFailed: (member: string, error: string) => `Could not compress ${member}'s group chat history: ${error}`,
     searchToAdd: 'Search bots to add',
     searchToAddPlaceholder: 'Search bots to add…',
     removeFromSelection: 'Remove from selection',
     disbandTitle: 'Disband group chat?',
     deleteTitle: 'Delete group chat?',
     deleteAction: 'Delete',
-    composerPlaceholder: 'Say something — every bot in this group hears the room.',
+    composerPlaceholder: 'Say something — every bot in this group chat sees your message.',
     slashCommandsUnsupported:
       'Slash commands are not supported in group chats. Open an individual bot chat to use them.',
     attachHint: 'Attach files — every responding bot sees them',
@@ -281,22 +293,19 @@ const en: BotsMessages = {
     collapseThreadLabel: 'Collapse this thread',
     activity: 'Activity',
     noActivityYet: 'No activity in this turn yet.',
-    showActivity: 'Show room activity',
-    hideActivity: 'Hide room activity',
+    showActivity: 'Show group chat activity',
+    hideActivity: 'Hide group chat activity',
     stop: 'Stop',
     stopHint: 'Stop this run — interrupts the member on turn and holds the rest',
-    allHeldStatus: count => `All ${count} bots are paused`,
     heldMembersStatus: members => `Paused: ${members}`,
     holdReleaseHint: 'Mention a paused bot or send @all resume to release them.',
     needsYourInput: 'A bot in this group chat needs your input',
     noMembersToSend: group =>
-      `${group} has no members to send to — add a bot, or reopen the room if members are still loading.`,
+      `${group} has no members to send to — add a bot, or reopen the group chat if members are still loading.`,
     pictureGenerationFailed: 'Group picture generation failed',
     nameTaken: name => `A group named “${name}” already exists.`,
-    memberCount: count => `${count} bots`,
     you: 'You',
-    availableCount: (available, total) => `${available} of ${total} available`,
-    settingsHint: group => `Group settings — rename ${group} or set a room picture`,
+    settingsHint: group => `Group settings — rename ${group} or set a group chat picture`,
     settingsLabel: group => `Group settings for ${group}`,
     disbandHint: group => `Disband the ${group} group chat`,
     disbandLabel: group => `Disband ${group}`,
@@ -304,9 +313,6 @@ const en: BotsMessages = {
     disbanding: 'Disbanding…',
     disbandDone: 'Disbanded',
     disbanded: group => `Disbanded “${group}”`,
-    disbandDescPrefix: 'This removes the ',
-    disbandDescSuffix: count =>
-      ` grouping from its ${count} bots and clears the shared room log. The bots themselves and their per-group sessions are kept.`,
     stopped: group => `Stopped ${group} — remaining turns are held until you resume`,
     removeAttachment: 'Remove attachment',
     threadFallback: 'Thread',
@@ -315,10 +321,10 @@ const en: BotsMessages = {
     dropToRoom: 'Drop to attach — every responding bot sees it',
     waitingForAnswer: 'Waiting for your answer…',
     memberThinking: name => `${name} is thinking…`,
-    roomWorking: 'The room is working…',
+    roomWorking: 'The group chat is working…',
     messageRoom: group => `Message ${group}`,
     newThreadPlaceholder: group => `New thread in ${group}… (@name to direct, @everyone for all)`,
-    everyoneMeta: 'Every bot in the room',
+    everyoneMeta: 'Every bot in the group chat',
     commandApproval: 'command approval',
     answerFailed: (handle, error) => `Could not send the answer to @${handle}: ${error}`,
     wantsToRunCommand: handle => `@${handle} wants to run a command:`,
@@ -409,7 +415,8 @@ const en: BotsMessages = {
     youControl: 'You are in control',
     otherControls: 'Another viewer is in control',
     agentControls: 'Bot is in control',
-    controlTaken: 'Another viewer took control. Watching only.'
+    controlTaken: 'Another viewer took control. Watching only.',
+    needsHttps: 'Bot screens need a secure connection. Open the Webapp over HTTPS, or through an SSH tunnel to 127.0.0.1, to view this one.'
   },
   cron: {
     untitled: 'Untitled job',
@@ -479,6 +486,7 @@ const en: BotsMessages = {
 
 const ja: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.ja,
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ja,
   editor: {
     fullConfigHint: 'すべての設定を使うには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
     liveCapabilities: '機能（即時適用 — スキル、ツール、MCP）',
@@ -555,6 +563,7 @@ const ja: BotsMessages = {
     createdOn: (name, target) => `${target} にボット「${name}」を作成しました`
   },
   roster: {
+    ...ROSTER_CHROME['ja'],
     search: 'ボットとグループチャットを検索',
     searchPlaceholder: 'ボットとグループチャットを検索…',
     newBotOrGroup: '新しいボットまたはグループチャット',
@@ -622,6 +631,7 @@ const ja: BotsMessages = {
     descriptionHint: '空欄のままにすると、ボットの名前と説明から生成します。',
     newChatWith: 'このボットと新しいチャット',
     openBotChat: 'ボットチャットを開く',
+    openBotChatInNewTab: 'ボットチャットを新しいタブで開く',
     openingChat: 'チャットを開いています…',
     pinToTop: '先頭にピン留め',
     unpin: 'ピン留めを解除',
@@ -687,29 +697,30 @@ const ja: BotsMessages = {
     generating: '生成中…'
   },
   group: {
+    ...GROUP_CHAT_LOCALES.ja,
     newTitle: '新しいグループチャット',
     manageDesc: 'ボットは複数のグループチャットに参加できます。メンバーシップはすべてのマシンに同期されます。',
     manageTitle: 'グループを管理',
     settingsTitle: 'グループ設定',
-    settingsDesc: 'グループ名の変更や部屋の画像の設定ができます。メンバーと履歴は保持されます。',
+    settingsDesc: 'グループ名の変更やグループチャットの画像の設定ができます。メンバーと履歴は保持されます。',
     nameLabel: 'グループ名',
     holdDetection: '停止指示を検出',
-    holdDetectionHint: 'ルームのメッセージで、再びメンションされるまで対象メンバーを保留にします。',
+    holdDetectionHint: 'グループチャットのメッセージで、再びメンションされるまで対象メンバーを保留にします。',
     compressHistory: '履歴を圧縮',
     compressHistoryHint: (member: string) =>
-      `${member} の非表示のルーム履歴を圧縮し、空の応答で失敗しなくなるようにします`,
-    compressing: (member: string) => `${member} のルーム履歴を圧縮中…`,
+      `${member} の非表示のグループチャット履歴を圧縮し、空の応答で失敗しなくなるようにします`,
+    compressing: (member: string) => `${member} のグループチャット履歴を圧縮中…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `${member} のルームセッション ${compressed} 件を圧縮しました${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `${member} に圧縮する履歴はありません — ルームセッションがまだありません`,
-    compressFailed: (member: string, error: string) => `${member} のルーム履歴を圧縮できませんでした: ${error}`,
+      `${member} のグループチャットセッション ${compressed} 件を圧縮しました${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} に圧縮する履歴はありません — グループチャットセッションがまだありません`,
+    compressFailed: (member: string, error: string) => `${member} のグループチャット履歴を圧縮できませんでした: ${error}`,
     searchToAdd: '追加するボットを検索',
     searchToAddPlaceholder: '追加するボットを検索…',
     removeFromSelection: '選択から外す',
     disbandTitle: 'グループチャットを解散しますか？',
     deleteTitle: 'グループチャットを削除しますか？',
     deleteAction: '削除',
-    composerPlaceholder: '何か書いてください — このグループのすべてのボットが部屋の内容を受け取ります。',
+    composerPlaceholder: '何か書いてください — このグループチャットのすべてのボットがメッセージを受け取ります。',
     slashCommandsUnsupported:
       'グループチャットではスラッシュコマンドを使用できません。個別のボットチャットを開いて使用してください。',
     attachHint: 'ファイルを添付 — 応答するすべてのボットが見ます',
@@ -722,22 +733,19 @@ const ja: BotsMessages = {
     collapseThreadLabel: 'このスレッドを折りたたむ',
     activity: 'アクティビティ',
     noActivityYet: 'このターンのアクティビティはまだありません。',
-    showActivity: '部屋のアクティビティを表示',
-    hideActivity: '部屋のアクティビティを隠す',
+    showActivity: 'グループチャットのアクティビティを表示',
+    hideActivity: 'グループチャットのアクティビティを隠す',
     stop: '停止',
     stopHint: 'この実行を停止 — ターン中のメンバーを中断し、残りを保留します',
-    allHeldStatus: count => `すべてのボット（${count}体）が一時停止中`,
     heldMembersStatus: members => `一時停止中: ${members}`,
     holdReleaseHint: '一時停止中のボットにメンションするか、@all resume を送信して再開します。',
     needsYourInput: 'このグループチャットのボットが入力を待っています',
     noMembersToSend: group =>
-      `${group} に送信先のメンバーがいません。ボットを追加するか、メンバーの読み込み中であればルームを開き直してください。`,
+      `${group} に送信先のメンバーがいません。ボットを追加するか、メンバーの読み込み中であればグループチャットを開き直してください。`,
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
     nameTaken: name => `「${name}」という名前のグループはすでに存在します。`,
-    memberCount: count => `ボット${count}体`,
     you: 'あなた',
-    availableCount: (available, total) => `${total}体中${available}体が利用可能`,
-    settingsHint: group => `グループ設定 — ${group}の名前変更やルーム画像の設定`,
+    settingsHint: group => `グループ設定 — ${group}の名前変更やグループチャット画像の設定`,
     settingsLabel: group => `${group}のグループ設定`,
     disbandHint: group => `${group}グループチャットを解散`,
     disbandLabel: group => `${group}を解散`,
@@ -745,9 +753,6 @@ const ja: BotsMessages = {
     disbanding: '解散中…',
     disbandDone: '解散しました',
     disbanded: group => `「${group}」を解散しました`,
-    disbandDescPrefix: '',
-    disbandDescSuffix: count =>
-      `のグループ分けをボット${count}体から解除し、共有ルームログを消去します。ボット自体と各グループのセッションは保持されます。`,
     stopped: group => `${group}を停止しました — 残りのターンは再開するまで保留されます`,
     removeAttachment: '添付を削除',
     threadFallback: 'スレッド',
@@ -756,10 +761,10 @@ const ja: BotsMessages = {
     dropToRoom: 'ドロップして添付 — 応答するすべてのボットが見られます',
     waitingForAnswer: 'あなたの回答を待っています…',
     memberThinking: name => `${name}が考えています…`,
-    roomWorking: 'ルームが作業中です…',
+    roomWorking: 'グループチャットが作業中です…',
     messageRoom: group => `${group}にメッセージ`,
     newThreadPlaceholder: group => `${group}で新しいスレッド…（@名前で個別、@everyoneで全員）`,
-    everyoneMeta: 'ルーム内のすべてのボット',
+    everyoneMeta: 'グループチャット内のすべてのボット',
     commandApproval: 'コマンドの承認',
     answerFailed: (handle, error) => `@${handle}に回答を送信できませんでした: ${error}`,
     wantsToRunCommand: handle => `@${handle}がコマンドを実行しようとしています:`,
@@ -853,7 +858,8 @@ const ja: BotsMessages = {
     youControl: 'あなたが操作中',
     otherControls: '別のビューアが操作中',
     agentControls: 'ボットが操作中',
-    controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。'
+    controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。',
+    needsHttps: 'ボットの画面には安全な接続が必要です。表示するには、Webapp を HTTPS か 127.0.0.1 への SSH トンネル経由で開いてください。'
   },
   cron: {
     untitled: '無題のジョブ',
@@ -923,6 +929,7 @@ const ja: BotsMessages = {
 
 const zh: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.zh,
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES.zh,
   editor: {
     fullConfigHint: '完整配置需要更新网关（更新 Hermes 后请重启网关）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
@@ -993,6 +1000,7 @@ const zh: BotsMessages = {
     createdOn: (name, target) => `已在 ${target} 上创建机器人“${name}”`
   },
   roster: {
+    ...ROSTER_CHROME['zh'],
     search: '搜索机器人和群聊',
     searchPlaceholder: '搜索机器人和群聊…',
     newBotOrGroup: '新建机器人或群聊',
@@ -1056,6 +1064,7 @@ const zh: BotsMessages = {
     descriptionHint: '留空则根据机器人的名称和描述生成。',
     newChatWith: '与此机器人开新聊天',
     openBotChat: '打开机器人聊天',
+    openBotChatInNewTab: '在新标签页中打开机器人聊天',
     openingChat: '正在打开聊天…',
     pinToTop: '置顶',
     unpin: '取消置顶',
@@ -1121,28 +1130,29 @@ const zh: BotsMessages = {
     generating: '生成中…'
   },
   group: {
+    ...GROUP_CHAT_LOCALES.zh,
     newTitle: '新建群聊',
     manageDesc: '一个机器人可以加入多个群聊。成员关系会同步到每台设备。',
     manageTitle: '管理群组',
     settingsTitle: '群组设置',
-    settingsDesc: '重命名群组或设置房间图片。成员和历史都会保留。',
+    settingsDesc: '重命名群组或设置群聊图片。成员和历史都会保留。',
     nameLabel: '群组名称',
     holdDetection: '检测停止指令',
-    holdDetectionHint: '允许房间消息将指定成员保持暂停，直到再次提及该成员。',
+    holdDetectionHint: '允许群聊中的停止指令暂停指定成员，直到再次提及该成员。',
     compressHistory: '压缩历史',
-    compressHistoryHint: (member: string) => `压缩 ${member} 隐藏的房间历史，避免该成员因空回复而失败`,
-    compressing: (member: string) => `正在压缩 ${member} 的房间历史…`,
+    compressHistoryHint: (member: string) => `压缩 ${member} 隐藏的群聊历史，避免该成员因空回复而失败`,
+    compressing: (member: string) => `正在压缩 ${member} 的群聊历史…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `已压缩 ${member} 的 ${compressed} 个房间会话${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `${member} 没有可压缩的历史 — 还没有房间会话`,
-    compressFailed: (member: string, error: string) => `无法压缩 ${member} 的房间历史: ${error}`,
+      `已压缩 ${member} 的 ${compressed} 个群聊会话${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} 没有可压缩的历史 — 还没有群聊会话`,
+    compressFailed: (member: string, error: string) => `无法压缩 ${member} 的群聊历史: ${error}`,
     searchToAdd: '搜索要添加的机器人',
     searchToAddPlaceholder: '搜索要添加的机器人…',
     removeFromSelection: '从选择中移除',
     disbandTitle: '解散群聊？',
     deleteTitle: '删除群聊？',
     deleteAction: '删除',
-    composerPlaceholder: '说点什么 — 这个群里的每个机器人都会听到。',
+    composerPlaceholder: '说点什么 — 这个群聊里的每个机器人都会看到你的消息。',
     slashCommandsUnsupported: '群聊不支持斜杠命令。请打开单个机器人的聊天来使用。',
     attachHint: '附加文件 — 每个回应的机器人都能看到',
     newThread: '新帖子',
@@ -1154,31 +1164,25 @@ const zh: BotsMessages = {
     collapseThreadLabel: '收起此帖子',
     activity: '活动',
     noActivityYet: '本回合还没有活动。',
-    showActivity: '显示房间活动',
-    hideActivity: '隐藏房间活动',
+    showActivity: '显示群聊活动',
+    hideActivity: '隐藏群聊活动',
     stop: '停止',
     stopHint: '停止本次运行 — 中断当前回合的成员，并暂停其余成员',
-    allHeldStatus: count => `全部 ${count} 个机器人已暂停`,
     heldMembersStatus: members => `已暂停：${members}`,
     holdReleaseHint: '提及已暂停的机器人，或发送 @all resume 以恢复它们。',
     needsYourInput: '此群聊中有机器人需要你输入',
     noMembersToSend: group => `${group} 没有可发送的成员——请添加机器人，如果成员仍在加载，请重新打开该群聊。`,
     pictureGenerationFailed: '群组图片生成失败',
-    nameTaken: name => `已存在名为“${name}”的群聊。`,
-    memberCount: count => `${count} 个机器人`,
+    nameTaken: name => `已存在名为“${name}”的群组。`,
     you: '你',
-    availableCount: (available, total) => `${total} 个中 ${available} 个可用`,
-    settingsHint: group => `群聊设置 — 重命名 ${group} 或设置房间图片`,
-    settingsLabel: group => `${group} 的群聊设置`,
+    settingsHint: group => `群组设置 — 重命名 ${group} 或设置群聊图片`,
+    settingsLabel: group => `${group} 的群组设置`,
     disbandHint: group => `解散 ${group} 群聊`,
     disbandLabel: group => `解散 ${group}`,
     disbandAction: '解散',
     disbanding: '正在解散…',
     disbandDone: '已解散',
     disbanded: group => `已解散“${group}”`,
-    disbandDescPrefix: '',
-    disbandDescSuffix: count =>
-      ` 的分组将从 ${count} 个机器人中移除，并清空共享房间日志。机器人本身及其各群聊会话都会保留。`,
     stopped: group => `已停止 ${group} — 其余轮次将保留到你恢复为止`,
     removeAttachment: '移除附件',
     threadFallback: '讨论串',
@@ -1187,10 +1191,10 @@ const zh: BotsMessages = {
     dropToRoom: '拖放以附加 — 每个回应的机器人都能看到',
     waitingForAnswer: '等待你的回答…',
     memberThinking: name => `${name} 正在思考…`,
-    roomWorking: '房间正在处理…',
+    roomWorking: '群聊正在处理…',
     messageRoom: group => `发消息给 ${group}`,
     newThreadPlaceholder: group => `在 ${group} 中开启新讨论串…（@名称指定，@everyone 全体）`,
-    everyoneMeta: '房间里的所有机器人',
+    everyoneMeta: '群聊里的所有机器人',
     commandApproval: '命令批准',
     answerFailed: (handle, error) => `无法将回答发送给 @${handle}：${error}`,
     wantsToRunCommand: handle => `@${handle} 想执行一个命令：`,
@@ -1280,7 +1284,8 @@ const zh: BotsMessages = {
     youControl: '你正在控制',
     otherControls: '另一位查看者正在控制',
     agentControls: '机器人正在控制',
-    controlTaken: '另一位查看者已接管控制。仅可观看。'
+    controlTaken: '另一位查看者已接管控制。仅可观看。',
+    needsHttps: '机器人屏幕需要安全连接。请通过 HTTPS 或到 127.0.0.1 的 SSH 隧道打开 Webapp 后查看。'
   },
   cron: {
     untitled: '未命名任务',
@@ -1350,6 +1355,7 @@ const zh: BotsMessages = {
 
 const zhHant: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES['zh-hant'],
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES['zh-hant'],
   editor: {
     fullConfigHint: '完整設定需要更新閘道（更新 Hermes 後請重新啟動閘道）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
@@ -1420,6 +1426,7 @@ const zhHant: BotsMessages = {
     createdOn: (name, target) => `已在 ${target} 上建立機器人「${name}」`
   },
   roster: {
+    ...ROSTER_CHROME['zh-hant'],
     search: '搜尋機器人和群組聊天',
     searchPlaceholder: '搜尋機器人和群組聊天…',
     newBotOrGroup: '新增機器人或群組聊天',
@@ -1483,6 +1490,7 @@ const zhHant: BotsMessages = {
     descriptionHint: '留空則依機器人的名稱和描述產生。',
     newChatWith: '與此機器人開新聊天',
     openBotChat: '開啟機器人聊天',
+    openBotChatInNewTab: '在新分頁中開啟機器人聊天',
     openingChat: '正在開啟聊天…',
     pinToTop: '釘選到頂端',
     unpin: '取消釘選',
@@ -1548,28 +1556,29 @@ const zhHant: BotsMessages = {
     generating: '生成中…'
   },
   group: {
+    ...GROUP_CHAT_LOCALES['zh-hant'],
     newTitle: '新增群組聊天',
     manageDesc: '一個機器人可以加入多個群組聊天。成員關係會同步到每台裝置。',
     manageTitle: '管理群組',
     settingsTitle: '群組設定',
-    settingsDesc: '重新命名群組或設定房間圖片。成員和歷史都會保留。',
+    settingsDesc: '重新命名群組或設定群組聊天圖片。成員和歷史都會保留。',
     nameLabel: '群組名稱',
     holdDetection: '偵測停止指令',
-    holdDetectionHint: '允許房間訊息暫停指定成員，直到再次提及該成員。',
+    holdDetectionHint: '允許群組聊天訊息暫停指定成員，直到再次提及該成員。',
     compressHistory: '壓縮歷史',
-    compressHistoryHint: (member: string) => `壓縮 ${member} 隱藏的房間歷史，避免該成員因空回覆而失敗`,
-    compressing: (member: string) => `正在壓縮 ${member} 的房間歷史…`,
+    compressHistoryHint: (member: string) => `壓縮 ${member} 隱藏的群組聊天歷史，避免該成員因空回覆而失敗`,
+    compressing: (member: string) => `正在壓縮 ${member} 的群組聊天歷史…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `已壓縮 ${member} 的 ${compressed} 個房間會話${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `${member} 沒有可壓縮的歷史 — 還沒有房間會話`,
-    compressFailed: (member: string, error: string) => `無法壓縮 ${member} 的房間歷史: ${error}`,
+      `已壓縮 ${member} 的 ${compressed} 個群組聊天工作階段${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} 沒有可壓縮的歷史 — 還沒有群組聊天工作階段`,
+    compressFailed: (member: string, error: string) => `無法壓縮 ${member} 的群組聊天歷史: ${error}`,
     searchToAdd: '搜尋要加入的機器人',
     searchToAddPlaceholder: '搜尋要加入的機器人…',
     removeFromSelection: '從選取中移除',
     disbandTitle: '解散群組聊天？',
     deleteTitle: '刪除群組聊天？',
     deleteAction: '刪除',
-    composerPlaceholder: '說點什麼 — 這個群組裡的每個機器人都會聽到。',
+    composerPlaceholder: '說點什麼 — 這個群組聊天裡的每個機器人都會看到你的訊息。',
     slashCommandsUnsupported: '群組聊天不支援斜線命令。請開啟個別機器人的聊天來使用。',
     attachHint: '附加檔案 — 每個回應的機器人都能看到',
     newThread: '新討論串',
@@ -1581,21 +1590,18 @@ const zhHant: BotsMessages = {
     collapseThreadLabel: '收合此討論串',
     activity: '活動',
     noActivityYet: '本回合還沒有活動。',
-    showActivity: '顯示房間活動',
-    hideActivity: '隱藏房間活動',
+    showActivity: '顯示群組聊天活動',
+    hideActivity: '隱藏群組聊天活動',
     stop: '停止',
     stopHint: '停止本次執行 — 中斷目前回合的成員，並暫停其餘成員',
-    allHeldStatus: count => `全部 ${count} 個機器人已暫停`,
     heldMembersStatus: members => `已暫停：${members}`,
     holdReleaseHint: '提及已暫停的機器人，或傳送 @all resume 以恢復它們。',
     needsYourInput: '此群組聊天中有機器人需要您的輸入',
     noMembersToSend: group => `${group} 沒有可傳送的成員——請新增機器人，若成員仍在載入中，請重新開啟該群組聊天。`,
     pictureGenerationFailed: '群組圖片產生失敗',
-    nameTaken: name => `已存在名為「${name}」的群組聊天。`,
-    memberCount: count => `${count} 個機器人`,
+    nameTaken: name => `已存在名為「${name}」的群組。`,
     you: '您',
-    availableCount: (available, total) => `${total} 個中 ${available} 個可用`,
-    settingsHint: group => `群組設定 — 重新命名 ${group} 或設定房間圖片`,
+    settingsHint: group => `群組設定 — 重新命名 ${group} 或設定群組聊天圖片`,
     settingsLabel: group => `${group} 的群組設定`,
     disbandHint: group => `解散 ${group} 群組聊天`,
     disbandLabel: group => `解散 ${group}`,
@@ -1603,9 +1609,6 @@ const zhHant: BotsMessages = {
     disbanding: '正在解散…',
     disbandDone: '已解散',
     disbanded: group => `已解散「${group}」`,
-    disbandDescPrefix: '',
-    disbandDescSuffix: count =>
-      ` 的分組將從 ${count} 個機器人中移除，並清空共享房間日誌。機器人本身及其各群組工作階段都會保留。`,
     stopped: group => `已停止 ${group} — 其餘回合將保留到你恢復為止`,
     removeAttachment: '移除附件',
     threadFallback: '討論串',
@@ -1614,10 +1617,10 @@ const zhHant: BotsMessages = {
     dropToRoom: '拖放以附加 — 每個回應的機器人都能看到',
     waitingForAnswer: '等待你的回答…',
     memberThinking: name => `${name} 正在思考…`,
-    roomWorking: '房間正在處理…',
+    roomWorking: '群組聊天正在處理…',
     messageRoom: group => `傳訊息給 ${group}`,
     newThreadPlaceholder: group => `在 ${group} 中開啟新討論串…（@名稱指定，@everyone 全體）`,
-    everyoneMeta: '房間裡的所有機器人',
+    everyoneMeta: '群組聊天裡的所有機器人',
     commandApproval: '命令核准',
     answerFailed: (handle, error) => `無法將回答傳送給 @${handle}：${error}`,
     wantsToRunCommand: handle => `@${handle} 想執行一個命令：`,
@@ -1707,7 +1710,8 @@ const zhHant: BotsMessages = {
     youControl: '你正在控制',
     otherControls: '另一位檢視者正在控制',
     agentControls: '機器人正在控制',
-    controlTaken: '另一位檢視者已接手控制。僅可觀看。'
+    controlTaken: '另一位檢視者已接手控制。僅可觀看。',
+    needsHttps: '機器人螢幕需要安全連線。請透過 HTTPS 或到 127.0.0.1 的 SSH 通道開啟 Webapp 後檢視。'
   },
   cron: {
     untitled: '未命名工作',
@@ -1781,11 +1785,11 @@ export const BOTS_LOCALES: PluginLocaleBundles = {
   ja,
   zh,
   'zh-hant': zhHant,
-  ar: { canonical: CANONICAL_GROUP_LOCALES.ar },
-  ru: { canonical: CANONICAL_GROUP_LOCALES.ru },
-  fr: { canonical: CANONICAL_GROUP_LOCALES.fr },
-  de: { canonical: CANONICAL_GROUP_LOCALES.de },
-  es: { canonical: CANONICAL_GROUP_LOCALES.es }
+  ar: { canonical: CANONICAL_GROUP_LOCALES.ar, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ar, ...GROUP_SURFACE_AR },
+  ru: { canonical: CANONICAL_GROUP_LOCALES.ru, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ru, ...GROUP_SURFACE_RU },
+  fr: { canonical: CANONICAL_GROUP_LOCALES.fr, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.fr, ...GROUP_SURFACE_FR },
+  de: { canonical: CANONICAL_GROUP_LOCALES.de, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.de, ...GROUP_SURFACE_DE },
+  es: { canonical: CANONICAL_GROUP_LOCALES.es, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.es, ...GROUP_SURFACE_ES }
 }
 
 export type BotsText = Bound<BotsMessages>
@@ -1810,10 +1814,9 @@ let bound: { text: BotsText; translate: PluginTranslate } | null = null
 
 /** `useBots` for the module-level functions a hook can't reach — the schedule
  *  summarizers and label helpers that render inside components but aren't
- *  components. Non-reactive on its own; every caller is invoked during a
- *  render that a core `useI18n()` already subscribes to, so a locale switch
- *  still repaints. Cached on translator identity: `bind` walks the whole tree,
- *  and these run per row. */
+ *  components. Non-reactive on its own; rendering callers rely on their
+ *  component's locale subscription. Cache the shape on translator identity; its leaves resolve
+ *  on read so handlers and async callers also see the current language. */
 export function botsText(): BotsText {
   const translate = getPluginCtx()?.i18n?.t ?? english
 

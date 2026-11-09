@@ -815,14 +815,6 @@ def _interrupt_session_turn(
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
             request_hard_interrupt(session.get("agent"))
-        # Background delegations are detached from the turn's interrupt fan-out; a stop ends them too
-        # (own UI sid + spawner id only — a viewer tab must not kill gateway work). Each returns as an
-        # interrupted completion with its partial output.
-        with contextlib.suppress(Exception):
-            from tools.async_delegation import interrupt_for_session
-            interrupt_for_session(
-                origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
-                parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""))
         if not run_thread_alive and not compressing:
             with session["history_lock"]:
                 if session.get("running"):

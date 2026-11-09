@@ -282,3 +282,108 @@ def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
 
     assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
     assert not (destination / "dist").exists(), "root build output never enters the snapshot"
+
+
+def test_tool_store_inside_a_package_stays_out_of_the_snapshot(tmp_path):
+    """The container image keeps PM's tool store in the ``tools`` package directory; each dependency
+    generation copied its interpreters, browser and media binaries (~1.5 GB) into its workspace."""
+    core = tmp_path / "core"
+    tools = core / "tools"
+    (tools / "environments").mkdir(parents=True)
+    (tools / "wakewords").mkdir()
+    for entry in ("python-3.14.7-linux-x64", "chromium-1208", "fetch-abc123"):
+        (tools / entry / "bin").mkdir(parents=True)
+        (tools / entry / "bin" / "payload").write_text("BINARY\n", encoding="utf-8")
+    (tools / "__init__.py").write_text("", encoding="utf-8")
+    (tools / "environments" / "__init__.py").write_text("", encoding="utf-8")
+    (tools / "wakewords" / "hey.onnx").write_text("DATA\n", encoding="utf-8")
+    (tools / "facts.json").write_text(json.dumps({"packages": {
+        "python": {"entry": "python-3.14.7-linux-x64"}, "chromium": {"entry": "chromium-1208"},
+        "venv": {"entry": None}, "escape": {"entry": "../environments"}}}), encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["tools", "tools.*"]\n',
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "tools/environments/__init__.py").is_file()
+    assert (destination / "tools/wakewords/hey.onnx").read_text(encoding="utf-8") == "DATA\n"
+    for entry in ("python-3.14.7-linux-x64", "chromium-1208", "fetch-abc123"):
+        assert not (destination / "tools" / entry).exists(), f"store entry {entry} copied into the snapshot"
+
+
+def test_a_facts_file_without_published_entries_hides_nothing(tmp_path):
+    core = tmp_path / "core"
+    data = core / "agent" / "chromium-1208"
+    data.mkdir(parents=True)
+    (data / "kept.txt").write_text("KEPT\n", encoding="utf-8")
+    (core / "agent" / "facts.json").write_text('{"schema": 1}', encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["agent"]\n',
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "agent/chromium-1208/kept.txt").read_text(encoding="utf-8") == "KEPT\n"
+
+
+def test_a_package_root_named_in_where_travels_into_the_snapshot(tmp_path):
+    """With packages under ``src/`` (``where = [".", "src"]``), the snapshot dropped ``src/`` because
+    no include pattern names it, and the generation's editable install had no ``hermes_agent``."""
+    core = tmp_path / "core"
+    (core / "src" / "hermes_agent").mkdir(parents=True)
+    (core / "src" / "hermes_agent" / "__init__.py").write_text("MOVED = 1\n", encoding="utf-8")
+    (core / "agent").mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\nwhere=[".", "src"]\ninclude=["agent", "hermes_agent*"]\n',
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "src/hermes_agent/__init__.py").read_text(encoding="utf-8") == "MOVED = 1\n"
+    assert (destination / "agent").is_dir()
+
+
+def test_a_packaging_change_without_a_lock_change_needs_a_new_environment(tmp_path, monkeypatch):
+    """The stamp hashed uv.lock and the selection only, so moving packages (a new ``where``) with no
+    dependency change kept the old generation current and its snapshot kept serving moved code."""
+    from pm import paths
+    from pm.packages import Venv
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text('[project]\nname="core"\n[tool.setuptools.packages.find]\ninclude=["agent"]\n',
+                         encoding="utf-8")
+    monkeypatch.setattr(paths, "repo_root", lambda: root)
+    before = Venv(root).expected_stamp([], plugin_dirs=[])
+    assert Venv(root).expected_stamp([], plugin_dirs=[]) == before
+    pyproject.write_text('[project]\nname="core"\n[tool.setuptools.packages.find]\nwhere=[".", "src"]\n'
+                         'include=["agent", "hermes_agent*"]\n', encoding="utf-8")
+    assert Venv(root).expected_stamp([], plugin_dirs=[]) != before
+
+
+@pytest.mark.parametrize("name", ["pyproject.toml", "setup.py", "setup.cfg"])
+def test_each_packaging_file_is_part_of_the_environment_stamp(tmp_path, monkeypatch, name):
+    from pm import paths
+    from pm.packages import Venv
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text('[project]\nname="core"\n', encoding="utf-8")
+    monkeypatch.setattr(paths, "repo_root", lambda: root)
+    before = Venv(root).expected_stamp([], plugin_dirs=[])
+    with (root / name).open("a", encoding="utf-8") as handle:
+        handle.write("# packaging edit\n")
+    assert Venv(root).expected_stamp([], plugin_dirs=[]) != before

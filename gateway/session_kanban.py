@@ -105,7 +105,7 @@ async def run_task(connection, params):
     from hermes_cli import kanban_db as kb
     import os
     import psutil
-    from hermes_cli.process_identity import process_birth
+    from hermes_cli.process_identity import worker_birth
     context = json.loads(policy.kanban_json)
 
     def admit_claim():
@@ -126,7 +126,7 @@ async def run_task(connection, params):
                     raise RuntimeStoreError('stale_kanban_claim')
                 kb._append_event(conn, task.id, 'owner_admitted',
                     {'db': owner_db, 'session_id': ref.session_id,
-                     'request_id': request_id, 'pid': os.getpid(), 'birth': process_birth(psutil.Process())},
+                     'request_id': request_id, 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
                     run_id=task.current_run_id)
     from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
@@ -312,6 +312,33 @@ def _record_worker_result(context, code, last_output):
                  'last_output': last_output}, run_id=context['run_id'])
 
 
+def record_worker_loss(policy, reason, *, pid=None, bound=False):
+    """Append a run-scoped ``worker_lost`` event for this attempt to the card's board.
+
+    Dropped when the card has moved past the run (it says nothing about the current attempt).
+    Never raises: the caller's own loss handling must not depend on the board write.
+    """
+    try:
+        context = json.loads(policy.kanban_json or 'null')
+        if not context:
+            return
+        from hermes_cli.kanban_db_connect import connect_closing
+        from hermes_cli import kanban_db as kb
+        run_id = int(context['run_id'])
+        with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
+            row = conn.execute('SELECT status, current_run_id FROM tasks WHERE id=?',
+                               (context['task_id'],)).fetchone()
+            if row is None or row[0] != 'running' or row[1] != run_id:
+                return
+            kb._append_event(conn, context['task_id'], 'worker_lost',
+                             {'reason': str(reason)[:200], 'claim_lock': context['claim_lock'],
+                              'run_id': run_id, 'pid': pid, 'bound': bool(bound)},
+                             run_id=run_id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception('kanban worker_lost record failed')
+
+
 def _bound_worker_matches(conn, context):
     import os
     row = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='worker_bound' ORDER BY id DESC LIMIT 1",
@@ -348,19 +375,26 @@ def worker_exit_code(path, params):
     return worker_result(path, params).get('exit_code', 1)
 
 
+# Who wrote a card attempt's prompts: the dispatcher, never the operator, so memory providers do not
+# file "work kanban task t_..." and the worker's progress notes as the human's own turns (#137406).
+# Not a ``bot:<profile>`` id: a Bot Mode profile named ``kanban`` would share its memory key.
+KANBAN_TURN_AUTHOR = {'id': 'kanban:dispatcher', 'name': 'Kanban dispatcher', 'is_bot': True}
+
+
 def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
         raise ValueError('kanban_skills_unavailable')
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
-    result = agent.run_conversation(prompt, conversation_history=history)
+    result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 
     def recover(nudge):
         nonlocal result
         prior = result.get('messages') if isinstance(result, dict) else None
         result = agent.run_conversation(nudge, conversation_history=prior or
-                                        agent._session_db.get_messages_as_conversation(agent.session_id))
+                                        agent._session_db.get_messages_as_conversation(agent.session_id),
+                                        turn_author=KANBAN_TURN_AUTHOR)
     # Same in-place retry as the one-shot CLI worker (agent/kanban_turn_recovery.py), but the
     # carrier is this frame's bound claim, never the owner process's environment.
     from agent.kanban_turn_recovery import recover_failed_kanban_turns
@@ -382,7 +416,8 @@ def _run_task_turns(agent, frame, history, context):
             kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'])
     def turn(prompt):
         nonlocal result
-        result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id))
+        result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id),
+                                        turn_author=KANBAN_TURN_AUTHOR)
         return result.get('final_response', '')
     run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,
         task_status_fn=status, block_fn=block, max_turns=context['goal_max_turns'] or DEFAULT_MAX_TURNS,

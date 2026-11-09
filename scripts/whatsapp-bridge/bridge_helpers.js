@@ -608,6 +608,47 @@ export function inboundReadReceiptKeys({ key, enabled }) {
   return [key];
 }
 
+// proto.WebMessageInfo.Status values (Baileys). PENDING is our own local state, never a receipt.
+const DELIVERY_STATUS_NAMES = { 0: 'error', 2: 'server_ack', 3: 'delivered', 4: 'read', 5: 'played' };
+const RECEIPT_TIMESTAMP_STATUS = [
+  ['playedTimestamp', 'played'], ['readTimestamp', 'read'], ['receiptTimestamp', 'delivered'],
+];
+
+/**
+ * Delivery/read status of a message Hermes sent, as a queue event for the adapter to log.
+ * `messages.update` carries `update.status` for 1:1 chats; `message-receipt.update` carries a
+ * per-recipient `receipt` for groups. Returns null for anything that is not a status change of
+ * one of our own sends (`isOwnSend(id)`), so human messages on the linked phone are never logged.
+ */
+export function deliveryStatusEvent({ key, update, receipt, isOwnSend }) {
+  if (!key?.fromMe || !key.id || !isOwnSend(key.id)) return null;
+  let status;
+  let at;
+  let recipientId = '';
+  if (receipt) {
+    const hit = RECEIPT_TIMESTAMP_STATUS.find(([field]) => receipt[field]);
+    if (!hit) return null;
+    [, status] = hit;
+    at = Number(receipt[hit[0]]) || 0;
+    recipientId = normalizeWhatsAppId(receipt.userJid || '');
+  } else {
+    status = DELIVERY_STATUS_NAMES[update?.status];
+    if (!status) return null;
+    at = Number(update.messageTimestamp) || 0;
+  }
+  const event = {
+    event: 'delivery_status',
+    messageId: key.id,
+    chatId: normalizeWhatsAppId(key.remoteJid || ''),
+    status,
+    timestamp: at || Math.floor(Date.now() / 1000),
+  };
+  if (recipientId) event.recipientId = recipientId;
+  const error = status === 'error' ? update?.messageStubParameters?.[0] : undefined;
+  if (error) event.error = String(error);
+  return event;
+}
+
 export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {
   const ext = filePath.toLowerCase().split('.').pop();
   const type = mediaType || inferMediaType(ext);

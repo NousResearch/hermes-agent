@@ -94,11 +94,11 @@ by the turn's own marker), no visual baselines, `retries: 0`, one worker,
 sandboxed `HOME`/`HERMES_HOME`/user-data per test, all `HERMES_*` and
 credential env stripped from the spawned app.
 
-Run locally (Linux, after `npm run build` in `apps/desktop`):
+Run locally (Linux, after `pnpm run build` in `apps/desktop`):
 
 ```sh
 cd apps/desktop
-xvfb-run -a npx playwright test -c e2e/core/playwright.config.ts
+xvfb-run -a pnpm exec playwright test -c e2e/core/playwright.config.ts
 ```
 
 `HERMES_E2E_CORE_ROOT` picks the sandbox parent dir (default: OS tmpdir);

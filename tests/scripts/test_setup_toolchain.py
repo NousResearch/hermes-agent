@@ -85,8 +85,8 @@ def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkey
 
 @pytest.mark.parametrize("toolchain,names", [
     ("python", {"python", "uv"}),
-    ("node", {"node", "npm"}),
-    ("all", {"python", "uv", "node", "npm"}),
+    ("node", {"node", "npm", "pnpm"}),
+    ("all", {"python", "uv", "node", "npm", "pnpm"}),
 ])
 def test_stdlib_bootstrap_exports_the_pm_lock(toolchain, names, tmp_path):
     root = Path(__file__).resolve().parents[2]

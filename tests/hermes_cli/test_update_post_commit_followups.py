@@ -141,6 +141,12 @@ def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, mo
     monkeypatch.setattr("hermes_cli.gitlock.fetch_full_commit_graph", lambda *a, **kw: False)
     monkeypatch.setattr("hermes_cli.model_catalog.seed_cache_from_checkout", lambda root: False)
 
+    def broken_graph_refresh(root):
+        calls.append(("commit_graph", root))
+        raise OSError("fork failed")  # a refresh that cannot start must not fail or owe anything
+
+    monkeypatch.setattr("hermes_cli.git_commit_graph.spawn_commit_graph_refresh", broken_graph_refresh)
+
     def broken_migration(**kwargs):
         raise SystemExit(1)  # a migration helper that exits must not fail the committed update
 
@@ -154,6 +160,7 @@ def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, mo
         had_desktop_app_before_update=False, pre_update_version=None, followups=owed) is True
     assert [step for step, _ in owed] == ["config_migration"]
     assert calls[0] == "repair_windows_home_acl"
+    assert ("commit_graph", update_cmd._m().PROJECT_ROOT) in calls
     assert calls[-2:] == ["verdict", "notices"]
     assert "⚠ Update follow-up 'config_migration'" in capsys.readouterr().out
     update_receipt.finalize_update_receipt("success")

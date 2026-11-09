@@ -261,6 +261,14 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     return _environ_or(name, default)
 
 
+def secret_source_label(name: str) -> str:
+    """``" (from Bitwarden)"``-style suffix naming the external secret source (a secret-source plugin)
+    that supplied env var *name*; ``""`` for ``.env`` / shell values. Public for plugins' status lines."""
+    from hermes_cli.env_loader import format_secret_source_suffix
+
+    return format_secret_source_suffix(name)
+
+
 def get_secret_str(name: str, default: str = "") -> str:
     """``get_secret`` for callers that want a ``str``: ``default`` only when the secret is genuinely
     unset. Still raises ``UnscopedSecretError`` — swallowing it hides a spawn-site bug."""

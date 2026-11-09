@@ -1,0 +1,28 @@
+name: hermes-ui-cards
+repo: https://github.com/robbyczgw-cla/hermes-ui-cards
+sha: c40df4d41cd5439cf4902995fd4a9e5505483f25
+description: "Interactive answer cards in Hermes Desktop and the Webapp; your answer goes back as the next message. Disclosure — stores every Desktop card and the user's answers, free text typed into cards included, in the profile's plugin-data/hermes-ui-cards/ (answers.db plus the newest 500 card files; nothing expires by time and deleting a chat does not delete its entries); adds turn context for the model (card answers, confirm-card actions and commands, and a periodic Desktop hint to use cards); Desktop cards load images from https URLs the model supplies, so the image host sees the user's IP; read-only backend routes /api/plugins/hermes-ui-cards/answers and /settings; no telemetry, no credentials, no shell commands."
+maintainer: robbyczgw-cla
+tier: community
+category: desktop
+title: HUI+ Cards
+version: "0.1.0"
+requires_hermes: ">=0.22.6"
+image: https://raw.githubusercontent.com/robbyczgw-cla/hermes-ui-cards/c40df4d41cd5439cf4902995fd4a9e5505483f25/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/robbyczgw-cla/hermes-ui-cards/c40df4d41cd5439cf4902995fd4a9e5505483f25/assets/cards/plan.jpg
+  - https://raw.githubusercontent.com/robbyczgw-cla/hermes-ui-cards/c40df4d41cd5439cf4902995fd4a9e5505483f25/assets/cards/confirm.jpg
+  - https://raw.githubusercontent.com/robbyczgw-cla/hermes-ui-cards/c40df4d41cd5439cf4902995fd4a9e5505483f25/assets/cards/checklist.jpg
+  - https://raw.githubusercontent.com/robbyczgw-cla/hermes-ui-cards/c40df4d41cd5439cf4902995fd4a9e5505483f25/assets/cards/compare.jpg
+  - https://raw.githubusercontent.com/robbyczgw-cla/hermes-ui-cards/c40df4d41cd5439cf4902995fd4a9e5505483f25/assets/cards/form.jpg
+  - https://raw.githubusercontent.com/robbyczgw-cla/hermes-ui-cards/c40df4d41cd5439cf4902995fd4a9e5505483f25/assets/cards/review.jpg
+readme: true
+capabilities:
+  provides_tools:
+    - hui_present
+  provides_hooks:
+    - pre_llm_call
+    - transform_llm_output
+    - post_compaction
+  provides_middleware: []
+  requires_env: []

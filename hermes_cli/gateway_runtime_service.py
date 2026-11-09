@@ -231,10 +231,10 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
             raise RuntimeStartError(refusal)
         return _decode_schtasks_output(result.stdout or b"")
 
-    rows = list(csv.reader(io.StringIO(query("service_manager_unavailable", "schtasks.exe", "/Query", "/FO", "CSV", "/NH"))))
-    if any(len(row) != 3 for row in rows if row):
-        raise RuntimeStartError("service_state_unknown")
-    if any(row and row[0].lstrip("\\") == name for row in rows):
+    rows = csv.reader(io.StringIO(query("service_manager_unavailable", "schtasks.exe", "/Query", "/FO", "CSV", "/NH")))
+    # Orphaned TaskCache entries print localized one-field diagnostics among the rows (#142140). Only a
+    # well-formed row can name our task, so skipping the rest can only fall through to the unmanaged path.
+    if any(len(row) == 3 and row[0].lstrip("\\") == name for row in rows):
         from hermes_cli.gateway_runtime_service_identity import verify_windows_task
         unverified = "service_identity_unverified"
         definition = query(unverified, "schtasks.exe", "/Query", "/TN", name, "/XML")

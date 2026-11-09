@@ -70,3 +70,42 @@ def test_billing_state_serializes_decimals_as_strings(monkeypatch):
     }
     assert res["monthly_cap"]["is_default_ceiling"] is True
     assert res["is_admin"] is True and res["can_charge"] is True
+    # Not a window plan (or an older portal): no Keep going on credits control.
+    assert res["keep_going_on_credits"] is None
+
+
+def test_billing_state_carries_keep_going_on_credits(monkeypatch):
+    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: BillingState(logged_in=True, keep_going_on_credits=False))
+    assert _call("billing.state", {})["keep_going_on_credits"] is False
+
+
+# ---------------------------------------------------------------------------
+# billing.keep_going_on_credits
+# ---------------------------------------------------------------------------
+
+
+def test_keep_going_on_credits_patches_just_enabled(monkeypatch):
+    import hermes_cli.nous_billing as nb
+    sent = []
+    monkeypatch.setattr(nb, "patch_keep_going_on_credits", lambda **kw: sent.append(kw) or {})
+    assert _call("billing.keep_going_on_credits", {"enabled": True}) == {"ok": True}
+    assert _call("billing.keep_going_on_credits", {"enabled": False}) == {"ok": True}
+    assert sent == [{"enabled": True}, {"enabled": False}]
+
+
+def test_keep_going_on_credits_rejects_a_non_bool_without_calling_the_portal(monkeypatch):
+    import hermes_cli.nous_billing as nb
+    monkeypatch.setattr(nb, "patch_keep_going_on_credits", lambda **kw: (_ for _ in ()).throw(AssertionError("called")))
+    for params in ({}, {"enabled": "true"}, {"enabled": 1}):
+        res = _call("billing.keep_going_on_credits", params)
+        assert res["ok"] is False and res["error"] == "invalid_request"
+
+
+def test_keep_going_on_credits_scope_denial_is_an_envelope(monkeypatch):
+    import hermes_cli.nous_billing as nb
+
+    def deny(**_kw):
+        raise nb.BillingScopeRequired("billing:manage required", status=403, error="insufficient_scope")
+    monkeypatch.setattr(nb, "patch_keep_going_on_credits", deny)
+    res = _call("billing.keep_going_on_credits", {"enabled": True})
+    assert res["ok"] is False and res["error"] == "insufficient_scope"

@@ -25,6 +25,7 @@ export const zhCatalog = {
   installing: '正在安装…',
   installComplete: (name: string) => `已安装“${name}”`,
   destinationChanged: '安装目标已更改。请关闭此对话框并重新打开安装链接。',
+  install: '安装',
   installed: '已安装',
   searchSkills: '搜索技能',
   searchPlugins: '搜索插件',

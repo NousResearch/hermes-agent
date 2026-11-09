@@ -108,9 +108,7 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[list[di
     ``on_fork(fork)`` publishes the built fork so an owner can interrupt it, and
     ``on_fork(None)`` follows its teardown.
     """
-    from agent.background_review import (
-        _digest_history, _record_review_usage_to_parent, _snapshot_review_usage, build_cache_parity_fork,
-    )
+    from agent.background_review import _digest_history, build_cache_parity_fork, release_cache_parity_fork
     from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
 
     fork, _rt, routed = build_cache_parity_fork(parent_agent, _side_question_task_config(),
@@ -130,13 +128,7 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[list[di
         return answer.strip()
     finally:
         clear_thread_tool_whitelist()
-        # Attribute the fork's usage to the parent session; teardown never raises.
-        for step in (lambda: _record_review_usage_to_parent(parent_agent, _snapshot_review_usage(fork)),
-                     fork.shutdown_memory_provider, fork.close):
-            try:
-                step()
-            except Exception:
-                pass
+        release_cache_parity_fork(parent_agent, fork, task=SIDE_QUESTION_TASK)
         if on_fork is not None:
             on_fork(None)
 

@@ -32,6 +32,7 @@ export const ruCatalog = {
   installing: 'Установка…',
   installComplete: (name: string) => `«${name}» установлен`,
   destinationChanged: 'Место установки изменилось. Закройте диалог и снова откройте ссылку установки.',
+  install: 'Установить',
   installed: 'Установленные',
   searchSkills: 'Поиск навыков',
   searchPlugins: 'Поиск плагинов',

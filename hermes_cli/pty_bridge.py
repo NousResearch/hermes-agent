@@ -17,8 +17,9 @@ import signal
 import struct
 import sys
 import termios  # windows-footgun: ok — POSIX-only module by design (see docstring)
+import threading
 import time
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 try:
     import ptyprocess  # type: ignore
@@ -103,8 +104,8 @@ def _psutil_alive(proc) -> bool:
 class PtyBridge:
     """Thin wrapper around ``ptyprocess.PtyProcess`` for byte streaming. Not thread-safe: owned by
     the WebSocket handler that spawned it; reads run in an executor thread, writes are awaited on
-    the loop. The master fd is non-blocking so input backpressure suspends only the owning
-    WebSocket task, never the dashboard event loop.
+    the loop (or run in a worker under a caller's ``fence``). The master fd is non-blocking so
+    input backpressure suspends only the owning WebSocket task, never the dashboard event loop.
     """
 
     _waiter = None  # FdWaiter for the master; None until __init__ registers it
@@ -113,6 +114,9 @@ class PtyBridge:
         self._proc = proc
         self._fd: int = proc.fd
         self._closed = False
+        # A fenced write runs in a worker thread; it must never reach a descriptor
+        # number that close() has already released for reuse.
+        self._fd_lock = threading.Lock()
         # Recorded at spawn: once the leader is reaped getpgid() can no longer find its group,
         # but the helpers it started still belong to it.
         try:
@@ -197,9 +201,9 @@ class PtyBridge:
             raise
         return data or None
 
-    async def _wait_writable(self, timeout: float) -> bool:
-        """Wait without blocking the event loop until the master accepts input."""
-        if self._closed or timeout <= 0:
+    async def _wait_writable(self, timeout: Optional[float]) -> bool:
+        """Wait without blocking the event loop until the master accepts input (``None``: no limit)."""
+        if self._closed or (timeout is not None and timeout <= 0):
             return False
         loop = asyncio.get_running_loop()
         ready = loop.create_future()
@@ -210,7 +214,11 @@ class PtyBridge:
 
         try:
             loop.add_writer(self._fd, _mark_ready)
-            await asyncio.wait_for(ready, timeout=timeout)
+            # wait_for can swallow cancellation on Python 3.11 if readiness
+            # completes in the same tick as viewer takeover. Never retry input
+            # from that cancelled writer after the new viewer owns the PTY.
+            async with asyncio.timeout(timeout):
+                await ready
             return not self._closed
         except (TimeoutError, OSError, ValueError):
             return False
@@ -220,12 +228,35 @@ class PtyBridge:
             except (OSError, ValueError):
                 pass
 
-    async def write(self, data: bytes, *, timeout: float = 10.0) -> bool:
+    def _write_some(self, view: memoryview) -> Optional[int]:
+        """One non-blocking write: bytes accepted (0 while the child's buffer is full), None once closed."""
+        with self._fd_lock:
+            if self._closed:
+                return None
+            try:
+                return os.write(self._fd, view)
+            except OSError as exc:
+                if exc.errno in {errno.EIO, errno.EBADF, errno.EPIPE}:
+                    return None
+                if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
+                    return 0
+                raise
+
+    async def write(
+        self, data: bytes, *, timeout: Optional[float] = 10.0,
+        fence: Optional[Callable[[Callable[[], Optional[int]]], Optional[int]]] = None,
+    ) -> bool:
         """Write all raw bytes without ever blocking the dashboard event loop.
 
         Returns ``False`` when the bridge closes or the child leaves its input
         buffer full for ``timeout`` seconds. Callers can then recycle only the
         affected terminal session while the rest of the dashboard stays live.
+        ``timeout=None`` waits for as long as the child leaves its input unread
+        (cancel the call to stop waiting), so ``False`` then means the bridge closed.
+
+        ``fence`` wraps every non-blocking write attempt in a worker thread, so a
+        caller can hold a lock around exactly the bytes that reach the child;
+        whatever it raises propagates. Backpressure waits happen outside it.
         """
         if self._closed:
             return False
@@ -233,20 +264,15 @@ class PtyBridge:
             return True
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + max(0.0, timeout)
+        deadline = None if timeout is None else loop.time() + max(0.0, timeout)
         view = memoryview(data)
         while view:
-            if self._closed:
+            if fence is None:
+                n = self._write_some(view)
+            else:
+                n = await asyncio.to_thread(fence, lambda chunk=view: self._write_some(chunk))
+            if n is None:
                 return False
-            try:
-                n = os.write(self._fd, view)
-            except OSError as exc:
-                if exc.errno in {errno.EIO, errno.EBADF, errno.EPIPE}:
-                    return False
-                if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
-                    n = 0
-                else:
-                    raise
             if n > 0:
                 view = view[n:]
                 # A very large paste can otherwise monopolize the loop while
@@ -255,7 +281,7 @@ class PtyBridge:
                     await asyncio.sleep(0)
                 continue
 
-            remaining = deadline - loop.time()
+            remaining = None if deadline is None else deadline - loop.time()
             if not await self._wait_writable(remaining):
                 return False
         return True
@@ -275,6 +301,17 @@ class PtyBridge:
             fcntl.ioctl(self._fd, termios.TIOCSWINSZ, winsize)
         except OSError:
             pass
+
+    def size(self) -> Optional[tuple[int, int]]:
+        """The child's ``(cols, rows)`` (``TIOCGWINSZ``), or None once the PTY is closed."""
+        if self._closed:
+            return None
+        try:
+            rows, cols, _xpixel, _ypixel = struct.unpack(
+                "HHHH", fcntl.ioctl(self._fd, termios.TIOCGWINSZ, bytes(8)))
+        except OSError:
+            return None
+        return cols, rows
 
     def _discard_output(self, timeout: float) -> None:
         # Exiting children flush their pending terminal output first; on macOS a process stays in
@@ -298,16 +335,16 @@ class PtyBridge:
         the dashboard never leaks zombies, and close fds. Idempotent; blocks, so call it off the
         event loop.
         """
-        if self._closed:
-            return
-        self._closed = True
+        with self._fd_lock:
+            if self._closed:
+                return
+            self._closed = True
 
         pgid = self._pgid
         leader_was_alive = self._proc.isalive()
         # No group signal is safe for a shared-group child, so its descendants must be
         # snapshotted BEFORE the parent is signalled: once the parent exits they reparent
-        # and psutil can no longer find them (browser_tool_lifecycle._legacy_kill_process_tree,
-        # process_registry._terminate_host_pid). The sweep below then kills them individually
+        # and psutil can no longer find them (process_registry._terminate_host_pid). The sweep below then kills them individually
         # so a SIGHUP-ignoring helper cannot keep the PTY slave open (#76759).
         non_leader_descendants: list = []
         if pgid is not None and pgid != self._proc.pid:

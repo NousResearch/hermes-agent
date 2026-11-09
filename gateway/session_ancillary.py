@@ -88,7 +88,8 @@ async def show_tools(connection, ref, params):
                 enabled = list(policy.current_toolsets(config)) if policy is not None else None
                 disabled = session_disabled_toolsets(parse_config_string_list(
                     (config.get('agent') or {}).get('disabled_toolsets')) or None,
-                    policy.platform if policy is not None else 'cli')
+                    policy.platform if policy is not None else 'cli',
+                    oneshot=policy is not None and policy.source == 'oneshot')
             tools = model_tools.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled,
                                                      quiet_mode=True, skip_tool_search_assembly=True)
             sections = {}
@@ -137,13 +138,21 @@ async def attach_file(connection, ref, params):
     """Desktop's non-image attachment: stage the file for this session (its frozen launch cwd and
     the owner profile's ``attachments/``) and hand back the ``@file:`` ref its next submit carries.
     The sidecar handler looked the session up in its own table, which never holds an authority
-    session, so every file drop failed with ``session not found``."""
-    if (set(params) - {'session_id', 'profile', 'path', 'data_url', 'name'} or not ref.session_id
-            or any(not isinstance(value, str) for value in params.values())):
+    session, so every file drop failed with ``session not found``.
+
+    A browser pick arrives as ``staged_upload`` (the Webapp upload route's receipt,
+    ``hermes_cli/staged_uploads.py``): it is copied out of the profile it was uploaded to, which must
+    be one this connection may reach."""
+    staged_upload = params.get('staged_upload')
+    if (set(params) - {'session_id', 'profile', 'path', 'data_url', 'name', 'staged_upload'} or not ref.session_id
+            or any(not isinstance(value, str) for key, value in params.items() if key != 'staged_upload')
+            or (staged_upload is not None and not isinstance(staged_upload, dict))):
         raise RuntimeStoreError('invalid_params')
     if ref.session_id not in connection.subscriptions:
         raise RuntimeStoreError('permission_denied')
     authorize(connection, ref, params, 'session:submit')
+    if staged_upload is not None and not _reachable_upload_home(connection, staged_upload.get('profile_home')):
+        raise RuntimeStoreError('permission_denied')
     from gateway.session_policy import policy_for_source
     authority = connection.authority
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
@@ -152,17 +161,41 @@ async def attach_file(connection, ref, params):
     # The staging helpers are bound onto the sidecar module's globals (method_ctx.bind_module).
     from tui_gateway import server
     session = {'cwd': policy.cwd, 'profile_home': authority.profile_id}
+
+    def stage():
+        if staged_upload is not None:
+            # Only the receipt is read: a supplied path/data_url never stands in for a missing upload.
+            return server._stage_browser_file_attachment(session, staged_upload, params.get('name', ''))
+        return server._stage_session_file_attachment(
+            session, raw_path=params.get('path', ''), data_url=params.get('data_url', ''),
+            name=params.get('name', ''))
     try:
-        stored, uploaded = await asyncio.to_thread(
-            server._stage_session_file_attachment, session, raw_path=params.get('path', ''),
-            data_url=params.get('data_url', ''), name=params.get('name', ''))
-    except ValueError as exc:
+        stored, uploaded = await asyncio.to_thread(stage)
+    except (ValueError, OverflowError) as exc:
         raise RuntimeStoreError('invalid_params') from exc
     except OSError as exc:
         raise RuntimeStoreError('storage_unavailable') from exc
     ref_path = server._attachment_ref_path(session, stored)
     return {'attached': True, 'name': stored.name, 'path': str(stored), 'ref_path': ref_path,
             'ref_text': f'@file:{server._format_ref_value(ref_path)}', 'uploaded': uploaded}
+
+
+def _reachable_upload_home(connection, raw_home) -> bool:
+    """A staged upload's source profile: this authority's own home or, for a host-scoped grant, a
+    sibling this process serves (an owner-routed tile can receive a foreground browser pick). Never
+    any other profile on disk, whatever its descriptor names."""
+    from pathlib import Path
+    if not isinstance(raw_home, str) or not raw_home:
+        return False
+    homes = {connection.authority.profile_id}
+    if connection.host_scoped:
+        registry = getattr(getattr(connection.authority, 'runner', None), 'session_authorities', None)
+        homes |= {sibling.profile_id for sibling in (registry or ())}
+    try:
+        target = Path(raw_home).resolve()
+        return any(Path(home).resolve() == target for home in homes)
+    except (OSError, ValueError):
+        return False
 
 
 async def approvals(connection, ref, params, *, ack=False):
@@ -201,20 +234,41 @@ async def read(connection, ref, params, *, kind):
     if ref.session_id not in authority.sessions:
         raise RuntimeStoreError('not_found')
     authorize(connection, ref, params, 'session:read')
-    live = authority.sessions[ref.session_id]
+    # In a worker thread (it inherits the dispatch's owner scope): the projection takes the session's
+    # event lock, which every streamed token takes too, reads state.db (compression lineage, local
+    # receipt, control meta) and the process registry under its lock. Clients poll these every 1-5 s per
+    # open session, so on the loop they were a large share of loop time with many sessions running.
+    return await asyncio.to_thread(locked_projection, authority, authority.sessions[ref.session_id], ref,
+                                   partial(_project, authority, ref, params, kind))
+
+
+def locked_projection(authority, live, ref, project):
+    """``project()`` under the session's event lock, off the loop (``session.transcript`` reads a
+    ``subagent_id``'s roster here)."""
     with live.event_stream.lock:
-        if kind == 'control':
-            # Persisted per session id, never the route's live objects: readable after a messaging
-            # route moved on to another conversation.
-            return {'control': control_snapshot(authority, ref)}
-        _require_current_route(authority, ref)
-        agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
-        if kind == 'subagents':
-            return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
-                                  for record in records], 'delegations': []}
-        if kind == 'tail':
-            return subagent_tail(records, params['subagent_id'])
-        return {'processes': process_snapshot(authority, ref, agent, records)}
+        try:
+            return project()
+        except KeyError:
+            # Popped from authority.sessions before or during the projection (retire_live_sessions runs
+            # on the loop without this lock): the projection re-indexes the map, and a popped session is
+            # not_found.
+            if authority.sessions.get(ref.session_id) is not live:
+                raise RuntimeStoreError('not_found') from None
+            raise
+
+
+def _project(authority, ref, params, kind):
+    if kind == 'control':
+        # Persisted per session id, never the route's live objects: readable after a messaging
+        # route moved on to another conversation.
+        return {'control': control_snapshot(authority, ref)}
+    _require_current_route(authority, ref)
+    agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
+    if kind == 'subagents':
+        return {'subagents': [subagent_row(record) for record in records], 'delegations': []}
+    if kind == 'tail':
+        return subagent_tail(records, params['subagent_id'])
+    return {'processes': process_snapshot(authority, ref, agent, records)}
 
 
 def _owned_targets(connection, ref, params, *, select):
@@ -410,7 +464,8 @@ def _owner_objects(authority, ref, *, include_fallback_evicted=False):
 
 def physical_target(authority, ref):
     from gateway.config import Platform
-    if authority.sessions[ref.session_id].source.platform == Platform.LOCAL:
+    source = authority.sessions[ref.session_id].source  # None: a history mount
+    if source is not None and source.platform == Platform.LOCAL:
         from hermes_state_local import local_receipt
         return local_receipt(authority.db, ref.session_id)['entry']['session_id']
     return ref.session_id
@@ -483,10 +538,24 @@ def subagent_records(parent, session_id=None, *, session_db=None, route=None, in
     # A rotating /compress moves the conversation to a new stored id; an evicted parent keeps its earlier one.
     target_sids = _compression_lineage(expected_db, target_sid)
     with registry._active_subagents_lock:
-        return [dict(record) for record in registry._active_subagents.values()
-                if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
-                or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)
-                or _owned_by_lineage(record, target_sids, expected_db)]
+        records = list(registry._active_subagents.values())
+        owned = {id(record): record for record in records
+                 if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
+                 or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)
+                 or _owned_by_lineage(record, target_sids, expected_db)}
+        return [dict(record) for record in records
+                if id(record) in owned or _below_owned(record, owned.values(), expected_db, registry)]
+
+
+def _below_owned(record, owned, expected_db, registry):
+    """A worker of a child this roster already owns, in the same session database file. After a parent
+    rebuild or eviction the orchestrator is found by its durable owner id, but its worker's owner id names the
+    orchestrator and its spawn ancestry runs through the old parent, so only the orchestrator links it."""
+    expected_path = getattr(expected_db, 'db_path', None)
+    child_path = getattr(getattr(record.get('agent'), '_session_db', None), 'db_path', None)
+    if expected_path is None or child_path is None or str(child_path) != str(expected_path):
+        return False
+    return any(registry._is_descendant_of(record.get('agent'), r.get('agent')) for r in owned)
 
 
 def _owned_by_lineage(record, target_sids, expected_db):
@@ -518,6 +587,14 @@ def _compression_lineage(db, session_id):
     lineage = getattr(db, 'get_compression_lineage', None)
     found = lineage(session_id) if callable(lineage) else None
     return frozenset(found if isinstance(found, (list, tuple)) else ()) | ids
+
+
+def subagent_row(record):
+    """One ``subagent.list`` row; ``child_session_id`` is the child's own stored session, the one
+    ``session.transcript`` reads for its ``subagent_id``."""
+    child = getattr(record.get('agent'), 'session_id', None)
+    return {**{key: record.get(key) for key in _SUBAGENT_FIELDS},
+            'child_session_id': child if isinstance(child, str) and child else None}
 
 
 def subagent_tail(records, subagent_id):

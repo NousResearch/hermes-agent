@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent.deadline import poll_until
 from agent.proxy_bypass import is_loopback_host
 from hermes_constants import get_hermes_home
 
@@ -477,7 +478,7 @@ def _copy_auth_file(src_file: str, dst_file: str, *, deadline_s: float | None = 
 
 
 def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> dict[str, str]:
-    """Mirror ``source_profile``'s auth files into the copy's ``Default`` (agent-browser opens it);
+    """Mirror ``source_profile``'s auth files into the copy's ``Default`` (the launched browser opens it);
     returns ``{relative name: reason}`` for the session-cookie DBs that could NOT be copied ({} =
     the signed-in state is usable). Locked password/autofill DBs are logged and skipped."""
     failed: dict[str, str] = {}
@@ -537,10 +538,11 @@ def _profile_is_locked(src: str, source_profile: str) -> bool:
 
 
 def _browser_setting(key: str):
-    """Read ``browser.<key>`` from raw config; None when unset/unreadable."""
+    """``browser.<key>`` from the effective user config (managed overlay, ``${VAR}`` expanded); None when
+    unset/unreadable."""
     try:
-        from hermes_cli.config import read_raw_config
-        browser_cfg = read_raw_config().get("browser", {})
+        from hermes_cli.config_effective import load_user_config_effective
+        browser_cfg = load_user_config_effective().get("browser", {})
         return browser_cfg.get(key) if isinstance(browser_cfg, dict) else None
     except Exception as e:
         logger.debug("could not read %s: %s", key, e)
@@ -630,11 +632,8 @@ def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool
     psutil.wait_procs(alive, timeout=3.0)
     # The lock releases slightly after the process exits on Windows; poll.
     source_profile = _resolve_source_profile(src)[0] or _last_used_profile(src)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not _profile_is_locked(src, source_profile):
-            return True, "closed the browser and the profile lock released."
-        time.sleep(0.5)
+    if poll_until(lambda: not _profile_is_locked(src, source_profile), timeout, 0.5):
+        return True, "closed the browser and the profile lock released."
     return False, (
         "closed the browser processes but the profile is still locked — "
         "another instance may have relaunched (background/tray mode).")
@@ -1056,7 +1055,9 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
 
 def _detach_kwargs(system: str) -> dict:
     if system != "Windows":
-        return {"start_new_session": True}
+        # /browser connect launches the USER's debug browser: it must outlive this Hermes (the connection persists in
+        # BROWSER_CDP_URL and a later session re-attaches to it), and it is never ours to stop.
+        return {"start_new_session": True}  # detached-spawn: ok — the user's browser, meant to outlive Hermes
     flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
              | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     return {"creationflags": flags} if flags else {}

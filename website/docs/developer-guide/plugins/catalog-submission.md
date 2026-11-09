@@ -116,8 +116,11 @@ the gallery. There is no separate listing to maintain.
    (querying `data-slot` / `data-tour` / `data-sidebar` / `data-testid`
    elements from `document`, or a `document.body` MutationObserver, to restyle,
    hide, click or rewrite core UI). `hermes plugins validate` refuses these at
-   admission (`desktop surface` check); a plugin that needs a capability the
-   SDK lacks asks for an SDK hook instead of patching around it.
+   admission (`desktop surface` check) and warns, for the reviewer, on raw
+   `window.hermesDesktop` bridge calls and on the app's markup selected any
+   other way (`[data-slot]`, `[data-tree-*]` in CSS text or `closest()`); a
+   plugin that needs a capability the SDK lacks asks for an SDK hook instead
+   of patching around it.
 9. **No runtime overrides of Hermes core.** A listed plugin extends Hermes only
    through public surfaces: hooks, middleware, provider profiles and the
    other `register_*` APIs, and Desktop SDK slots and routes. It must not
@@ -127,7 +130,8 @@ the gallery. There is no separate listing to maintain.
    patching the same seam silently break each other, and every core release
    can break both. `hermes plugins validate` refuses these at admission (`no
    core override` check), and warns (without failing) on each import of an
-   undocumented core module, by file and line. If the hook you need does not
+   undocumented core module and each call to a private method of a core
+   object it is handed (`db._execute_write(...)`), by file and line. If the hook you need does not
    exist, open an issue describing it: we would rather add the seam than list
    a patch.
 10. **Dependency security policy is the plugin's.** Hermes's 3-day
@@ -172,9 +176,16 @@ the gallery. There is no separate listing to maintain.
    reporting are opt-in. Reviewers summarise these as disclosure lines on the
    entry PR; undisclosed behaviour found in review is a request for changes.
 14. **Compatibility metadata is truthful.** `requires_hermes` is a SemVer floor
-   (`">=0.21.5"`), never a CalVer date, and never newer than the current release
-   (the loader skips the plugin otherwise). `version` matches the pinned code,
-   and Python dependencies resolve under Hermes's core constraints
+   (`">=0.21.5"`), never a CalVer date, and never newer than the current release.
+   The entry's `requires_hermes` is enforced: an install by catalog name refuses
+   on a Hermes it rejects, and `hermes plugins update` keeps an installed plugin
+   at its current pin until Hermes is updated. Declare the same floor in
+   `plugin.yaml` as well, because older Hermes versions enforce only that one
+   (the loader skips the plugin when it does not match). A portable package
+   (`plugin.json`) has no `requires_hermes` field, so the catalog entry's
+   `requires_hermes` is its only floor: set one when the package needs a recent
+   Hermes (a server declaration key an older release ignores). `version` matches the
+   pinned code, and Python dependencies resolve under Hermes's core constraints
    (`hermes plugins validate --install-deps` is what CI runs).
 15. **No skins or forks of bundled plugins.** A change to a bundled plugin is a
    PR against `hermes-agent`, not a competing listing, and vendor-lookalike skins
@@ -205,6 +216,17 @@ the gallery. There is no separate listing to maintain.
    <pinned sha>`). A binary a user's own machine fetches at setup time is allowed
    only from the upstream tool's official source, pinned by checksum, and
    disclosed (rule 13) — never bundled and never from an unofficial mirror.
+18. **Password managers come from their vendor.** A plugin that registers a
+   `browser_vault` login backend (`ctx.register_login_backend`) is listed only at
+   `tier: verified`, submitted from the password-manager vendor's own repository
+   by that vendor, or at `tier: official` when Nous maintains it. Community-tier,
+   fork and third-party listings of a login backend are declined. Hermes enforces
+   the same rule when the plugin loads: a login backend is accepted only from a
+   plugin bundled with Hermes or installed from this catalog at `verified` or
+   `official` tier and at the reviewed pin, as recorded in Hermes's own install
+   record (never a file inside the plugin). Local-directory, Git URL, `--ref`,
+   `--allow-removed`, project and pip installs are refused, and no setting
+   relaxes it.
 <!-- admission-rules:end -->
 
 ## Updating your entry

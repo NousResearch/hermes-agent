@@ -135,9 +135,13 @@ def _fetch_retries_configured(project_root: Path, env: dict) -> bool:
     that cannot answer counts as configured: the default stays."""
     if any(key.lower() == "pnpm_config_fetch_retries" for key in env):
         return True
-    pnpm = shutil.which("pnpm", path=env["PATH"])
-    if pnpm is None:
+    from hermes_platform.resolver import LookupContext, locate_command
+
+    # The PATH of the env PM's ensure("pnpm") composed, never this process's.
+    found = locate_command("pnpm", LookupContext(path=env["PATH"])).command
+    if not found:
         return True
+    pnpm = found[0]
     try:
         answer = subprocess.run(
             [pnpm, "config", "get", "fetchRetries", "--json"], cwd=project_root, env=env,

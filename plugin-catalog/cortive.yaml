@@ -1,7 +1,7 @@
 name: cortive
 title: Cortive Memory
 repo: https://github.com/KadenDevAi/hermes-cortive
-sha: dcfc53e8cd7943dc39ce41ccaa49c0f3ff55a263
+sha: 3eb2f4935994c6b7ea0d7067428d3051f9388fc6
 version: "0.1.0"
 description: >-
   Adds Cortive, a private knowledge base for your Mac, to the agent's memory, alongside
@@ -15,18 +15,20 @@ description: >-
   optional config file inside its Hermes plugin-data folder. No network calls, no credentials,
   no background services, no telemetry. Recalled excerpts reach the model Hermes uses, like any
   context; passwords and keys are hidden first, and the plugin is off in group chats by default.
+  Two tool hooks enforce that: pre_tool_call refuses other tools' calls that point at Cortive's
+  data folder, and transform_tool_result hides passwords saved in Cortive from other tools' output.
 maintainer: KadenDevAi
 tier: community
 category: memory
-docs_url: https://github.com/KadenDevAi/hermes-cortive/blob/dcfc53e8cd7943dc39ce41ccaa49c0f3ff55a263/README.md
-image: https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/dcfc53e8cd7943dc39ce41ccaa49c0f3ff55a263/docs/banner.png
+docs_url: https://github.com/KadenDevAi/hermes-cortive/blob/3eb2f4935994c6b7ea0d7067428d3051f9388fc6/README.md
+image: https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/3eb2f4935994c6b7ea0d7067428d3051f9388fc6/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/dcfc53e8cd7943dc39ce41ccaa49c0f3ff55a263/docs/recall.png
+  - https://raw.githubusercontent.com/KadenDevAi/hermes-cortive/3eb2f4935994c6b7ea0d7067428d3051f9388fc6/docs/recall.png
 platforms:
   - macos
 capabilities:
   provides_tools: []
-  provides_hooks: []
+  provides_hooks: [pre_tool_call, transform_tool_result]
   provides_middleware: []
   requires_env: []
 known_issues:

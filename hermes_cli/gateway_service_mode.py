@@ -18,22 +18,52 @@ def _valid_profile_operand(value: str) -> bool:
     # Keep normalization and validation aligned with hermes_cli.main._scan_profile_flag.
     return PROFILE_ID_RE.fullmatch(value.strip().casefold()) is not None
 
+def _mode_launch_module(argv: list[str], *, legacy: bool):
+    """Recognize launcher syntax only; never use this as a profile identity proof."""
+    import ast
+    from hermes_cli import gateway
+    from hermes_cli._launchers import runtime_command
+    from hermes_cli.gateway_runtime_service_identity import _launch_module, _PYTHON_EXECUTABLE
+
+    launch = _launch_module(argv, legacy=legacy)
+    if launch is not None:
+        return launch
+    if (len(argv) < 4 or not _PYTHON_EXECUTABLE.fullmatch(Path(argv[0]).name.lower())
+            or argv[1:3] != ["-I", "-c"]):
+        return None
+    try:
+        statements = ast.parse(argv[3]).body
+    except (SyntaxError, ValueError):
+        return None
+    for statement in statements:
+        if not isinstance(statement, ast.Assign) or not isinstance(statement.value, ast.BoolOp):
+            continue
+        values = statement.value.values
+        if not values or not isinstance(values[-1], ast.Constant) or not isinstance(values[-1].value, str):
+            continue
+        for module in ("hermes_cli.stderr_timestamp", "hermes_cli.main"):
+            expected = runtime_command(gateway.PROJECT_ROOT, module=module, python=argv[0], home=values[-1].value)
+            if expected[3] == argv[3]:
+                return module, argv[4:]
+    return None
+
+
 
 def _command_mode(argv: list[str], *, live: bool = False) -> str:
     """Classify a persisted launcher, or a live command using the actual run parser."""
     if not argv:
         return "unknown"
-    from hermes_cli.gateway_runtime_service_identity import _launch_module, _launchd_command
+    from hermes_cli.gateway_runtime_service_identity import _launchd_command
 
     try:
         command, wrapped = _launchd_command(argv)
-        launch = _launch_module(command, legacy=not wrapped)
+        launch = _mode_launch_module(command, legacy=not wrapped)
         if launch is not None and launch[0] == "hermes_cli.stderr_timestamp":
             args = launch[1]
             if len(args) < 4 or args[0] != "--error-log" or args[2] != "--":
                 return "unknown"
             command = args[3:]
-            launch = _launch_module(command, legacy=not wrapped)
+            launch = _mode_launch_module(command, legacy=not wrapped)
         if launch is not None:
             if launch[0] != "hermes_cli.main":
                 return "unknown"

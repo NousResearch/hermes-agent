@@ -289,6 +289,9 @@ def test_generated_systemd_and_launchd_serving_definitions_remain_recognized(tmp
     from hermes_cli.gateway_service_mode import launchd_definition_mode, systemd_definition_mode
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    # Exercise the external-interpreter producer even on hosts with a managed store.
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway, "get_python_path", lambda: "/usr/bin/python3")
     systemd = tmp_path / "generated.service"
     launchd = tmp_path / "generated.plist"
     systemd.write_text(gateway.generate_systemd_unit(), encoding="utf-8")
@@ -296,6 +299,46 @@ def test_generated_systemd_and_launchd_serving_definitions_remain_recognized(tmp
 
     assert systemd_definition_mode(systemd) == "serving"
     assert launchd_definition_mode(launchd) == "serving"
+
+
+def test_inline_pinned_home_launcher_classification_is_exact(tmp_path, monkeypatch):
+    from hermes_cli import gateway
+    from hermes_cli._launchers import runtime_command
+    from hermes_cli.gateway_service_mode import systemd_definition_mode, systemd_execstart_property_mode
+
+    command = runtime_command(gateway.PROJECT_ROOT, ["gateway", "run"], python="/usr/bin/python3",
+                              home=tmp_path / "profile")
+    unit = tmp_path / "gateway.service"
+    _write_unit(unit, shlex.join(command))
+    assert systemd_definition_mode(unit) == "serving"
+    effective = f"{{ path={command[0]} ; argv[]={shlex.join(command)} ; ignore_errors=no ; }}"
+    assert systemd_execstart_property_mode(effective) == "serving"
+    _write_unit(unit, shlex.join([*command, "--control-only"]))
+    assert systemd_definition_mode(unit) == "control_only"
+    command[3] += "; print('unexpected')"
+    _write_unit(unit, shlex.join(command))
+    assert systemd_definition_mode(unit) == "unknown"
+
+
+@pytest.mark.platforms("linux")
+def test_inline_mode_classification_does_not_authorize_foreign_home(tmp_path):
+    import os
+    from hermes_cli import gateway
+    from hermes_cli._launchers import runtime_command
+    from hermes_cli.gateway_runtime_service_identity import SYSTEMD_IDENTITY_PROPERTIES, verify_systemd
+    from hermes_cli.gateway_service_mode import systemd_execstart_property_mode
+
+    account_home = tmp_path / "account"
+    requested = account_home / ".hermes"
+    foreign = tmp_path / "foreign"
+    command = runtime_command(gateway.PROJECT_ROOT, ["gateway", "run"], python="/usr/bin/python3", home=foreign)
+    effective = f"{{ path={command[0]} ; argv[]={shlex.join(command)} ; ignore_errors=no ; }}"
+    assert systemd_execstart_property_mode(effective) == "serving"
+    props = {key: "" for key in SYSTEMD_IDENTITY_PROPERTIES}
+    props.update(User=str(os.getuid()), DynamicUser="no", ExecStart=effective,
+                 Environment="HERMES_SUPERVISED_CHILD=1")
+    with pytest.raises(ValueError, match="service_identity_unverified"):
+        verify_systemd(props, f"HOME={shlex.quote(str(account_home))}", requested, system=False)
 
 
 def test_update_fleet_does_not_restart_control_only_effective_systemd_command(monkeypatch):

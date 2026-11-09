@@ -1,6 +1,11 @@
 import { atom, computed } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
+import {
+  reconcileReviewOrder,
+  sameReviewOrder,
+  smartReviewOrder
+} from '@/app/right-sidebar/review/tree-data'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import type { HermesReviewFile, HermesReviewScope, HermesReviewShipInfo } from '@/global'
@@ -141,6 +146,36 @@ export const $reviewIsRepo = atom(true)
 export const $reviewMaxChurn = computed($reviewFiles, files =>
   files.reduce((max, file) => Math.max(max, file.added + file.removed), 0)
 )
+// Smart order on screen. Pinned while the user stays in the smart layout so a
+// refresh never reorders rows under them: kept paths hold their place, new
+// ones are appended (reconcileReviewOrder). The fresh order is computed beside
+// it, and $reviewSmartOrderStale lights the blue dot on the layout button until
+// the user applies it (or leaves smart and comes back).
+export const $reviewSmartOrder = atom<null | string[]>(null)
+
+const $reviewFreshSmartOrder = computed($reviewFiles, smartReviewOrder)
+
+export const $reviewSmartOrderStale = computed(
+  [$reviewTreeMode, $reviewSmartOrder, $reviewFreshSmartOrder],
+  (mode, shown, fresh) => mode === 'smart' && shown !== null && !sameReviewOrder(reconcileReviewOrder(shown, fresh), fresh)
+)
+
+export function applyFreshSmartOrder(): void {
+  $reviewSmartOrder.set($reviewFreshSmartOrder.get())
+}
+
+$reviewTreeMode.subscribe(mode => {
+  $reviewSmartOrder.set(mode === 'smart' ? $reviewFreshSmartOrder.get() : null)
+})
+
+$reviewFiles.listen(() => {
+  const shown = $reviewSmartOrder.get()
+
+  if (shown !== null) {
+    $reviewSmartOrder.set(reconcileReviewOrder(shown, $reviewFreshSmartOrder.get()))
+  }
+})
+
 // Persisted so a relaunch restores the file you were diffing (its diff is
 // re-fetched in refreshReview once the file is confirmed still changed).
 export const $reviewSelectedPath = persistentAtom<null | string>(SELECTED_KEY, null, Codecs.nullableText)

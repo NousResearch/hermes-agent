@@ -37,6 +37,7 @@ import {
   $reviewOpen,
   $reviewScopeCwd,
   $reviewSelectedPath,
+  $reviewSmartOrder,
   $reviewTreeMode,
   requestRevert,
   reviewRepoCwd,
@@ -113,11 +114,16 @@ export function ReviewFileTree() {
   const open = useStore($reviewOpen)
   const loading = useStore($reviewLoading)
   const mode = useStore($reviewTreeMode)
+  const smartOrder = useStore($reviewSmartOrder)
 
   const tree = useMemo(
     () =>
-      mode === 'tree' ? buildReviewTree(files) : mode === 'smart' ? buildReviewSmartList(files) : buildReviewFlatList(files),
-    [files, mode]
+      mode === 'tree'
+        ? buildReviewTree(files)
+        : mode === 'smart'
+          ? buildReviewSmartList(files, smartOrder)
+          : buildReviewFlatList(files),
+    [files, mode, smartOrder]
   )
 
   // Heavy is decided by the TOTAL node count, not the top-level row count: the

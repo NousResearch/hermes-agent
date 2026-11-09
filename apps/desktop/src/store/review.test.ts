@@ -20,8 +20,11 @@ import {
   $reviewSelectedPath,
   $reviewShipBusy,
   $reviewShipInfo,
+  $reviewSmartOrder,
+  $reviewSmartOrderStale,
   $reviewTreeMode,
   $reviewTurnBase,
+  applyFreshSmartOrder,
   clearReviewSelection,
   closeReview,
   commitChanges,
@@ -361,6 +364,31 @@ describe('selectReviewFile', () => {
 })
 
 describe('view state', () => {
+  it('smart layout pins its order on a diff change and the blue dot applies the fresh one', () => {
+    $reviewTreeMode.set('tree')
+    $reviewFiles.set([file('src/a.ts', { added: 50 }), file('src/b.ts', { added: 10 })])
+    $reviewTreeMode.set('smart')
+    expect($reviewSmartOrder.get()).toEqual(['src/a.ts', 'src/b.ts'])
+    expect($reviewSmartOrderStale.get()).toBe(false)
+
+    $reviewFiles.set([file('src/a.ts', { added: 50 }), file('src/b.ts', { added: 400 }), file('src/c.ts', { added: 1 })])
+    expect($reviewSmartOrder.get()).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts'])
+    expect($reviewSmartOrderStale.get()).toBe(true)
+
+    applyFreshSmartOrder()
+    expect($reviewSmartOrder.get()).toEqual(['src/b.ts', 'src/a.ts', 'src/c.ts'])
+    expect($reviewSmartOrderStale.get()).toBe(false)
+
+    // Leaving smart and coming back also adopts the fresh order.
+    $reviewFiles.set([file('src/a.ts', { added: 999 }), file('src/b.ts', { added: 400 })])
+    expect($reviewSmartOrderStale.get()).toBe(true)
+    $reviewTreeMode.set('tree')
+    expect($reviewSmartOrderStale.get()).toBe(false)
+    $reviewTreeMode.set('smart')
+    expect($reviewSmartOrder.get()).toEqual(['src/a.ts', 'src/b.ts'])
+    $reviewTreeMode.set('tree')
+  })
+
   it('toggleReviewTreeMode cycles tree -> list -> smart -> tree', () => {
     $reviewTreeMode.set('tree')
     toggleReviewTreeMode()

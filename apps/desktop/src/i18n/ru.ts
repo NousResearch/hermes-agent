@@ -2895,6 +2895,7 @@ export const ruOverrides = {
       viewAsTree: 'Вид деревом',
       viewAsList: 'Вид списком',
       viewAsSmart: 'По важности',
+      applySmartOrder: 'Применить обновлённый порядок',
       revert: 'Отменить',
       revertAll: 'Отменить всё',
       revertConfirm:

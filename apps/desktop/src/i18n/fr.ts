@@ -4124,6 +4124,7 @@ export const frOverrides = {
       viewAsTree: 'Voir en arbre',
       viewAsList: 'Voir en liste',
       viewAsSmart: 'Voir par importance',
+      applySmartOrder: 'Appliquer l’ordre mis à jour',
       revert: 'Rétablir',
       revertAll: 'Tout rétablir',
       revertConfirm:

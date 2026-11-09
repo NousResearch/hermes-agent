@@ -3672,6 +3672,7 @@ export const en: Translations = {
       viewAsTree: 'View as tree',
       viewAsList: 'View as list',
       viewAsSmart: 'View by importance',
+      applySmartOrder: 'Apply updated order',
       revert: 'Revert',
       revertAll: 'Revert all',
       revertConfirm: 'Discard changes to this file and restore it to the committed state? This cannot be undone.',

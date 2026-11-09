@@ -66,10 +66,10 @@ export function isSupportingReviewPath(path: string): boolean {
   return segments.some(segment => SUPPORTING_DIR_SEGMENTS.has(segment.toLowerCase()))
 }
 
-// Smart flat list: change-explaining files first ordered by churn (the file
-// with the most movement usually explains the change), supporting files after,
-// dimmed. Ties break by path so the order is stable across refreshes.
-export function buildReviewSmartList(files: HermesReviewFile[]): ReviewTreeNode[] {
+// Smart order: change-explaining files first ordered by churn (the file with
+// the most movement usually explains the change), supporting files after. Ties
+// break by path so the order is identical on every refresh.
+export function smartReviewOrder(files: HermesReviewFile[]): string[] {
   const churn = (f: HermesReviewFile) => f.added + f.removed
 
   return [...files]
@@ -83,21 +83,48 @@ export function buildReviewSmartList(files: HermesReviewFile[]): ReviewTreeNode[
 
       return churn(b) - churn(a) || a.path.localeCompare(b.path)
     })
-    .map(file => {
-      const segments = file.path.split('/').filter(Boolean)
-      const name = segments.pop() ?? file.path
+    .map(file => file.path)
+}
 
-      return {
-        id: file.path,
-        name,
-        dir: segments.join('/'),
-        isDir: false,
-        added: file.added,
-        removed: file.removed,
-        muted: isSupportingReviewPath(file.path),
-        file
-      }
-    })
+// Keep the order the user is reading while the diff changes under them (Amp's
+// "first things first, faster"): paths still in the diff keep their place,
+// removed paths drop out, and new paths are appended in their fresh smart
+// order. The fresh order is only adopted when the user asks for it.
+export function reconcileReviewOrder(shown: readonly string[], fresh: readonly string[]): string[] {
+  const present = new Set(fresh)
+  const kept = shown.filter(path => present.has(path))
+  const keptSet = new Set(kept)
+
+  return [...kept, ...fresh.filter(path => !keptSet.has(path))]
+}
+
+export function sameReviewOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((path, index) => path === b[index])
+}
+
+// Smart flat list, supporting files dimmed. `shown` is the order on screen; it
+// is reconciled against the current files so a refresh never reshuffles rows.
+export function buildReviewSmartList(files: HermesReviewFile[], shown?: readonly string[] | null): ReviewTreeNode[] {
+  const fresh = smartReviewOrder(files)
+  const order = shown ? reconcileReviewOrder(shown, fresh) : fresh
+  const byPath = new Map(files.map(file => [file.path, file]))
+
+  return order.map(path => {
+    const file = byPath.get(path)!
+    const segments = path.split('/').filter(Boolean)
+    const name = segments.pop() ?? path
+
+    return {
+      id: path,
+      name,
+      dir: segments.join('/'),
+      isDir: false,
+      added: file.added,
+      removed: file.removed,
+      muted: isSupportingReviewPath(path),
+      file
+    }
+  })
 }
 
 // Flat changed-file list (VS Code's default SCM "List" view): one row per file,

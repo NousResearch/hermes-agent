@@ -1,0 +1,19 @@
+name: reset-rescue
+repo: https://github.com/bwoliveira/hermes-reset-rescue
+sha: 196656be1b781fb7a9f3ce6e346b35f2f4e3cc23
+description: >-
+  Redeems expiring OpenAI Codex rate-limit reset credits across every openai-codex account in the active Hermes profile's credential pool, with two Hermes one-shot cron attempts 10 and 4 minutes before expiry and success confirmed by backend readback. Includes opt-in early redemption at low weekly quota, per-account overrides, Hermes channel notices, a Desktop status-bar chip and popup, and dashboard settings. Account labels and domains are masked by default. Disclosure — reads the pool through Hermes' read_credential_pool helper (global-root read-only fallback when the profile has no pool), holding each account's access token in memory only; an empty pool falls back to the active sign-in through credentialed_provider_request. Sends Codex CLI client headers (User-Agent codex-cli and ChatGPT-Account-ID) to chatgpt.com for reset-credit list, usage and consume requests; the consume POST spends an owned credit through a private, undocumented endpoint. On HTTP 401, invokes hermes auth refresh; Hermes may rotate and save credentials. The plugin does not directly read or write credential files or store or log tokens. Creates its own Hermes cron jobs and launcher scripts, runs hermes send, and stores credential-free state under plugin-data/reset-rescue. Automatic redemption is on by default and can be disabled globally or per account; early redemption is off by default, and manual redemption requires confirmation. Does not purchase credits or enable overage; unattended redemption needs the Hermes scheduler running.
+maintainer: bwoliveira
+tier: community
+category: automation
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/bwoliveira/hermes-reset-rescue#readme
+version: "0.1.0"
+readme: true
+platforms: [linux, macos]
+title: Reset Rescue
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

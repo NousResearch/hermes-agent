@@ -3921,12 +3921,9 @@ class BasePlatformAdapter(ABC):
             # say so once per adapter (#102260).
             if not getattr(self, "_no_message_handler_logged", False):
                 self._no_message_handler_logged = True
-                logger.error(
-                    "[%s] Dropping inbound message: no gateway message handler "
-                    "is installed on this adapter. The adapter is connected and "
-                    "can send, but every inbound message is discarded.",
-                    self.name,
-                )
+                logger.error("[%s] Dropping inbound message: no gateway message handler is installed on this "
+                             "adapter. The adapter is connected and can send, but every inbound message is "
+                             "discarded.", self.name)
             return
 
         if event.allow_gateway_control:
@@ -3953,6 +3950,9 @@ class BasePlatformAdapter(ABC):
         if session_key in self._active_sessions or behind_burst:
             await self._handle_message_while_active(event, session_key)
             return
+        from hermes_cli.commands import is_interrupt_then_dispatch  # idle too: a held burst is the old chat's
+        if is_interrupt_then_dispatch(event.get_command()):
+            self._discard_text_debounce(session_key)
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
 

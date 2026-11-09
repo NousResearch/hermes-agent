@@ -1,0 +1,22 @@
+name: hermes-a2ui
+title: Hermes A2UI
+repo: https://github.com/Revenue-Architect/hermes-kaizen-ui
+sha: "2400585a725c02df54005f92573a10730d068236"
+subdir: packages/a2ui
+description: "Interactive A2UI v0.9 views in the Hermes Desktop and Webapp chat: status, plans, tables, charts, forms and choices, with exact validation errors the model can fix and a text fallback for other clients. Disclosure — no network calls, subprocesses or credentials; saves each view in the plugin's data folder (newest 500); clicking a view sends an ordinary message in that chat."
+maintainer: Revenue-Architect
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Revenue-Architect/hermes-kaizen-ui/tree/main/packages/a2ui#readme
+version: "1.0.0"
+readme: true
+platforms: []
+known_issues:
+  - "A Desktop that connects to Hermes on another machine needs the Desktop half installed there too (Capabilities > Plugins > Install from Git)."
+  - "The Android app receives a readable file instead of the interactive view."
+capabilities:
+  provides_tools: [a2ui_present]
+  provides_hooks: [pre_llm_call, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

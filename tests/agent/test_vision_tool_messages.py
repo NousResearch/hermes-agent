@@ -39,6 +39,9 @@ def _make_agent(provider="openrouter", model="gpt-4o"):
     agent._tool_result_content_for_active_model = (
         lambda name, result: AIAgent._tool_result_content_for_active_model(agent, name, result)
     )
+    agent._prepare_messages_for_non_vision_model = (
+        lambda msgs: AIAgent._prepare_messages_for_non_vision_model(agent, msgs)
+    )
     return agent
 
 def _multimodal_result(text="screenshot", image_url="data:image/png;base64,AAAA"):
@@ -56,31 +59,41 @@ def _multimodal_result(text="screenshot", image_url="data:image/png;base64,AAAA"
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# _tool_result_content_for_active_model — proactive downgrade
+# _tool_result_content_for_active_model — wire reshaping
 # ---------------------------------------------------------------------------
 
 class TestToolResultContentProactiveDowngrade:
-    def test_xiaomi_downgrades_to_text_summary(self):
-        """Xiaomi: vision=True but supports_vision_tool_messages=False → text."""
+    def test_xiaomi_preserves_multimodal_content_in_session(self):
+        """Xiaomi: vision=True preserves images in canonical session history."""
         agent = _make_agent("xiaomi", "mimo-v2.5")
         result = _multimodal_result(text="screenshot captured")
 
         with patch.object(agent, "_model_supports_vision", return_value=True):
             content = agent._tool_result_content_for_active_model("browser_screenshot", result)
 
-        assert isinstance(content, str)
-        assert "screenshot captured" in content
+        assert isinstance(content, list)
+        assert any(p.get("type") == "image_url" for p in content if isinstance(p, dict))
 
-    def test_openrouter_xiaomi_route_downgrades_to_text_summary(self):
-        """OpenRouter must not bypass Xiaomi's list-type tool-message veto."""
-        agent = _make_agent("openrouter", "xiaomi/mimo-v2.5")
-        result = _multimodal_result(text="aggregated screenshot captured")
+    def test_xiaomi_reshapes_wire_messages(self):
+        """On the wire, Xiaomi tool results become strings and images move to user message."""
+        agent = _make_agent("xiaomi", "mimo-v2.5")
+        result = _multimodal_result(text="screenshot captured")
 
         with patch.object(agent, "_model_supports_vision", return_value=True):
             content = agent._tool_result_content_for_active_model("browser_screenshot", result)
+            wire_msgs = agent._prepare_messages_for_non_vision_model([
+                {"role": "user", "content": "take screenshot"},
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+                {"role": "tool", "tool_call_id": "c1", "content": content},
+            ])
 
-        assert isinstance(content, str)
-        assert "aggregated screenshot captured" in content
+        assert len(wire_msgs) == 4
+        assert wire_msgs[2]["role"] == "tool"
+        assert isinstance(wire_msgs[2]["content"], str)
+        assert "screenshot captured" in wire_msgs[2]["content"]
+        assert wire_msgs[3]["role"] == "user"
+        assert isinstance(wire_msgs[3]["content"], list)
+        assert any(p.get("type") == "image_url" for p in wire_msgs[3]["content"] if isinstance(p, dict))
 
     def test_xiaomi_non_multimodal_passes_through(self):
         """Non-multimodal results should pass through unchanged."""
@@ -101,18 +114,6 @@ class TestToolResultContentProactiveDowngrade:
 
         assert isinstance(content, list)
         assert any(p.get("type") == "image_url" for p in content if isinstance(p, dict))
-
-    def test_reactive_cache_still_works(self):
-        """In-session cache (_no_list_tool_content_models) still triggers."""
-        agent = _make_agent("openrouter", "some-model")
-        agent._no_list_tool_content_models = {("openrouter", "some-model")}
-        result = _multimodal_result(text="cached downgrade")
-
-        with patch.object(agent, "_model_supports_vision", return_value=True):
-            content = agent._tool_result_content_for_active_model("browser_screenshot", result)
-
-        assert isinstance(content, str)
-        assert "cached downgrade" in content
 
 # ---------------------------------------------------------------------------
 # ProviderProfile.supports_vision_tool_messages field

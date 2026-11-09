@@ -183,3 +183,40 @@ def test_unreadable_plugin_dir_is_skipped_by_every_manifest_scan(monkeypatch, tm
     assert loader_names == ["good"]
     assert listed_names == ["good"]
     assert caplog.text.count("Skipping unreadable plugin directory") == 2
+
+
+def test_bundled_plugins_have_unique_display_names_and_keys(monkeypatch, tmp_path):
+    """Regression for #145143: every bundled plugin row must carry a unique manifest
+    display name so `hermes plugins list` never renders two rows with the same name."""
+    import collections
+    import importlib.metadata
+
+    monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: tmp_path)
+    monkeypatch.setattr(importlib.metadata, "entry_points", list)
+
+    entries = plugins_cmd._discover_all_plugins()
+    dup_names = {k: v for k, v in collections.Counter(e[0] for e in entries).items() if v > 1}
+    dup_keys = {k: v for k, v in collections.Counter(e[5] for e in entries).items() if v > 1}
+    assert not dup_names, f"duplicate bundled manifest names: {dup_names}"
+    assert not dup_keys, f"duplicate bundled plugin keys: {dup_keys}"
+
+    by_key = {e[5]: e[0] for e in entries}
+    assert by_key["image_gen/xai"] == "image-xai"
+    assert by_key["video_gen/xai"] == "video-xai"
+    assert by_key["web/xai"] == "web-xai"
+
+
+def test_shared_leaf_name_does_not_resolve_to_one_plugin(monkeypatch, tmp_path):
+    """A leaf shared by several bundled plugins (``xai`` in image_gen/, video_gen/, web/)
+    must refuse resolution instead of silently picking the first scan hit."""
+    import importlib.metadata
+
+    monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: tmp_path)
+    monkeypatch.setattr(importlib.metadata, "entry_points", list)
+
+    assert plugins_cmd._find_plugin_entry("xai") is None
+    assert plugins_cmd._find_plugin_entry("fal") is None
+
+    assert plugins_cmd._find_plugin_entry("image-xai")[5] == "image_gen/xai"
+    assert plugins_cmd._find_plugin_entry("video-xai")[5] == "video_gen/xai"
+    assert plugins_cmd._find_plugin_entry("web-xai")[5] == "web/xai"

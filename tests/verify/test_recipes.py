@@ -36,6 +36,52 @@ class TestPackageManagerDetection:
     def test_no_lockfile(self, tmp_path):
         assert detect_package_manager(tmp_path) is None
 
+    def _tree(self, tmp_path, *markers):
+        """Build a node_modules carrying the given installer markers."""
+        for marker in markers:
+            path = tmp_path / marker
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if marker == "node_modules/.pnpm":
+                path.mkdir(exist_ok=True)
+            else:
+                path.touch()
+
+    def test_vestigial_lockfile_loses_to_the_installed_tree(self, tmp_path):
+        """An npm-installed tree decides over a pnpm lockfile that installed nothing.
+
+        Filename order picks pnpm here, which rewrites the vestigial lockfile during
+        bootstrap and resolves a different node_modules layout than the one on disk.
+        """
+        (tmp_path / "pnpm-lock.yaml").touch()
+        (tmp_path / "package-lock.json").touch()
+        self._tree(tmp_path, "node_modules/.package-lock.json")
+        assert detect_package_manager(tmp_path) == "npm"
+
+    def test_installed_pnpm_tree_wins_over_an_earlier_lockfile(self, tmp_path):
+        """Precedence must not defeat the tree in the other direction either."""
+        (tmp_path / "yarn.lock").touch()
+        (tmp_path / "pnpm-lock.yaml").touch()
+        self._tree(tmp_path, "node_modules/.pnpm")
+        assert detect_package_manager(tmp_path) == "pnpm"
+
+    def test_absent_lockfile_is_not_selected_from_a_stale_marker(self, tmp_path):
+        """A marker for a manager with no lockfile is not a candidate."""
+        (tmp_path / "package-lock.json").touch()
+        self._tree(tmp_path, "node_modules/.pnpm")
+        assert detect_package_manager(tmp_path) == "npm"
+
+    def test_lockfile_precedence_holds_before_anything_is_installed(self, tmp_path):
+        """A fresh clone has no tree to ask, so lockfile order still decides."""
+        (tmp_path / "pnpm-lock.yaml").touch()
+        (tmp_path / "package-lock.json").touch()
+        assert detect_package_manager(tmp_path) == "pnpm"
+
+    def test_single_lockfile_ignores_another_managers_tree(self, tmp_path):
+        """One lockfile is unambiguous and decides alone."""
+        (tmp_path / "package-lock.json").touch()
+        self._tree(tmp_path, "node_modules/.pnpm", "node_modules/.package-lock.json")
+        assert detect_package_manager(tmp_path) == "npm"
+
 
 class TestNodeDetection:
     def test_nextjs_with_pnpm(self, tmp_path):
@@ -54,6 +100,32 @@ class TestNodeDetection:
         assert recipe.test == ["pnpm test"]
         assert recipe.start == "pnpm dev"
         assert recipe.port == 3000
+
+    def test_nextjs_commands_follow_the_installed_tree(self, tmp_path):
+        """The recipe the CLI runs names the manager that installed the tree.
+
+        User-visible half of the detection bug: pnpm commands bootstrap by
+        rewriting a lockfile the repo does not use, and the build resolves a
+        node_modules layout that is not on disk, so `hermes verify` reports a
+        failure on a project that builds.
+        """
+        write_pkg(
+            tmp_path,
+            {
+                "dependencies": {"next": "14.0.0"},
+                "scripts": {"dev": "next dev", "build": "next build", "test": "jest"},
+            },
+        )
+        (tmp_path / "pnpm-lock.yaml").touch()
+        (tmp_path / "package-lock.json").touch()
+        tree = tmp_path / "node_modules" / ".package-lock.json"
+        tree.parent.mkdir()
+        tree.touch()
+        recipe = detect_recipe(tmp_path)
+        assert recipe is not None
+        assert recipe.bootstrap == ["npm install"]
+        assert recipe.build == ["npm run build"]
+        assert recipe.test == ["npm run test"]
 
     def test_vite_with_yarn(self, tmp_path):
         write_pkg(

@@ -36,7 +36,13 @@ from pathlib import Path
 
 _FIELDS_SCRIPT = Path(__file__).resolve().with_name("catalog_entry_fields.py")
 _MANIFESTS = ("plugin.yaml", "plugin.yml", "plugin.json")
-_SELF_UPDATE_FETCH = r"releases/latest|releases/download|raw\.githubusercontent\.com|codeload\.github\.com"
+# A GitHub fetch. raw.githubusercontent.com is exempted ONLY for ajv's bundled meta-schema
+# $id/$ref, an inert JSON-schema identifier string that never drives a request (ajv matches it
+# by value against its own in-memory schema). The negative lookahead is pinned to that exact
+# path up to the "#" fragment terminator so a real fetch under any other raw.githubusercontent
+# path -- or a traversal like .../lib/refs/../../payload.js -- still counts. Needs grep -P.
+_SELF_UPDATE_FETCH = (r"releases/latest|releases/download|codeload\.github\.com"
+                      r"|raw\.githubusercontent\.com(?!/ajv-validator/ajv/master/lib/refs/data\.json#)")
 _SELF_UPDATE_WRITE = (r"writeTextFile|renamePath|writeFile\(|writeFileSync|renameSync|copyFileSync"
                       r"|cpSync|createWriteStream")
 _SCRIPT_GLOBS = ("*.js", "*.mjs", "*.cjs", "*.ts", "*.jsx", "*.tsx", "*.mts", "*.cts")
@@ -178,7 +184,9 @@ def _check_self_updater(plugin_dir: str) -> None:
     # both ways: committed filenames with spaces or newlines must not split into grep options
     # or forged log lines.
     includes = [f"--include={glob}" for glob in _SCRIPT_GLOBS]
-    fetchers = _run(["grep", "-rlZE", _SELF_UPDATE_FETCH, *includes, plugin_dir],
+    # -P (PCRE): the fetch pattern uses a negative lookahead to exempt ajv's inert bundled
+    # meta-schema id; -E has no lookahead. The write pattern stays -E (no lookahead needed).
+    fetchers = _run(["grep", "-rlZP", _SELF_UPDATE_FETCH, *includes, plugin_dir],
                     stdout=subprocess.PIPE).stdout
     writers = subprocess.run(["xargs", "-r0", "grep", "-lZE", _SELF_UPDATE_WRITE],
                              input=fetchers, stdout=subprocess.PIPE, check=False,

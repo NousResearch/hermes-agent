@@ -767,6 +767,8 @@ def worktree_reclaim(cwd: str, worktree_path: str) -> dict:
         "removed": result["removed"],
         "branch": result["branch"],
         "branchDeleted": result["branch_deleted"],
+        "outcome": result["outcome"],
+        "forceable": result["forceable"],
         "verdict": result["verdict"],
         "reason": result["reason"],
         "actions": result["actions"],

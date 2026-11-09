@@ -218,6 +218,11 @@ class TestReclaimOne:
         assert "uncommitted" in kept["reason"] and dirty.exists()
         assert _git(["rev-parse", "--verify", dirty_branch], repo)
 
+        # The REST shape Desktop reads: a plain policy keep is the one forceable verdict.
+        from hermes_cli import web_git
+        rest = web_git.worktree_reclaim(str(repo), str(dirty))
+        assert rest["outcome"] == "kept" and rest["forceable"] is True and rest["removed"] is False
+
     def test_tree_a_live_process_works_in_is_kept_unforceable(self, repo):
         """The live-process check ``prune`` applies: a clean merged tree a running process
         uses (cwd here, no git lock) stays, and the verdict never offers force."""

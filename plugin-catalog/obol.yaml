@@ -1,19 +1,19 @@
 name: obol
 title: Obol
 repo: https://github.com/UEddy/Obol
-sha: d21df0241a3c88d0def0f12ef7ffa581e6e0b59f
-description: "Safe invoicing for freelancers, consultants and agencies who bill clients, from any chat Hermes runs in (tested: Telegram, WhatsApp, Slack, email and the terminal). Hermes drafts invoices (also from forwarded messages via ctx.llm), sends them as Stripe payment links or as bank-transfer PDF invoices with no provider account, tracks who has paid, and adds Invoices and Security dashboard views plus /invoices in every chat. Every invoice write needs approval, with deterministic checks for prompt injection (a message can never choose the recipient), lookalike and impersonated client addresses, duplicates, unusual amounts and changed payout details; live keys are refused unless allowed, writes are refused in unattended runs, and the activity and security logs are hash-chained. Disclosure — handles payments: in Stripe mode it calls api.stripe.com with your STRIPE_API_KEY (read through Hermes's secret route) and Stripe emails your clients when invoices are sent or reminded; live keys are refused unless you turn on allow_live; every invoice write asks for approval and writes are refused in cron runs; forwarded messages you ask it to draft from go to your configured model; bank-transfer mode makes no network calls and prints the bank details you enter in plugin settings (stored in config.yaml) on PDF invoices; data stays in plugin-data/obol/."
+sha: 87015c996b608b93e81f8123011c5bf3d2d53f71
+description: "Safe invoicing for freelancers, consultants and agencies who bill clients, from any chat Hermes runs in (tested: Telegram, WhatsApp, Slack, email and the terminal). Hermes drafts invoices (also from forwarded messages via ctx.llm), sends them as Stripe payment links or as bank-transfer PDF invoices with no provider account, tracks who has paid, and adds Invoices and Security dashboard views plus /invoices in every chat. Every invoice write needs approval, with deterministic checks for prompt injection (a message can never choose the recipient), lookalike and impersonated client addresses, duplicates, unusual amounts and changed payout details; live keys are refused unless allowed, writes are refused in unattended runs, and the activity and security logs are hash-chained. Disclosure — handles payments: in Stripe mode it calls api.stripe.com with your STRIPE_API_KEY (read through Hermes's secret route) and Stripe emails your clients when invoices are sent or reminded; live keys are refused unless you turn on allow_live, and in live mode the approval prompt warns that sending or reminding emails the real client; every invoice write asks for approval and writes are refused in cron runs; forwarded messages you ask it to draft from go to your configured model; bank-transfer mode makes no network calls and prints the bank details you enter in plugin settings (stored in config.yaml) on PDF invoices; data stays in plugin-data/obol/."
 maintainer: UEddy
 tier: community
 category: tools
 requires_hermes: ">=0.22"
-version: "0.1.0"
+version: "0.1.1"
 docs_url: https://github.com/UEddy/Obol#readme
 screenshots:
-  - https://raw.githubusercontent.com/UEddy/Obol/d21df0241a3c88d0def0f12ef7ffa581e6e0b59f/docs/screenshots/dashboard-invoices.png
-  - https://raw.githubusercontent.com/UEddy/Obol/d21df0241a3c88d0def0f12ef7ffa581e6e0b59f/docs/screenshots/dashboard-security.png
-  - https://raw.githubusercontent.com/UEddy/Obol/d21df0241a3c88d0def0f12ef7ffa581e6e0b59f/docs/screenshots/approval.png
-  - https://raw.githubusercontent.com/UEddy/Obol/d21df0241a3c88d0def0f12ef7ffa581e6e0b59f/docs/screenshots/approval-scam.png
+  - https://raw.githubusercontent.com/UEddy/Obol/87015c996b608b93e81f8123011c5bf3d2d53f71/docs/screenshots/dashboard-invoices.png
+  - https://raw.githubusercontent.com/UEddy/Obol/87015c996b608b93e81f8123011c5bf3d2d53f71/docs/screenshots/dashboard-security.png
+  - https://raw.githubusercontent.com/UEddy/Obol/87015c996b608b93e81f8123011c5bf3d2d53f71/docs/screenshots/approval.png
+  - https://raw.githubusercontent.com/UEddy/Obol/87015c996b608b93e81f8123011c5bf3d2d53f71/docs/screenshots/approval-scam.png
 platforms: []
 capabilities:
   provides_tools:

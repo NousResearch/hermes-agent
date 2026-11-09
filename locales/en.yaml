@@ -629,6 +629,7 @@ gateway:
     action_always: "Always Allow"
     action_deny: "Deny"
     deadline: "If you don't answer within {window} it will NOT run."
+    not_requester: "Only {requester} can answer this approval."
     text_choice_once: "Reply `{prefix}approve` to run it once"
     text_choice_session: "`{prefix}approve session` to allow this pattern for the rest of this session"
     text_choice_always: "`{prefix}approve always` to allow it permanently"
@@ -636,6 +637,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", or {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Preview shortened: the full command ({total} characters) is in the message above."
+    truncated_deny_only: "Preview shortened ({total} characters) and the full command could not be shown here, so only Deny is offered. Review it in the CLI or Desktop app."
+    text_prompt_deny_only: "The full approval prompt is too long for this platform, so only Deny is offered. Review it in the CLI or Desktop app."
   notify:
     media_kind:
       audio: "audio"

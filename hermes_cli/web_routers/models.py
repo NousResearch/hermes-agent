@@ -234,38 +234,38 @@ def get_auxiliary_models(profile: Optional[str] = None):
     with http_failure("GET /api/model/auxiliary failed", 500, detail="Failed to read auxiliary config"):
         with _profile_scope(profile):
             cfg = load_config()
-            # Inside the scope on purpose: plugin discovery and the resolver key on the same
-            # context-local home, so profile B's rows come from B's plugins and B's config.
+            # Inside the scope on purpose: plugin discovery, the resolver and ``is_local_server``'s
+            # provider lookup key on the same context-local home, so profile B's rows are B's.
             plugin_tasks = _plugin_aux_tasks()
             effective = {entry["key"]: _get_auxiliary_task_config(entry["key"])
                          for entry in plugin_tasks if entry.get("inherit_from")}
-        aux_cfg = cfg.get("auxiliary", {})
-        if not isinstance(aux_cfg, dict):
-            aux_cfg = {}
+            aux_cfg = cfg.get("auxiliary", {})
+            if not isinstance(aux_cfg, dict):
+                aux_cfg = {}
 
-        def _row(slot: str) -> dict:
-            slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
-            base_url = str(slot_cfg.get("base_url", "") or "")
-            provider = str(slot_cfg.get("provider", "auto") or "auto")
-            return {
-                "task": slot, "provider": provider,
-                "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
-                "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
-                # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
-                "local_endpoint": is_local_server(base_url, provider),
-            }
+            def _row(slot: str) -> dict:
+                slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
+                base_url = str(slot_cfg.get("base_url", "") or "")
+                provider = str(slot_cfg.get("provider", "auto") or "auto")
+                return {
+                    "task": slot, "provider": provider,
+                    "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
+                    "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
+                    # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
+                    "local_endpoint": is_local_server(base_url, provider),
+                }
 
-        tasks = [_row(slot) for slot in _AUX_TASK_SLOTS]
-        tasks.extend({
-            **_row(entry["key"]),
-            "label": str(entry.get("display_name") or entry["key"]),
-            "hint": str(entry.get("description") or ""),
-            "plugin": str(entry.get("plugin") or ""),
-            "inherit_from": entry.get("inherit_from") or None,
-            **({"effective": {field: str(effective[entry["key"]].get(field) or "")
-                              for field in ("provider", "model", "base_url")}}
-               if entry["key"] in effective else {}),
-        } for entry in plugin_tasks)
+            tasks = [_row(slot) for slot in _AUX_TASK_SLOTS]
+            tasks.extend({
+                **_row(entry["key"]),
+                "label": str(entry.get("display_name") or entry["key"]),
+                "hint": str(entry.get("description") or ""),
+                "plugin": str(entry.get("plugin") or ""),
+                "inherit_from": entry.get("inherit_from") or None,
+                **({"effective": {field: str(effective[entry["key"]].get(field) or "")
+                                  for field in ("provider", "model", "base_url")}}
+                   if entry["key"] in effective else {}),
+            } for entry in plugin_tasks)
 
         model, provider = _main_model_fields(cfg.get("model", {}))
         return {"tasks": tasks, "main": {"provider": str(provider or ""), "model": str(model or "")}}

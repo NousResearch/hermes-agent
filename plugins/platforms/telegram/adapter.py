@@ -3639,15 +3639,15 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         elif not finalize:
             # Content shrank back under the cap — clear stale saturation state so dedup can't mask an edit.
             self._last_overflow_preview.pop(_preview_key, None)
+        # Previews edit in the final's parse mode (#49536): a plain -> MarkdownV2 flip on the same message makes
+        # clients draw the old layout over the new text. A rejected preview retries as raw text (nothing lost).
+        formatted = self.format_message(content)
+        plain = (_strip_mdv2(content) if content else content) if finalize else content
+        warn = "[%s] MarkdownV2 edit failed, falling back to plain text: %s"
         try:
-            if not finalize:
-                await self._edit_text(chat_id, message_id, content)
-                if _saturated_preview:
-                    self._last_overflow_preview[_preview_key] = content
-                return SendResult(success=True, message_id=message_id)
-            await self._edit_markdown_or_plain(
-                chat_id, message_id, self.format_message(content), _strip_mdv2(content) if content else content,
-                "[%s] MarkdownV2 edit failed, falling back to plain text: %s")
+            await self._edit_markdown_or_plain(chat_id, message_id, formatted, plain, warn)
+            if _saturated_preview:
+                self._last_overflow_preview[_preview_key] = content
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -3680,7 +3680,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 logger.warning("[%s] Telegram flood control, waiting %.1fs", self.name, wait)
                 await asyncio.sleep(wait)
                 try:
-                    await self._edit_text(chat_id, message_id, content)
+                    await self._edit_markdown_or_plain(chat_id, message_id, formatted, plain, warn)
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)

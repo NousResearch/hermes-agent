@@ -873,9 +873,22 @@ def cmd_mcp_test(args):
         return 1
     _success(f"Connected ({(time.monotonic() - start) * 1000:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
-    if tools:
+    # Same include/exclude predicate runtime registration uses, so the list matches what the agent gets.
+    from tools.mcp_tool_registration import _make_tool_filter
+
+    keep = _make_tool_filter(name, cfg)
+    kept = [tool for tool in tools if keep(tool[0])]
+    filtered = [tool for tool in tools if not keep(tool[0])]
+    if filtered:
+        _info(f"{len(kept)} kept by this server's tools.include/tools.exclude, {len(filtered)} filtered out")
+    if kept:
         print()
-        _print_tools(tools, 36, 55)
+        _print_tools(kept, 36, 55)
+    if filtered:
+        print()
+        _info("Filtered out by config (the agent won't get these):")
+        for tool_name, _ in filtered:
+            print(color(f"    {tool_name}", Colors.DIM))
     print()
     return 0
 

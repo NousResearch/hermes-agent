@@ -76,6 +76,16 @@ check-uv-lock:
 lint-docker:
     scripts/ci/lint_docker.sh
 
+# Validate every plugin-catalog entry's structure (no clone, no install)
+[group('check')]
+check-plugin-catalog:
+    scripts/hermes-python scripts/validate_plugin_catalog.py plugin-catalog/
+
+# Run the flake's checks (needs nix with flakes)
+[group('check')]
+check-nix:
+    nix --extra-experimental-features 'nix-command flakes' flake check . --print-build-logs
+
 # Run the named test files or directories (pytest flags pass through)
 [group('test')]
 [positional-arguments]
@@ -93,10 +103,20 @@ test-js:
     pnpm --dir ui-tui run build:ink
     pnpm -r test
 
+# Run the plugin-catalog tests, the files scripts/ci/catalog_test_files.py selects
+[group('test')]
+test-catalog:
+    scripts/hermes-python scripts/ci/catalog_test_files.py | scripts/run_tests.sh --files-from -
+
 # Run the WhatsApp bridge's node tests (after `just js-install-whatsapp-bridge`)
 [group('test')]
 test-whatsapp-bridge:
     node --test scripts/whatsapp-bridge/*.test.mjs
+
+# Run the bootstrap installer's Rust unit tests (needs cargo and Tauri's system libraries)
+[group('test')]
+test-rust:
+    cargo test --lib --manifest-path apps/bootstrap-installer/src-tauri/Cargo.toml
 
 # Start the desktop app in development mode
 [group('dev')]

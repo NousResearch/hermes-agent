@@ -136,6 +136,36 @@ async def test_a_listed_chat_whose_connector_cannot_bind_is_refused_before_anyth
 
 
 @pytest.mark.asyncio
+async def test_after_new_a_listed_chat_opens_by_origin_while_session_key_stays_refused(monkeypatch):
+    """``open_chats`` covers ``origin`` only (#148065). After ``/new`` the chat's current session holds
+    no committed turn: a ``session_key`` injection is still dropped at dispatch, and an ``origin``
+    injection opens that same session instead of minting another one."""
+    from gateway.platforms.event import MessageEvent
+    from hermes_constants import get_hermes_home
+
+    runner, adapter, authority, executed = await _gateway(monkeypatch)
+    ctx, manager = _context(get_hermes_home(), ["discord:42"])
+    _publish(runner, manager)
+    source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
+    key = runner.session_store._generate_session_key(source)
+    await adapter.handle_message(MessageEvent(text="hello", source=source, message_id="human-1"))
+    await async_wait_until(lambda: "hello" in executed, timeout=10, what="the human turn")
+    runner.session_store.reset_session(key)  # what /new does to the route
+    fresh = runner.session_store.lookup_by_session_key(key).session_id
+
+    assert await asyncio.to_thread(ctx.inject_message, "keepalive", session_key=key) is True
+    await async_wait_until(lambda: not runner._background_tasks, timeout=10, what="the dispatch to finish")
+    assert "keepalive" not in executed
+    assert _rows(authority, authority.logical_owner(fresh)) == []
+
+    assert await asyncio.to_thread(ctx.inject_message, "keepalive", origin=_origin("42")) is True
+    await async_wait_until(lambda: "keepalive" in executed, timeout=10, what="the opening plugin turn")
+    assert runner.session_store.lookup_by_session_key(key).session_id == fresh
+    (opened,) = _rows(authority, authority.logical_owner(fresh))
+    assert opened["payload"]["native_text_v1"]["automation"]["opened"] is True
+
+
+@pytest.mark.asyncio
 async def test_a_queued_opening_turn_replays_only_against_the_same_live_connector(monkeypatch):
     """A restart recovers the queued opening turn like any native row: its binding is checked against
     the live connector again, and a changed credential leaves it queued instead of running it."""

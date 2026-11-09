@@ -8,8 +8,12 @@ dispatch, reclaim, terminate) stays on the dashboard where its transition rules
 and tests live. Exposing writes here would let an app-level API key dispatch
 work, which is exactly the race this design avoids.
 
-Route table is registered through ``api_server.APIServerAdapter._http_route_table``
-and inherits the gateway's API-key middleware.
+Route table is registered through ``api_server.APIServerAdapter._http_route_table``.
+The gateway has no API-key middleware: every other route checks the key in its own
+handler (``api_server._require_auth``). These handlers are module functions, so
+``http_routes`` takes the adapter's ``_check_auth`` and wraps every row with it. There is
+no unauthenticated variant: the board carries task bodies and errors, and this listener is
+reachable through the relay.
 """
 
 from __future__ import annotations
@@ -17,7 +21,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
-from typing import Any, Optional
+from functools import wraps
+from typing import Any, Awaitable, Callable, Optional
 
 try:
     from aiohttp import web
@@ -187,14 +192,34 @@ async def _handle_boards(request: web.Request) -> web.Response:
     return web.json_response({"boards": payload})
 
 
-def http_routes() -> list[tuple[str, str, Any]]:
-    """Read-only rows for ``APIServerAdapter._http_route_table``.
+AuthCheck = Callable[[Any], Optional[Any]]
 
+
+def _authenticated(handler: Callable[[Any], Awaitable[Any]], check_auth: AuthCheck):
+    """*handler* behind *check_auth*: its 401 is returned before the board is touched."""
+
+    @wraps(handler)
+    async def _wrapped(request):
+        auth_err = check_auth(request)
+        if auth_err is not None:
+            return auth_err
+        return await handler(request)
+
+    return _wrapped
+
+
+def http_routes(check_auth: AuthCheck) -> list[tuple[str, str, Any]]:
+    """Read-only rows for ``APIServerAdapter._http_route_table``, each behind *check_auth*.
+
+    *check_auth* is the adapter's ``_check_auth`` (None when the request may proceed, else the
+    401 response). It is required, so a caller cannot register the board unauthenticated.
     ``/api/tasks/boards`` is registered before ``/api/tasks/{task_id}`` so the
     static path is not captured as a task id.
     """
+    if not callable(check_auth):
+        raise TypeError("http_routes needs the adapter's auth check")
     return [
-        ("GET", "/api/tasks", _handle_list_tasks),
-        ("GET", "/api/tasks/boards", _handle_boards),
-        ("GET", "/api/tasks/{task_id}", _handle_get_task),
+        ("GET", "/api/tasks", _authenticated(_handle_list_tasks, check_auth)),
+        ("GET", "/api/tasks/boards", _authenticated(_handle_boards, check_auth)),
+        ("GET", "/api/tasks/{task_id}", _authenticated(_handle_get_task, check_auth)),
     ]

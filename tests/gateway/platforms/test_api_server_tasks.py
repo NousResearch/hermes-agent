@@ -69,7 +69,7 @@ def test_status_filter_is_forwarded_and_invalid_status_is_a_value_error(kanban_h
 
 
 def test_route_table_is_read_only_and_orders_static_path_first():
-    rows = tasks.http_routes()
+    rows = tasks.http_routes(lambda _request: None)
     methods = {method for method, _path, _handler in rows}
     assert methods == {"GET"}, "write/control endpoints must stay on the dashboard surface"
     paths = [path for _method, path, _handler in rows]

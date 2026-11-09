@@ -86,7 +86,9 @@ class PluginSelection:
 
         self.configs = selection_snapshot()
         self.home = Path(selection["home"]).resolve()
-        if not self.home.is_relative_to(dependency_home_root().resolve()):
+        from pm.plugins_state import dependency_homes
+        valid_roots = [h.resolve() for h in dependency_homes()]
+        if not any(self.home == root or self.home.is_relative_to(root) for root in valid_roots):
             raise ValueError("config path is outside Hermes state")
         self.path = self.home / "config.yaml"
         self.previous = read_bytes_or_none(self.path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
@@ -131,7 +133,9 @@ class StagedPlugin:
         self.configs = selection_snapshot()
         self.target = Path(plugin["target"]).absolute()
         self.staged = Path(plugin["staged"]).resolve()
-        if (not self.target.resolve().is_relative_to(dependency_home_root().resolve())
+        from pm.plugins_state import dependency_homes
+        valid_roots = [h.resolve() for h in dependency_homes()]
+        if (not any(self.target.resolve().is_relative_to(root) for root in valid_roots)
                 or self.target.parent.name != "plugins" or self.target.is_symlink()
                 or self.staged == self.target.resolve() or self.staged.is_relative_to(self.target.resolve())
                 or self.target.resolve().is_relative_to(self.staged)):

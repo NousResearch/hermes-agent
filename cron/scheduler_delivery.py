@@ -25,9 +25,9 @@ logger = logging.getLogger("cron.scheduler")
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
 # Plugin platforms are known through ``PlatformEntry.cron_deliver_env_var``; these rows have none:
-# ``webhook`` is core-only and ``wecom_callback`` (a ``wecom`` plugin sibling) delivers only to its
-# config.yaml ``home_channel``.
-_KNOWN_DELIVERY_PLATFORMS = frozenset({"webhook", "wecom_callback"})
+# ``webhook`` is core-only, ``wecom_callback`` (a ``wecom`` plugin sibling) delivers only to its
+# config.yaml ``home_channel``, and ``relay`` is core-only with its home in ``platforms.relay.home_channel``.
+_KNOWN_DELIVERY_PLATFORMS = frozenset({"webhook", "wecom_callback", "relay"})
 
 # Gateway platforms whose adapter declares ``supports_async_delivery = False`` (request/response
 # only, ``send()`` is a stub) — a cron report can never reach them, so they are never a
@@ -500,12 +500,12 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
 
 
 def _iter_home_target_platforms():
-    """Iterate plugin platform names that expose a home channel, ``_HOME_TARGET_PRIORITY`` first."""
+    """Iterate home-target names: plugins with a home channel (``_HOME_TARGET_PRIORITY`` first) plus the env-var-less core ``relay``."""
     with contextlib.suppress(Exception):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
-        named = [e.name for e in platform_registry.plugin_entries() if e.cron_deliver_env_var]
+        named = [e.name for e in platform_registry.plugin_entries() if e.cron_deliver_env_var] + ["relay"]
         yield from (n for n in _HOME_TARGET_PRIORITY if n in named)
         yield from (n for n in named if n not in _HOME_TARGET_PRIORITY)  # registry order, as before
 

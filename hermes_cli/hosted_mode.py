@@ -329,7 +329,8 @@ def _require_hosted_backends(config: Mapping[str, Any]) -> None:
         _refuse(
             f"the configured identity verifier {verifier!r} is not available here",
             "The verifier must be able to check every frame this process serves (the reference "
-            "turn-claim verifier needs the deployment's relay id); fix its configuration")
+            "turn-claim verifier needs the deployment's relay id and the connector's issuer); "
+            "fix its configuration")
     storage = str(_hosted_setting(config, "session_storage") or "").strip()
     if not storage:
         _refuse(

@@ -74,6 +74,11 @@ DEFAULT_CONFIG = {
         # storage and must pass its own isolation assertion (hosted.session_storage).
         "identity_verifier": "",
         "session_storage": "",
+        # The connector's issuer (its public base URL): the ONE trust root the reference
+        # turn-claim verifier ever fetches signing keys from (its well-known document); a
+        # claim's own iss must equal it and never locates a key. Boot refuses the reference
+        # verifier without this.
+        "turn_claim_issuer": "",
     },
     "agent": {
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int

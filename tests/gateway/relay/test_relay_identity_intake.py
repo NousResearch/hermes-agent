@@ -92,7 +92,8 @@ def fetch():
 
 
 def _verifier(fetch, audience=AUDIENCE):
-    return TurnClaimV1Verifier(audience=audience, now=lambda: NOW, fetch_jwks=fetch)
+    return TurnClaimV1Verifier(audience=audience, issuer="https://connector.example",
+                               now=lambda: NOW, fetch_jwks=fetch)
 
 
 @pytest.fixture

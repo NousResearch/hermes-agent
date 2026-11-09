@@ -5,18 +5,27 @@ payload names the tenant, agent, acting principal, owner and administration righ
 turn, bound to the frame's event by a hash — exactly as the shared wire contract pins it:
 
 - protected header exactly ``{"alg": "EdDSA", "typ": "hermes-turn-claim+jwt", "kid": …}``;
-- Ed25519 only, keys fetched from the connector's JWKS
-  (``GET <iss>/.well-known/hermes-turn-claim-jwks.json``, unauthenticated), cached honouring the
-  response's ``max-age`` (default 300 s), with an unknown ``kid`` causing at most one refetch
-  per cache interval — the connector publishes at most the current key and one previous;
-- the payload's keys and types exactly the contract's, ``aud == "hermes-relay:" + agt``, and the
-  audience equal to the one this process serves (``hermes-relay:<this gateway's relay id>``);
+- Ed25519 only. The verifier pins its trust root: it is configured with the connector's issuer
+  (``hosted.turn_claim_issuer``) and fetches keys ONLY from that issuer's JWKS
+  (``GET <configured issuer>/.well-known/hermes-turn-claim-jwks.json``, unauthenticated) — the
+  claim's own ``iss`` never locates a key; after the payload's checks it must equal the pinned
+  issuer. Keys are cached honouring the response's ``max-age`` (default 300 s), a failed refresh
+  keeps the last good keys for at most an hour past their expiry (then every key is unknown),
+  and fetches are single-flight and at most one per 30 s whatever the outcome — an unknown
+  ``kid`` shares that budget, so rotation is picked up without any frame being able to hammer
+  the connector;
+- the payload's keys and types exactly the contract's, its value rules (a claim's lifetime is
+  at most 120 s, the ``jti`` a lowercase canonical UUIDv4, the tenant, agent, actor and owner
+  id non-empty, ``v == 1``), and ``aud == "hermes-relay:" + agt``; the audience must equal the
+  one this process serves (``hermes-relay:<this gateway's relay id>``);
 - 30 s clock skew on ``exp``/``iat``, the event binding recomputed from the frame's own event,
-  and a ``jti`` replay cache bounded to the claim's lifetime (``exp`` + skew).
+  and a ``jti`` replay cache that retains an entry exactly as long as the claim is not expired
+  (``now <= exp + skew``): live entries are never evicted to make room — at capacity the frame
+  is refused as a replay (fail closed).
 
 A frame this verifier cannot check is refused, never served: a JWKS that cannot be fetched or a
-key that cannot be found is an unknown key. Fail-closed is the point — the claim is the only
-thing standing between a frame and a tenant's agent.
+key that cannot be found is an unknown key, and no pinned issuer means no key at all. Fail-closed
+is the point — the claim is the only thing standing between a frame and a tenant's agent.
 """
 
 from __future__ import annotations
@@ -24,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import heapq
 import json
 import logging
 import re
@@ -44,6 +54,7 @@ from hermes_identity_verifier import (
     REPLAYED,
     UNKNOWN_KID,
     WRONG_AUDIENCE,
+    WRONG_ISSUER,
     IdentityVerifier,
     Refusal,
     VerifiedTurn,
@@ -57,8 +68,14 @@ _TYP = "hermes-turn-claim+jwt"
 _JWKS_PATH = "/.well-known/hermes-turn-claim-jwks.json"
 _AUD_PREFIX = "hermes-relay:"
 _SKEW_SECONDS = 30
+_MAX_CLAIM_LIFETIME_S = 120
 _JWKS_MAX_AGE_DEFAULT = 300
 _JWKS_TIMEOUT_S = 5.0
+# The key cache's own bounds: whatever a fetch returns (keys, an error, or a document without
+# the wanted kid), the next fetch is at least this far away, and a failed refresh keeps the last
+# good keys trusted for at most this long past their expiry.
+_JWKS_FETCH_MIN_INTERVAL_S = 30.0
+_JWKS_STALE_IF_ERROR_S = 3600.0
 # The claim's payload: key -> the exact type its value must be (a verifier refuses unknown or
 # missing keys; a bool is not an int here).
 _PAYLOAD_KEYS: dict[str, type] = {
@@ -66,7 +83,9 @@ _PAYLOAD_KEYS: dict[str, type] = {
     "ten": str, "agt": str, "act": str, "own": dict, "adm": bool, "evb": str,
 }
 _OWNER_KINDS = ("principal", "group", "org")
-_MAX_REPLAY_ENTRIES = 10_000  # a jti is a UUIDv4: 10k live claims bound the cache hard
+# A canonical lowercase UUIDv4: 8-4-4-4-12 hex, version nibble 4, variant 8-b.
+_UUIDV4_JTI = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z")
+_MAX_REPLAY_ENTRIES = 10_000  # live claims bound the cache hard; at capacity it refuses
 
 _FetchResult = tuple[bytes, str]  # (jwks document body, Cache-Control header value)
 
@@ -109,35 +128,43 @@ def event_binding(event: Any) -> str:
 
 
 class TurnClaimV1Verifier(IdentityVerifier):
-    """The v1 verifier. *audience* is the relay instance this process serves
-    (``hermes-relay:<relay id>``); ``None`` reads it from the deployment's relay identity, which
-    the transport dials with. *now* (epoch seconds) and *fetch_jwks* are seams for tests."""
+    """The v1 verifier. *issuer* is the pinned trust root (the connector's issuer, whose
+    well-known document is the only place a key is ever fetched from) and *audience* the relay
+    instance this process serves (``hermes-relay:<relay id>``); ``None`` reads either from the
+    deployment's configuration, which a hosted boot refuses the verifier without. *now* (epoch
+    seconds) and *fetch_jwks* are seams for tests."""
 
     def __init__(self, *, audience: Optional[str] = None,
+                 issuer: Optional[str] = None,
                  now: Optional[Callable[[], int]] = None,
                  fetch_jwks: Optional[Callable[[str], _FetchResult]] = None) -> None:
         self._audience = audience
+        self._issuer = issuer
         self._now = now or (lambda: int(time.time()))
         self._fetch_jwks = fetch_jwks or _http_fetch_jwks
-        # Per issuer: the parsed keys by kid, when the cache expires, its max-age, and when an
-        # unknown kid last caused a refetch (at most one per interval).
-        self._keys: dict[str, dict[str, Ed25519PublicKey]] = {}
-        self._expires: dict[str, float] = {}
-        self._max_age: dict[str, int] = {}
-        self._unknown_kid_refetched: dict[str, float] = {}
-        # jti -> when it stops being a replay (exp + skew); FIFO-capped.
+        # The pinned issuer's key cache: the keys by kid from the last good fetch, when they
+        # stop being fresh (fetch time + max-age), when a fetch last ran (any outcome — the
+        # throttle), and the single-flight gate every fetch goes through.
+        self._keys: dict[str, Ed25519PublicKey] = {}
+        self._keys_fresh_until: float = 0.0
+        self._last_fetch_at: float = float("-inf")
+        self._fetch_gate = asyncio.Lock()
+        # jti -> when it stops being a replay (exp + skew); pruned only past that, never
+        # evicted to make room. The heap orders the pruning.
         self._seen_jti: dict[str, float] = {}
+        self._jti_expiry: list[tuple[float, str]] = []
 
     @property
     def name(self) -> str:
         return "turn_claim_v1"
 
     def is_available(self) -> bool:
-        """The relay id this process serves must be configured: without it no audience can be
-        checked, so no claim could be admitted."""
+        """The relay id this process serves and the connector's pinned issuer must both be
+        configured: without either, no audience and no trust root could be checked, so no
+        claim could be admitted."""
         try:
-            return self._expected_audience() is not None
-        except Exception:  # health: allow BLE001 -- the relay id comes from the config backends, whose read errors are many and varied; none of them make a verifier available, and boot must report unavailability rather than enumerate every backend's failure
+            return self._expected_audience() is not None and self._pinned_issuer() is not None
+        except Exception:  # health: allow BLE001 -- the relay id and the issuer come from the config backends, whose read errors are many and varied; none of them make a verifier available, and boot must report unavailability rather than enumerate every backend's failure
             return False
 
     def _expected_audience(self) -> Optional[str]:
@@ -146,6 +173,15 @@ class TurnClaimV1Verifier(IdentityVerifier):
         from gateway.relay import relay_connection_auth
         gateway_id = relay_connection_auth()[0]
         return f"{_AUD_PREFIX}{gateway_id}" if gateway_id else None
+
+    def _pinned_issuer(self) -> Optional[str]:
+        """The deployment's trust root (``hosted.turn_claim_issuer``): the one issuer whose
+        well-known document is ever fetched. A claim never chooses it."""
+        if self._issuer is not None:
+            return self._issuer
+        from hermes_cli.hosted_mode import _boot_or_effective_config, _hosted_setting
+        configured = _hosted_setting(_boot_or_effective_config(), "turn_claim_issuer")
+        return str(configured).strip() if isinstance(configured, str) and configured.strip() else None
 
     # ── the check, in the contract's order; each step is its own method so a test can break one ──
 
@@ -167,13 +203,18 @@ class TurnClaimV1Verifier(IdentityVerifier):
             return Refusal(BAD_SIGNATURE)
         if self._bad_header(header):
             return Refusal(BAD_HEADER)
-        key = await self._signing_key(payload, header, now)
+        # The key lookup depends on the header's kid and the pinned issuer alone — never on a
+        # payload field — so a signed payload missing its iss is judged by the payload's own
+        # checks, not as an unknown key.
+        key = await self._signing_key(header, now)
         if key is None:
             return Refusal(UNKNOWN_KID)
         if not self._signature_valid(key, signature, parts):
             return Refusal(BAD_SIGNATURE)
         if self._bad_payload(payload):
             return Refusal(BAD_PAYLOAD)
+        if self._wrong_issuer(payload):
+            return Refusal(WRONG_ISSUER)
         if payload["aud"] != self._expected_audience():
             return Refusal(WRONG_AUDIENCE)
         if self._expired(payload, now):
@@ -192,45 +233,54 @@ class TurnClaimV1Verifier(IdentityVerifier):
         return (not isinstance(header, dict) or set(header) != {"alg", "typ", "kid"}
                 or header["alg"] != "EdDSA" or header["typ"] != _TYP)
 
-    async def _signing_key(self, payload: Any, header: Mapping[str, Any],
+    async def _signing_key(self, header: Mapping[str, Any],
                            now: float) -> Optional[Ed25519PublicKey]:
-        """The JWKS key for the claim's ``kid``: the JWKS is fetched from the claim's ``iss``
-        (the connector's public base URL) and cached per issuer honouring ``max-age``. An unknown
-        ``kid`` causes at most one refetch per cache interval, so a replayed unknown kid is
-        answered from the cache. Any failure to obtain the key is ``None`` (an unknown key), never
-        a served frame."""
-        iss = payload.get("iss") if isinstance(payload, dict) else None
+        """The key for the claim's ``kid`` from the pinned issuer's cache. A kid the cached
+        document does not name is worth one fetch per fetch window (rotation: the connector
+        publishes at most the current key and one previous), then the cache answers."""
         kid = header.get("kid") if isinstance(header, Mapping) else None
-        if not isinstance(iss, str) or not iss or not isinstance(kid, str):
-            return None
-        keys = await self._jwks(iss, now)
+        if not isinstance(kid, str) or not kid or self._pinned_issuer() is None:
+            return None  # no pinned trust root: every key is unknown (fail closed)
+        keys = await self._jwks(now)
         if kid in keys:
             return keys[kid]
-        # Unknown kid: one refetch per interval, then the cache answers.
-        if now - self._unknown_kid_refetched.get(iss, float("-inf")) < self._max_age.get(iss, _JWKS_MAX_AGE_DEFAULT):
-            return None
-        self._unknown_kid_refetched[iss] = now
-        keys = await self._jwks(iss, now, refresh=True)
+        if now - self._last_fetch_at >= _JWKS_FETCH_MIN_INTERVAL_S:
+            keys = await self._jwks(now, refresh=True)
         return keys.get(kid)
 
-    async def _jwks(self, iss: str, now: float, *, refresh: bool = False) -> dict[str, Ed25519PublicKey]:
-        """The cached JWKS keys for *iss*, fetched when absent or past their max-age (or forced)."""
-        if not refresh and self._expires.get(iss, 0.0) > now:
-            return self._keys.get(iss) or {}
-        url = iss.rstrip("/") + _JWKS_PATH
-        try:
-            body, cache_control = await asyncio.to_thread(self._fetch_jwks, url)
-            document = json.loads(body)
-            keys = self._parse_jwks(document)
-        except Exception:
-            logger.warning("turn-claim JWKS fetch failed for %s; treating every key as unknown",
-                           iss, exc_info=True)
-            return self._keys.get(iss) or {}
-        max_age = _parse_max_age(cache_control)
-        self._keys[iss] = keys
-        self._max_age[iss] = max_age
-        self._expires[iss] = now + max_age
-        return keys
+    async def _jwks(self, now: float, *, refresh: bool = False) -> dict[str, Ed25519PublicKey]:
+        """The pinned issuer's keys by kid. Keys fetched at T are trusted until T + max-age; a
+        refresh is fetched single-flight, at most one per fetch window whatever the outcome; a
+        failed refresh keeps the last good keys for at most an hour past their expiry."""
+        if self._keys and not refresh and now < self._keys_fresh_until:
+            return self._keys
+        if now - self._last_fetch_at < _JWKS_FETCH_MIN_INTERVAL_S:
+            return self._trusted_keys(now)
+        async with self._fetch_gate:  # single-flight: one fetch serves every concurrent frame
+            if self._keys and not refresh and now < self._keys_fresh_until:
+                return self._keys  # a concurrent frame fetched while this one waited
+            if now - self._last_fetch_at < _JWKS_FETCH_MIN_INTERVAL_S:
+                return self._trusted_keys(now)
+            self._last_fetch_at = now
+            url = (self._pinned_issuer() or "").rstrip("/") + _JWKS_PATH
+            try:
+                body, cache_control = await asyncio.to_thread(self._fetch_jwks, url)
+                keys = self._parse_jwks(json.loads(body))
+            except Exception:
+                logger.warning("turn-claim JWKS fetch failed for %s; the last good keys serve "
+                               "while they may, then every key is unknown", url, exc_info=True)
+                return self._trusted_keys(now)
+            self._keys = keys
+            self._keys_fresh_until = now + _parse_max_age(cache_control)
+            return keys
+
+    def _trusted_keys(self, now: float) -> dict[str, Ed25519PublicKey]:
+        """What the last good fetch left, while it may still answer: fresh keys, or stale ones
+        within the stale-if-error bound past their expiry. Empty past that bound — a key that
+        cannot be freshened within the hour is no key at all."""
+        if self._keys and now <= self._keys_fresh_until + _JWKS_STALE_IF_ERROR_S:
+            return self._keys
+        return {}
 
     @staticmethod
     def _parse_jwks(document: Any) -> dict[str, Ed25519PublicKey]:
@@ -259,18 +309,30 @@ class TurnClaimV1Verifier(IdentityVerifier):
             return False
 
     def _bad_payload(self, payload: Any) -> bool:
-        """The payload's keys and types exactly as the contract pins them, the owner's shape, and
-        the audience internally consistent with the agent it names."""
+        """The payload's keys, types and value rules exactly as the contract pins them, the
+        owner's shape, and the audience internally consistent with the agent it names."""
         if not isinstance(payload, dict) or set(payload) != set(_PAYLOAD_KEYS):
             return True
         if any(type(payload[key]) is not expected for key, expected in _PAYLOAD_KEYS.items()):
             return True
         if payload["v"] != 1:
             return True
+        if not (payload["iat"] < payload["exp"] <= payload["iat"] + _MAX_CLAIM_LIFETIME_S):
+            return True
+        if _UUIDV4_JTI.fullmatch(payload["jti"]) is None:
+            return True
+        if not payload["ten"] or not payload["agt"] or not payload["act"]:
+            return True
         owner = payload["own"]
-        if set(owner) != {"k", "id"} or owner["k"] not in _OWNER_KINDS or type(owner["id"]) is not str:
+        if (set(owner) != {"k", "id"} or owner["k"] not in _OWNER_KINDS
+                or type(owner["id"]) is not str or not owner["id"]):
             return True
         return payload["aud"] != _AUD_PREFIX + payload["agt"]
+
+    def _wrong_issuer(self, payload: Mapping[str, Any]) -> bool:
+        """Whether the claim names an issuer other than the pinned one. The claim never chose
+        its trust root; this only refuses a good signature from the wrong issuer."""
+        return payload["iss"] != self._pinned_issuer()
 
     def _frame_event_binding(self, frame: Mapping[str, Any]) -> str:
         return event_binding(frame.get("event"))
@@ -286,14 +348,22 @@ class TurnClaimV1Verifier(IdentityVerifier):
         return payload["iat"] > now + _SKEW_SECONDS
 
     def _replayed(self, jti: str, expiry: float, now: float) -> bool:
-        """Whether *jti* was seen before; records it otherwise. Entries live to the claim's
-        ``exp`` + skew (after that the claim is expired anyway) and the cache is FIFO-capped."""
-        seen_at = self._seen_jti.get(jti)
-        if seen_at is not None and seen_at > now:
+        """Whether *jti* was seen before; records it otherwise. An entry lives exactly as long
+        as the claim is not expired (``now <= exp + skew`` — the same boundary as ``expired``,
+        so a claim is either expired or remembered, never neither), is pruned only past that,
+        and is never evicted to make room: a verifier that cannot record a jti refuses the
+        frame as a replay (fail closed)."""
+        seen_until = self._seen_jti.get(jti)
+        if seen_until is not None and now <= seen_until:
             return True
+        while self._jti_expiry and self._jti_expiry[0][0] < now:
+            expiry_of, recorded = heapq.heappop(self._jti_expiry)
+            if self._seen_jti.get(recorded) == expiry_of:
+                del self._seen_jti[recorded]
+        if len(self._seen_jti) >= _MAX_REPLAY_ENTRIES:
+            return True  # full of live entries: refuse rather than evict one
         self._seen_jti[jti] = expiry
-        while len(self._seen_jti) > _MAX_REPLAY_ENTRIES:
-            self._seen_jti.pop(next(iter(self._seen_jti)))
+        heapq.heappush(self._jti_expiry, (expiry, jti))
         return False
 
     @staticmethod

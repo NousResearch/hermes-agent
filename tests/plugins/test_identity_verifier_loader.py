@@ -97,22 +97,37 @@ def test_an_unavailable_provider_is_an_error(tmp_path):
             resolve_identity_verifier("unavailable")
 
 
+def _pinned_issuer(monkeypatch, issuer="https://connector.example"):
+    """The deployment's recorded boot config: the pinned trust root the reference verifier
+    reads its issuer from."""
+    from hermes_cli import hosted_mode
+
+    monkeypatch.setattr(hosted_mode, "_boot_or_effective_config",
+                        lambda: {"hosted": {"turn_claim_issuer": issuer}})
+
+
 def test_the_bundled_reference_provider_resolves_by_name(tmp_path, monkeypatch):
     """``turn_claim_v1`` resolves through the real bundled discovery, and its availability needs
-    the deployment's relay id (without it no audience could be checked, so no claim admitted)."""
+    the deployment's relay id and its pinned issuer (without either no claim could be checked,
+    so none admitted)."""
     monkeypatch.setenv("GATEWAY_RELAY_ID", "inst_probe")
+    _pinned_issuer(monkeypatch)
     with bind_profile_scope(tmp_path, hydrate_secrets=False):
         verifier = resolve_identity_verifier("turn_claim_v1")
     assert verifier.name == "turn_claim_v1"
     assert verifier.is_available() is True
     monkeypatch.setenv("GATEWAY_RELAY_ID", "")
     assert verifier.is_available() is False  # the same process serves no relay id
+    monkeypatch.setenv("GATEWAY_RELAY_ID", "inst_probe")
+    _pinned_issuer(monkeypatch, issuer="")
+    assert verifier.is_available() is False  # and no pinned issuer
 
 
 def test_a_user_provider_never_shadows_the_bundled_one(tmp_path, monkeypatch):
     """Bundled wins on collision, like every explicit-name provider kind: a dropped-in dir must
     not stand in for the reference verifier."""
     monkeypatch.setenv("GATEWAY_RELAY_ID", "inst_probe")
+    _pinned_issuer(monkeypatch)
     home = tmp_path / "shadow"
     _install(home, "SHADOW", name="turn_claim_v1")
     with bind_profile_scope(home, hydrate_secrets=False):

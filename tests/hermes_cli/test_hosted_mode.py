@@ -653,9 +653,10 @@ def test_an_unavailable_identity_verifier_refuses_hosted_boot(clean_hosted):
         boot(config=config, env={"PATH": "/usr/bin"})
 
 
-def test_the_bundled_reference_verifier_boots_with_a_relay_id(clean_hosted, monkeypatch):
-    """``turn_claim_v1`` resolves through the same discovery at boot; its availability needs the
-    deployment's relay id (the audience every claim must name). The reference verifier ships
+def test_the_bundled_reference_verifier_boots_with_a_relay_id_and_a_pinned_issuer(clean_hosted, monkeypatch):
+    """``turn_claim_v1`` resolves through the same discovery at boot; its availability needs
+    the deployment's relay id (the audience every claim must name) and the connector's pinned
+    issuer (the one URL its signing keys are ever fetched from). The reference verifier ships
     with the deployment's bundled tree (copied into the relocated bundled dir this file's
     fixtures install the stubs in)."""
     from plugins import identity_verifier
@@ -664,12 +665,17 @@ def test_the_bundled_reference_verifier_boots_with_a_relay_id(clean_hosted, monk
                    identity_verifier._PLUGINS_DIR / "turn_claim_v1", dirs_exist_ok=True)
     monkeypatch.setenv("GATEWAY_RELAY_ID", "inst_agent_a")
     config = _clean_hosted_config()
-    config["hosted"] = dict(HOSTED, identity_verifier="turn_claim_v1")
+    config["hosted"] = dict(HOSTED, identity_verifier="turn_claim_v1",
+                            turn_claim_issuer="https://connector.example")
     _write_config(config)
     boot(config=config, env={"PATH": "/usr/bin", "GATEWAY_RELAY_ID": "inst_agent_a"})
+    without_issuer = dict(config)
+    without_issuer["hosted"] = dict(HOSTED, identity_verifier="turn_claim_v1")
+    with pytest.raises(HostedBootRefused, match="not available here"):
+        boot(config=without_issuer, env={"PATH": "/usr/bin", "GATEWAY_RELAY_ID": "inst_agent_a"})
     monkeypatch.setenv("GATEWAY_RELAY_ID", "")
     with pytest.raises(HostedBootRefused, match="not available here"):
-        boot(config=config, env={"PATH": "/usr/bin", "GATEWAY_RELAY_ID": ""})
+        boot(config=without_issuer, env={"PATH": "/usr/bin", "GATEWAY_RELAY_ID": ""})
 
 
 def test_no_session_storage_name_refuses_hosted_boot(clean_hosted):

@@ -1,7 +1,7 @@
 name: valun
 repo: https://github.com/fitzss/hermes-plugin-valun
 sha: 5d01fbdde03ab5ad80f51b6547026fb06cd5e20e
-description: Let your Hermes agent negotiate service-for-credit deals with other independently controlled agents, signing with its own key within limits you set; credit notes recorded by a real Basis tracker (synthetic pilot units).
+description: "Let your Hermes agent negotiate service-for-credit deals with other independently controlled agents, signing with its own key within limits you set; credit notes recorded by a real Basis tracker (synthetic pilot units). Disclosure — Talks to the Valun pilot server set in `server_url` (default https://valun-desk.fly.dev, run by the plugin author's Valun project), sending your participant id, locally signed offers/acceptances/credit notes, deal terms and deliverables, and the goals/limits your agent records; whoever runs that server sees all of it. Stores VALUN_AGENT_TOKEN and VALUN_SIGNING_SECRET via `hermes config set` (the secret is briefly visible in the process list while it runs). Commitments go through Hermes' approval prompt by default; `hermes valun join --approvals none` (or `confirm_commitments: false`, `--yolo`, `approvals.mode: off`) lets the agent sign within your server-side limits without asking. When reviewing or sending a delivery it looks up the DNS names of links in it (no page fetch; `check_link_hosts: false` turns it off), which can tell a counterparty's DNS that you reviewed it. `join --direct-tools` sets `tools.tool_search.enabled off` in that profile. Pilot credits have no monetary value and nothing is settled."
 maintainer: fitzss
 tier: community
 category: tools

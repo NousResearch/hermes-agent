@@ -10,6 +10,7 @@ lease in either place, and installers take the old lock too, first, whenever the
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import sys
@@ -235,6 +236,45 @@ def test_old_install_lock_still_excludes_where_it_can_only_be_read(install):
     finally:
         if fd >= 0:
             os.close(fd)
+
+
+@pytest.mark.platforms("posix")
+@non_root
+def test_failure_to_lock_a_read_only_old_lock_reaches_the_caller(install, monkeypatch):
+    """Only an old lock this process cannot open is skipped; one it opened but could not lock
+    (ENOLCK on NFS) fails the installer rather than leaving it on the new lock alone."""
+    from pm import filesystem
+
+    project, state = install
+    (state / "locks").mkdir(parents=True)
+    old = state / ".install.lock"
+    old.touch()
+    old.chmod(0o444)
+
+    def lock_fd(fd, **kwargs):
+        if os.path.samestat(os.fstat(fd), os.stat(old)):
+            raise OSError(errno.ENOLCK, "No locks available")
+        return filesystem_lock_fd(fd, **kwargs)
+
+    filesystem_lock_fd = filesystem.lock_fd
+    monkeypatch.setattr(filesystem, "lock_fd", lock_fd)
+    with _read_only(state), pytest.raises(OSError) as raised:
+        with runtime_lock(project, timeout=0.2):
+            pass
+    assert raised.value.errno == errno.ENOLCK
+
+
+@pytest.mark.platforms("posix")
+@non_root
+def test_old_install_lock_this_process_cannot_open_is_skipped(install):
+    project, state = install
+    (state / "locks").mkdir(parents=True)
+    old = state / ".install.lock"
+    old.touch()
+    old.chmod(0o000)
+    with _read_only(state):
+        with runtime_lock(project, timeout=0.2) as held:
+            assert held is True
 
 
 @pytest.mark.platforms("any")

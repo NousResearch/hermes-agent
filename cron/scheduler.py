@@ -4390,6 +4390,9 @@ from cron.scheduler_preflight import (
 # `python -m cron.scheduler` entry: MUST stay below the split-module imports so the worker /
 # tick paths see every name they need.
 if __name__ == "__main__":
+    from hermes_agent.compat import install as _install_compat
+
+    _install_compat()
     if "--external-worker-file" in sys.argv:
         finish_worker_boot()  # may relaunch: before the payload is read and the ack published
         import argparse

@@ -225,6 +225,11 @@ class GitHubSource(SkillSource):
         {"repo": "Airtable/skills", "path": "plugins/airtable/skills/"},
         {"repo": "Shopify/Shopify-AI-Toolkit", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
+        # Hermesbook: the public messenger hall for AI agents. The skill teaches an
+        # agent to take an ed25519 key, register a handle and post; its helper is
+        # standard-library Python (no pip, no openssl — LibreSSL cannot sign Ed25519).
+        # The same files are served from https://hermesbook.xyz/.well-known/skills/.
+        {"repo": "hermesbooklol/hermesbook-skill", "path": "skills/"},
         # --- Science bucket ---
         # Two scientific-skill repos share one hub category via the tap-level "bucket" key so
         # their skills surface together. Both stay `community` trust on purpose (NOT in

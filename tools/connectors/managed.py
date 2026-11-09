@@ -10,7 +10,7 @@ from tools.connectors.gateway.config import ensure_guest_identity, operation_ses
 from tools.connectors.gateway.errors import RateLimited, ToolGatewayError
 from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
 from tools.connectors.run import Kind, run_operation
-from tools.connectors.targets import HostedTarget, catalog_names, hosted_names, misrouted_to_hosted_error
+from tools.connectors.targets import HostedTarget
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -217,26 +217,6 @@ def _observe(client: Any, operation: ConnectionOperation) -> None:
         _apply_read(operation, target, str(row.get("status") or "").lower(), str(row.get("statusReason") or ""))
 
 
-def _mark_misrouted(operation: ConnectionOperation) -> None:
-    unminted = [t for t in operation.targets
-                if t.state == TargetState.failed and not t.connection_id]
-    if not unminted:
-        return
-    catalog = catalog_names()
-    candidates = [t for t in unminted if t.name in catalog]
-    if not candidates:
-        return
-    hosted = hosted_names()
-    if hosted is None:
-        return
-    misrouted = [t for t in candidates if t.name not in hosted]
-    for target in misrouted:
-        operation.refresh(target.name, connect_url=None, actor=Actor.backend_watcher,
-                          detail=misrouted_to_hosted_error(target.name))
-    if misrouted and len(misrouted) == len(operation.targets):
-        operation.settle(SettleReason.all_resolved)
-
-
 def _unknown_slug(name: str, known: set[str]) -> str:
     close = sorted(slug for slug in known if name in slug or slug in name)
     if close:
@@ -249,10 +229,6 @@ def _mark_unknown(client: Any, operation: ConnectionOperation) -> None:
     app's name (granola for granola_mcp), so the row names the listed slug instead."""
     unminted = [t for t in operation.targets if t.state == TargetState.failed and not t.connection_id]
     if operation.settled or not unminted:
-        return
-    catalog = catalog_names()  # a local MCP name already carries its misrouted detail
-    unminted = [t for t in unminted if t.name not in catalog]
-    if not unminted:
         return
     try:
         known = {str(i.get("connector", "")).lower() for i in client.list_connectors()}
@@ -272,7 +248,6 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
         names = [t.name for t in operation.targets]
         if action == "connect":
             mint(client, operation, names, reinitiate=False, actor=Actor.backend_watcher)
-            _mark_misrouted(operation)
             _mark_unknown(client, operation)
             return
         # A named account is checked on its own row, read before force so a label resolves to its
@@ -282,7 +257,6 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
             # The re-mint names a new account; the watcher reads that one, never the old row.
             account = next((s["connection_id"] for s in (named or {}).values() if s.get("connection_id")), None)
             mint(client, operation, names, reinitiate=True, actor=Actor.backend_watcher, connection_id=account)
-            _mark_misrouted(operation)
             _mark_unknown(client, operation)
             return
         status = named or _status_by_slug(client)
@@ -301,7 +275,6 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
         # A named target is alone in its call, so at most one account id applies.
         account = next((status[n].get("connection_id") for n in repair if status.get(n, {}).get("connection_id")), None)
         mint(client, operation, repair, reinitiate=True, actor=Actor.backend_watcher, connection_id=account)
-        _mark_misrouted(operation)
         _mark_unknown(client, operation)
 
     return prepare

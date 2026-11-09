@@ -8,7 +8,7 @@ from typing import Any, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 CONNECTOR_ACTIONS = ("display", "status", "connect", "reconnect", "rename")
-MCP_ACTIONS = ("install", "enable", "authorize")
+MCP_ACTIONS = ("enable", "authorize")
 ALL_ACTIONS = CONNECTOR_ACTIONS + MCP_ACTIONS
 
 _TARGET_FIELDS = frozenset({"name", "mcp", "alias", "to"})
@@ -51,7 +51,7 @@ def normalize_targets(raw: Any) -> tuple[list[HostedTarget], list[str], Optional
                 return [], [], (
                     f"unknown target field(s) {', '.join(unknown)}: a target is "
                     "{\"name\": \"<slug>\"} or {\"name\": \"<server>\", \"mcp\": true}. Transport, "
-                    "URLs and credentials come from the catalog manifest, never from the call."
+                    "URLs and credentials come from the server's mcp_servers entry, never from the call."
                 )
             name = str(item.get("name") or "").strip().lower()
             is_mcp = bool(item.get("mcp", False))
@@ -73,7 +73,17 @@ def normalize_targets(raw: Any) -> tuple[list[HostedTarget], list[str], Optional
     return managed, mcp, None
 
 
+# A session whose cached schema predates the MCP catalog's removal can still send install.
+INSTALL_RETIRED = (
+    "'install' is no longer an action: there is no bundled MCP catalog. A server already in mcp_servers "
+    "uses enable or authorize (targets {\"name\": ..., \"mcp\": true}); a new one is added by the user "
+    "with `hermes mcp add <name> --url <url>` (or --command for a local server)."
+)
+
+
 def validate_action(action: str, managed: list[HostedTarget], mcp: list[str]) -> Optional[str]:
+    if action == "install":
+        return INSTALL_RETIRED
     if action not in ALL_ACTIONS:
         return (
             f"action must be one of {', '.join(ALL_ACTIONS)}. "
@@ -121,16 +131,6 @@ def _validate_accounts(action: str, managed: list[HostedTarget]) -> Optional[str
     return next((e for t in managed if (e := _bad_alias("alias", t.alias))), None)
 
 
-def catalog_names() -> set[str]:
-    try:
-        from hermes_cli.mcp_catalog import list_catalog
-
-        return {e.name for e in list_catalog()}
-    except Exception as exc:
-        logger.debug("MCP catalog for the routing check failed: %s", exc)
-        return set()
-
-
 def hosted_names() -> Optional[set[str]]:
     try:
         from tools.connectors.gateway.client import ConnectorClient
@@ -143,14 +143,6 @@ def hosted_names() -> Optional[set[str]]:
     except Exception as exc:
         logger.debug("connector list for the routing check failed: %s", exc)
         return None
-
-
-def misrouted_to_hosted_error(name: str) -> str:
-    return (
-        f"{name} is a local MCP server, not a hosted connector account. "
-        f"Call manage_connections with action install and connectors "
-        f"[{{\"name\": \"{name}\", \"mcp\": true}}]."
-    )
 
 
 def misrouted_to_mcp_error(action: str, name: str) -> str:

@@ -171,10 +171,10 @@ def read_window_below_cb(**kw):
     return json.dumps({"title": "Invoices — draft", "text": WINDOW_BELOW})
 
 def connection_cb(payload):
-    # Answer every manage_connections MCP target as installed.
+    # Approve every manage_connections MCP target.
     CALLBACK_LOG.append({"name": "manage_connections", "targets": payload.get("targets", [])})
     return json.dumps({"settled_by": "all_resolved", "targets": [
-        {"name": t["name"], "status": "installed"} for t in payload.get("targets", [])]})
+        {"name": t["name"], "status": "approved"} for t in payload.get("targets", [])]})
 
 # --- import the tree's model_tools + patch registry stubs ------------------
 import model_tools

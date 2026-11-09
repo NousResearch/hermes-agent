@@ -300,7 +300,7 @@ def g_project(ctx):
             notes.append("desktop_project called but not with 'apollo'")
     else:
         notes.append("desktop_project never called")
-    # MCP install is a manage_connections call with an mcp:true target.
+    # Enabling an MCP server is a manage_connections call with an mcp:true target.
     mcp_calls = [c for c in ctx["messages_tool_args"].get("manage_connections", [])
                  if "github" in json.dumps(c).lower() and "mcp" in json.dumps(c).lower()]
     if _called(ctx, "manage_connections"):
@@ -477,8 +477,8 @@ TASKS = [
          fixtures=None, grade=g_preview,
          clarify_answers=["The in-app preview pane, not an external browser."]),
     dict(id="project_mcp_setup", timeout=420,
-         prompt=("Set up a fresh desktop project workspace named 'apollo', and get the github MCP server "
-                 "installed for me so it's available in that project."),
+         prompt=("Set up a fresh desktop project workspace named 'apollo', and turn my github MCP server "
+                 "back on (it's configured but disabled) so it's available in that project."),
          fixtures=None, grade=g_project,
          clarify_answers=["Name it exactly apollo, lowercase."]),
     dict(id="longrange_backup_pipeline", timeout=900,

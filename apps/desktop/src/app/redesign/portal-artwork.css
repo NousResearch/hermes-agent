@@ -18,3 +18,8 @@
 :root:not(.dark):has([data-portal-redesign='true']) :is(.portal-sidebar, [data-page-surface] [data-tour='overlay-nav']) {
   background-image: none;
 }
+
+/* The new-chat pane already has its own landing illustration. */
+:root:has([data-portal-redesign='true']) [data-chat-landing='true'] [data-slot='composer-bounds'] {
+  background-image: none;
+}

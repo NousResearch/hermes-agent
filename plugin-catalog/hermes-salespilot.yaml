@@ -1,8 +1,8 @@
 name: hermes-salespilot
 title: SalesPilot
 repo: https://github.com/ranggaoscar/hermes-salespilot
-sha: dad697e6ae4903c06657e997bceaeae0342ddfc8
-version: "1.1.0"
+sha: d390d19ad901aa8e42636ac444d8adf108bec3dc
+version: "1.1.1"
 description: >-
   An approval-gated sales desk inside Hermes: collect companies from quoted page
   evidence, qualify them against your ICP, draft the first email, and send one
@@ -20,7 +20,7 @@ maintainer: ranggaoscar
 tier: community
 category: tools
 docs_url: https://github.com/ranggaoscar/hermes-salespilot#readme
-requires_hermes: ">=0.22.0"
+requires_hermes: ">=0.23.0"
 readme: true
 platforms: []
 image: https://raw.githubusercontent.com/ranggaoscar/hermes-salespilot/dad697e6ae4903c06657e997bceaeae0342ddfc8/assets/catalog-cover.png

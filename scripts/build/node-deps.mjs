@@ -5,7 +5,7 @@ import {
   closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
   writeFileSync, writeSync,
 } from 'node:fs'
-import { hostname } from 'node:os'
+import { constants as osConstants, hostname } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -432,9 +432,23 @@ if (child.pid) {
 child.on('exit', (code, signal) => process.exit(code ?? 128 + (constants.signals[signal] ?? 0)));
 `
 
+// Ctrl-C and a closed terminal signal the whole job, so the child gets them too and exits: this run
+// outlives them long enough to put the previous trees back and release the lock, instead of leaving
+// both for the next run to wait lockTiming.stale on. SIGTERM is left out: one aimed at this process
+// alone still kills it, and the relay passes it on to the child.
+const JOB_SIGNALS = ['SIGINT', 'SIGHUP']
+
+const outlive = () => {}
+
 function runWatched({ lock, token }, file, args, { cwd, env }) {
-  const child = spawnSync(process.execPath, ['-e', RELAY, '--', WATCHER, lock, token, String(lockTiming.watch), file, ...args],
-    { cwd, env, stdio: 'inherit' })
+  for (const name of JOB_SIGNALS) process.on(name, outlive)
+  let child
+  try {
+    child = spawnSync(process.execPath, ['-e', RELAY, '--', WATCHER, lock, token, String(lockTiming.watch), file, ...args],
+      { cwd, env, stdio: 'inherit' })
+  } finally {
+    for (const name of JOB_SIGNALS) process.off(name, outlive)
+  }
   if (child.error) throw child.error
   if (child.status !== 0) {
     throw Object.assign(new Error(`Command failed: ${file} ${args.join(' ')}`), { status: child.status, signal: child.signal })
@@ -680,5 +694,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     'native-toolchain': { type: 'string' },
   } })
   if (!values.source) throw new Error('--source is required')
-  prepareNodeDependencies({ source: values.source, workspaces: values.workspace, reuse: values.reuse, install: !values['no-install'], nativeToolchain: values['native-toolchain'] })
+  try {
+    prepareNodeDependencies({ source: values.source, workspaces: values.workspace, reuse: values.reuse, install: !values['no-install'], nativeToolchain: values['native-toolchain'] })
+  } catch (error) {
+    // A child ended by a job signal this run outlived (the relay's 128 + n): exit as that signal
+    // would have, 130 for Ctrl-C, now that the trees are back.
+    const interrupted = JOB_SIGNALS.map(name => 128 + osConstants.signals[name]).includes(error.status)
+    if (!interrupted) throw error
+    console.error(`node-deps: ${error.message} (exit ${error.status})`)
+    process.exit(error.status)
+  }
 }

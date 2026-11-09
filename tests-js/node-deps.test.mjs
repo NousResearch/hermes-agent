@@ -578,6 +578,25 @@ test.skipIf(process.platform === 'win32').each([['Ctrl-C reaches the job', 'grou
     expect(readdirSync(join(source, '.cache'))).toEqual([])
   }, 60000)
 
+// Ctrl-C (or closing the terminal) during the install is the common way out of a slow or offline
+// launch: the run puts the previous trees back and releases the lock itself, so the next run does
+// not wait out the stale limit. The CLI exits as the signal would have.
+test.skipIf(process.platform === 'win32').each([['SIGINT', 130], ['SIGHUP', 129]])('%s to the job during the install leaves no lock and the previous trees in place', async (signal, status) => {
+  const { source, env } = fixture()
+  prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env })
+  addExtraOnly(source, env)
+  const pnpm = slowPnpm(30)
+  const run = background(source, pnpm.env(env), '--workspace', 'web', '--reuse')
+  await until(() => existsSync(pnpm.started))
+  run.signal(signal, true)
+  const { code, output } = await run.exit
+  await until(() => !run.alive())
+  expect(output).toMatch(/restored the previously installed dependencies/)
+  expect(code).toBe(status)
+  expect(readdirSync(join(source, '.cache'))).toEqual([])
+  expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
+}, 30000)
+
 // A heartbeat that fails once (an antivirus or indexer handle on Windows, ESTALE on NFS, EMFILE)
 // keeps beating: a waiter must not break the lock of an install that is still running.
 test.skipIf(process.platform === 'win32')('a transient heartbeat error does not let another run break a live lock', async () => {

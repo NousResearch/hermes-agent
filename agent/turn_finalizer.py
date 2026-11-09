@@ -21,7 +21,6 @@ from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
 from agent.review_signals import build_review_signals, skill_review_due
-from agent.prompt_cache_warmer import settle_prompt_cache_warming
 from agent.served_model import result_model_fields
 
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
@@ -653,8 +652,6 @@ def finalize_turn(
     from agent.conversation_loop import logger
     from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
 
-    # Streaming-mode warming ends with the run; idle mode keeps the entry warm between turns.
-    settle_prompt_cache_warming(agent)
     vetoed = _turn_exit_reason == PRE_LLM_BLOCK_EXIT_REASON  # a pre_llm_call block: no model call at all
 
     agent._empty_response_retry_hint = None

@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from providers.base import ProviderProfile
-from registry_freeze import refuse_if_frozen, seal_at_freeze
+from registry_freeze import check_at_freeze, refuse_if_frozen, seal_at_freeze
 from registry_sealed import seal, seal_instance
 
 logger = logging.getLogger(__name__)
@@ -185,6 +185,9 @@ def _seal_registered() -> None:
 
 
 seal_at_freeze(_seal_registered)
+# Discovery is lazy (first lookup): run after the freeze, every bundled registration is refused
+# and the catalog stays empty for the process, so the freeze refuses until it has run.
+check_at_freeze(lambda: [] if _discovered and not _discovering else ["provider discovery"])
 
 
 def provider_source(name: str) -> str | None:

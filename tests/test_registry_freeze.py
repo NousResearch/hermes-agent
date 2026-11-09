@@ -312,3 +312,20 @@ def test_freeze_proceeds_once_deferred_platforms_resolve(thawed_platforms):
     registry_freeze.assert_registries_complete()
     freeze_registries()
     assert registries_frozen()
+
+
+@pytest.mark.parametrize("discovered, discovering", [(False, False), (True, True)])
+def test_freeze_refuses_until_provider_discovery_has_run(thawed_platforms, monkeypatch, discovered, discovering):
+    """Provider discovery is lazy: run after the freeze, every bundled registration is refused and
+    the catalog stays empty for the process. The freeze refuses until discovery has finished."""
+    import providers
+    monkeypatch.setattr(providers, "_discovered", discovered)
+    monkeypatch.setattr(providers, "_discovering", discovering)
+    with pytest.raises(registry_freeze.RegistriesIncomplete, match="provider discovery"):
+        freeze_registries()
+    assert not registries_frozen()
+    monkeypatch.setattr(providers, "_discovered", False)
+    monkeypatch.setattr(providers, "_discovering", False)
+    assert providers.list_providers()  # the boot looks a provider up once
+    freeze_registries()
+    assert providers.get_provider_profile("openrouter") is not None

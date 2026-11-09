@@ -66,6 +66,11 @@ check-repo-guards:
 check-uv-lock:
     scripts/ci/local_step.sh scripts/ci/verify_uv_lock.py
 
+# Lint the Dockerfiles (pinned hadolint image) and docker/ shell scripts (shellcheck on PATH)
+[group('check')]
+lint-docker:
+    scripts/ci/lint_docker.sh
+
 # Run the named test files or directories (pytest flags pass through)
 [group('test')]
 [positional-arguments]

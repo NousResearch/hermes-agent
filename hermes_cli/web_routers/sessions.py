@@ -412,6 +412,50 @@ async def search_sessions(
                 snippet = preview or f"Session ID: {sid}"
                 add_lineage_result(sid, hit_payload(row, snippet, None, row.get("started_at")))
 
+            # Title matches come SECOND, ahead of message-content hits: a session
+            # title is what the user just read in the sidebar, so an exact/prefix
+            # title hit must outrank a bm25 content hit. This lane used to run
+            # LAST and only when the content lane left slots, which starved it —
+            # the content lane alone fills `limit`, so an exact-title query came
+            # back with the conversation missing, or appended at the very end.
+            if len(seen) < safe_limit:
+                try:
+                    title_rows = db.list_sessions_rich(
+                        search_query=q.strip(), include_archived=True, order_by_last_active=True,
+                        source=source_filter, sources=source_list or None,
+                        exclude_sources=exclude_list or None, limit=safe_limit)
+                except Exception:  # health: allow BLE001 -- best-effort title lane: an old/odd store that rejects the search_query read must not fail the id results already collected
+                    _log.debug("Title-match lane skipped for %r", q[: 200])
+                    title_rows = []
+
+                needle = " ".join(q.strip().lower().split())
+
+                def _title_rank(row: dict) -> int:
+                    title = " ".join((row.get("title") or "").lower().split())
+                    if not title:
+                        return 3
+                    if title == needle:
+                        return 0
+                    return 1 if title.startswith(needle) else 2
+
+                # sorted() is stable, so equal ranks keep the DB's recency order.
+                ranked_titles = sorted(title_rows, key=_title_rank)
+                strong_titles = [r for r in ranked_titles if _title_rank(r) < 2]
+                weak_titles = [r for r in ranked_titles if _title_rank(r) == 2]
+            else:
+                strong_titles, weak_titles = [], []
+
+            for row in strong_titles:
+                if len(seen) >= safe_limit:
+                    break
+                sid = row.get("id")
+                if not sid:
+                    continue
+                preview = (row.get("preview") or "").strip()
+                add_lineage_result(
+                    sid, hit_payload(row, preview or f"Session title matched: {q.strip()}",
+                                     None, row.get("started_at")))
+
             # Prefix wildcards so partial words match ("nimb" -> "nimb*");
             # quoted phrases and existing wildcards are kept as-is.
             prefix_query = " ".join(
@@ -430,33 +474,19 @@ async def search_sessions(
                     m["session_id"],
                     hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
 
-            # Title matches fill any remaining slots (#66242): the FTS index
-            # only covers message content, so a term that lives solely in a
-            # manually-set sessions.title would otherwise return nothing. The
-            # DB layer already knows how to LIKE-match titles across the whole
-            # compression chain (list_sessions_rich(search_query=) — the same
-            # helper the sidebar listing uses), so reuse it rather than adding
-            # a second title query path here. Best-effort: an old/odd store
-            # that rejects the call just skips the lane.
-            if len(seen) < safe_limit:
-                try:
-                    title_rows = db.list_sessions_rich(
-                        search_query=q.strip(), include_archived=True, order_by_last_active=True,
-                        source=source_filter, sources=source_list or None,
-                        exclude_sources=exclude_list or None, limit=safe_limit)
-                except Exception:  # health: allow BLE001 -- best-effort supplement lane: an old/odd store that rejects the search_query read must not fail the id+content results already collected
-                    _log.debug("Title-match supplement skipped for %r", q[: 200])
-                    title_rows = []
-                for row in title_rows:
-                    if len(seen) >= safe_limit:
-                        break
-                    sid = row.get("id")
-                    if not sid:
-                        continue
-                    preview = (row.get("preview") or "").strip()
-                    add_lineage_result(
-                        sid, hit_payload(row, preview or f"Session title matched: {q.strip()}",
-                                         None, row.get("started_at")))
+            # Substring-only title hits fill any remaining slots, as before: a
+            # loose LIKE match must not outrank a real content hit.
+            for row in weak_titles:
+                if len(seen) >= safe_limit:
+                    break
+                sid = row.get("id")
+                if not sid:
+                    continue
+                preview = (row.get("preview") or "").strip()
+                add_lineage_result(
+                    sid, hit_payload(row, preview or f"Session title matched: {q.strip()}",
+                                     None, row.get("started_at")))
+
             return {"results": list(seen.values())}
 
         # FTS over a large state.db is the slowest read here; keep it off the loop (#60747).

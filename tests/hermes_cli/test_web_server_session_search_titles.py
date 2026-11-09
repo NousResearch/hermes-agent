@@ -12,6 +12,11 @@ add_lineage_result dedup path (content hits keep BM25 priority).
 These tests drive the real SessionDB through the real route handler (no fake
 DB) so the title lane is exercised end to end, including the SQLite
 read-only connection the endpoint opens.
+
+Lane precedence (see :func:`hermes_cli.web_routers.sessions.search_sessions`):
+id hits, then exact/prefix title hits, then bm25 content hits, then
+substring-only title hits. The exact/prefix-hoisting tests below pin that
+order; the substring case deliberately stays behind real content hits.
 """
 
 import asyncio
@@ -96,3 +101,71 @@ def test_search_title_lane_runs_off_event_loop(db_path_for_profile, monkeypatch)
     asyncio.run(_rt_sessions.search_sessions(q="Modpack", limit=20))
     assert db_threads
     assert all(tid != loop_thread for tid in db_threads)
+
+
+@pytest.fixture
+def ranked_db(real_db, db_path_for_profile):
+    """Title hits that rank exact / prefix / substring, each with a *different*
+    session holding a real bm25 message-content hit for the same needle.
+
+    The two lanes therefore both fire for every needle, so the assertion is
+    about lane ORDER, not about which lane found something. Title-only
+    sessions get content free of the needle (and ids free of it too, so the
+    id lane cannot promote them first).
+    """
+    db = real_db
+    # --- exact title hit: normalized title == needle ---------------
+    db.create_session(session_id="doc_a", source="cli", model="m")
+    db.set_session_title("doc_a", "Quetzalcoatl")
+    db.append_message("doc_a", role="user", content="sidebar only")
+    db.create_session(session_id="doc_b", source="cli", model="m")
+    db.append_message("doc_b", role="user", content="the Quetzalcoatl expedition log")
+    # --- prefix title hit: title startswith needle ------------------
+    db.create_session(session_id="doc_c", source="cli", model="m")
+    db.set_session_title("doc_c", "Cormorant Migration Notes")
+    db.append_message("doc_c", role="user", content="sidebar only")
+    db.create_session(session_id="doc_d", source="cli", model="m")
+    db.append_message("doc_d", role="user", content="cormorant sightings at the pier")
+    # --- substring-only title hit: needle sits mid-title ------------
+    db.create_session(session_id="doc_e", source="cli", model="m")
+    db.set_session_title("doc_e", "Notes on the Wandering Albatross")
+    db.append_message("doc_e", role="user", content="sidebar only")
+    db.create_session(session_id="doc_f", source="cli", model="m")
+    db.append_message("doc_f", role="user", content="wandering route over the ridge")
+    return db
+
+
+def test_search_exact_title_outranks_content_hit(ranked_db):
+    """An exact session-title match is rank 0: the user just read that title in
+    the sidebar, so it must sit ahead of the bm25 content hit for the same word."""
+    response = asyncio.run(_rt_sessions.search_sessions(q="Quetzalcoatl", limit=20))
+    ids = [row["session_id"] for row in response["results"]]
+    assert ids[0] == "doc_a", ids
+    # Both lanes really fired: the content-only hit is still in the results.
+    assert "doc_b" in ids, ids
+    assert ids.index("doc_a") < ids.index("doc_b")
+
+
+def test_search_prefix_title_outranks_content_hit(ranked_db):
+    """A prefix title match outranks a content hit too (rank 1), ahead of bm25."""
+    response = asyncio.run(_rt_sessions.search_sessions(q="Cormorant", limit=20))
+    ids = [row["session_id"] for row in response["results"]]
+    assert ids[0] == "doc_c", ids
+    assert "doc_d" in ids, ids
+    assert ids.index("doc_c") < ids.index("doc_d")
+
+
+def test_search_substring_title_stays_behind_content_hits(ranked_db):
+    """A loose LIKE (needle mid-title) must NOT be hoisted: it keeps the old
+    tail-lane slot after real content hits."""
+    response = asyncio.run(_rt_sessions.search_sessions(q="Wandering", limit=20))
+    ids = [row["session_id"] for row in response["results"]]
+    assert "doc_f" in ids and "doc_e" in ids, ids
+    assert ids.index("doc_f") < ids.index("doc_e"), ids
+
+
+def test_search_exact_title_returned_at_limit_one(ranked_db):
+    """With one slot the exact title wins it outright; it used to be starved by
+    the content lane filling `limit` first."""
+    response = asyncio.run(_rt_sessions.search_sessions(q="Quetzalcoatl", limit=1))
+    assert [row["session_id"] for row in response["results"]] == ["doc_a"]

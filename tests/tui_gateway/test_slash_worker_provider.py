@@ -1,7 +1,7 @@
 """The slash worker inherits the parent agent's provider and base URL, not the config default.
 
-Regression for #57283 (provider) and #141953 (base URL: a Codex session on a profile whose default
-is a ``process://`` provider ran ``/fast`` against the default's URL and was refused).
+Regression for #57283 (provider) and #141953 (base URL; the child side is
+``test_slash_worker_real_cli_route.py``, against a real ``HermesCLI``).
 
 A Desktop/TUI MoA session pins the live agent to the virtual ``moa`` provider, but the
 persistent slash-worker subprocess was spawned with only ``--model``. HermesCLI re-resolves
@@ -100,21 +100,17 @@ def test_slash_worker_child_forwards_provider_to_hermes_cli(monkeypatch):
     built = {}
 
     class _FakeCLI:
-        base_url = "process://config-default"
-
         def __init__(self, **kwargs):
             built.update(kwargs)
-            built["cli"] = self
 
     # main() resolves HermesCLI from ``cli`` at call time, so patch it there.
     monkeypatch.setitem(_sys.modules, "cli", types.SimpleNamespace(HermesCLI=_FakeCLI))
     monkeypatch.setattr(sw, "_prepare_slash_worker_runtime", lambda: None)
     monkeypatch.setattr(sw.sys, "stdin", type("S", (), {"readline": lambda self: ""})())
     monkeypatch.setattr(_sys, "argv", ["slash_worker", "--session-key", "s", "--model", "m",
-                                       "--provider", "moa", "--base-url", "https://chatgpt.com/backend-api/codex"])
+                                       "--provider", "moa"])
 
     sw.main()
 
     assert built.get("provider") == "moa"
-    assert built["cli"].base_url == "https://chatgpt.com/backend-api/codex"
     assert built.get("model") == "m"

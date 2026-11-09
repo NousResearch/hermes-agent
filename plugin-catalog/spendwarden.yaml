@@ -1,7 +1,7 @@
 name: spendwarden
 title: SpendWarden
 repo: https://github.com/matrixneoaiagent/spendwarden
-sha: 114751449419f8b58ec1e69f1b72d4b7202e7eca
+sha: fe23b59ab2eca7d1b183bfbde3f47841b0603788
 version: "0.1.0"
 description: "A spend policy firewall and local ledger for Hermes agents that can move money. A pre_tool_call hook checks payment-shaped tool calls against daily, monthly and per-call USD caps, recipient/asset/network allowlists and an approval threshold; in enforce mode it blocks hard violations and escalates uncertain ones to Hermes's own approval gate. Four tools add spend_check, idempotent spend_record receipts, spend_report totals, and x402_inspect (decodes PAYMENT-REQUIRED / X-PAYMENT without signing). State is a local SQLite ledger under the plugin data directory; no network calls, no credentials, no key handling, no transaction signing. Observe mode logs only; enforce mode is opt-in. Terminal recognition covers cast send, solana transfer, bitcoin-cli sendtoaddress, near call --deposit and curl with X-PAYMENT."
 maintainer: matrixneoaiagent
@@ -9,9 +9,9 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/matrixneoaiagent/spendwarden#readme
-image: https://raw.githubusercontent.com/matrixneoaiagent/spendwarden/114751449419f8b58ec1e69f1b72d4b7202e7eca/docs/banner.png
+image: https://raw.githubusercontent.com/matrixneoaiagent/spendwarden/fe23b59ab2eca7d1b183bfbde3f47841b0603788/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/matrixneoaiagent/spendwarden/114751449419f8b58ec1e69f1b72d4b7202e7eca/docs/demo.png
+  - https://raw.githubusercontent.com/matrixneoaiagent/spendwarden/fe23b59ab2eca7d1b183bfbde3f47841b0603788/docs/demo.png
 capabilities:
   provides_tools:
     - spend_check

@@ -1187,6 +1187,7 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
     for the TUI poller. ``HERMES_SESSION_ID`` is deliberately NOT a fallback: it is set for
     every CLI/ACP invocation and would auto-subscribe every CLI run."""
     from gateway.session_context import get_session_env as env
+    from hermes_cli.kanban_db_notify import auto_subscribe_delivery_mode
     platform, chat_id = env("HERMES_SESSION_PLATFORM", ""), env("HERMES_SESSION_CHAT_ID", "")
     if not platform or not chat_id:
         session_key = env("HERMES_SESSION_KEY", "") or os.environ.get("HERMES_SESSION_KEY", "")
@@ -1222,7 +1223,7 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
         user_id=env("HERMES_SESSION_USER_ID", "") or None,
         user_id_alt=env("HERMES_SESSION_USER_ID_ALT", "") or None,
         notifier_profile=notifier_profile,
-        delivery_mode="notify+wake" if platform != "tui" else None,
+        delivery_mode=auto_subscribe_delivery_mode() if platform != "tui" else None,
         delivery_metadata=delivery_metadata or None)
 
 

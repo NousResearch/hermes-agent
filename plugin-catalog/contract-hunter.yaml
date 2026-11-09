@@ -1,7 +1,7 @@
 name: contract-hunter
 repo: https://github.com/NathanOyewole/hermes-contract-hunter
-sha: 8aa0f3bd59efff91a5035be5ce3f704d1662c9f0
-version: "1.2.0"
+sha: e66266220cb4eef46f10f5ec05cad8119744eb1c
+version: "1.3.0"
 description: "Scout-powered EVM contract vulnerability hunter. Radar → surface → prove → report pipeline for bounty programs."
 author: NathanOyewole
 tags:

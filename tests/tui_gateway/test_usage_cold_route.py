@@ -40,7 +40,7 @@ def rig(monkeypatch):
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
     monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "auto", "default": "m"}})
     monkeypatch.setattr(server, "_session_usage_snapshot", lambda session: {})
-    monkeypatch.setattr("agent.account_usage.nous_credits_view", lambda **kw: (["Nous credits: 7 remaining"], False))
+    monkeypatch.setattr("agent.account_usage_nous.nous_credits_view", lambda **kw: (["Nous credits: 7 remaining"], False))
     monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda *a, **kw: None)
     return scoped, resolved
 
@@ -70,7 +70,7 @@ def test_an_auto_profile_logged_in_to_nous_is_a_nous_route_before_the_first_turn
 
 
 def test_a_codex_pick_under_a_nous_profile_is_not_a_nous_route(rig):
-    from agent.account_usage import NOUS_OTHER_ROUTE_HEADING
+    from agent.account_usage_nous import NOUS_OTHER_ROUTE_HEADING
     _, resolved = rig
     pick = {"model_override": {"model": "gpt-5.3-codex", "provider": "openai-codex"}}
     reply = _usage(_cold(**pick))

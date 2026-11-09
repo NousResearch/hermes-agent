@@ -34,7 +34,7 @@ async def test_usage_right_after_a_nous_login_shows_the_nous_balance(monkeypatch
     monkeypatch.setattr("gateway.slash_commands_status.fetch_account_usage",
                         lambda provider, base_url=None, api_key=None: fetched.append((provider, base_url)))
     nous_calls = []
-    monkeypatch.setattr("agent.account_usage.nous_credits_lines",
+    monkeypatch.setattr("agent.account_usage_nous.nous_credits_lines",
                         lambda **kw: nous_calls.append(kw["nous_route"]) or ["Nous credits: 7 remaining"])
 
     result = await runner._handle_usage_command(MagicMock())

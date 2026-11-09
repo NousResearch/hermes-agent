@@ -659,7 +659,7 @@ class CLIInfoMixin:
                 return True
             return shown
         if nous_lines is None:
-            from agent.account_usage import nous_usage_lines
+            from agent.account_usage_nous import nous_usage_lines
             nous_lines = nous_usage_lines(nous_route=False)
         return self._print_account_limits(nous_lines) or shown
 

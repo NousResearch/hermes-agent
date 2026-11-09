@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from agent.account_usage import NOUS_OTHER_ROUTE_HEADING, nous_usage_lines
+from agent.account_usage_nous import NOUS_OTHER_ROUTE_HEADING, nous_usage_lines
 from tests.hermes_cli.test_nous_account import _account_payload, _jwt
 
 _PAYLOAD = _account_payload(allowed=True, subscription=None, subscription_credits=0, purchased_credits=7.75)

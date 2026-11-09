@@ -51,7 +51,7 @@ def test_usage_slash_shows_account_limits_before_first_turn_inside_session_scope
         patch("hermes_cli.runtime_provider.resolve_runtime_provider",
               lambda *, requested=None, **kw: {"provider": requested or "openrouter", "base_url": "", "api_key": "k"}),
         patch("agent.account_usage.fetch_account_usage", _fetch),
-        patch("agent.account_usage.nous_credits_lines", _credits),
+        patch("agent.account_usage_nous.nous_credits_lines", _credits),
     ):
         out = server._live_slash_command_output("sid-usage", session, "usage", "")
 

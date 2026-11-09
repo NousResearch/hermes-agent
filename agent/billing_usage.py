@@ -53,7 +53,7 @@ def fetch_nous_account(timeout: float):
 
     Shares the one bounded implementation so a stalled portal releases the
     /billing surface at ``timeout`` too (see ``_fetch_portal_account``)."""
-    from agent.account_usage import _fetch_portal_account
+    from agent.account_usage_nous import _fetch_portal_account
     return _fetch_portal_account(timeout)
 
 

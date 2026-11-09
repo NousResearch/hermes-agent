@@ -233,7 +233,8 @@ async def account_usage(connection, ref, params):
     ``provider: auto`` is the saved login), fetched off the loop in the owning profile's scope:
     the provider's plan limits, then the Nous section whenever Nous is signed in (``nous_usage_lines``)."""
     import asyncio
-    from agent.account_usage import account_limit_lines, nous_usage_lines
+    from agent.account_usage import account_limit_lines
+    from agent.account_usage_nous import nous_usage_lines
     from agent.billing_links import is_nous_inference_route
     from gateway.session_authorities import owner_scope
     from gateway.session_llm_oneshot import _session_runtime

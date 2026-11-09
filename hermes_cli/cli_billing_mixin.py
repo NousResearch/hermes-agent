@@ -279,7 +279,7 @@ class CLIBillingMixin:
                 _cprint(ln)
             if head or tail:
                 return True
-        from agent.account_usage import nous_credits_lines
+        from agent.account_usage_nous import nous_credits_lines
         lines = nous_credits_lines(
             credits_state=getattr(getattr(self, "agent", None), "_credits_state", None),
         )

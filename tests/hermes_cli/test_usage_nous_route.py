@@ -17,14 +17,14 @@ def _usage(monkeypatch, capsys, provider: str, *, signed_in: bool) -> str:
     cli_obj._print_nous_credits_block = lambda: signed_in and (print("  NOUS-BALANCE-BARS") or True)
     monkeypatch.setattr("agent.account_usage.account_limit_lines",
                         lambda p, **kw: CLAUDE_LIMITS if p != "nous" else [])
-    monkeypatch.setattr("agent.account_usage.nous_credits_lines",
+    monkeypatch.setattr("agent.account_usage_nous.nous_credits_lines",
                         lambda **kw: ["📈 Nous credits", "Top-up credits: $7.75"] if signed_in else [])
     cli_obj._show_usage()
     return capsys.readouterr().out
 
 
 def test_claude_with_nous_signed_in_shows_both_blocks_claude_first_and_no_cta(monkeypatch, capsys):
-    from agent.account_usage import NOUS_OTHER_ROUTE_HEADING
+    from agent.account_usage_nous import NOUS_OTHER_ROUTE_HEADING
     out = _usage(monkeypatch, capsys, "claude-subscription-directsdk-experimental", signed_in=True)
     assert out.index("Claude plan limits") < out.index(NOUS_OTHER_ROUTE_HEADING) < out.index("Top-up credits: $7.75")
     assert "/topup" not in out and "/subscription" not in out

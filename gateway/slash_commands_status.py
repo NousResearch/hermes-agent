@@ -486,7 +486,7 @@ class GatewayStatusCommandsMixin:
     async def _handle_topup_command(self, event: MessageEvent) -> str:
         """Handle /topup -- show the Nous balance and hand off to the portal. Does NOT charge, confirm,
         or track payment (that happens in the browser; the next /topup shows the new balance)."""
-        from agent.account_usage import build_credits_view
+        from agent.account_usage_nous import build_credits_view
         view = await _quiet(lambda: asyncio.to_thread(build_credits_view, markdown=True))
         if view is None or not view.logged_in:
             return t("gateway.credits.not_logged_in")
@@ -604,7 +604,7 @@ class GatewayStatusCommandsMixin:
 
         # The Nous section (shared with CLI/TUI) after the provider's block, whenever Nous is signed in;
         # its top-up lines only on a Nous route. Fail-open: never break /usage.
-        from agent.account_usage import nous_usage_lines
+        from agent.account_usage_nous import nous_usage_lines
         from agent.billing_links import is_nous_inference_route
         credits_state = getattr(agent, "_credits_state", None) if agent else None
         nous_route = is_nous_inference_route(provider or "", base_url or "")

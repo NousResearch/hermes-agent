@@ -153,7 +153,7 @@ def _usage_on_nous_route(route: dict) -> bool:
 def _usage_nous_fields(session: dict) -> dict:
     """``session.usage``'s Nous fields: ``nous_route`` (the /topup CTA applies), plus the balance lines
     whenever Nous is signed in (``nous_credits_usage_fields``, which never raises), in the session's scope."""
-    from agent.account_usage import nous_credits_usage_fields
+    from agent.account_usage_nous import nous_credits_usage_fields
     with _session_profile_runtime_scope(session):
         nous_route = _usage_on_nous_route(_usage_route(session))
         return {**nous_credits_usage_fields(session.get("agent"), nous_route=nous_route), "nous_route": nous_route}
@@ -163,7 +163,8 @@ def _usage_account_blocks(session: dict) -> list[str]:
     """Provider limits then the Nous section (``nous_usage_lines``), as CLI/messaging /usage show them;
     neither needs an agent. Both read the session profile's credentials, unreadable outside its scope
     when multiplexed (#132422)."""
-    from agent.account_usage import account_limit_lines, nous_usage_lines
+    from agent.account_usage import account_limit_lines
+    from agent.account_usage_nous import nous_usage_lines
     agent = session.get("agent")
     lines: list[str] = []
     with _session_profile_runtime_scope(session):

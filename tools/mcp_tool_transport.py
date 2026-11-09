@@ -126,7 +126,9 @@ def _http_endpoint(server_name: str, config: dict) -> tuple[str, dict]:
 
 
 def _stdio_launch(config: dict) -> tuple:
-    """(command, env, cwd) a stdio child is spawned with, resolved in the current profile's scope."""
+    """(command, env, cwd, args) a stdio child is spawned with, resolved in the current profile's
+    scope: ``args`` is the configured argv, before the connect-time preflight rewrites it for a
+    cached launcher, so the owner and a comparison hash the same thing."""
     command, env = _config._resolve_stdio_command(config["command"], _config._build_safe_env(config.get("env")))
     # A stdio child inherits this process's cwd when none is configured. Hosted sessions (ACP,
     # gateway) pin a logical cwd via agent.runtime_cwd; without it the child resolves relative
@@ -136,12 +138,12 @@ def _stdio_launch(config: dict) -> tuple:
     cwd = config.get("cwd")
     if cwd is None:
         cwd = _runtime_cwd.resolve_context_cwd() or None
-    return command, env, cwd
+    return command, env, cwd, config.get("args", [])
 
 
 def _connect_inputs(server_name: str, config: dict) -> tuple[list, set]:
     """What a connection is opened with, resolved in the current profile's scope: stdio
-    ``[command, env, cwd]``; HTTP ``[url, headers]`` after the live endpoint and the identity
+    ``[command, env, cwd, args]``; HTTP ``[url, headers]`` after the live endpoint and the identity
     header. The owner hashes this very list and an adopter recomputes it, so both digests are
     built from one code path. Also returns the configured header names (HTTP only), captured
     before the identity header is merged in, for the strict-redirect boundary."""
@@ -379,9 +381,9 @@ class MCPServerTransportMixin:
         inputs, _ = _connect_inputs(self.name, config)
         # Hash the inputs this attempt spawns with, never a second resolution of them.
         self._resolved_identity = _registration._identity_digest(inputs)
-        command, safe_env, stdio_cwd = inputs
+        command, safe_env, stdio_cwd, args = inputs
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
-        command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
+        command, args = await _core._preflight_stdio_command(self.name, command, args)
         server_params = _core.StdioServerParameters(
             command=command, args=args, env=safe_env or None, cwd=stdio_cwd,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.

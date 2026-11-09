@@ -291,6 +291,32 @@ def test_servers_with_new_inputs_counts_a_lazy_registration(core, calls, monkeyp
     assert discovery.mcp_servers_with_new_inputs({"lazy"}) == []
 
 
+def test_lazy_args_change_is_detected_with_the_real_resolver(core, calls, monkeypatch):
+    """A lazy registration never connected, so its first use connects with the launch inputs
+    captured at registration — argv included. A settings save that changes ``args`` must be named
+    by the read-only detection, hashed by the transport's own identity resolver (the same one
+    the connect path records), not a stand-in; a save that changed nothing stays quiet."""
+    import sys
+    from tools import mcp_tool_discovery as discovery
+    captured = {"command": sys.executable, "args": ["old.py"]}
+    core._lazy_server_configs["lazy"] = dict(captured)
+    core._lazy_server_fingerprints["lazy"] = "fp"
+    core._lazy_server_tool_names["lazy"] = ["mcp__lazy__t"]
+
+    def saved(**overrides):
+        return lambda: {"lazy": {**captured, **overrides}}
+
+    monkeypatch.setattr(discovery._config, "_load_mcp_config", saved())
+    registry_freeze.freeze_registries()
+    assert discovery.mcp_servers_with_new_inputs({"lazy"}) == []
+    monkeypatch.setattr(discovery._config, "_load_mcp_config", saved(env={"KEY": "new"}))
+    assert discovery.mcp_servers_with_new_inputs({"lazy"}) == ["lazy"]
+    monkeypatch.setattr(discovery._config, "_load_mcp_config", saved(args=["new.py"]))
+    assert discovery.mcp_servers_with_new_inputs({"lazy"}) == ["lazy"]
+    assert calls == {"shutdown": [], "discover": []}  # read-only: the registration is untouched
+    assert core._lazy_server_configs == {"lazy": captured}
+
+
 def test_restart_drops_a_lazy_registration_whose_inputs_changed(core, calls, monkeypatch):
     """Unfrozen, a settings save restarts what changed: a lazy registration is dropped (its cached
     tools go with it) so the trailing discovery re-registers it from the current config, and a live

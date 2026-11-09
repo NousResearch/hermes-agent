@@ -42,7 +42,7 @@ def test_child_spawned_through_the_sdk_merge_sees_the_documented_env():
     from tools.mcp_tool_transport import _stdio_launch
 
     with patch.dict("os.environ", PARENT, clear=True):
-        command, env, _ = _stdio_launch(_rendered())
+        command, env, _cwd, _args = _stdio_launch(_rendered())
         child_env = get_default_environment() | env  # what mcp.client.stdio.stdio_client spawns with
     probe = "import json, os; print(json.dumps(dict(os.environ)))"
     seen = json.loads(subprocess.run([command, "-c", probe], env=child_env, capture_output=True, text=True,

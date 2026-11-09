@@ -348,6 +348,9 @@ def check_fn_cache_scope() -> Optional[str]:
 # (the environment probe's) and then counts as unavailable; its thread stays parked, and later
 # calls in the same profile answer False at once instead of waiting or spawning another thread.
 _CHECK_FN_PROBE_TIMEOUT_SECONDS = 10.0
+# Bound at import: callers that swap ``threading.Thread`` for their own worker type must not turn
+# the probe's bounded wait into an unstarted (or inline) one.
+_ProbeThread = threading.Thread
 _check_fn_parked: dict[tuple[Callable, str], threading.Event] = {}
 _check_fn_parked_lock = threading.Lock()
 _UNSET = object()
@@ -377,7 +380,7 @@ def _call_check_fn(fn: Callable) -> bool:
         finally:
             done.set()
 
-    threading.Thread(target=ctx.run, args=(_probe,), name="check-fn-probe", daemon=True).start()
+    _ProbeThread(target=ctx.run, args=(_probe,), name="check-fn-probe", daemon=True).start()
     if not done.wait(_CHECK_FN_PROBE_TIMEOUT_SECONDS):
         with _check_fn_parked_lock:
             _check_fn_parked[key] = done

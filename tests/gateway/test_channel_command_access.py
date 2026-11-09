@@ -179,3 +179,71 @@ async def test_allowed_channel_command_and_unconfigured_chat_preserve_behavior()
         MessageEvent(text="/whoami", source=other, message_id="synthetic-2")
     )
     assert result and "Tier: unrestricted" in result
+
+
+@pytest.mark.asyncio
+async def test_plugin_rewrite_is_capped_on_the_command_it_became(monkeypatch):
+    """pre_gateway_dispatch may rewrite an allowed typed command; the cap judges the rewrite.
+
+    The cap runs at ingress on the event admission left — after the hook seam at
+    run_inbound._hm_admit_event — so a rewrite into a capped command cannot inherit the typed
+    command's permission, and the reset never reaches the interrupt path.
+    """
+    from hermes_cli import lifecycle
+
+    async def _rewrite_hook(_name, **_kwargs):
+        return [{"action": "rewrite", "text": "/new"}]
+
+    monkeypatch.setattr(lifecycle, "ainvoke_hook", _rewrite_hook)
+    runner = _runner(allowed_commands=["whoami"])
+    runner._interrupt_and_clear_session = AsyncMock()
+    runner._handle_reset_command = AsyncMock(return_value="reset-ran")
+    result = await runner._handle_message(_event("/whoami"))
+    assert result == "Not enabled in this room."
+    runner._interrupt_and_clear_session.assert_not_awaited()
+    runner._handle_reset_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_capped_reset_cannot_interrupt_a_running_agent():
+    """A denied /new must leave the running turn alone — denial precedes busy-command routing."""
+    runner = _runner(allowed_commands=["whoami"])
+    key = runner._session_key_for_source(_source())
+    runner._running_agents[key] = object()
+    runner._running_agents_ts[key] = 0
+    runner._interrupt_and_clear_session = AsyncMock()
+    runner._handle_reset_command = AsyncMock(return_value="reset-ran")
+    result = await runner._handle_message(_event("/new"))
+    assert result == "Not enabled in this room."
+    runner._interrupt_and_clear_session.assert_not_awaited()
+    runner._handle_reset_command.assert_not_awaited()
+
+
+def test_multiplex_served_profile_with_uncached_config_defers_to_the_fail_closed_policy():
+    """The cap has no opinion it cannot read, so it must not pre-empt the canonical denial.
+
+    Upstream #121705 pins this: a served profile whose config was never cached fails closed via
+    ``policy_for_runner_source`` (``_FAIL_CLOSED_POLICY``, keeping the read-only floor). If the cap
+    invented its own denial here it would swap that text for the cap's message and break the
+    contract the dispatch tests hold, so the cap defers and the policy answers.
+    """
+    from dataclasses import replace
+
+    from gateway.slash_access import (
+        _FAIL_CLOSED_POLICY,
+        channel_command_denial_for_runner_source,
+        policy_for_runner_source,
+    )
+
+    class _MultiplexRunner:
+        config = GatewayConfig(multiplex_profiles=True)
+        _profile_configs = {}
+
+    served = replace(_source(), profile="served-profile")
+    runner = _MultiplexRunner()
+    for command in ("help", "whoami", "new"):
+        assert channel_command_denial_for_runner_source(runner, served, command) is None
+    policy = policy_for_runner_source(runner, served)
+    assert policy is _FAIL_CLOSED_POLICY
+    assert policy.can_run(served.user_id, "help")
+    assert not policy.can_run(served.user_id, "new")

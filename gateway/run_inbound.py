@@ -25,6 +25,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.run_busy import approval_input_words
 from gateway.run_inbound_media import rehome_inbound_media
+from gateway.run_inbound_command_caps import GatewayInboundCommandCapsMixin
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
 from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
@@ -74,7 +75,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin):
+class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayInboundCommandCapsMixin, GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
@@ -1313,24 +1314,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
-        # Enforce exact channel command caps before pending-reply interception, busy routing, command
-        # hooks, quick/plugin handlers, or skill/bundle rewrites can observe slash-command payloads.
-        # The later shared access checks remain necessary for aliases and hook rewrites.
-        if not is_internal:
-            _ingress_command = event.get_command()
-            if _ingress_command:
-                from hermes_cli.commands import resolve_command as _resolve_ingress_command
-                _ingress_def = _resolve_ingress_command(_ingress_command)
-                _ingress_canonical = (
-                    _ingress_def.name if _ingress_def
-                    else _ingress_command.strip().lstrip("/").lower().replace("_", "-")
-                )
-                _channel_denial = self._check_channel_command_access(source, _ingress_canonical)
-                if _channel_denial is not None:
-                    return _channel_denial
-        if not is_internal:
-            from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
-            record_gateway_slash_command(event)
+        # Channel command caps evaluate the event as admission left it — after profile routing, the
+        # ignored-channel guard and pre_gateway_dispatch — so a hook rewrite into a capped command
+        # is gated on its canonical target, and the command metric records only what proceeds.
+        # Pending-reply interception, busy routing, command hooks, quick/plugin handlers and
+        # skill/bundle rewrites all come after this; their own access checks remain in force.
+        _cap_denial = self._hm_channel_command_gate(event, source, is_internal)
+        if _cap_denial is not None:
+            return _cap_denial
         # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
         # not on the adapter's raw inbound: profile routing, the ignored-channel
         # guard, plugin hooks and user authorization all reject events above,

@@ -207,10 +207,12 @@ def channel_command_denial_for_runner_source(runner: Any, source: Any, canonical
         config = (getattr(runner, "_profile_configs", None) or {}).get(owner)
         if config is None:
             # Same failure upstream #121705 pinned: a served profile whose config is not cached
-            # may not inherit the launch profile's policy. Mirror ``_FAIL_CLOSED_POLICY`` exactly
-            # — everything denied except the ``_ALWAYS_ALLOWED_FOR_USERS`` read-only floor — so
-            # the cap adds no new grant and strips no existing allowance.
-            return None if canonical_cmd in _ALWAYS_ALLOWED_FOR_USERS else _CAP_DENIAL_MESSAGE
+            # may not inherit the launch profile's policy. But the cap has nothing to read here,
+            # and inventing a denial would replace the canonical fail-closed text that
+            # ``policy_for_runner_source`` returns (``_FAIL_CLOSED_POLICY``: everything denied
+            # except the ``_ALWAYS_ALLOWED_FOR_USERS`` read-only floor). Defer to it: the cap adds
+            # no grant and strips no allowance it cannot actually see.
+            return None
     return channel_command_denial(config, source, canonical_cmd)
 
 

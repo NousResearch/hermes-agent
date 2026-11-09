@@ -2,6 +2,7 @@
 
 
 from persistence.sqlite.conversation._store.sql_common import _placeholders
+from persistence.sqlite.conversation._store.messages import _active_transcript_counts, _check_transcript_write_guards, _insert_message_rows, _split_rewind_target
 from persistence.sqlite.conversation._store.messages_sql import _ACTIVE_IDS_SQL, _SET_COUNTERS_SQL
 
 
@@ -39,7 +40,3 @@ def rewind_in_transaction(holder, conn, session_id, target_message_id, *,
     head_id = conn.execute(
         "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchone()[0]
     return target_row, ids, head_id, replacement_message_id
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import _active_transcript_counts, _check_transcript_write_guards, _insert_message_rows, _split_rewind_target

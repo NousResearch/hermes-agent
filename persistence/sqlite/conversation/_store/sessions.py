@@ -19,7 +19,13 @@ from persistence.sqlite.conversation._store.sql_common import (
     _sql_session_last_active_by_id, escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks,
     _placeholders as _session_ids_placeholders, _source_match_clause, launch_stub_filter_sql,
 )
-from persistence.sqlite.conversation._store.compression import _UNSET_CREATED_SQL
+from persistence.sqlite.conversation._store.compression import (
+    _CHAIN_CAP, _UNSET_CREATED_SQL, get_compression_chain, get_compression_tip,
+)
+from persistence.sqlite.conversation._store.core import CANONICAL_BOT_CHAT_TITLE, _delete_unreferenced_system_prompts, _session_row_dict
+from persistence.sqlite.conversation._store.messages import _bump_conversation_generation, _display_messages_from_conn, _is_explicit_fork_child_row
+from persistence.sqlite.conversation._store.portability import _compact_session_cols
+from persistence.sqlite.conversation._store.write_guards import _guarded_ids
 
 
 logger = logging.getLogger("hermes_state")
@@ -904,6 +910,8 @@ def set_session_archived(holder: StoreHolder, session_id: str, archived: bool, *
     ``notify=False`` is for housekeeping that hides a row whose session lives on elsewhere.
     Archiving the canonical Bot Chat retires its name in the same write
     (:func:`_retire_canonical_bot_chat_in_transaction`)."""
+    from persistence.sqlite.conversation._store.titles import _retire_canonical_bot_chat_in_transaction
+
     def _do(conn):
         row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
         ids = _set_lineage_column_in_transaction(holder,
@@ -1883,12 +1891,3 @@ def delete_empty_sessions(holder: StoreHolder, sessions_dir: Optional[Path] = No
         return len(session_ids)
     holder._execute_write(_do)
     return tuple(removed_ids)
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.compression import _CHAIN_CAP, get_compression_chain, get_compression_tip
-from persistence.sqlite.conversation._store.core import CANONICAL_BOT_CHAT_TITLE, _delete_unreferenced_system_prompts, _session_row_dict
-from persistence.sqlite.conversation._store.messages import _bump_conversation_generation, _display_messages_from_conn, _is_explicit_fork_child_row
-from persistence.sqlite.conversation._store.portability import _compact_session_cols
-from persistence.sqlite.conversation._store.titles import _retire_canonical_bot_chat_in_transaction
-from persistence.sqlite.conversation._store.write_guards import _guarded_ids

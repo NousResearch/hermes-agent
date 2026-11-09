@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from contextlib import contextmanager
 from session_rules.turns import project_compaction_message_for_display, user_originated_turn_view
+from persistence.sqlite.conversation._store.compaction_display import not_a_later_tool_copy_sql
+from persistence.sqlite.conversation._store.messages import _decode_content, _encode_content, _row_to_message_dict
 from persistence.sqlite.conversation._store.messages_sql import DISPLAY_VISIBLE_SQL
 
 
@@ -163,8 +165,3 @@ def get_session_timeline(db, session_id, *, limit=500, after_row_id=0):
                        "total": total, "has_more": has_more,
                        "next_cursor": page[-1]["sort_id"] if has_more else None},
     }
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import _decode_content, _encode_content, _row_to_message_dict
-from persistence.sqlite.conversation._store.compaction_display import not_a_later_tool_copy_sql

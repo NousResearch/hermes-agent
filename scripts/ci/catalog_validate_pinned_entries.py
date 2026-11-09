@@ -58,7 +58,7 @@ def _file_fetches_github(path: str) -> bool:
     # removed first (any quoting/spacing); whatever raw.githubusercontent / release URL remains is
     # a real fetch. Reading the file as text mirrors what grep -l would have matched.
     try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        text = Path(path).read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return True  # unreadable here means the grep already flagged it; keep it flagged
     return bool(_GITHUB_FETCH.search(_AJV_DECLARATION.sub("", text)))

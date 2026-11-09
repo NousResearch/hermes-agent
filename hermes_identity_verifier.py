@@ -32,6 +32,7 @@ NO_CLAIM = "no_claim"
 BAD_SIGNATURE = "bad_signature"
 BAD_HEADER = "bad_header"
 UNKNOWN_KID = "unknown_kid"
+WRONG_ISSUER = "wrong_issuer"
 EXPIRED = "expired"
 NOT_YET_VALID = "not_yet_valid"
 WRONG_AUDIENCE = "wrong_audience"
@@ -40,7 +41,7 @@ BAD_PAYLOAD = "bad_payload"
 EVENT_MISMATCH = "event_mismatch"
 
 REFUSAL_REASONS = frozenset({
-    NO_CLAIM, BAD_SIGNATURE, BAD_HEADER, UNKNOWN_KID, EXPIRED, NOT_YET_VALID,
+    NO_CLAIM, BAD_SIGNATURE, BAD_HEADER, UNKNOWN_KID, WRONG_ISSUER, EXPIRED, NOT_YET_VALID,
     WRONG_AUDIENCE, REPLAYED, BAD_PAYLOAD, EVENT_MISMATCH,
 })
 

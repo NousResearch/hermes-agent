@@ -307,7 +307,7 @@ async def test_storage_lock_during_claim_retries_in_place_and_keeps_waiters(tmp_
 
     caplog.set_level(logging.WARNING, logger='gateway.session_authority')
     db, authority = _authority(tmp_path, monkeypatch)
-    monkeypatch.setattr(authority.persistence.holder(), '_WRITE_PATIENCE_S', 0.2)
+    monkeypatch.setattr(raw_holder(authority.persistence), '_WRITE_PATIENCE_S', 0.2)
     monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.05, raising=False)
     ran = []
 

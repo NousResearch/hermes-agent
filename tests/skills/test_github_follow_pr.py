@@ -27,6 +27,11 @@ def test_ci_verdict_reported_once_per_head_and_only_when_settled():
     assert [k for k, _ in follow_pr.collect_events(_snap(red, sha="def456"), {"ci:abc123"}, "me")] == ["ci:def456"]
 
 
+def test_paginated_pages_join_into_one_list():
+    assert follow_pr._json_pages('[{"id": 1}]\n[{"id": 2}][{"id": 3}]') == [{"id": 1}, {"id": 2}, {"id": 3}]
+    assert follow_pr._json_pages('{"login": "me"}') == {"login": "me"}
+
+
 def test_own_comments_and_baselined_history_never_wake():
     mine = {"id": "c1", "author": {"login": "me"}, "body": "pushed a fix"}
     old = {"id": "c2", "author": {"login": "rev"}, "body": "old"}

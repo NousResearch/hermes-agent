@@ -52,7 +52,25 @@ def gh_json(args: list[str]):
                          timeout=120, stdin=subprocess.DEVNULL)
     if out.returncode != 0:
         raise RuntimeError(out.stderr.strip() or f"gh {' '.join(args)} exited {out.returncode}")
-    return json.loads(out.stdout or "null")
+    return _json_pages(out.stdout)
+
+
+def _json_pages(text: str):
+    """One JSON value, or the pages of ``gh api --paginate`` joined into one list.
+
+    Older ``gh`` releases print each page as its own array (``[...][...]``) and
+    ``--slurp`` does not exist before 2.48, so concatenated values are decoded here.
+    """
+    decoder, pos, values = json.JSONDecoder(), 0, []
+    text = text.strip()
+    while pos < len(text):
+        value, pos = decoder.raw_decode(text, pos)
+        values.append(value)
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+    if len(values) <= 1:
+        return values[0] if values else None
+    return [item for page in values for item in (page if isinstance(page, list) else [page])]
 
 
 def fetch_snapshot(repo: str, pr: int) -> dict:
@@ -253,6 +271,18 @@ def main() -> int:
     if bool(args.pr) == bool(args.gitlab_mr):
         p.error("pass exactly one of --pr or --gitlab-mr")
 
+    for attempt in range(MAX_GH_FAILURES):
+        try:
+            return follow(args)
+        except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            if attempt == MAX_GH_FAILURES - 1:
+                print(f"follow_pr: startup failed {MAX_GH_FAILURES} times, last: {exc}", file=sys.stderr)
+                return 2
+            time.sleep(max(args.interval, 20))
+    return 2
+
+
+def follow(args: argparse.Namespace) -> int:
     if args.gitlab_mr:
         host, project, number = parse_gitlab_mr(args.gitlab_mr)
         repo = f"{host}/{project}"

@@ -12,7 +12,7 @@ source: https://github.com/igorsaevets/page2ai-mcp
 
 transport:
   type: http
-  url: https://page2ai-mcp-remote.vercel.app/api/mcp
+  url: https://page2ai.igorsaevets.com/api/mcp
 
 auth:
   type: none
@@ -26,7 +26,7 @@ suggest:
     - convert page to markdown
     - web scraping for llm
   hosts:
-    - page2ai-mcp-remote.vercel.app
+    - page2ai.igorsaevets.com
 
 post_install: |
   No account or credentials needed — Page2AI is publicly hosted with no auth.

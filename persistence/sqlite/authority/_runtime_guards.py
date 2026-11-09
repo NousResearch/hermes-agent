@@ -4,7 +4,7 @@ gateway's history-mount check."""
 
 from persistence.core.errors import AuthorityRefusal
 
-from .._schema_ddl import _sql_json_extract
+from ..conversation._store.sql_common import _non_continuation_child_sql
 
 
 _ENDED_ROW_SQL = "SELECT ended_at, end_reason FROM sessions WHERE id = ?"
@@ -12,17 +12,6 @@ _ENDED_ROW_SQL = "SELECT ended_at, end_reason FROM sessions WHERE id = ?"
 
 def _ended_by_compression(row) -> bool:
     return row is not None and row["ended_at"] is not None and row["end_reason"] == "compression"
-
-
-def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
-    """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
-    (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
-    inherit ``model_config`` verbatim, so a marker naming another row is inherited, not a fork.
-    ``child`` is the column prefix (``""``, ``"c."``)."""
-    return "".join(
-        f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
-        for marker in ("_branched_from", "_delegate_from", "_reset_from")
-    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
 
 
 def require_not_executing(conn, session_ids):

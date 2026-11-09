@@ -111,6 +111,7 @@ class _Rewriter(cst.CSTTransformer):
         self.prose: set[int] = set()
         self.blocked: dict[int, str] = {}
         self.moved = path in plan.moved_files
+        self.tops = {old.split(".")[0] for old in plan.renames}
 
     def _count(self, kind: str) -> None:
         self.counts[kind] = self.counts.get(kind, 0) + 1
@@ -292,7 +293,7 @@ class _Rewriter(cst.CSTTransformer):
         text = original.evaluated_value
         if not isinstance(text, str):
             return updated
-        rewritten = self._text(text)
+        rewritten = self._text(text, original)
         if self.plan.names_module(rewritten):
             self._flag(original, OTHER, text, "string names a moved module; rewrite or confirm by hand")
         else:
@@ -303,16 +304,33 @@ class _Rewriter(cst.CSTTransformer):
                     break
         if rewritten == text:
             return updated
-        replaced = _with_text(updated, self._text)
+        dashed = _DASH_M.sub(self._dash_m, text)
+        replaced = _with_text(updated, lambda raw: _DASH_M.sub(self._dash_m, raw)) if rewritten == dashed \
+            else _with_value(updated, rewritten)
         if replaced is None:
             self._flag(original, OTHER, text[:80], "code in a string spells the name with escapes; fix by hand")
             return updated
         self._count("string-code")
         return replaced
 
-    def _text(self, text: str) -> str:
-        """``-m <module>`` and ``import``/``from`` lines in string text: code a child process runs."""
-        return _CODE_IMPORT.sub(self._dash_m, _DASH_M.sub(self._dash_m, text))
+    def _text(self, text: str, node: cst.CSTNode | None = None) -> str:
+        """``-m <module>`` arguments, and the Python program when the text parses as one: code a child process runs."""
+        text = _DASH_M.sub(self._dash_m, text)
+        if node is None or "import" not in text or not any(top in text for top in self.tops):
+            return text
+        try:
+            program = rewrite_source(text, "<string>", self.plan)
+        except RecursionError:
+            program = Result("<string>", error="too deep")
+        if program.error:
+            for match in _CODE_IMPORT.finditer(text):
+                if self._new(match.group(2)) is not None:
+                    self._flag(node, OTHER, match.group(0), "code in a string imports a moved module but does not parse; fix by hand")
+            return text
+        for flag in program.flags:
+            _, kind, name, reason = flag.split("  ", 3)
+            self._flag(node, kind, name, reason)
+        return program.source if program.source is not None else text
 
     def _dash_m(self, match: re.Match) -> str:
         new = self._new(match.group(2))
@@ -322,12 +340,15 @@ class _Rewriter(cst.CSTTransformer):
         parts = []
         for part in updated.parts:
             if isinstance(part, cst.FormattedStringText):
-                text = self._text(part.value)
+                text = _DASH_M.sub(self._dash_m, part.value)
                 if text != part.value:
                     self._count("string-code")
                     part = part.with_changes(value=text)
             parts.append(part)
         updated = updated.with_changes(parts=parts)
+        for match in _CODE_IMPORT.finditer("".join(_literal_text(part) for part in parts)):
+            if self._new(match.group(2)) is not None:
+                self._flag(original, OTHER, match.group(0), "f-string builds code that imports a moved module; fix by hand")
         if _imports_old(original, self.plan.renames):
             self._flag(original, DYNAMIC, _code(original), "f-string builds a moved module name; check by hand")
         return updated
@@ -360,6 +381,23 @@ def _with_text(node: cst.SimpleString, transform) -> cst.SimpleString | None:
     raw = node.value[head:-len(node.quote)]
     candidate = node.with_changes(value=node.value[:head] + transform(raw) + node.quote)
     return candidate if candidate.evaluated_value == transform(node.evaluated_value) else None
+
+
+def _with_value(node: cst.SimpleString, value: str) -> cst.SimpleString | None:
+    """``node`` spelling ``value``; None when its escapes cannot be kept (``\\x``, ``\\u``, a raw prefix with backslashes)."""
+    head = len(node.prefix) + len(node.quote)
+    raw = node.value[head:-len(node.quote)]
+    if raw != node.evaluated_value:
+        if "\\" in re.sub(r"\\[nt\\'\"]", "", raw) or "r" in node.prefix.lower():
+            return None
+        quote = node.quote[0]
+        raw = value.replace("\\", "\\\\").replace(quote, "\\" + quote)
+        if len(node.quote) == 1:
+            raw = raw.replace("\n", "\\n").replace("\t", "\\t")
+    else:
+        raw = value
+    candidate = node.with_changes(value=node.value[:head] + raw + node.quote)
+    return candidate if candidate.evaluated_value == value else None
 
 
 def _code(node: cst.CSTNode) -> str:

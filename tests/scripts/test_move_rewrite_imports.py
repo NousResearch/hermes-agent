@@ -178,6 +178,30 @@ def test_sites_left_alone_are_flagged_with_class_and_name(source, kind, name):
     assert (line, flag_kind, flag_name) == ("x.py:1", kind, name)
 
 
+@pytest.mark.parametrize("before, after", [
+    ('CODE = "import watchdog; watchdog.arm()"\n', 'CODE = "import hermes_agent.watchdog; hermes_agent.watchdog.arm()"\n'),
+    ('CODE = "import os, watchdog\\nprint(watchdog.kick)"\n',
+     'CODE = "import os, hermes_agent.watchdog\\nprint(hermes_agent.watchdog.kick)"\n'),
+    ('CODE = "import watchdog, tui_gateway.entry"\n',
+     'CODE = "import hermes_agent.watchdog, hermes_agent.tui_gateway.entry"\n'),
+    ("CODE = \"x = __import__('watchdog').arm\"\n", "CODE = \"x = __import__('hermes_agent.watchdog').arm\"\n"),
+    ('CODE = "import importlib; importlib.import_module(\'tui_gateway.entry\')"\n',
+     'CODE = "import importlib; importlib.import_module(\'hermes_agent.tui_gateway.entry\')"\n'),
+])
+def test_a_string_that_parses_as_python_is_rewritten_with_its_uses(before, after):
+    check_transformed(before, after)
+
+
+@pytest.mark.parametrize("source", [
+    'CODE = "    import watchdog\\n"\n',
+    'CODE = "import watchdog; x = ("\n',
+    'CODE = f"import watchdog; {call}"\n',
+])
+def test_a_string_that_imports_a_moved_module_but_does_not_parse_is_flagged_and_left(source):
+    result = check_noop(source)
+    assert len(result.flags) == 1 and not result.counts
+
+
 def test_a_docstring_naming_a_moved_path_is_flagged_as_prose():
     [flag] = check_noop('"""Drives tui_gateway/entry.py over stdio."""\n').flags
     assert flag.split("  ")[1:3] == [rw.BY_PATH, "tui_gateway/entry.py"] and "docstring prose" in flag

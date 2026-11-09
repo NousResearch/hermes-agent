@@ -873,6 +873,12 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     # 51 -> 52: browser.backend + browser.extension_control dropped, AGENT_BROWSER_* .env settings ->
     # browser.* (see config_migrations_browser.migrate_to_52).
     (52, migrate_to_52),
+    # 52 -> 53: clarify_timeout 3600 -> 90. An hour-long wait held the chat's turn hostage; a
+    # value the user picked themselves is kept.
+    (53, _rewrite_stale_default(
+        section="agent", key="clarify_timeout", old=3600, new=90,
+        added="agent.clarify_timeout=90",
+        message="  ✓ Lowered agent.clarify_timeout from 3600 to 90 seconds (unanswered questions no longer hold the chat for an hour)")),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

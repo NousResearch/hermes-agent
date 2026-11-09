@@ -35,6 +35,7 @@ import httpx
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.telegram_network import TelegramFallbackTransport
 
 
 class _StopConnect(Exception):
@@ -201,7 +202,7 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
     assert len(instances) >= 2
     for index, instance in enumerate(instances):
         transport = instance.kwargs["httpx_kwargs"]["transport"]
-        assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
+        assert isinstance(transport, TelegramFallbackTransport)
         limits = transport._transport_kwargs["limits"]
         assert isinstance(limits, httpx.Limits)
         assert limits.keepalive_expiry is not None

@@ -200,7 +200,7 @@ def _completion_attempts_path(project_root: Path) -> Path:
 #: What a launch-time dependency sync consumes. A failed sync is recorded against
 #: these inputs (#139952): relaunching over the same inputs repeats the same doomed
 #: repair and backs off, while a corrected source update is a fresh repair.
-_SYNC_INPUTS = ("pyproject.toml", "uv.lock", "pm/lock.json")
+_SYNC_INPUTS = ("pyproject.toml", "setup.py", "uv.lock", "pm/lock.json")
 
 
 def _sync_inputs_digest(root: Path) -> str:

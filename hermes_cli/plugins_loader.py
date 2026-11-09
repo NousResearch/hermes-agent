@@ -688,6 +688,11 @@ class PluginLoaderMixin:
                     host = self._plugin_host_instance = PluginHost(self)
         return host
 
+    def _running_plugin_host(self) -> Any:
+        """This manager's plugin host when its process is running, else None (never creates one)."""
+        host = getattr(self, "_plugin_host_instance", None)
+        return host if host is not None and host.alive else None
+
     def _track_tool_override_policy(self, manifest: PluginManifest, module_name: str) -> None:
         """Install the plugin's tool-override policy in tools.registry as a ledger-owned lease."""
         from hermes_cli.plugins import PluginContext

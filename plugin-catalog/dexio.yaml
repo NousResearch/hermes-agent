@@ -1,13 +1,18 @@
 name: dexio
 repo: https://github.com/dexio-wiki/hermes-plugin
-sha: 5ab1615315512bbc70dad8f80cc5ecebc0404b34
-version: "0.1.0"
-description: "Dexio shared-wiki memory. Before each turn, the pages of your Dexio wiki that match the user's message; tools to search, read and write the pages your other agents and team also use. Nothing is captured automatically: no transcripts or turn logs. Standard library only; no background threads or local services. Disclosure — with DEXIO_API_KEY set, the first 300 characters of each user message go to the Dexio server (default app.dexio.wiki, or DEXIO_URL) as a search query, tool arguments and the agent's profile name go there on tool calls, and the model is prompted to write, overwrite and edit pages in a wiki shared with the user's team and other agents, without a confirmation step."
+sha: d05715098148e0335ceaf87a58caaa22d19ff3ff
+title: Dexio
+version: "0.2.0"
+description: "Dexio shared-wiki memory. Before each turn, the pages of your Dexio wiki that match the user's message; tools to search, read and write the pages your other agents and team also use; and a Hermes Desktop pane showing which pages the agent recalled and wrote and what your other agents changed. Nothing is captured automatically: no transcripts or turn logs. The provider uses the standard library only, the pane's backend uses the FastAPI that Hermes ships, and neither starts threads or local services. Disclosure — with DEXIO_API_KEY set, the first 300 characters of each user message go to the Dexio server (default app.dexio.wiki, or DEXIO_URL) as a search query, tool arguments and the agent's profile name go there on tool calls, and the model is prompted to write, overwrite and edit pages in a wiki shared with the user's team and other agents, without a confirmation step; while the Desktop pane is open, its backend (loaded only with dexio in plugins.enabled) asks the same server for the wiki's recent changes, name, page count and page titles, cached 8 to 60 seconds; the last 200 recalls and tool calls (search text cut to 160 characters, page paths and titles, notes and errors) are kept in $HERMES_HOME/dexio/activity.jsonl and pushed to Desktop windows connected to the same Hermes, never uploaded."
 maintainer: dexio-wiki
 tier: community
 category: memory
 docs_url: https://github.com/dexio-wiki/hermes-plugin#readme
 readme: true
+screenshots:
+  - https://raw.githubusercontent.com/dexio-wiki/hermes-plugin/d05715098148e0335ceaf87a58caaa22d19ff3ff/assets/pane.png
+  - https://raw.githubusercontent.com/dexio-wiki/hermes-plugin/d05715098148e0335ceaf87a58caaa22d19ff3ff/assets/pane-closeup.png
+  - https://raw.githubusercontent.com/dexio-wiki/hermes-plugin/d05715098148e0335ceaf87a58caaa22d19ff3ff/assets/web.png
 capabilities:
   provides_tools:
     - dexio_search

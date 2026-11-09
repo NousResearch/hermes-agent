@@ -35,6 +35,19 @@ function pnpmVersion(pnpm, { source, env }) {
   }
 }
 
+// PM's pnpm pin: the pnpm this checkout's lockfile is written and installed with.
+function pinnedPnpm(source) {
+  const path = join(source, 'pm/lock.json')
+  let version
+  try {
+    version = JSON.parse(readFileSync(path, 'utf8')).packages?.pnpm?.version
+  } catch (error) {
+    throw new Error(`cannot read the pnpm pin from ${path}: ${error.message}`)
+  }
+  if (typeof version !== 'string') throw new Error(`${path} pins no pnpm (packages.pnpm.version)`)
+  return version
+}
+
 // Every package directory pnpm linked: each locked direct dependency of an installed
 // project, and every entry of every virtual-store slot (the package itself plus links
 // to its dependencies, so a removed slot shows up as a dangling link). Optional
@@ -107,11 +120,11 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     && Boolean(JSON.parse(readFileSync(join(source, 'apps/desktop/package.json'), 'utf8')).devDependencies?.electron)
   const pnpm = pnpmCommand({ env })
   const version = pnpmVersion(pnpm, { source, env })
-  // pnpm-workspace.yaml sets pmOnFail: ignore (so the lock stays one YAML document),
-  // which also stops pnpm from enforcing the root devEngines pin: enforce it here.
-  const pinned = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8')).devEngines?.packageManager
-  if (pinned?.name === 'pnpm' && pinned.version !== version) {
-    throw new Error(`pnpm ${pinned.version} is required (root package.json devEngines), found ${version} at ${pnpm}`)
+  // pnpm never checks its own version here (pmOnFail: ignore keeps the lock one YAML
+  // document): PM's pin is the one this checkout's lockfile was written with.
+  const pinned = pinnedPnpm(source)
+  if (pinned !== version) {
+    throw new Error(`pnpm ${pinned} is required (pm/lock.json), found ${version} at ${pnpm}`)
   }
   // The root project is always installed with a filtered install. The release-age
   // policy is enforced where the lockfile is written (CI), not re-fetched per user.

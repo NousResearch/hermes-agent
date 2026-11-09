@@ -305,10 +305,12 @@ def restore_api_session(authority, session_id):
     if saved is None:
         raise RuntimeStoreError('not_found')
     receipt = json.loads(saved[0])
-    if receipt['profile_id'] != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
     entry = SessionEntry.from_dict(receipt['entry'])
     source = entry.origin
+    if receipt['profile_id'] != authority.profile_id and (source is None or source.profile != _served_profile(authority)):
+        # Minted under an older home of this store (it moved with its profile): the stored origin
+        # still places the turn's runtime scope (``bind_api_session``), so it must name this profile.
+        raise RuntimeStoreError('profile_mismatch')
     _pin_api_identity(authority.runner, source, transport_profile=entry.transport_profile)
     row = authority.db.get_session(session_id)
     if (receipt['session_id'] != session_id or entry.session_id != session_id

@@ -1,0 +1,28 @@
+name: tusk
+repo: https://github.com/Automationbot24x7/hermes-tusk
+sha: 3d1a6ef5f938c3d6b36187a388bcdaabe20b1829
+subdir: tusk
+version: "0.2.1"
+title: Tusk
+description: "Hermes long-term memory on Walrus mainnet (decentralized storage on Sui) through the official Walrus Memory SDK: encrypted inside the relayer's TEE, owned by your key, survives wiping or reinstalling Hermes, and the same on every machine and for other agents on the same account. Recall before each turn, turn capture, built-in memory mirroring and pre-compression saves; a crash-safe, rate-paced SQLite write outbox with a receipt and public Walruscan proof per memory; a Tusk dashboard tab (semantic search across namespaces, live write queue, one-click verification that downloads the blob from a public Walrus aggregator and checks it is ciphertext); /tusk and hermes tusk (status, recall, proofs, verify, namespaces, import, flush, export, restore). Secrets are redacted before anything is queued. Disclosure — each turn's user message (as the recall query), finished turns (for fact extraction), built-in memory entries and tusk_remember facts are sent over HTTPS to relayer.memory.walrus.xyz (or MEMWAL_SERVER_URL) signed with MEMWAL_PRIVATE_KEY / MEMWAL_ACCOUNT_ID; verify downloads blobs from aggregator.walrus-mainnet.walrus.space; queued writes (until sent) and receipts are kept in plugin-data/tusk/outbox.db (0600); one in-process background writer thread; dashboard routes sit behind the dashboard auth gate; no shell commands, no subprocesses, no telemetry."
+maintainer: Automationbot24x7
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Automationbot24x7/hermes-tusk#readme
+image: https://raw.githubusercontent.com/Automationbot24x7/hermes-tusk/3d1a6ef5f938c3d6b36187a388bcdaabe20b1829/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Automationbot24x7/hermes-tusk/3d1a6ef5f938c3d6b36187a388bcdaabe20b1829/assets/dashboard.png
+readme: true
+platforms: [linux, macos, windows]
+known_issues:
+  - "The Walrus Memory relayer has no per-memory delete yet (whole-namespace erasure only), so removing a built-in memory entry does not delete its Walrus copy."
+  - "Writes are paced (about 6 per minute) and take 20-30 s each; one-shot hermes chat -q runs usually exit before the queue drains. Queued writes go out on the next run or with hermes tusk flush."
+  - "The dashboard tab appears after hermes plugins enable tusk (memory providers are otherwise activated through memory.provider only)."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MEMWAL_PRIVATE_KEY
+    - MEMWAL_ACCOUNT_ID

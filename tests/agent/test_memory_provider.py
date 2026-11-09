@@ -787,6 +787,34 @@ class TestUserInstalledProviderCli:
         assert commands[0]["name"] == "extcli"
         assert callable(commands[0]["setup_fn"])
 
+    def test_cli_refused_for_a_user_provider_in_a_hosted_process(self, tmp_path, monkeypatch):
+        """The one hosted provenance rule: a cli.py under the deployment home is
+        tenant-writable code, so a hosted process never imports it — the provider's
+        commands are simply absent, and the local discovery above is unchanged."""
+        from hermes_cli import hosted_mode
+        from plugins.memory import discover_plugin_cli_commands
+
+        monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+        plugin_dir = tmp_path / "plugins" / "hostedcli"
+        plugin_dir.mkdir(parents=True)
+        # A memory provider dir: discovery accepts it only when __init__.py speaks the
+        # provider contract, so the fixture says it (and the gate still refuses it).
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "cli.py").write_text(
+            "from pathlib import Path\n"
+            f"Path({str(tmp_path / 'cli-imported')!r}).write_text('x')\n"
+            "def register_cli(subparser):\n"
+            "    subparser.add_argument('--status', action='store_true')\n",
+            encoding="utf-8",
+        )
+        self._activate(tmp_path, monkeypatch, "hostedcli")
+
+        assert discover_plugin_cli_commands() == []
+        assert not (tmp_path / "cli-imported").exists()  # the cli module never ran
+
     def test_provider_load_after_cli_discovery(self, tmp_path, monkeypatch):
         """The provider still loads after CLI discovery ran first.
 

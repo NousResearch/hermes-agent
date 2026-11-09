@@ -667,6 +667,16 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     if source != "bundled" and _plugin_disabled(plugin_dir):
         logger.debug("Skipping disabled provider plugin %s (plugins.disabled)", plugin_dir.name)
         return
+    if source != "bundled":
+        from plugins.plugin_loader import hosted_inprocess_refusal
+        refusal = hosted_inprocess_refusal(plugin_dir)
+        if refusal:
+            # The one hosted provenance rule: nothing under the deployment home loads
+            # in-process, whatever its install record says. A hosted deployment's
+            # providers ship bundled with Hermes or as installed packages (entry points).
+            logger.error("Provider plugin %s: %s", plugin_dir.name, refusal)
+            _note_load_result(plugin_dir, RuntimeError(refusal))
+            return
     if source == "bundled":
         # A stable import path (``plugins.model_providers.<name>``) so relative imports work.
         _exec_plugin_module(plugin_dir, source, f"plugins.model_providers.{plugin_dir.name.replace('-', '_')}")

@@ -24,6 +24,7 @@ from hermes_cli.plugin_catalog import (
     _NAME_RE, _normalize_repo,
 )
 from pm.filesystem import is_junction
+from plugins.plugin_loader import bundled_dir_is_genuine  # the one bundled-source predicate
 
 logger = logging.getLogger(__name__)
 
@@ -208,27 +209,6 @@ LOGIN_BACKEND_RULE = ("password-manager login backends are accepted only from pl
                       "installed from the Hermes plugin catalog at tier verified or official (published by the "
                       "password-manager vendor itself or by Nous)")
 _NON_CATALOG_SOURCES = {"project": "a project .hermes/plugins directory", "entrypoint": "a pip entry point"}
-
-
-def bundled_dir_is_genuine(plugin_dir) -> bool:
-    """Whether a manifest that claims the ``bundled`` source really is a directory inside the
-    plugins tree shipped with Hermes: not a symlink, and its realpath stays inside the bundled
-    root. A symlink planted in the bundled dir (or a dir whose realpath leaves the tree) is
-    operator-unreviewed code wearing the bundled label, so every trust decision that consults
-    the bundled source must consult this, not the label alone."""
-    from hermes_cli.plugins import get_bundled_plugins_dir
-
-    if not plugin_dir:
-        return False
-    path = Path(plugin_dir)
-    try:
-        if path.is_symlink():
-            return False
-        resolved = path.resolve()
-        root = get_bundled_plugins_dir().resolve()
-    except OSError:
-        return False
-    return resolved == root or root in resolved.parents
 
 
 BROWSER_PAGE_BACKEND_RULE = ("browser page backends (which carry browser_vault fill scripts) are accepted only from "

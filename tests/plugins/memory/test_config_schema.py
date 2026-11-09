@@ -60,3 +60,27 @@ def test_broken_schema_is_not_cached(monkeypatch, tmp_path):
     recovered = get_provider_config_schema("broken")
     assert recovered is not None
     assert recovered.label == "Broken"
+
+
+def test_a_home_provider_schema_is_refused_in_a_hosted_process(monkeypatch, tmp_path):
+    """A config schema is the provider plugin's own code, so the one hosted provenance rule
+    covers it: in a hosted process a schema under the deployment home never imports (the
+    panel simply has no schema), and the local behaviour above is unchanged."""
+    from hermes_cli import hosted_mode
+    from plugins import memory
+
+    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+    monkeypatch.setattr(config_schema, "_SCHEMA_CACHE", {})
+    provider_dir = tmp_path / "custom"
+    provider_dir.mkdir()
+    (provider_dir / "config_schema.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(tmp_path / 'schema-imported')!r}).write_text('x')\n"
+        "from plugins.memory.config_schema import ProviderConfigSchema\n"
+        'CONFIG_SCHEMA = ProviderConfigSchema(name="custom", label="Custom")\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(memory, "find_provider_dir", lambda name: provider_dir)
+
+    assert get_provider_config_schema("custom") is None
+    assert not (tmp_path / "schema-imported").exists()  # the schema module never ran

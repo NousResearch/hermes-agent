@@ -1,6 +1,6 @@
 name: wearos
 repo: https://github.com/borealBytes/hermes-wearos-plugin
-sha: f3f04af84b90fc8293f0c9851bd8f72864aebb71
+sha: 5360cf4e33a36d9a7ebee85dbfe855a77ec1e135
 subdir: ""
 description: Pairs a Wear OS watch with your Hermes gateway over the watch's own embedded Tailscale node — PIN on the glass, /pair, done; no phone app, no relay.
 maintainer: borealBytes
@@ -8,14 +8,14 @@ tier: community
 category: platform
 requires_hermes: ">=0.23.0"
 version: "0.1.0"
-image: https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/f3f04af84b90fc8293f0c9851bd8f72864aebb71/docs/banner.png
+image: https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/5360cf4e33a36d9a7ebee85dbfe855a77ec1e135/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/f3f04af84b90fc8293f0c9851bd8f72864aebb71/docs/screenshots/03-image-card.png
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/f3f04af84b90fc8293f0c9851bd8f72864aebb71/docs/screenshots/48-media-cards.png
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/f3f04af84b90fc8293f0c9851bd8f72864aebb71/docs/screenshots/33-approval-card.png
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/f3f04af84b90fc8293f0c9851bd8f72864aebb71/docs/screenshots/42-gateways-multi.png
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/f3f04af84b90fc8293f0c9851bd8f72864aebb71/docs/screenshots/64-vm-pairing-ceremony.png
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/f3f04af84b90fc8293f0c9851bd8f72864aebb71/docs/screenshots/63-vm-wizard-green.png
+  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/5360cf4e33a36d9a7ebee85dbfe855a77ec1e135/docs/screenshots/66-wearkit-pane.png
+  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/5360cf4e33a36d9a7ebee85dbfe855a77ec1e135/docs/screenshots/06-pin-screen.png
+  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/5360cf4e33a36d9a7ebee85dbfe855a77ec1e135/docs/screenshots/05-aurora-player.gif
+  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/5360cf4e33a36d9a7ebee85dbfe855a77ec1e135/docs/screenshots/07-stop-running.png
+  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/5360cf4e33a36d9a7ebee85dbfe855a77ec1e135/docs/screenshots/33-approval-card.png
+  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/5360cf4e33a36d9a7ebee85dbfe855a77ec1e135/docs/screenshots/64-vm-pairing-ceremony.png
 readme: true
 platforms: [linux, macos]
 title: Hermes Wear Kit

@@ -232,3 +232,22 @@ class TestInlineBootstrapArgvCache:
         info = _inline_bootstrap_argv_cached.cache_info()
         assert info.misses == 2
         assert info.currsize == 2
+
+    def test_negative_churn_preserves_hot_gateway_entry(self, monkeypatch) -> None:
+        """Unrelated inline processes must not force a hot gateway launcher re-parse."""
+        from gateway import status_inline_source
+
+        # /proc and ps split this published multi-KB bootstrap into hundreds of tokens.
+        tokens = " ".join(_forms(["gateway", "run"])["launcher-script"]).split()
+        expected = inline_bootstrap_argv(tokens)
+        assert expected == [PY, "-m", "hermes_cli.main", "gateway", "run"]
+
+        # A single 64-slot LRU also caches these misses, evicting the gateway line.
+        for n in range(65):
+            assert inline_bootstrap_argv([PY, "-c", f"print({n})"]) is None
+
+        def refuse_reparse(source: str, argv: list[str]) -> list[str] | None:
+            pytest.fail("unchanged gateway bootstrap was reparsed after unrelated misses")
+
+        monkeypatch.setattr(status_inline_source, "_bootstrap_entry", refuse_reparse)
+        assert inline_bootstrap_argv(tokens) == expected

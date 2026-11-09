@@ -1,9 +1,10 @@
-import type { GatewayEvent } from '@hermes/shared'
+import { type GatewayEvent, registryBackendScopeKey } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { eventSourceMatchesOwner, gatewayEventSource } from '@/lib/replay-gap-owner'
 import { clearClarifyRequest } from '@/store/clarify'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import {
   noteGatewayReady,
   notifyCronChanged,
@@ -74,10 +75,23 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  // The shared backend watches every served profile database, but global
+  // notifications carry the socket's profile, not the changed store's profile.
+  // Invalidate within this connection; transcript reads remain owner-scoped.
+  if (event.type === 'sessions.changed') {
+    if (
+      registryBackendScopeKey(event.connectionId ?? null, null) ===
+      registryBackendScopeKey(activeGatewayConnectionId(), null)
+    ) {
+      notifySessionsChanged()
+    }
+
+    return true
+  }
+
   if (
     event.type === 'pet.changed' ||
     event.type === 'cron.changed' ||
-    event.type === 'sessions.changed' ||
     event.type === 'projects.changed' ||
     event.type === 'platforms.changed' ||
     event.type === 'pairing.changed'
@@ -98,8 +112,6 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
         notifyPlatformsChanged()
       } else if (event.type === 'pairing.changed') {
         notifyPairingChanged()
-      } else {
-        notifySessionsChanged()
       }
     }
 

@@ -5,7 +5,9 @@
   token is burned on a Template Buttons bubble; the tap yields a fresh free token that
   delivers the cached answer (PENDING → READY → DELIVERED, ERROR on cancel). Mid-turn
   progress/status sends (``_interim_send`` metadata / busy-ack prefixes) bypass the cache;
-  a stale or vanished mapping falls through to a live wire send (#106446).
+  a stale or vanished mapping falls through to a live wire send (#106446). Prompts
+  (clarify, approval: ``is_approval_prompt``) always reach the wire and retire a PENDING
+  button, so the reply that follows lands below the question.
 * Three allowlists (users U…, groups C…, rooms R…); ``LINE_ALLOW_ALL_USERS`` is dev-only.
 * Media via public HTTPS only: local files served under ``/line/media/<token>/<name>``
   (allowed-roots guard); ``LINE_PUBLIC_URL`` overrides host:port behind tunnels/wildcards.
@@ -164,7 +166,8 @@ class _CacheEntry:
 
 
 class RequestCache:
-    """In-memory cache for slow-LLM postback retrieval (PENDING → READY|ERROR → DELIVERED).
+    """In-memory cache for slow-LLM postback retrieval (PENDING → READY|ERROR → DELIVERED;
+    PENDING → DELIVERED when a prompt went out instead of the answer).
 
     We keep the same model here. See #18153.
     """
@@ -194,6 +197,10 @@ class RequestCache:
 
     def mark_delivered(self, request_id: str) -> None:
         self._transition(request_id, {State.READY, State.ERROR}, State.DELIVERED)
+
+    def retire(self, request_id: str) -> None:
+        """PENDING → DELIVERED; READY stays fetchable (an earlier turn's answer is still owed)."""
+        self._transition(request_id, {State.PENDING}, State.DELIVERED)
 
 
 # LINE source type → (id key, normalized chat_type)
@@ -656,8 +663,11 @@ class LineAdapter(BasePlatformAdapter):
         # bubbles. Interim detection is purpose-first: the gateway marks every mid-turn
         # status send with ``_interim_send`` (see ``gateway.run._interim_metadata``);
         # the text prefixes stay as belt-and-suspenders for metadata-less callers.
+        # A prompt (clarify, approval) blocks the turn on the user's reply, so caching it as the
+        # answer hides the question until it times out.
+        is_prompt = bool((metadata or {}).get("is_approval_prompt"))
         pending_rid = self._pending_buttons.get(chat_id)
-        if pending_rid and not _is_interim_send(content, metadata):
+        if pending_rid and not is_prompt and not _is_interim_send(content, metadata):
             entry = self._cache.get(pending_rid)
             if entry is not None and entry.state is State.PENDING:
                 self._cache.set_ready(pending_rid, content)
@@ -669,10 +679,22 @@ class LineAdapter(BasePlatformAdapter):
         # System busy-acks (interrupting / queued / steered) and progress heartbeats
         # bypass the postback cache and route directly to LINE so they reach the user
         # as visible bubbles. Source: PR #18153, #106446.
-        return await self._send_text_chunks(chat_id, content, force_push=False)
+        result = await self._send_text_chunks(chat_id, content, force_push=False)
+        if result.success and is_prompt and pending_rid:
+            # A failed prompt keeps the button: the turn's answer can still ride its free token.
+            self._cache.retire(pending_rid)
+            self._pending_buttons.pop(chat_id, None)
+        return result
 
     async def _send_text_chunks(self, chat_id: str, content: str, *, force_push: bool) -> SendResult:
         return await self._send_messages(chat_id, _text_messages(content), force_push=force_push, text=True)
+
+    async def send_clarify(
+        self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
+        session_key: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        """The base numbered prompt, marked as a prompt for ``send()``."""
+        return await super().send_clarify(
+            chat_id, question, choices, clarify_id, session_key, {**(metadata or {}), "is_approval_prompt": True})
 
     def _consume_reply_token(self, chat_id: str) -> tuple[str, bool]:
         """Consume a stashed reply token if present and unexpired → ``(token, used_reply)``."""
@@ -702,8 +724,9 @@ class LineAdapter(BasePlatformAdapter):
         async def _fire_postback() -> None:
             await asyncio.sleep(self.slow_response_threshold)
             # Only fire while a usable reply token remains (the agent responding
-            # consumes it) and no button is already outstanding.
-            if chat_id not in self._reply_tokens or chat_id in self._pending_buttons:
+            # consumes it), no button is already outstanding, and typing is not paused
+            # (a clarify/approval wait: the agent is waiting on the user, not thinking).
+            if chat_id not in self._reply_tokens or chat_id in self._pending_buttons or chat_id in self._typing_paused:
                 return
             rid = self._cache.register_pending(chat_id)
             self._pending_buttons[chat_id] = rid

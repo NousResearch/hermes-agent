@@ -20,11 +20,13 @@ import hashlib
 import hmac
 import base64
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+from tests.waiting import async_wait_until
 
 # Load plugins/platforms/line/adapter.py under plugin_adapter_line so it
 # cannot collide with sibling platform-plugin tests in the same process.
@@ -133,6 +135,15 @@ class TestRequestCache:
         # DELIVERED is terminal — no further mutation
         assert c.get(rid).payload == "first"
         assert c.get(rid).state is State.DELIVERED
+
+    def test_retire_moves_only_pending(self):
+        c = RequestCache()
+        pending, ready = c.register_pending("Uchat"), c.register_pending("Uchat")
+        c.set_ready(ready, "earlier answer")
+        c.retire(pending)
+        c.retire(ready)
+        assert c.get(pending).state is State.DELIVERED
+        assert (c.get(ready).state, c.get(ready).payload) == (State.READY, "earlier answer")
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +337,133 @@ class TestSlowLLMPostbackRegression:
         adapter._client.reply.assert_awaited_once()
         assert adapter._client.reply.await_args.args[1][0]["text"] == adapter.expired_text
         assert "Uchat" not in adapter._pending_buttons
+
+
+SK = "agent:main:line:dm:Uchat"
+
+
+@pytest.fixture
+def line_adapter(monkeypatch):
+    monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+    from gateway.config import PlatformConfig
+    ad = LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "tok", "channel_secret": "sec"}))
+    ad._client = MagicMock()
+    ad._client.reply = AsyncMock()
+    ad._client.push = AsyncMock()
+    ad._client.loading = AsyncMock()
+    return ad
+
+
+@pytest.fixture
+def clarify():
+    """Register a real pending clarify for ``SK``; returns its id."""
+    from tools import clarify_gateway
+    ids = iter(range(1, 100))
+
+    def _register(choices):
+        cid = f"cl-{next(ids)}"
+        clarify_gateway.register(cid, SK, "Which region?", choices)
+        return cid
+
+    yield _register
+    clarify_gateway.clear_session(SK)
+
+
+def _sent(client_call):
+    """Messages of the single reply/push call the LINE client received."""
+    client_call.assert_awaited_once()
+    return client_call.await_args.args[1]
+
+
+def _show_response(adapter, rid):
+    asyncio.run(adapter._handle_postback_event({
+        "replyToken": "tap-token", "source": {"type": "user", "userId": "Uchat"},
+        "postback": {"data": json.dumps({"action": "show_response", "request_id": rid})}}))
+    return adapter._client.reply.await_args.args[1][0]["text"]
+
+
+class TestPromptPastSlowButton:
+    """A clarify or approval prompt asks the user something, so it never hides behind the
+    slow-LLM "Get answer" button; once it is on the wire the button holds nothing."""
+
+    def _button(self, adapter, ready=None):
+        rid = adapter._cache.register_pending("Uchat")
+        if ready is not None:
+            adapter._cache.set_ready(rid, ready)
+        adapter._pending_buttons["Uchat"] = rid
+        return rid
+
+    def _ask(self, adapter, clarify):
+        choices = ["Tokyo", "Osaka"]
+        return asyncio.run(adapter.send_clarify("Uchat", "Which region?", choices, clarify(choices), SK))
+
+    def test_clarify_reaches_the_wire_and_retires_the_button(self, line_adapter, clarify):
+        rid = self._button(line_adapter)
+        assert self._ask(line_adapter, clarify).success
+        assert "Which region?" in _sent(line_adapter._client.push)[0]["text"]
+        assert line_adapter._cache.get(rid).state is State.DELIVERED
+        assert "Uchat" not in line_adapter._pending_buttons
+
+    def test_answer_after_the_prompt_is_sent_not_cached(self, line_adapter, clarify):
+        rid = self._button(line_adapter)
+        self._ask(line_adapter, clarify)
+        assert asyncio.run(line_adapter.send("Uchat", "Osaka it is")).success
+        assert line_adapter._client.push.await_args.args[1][0]["text"] == "Osaka it is"
+        assert line_adapter._cache.get(rid).payload is None
+
+    def test_old_button_tap_after_the_prompt_says_already_replied(self, line_adapter, clarify):
+        rid = self._button(line_adapter)
+        self._ask(line_adapter, clarify)
+        assert _show_response(line_adapter, rid) == line_adapter.delivered_text
+
+    def test_failed_prompt_keeps_the_button_for_the_answer(self, line_adapter, clarify):
+        rid = self._button(line_adapter)
+        line_adapter._client.push.side_effect = RuntimeError("LINE push 429: monthly limit")
+        assert not self._ask(line_adapter, clarify).success
+        assert line_adapter._cache.get(rid).state is State.PENDING
+        line_adapter._client.push.side_effect = None
+        asyncio.run(line_adapter.send("Uchat", "final"))
+        assert line_adapter._cache.get(rid).state is State.READY
+        assert line_adapter._cache.get(rid).payload == "final"
+
+    def test_ready_answer_survives_a_later_prompt(self, line_adapter, clarify):
+        rid = self._button(line_adapter, ready="Previous answer")
+        assert self._ask(line_adapter, clarify).success
+        assert "Which region?" in _sent(line_adapter._client.push)[0]["text"]
+        assert _show_response(line_adapter, rid) == "Previous answer"
+
+    def test_exec_approval_text_retires_the_button(self, line_adapter):
+        rid = self._button(line_adapter)
+        asyncio.run(line_adapter.send("Uchat", "Approve `rm -rf build`? Reply /approve or /deny",
+                                      metadata={"_interim_send": True, "is_approval_prompt": True}))
+        assert "Approve" in _sent(line_adapter._client.push)[0]["text"]
+        assert line_adapter._cache.get(rid).state is State.DELIVERED
+
+    @pytest.mark.parametrize("paused", [True, False])
+    def test_slow_button_does_not_fire_while_typing_is_paused(self, line_adapter, paused):
+        line_adapter.slow_response_threshold = 0.01
+        line_adapter._reply_tokens["Uchat"] = ("user-token", time.time() + 50)
+        if paused:
+            line_adapter.pause_typing_for_chat("Uchat")
+
+        async def run():
+            stop = asyncio.Event()
+            typing = asyncio.create_task(line_adapter._keep_typing("Uchat", interval=0.01, stop_event=stop))
+            if paused:
+                await asyncio.sleep(0.2)  # health: allow HX013 -- the threshold elapsing with no button is the behaviour under test
+            else:
+                await async_wait_until(lambda: line_adapter._client.reply.await_count, timeout=5)
+            stop.set()
+            await typing
+
+        asyncio.run(run())
+        if paused:
+            line_adapter._client.reply.assert_not_awaited()
+            assert "Uchat" in line_adapter._reply_tokens, "the user's reply token is kept for the answer"
+        else:
+            token, messages = line_adapter._client.reply.await_args.args
+            assert token == "user-token" and messages[0]["type"] == "template"
 
 
 class TestEnvEnablement:

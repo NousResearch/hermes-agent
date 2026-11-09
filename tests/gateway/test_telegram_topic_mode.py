@@ -909,6 +909,35 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
 
 
 @pytest.mark.asyncio
+async def test_handoff_into_bound_dm_topic_rebinds_the_topic(tmp_path):
+    """A handoff into an already-bound DM topic moves the topic binding to the handed-off session;
+    else the next message's binding heal switches the topic straight back to its old session."""
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    topic_key = build_session_key(_make_source(thread_id="42"))
+    session_db.create_session("old-topic-session", source="telegram", user_id="208214988")
+    session_db.create_session("cli-session", source="cli")
+    session_db.bind_telegram_topic(chat_id="208214988", thread_id="42", user_id="208214988",
+                                   session_key=topic_key, session_id="old-topic-session")
+    runner = _make_runner(session_db=session_db)
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="208214988", name="Tester DM", thread_id="42")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.create_handoff_thread = AsyncMock(return_value=None)
+    adapter.send.return_value = SimpleNamespace(success=True)
+    runner.session_store.switch_session.side_effect = lambda key, sid, **_kw: SessionEntry(
+        session_key=key, session_id=sid, created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.TELEGRAM, chat_type="dm")
+    runner._handle_message = AsyncMock(return_value="handoff ok")
+
+    await runner._process_handoff({"id": "cli-session", "title": "CLI work", "handoff_platform": "telegram"})
+
+    binding = session_db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["session_id"] == "cli-session"
+    assert binding["session_key"] == topic_key
+
+
+@pytest.mark.asyncio
 async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.apply_telegram_topic_migration()

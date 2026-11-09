@@ -1936,7 +1936,7 @@ class GatewayStartupMixin:
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=handoff_profile,
         )
 
-    async def _handoff_repoint(self, dest, session_key: str, cli_session_id: str) -> None:
+    async def _handoff_repoint(self, dest, session_key: str, cli_session_id: str):
         """Point the destination route at the handed-off conversation; ``switch_session`` ends the
         route's prior session and reopens this one. A handoff carries the conversation the user is
         looking at: a local chat's latest ``/new`` segment, then that segment's compression tip
@@ -1952,6 +1952,7 @@ class GatewayStartupMixin:
             raise RuntimeError(f"could not switch session key {session_key} → {target}")
         if authority is not None:
             follow_hand_off(authority, dest.source, session_key, authority.logical_owner(target), local_owner)
+        return switched
 
     async def _process_handoff(self, row: dict[str, Any], profile_name: Optional[str] = None) -> None:
         """Execute one handoff row; raises on failure (caller marks failed). ``profile_name`` (None =
@@ -1960,7 +1961,10 @@ class GatewayStartupMixin:
         cli_session_id = row["id"]
         dest = await self._handoff_resolve_destination(row, profile_name)
         session_key = self._handoff_session_key(dest, profile_name)
-        await self._handoff_repoint(dest, session_key, cli_session_id)
+        entry = await self._handoff_repoint(dest, session_key, cli_session_id)
+        # A Telegram DM topic lane follows its persisted topic binding, which would switch the
+        # route straight back to the topic's previous session on the very next turn.
+        await asyncio.to_thread(self._sync_telegram_topic_binding, dest.source, entry, reason="handoff")
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale
         # running-agent state so the synthetic turn isn't queued behind it.
         self._evict_cached_agent(session_key)

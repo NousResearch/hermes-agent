@@ -409,6 +409,10 @@ Known capability ids: `tools.override`, `llm.provider_override`,
 `llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
 `llm.task_override`, `llm.side_question` (ask the session's own agent after
 a turn, see [Plugin LLM Access](../plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question)),
+`state.detached_result` (record a durable result into a session's
+transcript, see [Record a durable detached result](#record-a-durable-detached-result)),
+`state.read` (read sessions, transcripts and kanban tasks of this profile,
+read-only, see [Read session and kanban state](#read-session-and-kanban-state)),
 `gateway.platform_actions` (see `hermes_cli/plugin_capabilities.py` for the
 canonical registry). Unknown ids are ignored. The older per-capability
 config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
@@ -1177,6 +1181,120 @@ conn.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY)")
 One directory per plugin means every plugin's data is inspectable in one
 predictable place. Secrets don't belong here — credential reads go through
 the standard `.env` / secret-scope path like everywhere else.
+
+### Record a durable detached result
+
+Some work finishes while no turn is live — a kanban worker, a cron job, a
+detached delegation. A result left in a side channel is one the turn loop
+never reads, so the session that asked for the work never sees it. A
+*detached result* is a row written between turns into that session's
+transcript: the core records it once, it survives compaction through the
+compression lineage, and the destination session's next turn reloads it as
+an ordinary `user` row.
+
+Reach for it when a producer finishes outside a turn and the result belongs
+to a session, not to the producer. For anything the current turn already
+sees, write to the transcript through the turn itself — a detached result
+is for the turns that haven't happened yet.
+
+```python
+def _deliver_result(ctx, session_id, result_text, delegation_id):
+    if not ctx.has_capability("state.detached_result"):
+        return  # fail closed: degrade gracefully, record nothing
+    ctx.record_delegation_delivery(
+        session_id, result_text, delegation_id=delegation_id)
+```
+
+The plugin must declare the capability in `plugin.yaml` and the user must
+grant it:
+
+```yaml
+capabilities:
+  - state.detached_result
+```
+
+### What you get back
+
+* `ctx.record_delegation_delivery(session_id, content, *, delegation_id, delivery_notice="", metadata=None)` records a delegation delivery;
+  `ctx.record_completion_note(session_id, content, *, admission_id, display_kind="internal_notification", metadata=None)` records a
+  completion note. Both return the message id of the recorded row, or
+  `None` when the capability is not granted (nothing is written, the
+  denial is logged once).
+* **Idempotent by stable id.** A retry with the same `delegation_id` (or
+  `admission_id`) returns the id of the already-recorded row instead of
+  writing a second one, so a producer that is unsure whether its first
+  write landed can simply retry.
+* The destination is resolved to its live continuation tip first: a parent
+  closed by compression never receives rows.
+* **Errors are raised, never swallowed.** A destination with a live turn
+  raises `SessionTurnLeaseLostError` — nothing is recorded, retry after
+  the turn ends. A compression-closed parent raises
+  `CompressionSessionClosedError` — the session is gone, do not retry the
+  same id. An empty `session_id`, empty `content`, or a missing
+  `delegation_id` / `admission_id` raises `ValueError`.
+* `display_kind` selects how a completion note presents; prefer the
+  default unless the core documents a kind for your producer.
+  `delivery_notice` is a short notice recorded alongside a delivery.
+
+### Read session and kanban state
+
+Plugins used to read `state.db` and `kanban.db` with raw SQL against
+hand-resolved paths: coupled to internal schema names, able to open
+`kanban.db` in read-write mode (creating or migrating a board from an
+observer), and reading `state.db` outside the owning profile's home. That
+import is not a contract. These calls replace it with a versioned,
+read-only facade that returns plain JSON dicts:
+
+```python
+def register(ctx):
+    def on_session_start(session_id, **kwargs):
+        if not ctx.has_capability("state.read"):
+            return  # fail closed: degrade gracefully, read nothing
+        session = ctx.read_session(session_id)
+        blocked = ctx.list_kanban_tasks(status="blocked", limit=10)
+```
+
+The plugin must declare the capability in `plugin.yaml` and the user must
+grant it:
+
+```yaml
+capabilities:
+  - state.read
+```
+
+### What you get back
+
+* `ctx.read_session(session_id)` — the session row (as
+  `SessionDB.get_session` returns it), resolved to the live continuation
+  tip; `None` when unknown or not granted.
+* `ctx.resolve_session(session_id)` — the session id resolved to its live
+  continuation tip (compression-aware). Without the capability it returns
+  the id unchanged: the caller learns nothing new.
+* `ctx.read_session_messages(session_id, *, limit=50, after_id=None, include_compacted=False)` — `{"schema_version", "session_id", "messages", "next_after_id"}`,
+  keyset-paged; `limit` is clamped to 1..100, and `after_id` cannot be
+  combined with `include_compacted`.
+* `ctx.read_kanban_task(task_id, *, board=None)` — one task as a
+  closed-field DTO (`id`, `title`, `status`, `assignee`, `priority`,
+  `session_id`, `created_at`, `started_at`, `completed_at`, `result`,
+  `block_kind`, `block_recurrences`, `completion_contract`,
+  `current_step_key`, `board`); `None` when unknown, when the board is
+  absent, or when not granted.
+* `ctx.list_kanban_tasks(*, status=None, assignee=None, session_id=None, limit=50, board=None)` — `{"api_version", "tasks"}`, newest-first; an
+  unknown `status` raises `ValueError`.
+* `ctx.read_kanban_task_summary(task_id, *, board=None)` — the newest
+  non-empty run summary, or `None` when there is none.
+* **Read-only by construction.** `kanban.db` is opened `mode=ro` and is
+  never created, initialized or migrated: a missing board or schema is a
+  clean `None` / empty result, never a created file. Every response
+  carries its contract version (`schema_version` for `state.db`,
+  `api_version` for kanban).
+* **Without the capability, reads return nothing.** `read_session`,
+  `read_kanban_task` and `read_kanban_task_summary` return `None`;
+  `read_session_messages` returns an empty page; `list_kanban_tasks`
+  returns an empty task list. The denial is logged once and nothing is
+  read.
+* Reads are profile-wide, not limited to the session that fired the hook —
+  the consent description says so.
 
 ### Bundle skills
 

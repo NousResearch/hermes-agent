@@ -611,6 +611,8 @@ class GatewayTurnProgressMixin:
         # A progress update held back by that window: delivered once it closes, even when no
         # further tool event arrives (a long-running last tool must not leave the bubble stale).
         flood_pending: bool = False
+        # (message_id, text) of bubbles a content reset closed while their update was flood-held.
+        owed_bubbles: list = dataclasses.field(default_factory=list)
 
     def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
@@ -712,6 +714,8 @@ class GatewayTurnProgressMixin:
     def _reset_progress_bubble(self, st) -> None:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
+        if st.flood_pending and st.can_edit and st.progress_msg_id is not None:
+            st.owed_bubbles.append((st.progress_msg_id, self._progress_text(st.progress_lines)))
         st.progress_msg_id, st.progress_lines = None, []
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
@@ -798,10 +802,15 @@ class GatewayTurnProgressMixin:
         The update stays owed until a send/edit lands (the delivery paths retire it), so a transient
         failure is retried on a later tick instead of being dropped.
         """
-        if not st.flood_pending or _in_flood_window(st) or not st.progress_lines:
+        if _in_flood_window(st) or not ((st.flood_pending and st.progress_lines) or st.owed_bubbles):
             return False
         if not self._ctx._run_still_current() or self._agent_interrupted():
             return False
+        if st.owed_bubbles:
+            result = await self._edit_progress_message(st, *st.owed_bubbles[0])
+            if result.success or not (getattr(result, "retryable", False) or _note_flood(st, result)):
+                st.owed_bubbles.pop(0)
+            return True
         if not await self._roll_progress_overflow_if_needed(st):
             await self._progress_send_or_edit(st, st.progress_lines[-1])
         return True

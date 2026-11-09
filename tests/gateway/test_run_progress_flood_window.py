@@ -221,3 +221,50 @@ async def test_held_progress_survives_a_transient_failure_of_its_idle_retry():
 
     assert st.adapter.edit_message.await_count == 2
     assert await loop._deliver_flood_pending_progress(st) is False  # landed: nothing left owed
+
+
+@pytest.mark.asyncio
+async def test_held_progress_reaches_its_own_bubble_after_a_content_reset():
+    """A content bubble landing inside the window closes the progress bubble; its held lines still land there."""
+    loop, st = _held_progress([SendResult(success=True, message_id="m1")])
+    st.flood_until = time.monotonic() + 60
+
+    loop._reset_progress_bubble(st)
+    assert await loop._deliver_flood_pending_progress(st) is False  # nothing fires into the open window
+    st.flood_until = 0.0  # the window closes while the agent works on
+    assert await loop._deliver_flood_pending_progress(st)
+
+    assert [(c.kwargs["message_id"], c.kwargs["content"]) for c in st.adapter.edit_message.await_args_list] == [
+        ("m1", "search 0\nlong build")]
+    assert await loop._deliver_flood_pending_progress(st) is False  # landed: nothing left owed
+
+
+@pytest.mark.asyncio
+async def test_a_closed_bubble_refused_again_stays_owed():
+    loop, st = _held_progress([
+        SendResult(success=False, error="flood_control:5", retry_after=5.0), SendResult(success=True, message_id="m1")])
+    loop._reset_progress_bubble(st)
+
+    assert await loop._deliver_flood_pending_progress(st)  # refused: a new window opens, the edit stays owed
+    assert await loop._deliver_flood_pending_progress(st) is False
+    st.flood_until = 0.0
+    assert await loop._deliver_flood_pending_progress(st)
+
+    assert st.adapter.edit_message.await_count == 2 and not st.owed_bubbles
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", [
+    {"flood_pending": False},  # nothing was held back
+    {"can_edit": False},  # one message per tool: nothing to edit
+    {"progress_msg_id": None},  # the bubble never landed
+])
+async def test_content_reset_owes_nothing_without_a_held_editable_bubble(held):
+    loop, st = _held_progress([SendResult(success=True, message_id="m1")])
+    for name, value in held.items():
+        setattr(st, name, value)
+
+    loop._reset_progress_bubble(st)
+
+    assert await loop._deliver_flood_pending_progress(st) is False
+    st.adapter.edit_message.assert_not_awaited()

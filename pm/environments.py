@@ -501,6 +501,20 @@ def activate_dependencies(project_root: Path) -> None:
             return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
+    # A generation built with a DIFFERENT CPython cannot be activated into this process:
+    # site.addsitedir would put an ABI-incompatible tree on sys.path, and every native
+    # extension in it then fails to import. Observed 2026-11-09: PM built the dependency
+    # environment with CPython 3.14 while the gateway ran 3.13, so the first pydantic
+    # import raised
+    #   ImportError: cannot import name 'ArgsKwargs' from 'pydantic_core._pydantic_core'
+    #   (unknown location)
+    # -- "unknown location" because the cp314 .so cannot load into 3.13. That silently
+    # disabled tool-search assembly and made the API WebSocket refuse every session (500).
+    # Running on the interpreter's own packages is strictly better than a guaranteed
+    # ImportError: skip the switch and let the caller keep what it booted with.
+    environment_version = venv_python_version(environment)
+    if environment_version is not None and environment_version != sys.version_info[:2]:
+        return _require_own_dependencies(project_root)
     import site
 
     sys.path[:] = [entry for entry in sys.path

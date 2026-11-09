@@ -1851,6 +1851,7 @@ def register(ctx):
 - Return the text to show. `print()` writes to the gateway's stdout, and the user never sees it.
 - Take the session's working directory from `agent.runtime_cwd.resolve_agent_cwd()`, not `os.getcwd()`, which is the gateway's own directory. Resolve relative paths against it.
 - Read session identity with `get_session_env("HERMES_SESSION_PLATFORM")`, `get_session_env("HERMES_SESSION_CHAT_ID")` and the other `HERMES_SESSION_*` names, not `os.environ`. Import the function itself with `from gateway.session_context import get_session_env`: that name is the public seam, and `hermes plugins validate` reports `import gateway.session_context` as a private import.
+- For "who asked this turn" (authorization, provenance), read `HERMES_SESSION_ACTOR_ID` / `HERMES_SESSION_ACTOR_NAME`. `HERMES_SESSION_USER_ID` is the session route, and it is empty in a shared chat (Telegram observe mode), so code that rebuilds a delivery target from it stays on the shared conversation.
 
 ```python
 from agent.runtime_cwd import resolve_agent_cwd

@@ -12,6 +12,7 @@ import time
 import pytest
 
 from hermes_state import SessionDB
+from hermes_state_local import API_BINDING_PREFIX
 
 
 @pytest.fixture
@@ -212,6 +213,49 @@ class TestRekeyProfileState:
         assert db._read_one(
             "SELECT session_key FROM telegram_dm_topic_bindings WHERE chat_id = ?", ("chatB",)
         )["session_key"] == "agent:keepme:telegram:dm:chatB"
+
+    def test_rekeys_api_binding_receipts(self, db):
+        """The renamed profile's API receipts move to the new name; others and every id stay."""
+        bound = {
+            "profile_id": "/homes/oldname", "session_id": "sess_api",
+            "entry": {"session_id": "sess_api",
+                      "session_key": "agent:oldname:api_server:dm:sess_api",
+                      "origin": {"platform": "api_server", "chat_id": "sess_api",
+                                 "profile": "oldname"}},
+        }
+        # Its name starts with the renamed one: only the whole ``agent:<name>:`` namespace may match.
+        bystander = {
+            "profile_id": "/homes/oldname2", "session_id": "sess_keep",
+            "entry": {"session_id": "sess_keep",
+                      "session_key": "agent:oldname2:api_server:dm:sess_keep",
+                      "origin": {"platform": "api_server", "chat_id": "sess_keep",
+                                 "profile": "oldname2"}},
+        }
+        db.set_meta(API_BINDING_PREFIX + "sess_api", json.dumps(bound))
+        db.set_meta(API_BINDING_PREFIX + "sess_keep", json.dumps(bystander))
+
+        counts = db.rekey_profile_state("oldname", "newname")
+
+        saved = json.loads(db.get_meta(API_BINDING_PREFIX + "sess_api"))
+        assert saved["entry"]["session_key"] == "agent:newname:api_server:dm:sess_api"
+        assert saved["entry"]["origin"]["profile"] == "newname"
+        # The id and the minting home are the store's, not the name's: both stay as stored.
+        assert saved["session_id"] == "sess_api"
+        assert saved["entry"]["session_id"] == "sess_api"
+        assert saved["profile_id"] == "/homes/oldname"
+        untouched = json.loads(db.get_meta(API_BINDING_PREFIX + "sess_keep"))
+        assert untouched == bystander
+        assert counts.get("api_binding_receipts") == 1
+
+    def test_leaves_unparseable_receipt_rows_alone(self, db):
+        """Control: a receipt the store cannot parse is skipped, not rewritten into garbage. The key
+        carries the real prefix, so the rekey scan does read it."""
+        db.set_meta(API_BINDING_PREFIX + "broken", "not json")
+
+        counts = db.rekey_profile_state("oldname", "newname")
+
+        assert counts.get("api_binding_receipts", 0) == 0
+        assert db.get_meta(API_BINDING_PREFIX + "broken") == "not json"
 
     def test_rekeys_legacy_ledger_without_adapter_profile_by_session_key(self, db):
         """A ledger created before adapter_profile existed is rekeyed on its namespace alone."""

@@ -194,3 +194,60 @@ async def test_reset_remains_route_scoped_with_global_default_policy(tmp_path, m
         await asyncio.gather(*tasks, return_exceptions=True)
         await viewer.close()
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persist_by_default", [False, True])
+async def test_model_picker_delivery_does_not_block_turn_admission(tmp_path, monkeypatch, persist_by_default):
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+    from gateway.session_authorities import active_authority
+    import gateway.run as gateway_run
+    import hermes_cli.model_switch_providers as model_switch_providers
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  default: old\n  provider: openrouter\n"
+        f"  persist_switch_by_default: {str(persist_by_default).lower()}\n")
+    runner, source, route, viewer, root, _ = await _compressed_chat(tmp_path)
+    entered, release = asyncio.Event(), asyncio.Event()
+    tasks = []
+    try:
+        authority = active_authority(runner)
+        other_source = SessionSource(platform=Platform.TELEGRAM, chat_id="5151", user_id="u-5151", chat_type="dm")
+        other_id = authority.register(other_source).session_id
+        other = _turn(runner, other_source, runner._session_key_for_source(other_source), other_id)
+        own = _turn(runner, source, route, "seg-1")
+
+        class PickerAdapter:
+            async def send_model_picker(self, **kwargs):
+                entered.set()
+                await release.wait()
+                return SimpleNamespace(success=True)
+
+        monkeypatch.setattr(runner, "_delivery_adapter_for", lambda source: PickerAdapter())
+        monkeypatch.setattr(model_switch_providers, "list_picker_providers", lambda **kwargs: [
+            {"provider": "openrouter", "models": [{"id": "old"}]}])
+        switch = AsyncMock(side_effect=AssertionError("Opening a picker must not switch models"))
+        monkeypatch.setattr(runner, "_perform_model_switch", switch)
+        listing = asyncio.create_task(runner._handle_model_command(MessageEvent(text="/model", source=source)))
+        tasks.append(listing)
+        await asyncio.wait_for(entered.wait(), 5)
+        other_capture = asyncio.create_task(other.capture_route_sync_fence())
+        tasks.append(other_capture)
+        await asyncio.wait_for(asyncio.shield(other_capture), 5)
+        assert other._route_sync_fence[0] == other_id
+        own_capture = asyncio.create_task(own.capture_route_sync_fence())
+        tasks.append(own_capture)
+        await asyncio.wait_for(asyncio.shield(own_capture), 5)
+        assert own._route_sync_fence[0] == root
+        switch.assert_not_awaited()
+        release.set()
+        assert await asyncio.wait_for(listing, 5) is None
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await viewer.close()
+        runner.session_store.close_all_db_handles()

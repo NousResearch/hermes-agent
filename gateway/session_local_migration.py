@@ -9,6 +9,7 @@ from dataclasses import asdict, replace
 from datetime import datetime
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
@@ -100,6 +101,11 @@ def legacy_launch_params(row):
         # an endpoint left without a provider is a custom route, never one to pair with the
         # profile's provider.
         route.setdefault('provider', 'custom')
+    if (route.get('provider', 'custom') != 'custom'
+            and urlsplit(route.get('base_url', '')).scheme not in ('', 'http', 'https')):
+        # A provider's own pseudo-address (process://, moa://) is not an endpoint the session picked,
+        # and replayed as a launch override it is refused (#142779, #147676). The provider is the route.
+        route.pop('base_url')
     if str(route.get('provider') or '').lower() == 'auto' and not (route.get('base_url') or route.get('api_mode')):
         # The saved automatic reset follows the profile route, including its endpoint and wire.
         route.pop('provider', None)

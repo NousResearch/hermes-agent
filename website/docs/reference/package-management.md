@@ -438,6 +438,10 @@ pnpm --dir ui-tui run build
 pnpm --dir apps/desktop run dev
 ```
 
+`just` lists these developer commands as recipes (`just js-install`, `just desktop`,
+`just tui`, `just check`, `just test <paths>`); each recipe calls the command shown
+here. See [Developer commands](../developer-guide/contributing.md#developer-commands).
+
 Activation provides the pnpm version `pm/lock.json` pins. An install that runs
 lifecycle scripts refuses any other pnpm, a direct or filtered `pnpm install`
 included: the root `preinstall` script requires the `pm/lock.json` pnpm and refuses
@@ -467,7 +471,7 @@ when it or any non-optional dependency it pulls in declares `engines` the curren
 or npm does not satisfy, where it would only warn outside the checkout.
 
 The website is a separate npm project: `npm ci --prefix website`, then
-`npm run build:fast --prefix website`. PM activation supplies tools, not these
+`npm run build:fast --prefix website` (`just docs-install`, `just docs-build`). PM activation supplies tools, not these
 `node_modules` directories or built assets. Native desktop builds have additional
 requirements in the [desktop build guide](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/BUILDING.md).
 

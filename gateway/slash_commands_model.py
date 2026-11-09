@@ -251,6 +251,8 @@ class GatewayModelCommandsMixin:
         self._session_model_overrides[ctx.session_key] = {
             "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
             "base_url": result.base_url, "api_mode": result.api_mode,
+            # Catalog alias names carry no credential authority; only a direct alias endpoint does.
+            "owns_credentials": result.alias_endpoint_applied,
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }
@@ -622,14 +624,17 @@ class GatewayModelCommandsMixin:
             reasoning_effort=request.reasoning_effort,
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
+        # Opening a picker publishes nothing; its selection callback takes the gate.
+        if not request.is_reset and not request.target and not request.explicit_provider:
+            ctx.read_config()
+            ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+            return await self._model_listing_reply(event, ctx, profile_home)
         # Reset only clears this route, even when ordinary picks persist by default.
         async with publication_lock(self, None if ctx.persist_global and not request.is_reset else session_key):
             ctx.read_config()
             if request.is_reset:
                 return await self._handle_model_reset(event, ctx)
             ctx.apply_override(self._session_model_overrides.get(session_key, {}))
-            if not request.target and not request.explicit_provider:
-                return await self._model_listing_reply(event, ctx, profile_home)
             result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
             if error is not None:
                 return error

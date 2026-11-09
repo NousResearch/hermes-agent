@@ -184,4 +184,3 @@ def test_compensation_holds_complete_component_through_sqlite_commit(repair_stor
     assert commits == [True]
     assert target.get_session("parent") is None
     assert target.get_session("child") is None
-

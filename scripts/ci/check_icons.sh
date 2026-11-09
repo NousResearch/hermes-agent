@@ -14,6 +14,11 @@ export HERMES_PAYLOAD_TAG='' HERMES_BUILD_COMMIT=''
 if [ "${GITHUB_ACTIONS:-}" = true ]; then
     changed() { git status --porcelain --untracked-files=all; }
 else
+    # The renderer runs isolated (-I, no PYTHONPATH), so it needs an interpreter that carries
+    # Pillow and resvg-py itself: the runtime venv, not the toolchain `python` on PATH.
+    HERMES_PYTHON="$(scripts/hermes-python -c \
+        'from pathlib import Path; from pm.environments import project_python; print(project_python(Path(".")))')"
+    export HERMES_PYTHON
     index="$(mktemp)"
     trap 'rm -f "$index"' EXIT
     cp "$(git rev-parse --git-path index)" "$index"

@@ -44,6 +44,21 @@ describe('setSessionTodos finished-list auto-clear', () => {
     expect($todosBySession.get().s1).toBeUndefined()
   })
 
+  it('does not prolong a completed live checklist when its snapshot is replayed', () => {
+    const completed = [todo('a', 'completed')]
+    setSessionTodos('s1', [todo('a', 'in_progress')], 1)
+    setSessionTodos('s1', completed, 2)
+
+    for (let replay = 0; replay < 3; replay += 1) {
+      vi.advanceTimersByTime(1_000)
+      restoreSessionTodosFromSnapshot('s1', { revision: 2, todos: [todo('a', 'completed')] }, true)
+    }
+
+    vi.advanceTimersByTime(1_100)
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($retainedTodosBySession.get().s1).toEqual(completed)
+  })
+
   it('clears finished lists for session ids that collide with object prototype keys', () => {
     setSessionTodos('toString', [todo('a', 'completed')])
 

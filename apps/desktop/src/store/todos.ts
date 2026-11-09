@@ -136,8 +136,24 @@ export function setSessionTodos(sid: string, todos: TodoItem[], revision?: null 
   // already settled when it arrives (resume, hydration, a same-revision re-read)
   // is history: it stays in the retained disclosure instead of flashing the
   // expanded live panel open and closed again.
-  if (!todoListActive(todos) && !hasSessionTodos($todosBySession.get(), sid)) {
-    return
+  if (!todoListActive(todos)) {
+    const live = getSessionTodos($todosBySession.get(), sid)
+    // Replayed terminal snapshots must not restart an existing linger.
+    const sameFinished =
+      live &&
+      !todoListActive(live) &&
+      live.length === todos.length &&
+      todos.every(
+        (item, index) =>
+          item.id === live[index]?.id &&
+          item.content === live[index]?.content &&
+          item.status === live[index]?.status &&
+          item.parent === live[index]?.parent
+      )
+
+    if (!live || sameFinished) {
+      return
+    }
   }
 
   clearTimers.cancel(sid)

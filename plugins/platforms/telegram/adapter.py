@@ -6615,9 +6615,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     @staticmethod
     def _note_instead_of_media(event: MessageEvent, text: str) -> bool:
-        """Replace the event text with a user-facing note; False lets the caller's tail dispatch it
-        (through the album queue for an album item, so the album stays one turn)."""
-        event.text = text
+        """Append a user-facing note to the event text (the caption survives); False lets the caller's tail
+        dispatch it (through the album queue for an album item, so the album stays one turn)."""
+        event.text = f"{event.text}\n\n{text}" if event.text else text
         return False
 
     @staticmethod

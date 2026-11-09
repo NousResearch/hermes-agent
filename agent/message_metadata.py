@@ -7,7 +7,8 @@ from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
 
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from session_rules.turns import (
-    index_tool_call_uids, message_uid_or_none, mint_uid, resolve_tool_call_uid, withheld_prompt_text,
+    _display_metadata_str, index_tool_call_uids, message_uid_or_none, mint_uid, resolve_tool_call_uid,
+    withheld_prompt_text,
 )
 
 
@@ -63,13 +64,6 @@ def _set_display_metadata_key(message: MutableMapping[str, Any], key: str, value
     """Set *key* in *message*'s ``display_metadata`` as a new dict (a non-dict value starts empty)."""
     metadata = message.get("display_metadata")
     message["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), key: value}
-
-
-def _display_metadata_str(message: Any, key: str) -> Optional[str]:
-    """*message*'s ``display_metadata[key]`` when it is a string, else None."""
-    metadata = message.get("display_metadata") if isinstance(message, Mapping) else None
-    value = metadata.get(key) if isinstance(metadata, Mapping) else None
-    return value if isinstance(value, str) else None
 
 
 def data_use_requirement(messages: Any) -> frozenset[str]:

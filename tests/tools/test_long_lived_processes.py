@@ -125,6 +125,30 @@ def test_a_reused_name_reaps_the_old_records_children_and_pipes(tmp_path):
                 os.killpg(child, signal.SIGKILL)
 
 
+def test_a_failed_respawn_keeps_the_stale_record():
+    """A respawn that fails (nonexistent executable) must keep the exited leader's record: its
+    pipes and children are still the environment's to stop, and dropping the record would orphan
+    both with nothing left to reap."""
+    env = _HostEnv()
+    env.start_process("svc", ["true"])
+    old = env._long_lived()["svc"]
+    assert old.stdin is not None and old.stdout is not None
+    old.wait(timeout=10)  # the leader exits; its record is now a leftover, not a running process
+    try:
+        with pytest.raises(FileNotFoundError):
+            env.start_process("svc", ["/nonexistent-hermes-review-executable"])
+        assert env._long_lived().get("svc") is old, \
+            "a failed spawn lost the stale record without reaping it"
+        assert not old.stdin.closed, "a failed spawn must not close the stale record's pipes behind its back"
+        env.stop_all_processes()
+        assert old.stdin.closed and old.stdout.closed, "stop must still reap the stale record"
+    finally:
+        if not old.stdin.closed:
+            old.stdin.close()
+        if not old.stdout.closed:
+            old.stdout.close()
+
+
 def test_stopping_a_backend_process_stops_the_service_inside_the_sandbox(tmp_path):
     env = _SandboxLikeEnv(tmp_path)
     env.start_process("svc", ["sleep", "60"])

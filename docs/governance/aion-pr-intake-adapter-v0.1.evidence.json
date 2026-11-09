@@ -1,0 +1,26 @@
+{
+  "status": "STATIC_SURFACE_PACK_READY_FOR_PR_AUDIT",
+  "formal_record": "https://github.com/kiddhu/aion-governance/issues/448",
+  "standard_anchor": "https://github.com/kiddhu/aion-governance/pull/447",
+  "semantics": {
+    "label_and_pr_metadata": "intake_mirror_only",
+    "execution_trigger": "Hermes Kanban task.assignee + dispatcher pickup evidence",
+    "github_actions": "CI/checkers only, no business-flow dispatch"
+  },
+  "fixture_coverage": [
+    "label-only execution claim",
+    "missing assignee",
+    "missing dispatcher pickup",
+    "missing audit verdict",
+    "forbidden runtime flag",
+    "full-unattended overclaim"
+  ],
+  "risk_boundary": {
+    "runtime_gateway_cron_required_mode_live_scanner_source_writeback": false,
+    "production_payment_database_webhook_secret_customer_data": false,
+    "external_executor_real_run": false,
+    "issue_close_or_merge": false,
+    "full_unattended_ready_declared": false
+  },
+  "audit_target": "bafuxunan / 八府巡按"
+}

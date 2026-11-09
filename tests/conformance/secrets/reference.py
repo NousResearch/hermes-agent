@@ -35,12 +35,14 @@ def _owner_key(owner: Owner) -> tuple[str, str]:
 class MemorySecretStore(SecretStore):
     """Every level, keyed by what the bound scope names. Serves one tenant, and no pin at all.
 
-    As the port's contract requires, a failed write holds no value on any error path: the
-    whole write runs in one helper frame that binds the value (or record), and any failure
-    propagates as a fresh error raised outside the except block, with the value deleted
-    from this frame's own bindings and both chained-exception slots cleared
-    (:func:`hermes_secret_port.fresh_write_error`) — so the error's traceback holds only
-    this frame and the caller's, and the frame that held the value is gone.
+    As the port's contract requires, a failed write holds no value on any error path: every
+    check and validation that can fail (the placement checks, the fixture's pinned-key write
+    lock) runs before the value (or record) is bound in any frame below the write method, and
+    the write itself is the only code that binds it. On any failure the method deletes its own
+    value binding and raises outside the except block with the chain slots cleared: the
+    port's own refusal as it raised it, and any other failure as the fresh error
+    (:func:`hermes_secret_port.fresh_write_error`) — so the error's traceback holds only this
+    frame and the caller's, and the frame that held the value is gone.
     """
 
     levels = frozenset(LEVELS)
@@ -89,26 +91,37 @@ class MemorySecretStore(SecretStore):
         return "tenant", None
 
     def set(self, name: str, value: str, *, level: str) -> None:
-        failure = None
+        refusal = None
+        where, key = None, None
         try:
-            self._write_secret(name, value, level)
-        except BaseException as exc:  # health: allow BLE001 -- only the fresh error below survives
-            failure = fresh_write_error(exc)
+            # Every check and validation that can fail — the placement (the level, the pin and
+            # the administration right), the fixture's pinned-key write lock — runs before the
+            # value is bound in any frame below this one, each keeping its own message.
+            where, key = self._place(level)
+            if name in self.provider.locked_keys:
+                # The managed-key write lock: an administrator pinned this key, and the store
+                # refuses changing it with a plain error, not the store's refusal.
+                raise ValueError("the key is pinned by an administrator; this store refuses to change it")
+        except BaseException as exc:  # health: allow BLE001 -- the port's own refusal, re-raised below
+            refusal = exc
+        failure = None
+        if refusal is None:
+            try:
+                self._write_secret(where, key, name, value)
+            except BaseException as exc:  # health: allow BLE001 -- the fresh error below is all that survives
+                failure = fresh_write_error(exc)
         del value
+        if refusal is not None:
+            raise refusal
         if failure is not None:
             failure.__context__ = None
             failure.__cause__ = None
             raise failure
 
-    def _write_secret(self, name: str, value: str, level: str) -> None:
-        """The whole write in one helper frame, so no frame binding the value survives a
-        failure (see :meth:`set`): the placement checks (every refusal and validation
-        condition) first, then the fixture's injected plain failures, then the write."""
-        where, key = self._place(level)
-        if name in self.provider.locked_keys:
-            # The fixture's managed-key write lock: an administrator pinned this key, and
-            # the store refuses changing it with a plain error, not the store's refusal.
-            raise ValueError("the key is pinned by an administrator; this store refuses to change it")
+    def _write_secret(self, where, key, name: str, value: str) -> None:
+        """The write itself — the only code that binds the value (see :meth:`set`), with the
+        fixture's injected mid-write failure ahead of it. *where* and *key* are the placement
+        the checks already resolved (``None`` only when the write never runs)."""
         if self.provider.fail_writes:
             # The fixture's injected mid-write failure: the caller's value is already bound
             # in this frame, and must not outlive the error in any frame below the caller.
@@ -128,20 +141,31 @@ class MemorySecretStore(SecretStore):
         return None
 
     def set_auth(self, provider: str, record: dict[str, Any]) -> None:
-        failure = None
+        refusal = None
+        key = None
         try:
-            self._write_auth_record(provider, record)
-        except BaseException as exc:  # health: allow BLE001 -- only the fresh error below survives
-            failure = fresh_write_error(exc)
+            # The placement check (the pin and the administration right) runs before the
+            # record is bound in any frame below this one, keeping its own message.
+            key = self._pin(administering=True).agent
+        except BaseException as exc:  # health: allow BLE001 -- the port's own refusal, re-raised below
+            refusal = exc
+        failure = None
+        if refusal is None:
+            try:
+                self._write_auth_record(key, provider, record)
+            except BaseException as exc:  # health: allow BLE001 -- the fresh error below is all that survives
+                failure = fresh_write_error(exc)
         del record
+        if refusal is not None:
+            raise refusal
         if failure is not None:
             failure.__context__ = None
             failure.__cause__ = None
             raise failure
 
-    def _write_auth_record(self, provider: str, record: dict[str, Any]) -> None:
-        """As :meth:`_write_secret`: the record's whole write in one helper frame."""
-        key = self._pin(administering=True).agent
+    def _write_auth_record(self, key, provider: str, record: dict[str, Any]) -> None:
+        """The write itself — the only code that binds the record (see :meth:`set_auth`), with
+        the fixture's injected mid-write failure ahead of it."""
         if self.provider.fail_writes:
             # As _write_secret: the fixture's injected mid-write failure, record bound here.
             raise OSError("the store's write path failed part-way through")

@@ -28,11 +28,16 @@ secret's value — nor is one still bound in any frame such an error's traceback
 not the raising implementation's own frames, not the frames of any helper the failed write
 handed it to, and not the frames of any exception chained to the error as context or cause:
 some error reporters render traceback frame locals. The design is structural, not a cleanup
-pass — an implementation never mutates any frame it does not own. ``set`` and ``set_auth`` run
-the whole write in one inner helper frame that binds the value (or record), and on ANY failure
-they leave the except block, delete their own value binding and raise a fresh error of the
-port's own types OUTSIDE the except block with both chained-exception slots cleared
-(:func:`fresh_write_error` builds it): the fresh error's traceback holds only the raising
+pass — an implementation never mutates any frame it does not own. Every load and validation
+that can fail — the pin, the level, the write lock, the store a record's write merges into —
+runs BEFORE the value (or record) is bound in any frame below the port's own write method, and
+the write itself, the only code that binds the value, calls nothing that logs with the live
+exception (``exc_info``): another component's log handler may keep the record and render its
+traceback frames later. The port's own refusals keep the messages the port wrote for them, and
+any other failure of the write — whatever the backend or its writers raised, refusal-typed or
+not — is re-raised as a fresh :class:`SecretWriteFailed` the port itself builds, outside the
+except block, after deleting its own value binding and with both chained-exception slots
+cleared (:func:`fresh_write_error`): the fresh error's traceback holds only the raising
 method's frame and the caller's frames above it, every frame below that held the value is
 gone with the original failure, and the caller's own frames — a caller retrying the write
 from inside an ``except`` handler included — are never touched.
@@ -56,6 +61,7 @@ never a fallback to the local files.
 
 from __future__ import annotations
 
+import errno
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
@@ -82,47 +88,40 @@ class SecretLevelRefused(PermissionError):
 
 
 class SecretWriteFailed(OSError):
-    """A credential write that failed part-way through the backend's own write path — a
-    plain I/O failure, re-made fresh with only the details the port itself authored
-    (:func:`fresh_write_error`): never the value or record the caller asked to store, and
-    no frame that held it survives on this error's chain."""
+    """A credential write that failed part-way through the backend's own write path — a plain
+    I/O failure, a validation, even an error the backend typed as one of the store's own
+    refusals — re-made fresh (:func:`fresh_write_error`) with only the details the port itself
+    authored: the failing exception's class name and errno number, never its own text, never
+    the value or record the caller asked to store, and no frame that held it survives on this
+    error's chain."""
 
 
 def fresh_write_error(exc: BaseException) -> BaseException:
     """The fresh, value-free error a failed credential write raises in place of *exc*.
 
-    Only details the port itself authored ride along: the exception's class, and a message
-    this function writes — for an OSError its errno, strerror and filename (a path is not
-    a secret), for one of the store's own refusals the refusal's own message (the checks
-    that raise them read the pin and the level, never the value, and the contract already
-    forbids a refusal naming one). Anything else keeps its type with a message of the
-    port's, never *exc*'s own: the code that failed wrote it, and nothing vouches it free
-    of the write's value. An OSError becomes :class:`SecretWriteFailed`.
+    Only what this port itself wrote rides along: a message of the port's plus the failing
+    exception's class name and, for an OSError, its errno number with the ``errno`` module's
+    name for it. Never *exc*'s own message, ``strerror`` or ``filename``: the code that failed —
+    a backend, a writer, a plugin — wrote those, and nothing vouches them free of the write's
+    value; an exception typed as one of the store's own refusals is no different, since the
+    port did not raise it. The errno number names the failure exactly as well as the failing
+    code's own text, with nothing the failing code controlled, so every failure of the write
+    becomes a :class:`SecretWriteFailed`.
 
-    Raise what this returns OUTSIDE the except block, after ``del``-ing the value (or
-    record) binding of the write's own frame, with both chained-exception slots cleared
-    first: the fresh error's traceback then holds only the raising ``set``/``set_auth``
-    frame and the caller's frames above it — every lower frame that held the value is gone
-    with the original failure, and no chain of that failure survives. (Python itself still
-    chains the CALLER's own active exception to any raise made inside its handler, which
-    the cleared cause suppresses from display; that chain is the caller's, and the port
-    never touches it.)
+    Raise what this returns OUTSIDE the except block, after ``del``-ing the value (or record)
+    binding of the write's own frame, with both chained-exception slots cleared first: the
+    fresh error's traceback then holds only the raising ``set``/``set_auth`` frame and the
+    caller's frames above it — every lower frame that held the value is gone with the original
+    failure, and no chain of that failure survives. (Python itself still chains the CALLER's
+    own active exception to any raise made inside its handler, which the cleared cause
+    suppresses from display; that chain is the caller's, and the port never touches it.)
     """
-    if isinstance(exc, (SecretPinRefused, SecretAdminRefused, SecretLevelRefused)):
-        return type(exc)(str(exc))
-    if isinstance(exc, OSError):
-        detail = type(exc).__name__
-        if exc.errno is not None:
-            detail += f", errno {exc.errno}"
-        if exc.strerror:
-            detail += f" ({exc.strerror})"
-        if exc.filename:
-            detail += f", file {exc.filename}"
-        return SecretWriteFailed(f"the credential write failed: {detail}")
-    try:
-        return type(exc)(f"the credential write failed: {type(exc).__name__}")
-    except Exception:  # health: allow BLE001 -- a signature this port cannot call falls back to its own type
-        return SecretWriteFailed(f"the credential write failed: {type(exc).__name__}")
+    detail = type(exc).__name__
+    if isinstance(exc, OSError) and exc.errno is not None:
+        detail += f", errno {exc.errno}"
+        if exc.errno in errno.errorcode:
+            detail += f" ({errno.errorcode[exc.errno]})"
+    return SecretWriteFailed(f"the credential write failed: {detail}")
 
 
 class SecretStore(ABC):
@@ -154,14 +153,17 @@ class SecretStore(ABC):
         failure — propagates with *value* bound in no frame the error's traceback passes
         through, and none of any exception chained to it, because some error reporters render
         traceback frame locals. The implementation is structural about it, never a cleanup
-        pass over frames it does not own: run the whole write in one inner helper frame that
-        binds *value* (every refusal and validation condition checked before it is passed to
-        any writer), and on ANY failure leave the except block, ``del`` the method's own
-        *value* binding and raise what :func:`fresh_write_error` built OUTSIDE the except
-        block with both chained-exception slots cleared. The fresh error's traceback then
-        holds only the ``set`` frame upward — no lower frame that held the value survives, and
-        the caller's own frames (a caller retrying from inside an ``except`` handler included)
-        are never touched."""
+        pass over frames it does not own: every load and validation that can fail runs before
+        *value* is bound in any frame below this method, the write itself — the only code that
+        binds *value* — calls nothing that logs with the live exception (a log handler may keep
+        the record and render its frames later), and on ANY failure the method ``del``-etes its
+        own *value* binding and raises OUTSIDE the except block: the port's own refusal as it
+        raised it, and everything a backend or writer raised — refusal-typed or not — as the
+        fresh :class:`SecretWriteFailed` :func:`fresh_write_error` built, with both
+        chained-exception slots cleared. The fresh error's traceback then holds only the
+        ``set`` frame upward — no lower frame that held the value survives, and the caller's
+        own frames (a caller retrying from inside an ``except`` handler included) are never
+        touched."""
 
     @abstractmethod
     def delete(self, name: str, *, level: str) -> bool:
@@ -179,10 +181,13 @@ class SecretStore(ABC):
         """Write *provider*'s auth *record* at the agent level (where ``auth.json`` keeps it
         today). Administration, refused like :meth:`set` — and like it, any error the write
         raises propagates with *record* bound in no frame the error's traceback passes
-        through, none of any exception chained to it: the same structural rule (run the whole
-        write in one inner helper frame, ``del`` the method's own *record* binding, raise
-        :func:`fresh_write_error`'s result outside the except block with the chain slots
-        cleared), and never a frame the store does not own touched."""
+        through, none of any exception chained to it: the same structural rule (the store
+        the write merges into loads and parses before *record* is bound in any frame below
+        this method, the merge and the atomic replace are the only code that binds *record*
+        and call nothing that logs with the live exception, the method ``del``-etes its own
+        *record* binding and raises the port's own refusal as it raised it and everything
+        else as :func:`fresh_write_error`'s fresh result outside the except block with the
+        chain slots cleared), and never a frame the store does not own touched."""
 
 
 class SecretStoreProvider(ABC):

@@ -19,7 +19,14 @@ nulls the caller's live value binding (a caller retrying from an error handler f
 variable gone), ``local_failure_keeps_the_escaped_secret`` clears the raw value but keeps the
 serialized, escaped form a writer quoted it into, and
 ``local_failure_keeps_the_original_failure_as_context`` raises a fresh error but chains the
-original failure to it, frames and all. Against the
+original failure to it, frames and all. Against the fresh error's own text:
+``local_keeps_strerror_in_the_fresh_error`` copies the failing writer's own message, strerror
+and filename into the error the caller reads, and
+``local_logs_exc_info_while_holding_the_value`` logs the failure with the live exception —
+exc_info and all — from a frame that still binds the value, so a log handler that keeps the
+record renders the plaintext from it later; ``local_loads_the_auth_store_after_binding_the_record``
+binds the record in a helper frame that then loads and parses the store, putting the record in
+every frame a load failure — logged with its live exception — unwinds. Against the
 leveled reference backend: ``reference_reads_ignore_tenant`` drops the tenant half of the pin,
 ``reference_writes_skip_the_administration_check`` drops the administration check,
 ``reference_owner_wide_resolves_everywhere`` resolves another owner's entries,
@@ -305,6 +312,77 @@ def local_failure_keeps_the_original_failure_as_context(monkeypatch):
     monkeypatch.setattr(LocalSecretStore, "set", set)
 
 
+def local_keeps_strerror_in_the_fresh_error(monkeypatch):
+    """The fresh error copies the failing writer's own text — an OSError's strerror and
+    filename, and any other failure's own message — so a writer that names the value it saw
+    puts it in the error the caller reads."""
+    from hermes_secret_port import SecretWriteFailed
+    from hermes_secret_port_local import LocalSecretStore
+
+    def fresh_write_error(exc):
+        if isinstance(exc, OSError):
+            detail = type(exc).__name__
+            if exc.errno is not None:
+                detail += f", errno {exc.errno}"
+            if exc.strerror:
+                detail += f" ({exc.strerror})"
+            if exc.filename:
+                detail += f", file {exc.filename}"
+            return SecretWriteFailed(f"the credential write failed: {detail}")
+        try:
+            return type(exc)(str(exc))
+        except Exception:  # health: allow BLE001 -- a signature this mutant cannot call falls back
+            return SecretWriteFailed(f"the credential write failed: {type(exc).__name__}")
+
+    monkeypatch.setattr("hermes_secret_port_local.fresh_write_error", fresh_write_error)
+
+
+def local_logs_exc_info_while_holding_the_value(monkeypatch):
+    """The failed write logs the failure — exc_info and all — from a frame that still binds the
+    value, so a log handler that keeps the record renders the plaintext from that frame's
+    locals later."""
+    from hermes_secret_port_local import LocalSecretStore
+    original = LocalSecretStore.set
+
+    def set(self, name, value, *, level):
+        try:
+            return original(self, name, value, level=level)
+        except BaseException:  # health: allow BLE001 -- re-raised below
+            logging.getLogger(__name__).error("the credential write failed", exc_info=True)
+            raise
+
+    monkeypatch.setattr(LocalSecretStore, "set", set)
+
+
+def local_loads_the_auth_store_after_binding_the_record(monkeypatch):
+    """The record is bound in a helper frame that then loads and parses the store: a load
+    failure is logged by today's loader with the live exception, whose traceback unwinds that
+    record-holding frame — a log handler that keeps the record renders the plaintext from it."""
+    from hermes_secret_port import fresh_write_error
+    from hermes_secret_port_local import LocalSecretStore
+
+    def _write(self, provider, record):
+        from hermes_cli import auth
+        with auth._auth_store_lock():
+            store = auth._load_auth_store()  # the record is bound in this very frame
+            auth._store_provider_state(store, provider, dict(record), set_active=False)
+            auth._save_auth_store(store)
+
+    def set_auth(self, provider, record):
+        failure = None
+        try:
+            _write(self, provider, record)
+        except BaseException as exc:  # health: allow BLE001 -- the fresh error below is all that survives
+            failure = fresh_write_error(exc)
+        del record
+        if failure is not None:
+            failure.__context__ = None
+            failure.__cause__ = None
+            raise failure
+
+    monkeypatch.setattr(LocalSecretStore, "set_auth", set_auth)
+
+
 def reference_reads_ignore_tenant(monkeypatch):
     """The reference pin keeps the agent half but drops the tenant: another tenant naming the
     agent reads its secrets."""
@@ -469,6 +547,17 @@ MUTANTS = {
     "local_failure_keeps_the_original_failure_as_context": (
         local_failure_keeps_the_original_failure_as_context,
         _local("test_no_failure_traceback_frame_holds_the_value_or_record")),
+    "local_keeps_strerror_in_the_fresh_error": (
+        local_keeps_strerror_in_the_fresh_error,
+        "tests/conformance/secrets/test_local.py::test_a_failed_writes_fresh_error_names_none_of_the_writers_text[strerror]"),
+    "local_logs_exc_info_while_holding_the_value": (
+        local_logs_exc_info_while_holding_the_value,
+        "tests/conformance/secrets/test_local.py::"
+        "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set]"),
+    "local_loads_the_auth_store_after_binding_the_record": (
+        local_loads_the_auth_store_after_binding_the_record,
+        "tests/conformance/secrets/test_local.py::"
+        "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set_auth]"),
     "reference_reads_ignore_tenant": (
         reference_reads_ignore_tenant,
         _reference("TestReferencePinning::test_every_read_is_refused_for_any_pin_but_its_agents[get]")),

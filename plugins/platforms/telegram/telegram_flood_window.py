@@ -75,7 +75,8 @@ async def delete_message(adapter: Any, chat_id: str, message_id: str) -> bool:
     """``TelegramAdapter.delete_message`` body: ``deleteMessage`` once the chat's flood window is closed."""
     from plugins.platforms.telegram.adapter import _redact_telegram_error_text, normalize_telegram_chat_id
     if not adapter._bot:
-        return False
+        live = adapter._replacement_telegram_adapter()
+        return await live.delete_message(chat_id, message_id) if live is not None else False
 
     async def _delete() -> bool:
         try:

@@ -1,9 +1,9 @@
 name: plur1bus
 title: PLUR1BUS Memory Engine
 repo: https://github.com/Cyb3rb1ade/openclaw-plur1bus-memory
-sha: a0361bacca5d7792bb369f1fdd4535b483d46a4f
+sha: 6e8a4f867ab728740a2406b02aa2ce9b20a063ed
 subdir: catalog/plur1bus
-version: "7.19.2-hermes.3"
+version: "7.19.3-hermes.0"
 requires_hermes: ">=0.23.0"
 description: >-
   Profile-scoped long-term memory and Langzeitgedächtnis for Hermes:
@@ -18,11 +18,10 @@ description: >-
 maintainer: Cyb3rb1ade
 tier: community
 category: memory
-docs_url: https://github.com/Cyb3rb1ade/openclaw-plur1bus-memory/blob/a0361bacca5d7792bb369f1fdd4535b483d46a4f/catalog/plur1bus/README.md
+docs_url: https://github.com/Cyb3rb1ade/openclaw-plur1bus-memory/blob/6e8a4f867ab728740a2406b02aa2ce9b20a063ed/catalog/plur1bus/README.md
 platforms: [linux, macos, windows]
 known_issues:
   - Enable PLUR1BUS and select it as the persistent memory provider in each intended profile after installation.
-  - The Desktop settings page currently uses German labels.
   - On Windows ARM64 use the separately published native installer; the catalog source contains no bundled native wheels.
   - On macOS use Apple Silicon. The standalone installer includes a workaround for the Hermes 0.23.0 filesystem synchronization issue.
 capabilities:

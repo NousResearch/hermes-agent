@@ -293,3 +293,14 @@ def test_the_cli_fails_on_a_parse_error_and_on_check_with_pending_changes(repo):
     _git(repo, "add", "broken.py")
     result = _cli(repo)
     assert result.returncode == 1 and "failed=1" in result.stdout
+
+
+def test_the_cli_rewrites_extensionless_files_with_a_python_shebang_only(repo):
+    _write(repo, {"hermes": "#!/usr/bin/env python3\nimport watchdog\nwatchdog.arm()\n",
+                  "launcher": "#!/bin/sh\nexec python -m tui_gateway.entry import watchdog\n"})
+    _git(repo, "add", "-A")
+    result = _cli(repo)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (repo / "hermes").read_text() == (
+        "#!/usr/bin/env python3\nimport hermes_agent.watchdog\nhermes_agent.watchdog.arm()\n")
+    assert (repo / "launcher").read_text().startswith("#!/bin/sh\nexec python -m tui_gateway.entry")

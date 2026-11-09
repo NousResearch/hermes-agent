@@ -33,6 +33,7 @@ DYNAMIC, STRING_REF, BY_PATH, FILE_MATH, OTHER = (
 _DASH_M = re.compile(r"(?<![\w-])(-m(?:\s+|[\"'],\s*[\"']))([A-Za-z_][\w.]*)")
 _CODE_IMPORT = re.compile(r"(?<![\w.])((?:from|import)\s+)([A-Za-z_][\w.]*)(?=\s+import\b|\s*(?:$|[\n,;)]|\\n| as\b))",
                           re.MULTILINE)
+_PYTHON_SHEBANG = re.compile(r"#!.*\bpython")
 _SYS_MODULES = {"sys.modules", "modules"}
 _SYS_MODULES_METHODS = {"pop", "get", "setdefault"}
 _STRICT_REASON = "left for the strict compat finder, which fails the test that runs it"
@@ -471,11 +472,13 @@ def _candidates(root: Path, paths: list[str], plan: Plan) -> list[str]:
     needle = re.compile("|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)))
     out = []
     for path in listed:
-        if not path.endswith(".py") or PurePosixPath(path).parts[-2:] == ("compat", "moves.py"):
+        if PurePosixPath(path).parts[-2:] == ("compat", "moves.py"):
             continue
         file = root / path
-        if file.is_file() and (path in plan.moved_files or needle.search(file.read_text(encoding="utf-8-sig",
-                                                                                        errors="replace"))):
+        if not file.is_file() or (PurePosixPath(path).suffix not in ("", ".py")):
+            continue
+        text = file.read_text(encoding="utf-8-sig", errors="replace")
+        if (path.endswith(".py") or _PYTHON_SHEBANG.match(text)) and (path in plan.moved_files or needle.search(text)):
             out.append(path)
     return out
 

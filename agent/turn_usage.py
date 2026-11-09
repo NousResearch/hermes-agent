@@ -240,6 +240,8 @@ def record_response_usage(
     if cost_result.amount_usd is not None:
         _cost_delta = float(cost_result.amount_usd)
         agent.session_estimated_cost_usd += _cost_delta
+    # Per-turn cost for the runtime footer's `cost` usage mode (session total lives above).
+    agent.last_turn_cost_usd = _cost_delta or 0.0
     if _moa_ref_cost is not None:
         try:
             _moa_cost = float(_moa_ref_cost)

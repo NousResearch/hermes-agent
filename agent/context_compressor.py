@@ -2694,7 +2694,7 @@ class ContextCompressor(
         self.max_summary_tokens = min(int(context_length * 0.05), _SUMMARY_TOKENS_CEILING)
         # Old usage cannot price a new model. Clear it without arming the post-compaction
         # latch: the next response supplies usage or enables the usage-less fallback.
-        self.last_prompt_tokens = self.last_completion_tokens = self.last_total_tokens = 0
+        self.last_prompt_tokens = self.last_completion_tokens = self.last_total_tokens = self.last_cache_read_tokens = 0
         self._reset_real_usage_pairing()
         # Strikes were judged against the previous threshold; void them durably too.
         self._record_ineffective_compression_verdict(0)
@@ -2881,7 +2881,7 @@ class ContextCompressor(
         # construction stays non-blocking on every path (not just quiet).
         self._log_init_summary = not quiet_mode
         self._context_probed = False  # True after a step-down from context error
-        self.last_prompt_tokens = self.last_completion_tokens = 0
+        self.last_prompt_tokens = self.last_completion_tokens = self.last_cache_read_tokens = 0
         self._reset_real_usage_pairing()
         self.summary_model = summary_model_override or ""
         self._session_db: Any = None
@@ -2897,6 +2897,7 @@ class ContextCompressor(
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
+        self.last_cache_read_tokens = usage.get("cache_read_tokens", 0)
         self._apply_real_prompt_verdict()
         # Consume the flag once real usage arrives even without prompt_tokens, so it can't stay armed.
         self._verify_compaction_cleared_threshold = self.awaiting_real_usage_after_compression = False

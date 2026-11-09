@@ -1391,8 +1391,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         comp = agent.context_compressor if has_comp else None
         usage = {
             "last_prompt_tokens": getattr(comp, "last_prompt_tokens", 0) if has_comp else 0,
+            "last_completion_tokens": getattr(comp, "last_completion_tokens", 0) if has_comp else 0,
+            "last_cache_read_tokens": getattr(comp, "last_cache_read_tokens", 0) if has_comp else 0,
             "input_tokens": getattr(agent, "session_prompt_tokens", 0) if has_comp else 0,
             "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,
+            "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0) if has_comp else 0,
+            "last_cost_usd": getattr(agent, "last_turn_cost_usd", None) if agent else None,
             "model": getattr(agent, "model", None) if agent else None,
             # Most failed results name no provider; the error card's sign-in / update-key action needs it.
             "provider": getattr(agent, "provider", None) if agent else None,

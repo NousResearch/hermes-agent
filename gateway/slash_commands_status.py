@@ -9,7 +9,7 @@ import hashlib
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Optional
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
@@ -563,7 +563,89 @@ class GatewayStatusCommandsMixin:
         except Exception:
             return []
 
-    async def _handle_usage_command(self, event: MessageEvent) -> str:
+    _USAGE_MODES = ("off", "tokens", "full", "cost")
+
+    async def _handle_usage_mode_command(self, event: MessageEvent, mode: str) -> Optional[str]:
+        """Set (or pick) the runtime footer's `usage` verbosity.
+
+        ``/usage mode`` opens a one-tap picker; ``/usage off|tokens|full|cost`` applies directly.
+        Writes ``display.platforms.<p>.runtime_footer.usage_mode`` (and enables the footer) so the
+        next reply's footer reflects the choice.
+        """
+        from gateway.run import _gateway_config_home, _load_gateway_config, _platform_config_key
+        from gateway.runtime_footer import resolve_footer_config
+        config_path = _gateway_config_home() / "config.yaml"
+        platform_key = _platform_config_key(event.source.platform)
+        effective = resolve_footer_config(_load_gateway_config(), platform_key)
+        current = str(effective.get("usage_mode") or "full")
+        _fields = [str(f) for f in (effective.get("fields") or [])]
+        _model_shown = "model" in _fields
+
+        if mode == "mode":
+            async def _on_choice(_chat_id: str, value: str) -> str:
+                return self._apply_usage_mode(config_path, platform_key, value)
+            sender = getattr(self, "_try_send_choice_picker", None)
+            sent = False
+            if callable(sender):
+                choices = [{"value": m, "label": m, "is_current": m == current} for m in self._USAGE_MODES]
+                choices.append({"value": "model_hide", "label": "model: hide", "is_current": not _model_shown})
+                choices.append({"value": "model_show", "label": "model: show", "is_current": _model_shown})
+                sent = await sender(
+                    event, self._session_key_for_source(event.source),
+                    title=f"Usage display (current: {current})",
+                    choices=choices,
+                    on_choice_selected=_on_choice,
+                )
+            if sent:
+                return None
+            return ("Usage display: " + " | ".join(self._USAGE_MODES)
+                    + " | model_hide | model_show"
+                    + f"  (current: {current}, model: {'shown' if _model_shown else 'hidden'})")
+        return self._apply_usage_mode(config_path, platform_key, mode)
+
+    def _apply_usage_mode(self, config_path, platform_key: str, mode: str) -> str:
+        """Persist a `/usage` display mode and return a confirmation with a live preview."""
+        from gateway.run import _load_gateway_config
+        from gateway.slash_commands import _write_raw_config_leaf
+        from gateway.runtime_footer import format_runtime_footer, resolve_footer_config
+        mode = (mode or "").strip().lower()
+        if mode in {"model", "model_hide", "model_show"}:
+            # Show or hide the model segment in the footer's field list.
+            fields = [str(f) for f in (resolve_footer_config(_load_gateway_config(), platform_key).get("fields") or [])]
+            want_shown = mode == "model_show" or (mode == "model" and "model" not in fields)
+            if want_shown:
+                if "model" not in fields:
+                    fields = ["model"] + fields
+                label = "shown"
+            else:
+                fields = [f for f in fields if f != "model"]
+                label = "hidden"
+            if not fields:
+                fields = ["usage"]
+            try:
+                _write_raw_config_leaf(config_path, ("display", "platforms", platform_key, "runtime_footer", "fields"), fields)
+                _write_raw_config_leaf(config_path, ("display", "platforms", platform_key, "runtime_footer", "enabled"), True)
+            except Exception as e:
+                logger.warning("Failed to save model visibility: %s", e)
+                return f"Could not save model visibility: {e}"
+            return f"Model in footer: **{label}**."
+        if mode not in self._USAGE_MODES:
+            return f"Unknown usage mode `{mode}` — use off, tokens, full or cost."
+        try:
+            _write_raw_config_leaf(config_path, ("display", "platforms", platform_key, "runtime_footer", "usage_mode"), mode)
+            _write_raw_config_leaf(config_path, ("display", "platforms", platform_key, "runtime_footer", "enabled"), True)
+        except Exception as e:
+            logger.warning("Failed to save usage mode: %s", e)
+            return f"Could not save usage mode: {e}"
+        preview = format_runtime_footer(
+            model="model", context_tokens=189_000, context_length=1_000_000,
+            in_tokens=189_000, out_tokens=4_600, cached_tokens=2_200_000, cost_usd=0.0042,
+            usage_mode=mode, fields=["usage"],
+        )
+        detail = f"\nPreview: {preview}" if preview else ""
+        return f"Usage display set to **{mode}**.{detail}"
+
+    async def _handle_usage_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /usage -- token usage for the current session (live or cached agent) plus
         account/credit blocks; ``/usage reset [--force]`` redeems a banked Codex reset credit."""
         source = event.source
@@ -571,6 +653,16 @@ class GatewayStatusCommandsMixin:
         raw_args = event.get_command_args().strip()
         args = [a.lower() for a in raw_args.split()] if raw_args else []
         wants_reset = bool(args) and args[0] == "reset"
+        # Display modes: off | tokens | full | cost.
+        if args and not wants_reset and args[0] in {"off", "tokens", "full", "cost", "model", "model_hide", "model_show", "mode"}:
+            return await self._handle_usage_mode_command(event, args[0])
+        # Bare /usage opens the mode picker; /usage report keeps the detailed report.
+        if not args:
+            picked = await self._handle_usage_mode_command(event, "mode")
+            if picked is None:
+                return None
+        elif args[0] == "report":
+            args = []
         if args and not wants_reset:
             return t("gateway.usage.unknown_subcommand", args=raw_args)
 

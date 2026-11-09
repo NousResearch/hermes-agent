@@ -24,6 +24,11 @@ js-install:
 js-install-tests:
     pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
 
+# Install the WhatsApp bridge's own npm lockfile, without native builds
+[group('setup')]
+js-install-whatsapp-bridge:
+    npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/whatsapp-bridge
+
 # Prepare the pm-locked Electron binary the desktop app and its E2E suites launch
 [group('setup')]
 electron-runtime:
@@ -87,6 +92,11 @@ test-all:
 test-js:
     pnpm --dir ui-tui run build:ink
     pnpm -r test
+
+# Run the WhatsApp bridge's node tests (after `just js-install-whatsapp-bridge`)
+[group('test')]
+test-whatsapp-bridge:
+    node --test scripts/whatsapp-bridge/*.test.mjs
 
 # Start the desktop app in development mode
 [group('dev')]

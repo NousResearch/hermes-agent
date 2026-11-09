@@ -174,7 +174,7 @@ _ASSUMED_WORKER_RSS_BYTES = 300 * 1024 * 1024
 def _cgroup_memory_max_bytes(
     proc_cgroup: Path = Path("/proc/self/cgroup"),
     cgroup_root: Path = Path("/sys/fs/cgroup"),
-) -> "int | None":
+) -> int | None:
     """Effective cgroup-v2 memory cap of this process, or ``None`` if
     unavailable/unlimited.
 

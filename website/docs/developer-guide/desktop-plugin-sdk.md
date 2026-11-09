@@ -2339,6 +2339,16 @@ register(ctx) {
 address another plugin's API or a core route through it. `PluginRestOptions` is
 `{ method?, body?, upload?: { filename, contentType?, bytes }, timeoutMs? }`.
 
+For HTTP handlers running in a plugin host, Hermes sets
+`request.state.hosted_native_http_authenticated` to `True` when the gateway has
+redeemed a native HTTP ticket for that worker's profile. A request carrying an
+`Origin` header cannot get native admission. The worker receives the decision
+for that request over private IPC. The ticket stays at the gateway. Plugins
+that distinguish native Desktop from browser callers can check this state with
+`getattr(request.state, "hosted_native_http_authenticated", False) is True`.
+Browser calls continue to follow the dashboard's usual authentication and
+origin rules.
+
 `ctx.socket` auto-reconnects with backoff until disposed. **It resolves to a no-op
 on OAuth remotes** (single-use WS tickets are core-managed) — treat the socket as
 an accelerator over polling, never a replacement. Every consumer needs a polling

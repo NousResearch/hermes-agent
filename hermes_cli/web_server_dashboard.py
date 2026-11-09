@@ -1026,14 +1026,17 @@ def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
         if target is None:
             return JSONResponse({"detail": f"plugin {name!r} is not enabled in this profile"}, status_code=404)
         host, dashboard_dir, api_file = target
+        from hermes_cli.dashboard_auth.native_http import HEADER
+        from hermes_cli.plugin_host_http_auth import admitted_for_native_http, admitted_for_sensitive_route
         from hermes_cli.web_server_plugin_profiles import run_hosted_request
-        query, headers = request.url.query, [(k, v) for k, v in request.headers.items() if k.lower() != "host"]
+        query = request.url.query
+        headers = [(k, v) for k, v in request.headers.items() if k.lower() not in {"host", HEADER}]
         body = await request.body()
-        from hermes_cli.plugin_host_http_auth import admitted_for_sensitive_route
         authenticated = admitted_for_sensitive_route(request)
+        native_authenticated = admitted_for_native_http(request, host.home)
         return await run_hosted_request(host.home, name, lambda timeout: host.asgi_request(
             name, dashboard_dir, api_file, request.method, "/" + path, query, headers, body,
-            timeout=timeout, authenticated=authenticated))
+            timeout=timeout, authenticated=authenticated, native_authenticated=native_authenticated))
 
     app.add_api_route(f"/api/plugins/{name}/{{path:path}}", forward, include_in_schema=False,
                       methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],

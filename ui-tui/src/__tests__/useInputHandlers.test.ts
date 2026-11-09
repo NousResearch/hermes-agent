@@ -7,6 +7,7 @@ import {
   composerHasDraft,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  handlePagerKey,
   pagerOffset,
   resolveCtrlCComposerAction,
   resolveDoubleEscAction,
@@ -240,6 +241,46 @@ describe('dismissSensitivePrompt', () => {
     expect(getOverlayState().vaultCode).toBeNull()
     expect(sys).toHaveBeenCalledWith('verification code for github.com skipped')
     expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
+})
+
+describe('pager key handling', () => {
+  const key = {
+    ...baseKey, leftArrow: false, rightArrow: false, home: false, end: false,
+    return: false, escape: false, ctrl: false, fn: false, tab: false,
+    backspace: false, delete: false, meta: false, super: false
+  }
+
+  const lines = Array.from({ length: 36 }, (_, i) => `line ${i}`)
+
+  it.each([
+    ['space', ' ', {}],
+    ['enter', '', { return: true }],
+    ['page down', '', { pageDown: true }]
+  ])('%s advances and stays open at the last page', (_name, ch, overrides) => {
+    try {
+      patchOverlayState({ pager: { lines, offset: 20 } })
+      handlePagerKey(ch, { ...key, ...overrides }, 10)
+      expect(getOverlayState().pager?.offset).toBe(26)
+      handlePagerKey(ch, { ...key, ...overrides }, 10)
+      expect(getOverlayState().pager?.offset).toBe(26)
+    } finally {
+      resetOverlayState()
+    }
+  })
+
+  it.each([
+    ['q', 'q', {}],
+    ['escape', '', { escape: true }],
+    ['ctrl-c', 'c', { ctrl: true }]
+  ])('%s closes the pager', (_name, ch, overrides) => {
+    try {
+      patchOverlayState({ pager: { lines, offset: 26 } })
+      handlePagerKey(ch, { ...key, ...overrides }, 10)
+      expect(getOverlayState().pager).toBeNull()
+    } finally {
+      resetOverlayState()
+    }
   })
 })
 

@@ -93,11 +93,23 @@ class TestPipeRemoteToShellPattern:
             assert time.perf_counter() - start < 3, command[:40]
 
     def test_many_fetch_pipes_scan_in_linear_time(self):
-        # A leading `.*` after curl rescanned the tail from every fetch word (quadratic: ~5 s here).
-        command = "curl | " * 4000 + "x"
-        start = time.perf_counter()
-        detect_dangerous_command(command)
-        assert time.perf_counter() - start < 3
+        # A leading `.*` after curl rescanned the tail from every fetch word (quadratic: ~5s here).
+        # Assert SCALING, not a fixed wall clock: a loaded CI runner makes any absolute bound flaky,
+        # but quadratic blowup still shows as ~16x for 4x the input while linear stays near 4x.
+        def scan(n):
+            command = "curl | " * n + "x"
+            start = time.perf_counter()
+            detect_dangerous_command(command)
+            return time.perf_counter() - start
+
+        def best(n):  # drop load spikes: the least-loaded of three samples
+            return min(scan(n) for _ in range(3))
+
+        base = best(1000)
+        wide = best(4000)
+        # Linear 4x the input stays near 4x the time; quadratic is ~16x. Floor the bound at 2s per the
+        # test guide so a fast baseline cannot make it tight on a loaded runner.
+        assert wide < max(2.0, base * 8)
 
     def test_or_list_is_not_a_pipe_for_the_widened_sink(self):
         pipe = "|"

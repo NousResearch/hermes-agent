@@ -5,7 +5,7 @@
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import logging
@@ -47,6 +47,7 @@ from hermes_cli.cli_tui_mixin import CLITuiMixin
 from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
 from hermes_cli.cli_init_mixin import CLIInitMixin
 from hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
+from hermes_cli.cli_backtrack import CLIBacktrackMixin
 # Extracted clusters (mechanical split, #116911); re-exported here so `cli.<name>` stays the seam.
 from hermes_cli.cli_shutdown import (
     _CLEANUP_STEPS,
@@ -877,7 +878,7 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
@@ -1046,8 +1047,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
 
         config_path = _hermes_home / 'config.yaml'
-        if not config_exists(config_path):
-            config_path = Path(__file__).parent / 'cli-config.yaml'
         config_status = _t("cli.config.loaded") if config_exists(config_path) else _t("cli.config.not_found")
         from hermes_cli.config_backend import get_config_backend
         if not get_config_backend().supports_file_tooling():  # no local file: name where config comes from

@@ -258,6 +258,12 @@ def _telegram_format(message):
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
     """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+    if str(thread_id or "").strip() and not str(thread_id).strip().lstrip("-").isdigit():
+        # ``<chat>:<topic name>`` parses for every caller, but only the live gateway's cron router
+        # resolves a name (ensure_dm_topic): the Bot API has no topic lookup by name (#80483).
+        return _error(f"Telegram topic '{thread_id}' is a name, not a thread id: a direct send cannot "
+                      "resolve named topics. Use telegram:<chat_id>:<numeric thread id>, or deliver "
+                      "through a cron job while the gateway is running.")
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token)

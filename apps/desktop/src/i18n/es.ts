@@ -29,6 +29,11 @@ import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  gatewayGroupOpen: {
+    opening: "Abriendo el chat de grupo…",
+    lookupFailed: "No se pudo encontrar este grupo en la pasarela. Inténtalo de nuevo.",
+    missing: "Este chat de grupo ya no existe."
+  },
   sharedMetrics: esSharedMetrics,
   firstRun: esFirstRun,
   intro: introEs,
@@ -2375,15 +2380,20 @@ export const esOverrides = {
       browserRealProfile: {
         label: 'Usar mi perfil real del navegador',
         description:
-          'Copia los inicios de sesión y las cookies de tu navegador predeterminado en una instantánea administrada con la que navega el agente. Tu perfil en uso nunca se abre directamente. Se aplica a las sesiones nuevas.',
+          'Copia los inicios de sesión y las cookies de tu navegador predeterminado en una instantánea administrada con la que navega el agente, y también inicia sesión con ellos en el navegador integrado. Tu perfil en uso nunca se abre directamente. Se aplica a las sesiones nuevas.',
         enabledTitle: 'Navegación con perfil real activada',
         enabledMessage: 'Las sesiones nuevas navegarán con una instantánea de tu perfil predeterminado del navegador.',
         disabledTitle: 'Navegación con perfil real desactivada',
-        disabledMessage: 'Se eliminará la instantánea del perfil; las sesiones nuevas usan un navegador limpio.',
+        disabledMessage: 'Se eliminará la instantánea del perfil y se cerrará su sesión en el navegador integrado; las sesiones nuevas usan un navegador limpio.',
         failedSave: 'No se pudo guardar el ajuste del perfil real',
+        reimportSignins: 'Volver a importar inicios de sesión',
+        signinsImportedTitle: 'Inicios de sesión del navegador integrado',
+        signinsImported: count => `Se inició sesión en el navegador integrado con ${count} cookie${count === 1 ? '' : 's'} de tu perfil del navegador.`,
+        signinsRemote: 'Este backend se ejecuta en otro equipo, así que su perfil del navegador no se importa al navegador integrado.',
+        signinsFailed: 'No se pudieron importar los inicios de sesión al navegador integrado',
         prompt: {
           title: 'Mantén la sesión iniciada en tus sitios',
-          body: 'Deja que Hermes navegue con una instantánea de tu perfil predeterminado del navegador, para que los sitios se abran con la sesión ya iniciada.',
+          body: 'Deja que Hermes navegue con una instantánea de tu perfil predeterminado del navegador, para que los sitios se abran con la sesión ya iniciada, para el agente y en el navegador integrado.',
           bulletSnapshot: 'Las cookies y los inicios de sesión se copian en una instantánea administrada.',
           bulletLiveProfile: 'Tu perfil del navegador en uso nunca se abre directamente.',
           bulletLocal: 'Nada sale de este equipo.',
@@ -5094,6 +5104,7 @@ export const esOverrides = {
       readAloud: 'Leer en voz alta',
       copyFullResponse: 'Copiar la respuesta completa',
       readAloudFullResponseHint: 'Mayús+clic: leer la respuesta completa',
+      contentRefusedNotice: 'El filtro de seguridad del modelo rechazó este mensaje: prueba con otra consulta.',
       editMessage: 'Editar mensaje',
       expandMessage: 'Expandir mensaje',
       scrollToBottom: 'Desplazarse hacia abajo',

@@ -272,10 +272,10 @@ Verify scheduling changes with native hidden/minimized windows and real preview
 navigation, typing and capture. Browser automation's focus emulation can keep
 hidden frames awake and conceal regressions; disable it for these checks.
 Software-rendered VM timings are not hardware GPU or battery measurements.
-With a graphical session (or Xvfb), `npm run test:preview-activity-native
---workspace apps/desktop` exercises real hidden-frame navigation (including
+With a graphical session (or Xvfb), `pnpm --dir apps/desktop run
+test:preview-activity-native` exercises real hidden-frame navigation (including
 lease-only rAF and capture), overlapping operations, cancellation and plugin
-completion values in a disposable profile. Add `-- --minimized` with a running
+completion values in a disposable profile. Add `--minimized` with a running
 window manager to exercise actual iconification rather than hiding the window.
 
 ## Nous free tier: state is pulled, never latched in the renderer

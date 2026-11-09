@@ -267,16 +267,8 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
-            compensated = False
-            try:
-                compensated = db.discard_unadmitted_session(new_key) is True
-            except Exception:
-                logger.debug("branch seed compensation delete failed for %s", new_key, exc_info=True)
-            if seed_record is not None:
-                seed_record["_fresh_generated_key"] = compensated
-                seed_record["_seed_compensation_unverified"] = not compensated
-                if compensated:
-                    seed_record.pop("_branch_seed_pending", None)
+            from .session_seed import compensate_seed
+            compensate_seed(db, new_key, seed_record)
         raise
 
 

@@ -232,7 +232,8 @@ def build_gateway_parser(
     _flag(gateway_migrate, "--dry-run", dest="dry_run", help="Print the plan and blockers without changing anything")
     _flag(gateway_migrate, "-y", "--yes", dest="yes", help="Apply without confirmation")
     _flag(gateway_migrate, "--backends", dest="backends",
-        help="Report serve/dashboard background services and what migrating them would do (read-only)")
+        help="Report serve/dashboard background services and what migrating them would do; "
+        "changes no service (normal Hermes startup bookkeeping still runs)")
     _flag(gateway_migrate, "--json", dest="json", help="With --backends: print the report as JSON")
 
     # enroll: redeem a single-use connector token for the per-gateway secret + per-tenant

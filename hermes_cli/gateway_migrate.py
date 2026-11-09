@@ -1228,7 +1228,7 @@ def _host_supports_migration() -> Optional[str]:
 
 
 def cmd_migrate(args) -> None:
-    """``hermes gateway migrate [--multiplex] [--dry-run] [--yes]``; ``--backends`` is a read-only report."""
+    """``hermes gateway migrate [--multiplex] [--dry-run] [--yes]``; ``--backends`` is a report that changes no service."""
     if getattr(args, "backends", False):
         from hermes_cli.gateway_migrate_backends import cmd_backends_report
         cmd_backends_report(args)

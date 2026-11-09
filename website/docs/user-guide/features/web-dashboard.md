@@ -445,10 +445,14 @@ hermes gateway migrate --backends --dry-run --json   # the same report as JSON
 
 For each backend the report shows its supervisor (systemd unit name, scope and unit file; launchd
 label and plist; Nix-managed; s6 slot; container; Desktop; detached process; or unknown), the
-`HERMES_HOME` it serves, and why nothing is applied yet. The report is read-only: it never stops,
-restarts or edits anything, and it exits 0. Running backends are found by what they run, whatever
-the unit is called; units that are enabled but not running are listed only when they are named
-`hermes-serve*`, `hermes-dashboard*` or `hermes-backend*`.
+`HERMES_HOME` it serves, and why nothing is applied yet. The report never stops, restarts or kills
+anything, never edits or writes a service file, unit, plist or ledger, and opens no network
+connection; it exits 0 even when a scan fails. Normal Hermes startup still runs first, as for any
+`hermes` command: it creates the `HERMES_HOME` layout and a default `SOUL.md` if missing, records the
+install under `HERMES_HOME/installs/`, opens `logs/agent.log` and `logs/errors.log`, and prunes
+`cache/scratch`. Running backends are found by what they run, whatever the unit is called; units
+that are enabled but not running are listed only when they are named `hermes-serve*`,
+`hermes-dashboard*` or `hermes-backend*`.
 
 ## `/reload` Slash Command
 

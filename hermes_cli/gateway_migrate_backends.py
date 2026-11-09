@@ -1,5 +1,5 @@
-"""``hermes gateway migrate --backends``: a READ-ONLY report of the serve/dashboard background
-services on this machine and what a future backend migration would do to each.
+"""``hermes gateway migrate --backends``: a report, changing no service, of the serve/dashboard
+background services on this machine and what a future backend migration would do to each.
 
 Hermes never installs a ``hermes serve`` / ``hermes dashboard`` service itself, so every one found
 here was set up by someone else: a systemd unit copied from the docs, a hand-written launchd plist,
@@ -8,10 +8,15 @@ longrun or the Compose ``dashboard`` sidecar, a Desktop SSH ``serve`` backend, o
 by hand. The report says which supervisor owns each backend, by what the process runs and which
 unit's ``MainPID`` it is, never by unit name (Nix calls it ``hermes-backend``).
 
-Nothing here stops, restarts, edits or writes anything, and nothing touches the network: only
-``ps``, ``/proc`` reads, plist reads and ``systemctl show`` / ``list-unit-files`` / ``launchctl
-print`` queries. The spawn ledger is deliberately not read, because reading a corrupt ledger
-quarantines (renames) it.
+The report itself never stops, restarts or kills anything, never edits or writes a service file,
+unit, plist or ledger, and opens no network connection: it only runs ``ps``, reads ``/proc`` and
+plists, and issues ``systemctl show`` / ``list-unit-files`` / ``launchctl print`` queries. The spawn
+ledger is deliberately not read, because reading a corrupt ledger quarantines (renames) it.
+
+Normal Hermes startup still runs first, exactly as for any other ``hermes`` command (e.g.
+``hermes gateway migrate --dry-run``): it creates the ``HERMES_HOME`` layout and a default
+``SOUL.md`` when missing, records the install under ``HERMES_HOME/installs/<id>/``, opens
+``logs/agent.log`` / ``logs/errors.log`` and prunes ``cache/scratch``.
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ _UNIT_PATTERNS = ("hermes-serve*", "hermes-dashboard*", "hermes-backend*")
 _ENABLED_STATES = frozenset({"enabled", "enabled-runtime", "linked", "linked-runtime", "static",
                              "generated", "alias", "indirect"})
 _CONTAINER_CGROUP_MARKERS = ("docker", "containerd", "libpod", "kubepods", "/lxc/")
-_NOT_APPLIED = "Report only: --backends never changes anything; applying a backend migration is not implemented yet."
+_NOT_APPLIED = "Report only: --backends never changes any service; applying a backend migration is not implemented yet."
 
 # supervisor -> (what a future migration would do, why it cannot simply be done for you)
 _PLANS: dict[str, tuple[str, str]] = {
@@ -331,7 +336,7 @@ def format_report(items: list[BackendItem]) -> list[str]:
 
 
 def cmd_backends_report(args) -> None:
-    """``hermes gateway migrate --backends [--dry-run] [--json]``. Always exits 0 on valid arguments."""
+    """``hermes gateway migrate --backends [--dry-run] [--json]``. Exits 0 on valid arguments, even when a scan fails."""
     if getattr(args, "yes", False) or getattr(args, "multiplex", False):
         print("✗ --backends is a read-only report; it cannot be combined with --yes or --multiplex.",
               file=sys.stderr)

@@ -9,7 +9,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
-from gateway.stream_consumer_fences import ensure_closed_code_fences, open_code_fence_line
+from gateway.stream_consumer_fences import ensure_closed_code_fences, open_code_fence_span
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -87,14 +87,16 @@ class StreamFallbackMixin:
                 )
                 if boundary >= 0:
                     cut = boundary + 1
-            opener = open_code_fence_line(final_text[:cut])
-            if opener is None:
+            span = open_code_fence_span(final_text, cut)
+            if span is None:
                 return final_text[cut:].lstrip()
-            # The tail starts inside a code block the user saw closed: reopen it, and keep the
-            # code's indentation. A tail that is only the closing fence adds nothing the closed
-            # preview did not already show.
-            tail = final_text[cut:].lstrip("\n")
-            return f"{opener}\n{tail}" if tail.replace("```", "").strip() else ""
+            # The tail starts inside a code block the user saw closed: reopen it with the model's
+            # own opener (a cut inside its language tag must not turn the tag's rest into code),
+            # and keep the code's indentation. A tail that is only the closing fence adds nothing
+            # the closed preview did not already show.
+            start, end = span
+            tail = final_text[max(cut, end):].lstrip("\n")
+            return f"{final_text[start:end]}\n{tail}" if tail.replace("```", "").strip() else ""
         return final_text
 
     @staticmethod

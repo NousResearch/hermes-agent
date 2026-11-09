@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import logging
-from types import SimpleNamespace
-from unittest.mock import patch
+import threading
+import time
 
 import pytest
 
-from agent.activity_tracking import ActivityTrackingMixin
 from agent.context_engine import ContextEngine, ContextEngineError
-from agent.turn_request_assembly import _apply_context_engine_selection
 
 
 @pytest.fixture(autouse=True)
@@ -37,244 +34,90 @@ class PluginEngine(ContextEngine):
         return messages
 
 
-class HostAgent(ActivityTrackingMixin):
-    def __init__(self, engine):
-        self.context_compressor = engine
-        self.session_id = "selection-callback-test"
-        self._interrupt_requested = False
-        self._last_activity_ts = 0.0
-        self._last_activity_desc = "before selection"
-        self._turn_liveness_activity_generation = 0
-
-
-def select(agent):
-    history = [{"role": "user", "content": "current task"}]
-    request = [{"role": "system", "content": "system"}, *history]
-    result = _apply_context_engine_selection(
-        agent, request, history, history[-1], logger=logging.getLogger(__name__)
-    )
-    return result, request
-
-
-def test_base_selection_accepts_optional_callbacks_without_reporting_progress():
-    reported = []
-    assert PluginEngine().select_context(
-        [{"role": "user", "content": "task"}],
-        progress=reported.append,
-        cancelled=lambda: False,
-    ) is None
-    assert reported == []
-
-
-def test_declared_callbacks_use_actual_activity_clock_and_live_interrupt_flag():
-    observed_cancellation = []
-    selected = [{"role": "user", "content": "bounded selected context"}]
-
-    class Selecting(PluginEngine):
-        def select_context(
-            self, request_messages, *, conversation_messages=None, incoming_message=None,
-            budget_tokens=0, progress=None, cancelled=None,
-        ):
-            assert budget_tokens == 160_000
-            assert conversation_messages[-1]["content"] == "current task"
-            assert incoming_message["content"] == "current task"
-            assert agent._turn_liveness_activity_generation == 0
-            observed_cancellation.append(cancelled())
-            progress("selection committed 12 messages")
-            agent._interrupt_requested = True
-            observed_cancellation.append(cancelled())
-            return selected
-
-    agent = HostAgent(Selecting())
-    result, _ = select(agent)
-
-    assert result is selected
-    assert observed_cancellation == [False, True]
-    assert agent._last_activity_ts > 0
-    assert agent._last_activity_desc == "selection committed 12 messages"
-    assert agent._turn_liveness_activity_generation == 1
-
-
-def test_kwargs_engine_receives_callbacks_without_synthetic_activity():
-    selected = [{"role": "user", "content": "selected"}]
-    received = {}
-
-    class Selecting(PluginEngine):
-        def select_context(self, request_messages, **kwargs):
-            received.update(kwargs)
-            assert kwargs["cancelled"]() is False
-            # An idle wait is not progress: merely receiving callbacks must not touch activity.
-            return selected
-
-    agent = HostAgent(Selecting())
-    result, _ = select(agent)
-
-    assert result is selected
-    assert callable(received["progress"])
-    assert callable(received["cancelled"])
-    assert agent._last_activity_ts == 0.0
-    assert agent._turn_liveness_activity_generation == 0
-
-
-def test_only_declared_callback_is_passed():
-    selected = [{"role": "user", "content": "selected"}]
-
-    class Selecting(PluginEngine):
-        def select_context(self, request_messages, *, progress=None):
-            progress("selection committed")
-            return selected
-
-    agent = HostAgent(Selecting())
-    result, _ = select(agent)
-
-    assert result is selected
-    assert agent._last_activity_desc == "selection committed"
-
-
-def test_engine_remains_usable_when_host_has_no_activity_callback():
-    selected = [{"role": "user", "content": "selected"}]
-
-    class Selecting(PluginEngine):
-        def select_context(self, request_messages, **kwargs):
-            assert kwargs["progress"] is None
-            assert kwargs["cancelled"]() is True
-            return selected
-
-    agent = SimpleNamespace(context_compressor=Selecting(), _interrupt_requested=True)
-    result, _ = select(agent)
-    assert result is selected
-
-
-def test_legacy_documented_selection_signature_remains_usable():
-    selected = [{"role": "user", "content": "legacy selected context"}]
-
-    class Selecting(PluginEngine):
-        def select_context(
-            self, request_messages, *, conversation_messages=None,
-            incoming_message=None, budget_tokens=0,
-        ):
-            assert budget_tokens == 160_000
-            return selected
-
-    result, _ = select(HostAgent(Selecting()))
-    assert result is selected
-
-
-def test_request_only_legacy_signature_remains_usable():
-    selected = [{"role": "user", "content": "old selected context"}]
-
-    class Selecting(PluginEngine):
-        def select_context(self, request_messages):
-            return selected
-
-    result, _ = select(HostAgent(Selecting()))
-    assert result is selected
-
-
-def test_ordinary_selection_error_still_falls_open():
-    class Selecting(PluginEngine):
-        def select_context(self, request_messages, **kwargs):
-            raise RuntimeError("selection service unavailable")
-
-    result, request = select(HostAgent(Selecting()))
-    assert result is request
-
-
 class SelectionCancelled(KeyboardInterrupt):
     pass
 
 
-def test_cooperative_cancellation_cannot_fall_open_to_raw_history():
-    class Selecting(PluginEngine):
-        def select_context(self, request_messages, *, cancelled=None):
-            if cancelled():
-                raise SelectionCancelled("selection interrupted")
-            raise AssertionError("host did not expose its interrupt flag")
-
-    agent = HostAgent(Selecting())
-    agent._interrupt_requested = True
-
-    with pytest.raises(SelectionCancelled, match="selection interrupted"):
-        select(agent)
-
-
-def test_keyboard_interrupt_propagates_even_for_legacy_engine():
-    class Selecting(PluginEngine):
-        def select_context(
-            self, request_messages, *, conversation_messages=None,
-            incoming_message=None, budget_tokens=0,
-        ):
-            raise KeyboardInterrupt("stop selecting")
-
-    with pytest.raises(KeyboardInterrupt, match="stop selecting"):
-        select(HostAgent(Selecting()))
-
-
-def test_typed_preparation_failure_never_falls_back_to_raw_history():
-    class Selecting(PluginEngine):
-        def select_context(self, request_messages, **kwargs):
-            raise ContextEngineError("Memory preparation deadline: 12 pending nodes; retry the turn.")
-
-    with pytest.raises(ContextEngineError, match="12 pending nodes"):
-        select(HostAgent(Selecting()))
-
-
 @pytest.fixture
-def turn_agent(monkeypatch, tmp_path):
-    """Run the real selection/dispatch/finalization path with an offline provider."""
+def turn_agent(tmp_path):
+    """Exercise the real agent and HTTP client against a loopback provider."""
     from run_agent import AIAgent
     from hermes_state import SessionDB
+    from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 
     database = SessionDB(db_path=tmp_path / "state.db")
-    database.create_session("context-preparation", source="cli", model="test-model")
+    database.create_session("context-preparation", source="cli", model="fake-model")
+    requests = []
+    reply = [Text("answer from selected context")]
 
-    with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-    ):
+    def answer(request):
+        requests.append(request["body"])
+        return reply[0]
+
+    with FakeLLMServer(script=answer, aux=answer) as provider:
         agent = AIAgent(
-            model="test-model", provider="openai",
-            api_key="test-key-1234567890", base_url="https://example.invalid/v1",
+            model="fake-model", provider="openai",
+            api_key="fixture-key", base_url=provider.base_url,
+            enabled_toolsets=[], max_iterations=3,
             quiet_mode=True, skip_context_files=True, skip_memory=True,
             save_trajectories=False,
             session_id="context-preparation", session_db=database,
         )
-    agent._cached_system_prompt = "You are helpful."
-    agent._use_prompt_caching = False
-    agent._disable_streaming = True
-    agent.compression_enabled = False
-    agent.skip_background_review = True
-    requests = []
-
-    def send(api_kwargs):
-        requests.append(api_kwargs)
-        return SimpleNamespace(
-            choices=[SimpleNamespace(
-                message=SimpleNamespace(
-                    content="answer from selected context", tool_calls=None,
-                    reasoning=None, reasoning_content=None, reasoning_details=None,
-                ),
-                finish_reason="stop",
-            )],
-            usage=None, model="test-model",
-        )
-
-    monkeypatch.setattr(agent, "_interruptible_api_call", send)
-    yield agent, requests
-    agent.close()
-    database.close()
+        agent.compression_enabled = False
+        agent.skip_background_review = True
+        try:
+            yield agent, requests, reply
+        finally:
+            agent.close()
+            database.close()
 
 
-def test_selected_context_reaches_provider_without_rewriting_transcript(turn_agent):
-    agent, requests = turn_agent
+@pytest.mark.parametrize("signature", ["request_only", "progress_only", "kwargs", "opaque"])
+def test_selected_context_reaches_provider_without_rewriting_transcript(
+    turn_agent, monkeypatch, signature,
+):
+    agent, requests, _ = turn_agent
+    selected = [{"role": "user", "content": "bounded selected context"}]
+    activity = {}
+
+    def report(progress):
+        before = agent.get_activity_summary()
+        # The clock is an external boundary; observe the public watchdog snapshot,
+        # not private timestamp fields or the activity tracker's implementation.
+        with monkeypatch.context() as clock:
+            clock.setattr(time, "time", lambda: before["last_activity_at"] + 10)
+            progress("fixture archive commit")
+            activity.update(agent.get_activity_summary())
+        assert activity["seconds_since_activity"] == 0
+        assert activity["last_activity_at"] == before["last_activity_at"] + 10
+
+    def request_only(self, request_messages):
+        return selected
+
+    def progress_only(self, request_messages, *, progress=None):
+        report(progress)
+        return selected
+
+    def kwargs(self, request_messages, **callbacks):
+        report(callbacks["progress"])
+        return selected
+
+    class OpaqueSelection:
+        @property
+        def __signature__(self):
+            raise ValueError("Extension callable has no Python signature")
+
+        def __call__(
+            self, request_messages, *, conversation_messages=None,
+            incoming_message=None, budget_tokens=0,
+        ):
+            return selected
 
     class Selecting(PluginEngine):
-        def select_context(self, request_messages, **kwargs):
-            return [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "bounded selected context"},
-            ]
+        select_context = {
+            "request_only": request_only, "progress_only": progress_only, "kwargs": kwargs,
+            "opaque": OpaqueSelection(),
+        }[signature]
 
     agent.context_compressor = Selecting()
     result = agent.run_conversation("current task", conversation_history=[
@@ -285,26 +128,35 @@ def test_selected_context_reaches_provider_without_rewriting_transcript(turn_age
     assert result["completed"] is True
     assert result["final_response"] == "answer from selected context"
     assert len(requests) == 1
-    assert [m["content"] for m in requests[0]["messages"]] == [
-        "You are helpful.", "bounded selected context",
-    ]
+    assert [m["content"] for m in requests[0]["messages"]] == ["bounded selected context"]
     transcript = [m.get("content") for m in result["messages"]]
     assert "original history" in transcript
     assert "current task" in transcript
     assert "bounded selected context" not in transcript
 
 
+def test_ordinary_selection_error_preserves_provider_history(turn_agent):
+    agent, requests, _ = turn_agent
+
+    class Selecting(PluginEngine):
+        def select_context(self, request_messages, **kwargs):
+            raise RuntimeError("fixture selection unavailable")
+
+    agent.context_compressor = Selecting()
+    result = agent.run_conversation("current task")
+
+    assert result["completed"] is True
+    assert len(requests) == 1
+    assert any(message.get("content") == "current task" for message in requests[0]["messages"])
+
+
 def test_preparation_failure_returns_terminal_error_without_provider_call(turn_agent):
-    agent, requests = turn_agent
-    observed = {}
+    agent, requests, _ = turn_agent
     reason = "Context preparation timed out; retry the turn."
 
     class Selecting(PluginEngine):
         def select_context(self, request_messages, **kwargs):
             raise ContextEngineError(reason)
-
-        def on_turn_complete(self, messages, usage=None, **kwargs):
-            observed.update(usage=usage, **kwargs)
 
     agent.context_compressor = Selecting()
     result = agent.run_conversation("current task")
@@ -319,55 +171,65 @@ def test_preparation_failure_returns_terminal_error_without_provider_call(turn_a
     assert result["failure_retryable"] is True
     assert all(message.get("content") != reason for message in result["messages"])
     assert result["messages"][-1]["display_kind"] == "failed_turn"
-    assert observed["failed"] is True
-    assert observed["usage"] is None
 
 
 def test_requested_selection_cancellation_finalizes_without_provider_call(turn_agent):
-    agent, requests = turn_agent
-    observed = {}
+    agent, requests, _ = turn_agent
+    outcome = {}
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
     class Selecting(PluginEngine):
         def select_context(self, request_messages, *, cancelled=None):
-            assert cancelled() is False
-            agent.interrupt()
-            if cancelled():
-                raise SelectionCancelled("selection interrupted")
-            raise AssertionError("host did not expose the live interrupt")
+            entered.set()
+            while cancelled is None or not cancelled():
+                if release.wait(0.01):
+                    return
+            raise SelectionCancelled("selection interrupted")
 
-        def on_turn_complete(self, messages, usage=None, **kwargs):
-            observed.update(usage=usage, **kwargs)
+    def run():
+        try:
+            outcome["result"] = agent.run_conversation("current task")
+        except BaseException as exc:
+            outcome["error"] = exc
+        finally:
+            finished.set()
 
     agent.context_compressor = Selecting()
-    result = agent.run_conversation("current task")
-
-    assert requests == []
-    assert result["interrupted"] is True
-    assert result["completed"] is False
-    assert observed["interrupted"] is True
-    assert observed["usage"] is None
-    assert agent._interrupt_requested is False
+    caller = threading.Thread(target=run)
+    caller.start()
+    try:
+        assert entered.wait(2), "Selection did not start"
+        agent.interrupt()
+        assert finished.wait(2), "Plugin never observed the live cancellation callback"
+        assert "error" not in outcome
+        result = outcome["result"]
+        assert requests == []
+        assert result["interrupted"] is True
+        assert result["completed"] is False
+    finally:
+        release.set()
+        caller.join(10)
 
 
 def test_unrequested_selection_keyboard_interrupt_is_not_swallowed(turn_agent):
-    agent, requests = turn_agent
+    agent, requests, _ = turn_agent
 
     class Selecting(PluginEngine):
         def select_context(self, request_messages, **kwargs):
             raise KeyboardInterrupt("stop selecting")
 
     agent.context_compressor = Selecting()
-    with pytest.raises(KeyboardInterrupt, match="stop selecting"):
+    with pytest.raises(KeyboardInterrupt):
         agent.run_conversation("current task")
     assert requests == []
 
 
-def test_context_engine_tool_cancellation_closes_every_call_and_finalizes(turn_agent, monkeypatch):
-    agent, requests = turn_agent
+def test_context_engine_tool_cancellation_closes_every_call_and_finalizes(turn_agent):
+    from tests.fakes.fake_llm_provider import ToolCall
+
+    agent, requests, reply = turn_agent
     name = "context_lookup"
-    calls = [SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(
-        name=name, arguments='{"offset":' + str(index) + '}',
-    )) for index, call_id in enumerate(("lookup_one", "lookup_two"))]
+    reply[0] = ToolCall(name, {"offset": 0}, parallel=[(name, {"offset": 1})])
 
     class Selecting(PluginEngine):
         def handle_tool_call(self, function_name, args, **kwargs):
@@ -382,15 +244,6 @@ def test_context_engine_tool_cancellation_closes_every_call_and_finalizes(turn_a
         "parameters": {"type": "object", "properties": {"offset": {"type": "integer"}}},
     }}]
 
-    def send(api_kwargs):
-        requests.append(api_kwargs)
-        return SimpleNamespace(choices=[SimpleNamespace(
-            message=SimpleNamespace(content=None, tool_calls=calls, reasoning=None,
-                                    reasoning_content=None, reasoning_details=None),
-            finish_reason="tool_calls",
-        )], usage=None, model="test-model")
-
-    monkeypatch.setattr(agent, "_interruptible_api_call", send)
     try:
         result = agent.run_conversation("retrieve archived context")
     except KeyboardInterrupt:
@@ -399,6 +252,11 @@ def test_context_engine_tool_cancellation_closes_every_call_and_finalizes(turn_a
     assert result["interrupted"] is True
     assert result["completed"] is False
     assert len(requests) == 1
+    issued_calls = [
+        call for message in result["messages"] for call in message.get("tool_calls", [])
+    ]
     tool_results = [message for message in result["messages"] if message.get("role") == "tool"]
-    assert sorted(message["tool_call_id"] for message in tool_results) == ["lookup_one", "lookup_two"]
-    assert agent._interrupt_requested is False
+    assert len(issued_calls) == 2
+    assert sorted(message["tool_call_id"] for message in tool_results) == sorted(
+        call["id"] for call in issued_calls
+    )

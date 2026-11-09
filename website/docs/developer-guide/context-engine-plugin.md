@@ -396,23 +396,24 @@ The `compression` config block (`compression.threshold`, `compression.protect_la
 
 ## Testing
 
-```python
-from agent.context_engine import ContextEngine
+Exercise the consumer: provider requests, returned turn state, preserved history, and
+engine policy after live configuration changes. A test that only checks a class name,
+private helper call, copied keyword, or log wording does not protect these contracts.
 
-def test_engine_satisfies_abc():
-    engine = YourEngine(context_length=200000)
-    assert isinstance(engine, ContextEngine)
-    assert engine.name == "your-name"
-
-def test_compress_returns_valid_messages():
-    engine = YourEngine(context_length=200000)
-    msgs = [{"role": "user", "content": "hello"}]
-    result = engine.compress(msgs)
-    assert isinstance(result, list)
-    assert all("role" in m for m in result)
+```sh
+scripts/run_tests.sh \
+  tests/agent/test_context_engine_host_callbacks.py \
+  tests/tui_gateway/test_context_engine_plugin_live_reload.py
 ```
 
-See `tests/agent/test_context_engine.py` for the full ABC contract test suite.
+The host tests use a real `AIAgent`, isolated `SessionDB`, and a scripted loopback HTTP
+provider. They cover request-only selection, optional/opaque hook signatures, observable
+activity updates, fail-closed preparation errors, cancellation while selection is blocked,
+and complete tool-call/result pairing. No real provider credentials are needed.
+
+The live-reload tests observe third-party compression decisions and context-window
+transitions; existing built-in compressor tests retain the separate compatibility checks.
+See `tests/agent/test_context_engine.py` for the broader ABC contract suite.
 
 ## Thread safety
 

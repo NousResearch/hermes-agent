@@ -25,12 +25,25 @@ _REPOSITORIES = (
 )
 
 
+# The verbs whose declared return is a context manager: entered on the loop thread, the block's reads would run on other threads.
+_CONTEXT_VERBS = {("messages", "read_snapshot")}
+
+
 def test_every_repository_has_its_awaitable_form(backend, scope_a):
     store = backend.open(scope_a)
     for name in _REPOSITORIES:
         repository = getattr(store, name)
-        verbs = [v for v in dir(repository) if not v.startswith("_") and callable(getattr(repository, v))]
+        verbs = [v for v in dir(repository) if not v.startswith("_") and callable(getattr(repository, v)) and (name, v) not in _CONTEXT_VERBS]
         assert verbs and all(callable(getattr(getattr(store.aio, name), v)) for v in verbs)
+
+
+def test_a_verb_returning_a_context_manager_has_no_awaitable_form(backend, scope_a):
+    store = backend.open(scope_a)
+    for name, verb in _CONTEXT_VERBS:
+        with pytest.raises(AttributeError, match=f"{verb}.*plain"):
+            getattr(getattr(store.aio, name), verb)
+    with store.messages.read_snapshot() as consistent:
+        assert consistent() is True
 
 
 def test_both_forms_give_identical_results(backend, scope_a):

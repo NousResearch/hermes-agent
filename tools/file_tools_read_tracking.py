@@ -32,13 +32,44 @@ from tools.file_tools_paths import _authoritative_workspace_root, _resolve_path_
 
 logger = logging.getLogger("tools.file_tools")
 
+
+class _PerAgentTracker(dict):
+    """``{task_id: ...}`` whose keys carry the bound hosted agent's sandbox key, so two hosted
+    agents that reuse a task id never share loop counters, read history or patch failures. With
+    no hosted scope bound a key is the task id itself, as before."""
+
+    @staticmethod
+    def _key(task_id):
+        from tools.environments.sandbox_scope import current_sandbox_key
+        sandbox = current_sandbox_key()
+        return f"{sandbox}:{task_id}" if sandbox else task_id
+
+    def __getitem__(self, task_id):
+        return super().__getitem__(self._key(task_id))
+
+    def __setitem__(self, task_id, value):
+        super().__setitem__(self._key(task_id), value)
+
+    def __contains__(self, task_id):
+        return super().__contains__(self._key(task_id))
+
+    def get(self, task_id, default=None):
+        return super().get(self._key(task_id), default)
+
+    def setdefault(self, task_id, default=None):
+        return super().setdefault(self._key(task_id), default)
+
+    def pop(self, task_id, *default):
+        return super().pop(self._key(task_id), *default)
+
+
 _read_tracker_lock = threading.Lock()
-_read_tracker: dict = {}
+_read_tracker: dict = _PerAgentTracker()
 
 # Consecutive patch failures per (task_id, resolved_path); escalates the hint
 # when the model keeps failing the same file. Reset on a successful patch.
 _patch_failure_lock = threading.Lock()
-_patch_failure_tracker: dict = {}  # {task_id: {resolved_path: count}}
+_patch_failure_tracker: dict = _PerAgentTracker()  # {task_id: {resolved_path: count}}
 _PATCH_FAILURE_PATHS_CAP = 64
 
 # Only the most recent reads matter for dedup, loop detection and external-edit

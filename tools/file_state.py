@@ -17,10 +17,23 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-# (mtime, read_ts, partial). partial=True when read_file returned a windowed
+# (mtime, read_ts, partial, why). partial=True when read_file returned a windowed
 # view (offset > 1 or limit < total_lines) — a later write should still warn
-# so the model re-reads in full.
-ReadStamp = tuple[float, float, bool]
+# so the model re-reads in full. ``why`` names a non-pagination reason a read
+# was not recorded as complete (a key of PARTIAL_READ_REASONS), or None.
+ReadStamp = tuple[float, float, bool, Optional[str]]
+
+# Why a whole-file read can still be stamped partial: (cause, what to do). A re-read
+# only helps when the metadata was unstable; for the others it is the loop the repeat
+# guard stops, or the redaction repeats.
+PARTIAL_READ_REASONS = {
+    "changed": ("its metadata was not stable while it was being read",
+                "read it again, or use patch for a targeted edit"),
+    "repeated": ("the same region was read repeatedly, so the repeat guard stopped recording it",
+                 "use patch for a targeted edit"),
+    "redacted": ("part of its content was redacted or cut",
+                 "use patch for a targeted edit"),
+}
 
 # Bounded so long sessions don't accumulate unbounded state.
 _MAX_PATHS_PER_AGENT = 4096
@@ -94,21 +107,22 @@ class FileStateRegistry:
                     self._path_lock_users.pop(resolved, None)
                     self._path_locks.pop(resolved, None)
 
-    def _stamp(self, task_id: str, resolved: str, mtime: float, now: float, partial: bool) -> None:
+    def _stamp(self, task_id: str, resolved: str, mtime: float, now: float, partial: bool,
+               why: Optional[str] = None) -> None:
         """Caller holds ``_state_lock``."""
         agent_reads = self._reads[task_id]
-        agent_reads[resolved] = (float(mtime), now, bool(partial))
+        agent_reads[resolved] = (float(mtime), now, bool(partial), why if partial else None)
         _evict_oldest(agent_reads, _MAX_PATHS_PER_AGENT)
 
     def record_read(self, task_id: str, resolved: str, *, partial: bool = False,
-                    mtime: Optional[float] = None) -> None:
+                    why: Optional[str] = None, mtime: Optional[float] = None) -> None:
         if _disabled():
             return
         mtime = _mtime_or_none(resolved) if mtime is None else mtime
         if mtime is None:
             return
         with self._state_lock:
-            self._stamp(task_id, resolved, mtime, time.time(), partial)
+            self._stamp(task_id, resolved, mtime, time.time(), partial, why)
 
     def note_write(self, task_id: str, resolved: str, *, mtime: Optional[float] = None) -> None:
         """Record a successful write: global last-writer AND this agent's own
@@ -157,12 +171,15 @@ class FileStateRegistry:
                         "Re-read the file before writing.")
 
         if stamp is not None:
-            read_mtime, _read_ts, partial = stamp
+            read_mtime, _read_ts, partial, why = stamp
             if current_mtime != read_mtime:
                 return (
                     f"{resolved} was modified since you last read it "
                     "on disk (external edit or unrecorded writer). "
                     "Re-read the file before writing.")
+            if partial and why in PARTIAL_READ_REASONS:
+                cause, remedy = PARTIAL_READ_REASONS[why]
+                return f"{resolved} was not recorded as a complete read: {cause}. To overwrite it, {remedy}."
             if partial:
                 return (
                     f"{resolved} was last read with offset/limit pagination "
@@ -225,8 +242,9 @@ def get_registry() -> FileStateRegistry:
 
 
 # Convenience wrappers (short names used at call sites).
-def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False) -> None:
-    _registry.record_read(task_id, str(resolved_or_path), partial=partial)
+def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False,
+                why: Optional[str] = None) -> None:
+    _registry.record_read(task_id, str(resolved_or_path), partial=partial, why=why)
 
 
 def note_write(task_id: str, resolved_or_path: str | Path) -> None:

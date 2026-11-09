@@ -582,8 +582,15 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             task_data["dedup_generation_reads"].discard(dedup_key)
         _cap_read_tracker_data(task_data)
 
+    why = None
+    if not complete:
+        # Name the first non-pagination cause. Redaction is only named for an
+        # unpaged read: on a windowed one the pages may simply be missing, and
+        # a windowed read with none of these causes keeps the pagination wording.
+        why = ("changed" if not stable else "repeated" if count >= 4
+               else "redacted" if redacted and not partial else None)
     try:
-        file_state.record_read(task_id, resolved_str, partial=not complete)
+        file_state.record_read(task_id, resolved_str, partial=not complete, why=why)
     except Exception:
         logger.debug("file_state.record_read failed", exc_info=True)
 

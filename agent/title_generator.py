@@ -818,12 +818,12 @@ def maybe_auto_title(
         upgrade_kwargs["title_preview"] = title_preview
     target, args = auto_title_session, (session_db, session_id, user_message)
     if persistence is not None:
-        upgrade_kwargs["persistence"] = persistence
-        # The caller may close its handle while the model is still answering: the thread's own reference keeps the
-        # profile's store open until the title is written (released when the thread ends, or when a thread that never
-        # started is collected).
+        # The caller may close its handle while the model is still answering: the thread writes through its own
+        # reference, which keeps the profile's store open until the title is written (released when the thread ends,
+        # or when a thread that never started is collected).
         from persistence_assembly import open_persistence
         hold = open_persistence(persistence.scope)
+        upgrade_kwargs["persistence"] = hold
         target, args = _upgrade_holding_store, (hold, *args)
     upgrade = spawn_context_thread(target, name="auto-title", args=args, kwargs=upgrade_kwargs)
     if persistence is not None:

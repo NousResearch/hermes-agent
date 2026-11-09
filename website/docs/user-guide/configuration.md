@@ -1411,6 +1411,8 @@ goals:
 
 Hermes has separate timeout layers for streaming, plus a stale detector for non-streaming calls. The stale detectors auto-adjust for local providers only when you leave them at their implicit defaults.
 
+External-process providers (a model reached through a CLI child process, such as the Claude subscription DirectSDK plugin or an ACP agent) get the same "Local providers" column below, for every model, because the child sends nothing until the model's first token. They are not treated as a local server anywhere else: a context rejection compresses and retries, and Hermes does not probe them for Ollama or llama.cpp.
+
 | Timeout | Default | Local providers | Config / env |
 |---------|---------|----------------|--------------|
 | Socket read timeout | 120s | Auto-raised to 1800s | `HERMES_STREAM_READ_TIMEOUT` |

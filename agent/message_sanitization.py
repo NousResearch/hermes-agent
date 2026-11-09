@@ -742,9 +742,9 @@ def route_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
         None,
     )
     if carriers is None:
-        from agent.model_metadata import is_local_endpoint
+        from agent.process_transport import is_local_server
 
-        carriers = _LOCAL_CARRIERS if base_url and is_local_endpoint(str(base_url)) else _DEFAULT_CARRIERS
+        carriers = _LOCAL_CARRIERS if is_local_server(base_url, provider_lower) else _DEFAULT_CARRIERS
     if RD not in carriers and carriers and _profile_declares_native_details(provider_lower):
         carriers = carriers | {RD}
     return carriers

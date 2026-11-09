@@ -204,7 +204,9 @@ def check_api_response(
         _last_preflight_pressure = None
     # Arm a one-token replay of THIS request before its Anthropic cache entry expires, so a tool
     # round longer than the TTL does not turn the next request into a full-price cache write.
-    start_prompt_cache_warming(agent, api_kwargs, response, sent_at=api_start_time)
+    start_prompt_cache_warming(
+        agent, api_kwargs, response, sent_at=getattr(agent, "_last_api_attempt_sent_at", None) or api_start_time,
+    )
 
     _retry.has_retried_429 = False
     # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.

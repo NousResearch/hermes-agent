@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from typing import Optional
@@ -11,6 +12,40 @@ from gateway.run_common import _UNSET
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _dedupe_audio_paths(audio_paths: list[str]) -> list[str]:
+    """Order-preserving dedupe by path, then by content: one clip can reach a turn through two
+    routes (Telegram's current voice + ``reply_to_message.voice``) under two cache paths, and
+    each would be transcribed and billed. Only same-size files are hashed; an unreadable path
+    keeps path identity so a failed probe never drops a distinct clip."""
+    unique: list[str] = []
+    by_size: dict[int, list[tuple[str, Optional[bytes]]]] = {}
+
+    def digest(path: str) -> Optional[bytes]:
+        try:
+            with open(path, "rb") as fh:
+                return hashlib.file_digest(fh, "sha256").digest()
+        except OSError:
+            return None
+
+    for path in dict.fromkeys(audio_paths):
+        try:
+            bucket = by_size.setdefault(os.path.getsize(path), [])
+        except OSError:
+            unique.append(path)
+            continue
+        if bucket:
+            mine = digest(path)
+            bucket[:] = [(p, d if d is not None else digest(p)) for p, d in bucket]
+            if mine is not None and any(d == mine for _p, d in bucket):
+                logger.info("Skipping duplicate audio attachment before STT: %s", path)
+                continue
+            bucket.append((path, mine))
+        else:
+            bucket.append((path, None))
+        unique.append(path)
+    return unique
 
 
 class GatewayInboundTranscriptionMixin:
@@ -24,7 +59,7 @@ class GatewayInboundTranscriptionMixin:
         failed or STT is disabled) let callers echo them back before the agent loop. ``clip_memo``
         (path → ``_transcribe_one_clip`` result) skips clips an earlier pass already transcribed."""
         from gateway.run import _probe_audio_duration
-        audio_paths = list(dict.fromkeys(audio_paths))
+        audio_paths = await asyncio.to_thread(_dedupe_audio_paths, audio_paths)
         if not getattr(self.config, "stt_enabled", True):
             notes = []
             for path in audio_paths:

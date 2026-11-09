@@ -175,6 +175,14 @@ def test_a_send_that_no_proxy_bypasses_keeps_its_real_error(monkeypatch, caplog,
     assert error and not re.search(r"\b[A-Z]\w+ via ", error), error
 
 
+@pytest.mark.parametrize("sender", sorted(set(SENDERS) - {"signal"}))  # Signal's result names only the batch
+def test_a_bare_secret_free_proxy_keeps_its_real_error(monkeypatch, caplog, sender):
+    """``HTTPS_PROXY=host:port`` (no scheme, no secret) is read as ``http://`` by httpx and requests:
+    nothing to hide, so the real error stays (#151811)."""
+    error, _ = _send_under(monkeypatch, caplog, sender, {"HTTPS_PROXY": "127.0.0.1:2", "HTTP_PROXY": "127.0.0.1:2"})
+    assert error and "<unparseable URL redacted>" not in error and not re.search(r"\b[A-Z]\w+ via ", error), error
+
+
 @pytest.mark.parametrize("no_proxy", [" *", "* ", "*\t"])
 @pytest.mark.parametrize("sender", SENDERS)
 @pytest.mark.parametrize("shape", SHAPES)

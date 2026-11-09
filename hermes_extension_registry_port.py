@@ -12,10 +12,15 @@ X)``), default off, so enabling an extension for one agent never enables it for 
 Every operation reads its pin (tenant, agent, owner, actor) from
 ``hermes_scope.current_scope()`` when it runs, never from a path, ``HERMES_HOME`` or an
 argument, and the port exposes no way to pin anything else. A backend refuses a pin it cannot
-serve with :class:`RegistryPinRefused`. Installing, removing, disabling and switching an entry
-on are administration: a scope without ``can_administer`` is refused with
-:class:`RegistryAdminRefused`, which is raised before the target is looked up so a refusal never
-reveals whether the entry exists. Reads resolve through the one documented policy function
+serve with :class:`RegistryPinRefused`. Writes are authorised in two disjoint classes (the v1
+rule): the agent's administration right — ``can_administer`` — reaches the agent's switches and
+the owner-wide entries of the bound agent's owner, and nothing wider; a tenant-wide entry is
+written only by the tenant's provisioning actor, a scope whose actor is
+``System("provisioning")`` (:func:`require_provisioning` refuses every other actor, before the
+target is looked up, so a refusal never reveals whether the entry exists; no
+tenant-administration claim exists yet). A scope without ``can_administer`` is refused with
+:class:`RegistryAdminRefused` for every write, likewise before the target is looked up. Reads
+resolve through the one documented policy function
 (:func:`entry_visible_to`): a tenant-wide entry is visible to every principal of the tenant, an
 owner-wide one only on agents the same principal or group owns — a member's own entries never
 reach a group's agent, because that agent's owner is the group, not the member.
@@ -24,7 +29,9 @@ A :class:`ExtensionRegistryProvider` supplies the registry. This is the interfac
 backend only: no production caller goes through it yet, and nothing in config.yaml selects a
 backend, so a provider plugin stores nothing that Hermes reads. Local installs keep today's
 in-process plugin loading; the local backend's rows (``hermes_extension_registry_port_local``)
-are not read by that path. :func:`resolve_extension_registry` takes the backend's name
+are not read by that path — and that backend keeps entries owner-wide, as the local owner's,
+refusing the tenant level outright (one owner; nothing to share), which is the registry's
+documented local exception. :func:`resolve_extension_registry` takes the backend's name
 explicitly: ``"local"`` (or empty) is the local backend; any other name is a provider from
 ``plugins/extension_registry/<name>/`` or ``$HERMES_HOME/plugins/<name>/``, and a named provider
 that is missing or unavailable is an error, never a fallback.
@@ -39,14 +46,17 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from hermes_scope import Group, Owner, Principal
+from hermes_scope import Group, Owner, Principal, System
 
 #: What a registry entry can be: a user plugin, or a user MCP server definition.
 KINDS = frozenset({"plugin", "mcp_server"})
 
 #: The levels an entry may sit at. The per-agent switch is not one of them: it is a separate
-#: row at the agent level.
+#: row at the agent level, and an entry never sits there by design.
 ENTRY_LEVELS = frozenset({"owner", "tenant"})
+
+#: The one actor that may write a tenant-wide entry (the v1 rule): the tenant's provisioning.
+PROVISIONING_ACTOR = System("provisioning")
 
 
 class RegistryPinRefused(PermissionError):
@@ -59,6 +69,19 @@ class RegistryAdminRefused(PermissionError):
     """The bound scope may not administer this agent, so it may not install, remove, disable or
     switch on an extension. Raised before the target is looked up, so the refusal is the same
     whether the entry exists, is foreign, or is missing."""
+
+
+def require_provisioning(scope) -> None:
+    """The v1 rule for writing a tenant-wide entry: only the tenant's provisioning actor — a
+    scope whose actor is :data:`PROVISIONING_ACTOR` — may make one, and every other actor (any
+    principal, administering or not) is refused with :class:`RegistryAdminRefused`. Backends
+    call this before the target is looked up, so the refusal never says whether the name is
+    taken; no tenant-administration claim exists yet, and when one does this is the one place
+    it changes."""
+    if scope is None or scope.actor != PROVISIONING_ACTOR:
+        raise RegistryAdminRefused(
+            "a tenant-wide user extension is written by the tenant's provisioning, "
+            "not by an agent's administrator")
 
 
 def entry_visible_to(owner: Owner, entry_owner: Optional[Owner]) -> bool:
@@ -90,6 +113,16 @@ class ExtensionRegistry(ABC):
     owning :class:`~hermes_scope.Principal` or :class:`~hermes_scope.Group`, ``None`` for a
     tenant-wide entry). One name may exist at both levels; the owner-wide entry is the one its
     owner's scopes resolve, and everyone else resolves the tenant-wide one.
+
+    Who may write (the v1 rule): a scope with ``can_administer`` may write this agent's switches
+    and the owner-wide entries of the bound agent's owner — its administration right reaches
+    the agent and its owner, never the tenant. A tenant-wide entry is written only by the
+    tenant's provisioning actor, a scope whose actor is
+    :data:`~hermes_extension_registry_port.PROVISIONING_ACTOR`; any principal actor attempting
+    one is refused with :class:`RegistryAdminRefused`, checked before the target is looked up,
+    and for a named write once the resolved entry is known to be tenant-wide, before anything
+    is changed. No tenant-administration claim exists yet; :func:`require_provisioning` is the
+    one place that changes when one does.
     """
 
     def _check_install_args(self, *, name: str, kind: str, version: str, content_hash: str,
@@ -118,10 +151,11 @@ class ExtensionRegistry(ABC):
                 level: str = "owner") -> dict[str, Any]:
         """Record an entry at *level* (``"owner"``: the bound agent's owner; ``"tenant"``: the
         whole tenant), replacing any entry already at that level and name. The entry starts
-        ``enabled`` and switched off for every agent. Administration.
-
-        This stores the row; validating the plugin, scanning it and discovering its tools are
-        the caller's, and their refusals happen before this is called."""
+        ``enabled`` and switched off for every agent. An owner-wide install needs the agent's
+        administration right; a tenant-wide one the provisioning actor (the v1 rule), refused
+        before anything is read. This stores the row; validating the plugin, scanning it and
+        discovering its tools are the caller's, and their refusals happen before this is
+        called."""
 
     @abstractmethod
     def get(self, name: str) -> Optional[dict[str, Any]]:
@@ -135,18 +169,24 @@ class ExtensionRegistry(ABC):
     @abstractmethod
     def set_enabled(self, name: str, enabled: bool) -> bool:
         """Offer or withdraw the resolved entry for its whole level; ``False`` when no visible
-        entry has that name (a foreign entry answers the same as a missing one). Administration."""
+        entry has that name (a foreign entry answers the same as a missing one). The agent's
+        administration right reaches the resolved entry when it is owner-wide; a tenant-wide
+        one needs the provisioning actor (the v1 rule), refused once the entry is known to be
+        tenant-wide, before anything is changed."""
 
     @abstractmethod
     def remove(self, name: str) -> bool:
-        """Delete the resolved entry and every per-agent switch naming it; ``False`` when no
-        visible entry has that name. Administration."""
+        """Delete the resolved entry and every per-agent switch for it; ``False`` when no
+        visible entry has that name. The agent's administration right reaches the resolved
+        entry when it is owner-wide; a tenant-wide one needs the provisioning actor (the v1
+        rule), refused once the entry is known to be tenant-wide, before anything is changed."""
 
     @abstractmethod
     def set_agent_enabled(self, name: str, enabled: bool) -> bool:
         """Turn this agent's per-agent switch for the resolved entry on or off; ``False`` when no
-        visible entry has that name. The switch is this agent's alone: other agents of the same
-        owner keep their own. Administration."""
+        visible entry has that name. The switch is this agent's own row, whatever level the
+        entry sits at: other agents of the same owner keep their own, and the agent's
+        administration right is the one that writes it."""
 
     @abstractmethod
     def agent_enabled(self, name: str) -> bool:

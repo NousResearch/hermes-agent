@@ -22,6 +22,9 @@ Covered:
 - administration: installing, removing, disabling and switching on are refused for a scope that
   may not administer the agent, with a refusal that never reveals whether the entry exists (the
   same message as for a missing name), while every read still works for such a scope;
+- the tenant's provisioning: a tenant-wide entry is written by the provisioning actor alone, not
+  by an agent's administrator (:class:`ProvisioningConformance`, against a backend that holds a
+  whole tenant's registry);
 - per-agent switches: an entry switched on for one agent is absent from another agent's — of any
   owner — offered list, and answers there exactly like a missing one; a level-disabled entry is
   offered to no one even with its switch on; removing an entry takes its switches with it;
@@ -72,6 +75,9 @@ class Backend:
     - ``foreign_tenant(agent)``: bind a scope of ANOTHER tenant that names the same agent id.
     - ``unbound()``: run with no scope pinned. A local backend's pin is then the ambient profile,
       so its ``unbound`` names a third profile; a hosted one binds nothing.
+    - ``install_shared(registry)``: install the world's ``shared`` entry — at the tenant level
+      under the tenant's provisioning scope where the backend stores one, else the backend's
+      stand-in for it (the local backend's owner-wide row, the registry's local exception).
     """
 
     open: Callable[[str], ExtensionRegistry]
@@ -80,6 +86,7 @@ class Backend:
     other_owner: Callable[[str], AbstractContextManager]
     foreign_tenant: Callable[[str], AbstractContextManager]
     unbound: Callable[[], AbstractContextManager]
+    install_shared: Callable[[ExtensionRegistry], None]
 
 
 @dataclass
@@ -93,12 +100,15 @@ class LevelBackend:
     - ``g``: an agent owned by a group.
 
     ``bind(agent)`` binds its administering scope; ``bind_member(agent)`` binds a
-    non-administering one (a teammate; for ``g``, a group member's turn).
+    non-administering one (a teammate; for ``g``, a group member's turn); ``bind_provisioning``
+    binds the tenant's provisioning actor on the agent — the only scope that may write a
+    tenant-wide entry (it may administer).
     """
 
     open: Callable[[str], ExtensionRegistry]
     bind: Callable[[str], AbstractContextManager]
     bind_member: Callable[[str], AbstractContextManager]
+    bind_provisioning: Callable[[str], AbstractContextManager]
 
 
 def _refused(call: Callable[[], object]) -> str:
@@ -141,7 +151,7 @@ def make_world(backend: Backend) -> World:
         install(registry, name="auth", kind="mcp_server")
         registry.set_enabled("auth", False)
         registry.set_agent_enabled("auth", True)
-        install(registry, name="shared", level="tenant")
+    backend.install_shared(registry)
     return World(registry)
 
 
@@ -176,10 +186,10 @@ READS: dict[str, Callable] = {
 }
 
 #: Every write, with arguments that succeed in a :class:`World` under agent ``a``'s own
-#: administering scope.
+#: administering scope. A tenant-wide install is not among them: an agent's administrator may
+#: not make one (:class:`ProvisioningConformance`).
 WRITES: dict[str, Callable] = {
     "install": lambda r: install(r, name="nova"),
-    "install_tenant": lambda r: install(r, name="orgwide", level="tenant"),
     "install_mcp": lambda r: install(r, name="server", kind="mcp_server"),
     "set_enabled": lambda r: r.set_enabled("weather", False),
     "set_agent_enabled_off": lambda r: r.set_agent_enabled("weather", False),
@@ -318,24 +328,18 @@ class SwitchConformance:
             install(world.registry, name="weather")  # a fresh entry starts switched off
             assert world.registry.agent_enabled("weather") is False
 
-    def test_one_name_at_both_levels_resolves_to_the_more_specific_for_its_owner(self, backend):
-        world = make_world(backend)
-        with backend.bind("a"):
-            install(world.registry, name="dup", level="tenant")
-            install(world.registry, name="dup", level="owner")
-            assert world.registry.get("dup")["level"] == "owner"
-
 
 class LevelConformance:
     """The ownership levels, against a backend that holds a whole tenant's registry. Inherit and
     supply a ``level`` fixture."""
 
     def _world(self, level):
-        """``a1`` installed ``team-tool`` for its owner and ``org-tool`` for the tenant; ``m``
-        installed ``member-tool`` for itself."""
+        """``a1`` installed ``team-tool`` for its owner; the tenant's provisioning installed
+        ``org-tool`` for the tenant; ``m`` installed ``member-tool`` for itself."""
         a1, m = level.open("a1"), level.open("m")
         with level.bind("a1"):
             install(a1, name="team-tool")
+        with level.bind_provisioning("a1"):
             install(a1, name="org-tool", level="tenant")
         with level.bind("m"):
             install(m, name="member-tool")
@@ -382,10 +386,11 @@ class LevelConformance:
                 assert level.open(agent).get("group-tool") is None
 
     def test_one_name_at_both_levels_resolves_by_owner(self, level):
-        with level.bind("a1"):
-            a1 = level.open("a1")
+        a1 = level.open("a1")
+        with level.bind_provisioning("a1"):
             install(a1, name="dup", level="tenant")
-            install(a1, name="dup", level="owner")
+        with level.bind("a1"):
+            install(a1, name="dup")
             assert a1.get("dup")["level"] == "owner"
         with level.bind("a2"):
             assert level.open("a2").get("dup")["level"] == "owner"
@@ -419,3 +424,57 @@ class LevelConformance:
                     continue  # an agent that cannot see the entry is tested by the pin matrix
                 assert theirs.agent_enabled("team-tool") is False
                 assert "team-tool" not in _names(theirs.enabled_extensions())
+
+
+class ProvisioningConformance:
+    """Tenant-wide entries are written by the tenant's provisioning actor alone. The agent's
+    administration right reaches the agent's switches and its owner's owner-wide entries, never
+    the tenant's (no tenant-administration claim exists yet); the provisioning actor is the one
+    other writer, and it answers for the whole tenant. Inherit and supply a ``level`` fixture
+    whose ``bind_provisioning`` binds that actor."""
+
+    def test_a_principal_administrator_cannot_install_a_tenant_wide_entry(self, level):
+        a1 = level.open("a1")
+        with level.bind("a1"):
+            first = _admin_refused(lambda: install(a1, name="org-tool", level="tenant"))
+            second = _admin_refused(lambda: install(a1, name="absent-tool", level="tenant"))
+        assert first == second  # the refusal never says whether the name is taken
+        with level.bind_member("g"):
+            _admin_refused(lambda: install(level.open("g"), name="org-tool", level="tenant"))
+        with level.bind("b"):
+            assert level.open("b").get("org-tool") is None  # and nothing changed for anyone
+
+    def test_the_provisioning_actor_installs_tenant_wide_entries_for_the_whole_tenant(self, level):
+        with level.bind_provisioning("a1"):
+            row = install(level.open("a1"), name="org-tool", level="tenant")
+        assert row["level"] == "tenant"
+        for agent, bind in (("a1", level.bind), ("a2", level.bind), ("b", level.bind),
+                            ("m", level.bind), ("g", level.bind_member)):
+            with bind(agent):
+                assert level.open(agent).get("org-tool") is not None, agent
+
+    def test_a_principal_administrator_cannot_disable_or_remove_a_tenant_wide_entry(self, level):
+        a1 = level.open("a1")
+        with level.bind_provisioning("a1"):
+            install(a1, name="org-tool", level="tenant")
+        with level.bind("a1"):
+            for call in (lambda: a1.set_enabled("org-tool", False),
+                         lambda: a1.remove("org-tool")):
+                _admin_refused(call)
+            # the switch is the agent's own row: an owner may still switch a tenant-wide entry on
+            assert a1.set_agent_enabled("org-tool", True) is True
+            assert _names(a1.enabled_extensions()) == ["org-tool"]
+        with level.bind("b"):
+            theirs = level.open("b")
+            assert theirs.get("org-tool")["enabled"] is True  # untouched by the other owner's admin
+            assert _names(theirs.enabled_extensions()) == []  # its own switch is off
+
+    def test_the_provisioning_actor_administers_tenant_wide_entries(self, level):
+        a1 = level.open("a1")
+        with level.bind_provisioning("a1"):
+            install(a1, name="org-tool", level="tenant")
+            assert a1.set_enabled("org-tool", False) is True
+            assert a1.set_enabled("org-tool", True) is True
+            assert a1.remove("org-tool") is True
+        with level.bind("b"):
+            assert level.open("b").get("org-tool") is None

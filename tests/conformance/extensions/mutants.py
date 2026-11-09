@@ -3,8 +3,11 @@
 Each passed an earlier version of the suite. The local backend's pin forgets the agent
 (``local_pin_forgets_agent``: another profile's scope, and the ambient pin of a scopeless
 caller, are served), the tenant (``local_pin_forgets_tenant``) or the owner
-(``local_pin_forgets_owner``), and ``local_admin_not_required`` lets a scope that may not
-administer install and switch. The reference backend's resolution ignores the owner
+(``local_pin_forgets_owner``), ``local_admin_not_required`` lets a scope that may not
+administer install and switch, and ``local_accepts_tenant_entries`` stores tenant-wide
+entries despite the registry's local exception. The reference backend accepts a principal administrator's
+tenant-wide writes (``reference_tenant_writes_without_provisioning``: the tenant gate is gone),
+its resolution ignores the owner
 (``reference_owner_blind``: every entry of the tenant reaches every principal), the per-agent
 switch forgets its agent (``reference_switch_forgets_agent``: one switch shared by every
 agent), owner-wide entries resolve by the actor instead of the agent's owner
@@ -70,6 +73,20 @@ def _local_admin_not_required(monkeypatch):
     """A scope that may not administer installs and switches anyway."""
     from hermes_extension_registry_port_local import LocalExtensionRegistry
     monkeypatch.setattr(LocalExtensionRegistry, "_administer", lambda self, scope: None)
+
+
+def _local_accepts_tenant_entries(monkeypatch):
+    """The local backend stores tenant-wide entries anyway: the local exception's level refusal
+    is gone."""
+    from hermes_extension_registry_port_local import LocalExtensionRegistry
+    monkeypatch.setattr(LocalExtensionRegistry, "_check_levels", lambda self, level: None)
+
+
+def _reference_tenant_writes_without_provisioning(monkeypatch):
+    """A principal administering its own agent installs, disables and removes tenant-wide
+    entries anyway: the tenant gate is gone."""
+    from hermes_conformance.extensions import reference
+    monkeypatch.setattr(reference, "require_provisioning", lambda scope: None)
 
 
 def _reference_owner_blind(monkeypatch):
@@ -145,6 +162,8 @@ MUTANTS = {
     "local_pin_forgets_tenant": _local_pin_forgets_tenant,
     "local_pin_forgets_owner": _local_pin_forgets_owner,
     "local_admin_not_required": _local_admin_not_required,
+    "local_accepts_tenant_entries": _local_accepts_tenant_entries,
+    "reference_tenant_writes_without_provisioning": _reference_tenant_writes_without_provisioning,
     "reference_owner_blind": _reference_owner_blind,
     "reference_switch_forgets_agent": _reference_switch_forgets_agent,
     "reference_resolves_by_actor": _reference_resolves_by_actor,

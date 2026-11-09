@@ -80,7 +80,9 @@ class SessionStore(ABC):
     def append_turn(self, session_id: str, messages: list[dict[str, Any]]) -> int:
         """Append the running turn's *messages* in one transaction, fenced by its claim. Refused
         (``TurnFenceRequiredError``) when no claimed turn of *session_id*, or of a session it is a
-        compression continuation of, is bound on this store."""
+        compression continuation of, is bound on this store; the continuation is the originating
+        claim's alone — once *session_id* holds its own claim, the claim it descends from can no
+        longer write it."""
 
     @abstractmethod
     def read_conversation(self, session_id: str, *, include_row_ids: bool = False) -> list[dict[str, Any]]:

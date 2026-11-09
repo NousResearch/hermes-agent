@@ -107,13 +107,33 @@ class LocalSessionStore(_Pinned, SessionStore):
         from hermes_state_errors import TurnFenceRequiredError
         from hermes_state_fence import store_turn
         mark = store_turn(self.db)
-        # A mid-turn compression moves the turn's transcript to a child; the claim stays on its session.
-        if mark is None or (session_id != mark.session
-                            and session_id not in self.db.get_compression_chain(mark.session)):
+        if mark is None:
             raise TurnFenceRequiredError(
                 f"a turn write to session {session_id!r} needs that session's claimed turn bound")
-        # The fence itself is checked by SessionDB's write transaction (hermes_state_fence).
-        return self.db.append_messages_batch(session_id, messages)
+        if session_id == mark.session:
+            return self.db.append_messages_batch(session_id, messages)
+
+        # A mid-turn compression moves the turn's transcript to a child; the claim stays on its
+        # session, and the continuation is that claim's alone. Both checks run inside the write's
+        # own transaction (the claim's own lease was checked at its start): a claim that lands on
+        # the destination while this write waits for the writer cannot slip between them.
+        def append_continuation(conn):
+            from hermes_state_compression import _CHAIN_STEP_SQL, _walk_compression_chain
+            if session_id not in _walk_compression_chain(
+                    mark.session, lambda current: conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()):
+                raise TurnFenceRequiredError(
+                    f"a turn write to session {session_id!r} needs that session's claimed turn bound")
+            own_claim = conn.execute(
+                "SELECT 1 FROM session_admissions WHERE target_session_id=? "
+                "AND status IN ('started','unknown') LIMIT 1", (session_id,)).fetchone()
+            if own_claim is not None:
+                raise TurnFenceRequiredError(
+                    f"session {session_id!r} holds its own claimed turn; the claim it continues "
+                    f"cannot write it")
+            return self.db._append_messages_in_transaction(conn, session_id, messages)
+
+        return self.db._execute_transcript_write(append_continuation, messages,
+                                                 patience_s=self.db._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def read_conversation(self, session_id, *, include_row_ids=False):
         self._pin()

@@ -1,0 +1,27 @@
+name: kata
+repo: https://github.com/opeblow/kata
+sha: "cc59b08f1bbeeb02524c060faac04edb34de0564"
+subdir: kata
+version: "0.1.0"
+title: Kata
+description: "Learns the multi-step tool routines your agent keeps repeating across conversations and, only after you review and approve each one, compiles it into a single deterministic tool that runs its steps without model round-trips in between. Proposals show the steps, data flow between them, permissions, input and output schemas, per-step side effects and a twelve-check offline validation (exact replay of recorded runs, held-out fit, injected failures and timeouts, secret scan, tool schema fingerprints). Approve, reject, disable, roll back and inspect run traces from /kata, `hermes kata` or a dashboard tab. Disclosure — records tool names, arguments and results (first 64 KB, secret-named keys and common credential formats redacted) plus model request timing and token counts to a local SQLite file under its plugin data directory, kept for 30 days by default; registers tools only after explicit approval and executes their steps through ctx.dispatch_tool; katas whose steps have external or unclassified effects escalate every call to Hermes's own approval prompt with a fresh rule key, so remembered approvals never repeat them and unattended runs follow Hermes's approval policy; side-effecting steps are never retried; makes no network, model or subprocess calls of its own."
+maintainer: opeblow
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/opeblow/kata/blob/cc59b08f1bbeeb02524c060faac04edb34de0564/README.md
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/opeblow/kata/cc59b08f1bbeeb02524c060faac04edb34de0564/docs/screenshots/dashboard-review-dark.png
+  - https://raw.githubusercontent.com/opeblow/kata/cc59b08f1bbeeb02524c060faac04edb34de0564/docs/screenshots/dashboard-active.png
+  - https://raw.githubusercontent.com/opeblow/kata/cc59b08f1bbeeb02524c060faac04edb34de0564/docs/screenshots/dashboard-review-light.png
+capabilities:
+  provides_tools: [kata_list]
+  provides_hooks: [post_tool_call, post_api_request, pre_tool_call, pre_llm_call, on_session_start, on_session_end]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Approved katas are registered as additional kata_<name> tools at runtime; they are not listed in provides_tools because they do not exist until you approve one."
+  - "Routines are linear. Branching on a result stays with the agent."
+  - "Values inside free-form text output cannot be referenced; they become inputs instead."

@@ -461,6 +461,9 @@ CASES = {
     # Fail open: CI-config / empty / blank diffs run everything.
     ".github change → all": ([".github/workflows/tests.yml"], DEFAULT),
     "action change → all": ([".github/actions/detect-changes/action.yml"], DEFAULT),
+    # Workflows call just recipes, so the recipes are CI config too.
+    "justfile change → all": (["justfile"], DEFAULT),
+    "recipe python wrapper → all": (["scripts/hermes-python"], DEFAULT),
     "empty diff → all": ([], DEFAULT),
     "blank lines → all": (["", "  "], DEFAULT),
 }

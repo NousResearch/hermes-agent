@@ -120,6 +120,7 @@ _DEFAULT_PAYLOADS = {
         "changed_paths": ["src/app.tsx"],
     },
     "on_session_start": {"session_id": "test-session"},
+    "on_session_open": {"session_id": "test-session", "platform": "cli", "reason": "create"},
     "on_session_end": {
         "session_id": "test-session", "task_id": "test-task", "turn_id": "test-turn",
         "completed": True, "failed": False, "interrupted": False,
@@ -165,6 +166,12 @@ _DEFAULT_PAYLOADS = {
         "started_at": 1756000000.0, "ended_at": 1756000000.42, "finish_reason": "stop",
         "response_model": "claude-haiku-4-5", "usage": {"input_tokens": 256, "output_tokens": 12},
         "assistant_content_chars": 40, "assistant_tool_call_count": 0, "error": None, "error_type": None,
+    },
+    "post_curator_run": {
+        "run_dir": "/home/user/.hermes/logs/curator/20260101-000000",
+        "run_json_path": "/home/user/.hermes/logs/curator/20260101-000000/run.json",
+        "report_md_path": "/home/user/.hermes/logs/curator/20260101-000000/REPORT.md",
+        "dry_run": False,
     },
     "subagent_stop": {
         "parent_session_id": "parent-sess", "child_role": None,

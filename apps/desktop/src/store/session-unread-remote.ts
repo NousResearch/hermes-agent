@@ -21,9 +21,11 @@
  */
 import { atom } from 'nanostores'
 
+import { isOwnerUnavailableRejection } from '@/api/owner-unavailable'
 import { setSessionUnreadRemote } from '@/hermes'
 
 import { $sessions, setSessions } from './session'
+import { OwnerWriteDeferredMarker, parkUntilOwnerAvailable } from './session-owner-deferred'
 
 export const UNREAD_WRITE_GUARD_MS = 10_000
 
@@ -53,6 +55,20 @@ export async function markSessionUnread(storedId: string, unread: boolean): Prom
   try {
     await setSessionUnreadRemote(storedId, unread, row.profile)
   } catch (err) {
+    if (isOwnerUnavailableRejection(err)) {
+      if (parkUntilOwnerAvailable(`unread:${storedId}:${unread}`, () => markSessionUnread(storedId, unread)) === 'parked') {
+        // Deferred, not failed: a live gateway owns the profile and will serve
+        // the write once its control plane is up (observed: minutes after
+        // login, every boot). The optimistic row and the write guard stand;
+        // the parked retry re-enters this function and either lands — the
+        // confirm mechanism releases the guard exactly as before — or expires
+        // into the visible rollback below.
+        throw new OwnerWriteDeferredMarker()
+      }
+
+      // Expired: fall through to the rollback — the backend kept the old value.
+    }
+
     // Roll back visibly: the backend kept the old value.
     const guard2 = new Map($unreadWriteGuard.get())
     guard2.delete(storedId)

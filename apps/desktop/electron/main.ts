@@ -44,6 +44,7 @@ import type { Session } from 'electron'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
 import { HERMES_API_EXPECTED_404 } from './api-expected-404'
+import { HERMES_API_OWNER_UNAVAILABLE, isOwnerUnavailableHttpError } from './api-owner-unavailable'
 import {
   destroyKeepaliveAgents,
   htmlResponseError,
@@ -15966,6 +15967,19 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     // failure still rejects and still logs in full.
     if (isNotFoundApiError(error)) {
       return { [HERMES_API_EXPECTED_404]: String((error as any)?.message ?? error) }
+    }
+
+    // Same rationale as the expected-404 sentinel above, for the other
+    // designed condition: the runtime-owner refusal (a live gateway owns the
+    // profile; its control plane is starting or unreachable) is a named,
+    // retryable verdict, and the sync stores park the write and retry until
+    // the owner serves it (session-owner-deferred.ts). Left rejecting, the
+    // first refusal of every parked write printed a full stack at every boot
+    // (observed live: four per boot). Resolve with the sentinel; preload
+    // rethrows it as the identical rejection, so the renderer contract is
+    // unchanged and only Electron's logging is bypassed.
+    if (isOwnerUnavailableHttpError(error)) {
+      return { [HERMES_API_OWNER_UNAVAILABLE]: String((error as any)?.message ?? error) }
     }
 
     // Persist the failure (full stack) before the rejection crosses to the

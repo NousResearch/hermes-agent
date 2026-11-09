@@ -24,6 +24,7 @@
 import { atom } from 'nanostores'
 
 import { ambientOwnerConnectionId } from '@/api/client'
+import { isOwnerUnavailableRejection } from '@/api/owner-unavailable'
 import { setSessionPinnedRemote } from '@/hermes'
 import { onConnectionScopeChange } from '@/lib/connection-scoped'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
@@ -42,6 +43,8 @@ import {
 } from '@/store/session'
 import { isSessionRemovalPending } from '@/store/session-removal'
 import type { SessionInfo } from '@/types/hermes'
+
+import { OwnerWriteDeferredMarker, parkUntilOwnerAvailable } from './session-owner-deferred'
 
 // pin ids we've successfully PATCHed pinned=true this session.
 const mirrored = new Set<string>()
@@ -236,6 +239,19 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
       // or by the cooldown if none ever does.
     },
     (err: unknown) => {
+      if (isOwnerUnavailableRejection(err)) {
+        if (parkUntilOwnerAvailable(`pin:${id}:${pinned}`, () => writePin(id, pinned, profile)) === 'parked') {
+          // Deferred, not failed: a live gateway owns the profile and will
+          // serve the write once its control plane is up (observed: minutes
+          // after login, every boot). The guard and the painted rows stand;
+          // the parked retry re-enters writePin and either lands or expires
+          // into the failure path below.
+          throw new OwnerWriteDeferredMarker()
+        }
+
+        // Expired: fall through — the server keeps the old value.
+      }
+
       // A failed write leaves the server on the old value, so the guard would
       // be fencing out the truth. Drop it and let the page win.
       // The painted rows are left as-is (pin or unpin alike): a failed pin is

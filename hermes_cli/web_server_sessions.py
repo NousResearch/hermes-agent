@@ -206,6 +206,16 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     failure surfaces a retryable 503. Only the owner's refusal frame
     (``GatewayRPCError``) is passed on as a verdict.
 
+    The reservation's own refusal is treated the same way, regardless of what
+    the discovery snapshot said: an ``OwnershipConflict`` is authoritative
+    evidence that a live owner holds the lock (nothing else refuses that way),
+    while the snapshot is advisory and can be seconds stale either way — the
+    owner takes the lock between the probe and the write during gateway boot,
+    observed live as the bare 409 in one run and the wrapped 503 in the next
+    for the same event. One condition, one shape: the refusal always surfaces
+    as the named, retryable ``owner_unavailable`` 503, with the owner state
+    re-probed for the reason rather than trusting the snapshot's word.
+
     The ticket is minted for the dashboard's authenticated principal, not the
     socket UID: ``authorize_history`` compares the actor subject against the
     row's stored owner, so a cold row owned by a dashboard account only takes
@@ -215,7 +225,7 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     from gateway.runtime_ownership import OwnershipConflict
     from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, missing_owner_state
     from hermes_cli.web_server_cron import _cron_profile_home
     from hermes_state import _default_db_path
 
@@ -227,11 +237,24 @@ async def _mutate_via_gateway_owner(profile, actor, params):
         try:
             return await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
         except HTTPException as exc:
-            if discovery.state == 'absent' or not isinstance(exc.__cause__, OwnershipConflict):
+            if not isinstance(exc.__cause__, OwnershipConflict):
                 raise
+            # The OwnershipConflict is the authoritative evidence that a runtime
+            # owner is on record: exclusive maintenance cannot refuse otherwise.
+            # The discovery snapshot above can be seconds stale either way —
+            # observed live, the same boot window surfaced the bare offline 409
+            # in one run and the wrapped 503 in the next, purely on snapshot
+            # timing (the owner took the lock between the probe and the write).
+            # One condition, one shape: always the named, retryable
+            # owner_unavailable refusal. Re-probe the owner state for the
+            # reason rather than publishing the stale snapshot's word — 'absent'
+            # next to a live-owner refusal is a lie the log reader untangles.
+            probed = await asyncio.to_thread(missing_owner_state, home)
+            reason = probed if probed in ('starting', 'inaccessible') else (
+                discovery.reason_code or discovery.state)
             known = ''.join(f', {value}' for value in (discovery.reason_code, discovery.detail) if value)
-            _log.warning('session write for %s: gateway owner not reachable (%s%s)', home, discovery.state, known)
-            reason = discovery.reason_code or discovery.state
+            _log.warning('session write for %s: gateway owner not reachable (probed %s, discovery %s%s)',
+                         home, probed, discovery.state, known)
             raise HTTPException(status_code=503, detail=f'owner_unavailable: {reason}: {exc.detail}') from exc
     if not getattr(endpoint, 'control_home', True):
         # The selected home answered on its own socket (a multiplexer-served profile already

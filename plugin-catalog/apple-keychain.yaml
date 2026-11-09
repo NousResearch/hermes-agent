@@ -1,7 +1,7 @@
 name: apple-keychain
 title: Apple Keychain
 repo: https://github.com/robbiemu/hermes-agent
-sha: 9507474c8675f3d773b40a47c18175bbbe4be6bf
+sha: 6b573f8f2f31ac0f5254c99b6f64d97e674ff569
 subdir: plugins/apple-keychain
 description: >-
   Load Hermes secrets from macOS Keychain, with interactive setup, safe rotation
@@ -14,10 +14,10 @@ maintainer: robbiemu
 tier: community
 category: general
 requires_hermes: ">=0.23.0"
-version: "0.1.0"
+version: "0.1.1"
 platforms:
   - macos
-docs_url: https://github.com/robbiemu/hermes-agent/blob/9507474c8675f3d773b40a47c18175bbbe4be6bf/plugins/apple-keychain/README.md
+docs_url: https://github.com/robbiemu/hermes-agent/blob/6b573f8f2f31ac0f5254c99b6f64d97e674ff569/plugins/apple-keychain/README.md
 capabilities:
   provides_tools: []
   provides_hooks: []

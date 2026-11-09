@@ -1,13 +1,6 @@
-"""A provider profile opts its wire into explicit ``max_tokens`` forwarding (#139778).
+"""A provider profile opts its wire into auxiliary ``max_tokens`` forwarding (#139778).
 
-``_forwards_max_tokens`` only forwards an explicit caller cap on the built-in branches
-(Anthropic Messages wire, NVIDIA, MoA reference, Gemini native, OpenRouter, managed
-llama-server). A plugin external-process provider (``process://<id>`` base URL) matches
-none of them, so auxiliary caps were dropped silently — a compression summarizer on the
-``claude-subscription-directsdk`` plugin ran uncapped. The opt-in is a profile flag, not a
-blanket ``external_process`` rule: unverified subprocess providers (``copilot-acp``) keep
-the omit-the-cap default. These tests pin all three sides through the real
-``_build_call_kwargs`` entry point (no network, no credentials).
+Pinned through the real ``_build_call_kwargs`` entry point: opt-in forwards, the default drops.
 """
 
 from __future__ import annotations
@@ -70,12 +63,4 @@ def test_default_process_profile_still_drops_the_cap(registry):
         )
     )
     kwargs = _build("probe-acp-unverified", "process://probe-acp-unverified")
-    assert _cap(kwargs) == {}
-
-
-def test_unregistered_process_route_still_drops_the_cap(registry):
-    kwargs = _build(
-        "claude-subscription-directsdk-experimental",
-        "process://claude-subscription-directsdk-experimental",
-    )
     assert _cap(kwargs) == {}

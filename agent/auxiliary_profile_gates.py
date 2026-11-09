@@ -1,8 +1,4 @@
-"""Provider-profile predicates the auxiliary client routes on.
-
-Split out of ``agent/auxiliary_client.py`` (which sits at its code-health line cap) so the
-profile seams stay importable and independently testable.
-"""
+"""Provider-profile predicates the auxiliary client routes on."""
 
 from __future__ import annotations
 
@@ -26,14 +22,7 @@ def contains_profile_reasoning_fields(value: Any) -> bool:
 
 
 def profile_forwards_max_tokens(provider_norm: str) -> bool:
-    """Whether the provider's profile opts its wire into explicit ``max_tokens`` forwarding.
-
-    Plugin external-process routes (``process://<id>``) match none of the built-in
-    ``_forwards_max_tokens`` branches, so an auxiliary cap was dropped silently (#139778);
-    a profile that verified its endpoint honors the kwarg declares ``forwards_max_tokens``.
-    A miss keeps the omit-the-cap default; so does a broken plugin — profile lookup spans
-    lazy plugin discovery, and cap routing must survive it.
-    """
+    """Whether the provider's profile declares that its wire honors an explicit ``max_tokens``."""
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(provider_norm)

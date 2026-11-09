@@ -271,20 +271,17 @@ class LocalSkillIndex(SkillIndex):
             level: str = AGENT_LEVEL) -> dict[str, Any]:
         self._pin()
         self._store_level(level)
-        for error in (_validate_name(name), _validate_category(category)):
-            if error:
-                raise ValueError(error)
+        # The same identifiers every read accepts, first: an exact path is how a same-name
+        # skill is addressed, and the ambiguity refusal a bare shared name gets is the one
+        # today's resolver gives. A bare name is validated only where it is used, to create
+        # a skill that does not exist yet.
         existing = self._locate(name)
         if existing is not None:  # a replace lands where the skill lives today
             skill_dir = Path(existing["path"]).parent
         else:
-            from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
-            matches = [entry for entry in self._scan()
-                       if name in {str(entry["name"]), Path(entry["path"]).parent.name,
-                                   entry["relative_path"]}]
-            if len(matches) > 1:  # a name two skills share: never guess which one to write
-                raise ValueError(f"{AMBIGUOUS_SKILL_PREFIX}{name!r}; use the exact path "
-                                 f"its index row reports")
+            for error in (_validate_name(name), _validate_category(category)):
+                if error:
+                    raise ValueError(error)
             skill_dir = self.skills_dir / (category or "") / name
         skill_dir.mkdir(parents=True, exist_ok=True)
         (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")

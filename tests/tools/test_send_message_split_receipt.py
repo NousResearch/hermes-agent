@@ -2,9 +2,9 @@
 
 ``_send_chunks`` used to return the last chunk's result and nothing else, so a text that
 went out as N messages came back with a single ``message_id`` and a failure after the head
-had landed came back as a plain error. These tests pin the receipt: ``total_chunks`` and
-``message_ids`` on success, ``partial_success`` + ``delivered_message_ids`` when only part
-of the text reached the chat.
+had landed came back as a plain error. These tests pin the receipt: ``total_chunks``,
+``message_ids`` and ``accounted_chunks`` on success, ``partial_success`` +
+``delivered_message_ids`` when only part of the text reached the chat.
 
 Kept out of ``test_send_message_tool.py`` because that module skips wholesale when the
 optional Telegram dependencies are absent.
@@ -50,6 +50,7 @@ def test_split_send_names_every_part() -> None:
     assert result["success"] is True
     assert result["total_chunks"] == 3
     assert result["message_ids"] == ["id-1", "id-2", "id-3"]
+    assert result["accounted_chunks"] == 3
     # The pre-existing contract does not move: ``message_id`` stays the last chunk's id.
     assert result["message_id"] == "id-3"
 
@@ -102,6 +103,24 @@ def test_sender_that_split_again_contributes_all_its_ids() -> None:
 
     assert result["message_ids"] == ["id-1", "id-2", "id-3", "id-4"]
     assert result["total_chunks"] == 2
+    # Four ids for two parts: the id count is not a part count, ``accounted_chunks`` is.
+    assert result["accounted_chunks"] == 2
+
+
+def test_accounted_chunks_is_the_completeness_test() -> None:
+    """The other side of the case above: a sender that reports success with no id leaves a
+    part delivered but unnamed. The receipt must say so instead of letting the shorter id
+    list pass for a complete one -- and it must not claim a failure, because the part did go
+    out."""
+    send_one, _ = _sender(_ok("id-1"), _ok(None))
+
+    result = asyncio.run(_send_chunks(["one", "two"], send_one))
+
+    assert result["success"] is True
+    assert result["total_chunks"] == 2
+    assert result["message_ids"] == ["id-1"]
+    assert result["accounted_chunks"] == 1, "one of the two parts came back without an id"
+    assert "partial_success" not in result, "both parts were sent; only a receipt is missing"
 
 
 def test_chunk_without_an_id_still_counts_as_delivered() -> None:
@@ -114,6 +133,7 @@ def test_chunk_without_an_id_still_counts_as_delivered() -> None:
     assert result["partial_success"] is True
     assert result["delivered_chunks"] == 1
     assert result["delivered_message_ids"] == []
+    assert result["accounted_chunks"] == 0, "the head landed but cannot be named"
 
 
 # ----------------------------------------------------------------------- _send_via_adapter
@@ -188,6 +208,7 @@ def test_split_text_send_reports_both_parts() -> None:
     assert len(chunks) == 2, "the synthetic text must exceed the limit"
     assert result["total_chunks"] == 2
     assert result["message_ids"] == ["post-1", "post-2"]
+    assert result["accounted_chunks"] == 2
 
 
 def test_split_text_send_that_loses_the_tail_reports_partial_delivery() -> None:

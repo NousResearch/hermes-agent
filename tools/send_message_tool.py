@@ -647,16 +647,23 @@ async def _send_chunks(chunks, send_one):
     """``send_one(chunk, is_last)`` in order; stop at the first error dict.
 
     A split send reports every part, not only the last one. On success the result carries
-    ``total_chunks`` and ``message_ids`` (send order); on a chunk failure after earlier
-    chunks landed it carries ``partial_success``, ``delivered_chunks`` and
-    ``delivered_message_ids``. Returning the last chunk's result alone made a half
-    delivered split unreadable: the error dict dropped the ids of the bubbles already in
-    the chat, so a retry re-sent the head, and a success dict named one id for N visible
-    messages. This is the rule the media path already applies to dropped attachments
-    (#115908): a script reading ``success`` / exit 0 must not book a delivery that never
-    happened, and it must be able to name what did land.
+    ``total_chunks``, ``message_ids`` (send order) and ``accounted_chunks``; on a chunk
+    failure after earlier chunks landed it carries ``partial_success``,
+    ``delivered_chunks``, ``delivered_message_ids`` and ``accounted_chunks``. Returning
+    the last chunk's result alone made a half delivered split unreadable: the error dict
+    dropped the ids of the bubbles already in the chat, so a retry re-sent the head, and a
+    success dict named one id for N visible messages. This is the rule the media path
+    already applies to dropped attachments (#115908): a script reading ``success`` /
+    exit 0 must not book a delivery that never happened, and it must be able to name what
+    did land.
+
+    ``accounted_chunks`` is the completeness test, not ``len(message_ids)``: a sender that
+    reports success without an id contributes no id, and one that splits the chunk again
+    contributes several, so the id count runs both below and above the part count. A
+    receipt whose ``accounted_chunks`` is short of its part count delivered those parts but
+    cannot name them -- do not read that as a failed send, and do not re-send.
     """
-    result, delivered = None, []
+    result, delivered, accounted = None, [], 0
     # --- Matrix: route ALL sends through the native adapter so text is encrypted in E2EE rooms too (issue:
     # text-only sends arrived with a red padlock because they took the raw-HTTP standalone path). The
     # adapter reuses the live gateway's E2EE session when available (#46310) and falls back to an
@@ -667,11 +674,15 @@ async def _send_chunks(chunks, send_one):
             if i:  # chunks 1..i are already visible in the chat; only the tail is missing
                 result.update({"success": False, "partial_success": True,
                                "delivered_chunks": i, "total_chunks": len(chunks),
-                               "delivered_message_ids": delivered})
+                               "delivered_message_ids": delivered,
+                               "accounted_chunks": accounted})
             break
-        delivered.extend(_chunk_message_ids(result))
+        chunk_ids = _chunk_message_ids(result)
+        delivered.extend(chunk_ids)
+        accounted += 1 if chunk_ids else 0
     if len(chunks) > 1 and isinstance(result, dict) and result.get("success"):
-        result.update({"total_chunks": len(chunks), "message_ids": delivered})
+        result.update({"total_chunks": len(chunks), "message_ids": delivered,
+                       "accounted_chunks": accounted})
     return result
 
 

@@ -17,10 +17,12 @@ cover is listed in :mod:`hermes_conformance.secrets.suite`.
 """
 
 from hermes_conformance.secrets.suite import (
+    WRITE_FAILURES,
     Backend,
     LeveledSecretConformance,
     SecretPinningConformance,
     SecretsConformance,
 )
 
-__all__ = ["Backend", "LeveledSecretConformance", "SecretPinningConformance", "SecretsConformance"]
+__all__ = ["WRITE_FAILURES", "Backend", "LeveledSecretConformance", "SecretPinningConformance",
+           "SecretsConformance"]

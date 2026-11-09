@@ -383,13 +383,18 @@ def _call_check_fn(fn: Callable) -> bool:
     key = (fn, hermes_home_key())
     with _check_fn_inflight_lock:
         current = _check_fn_inflight.get(key)
-        if current is not None and current.timed_out and not current.done.is_set():
+        if current is not None and current.timed_out:
             raise CheckFnTimeout("is still not answering")
-        if current is None or current.done.is_set():
-            probe, start = _Probe(), True
-            _check_fn_inflight[key] = probe
-        else:
-            probe, start = current, False
+        probe, start = (current, False) if current is not None else (_Probe(), True)
+        _check_fn_inflight[key] = probe
+
+    def _settle() -> None:
+        # A settled probe leaves the table (MCP refreshes register a fresh check_fn each time, so a
+        # kept record would never be replaced); callers already waiting keep their reference.
+        with _check_fn_inflight_lock:
+            if _check_fn_inflight.get(key) is probe:
+                del _check_fn_inflight[key]
+        probe.done.set()
 
     if start:
         def _probe() -> None:
@@ -398,9 +403,14 @@ def _call_check_fn(fn: Callable) -> bool:
             except BaseException as exc:  # health: allow BLE001 -- re-raised on the calling thread
                 probe.outcome["error"] = exc
             finally:
-                probe.done.set()
+                _settle()
 
-        _ProbeThread(target=probe.ctx.run, args=(_probe,), name="check-fn-probe", daemon=True).start()
+        try:
+            _ProbeThread(target=probe.ctx.run, args=(_probe,), name="check-fn-probe", daemon=True).start()
+        except BaseException as exc:  # health: allow BLE001 -- re-raised to every waiter, then here
+            probe.outcome["error"] = exc
+            _settle()
+            raise
     if not probe.done.wait(_CHECK_FN_PROBE_TIMEOUT_SECONDS):
         probe.timed_out = True
         raise CheckFnTimeout(f"did not answer within {_CHECK_FN_PROBE_TIMEOUT_SECONDS:.0f}s")

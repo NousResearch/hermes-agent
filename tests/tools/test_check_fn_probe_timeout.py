@@ -6,6 +6,7 @@ from contextvars import ContextVar
 
 import pytest
 
+from tests.waiting import wait_until
 from tools import registry as registry_module
 from tools.registry import ToolRegistry, invalidate_check_fn_cache
 
@@ -72,6 +73,31 @@ def test_a_wedged_check_fn_drops_only_its_tool_and_is_not_restarted():
     stuck, names = _build_within(reg, {"wedged", "fine"}, 5.0)
     assert not stuck and names == ["fine"]
     assert len(calls) == 1
+
+    # Once the wedged probe finally answers, its record leaves the table (MCP refreshes mint a new
+    # check_fn each time, so nothing else would ever replace it).
+    _RELEASE.set()
+    assert wait_until(lambda: not registry_module._check_fn_inflight, timeout=5.0)
+
+
+def test_a_probe_thread_that_cannot_start_does_not_park_the_check(monkeypatch):
+    class _NoThreads:
+        def __init__(self, *a, **kw):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    reg = ToolRegistry()
+    _register(reg, "flaky_host", lambda: True)
+    monkeypatch.setattr(registry_module, "_ProbeThread", _NoThreads)
+    assert reg.get_definitions({"flaky_host"}, quiet=True) == []
+    assert not registry_module._check_fn_inflight
+
+    # Thread capacity is back: the very next check runs instead of answering "still not answering".
+    monkeypatch.setattr(registry_module, "_ProbeThread", threading.Thread)
+    invalidate_check_fn_cache()
+    assert [d["function"]["name"] for d in reg.get_definitions({"flaky_host"}, quiet=True)] == ["flaky_host"]
 
 
 def test_a_bounded_probe_keeps_scope_errors_and_contextvar_publication():

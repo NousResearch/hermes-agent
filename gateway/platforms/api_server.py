@@ -3533,8 +3533,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         epoch, warnings = self._soul_request_prompt_refresh()
         # Audit: identity + sizes only; the persona content never enters logs.
         logger.info(
-            "[%s] PUT /api/soul: %d bytes, sha -> %s, backup %s, epoch %s %s",
-            self.name, result["bytes"], result["sha256"][:12],
+            "[%s] PUT /api/soul: %d bytes, sha %s -> %s, backup %s, epoch %s %s",
+            self.name, result["bytes"],
+            (result["prev_sha256"] or "-")[:12], result["sha256"][:12],
             result["backup"], epoch, self._request_audit_log_suffix(request))
         return web.json_response({
             "object": "hermes.soul",

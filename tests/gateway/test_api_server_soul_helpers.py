@@ -147,3 +147,21 @@ def test_write_os_replace_fails_leaves_file_intact(tmp_path, monkeypatch):
     ours = [p for p in tmp_path.iterdir() if BACKUP_RE.match(p.name)]
     assert len(ours) == 1  # backup was made before the failed replace
     assert ours[0].read_bytes() == raw
+    assert not list(tmp_path.glob("SOUL.md.tmp-*"))  # mkstemp debris cleaned
+
+
+def test_write_records_prev_sha(tmp_path):
+    # Audit support (spec §59 "sha %s→%s"): the write result carries the
+    # pre-replacement sha so the log line can show what changed into what.
+    res0 = write_soul(tmp_path, "one", None)
+    assert res0["prev_sha256"] is None  # create-from-nothing
+    res1 = write_soul(tmp_path, "two", res0["sha256"])
+    assert res1["prev_sha256"] == res0["sha256"]
+
+
+def test_write_rejects_nonstring_base(tmp_path):
+    # A non-string base_sha256 is a client bug: 400 (InvalidSoulContent),
+    # not an accidental 409 on a healthy file.
+    write_soul(tmp_path, "one", None)
+    with pytest.raises(InvalidSoulContent):
+        write_soul(tmp_path, "two", 123)  # type: ignore[arg-type]  # untrusted HTTP body reality

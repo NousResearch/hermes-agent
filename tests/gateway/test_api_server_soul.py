@@ -153,6 +153,11 @@ async def test_put_400_invalid_content(soul_home):
         resp = await client.put("/api/soul", json={"content": "   "})
         assert resp.status == 400
         assert (await resp.json())["error"] == "invalid_content"
+        # Non-string base_sha256 in a real JSON body is a client bug -> 400,
+        # never an accidental 409 that would invite a force-overwrite.
+        resp = await client.put("/api/soul", json={"content": "x", "base_sha256": 123})
+        assert resp.status == 400
+        assert (await resp.json())["error"] == "invalid_content"
 
 
 @pytest.mark.asyncio

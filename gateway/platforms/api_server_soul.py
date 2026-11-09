@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -150,7 +151,12 @@ def write_soul(home: Path, content: str, base_sha256: str | None) -> dict:
     path = home / SOUL_FILENAME
     existed = path.is_file()
 
+    prev_sha256: str | None = None
     if base_sha256 is not None:
+        if not isinstance(base_sha256, str):
+            # Contract hygiene: a non-string base is a client bug -> 400, not an
+            # accidental 409 that invites a "force overwrite" on a healthy file.
+            raise InvalidSoulContent("base_sha256 must be a string or null")
         if not existed:
             raise SoulMissing(str(path))
         current = soul_sha256(path.read_bytes())
@@ -159,17 +165,22 @@ def write_soul(home: Path, content: str, base_sha256: str | None) -> dict:
 
     backup_name: str | None = None
     if existed:
+        current_bytes = path.read_bytes()
+        prev_sha256 = soul_sha256(current_bytes)
         backup_name = _backup_name(home)
         # Copy the current bytes to the backup name (same-directory copy).
-        (home / backup_name).write_bytes(path.read_bytes())
+        (home / backup_name).write_bytes(current_bytes)
 
-    tmp = home / (SOUL_FILENAME + ".tmp")
+    # Unique mkstemp: two writers sharing the same home cannot clobber one
+    # fixed ".tmp" name; the replace itself stays atomic and in-directory.
+    fd, tmp_name = tempfile.mkstemp(dir=str(home), prefix=SOUL_FILENAME + ".tmp-")
     try:
-        tmp.write_bytes(data)
-        os.replace(tmp, path)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(Path(tmp_name), path)
     except OSError as exc:
         try:
-            tmp.unlink()  # best-effort: never leave a .tmp behind
+            os.unlink(tmp_name)  # best-effort: never leave .tmp debris behind
         except OSError:
             pass
         raise SoulWriteFailed(f"atomic replace failed: {exc}") from exc
@@ -177,6 +188,7 @@ def write_soul(home: Path, content: str, base_sha256: str | None) -> dict:
     prune_backups(home)
     return {
         "sha256": soul_sha256(data),
+        "prev_sha256": prev_sha256,
         "bytes": len(data),
         "updated_at": _updated_at(path),
         "backup": backup_name,

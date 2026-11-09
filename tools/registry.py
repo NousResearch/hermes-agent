@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import dataclass
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
@@ -343,11 +343,61 @@ def check_fn_cache_scope() -> Optional[str]:
         return CHECK_FN_CACHE_BYPASS
 
 
+# A probe that never answers held its caller forever: the boot warm-up never finished and the first
+# inbound turn stopped before its provider request, silently (#131145). A probe gets this budget
+# (the environment probe's) and then counts as unavailable; its thread stays parked, and later
+# calls in the same profile answer False at once instead of waiting or spawning another thread.
+_CHECK_FN_PROBE_TIMEOUT_SECONDS = 10.0
+_check_fn_parked: dict[tuple[Callable, str], threading.Event] = {}
+_check_fn_parked_lock = threading.Lock()
+_UNSET = object()
+
+
+class CheckFnTimeout(Exception):
+    """A ``check_fn`` did not answer within ``_CHECK_FN_PROBE_TIMEOUT_SECONDS``."""
+
+
+def _call_check_fn(fn: Callable) -> bool:
+    """``bool(fn())`` on a daemon worker under the caller's contextvars, bounded. The probe's
+    contextvar writes are published back (``memory_tool`` hands its availability snapshot to the
+    schema build that follows). Raises what the probe raised, or ``CheckFnTimeout``."""
+    key = (fn, hermes_home_key())
+    with _check_fn_parked_lock:
+        parked = _check_fn_parked.get(key)
+        if parked is not None and not parked.is_set():
+            raise CheckFnTimeout("is still not answering")
+        _check_fn_parked.pop(key, None)
+    ctx, done, outcome = copy_context(), threading.Event(), {}
+
+    def _probe() -> None:
+        try:
+            outcome["value"] = bool(fn())
+        except BaseException as exc:  # health: allow BLE001 -- re-raised on the calling thread
+            outcome["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=ctx.run, args=(_probe,), name="check-fn-probe", daemon=True).start()
+    if not done.wait(_CHECK_FN_PROBE_TIMEOUT_SECONDS):
+        with _check_fn_parked_lock:
+            _check_fn_parked[key] = done
+        raise CheckFnTimeout(f"did not answer within {_CHECK_FN_PROBE_TIMEOUT_SECONDS:.0f}s")
+    caller = copy_context()
+    for var, value in ctx.items():
+        if caller.get(var, _UNSET) is not value:
+            var.set(value)
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
 def _run_check_fn_uncached(fn: Callable) -> bool:
     """Run an availability check without cache/grace handling."""
     from agent.secret_scope import UnscopedSecretError, current_secret_scope
     try:
-        return bool(fn())
+        return _call_check_fn(fn)
+    except CheckFnTimeout as exc:
+        logger.warning("check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), exc)
     except UnscopedSecretError:
         # The verdict comes from the LIVE scope at the catch site, not from which registry branch
         # ran the probe: ``no_cache_check_fn`` probes skip the cache-scope lookup entirely, so a
@@ -390,8 +440,11 @@ def _check_fn_cached(fn: Callable) -> bool:
             _note_verdict_expiry(cached[0] + _CHECK_FN_TTL_SECONDS)
             return cached[1]
     exc_info = None
+    timed_out = False
     try:
-        value, outcome = bool(fn()), "returned False"
+        value, outcome = _call_check_fn(fn), "returned False"
+    except CheckFnTimeout as exc:
+        value, outcome, timed_out = False, str(exc), True
     except Exception as exc:
         # Keep the exception for the verdict log below (emitted outside this block, where
         # ``exc_info=True`` would resolve to nothing): a check_fn that raises is a bug in the probe
@@ -435,7 +488,8 @@ def _check_fn_cached(fn: Callable) -> bool:
                 "so not searchable either); dependent tools will be unavailable this turn",
                 _fn_label(fn), outcome, ", ".join(core_dropped), exc_info=exc_info)
         else:
-            log = logger.warning if exc_info else logger.info
+            # A probe that never answers is a bug in the probe, not a missing backend: WARNING.
+            log = logger.warning if exc_info or timed_out else logger.info
             log(
                 "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
                 exc_info=exc_info)

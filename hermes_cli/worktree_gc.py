@@ -283,11 +283,11 @@ def _audit_entry(_ops, repo_root: str, entry: Path, merge_cache, remote_heads, *
                  with_sizes: bool, older_than_days: Optional[float]) -> Optional[TreeRecord]:
     try:
         age_days = (now - entry.stat().st_mtime) / 86400.0
-    except Exception:
+    except Exception:  # health: allow BLE001 -- moved verbatim from audit_worktrees' loop; a tree that vanishes mid-audit is skipped
         return None
     try:
         branch = _git(["branch", "--show-current"], cwd=str(entry), timeout=5).stdout.strip()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- moved verbatim from audit_worktrees' loop; the verdict below still fails safe to keep
         branch = ""
     verdict, reason, untracked = _classify_tree(_ops, repo_root, entry, merge_cache, remote_heads)
     if older_than_days is not None and verdict in _REAP_VERDICTS and age_days < older_than_days:
@@ -299,7 +299,7 @@ def _audit_entry(_ops, repo_root: str, entry: Path, merge_cache, remote_heads, *
         verdict=verdict, reason=reason, untracked=untracked)
 
 
-def _linked_worktree_paths(repo_root: str) -> List[str]:
+def _linked_worktree_paths(repo_root: str) -> list[str]:
     """Real paths of the repo's LINKED worktrees (the main checkout, first in the porcelain
     listing, is excluded — it is never a reclaim target)."""
     result = _git(["worktree", "list", "--porcelain"], cwd=repo_root, timeout=10)

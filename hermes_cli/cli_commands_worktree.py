@@ -1,9 +1,12 @@
-"""``/worktree new``'s step into the tree it just created, split out of ``cli_commands_mixin``."""
+"""``/worktree`` subcommand bodies split out of ``cli_commands_mixin``: ``new``'s step into the tree it
+just created, ``prune`` and ``remove``."""
 
 from __future__ import annotations
 
+import os
+
 from agent.i18n import t
-from hermes_cli.cli_commands_session_tools import _t
+from hermes_cli.cli_commands_session_tools import _pr, _t
 
 
 def enter_new_worktree(cli, wt_info) -> bool:
@@ -31,3 +34,46 @@ def enter_new_worktree(cli, wt_info) -> bool:
             return False
         print(f"  {t('cli.session.cwd_enter_failed', path=wt_info['path'], error=e)}")
     return True
+
+
+def worktree_prune(repo_root: str, rest: str) -> None:
+    """``/worktree prune [--dry-run]``: reap every reapable tree and merged branch, never this session's tree."""
+    import cli as _cli
+    from hermes_cli import worktree_gc
+    rest = rest.lower()
+    dry_run = "--dry-run" in rest or "-n" in rest.split()
+    active = _cli._active_worktree
+    tree_records = worktree_gc.audit_worktrees(repo_root, with_sizes=False)
+    if active:
+        # Never reap the tree this session is sitting in, even if judged clean+merged.
+        active_path = str(active.get("path") or "")
+        tree_records = [record for record in tree_records if record.path != active_path]
+    actions = worktree_gc.reclaim_worktrees(repo_root, dry_run=dry_run, records=tree_records)
+    actions += worktree_gc.reclaim_branches(repo_root, dry_run=dry_run)
+    if actions:
+        _pr(*(f"  {line}" for line in actions),
+            "  " + _t("worktree.actions_planned" if dry_run else "worktree.actions_done", count=len(actions)))
+    else:
+        print(f"  {_t('worktree.nothing_to_reclaim')}")
+    kept = [r for r in tree_records
+            if r.verdict == "keep" and "kanban" not in r.reason and "in use" not in r.reason]
+    if kept:
+        _pr(f"  {_t('worktree.preserved', count=len(kept))}",
+            *(f"    {record.name}: {record.reason}" for record in kept))
+
+
+def worktree_remove(repo_root: str, rest: str) -> None:
+    """``/worktree remove <name|path>``: one tree under the prune policy (never this session's own)."""
+    import cli as _cli
+    from hermes_cli import worktree_gc
+    name = rest.strip()
+    if not name:
+        return print(f"  {_t('worktree.remove_usage')}")
+    path = name if os.path.isabs(name) or os.sep in name else os.path.join(repo_root, ".worktrees", name)
+    active = _cli._active_worktree
+    if active and os.path.realpath(str(active.get("path") or "")) == os.path.realpath(path):
+        return print(f"  {_t('worktree.remove_own_tree')}")
+    result = worktree_gc.reclaim_worktree(repo_root, path)
+    _pr(*(f"  {line}" for line in result["actions"]))
+    if not result["removed"]:
+        print(f"  {_t('worktree.kept', path=path, reason=result['reason'])}")

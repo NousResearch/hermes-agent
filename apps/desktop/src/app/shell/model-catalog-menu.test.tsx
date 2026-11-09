@@ -904,6 +904,23 @@ describe('picking options on another model', () => {
     expect(applyPreset).not.toHaveBeenCalled()
     expect(closeMenu).not.toHaveBeenCalled()
   })
+
+  // Regression test proposed by @kvnloo in review of #149461.
+  it('keeps the menu open when an option-triggered switch rejects', async () => {
+    const applyPreset = vi.fn()
+
+    const select = vi.fn(async () => {
+      throw new Error('gateway rejected model selection')
+    })
+
+    renderMenu(other, { applyPreset, optionPickSelects: true, select })
+    await pickHighOnGeminiPro()
+    await act(async () => {})
+
+    expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google')
+    expect(applyPreset).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
 })
 
 describe('the catalog renders per-model pricing', () => {

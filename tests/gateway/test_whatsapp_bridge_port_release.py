@@ -54,6 +54,21 @@ _HOLDER_POLITE = (
 )
 
 
+# Honors SIGTERM the way bridge.js does: it finishes an in-flight creds save (1.5s here, bounded at
+# 3s in the bridge) and exits 0. The adapter must let it finish instead of SIGKILLing it.
+_HOLDER_DRAINING_ON_SIGTERM = (
+    "import signal, socket, sys, threading\n"
+    "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})\n"
+    "s = socket.socket()\n"
+    "s.bind(('127.0.0.1', int(sys.argv[1])))\n"
+    "s.listen(5)\n"
+    "print('ready', flush=True)\n"
+    "signal.sigwait({signal.SIGTERM})\n"
+    "threading.Event().wait(1.5)\n"
+    "sys.exit(0)\n"
+)
+
+
 def _wait_port_held(port: int, held: bool = True, timeout: float = 10.0) -> None:
     """Wait until a real bind probe agrees the port is (not) free — the holder is a fresh child."""
     from plugins.platforms.whatsapp.bridge_ownership import port_is_free
@@ -378,35 +393,57 @@ class TestPidfileHygiene:
             _stop(holder)
 
 
+def _disconnecting_adapter(tmp_path):
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
+    adapter.platform = Platform.WHATSAPP
+    adapter._shutting_down = False
+    adapter._session_path = tmp_path
+    adapter._bridge_log_fh = None
+    adapter._bridge_log = None
+    adapter._poll_task = None
+    adapter._http_session = None
+    adapter._release_platform_lock = MagicMock()
+    adapter._mark_disconnected = MagicMock()
+    return adapter
+
+
 class TestDisconnectWaits:
     @linux
     @pytest.mark.asyncio
     async def test_disconnect_force_kill_waits_for_exit(self, tmp_path):
         """disconnect() escalates to force kill for a bridge that ignores SIGTERM and then WAITS
         for the exit, so an in-process restart does not race the dying bridge for the port."""
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
-
-        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
-        adapter.platform = Platform.WHATSAPP
-        adapter._shutting_down = False
-        adapter._session_path = tmp_path
-        adapter._bridge_log_fh = None
-        adapter._bridge_log = None
-        adapter._poll_task = None
-        adapter._http_session = None
-        adapter._release_platform_lock = MagicMock()
-        adapter._mark_disconnected = MagicMock()
-
+        adapter = _disconnecting_adapter(tmp_path)
         port = _free_port()
         holder = _spawn_holder(_HOLDER_IGNORING_SIGTERM, port, node_named_dir=tmp_path)
         try:
             _wait_port_held(port, held=True)
             adapter._bridge_process = holder
 
-            with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
+            with patch("plugins.platforms.whatsapp.adapter._BRIDGE_STOP_GRACE_S", 0.2):
                 await adapter.disconnect()
 
             assert holder.poll() is not None, "disconnect() returned before the force-killed bridge exited"
             assert holder.returncode == -signal.SIGKILL
+        finally:
+            _stop(holder)
+
+    @linux
+    @pytest.mark.asyncio
+    async def test_disconnect_lets_a_draining_bridge_finish(self, tmp_path):
+        """bridge.js finishes an accepted creds save on SIGTERM before exiting. disconnect() used to
+        SIGKILL after a fixed 1s, which cut that save; it must wait for the clean exit instead."""
+        adapter = _disconnecting_adapter(tmp_path)
+        port = _free_port()
+        holder = _spawn_holder(_HOLDER_DRAINING_ON_SIGTERM, port, node_named_dir=tmp_path)
+        try:
+            _wait_port_held(port, held=True)
+            adapter._bridge_process = holder
+
+            await adapter.disconnect()
+
+            assert holder.returncode == 0, "the draining bridge was killed instead of allowed to finish"
         finally:
             _stop(holder)

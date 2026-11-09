@@ -595,7 +595,7 @@ def test_windows_exe_interpreter_records_ad_hoc_evidence(tmp_path, monkeypatch, 
         lambda token, root: "hermes-verify-" in token and token.endswith(".py"),
     )
     win_script = r"C:\Users\me\AppData\Local\Temp\hermes-verify-x.py"
-    assert _find_ad_hoc_match(f"{interpreter} {win_script}", tmp_path) == []
+    assert _find_ad_hoc_match(f"{interpreter} {win_script}", tmp_path) == ([], 0)
 
 
 def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
@@ -629,3 +629,218 @@ def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
     assert result is not None, (
         "Windows backslash path should be matched via posix=False fallback"
     )
+
+
+# --- a status the command echoed is the honest one when the shell hid its own --------------
+
+
+def test_echoed_status_after_a_sequence_attributes_a_failing_verifier(tmp_path, monkeypatch):
+    """`V; echo "TESTS_RC=$?"` leaves the shell's code to the echo, so the verifier's real
+    status only exists in the output. Reading it back is what makes the shape honest instead
+    of silently passing a failing run.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    evidence = classify_verification_command(
+        'pytest -q; echo "TESTS_RC=$?"',
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="1 failed, 5 passed\nTESTS_RC=1",
+    )
+
+    assert evidence is not None
+    assert evidence.canonical_command == "pytest"
+    assert evidence.kind == "test"
+    assert evidence.status == "failed"
+
+
+def test_echoed_pipeline_status_attributes_the_leading_verifier(tmp_path, monkeypatch):
+    """`V | tail; echo "RC=${PIPESTATUS[0]}"` names the verifier's own slot, so the pipeline's
+    status survives the filter even when the tool handed over no PIPESTATUS list.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    evidence = classify_verification_command(
+        'pytest -q | tail -5; echo "RC=${PIPESTATUS[0]}"',
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="1 failed, 5 passed\nRC=1",
+    )
+
+    assert evidence is not None
+    assert evidence.canonical_command == "pytest"
+    assert evidence.status == "failed"
+
+
+def test_echoed_status_also_attributes_an_ad_hoc_script(tmp_path, monkeypatch):
+    """The nudge itself suggests running a temp script; wrapping it in `; echo "RC=$?"` must
+    still record the run, otherwise the advice the agent is given yields nothing.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    script = Path(tempfile.gettempdir()) / f"hermes-verify-{tmp_path.name}.py"
+    script.write_text("raise SystemExit(1)\n", encoding="utf-8")
+    try:
+        evidence = classify_verification_command(
+            f'python {script}; echo "RC=$?"',
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            output="boom\nRC=1",
+        )
+    finally:
+        script.unlink(missing_ok=True)
+
+    assert evidence is not None
+    assert evidence.kind == "ad_hoc"
+    assert evidence.status == "failed"
+
+
+def test_pipefail_makes_the_shell_code_describe_the_verifier(tmp_path, monkeypatch):
+    """Under `set -o pipefail` the pipeline's code is the rightmost non-zero member, so it
+    describes the verifier and both directions become readable.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    failing = classify_verification_command(
+        "set -o pipefail; pytest -q | tail -5",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=1,
+        output="1 failed, 5 passed",
+    )
+    passing = classify_verification_command(
+        "set -o pipefail; pytest -q | tail -5",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="5 passed",
+    )
+
+    assert failing is not None and failing.status == "failed"
+    assert passing is not None and passing.status == "passed"
+
+
+@pytest.mark.parametrize(
+    "command, exit_code",
+    [
+        ("pytest -q | tail -5", 1),
+        ("false && pytest -q | tail -5", 1),
+    ],
+)
+def test_without_pipefail_or_a_ran_chain_the_pipeline_code_is_not_evidence(
+    tmp_path, monkeypatch, command, exit_code
+):
+    """The mirror of the fix: a plain pipeline's code belongs to the last member, and a chain
+    that never reached the verifier must not claim its run.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    assert (
+        classify_verification_command(
+            command, cwd=tmp_path, session_id="s1", exit_code=exit_code, output="1 failed"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "command, output",
+    [
+        ('pytest -q | tail -5; echo "RC=${PIPESTATUS[1]}"', "RC=1"),
+        ('pytest -q | tail -5; echo "RC=$?"', "RC=1"),
+        ('pytest -q; echo "done"', "done"),
+        ('pytest -q; echo "TESTS_RC=$?"', "5 passed"),
+        ('pytest -q; ls; echo "RC=$?"', "RC=1"),
+    ],
+)
+def test_echoed_status_is_ignored_when_it_cannot_belong_to_the_verifier(tmp_path, monkeypatch, command, output):
+    """Everything the echo can legitimately mean something else: a later member's PIPESTATUS
+    slot, `$?` after the filter, an echo that carries no status, a label that never printed,
+    and a command that ran between the verifier and the echo.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    assert (
+        classify_verification_command(
+            command, cwd=tmp_path, session_id="s1", exit_code=0, output=output
+        )
+        is None
+    )
+
+
+# --- the end directory may carry the evidence when the start directory cannot ---------------
+
+
+def test_alt_cwd_recovers_evidence_when_the_start_directory_names_no_workspace(tmp_path, monkeypatch):
+    """`cd project && pytest` starts outside the project, so the start directory classifies
+    nothing while the shell's code describes a run inside it (#151339).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    project = tmp_path / "project"
+    project.mkdir()
+    _python_project(project)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    assert classify_verification_command("pytest -q", cwd=elsewhere, session_id="s1", exit_code=0) is None
+
+    evidence = classify_verification_command(
+        "pytest -q", cwd=elsewhere, session_id="s1", exit_code=0, alt_cwd=project
+    )
+
+    assert evidence is not None
+    assert evidence.canonical_command == "pytest"
+    assert evidence.root == str(project.resolve())
+
+
+def test_alt_cwd_does_not_replace_a_start_directory_that_already_answers(tmp_path, monkeypatch):
+    """The start directory stays first: a command that classifies there is not re-attributed
+    to wherever the shell happened to end up.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    started = tmp_path / "started"
+    started.mkdir()
+    _python_project(started)
+    ended = tmp_path / "ended"
+    ended.mkdir()
+    _python_project(ended)
+
+    evidence = classify_verification_command(
+        "pytest -q", cwd=started, session_id="s1", exit_code=0, alt_cwd=ended
+    )
+
+    assert evidence is not None
+    assert evidence.root == str(started.resolve())
+
+
+def test_alt_cwd_records_a_terminal_result_from_the_end_of_the_command(tmp_path, monkeypatch):
+    """`terminal_tool_result` hands over the cwd the command ended in; without it the run is
+    dropped and every later turn re-nudges the same workspace as unverified.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    project = tmp_path / "project"
+    project.mkdir()
+    _python_project(project)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    recorded = record_terminal_result(
+        command="pytest -q",
+        cwd=elsewhere,
+        session_id="s1",
+        exit_code=0,
+        output="5 passed",
+        alt_cwd=project,
+    )
+
+    assert recorded is not None
+    assert recorded["status"] == "passed"
+    assert recorded["root"] == str(project.resolve())

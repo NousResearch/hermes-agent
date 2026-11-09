@@ -252,14 +252,99 @@ def _segment_status(
             ),
             default=sequence_start,
         )
-        chain_ran = "&&" not in operators or int(exit_code) == 0
+        chain_members = segments[sequence_start:pipeline_start]
+        chain_ran = (
+            "&&" not in operators
+            or int(exit_code) == 0
+            # A `cd DIR &&` prefix is path setup, not a gate that hides a run: when it is
+            # the only member ahead of the pipeline the verifier was reached, so the
+            # pipeline code still describes it.
+            or all(_is_cd_segment(member) for member in chain_members)
+        )
         if chain_ran and pipeline_status and len(pipeline_status) >= 2 and match_index == pipeline_start:
             return pipeline_status[0]
+        if chain_ran and _pipefail_before(segments, sequence_start):
+            # ``set -o pipefail`` makes the pipeline's code the rightmost non-zero
+            # member: 0 proves every member (so the verifier) passed. A non-zero code
+            # may belong to a downstream filter, so it is only a conservative red.
+            return int(exit_code)
         return None
     if not operators:
         return int(exit_code)
     if operators == {"&&"}:
         return int(exit_code) if int(exit_code) == 0 else None
+    return None
+
+
+def _is_cd_segment(segment: _ShellSegment) -> bool:
+    """Whether the segment only changes directory (``cd DIR`` / ``cd "DIR"``)."""
+    tokens = segment.tokens
+    if len(tokens) < 2:
+        return False
+    prefix = _strip_command_prefix(tokens)
+    return bool(prefix) and prefix[0] == "cd"
+
+
+def _pipeline_span_start(segments: list[_ShellSegment], match_index: int) -> int:
+    """Index of the first command of the pipeline the match belongs to."""
+    start = match_index
+    while start > 0 and segments[start - 1].following_operator in {"|", "|&"}:
+        start -= 1
+    return start
+
+
+def _pipefail_before(segments: list[_ShellSegment], upto: int) -> bool:
+    """Whether an earlier segment of the same command turned on ``pipefail``."""
+    for segment in segments[:upto]:
+        tokens = segment.tokens
+        if tokens and tokens[0] == "set" and any("pipefail" in token for token in tokens[1:]):
+            return True
+    return False
+
+
+def _echo_reported_status(
+    segments: list[_ShellSegment], match_index: int, output: str,
+) -> Optional[int]:
+    """The status a following ``echo "X=$?"``/``echo "X=${PIPESTATUS[n]}"`` printed.
+
+    A shell hides the status of a verifier that is followed by other work; when the
+    very next command is a status echo for this one, the number it printed is the
+    honest status. Anything else (a different command first, a non-status ``echo``,
+    a foreign ``PIPESTATUS`` slot, ``$?`` after a pipeline) stays unattributed.
+    """
+    if not output:
+        return None
+    end = match_index
+    while end + 1 < len(segments) and segments[end].following_operator in {"|", "|&"}:
+        end += 1
+    if segments[end].following_operator != ";" or end + 1 >= len(segments):
+        return None
+    tokens = segments[end + 1].tokens
+    if not tokens or tokens[0] not in {"echo", "printf"}:
+        return None
+    text = " ".join(tokens[1:])
+    if "PIPESTATUS" in text:
+        slot = re.search(r"PIPESTATUS\[(\d+)\]", text)
+        position = match_index - _pipeline_span_start(segments, match_index)
+        if not slot or int(slot.group(1)) != position:
+            return None
+    elif "$?" not in text:
+        return None
+    elif end != match_index:
+        return None  # `$?` after a pipeline reports the last filter, not the verifier
+
+    lines = [line.strip() for line in str(output).splitlines() if line.strip()]
+    label = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*=", text)
+    if label:
+        pattern = re.compile(rf"^{re.escape(label.group(1))}\s*=\s*(-?\d+)$")
+        for line in reversed(lines):
+            hit = pattern.match(line)
+            if hit:
+                return int(hit.group(1))
+        return None
+    for line in reversed(lines):
+        if re.fullmatch(r"-?\d+", line):
+            return int(line)
     return None
 
 
@@ -381,10 +466,12 @@ def _equivalent_needles(needle: list[str]) -> list[list[str]]:
 def _find_canonical_match(
     command: str, canonical_commands: list[str], exit_code: int,
     pipeline_status: Optional[list[int]] = None, *, attributed: bool = True,
+    output: str = "",
 ) -> Optional[tuple[str, list[str], Optional[int]]]:
     """Return ``(canonical, trailing_args, status)`` for the first detected command.
 
     ``attributed=False`` also matches a run whose own status the shell hid (status ``None``).
+    ``output`` is only read to recover a status the shell hid but the command echoed.
     """
     segments = _split_shell_segments(command)
     for canonical in canonical_commands:
@@ -394,6 +481,8 @@ def _find_canonical_match(
         for index, segment in enumerate(segments):
             candidate_tokens = _normalize_tokens(_strip_command_prefix(segment.tokens))
             status = _segment_status(segments, index, exit_code, pipeline_status)
+            if status is None:
+                status = _echo_reported_status(segments, index, output)
             if status is None and attributed:
                 continue
             for candidate in _equivalent_needles(needle):
@@ -470,14 +559,27 @@ def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[
     return None
 
 
-def _find_ad_hoc_match(command: str, root: str | Path | None, exit_code: int = 0) -> Optional[list[str]]:
+def _find_ad_hoc_match(
+    command: str, root: str | Path | None, exit_code: int = 0, output: str = "",
+) -> Optional[tuple[list[str], int]]:
+    """The ad-hoc ``hermes-verify-*`` script run in ``command``, with the status it reported.
+
+    ``output`` recovers a status the shell hid (``script.py; echo "RC=$?"``), exactly as
+    for canonical commands — otherwise the nudge's own advice lands no evidence, and a
+    failing script still counts as a pass through the shell's code.
+    """
     # posix=False is retried so Windows backslash script paths survive splitting.
     for posix in (True, False):
         segments = _split_shell_segments(command, posix=posix)
         for index, segment in enumerate(segments):
             trailing_args = _ad_hoc_script_args(segment.tokens, root)
-            if trailing_args is not None and _segment_status(segments, index, exit_code) is not None:
-                return trailing_args
+            if trailing_args is None:
+                continue
+            status = _segment_status(segments, index, exit_code)
+            if status is None:
+                status = _echo_reported_status(segments, index, output)
+            if status is not None:
+                return trailing_args, int(status)
     return None
 
 
@@ -548,9 +650,32 @@ def _load_changed_paths(raw: Any) -> list[Any]:
         return []
 
 
+def _cwd_candidates(cwd: str | Path | None, alt_cwd: str | Path | None) -> list[str | Path | None]:
+    """``cwd`` first, then the command's end cwd when it names a different directory.
+
+    ``cd some/repo && pytest`` starts in one directory and verifies another; the shell's
+    own code belongs to the whole command, so either end may carry the evidence.
+    """
+    candidates: list[str | Path | None] = []
+    seen: set[str] = set()
+    for candidate in (cwd, alt_cwd):
+        if not candidate:
+            continue
+        try:
+            key = str(Path(str(candidate)).resolve()).lower()
+        except OSError:
+            key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    return candidates
+
+
 def classify_verification_command(
     command: str, *, cwd: str | Path | None = None, session_id: str | None = None, exit_code: int = 0,
     output: str = "", pipeline_status: Optional[list[int]] = None,
+    alt_cwd: str | Path | None = None,
 ) -> Optional[VerificationEvidence]:
     """Classify a terminal command as verification evidence, if applicable.
 
@@ -558,18 +683,25 @@ def classify_verification_command(
     leading command of a pipeline, its own status comes from there rather than from the
     shell's code (which belongs to the last filter).
 
+    ``alt_cwd`` is a second candidate workspace (the cwd the command ended in) for
+    commands that ``cd`` into the project they verify.
+
     Ad-hoc temp scripts only count when the project has no canonical verify
     commands at all, so they never shadow a real suite.
     """
     if not command or not isinstance(command, str):
         return None
-    facts = _project_facts(cwd)
-    if not facts:
-        return None
-    return _classify_in_workspace(
-        command, facts, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
-        pipeline_status=pipeline_status,
-    )
+    for candidate in _cwd_candidates(cwd, alt_cwd):
+        facts = _project_facts(candidate)
+        if not facts:
+            continue
+        evidence = _classify_in_workspace(
+            command, facts, cwd=candidate, session_id=session_id, exit_code=exit_code,
+            output=output, pipeline_status=pipeline_status,
+        )
+        if evidence is not None:
+            return evidence
+    return None
 
 
 def _classify_in_workspace(
@@ -577,16 +709,19 @@ def _classify_in_workspace(
     exit_code: int, output: str, pipeline_status: Optional[list[int]],
 ) -> Optional[VerificationEvidence]:
     verify_commands = list(facts.get("verifyCommands") or [])
-    match = _find_canonical_match(command, verify_commands, int(exit_code), pipeline_status)
+    match = _find_canonical_match(
+        command, verify_commands, int(exit_code), pipeline_status, output=output,
+    )
     if match is not None and match[2] is not None:
         canonical, trailing_args, status = match
         kind = _kind_for_command(canonical)
         scope = "targeted" if any(map(_looks_like_target, trailing_args)) else "full"
     else:
-        if verify_commands or _find_ad_hoc_match(command, facts.get("root"), int(exit_code)) is None:
+        ad_hoc = _find_ad_hoc_match(command, facts.get("root"), int(exit_code), output)
+        if verify_commands or ad_hoc is None:
             return None
         canonical, kind, scope = "ad-hoc verification script", "ad_hoc", "targeted"
-        status = int(exit_code)
+        status = ad_hoc[1]
     return VerificationEvidence(
         command=command, canonical_command=canonical, kind=kind, scope=scope,
         status="passed" if int(status) == 0 else "failed", exit_code=int(exit_code),
@@ -598,16 +733,25 @@ def _classify_in_workspace(
 def record_terminal_result(
     *, command: str, cwd: str | Path | None, session_id: str | None, exit_code: int, output: str = "",
     pipeline_status: Optional[list[int]] = None,
+    alt_cwd: str | Path | None = None,
 ) -> Optional[dict[str, Any]]:
     """Record a foreground terminal result when it is verification evidence.
 
     A run of a detected verify command whose own status the shell hid (``pytest || true``,
     a pipe on a backend without ``PIPESTATUS``) is remembered so the stop nudge can say why
     it did not count.
+
+    ``alt_cwd`` (the cwd the command ended in) is tried when the starting cwd names no
+    workspace — ``cd project && run tests`` is normally executed from elsewhere.
     """
     if not _ledger_enabled() or not command or not isinstance(command, str):
         return None
-    facts = _project_facts(cwd)
+    facts: Optional[dict[str, Any]] = None
+    for candidate in _cwd_candidates(cwd, alt_cwd):
+        facts = _project_facts(candidate)
+        if facts:
+            cwd = candidate
+            break
     if not facts:
         return None
     key = (str(session_id or "default"), _root_for(facts, cwd))
@@ -618,7 +762,7 @@ def record_terminal_result(
     if evidence is not None:
         return _insert_evidence(evidence)
     verify_commands = list(facts.get("verifyCommands") or [])
-    if _find_canonical_match(command, verify_commands, int(exit_code), attributed=False):
+    if _find_canonical_match(command, verify_commands, int(exit_code), attributed=False, output=output):
         _UNATTRIBUTED_RUNS.pop(key, None)
         _UNATTRIBUTED_RUNS[key] = (command, _utc_now())
         while len(_UNATTRIBUTED_RUNS) > _MAX_UNATTRIBUTED_RUNS:

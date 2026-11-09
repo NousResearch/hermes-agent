@@ -235,6 +235,7 @@ class MemoryManager:
         }
         # The profile ``initialize_all`` bound the providers to; tool calls must come from it (#140058).
         self._bound_scope: Optional[dict[str, Any]] = None
+        self._session_db = None
         # Captured at initialize_all(). A fork ("subagent") holds a provider only for the checkpoint gate; its
         # turn writes and recall must not reach the user's memory. "primary" until initialized, so the legacy
         # construction path keeps writing.
@@ -694,8 +695,15 @@ class MemoryManager:
         """Notify providers that ``AIAgent.session_id`` rotated without teardown
         (``/resume``, ``/branch``, ``/reset``, ``/new``, compression). ``rewound=True``
         (``/undo``): same id, truncated transcript."""
-        if not new_session_id or not self._owner_allows("on_session_switch"):
+        if not new_session_id or not self._providers or not self._owner_allows("on_session_switch"):
             return
+        kwargs.pop("session_project_id", None)
+        if self._session_db is not None and self._agent_context == "primary":
+            from agent.agent_init_memory_provider import _session_project_id
+
+            kwargs["session_project_id"] = _session_project_id(
+                self._session_db, new_session_id, self._bound_scope["hermes_home"],
+            )
         if rewound:  # forward only when set so it never pollutes providers' **kwargs
             kwargs["rewound"] = True
         self._each_provider(
@@ -937,6 +945,8 @@ class MemoryManager:
         """``initialize_all`` for an agent build; True while an external provider is still served. One
         refused as another profile's shared instance is dropped, and ``say`` (the agent's startup
         warning sink) tells the user this profile now runs without it."""
+        # Keep the owner's store for switch lookups without handing it to providers.
+        self._session_db = kwargs.pop("_session_db", None)
         before = [p for p in self._providers if p.name != "builtin"]
         self.initialize_all(**kwargs)
         for provider in (p for p in before if not any(p is kept for kept in self._providers)):

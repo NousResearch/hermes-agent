@@ -461,20 +461,25 @@ def list_discovered_repos(conn: sqlite3.Connection) -> list[dict]:
 
 def project_for_path(conn: sqlite3.Connection, path: str, *, include_archived: bool = False) -> Optional[Project]:
     """Return the project owning ``path``: a folder owns it when equal or an ancestor, and the longest
-    folder wins so nested projects resolve to the innermost one."""
+    folder wins so nested projects resolve to the innermost one. Tied owners are ambiguous."""
     if not str(path or "").strip():
         return None
-    target = _normalize_path(path)
+    target = _primary_path_key(path)
     sql = "SELECT pf.project_id AS pid, pf.path AS folder FROM project_folders pf JOIN projects p ON p.id = pf.project_id"
     if not include_archived:
         sql += " WHERE p.archived = 0"
 
     def owns(folder: str) -> bool:
+        folder = os.path.normcase(folder)
         stem = folder.rstrip("/\\")
         return target == folder or target.startswith(stem + os.sep) or target.startswith(stem + "/")
 
     owners = [row for row in conn.execute(sql).fetchall() if owns(row["folder"])]
-    return get_project(conn, max(owners, key=lambda r: len(r["folder"]))["pid"]) if owners else None
+    if not owners:
+        return None
+    longest = max(len(row["folder"]) for row in owners)
+    project_ids = {row["pid"] for row in owners if len(row["folder"]) == longest}
+    return get_project(conn, project_ids.pop()) if len(project_ids) == 1 else None
 
 
 def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:

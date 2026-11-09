@@ -349,6 +349,8 @@ def test_unopenable_stdio_log_is_not_a_breakaway_refusal(tmp_path, monkeypatch):
     home = _absent_owner_home(tmp_path, monkeypatch)
     (home / "logs" / "gateway-stdio.log").mkdir(parents=True)  # a directory: open("ab") fails on every host
     spawned = []
+    # macOS tries a launchd job first; this test is about the direct spawn on every host.
+    monkeypatch.setattr(start, "start_gateway_job", lambda *a, **k: None)
     monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: spawned.append(a))
     result = runtime.ensure_gateway_runtime(home, timeout=5)
     assert (result.state, result.reason_code) == ("inaccessible", "stdio_log_unavailable")

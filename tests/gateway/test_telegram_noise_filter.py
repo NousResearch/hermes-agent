@@ -287,7 +287,12 @@ def test_local_surface_keeps_terminal_eos_control_token():
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
-def test_chat_gateways_suppress_provider_error_status(platform):
+@pytest.mark.parametrize("raw", [
+    "❌ API failed after 3 retries — HTTP 400: request blocked because "
+    "Operation contains cybersecurity risk. request_id=req_123",
+    "❌ Rate limited after 1 attempt — HTTP 429: Rate limit exceeded",
+])
+def test_chat_gateways_suppress_provider_error_status(platform, raw):
     """Provider-error statuses must not double up with the final response.
 
     The failed turn's final response is rewritten to the same user-safe text
@@ -296,11 +301,6 @@ def test_chat_gateways_suppress_provider_error_status(platform):
     raw body (request ids, policy text) out of chat — nothing is delivered on
     this path at all.
     """
-    raw = (
-        "❌ API failed after 3 retries — HTTP 400: request blocked because "
-        "Operation contains cybersecurity risk. request_id=req_123"
-    )
-
     assert _prepare_gateway_status_message(platform, "lifecycle", raw) is None
 
 

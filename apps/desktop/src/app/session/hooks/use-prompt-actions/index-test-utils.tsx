@@ -91,6 +91,7 @@ export function Harness({
   seedTurnStartedAt,
   rawAdmissionReceipts = false,
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
+  startFreshSessionDraft,
   storedSessionId,
   activeSessionId,
   createBackendSessionForSend
@@ -117,6 +118,7 @@ export function Harness({
   seedTurnStartedAt?: null | number
   rawAdmissionReceipts?: boolean
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
+  startFreshSessionDraft?: () => void
   storedSessionId?: null | string
   activeSessionId?: null | string
   createBackendSessionForSend?: (preview?: null | string) => Promise<null | string>
@@ -214,7 +216,7 @@ export function Harness({
     resumeStoredSession: resumeStoredSession ?? (() => undefined),
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
-    startFreshSessionDraft: () => undefined,
+    startFreshSessionDraft: startFreshSessionDraft ?? (() => undefined),
     sttEnabled: false,
     updateSessionState
   })

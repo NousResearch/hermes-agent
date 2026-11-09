@@ -1098,8 +1098,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
             return False
 
     @classmethod
-    def _should_retry_without_dm_topic_reply_anchor(
-        cls, error: Exception, metadata: Optional[dict[str, Any]], reply_to_message_id: Optional[int]) -> bool:
+    def _should_retry_without_dm_topic_reply_anchor(cls, error: Exception, metadata: Optional[dict[str, Any]], reply_to_message_id: Optional[int]) -> bool:
         """True when a DM-topic send may drop a deleted reply anchor and keep its route."""
         if not cls._dm_topic_fallback(metadata) or not cls._is_bad_request_error(error) or reply_to_message_id is None:
             return False
@@ -1111,12 +1110,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         return any(marker in str(error).lower() for marker in ("message to be replied not found", "reply message not found"))
 
     async def _send_with_dm_topic_reply_anchor_retry(
-        self, send_fn: Any, send_kwargs: dict[str, Any], metadata: Optional[dict[str, Any]],
-        media_label: str, reset_media: Optional[Any] = None) -> Any:
+        self, send_fn: Any, send_kwargs: dict[str, Any], metadata: Optional[dict[str, Any]], media_label: str, reset_media: Optional[Any] = None) -> Any:
         """Send private-topic media, retrying a deleted anchor or a dead topic one step at a time. Serialized per chat with
         ``send()`` so a file upload cannot land between two chunks of the text it accompanies."""
         async with self._media_send_slot(send_kwargs.get("chat_id")):
-            while True:  # anchor drop / native id (only from a thread route) / chat root: each step drops a constraint
+            same_thread_retried = False  # a one-off "thread not found" flake retries the same thread first, as send() does
+            while True:  # anchor drop / same thread once / native id (only from a thread route) / chat root, so it ends
                 try:
                     return await _await_with_thread_deadline(
                         send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
@@ -1124,6 +1123,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                     gone = dead_topic_may_reroute(send_kwargs.get("chat_id"), metadata) and topic_gone(send_kwargs.get("chat_id"), send_err)
                     if self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, send_kwargs.get("reply_to_message_id")):
                         send_kwargs = {**send_kwargs, "reply_to_message_id": None}  # the topic route stays
+                    elif gone and send_kwargs.get("message_thread_id") and not same_thread_retried:
+                        same_thread_retried = True
                     elif gone and send_kwargs.get("message_thread_id") and (direct := direct_topic_retry_kwargs(send_kwargs.get("chat_id"), None, metadata, send_kwargs)):
                         send_kwargs = {**send_kwargs, **direct}  # telegram_dm_topic_send.py: the same topic by its native id
                     elif gone and (send_kwargs.get("message_thread_id") or send_kwargs.get("direct_messages_topic_id")):
@@ -1131,8 +1132,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
                         self._prune_stale_dm_topic_binding(send_kwargs.get("chat_id"), self._metadata_thread_id(metadata), metadata=metadata)
                     else:
                         raise
-                    logger.warning(
-                        "[%s] Telegram %s rejected (%s), retrying with routing %s", self.name, media_label, _redact_telegram_error_text(send_err),
+                    logger.warning("[%s] Telegram %s rejected (%s), retrying with routing %s", self.name, media_label, _redact_telegram_error_text(send_err),
                         {k: send_kwargs.get(k) for k in ("message_thread_id", "direct_messages_topic_id", "reply_to_message_id")})
                     if reset_media is not None:
                         reset_media()

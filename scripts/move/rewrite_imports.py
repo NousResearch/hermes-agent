@@ -6,12 +6,15 @@ Sites listed in ``exclusions.py`` are left as they are and printed once per reas
 sites listed as by-hand are flagged instead of rewritten. A row whose anchor is no longer in its file is flagged.
 A UTF-8 BOM is kept; a file that is not UTF-8 is skipped with a flag.
 
-Rewritten: ``import`` and ``from`` statements, attribute chains of plain ``import`` bindings,
-``"-m", "<module>"`` argv pairs and ``-m <module>`` in strings, ``sys.modules`` keys and logger names
-(the strict compat finder in tests cannot see those). Every other site that names a moved module or path
-is printed as a flag, one line each: ``path:line  <class>  <old name>  <reason>``. The new old-name keys
-go into the compat MOVES table. Exit status 1 when a file fails to parse, a flag remains, or (with
---check) a file would change.
+Rewritten: ``import`` and ``from`` statements (``import a`` keeps its bound name: ``import new.a as a``),
+attribute chains of plain ``import a.b`` bindings, ``"-m", "<module>"`` argv pairs and ``-m <module>`` in
+strings, ``sys.modules`` keys and logger names (the strict compat finder in tests cannot see those), a string
+passed to any call whose whole value is a moved module or ``module.attr`` of a name it defines, the literal
+head of an f-string target, and ``pyproject.toml`` entry points and package-data keys. Config keys
+(``DEFAULT_CONFIG`` paths such as ``agent.reasoning_effort``) never change. Every other site that names a
+moved module or path is printed as a flag, one line each: ``path:line  <class>  <old name>  <reason>``.
+The new old-name keys go into the compat MOVES table. Exit status 1 when a file fails to parse, a flag
+remains, or (with --check) a file would change.
 """
 from __future__ import annotations
 
@@ -28,14 +31,18 @@ from pathlib import Path, PurePosixPath
 
 import libcst as cst
 from libcst.helpers import get_full_name_for_node
-from libcst.metadata import MetadataWrapper, ParentNodeProvider, PositionProvider, ScopeProvider
+from libcst.metadata import GlobalScope, MetadataWrapper, ParentNodeProvider, PositionProvider, ScopeProvider
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from exclusions import BY_HAND, EXCLUDED, IDENTITY, anchor_spans
 from renames import current_name, git, module_renames, moved_modules, renamed_paths
+from rewrite_toml import rewrite_pyproject
 
-DYNAMIC, STRING_REF, BY_PATH, FILE_MATH, BY_HAND_KIND, OTHER = (
-    "dynamic-import", "string-module-ref", "by-path", "file-math", "by-hand", "other")
+DYNAMIC, STRING_REF, BY_PATH, FILE_MATH, BY_HAND_KIND, OTHER, CALL_ARG = (
+    "dynamic-import", "string-module-ref", "by-path", "file-math", "by-hand", "other", "call-arg")
+_DOTTED_NAME = re.compile(r"[A-Za-z_][\w.]*(?::[A-Za-z_][\w.]*)?")
+GENERATE_HINT = ("next: after `just move-docs`, run `just move-generate`: generated files embed code and docstrings "
+                 "this move rewrote (apps/shared/src/gateway-contract.*, tests/hermes_cli/serve_handler_ledger.json)")
 _DASH_M = re.compile(r"(?<![\w-])(-m(?:\s+|[\"'],\s*[\"']))([A-Za-z_][\w.]*)")
 _CODE_IMPORT = re.compile(r"(?<![\w.])((?:from|import)\s+)([A-Za-z_][\w.]*)(?=\s+import\b|\s*(?:$|[\n,;)]|\\n| as\b))",
                           re.MULTILINE)
@@ -57,6 +64,8 @@ class Plan:
     """The compat MOVES table of the tree: earlier chunks' old names, so exclusion paths match after any move."""
     excluded: tuple[tuple[str, str, str], ...] = EXCLUDED
     by_hand: tuple[tuple[str, str], ...] = BY_HAND
+    config_keys: frozenset[str] = frozenset()
+    """Dotted ``DEFAULT_CONFIG`` keys: ``agent.reasoning_effort`` is a config key even where it is also a module."""
 
     @property
     def moved_files(self) -> set[str]:
@@ -144,14 +153,18 @@ class _Sink:
     attribute_allowed: bool | None = None
     by_hand: bool = False
     """None: rewrite any literal; otherwise rewrite only a name that resolves in the moved tree."""
+    pair: cst.BaseExpression | None = None
+    """For a call argument: the positional argument after it (``_lazy("mod", "attr")``)."""
 
 
 class _Rewriter(cst.CSTTransformer):
     METADATA_DEPENDENCIES = (PositionProvider,)
 
-    def __init__(self, plan: Plan, path: str, accesses: dict[cst.CSTNode, str | None]) -> None:
+    def __init__(self, plan: Plan, path: str, accesses: dict[cst.CSTNode, str | None],
+                 blocked_imports: dict[cst.CSTNode, str] | None = None) -> None:
         super().__init__()
         self.plan, self.path, self.accesses = plan, path, accesses
+        self.blocked_imports = blocked_imports or {}
         self.counts: dict[str, int] = {}
         self.flags: list[str] = []
         self.excluded: list[str] = []
@@ -217,11 +230,21 @@ class _Rewriter(cst.CSTTransformer):
     # Imports and the names they bind.
 
     def leave_Import(self, original: cst.Import, updated: cst.Import) -> cst.Import:
+        """``import a`` becomes ``import new.a as a``: the bound name stays, so its uses keep their spelling.
+
+        ``import a.b`` binds the new root, so its uses are respelled; one that would shadow another use of
+        that root in the same function (UnboundLocalError) is flagged instead.
+        """
+        if original in self.blocked_imports:
+            self._flag(original, OTHER, _code(original), self.blocked_imports[original])
+            return updated
         names = []
         for alias in updated.names:
-            new = self._new(get_full_name_for_node(alias.name))
-            if new is not None and not self._held(original, get_full_name_for_node(alias.name)):
-                alias = alias.with_changes(name=cst.parse_expression(new))
+            old = get_full_name_for_node(alias.name)
+            new = self._new(old)
+            if new is not None and not self._held(original, old):
+                keep = {} if alias.asname is not None or "." in old else {"asname": cst.AsName(name=cst.Name(old))}
+                alias = alias.with_changes(name=cst.parse_expression(new), **keep)
                 self._count("import")
             names.append(alias)
         return updated.with_changes(names=names)
@@ -352,6 +375,12 @@ class _Rewriter(cst.CSTTransformer):
                 self._mark(positional[1], "sys-modules")
         elif positional and method in _ATTRIBUTE_TARGETS | _MODULE_TARGETS:
             self._mark(positional[0], STRING_REF, method in _ATTRIBUTE_TARGETS)
+        self._mark_argv(node.args)
+        for arg, after in itertools.zip_longest(node.args, node.args[1:]):
+            if not arg.star and id(arg.value) not in self.sinks \
+                    and isinstance(arg.value, (cst.SimpleString, cst.FormattedString)):
+                pair = after.value if after is not None and after.keyword is None and not after.star else None
+                self.sinks[id(arg.value)] = _Sink(CALL_ARG, pair=pair)
 
     def visit_Expr(self, node: cst.Expr) -> None:
         if isinstance(node.value, (cst.SimpleString, cst.ConcatenatedString)):
@@ -390,6 +419,10 @@ class _Rewriter(cst.CSTTransformer):
     def _leave_sink(self, original, updated, sink: _Sink):
         if id(original) in self.matchers:
             return self._leave_matcher(original, updated)
+        if isinstance(original, cst.FormattedString) and (head := self._fstring_head(original, updated)) is not None:
+            return head
+        if sink.kind == CALL_ARG:
+            return self._leave_call_arg(original, updated, sink)
         if isinstance(updated, cst.SimpleString) and isinstance(text := updated.evaluated_value, str):
             if self._new(text.partition(":")[0]) is None or self._held(original, text):
                 return updated
@@ -406,6 +439,43 @@ class _Rewriter(cst.CSTTransformer):
                 and _mentions_old(original, self.plan.renames):
             self._flag(original, DYNAMIC, _code(original), f"computed {sink.kind} name; check by hand")
         return updated
+
+    def _leave_call_arg(self, original, updated, sink: _Sink):
+        """A string passed to a call is rewritten when its whole value names a moved module, ``module.attr`` or
+        ``module:attr`` of a name that module defines; a bare top-level name needs ``(module, attr)`` evidence.
+        A dotted name that only starts with a moved module is flagged; config keys are left alone."""
+        if isinstance(original, cst.FormattedString):
+            return self._leave_fstring(original, updated)
+        text = updated.evaluated_value if isinstance(updated, cst.SimpleString) else None
+        if not isinstance(text, str) or not _DOTTED_NAME.fullmatch(text) or text in self.plan.config_keys \
+                or self._new(text.partition(":")[0]) is None:
+            return self._leave_string(original, updated) if isinstance(original, cst.SimpleString) else updated
+        dotted = "." in text or ":" in text
+        paired = isinstance(sink.pair, cst.SimpleString) and sink.pair.evaluated_value in self.plan.names.get(text, ())
+        if not self.plan.names_module(text) or not (dotted or paired):
+            if not dotted or self.plan.path_pattern is not None and self.plan.path_pattern.search(text):
+                return self._leave_string(original, updated)
+            self._flag(original, CALL_ARG, text, "call argument starts with a moved module but does not resolve "
+                                                 "in the moved tree; fix by hand")
+            return updated
+        if self._held(original, text):
+            return updated
+        rewritten = _with_text(updated, self._whole)
+        if rewritten is None:
+            self._flag(original, OTHER, text, "call-arg literal spells the name with escapes; fix by hand")
+            return updated
+        self._count(CALL_ARG)
+        return rewritten
+
+    def _fstring_head(self, original: cst.FormattedString, node: cst.FormattedString) -> cst.FormattedString | None:
+        """``f"pkg.mod.{name}"`` in a sink: its literal head names a moved module, so only the head changes."""
+        head = node.parts[0] if node.parts else None
+        if not isinstance(head, cst.FormattedStringText) or len(node.parts) < 2 or not head.value.endswith(".") \
+                or "\\" in head.value or not self.plan.names_module(module := head.value[:-1]) \
+                or self._held(original, module):
+            return None
+        self._count("f-string")
+        return node.with_changes(parts=[head.with_changes(value=self._new(module) + "."), *node.parts[1:]])
 
     def _whole(self, text: str) -> str:
         module, colon, attr = text.partition(":")
@@ -424,7 +494,7 @@ class _Rewriter(cst.CSTTransformer):
         if id(original) in self.matchers:
             return self._leave_matcher(original, updated)
         rewritten = self._text(text, original)
-        if self.plan.names_module(rewritten):
+        if self.plan.names_module(rewritten) and rewritten not in self.plan.config_keys:
             self._flag(original, OTHER, text, "string names a moved module; rewrite or confirm by hand")
         elif self.plan.path_pattern is not None and (match := self.plan.path_pattern.search(rewritten)):
             old = match.group(1)
@@ -555,22 +625,32 @@ def _imports_old(node: cst.FormattedString, renames: dict[str, str]) -> bool:
 
 
 def _binding_accesses(wrapper: MetadataWrapper, renames: dict[str, str]):
-    """Each use of a name bound by a plain ``import``, as (new dotted spelling, None) or (None, flag reason).
+    """Uses of names bound by a plain dotted ``import a.b``, as (new dotted spelling, None) or (None, flag reason),
+    and the function-local dotted imports whose new root binding would shadow another use of that root.
 
-    A use is rewritten only when every binding it can see is an import of a moved module.
+    ``import a`` keeps its bound name (``import new.a as a``), so its uses are not touched. A use is rewritten
+    only when every binding it can see is an import of a moved module.
     """
-    found = {}
+    found, local, uses = {}, {}, []
     parents = wrapper.resolve(ParentNodeProvider)
     for scope in set(wrapper.resolve(ScopeProvider).values()):
         if scope is None:
             continue
+        for assignment in () if isinstance(scope, GlobalScope) else scope.assignments:
+            node = getattr(assignment, "node", None)
+            if isinstance(node, cst.Import) and _plain_alias(node, assignment.name) \
+                    and _imports_moved(node, assignment.name, renames) and not _keeps_name(node, assignment.name):
+                local[node] = scope
         for access in scope.accesses:
             if not isinstance(access.node, (cst.Name, cst.Attribute)):
                 continue
             referents = list(access.referents)
+            uses.append((access.node, scope, {getattr(r, "node", None) for r in referents}))
             imports = [r for r in referents if isinstance(getattr(r, "node", None), cst.Import)
                        and _plain_alias(r.node, r.name)]
             moved = [r for r in imports if _imports_moved(r.node, r.name, renames)]
+            if moved and all(_keeps_name(r.node, r.name) for r in moved):
+                continue
             new = current_name(get_full_name_for_node(access.node), renames)
             if imports and not moved:
                 chain = _chain(access.node, parents)
@@ -582,7 +662,45 @@ def _binding_accesses(wrapper: MetadataWrapper, renames: dict[str, str]):
                     (None, "name bound by a rewritten import does not map; fix by hand")
             elif moved and new is not None:
                 found[access.node] = (None, "name also bound by something other than a moved import; fix by hand")
-    return found
+    return found, _shadowing_imports(found, local, uses, {new.split(".")[0] for new in renames.values()})
+
+
+def _shadowing_imports(found, local, uses, roots: set[str]) -> dict[cst.CSTNode, str]:
+    """Function-local ``import a.b`` imports whose rewrite would bind a new root another use there reads globally.
+
+    Their uses are dropped from ``found`` so the import and its uses stay as they were, flagged.
+    """
+    by_scope: dict = {}
+    for node, scope in local.items():
+        by_scope.setdefault(scope, set()).add(node)
+    blocked = {}
+    for scope, imports in by_scope.items():
+        for node, use_scope, referents in uses:
+            spelled = (found.get(node) or (None,))[0] or get_full_name_for_node(node) or ""
+            root = spelled.split(".")[0]
+            if root in roots and _within(use_scope, scope) and not referents <= imports:
+                reason = (f"rewrite would bind {root} in this function, where {root} is also read from outside it "
+                          "(UnboundLocalError); fix by hand")
+                blocked.update((imp, reason) for imp in imports)
+                break
+    for node, _, referents in uses:
+        if referents & blocked.keys():
+            found.pop(node, None)
+    return blocked
+
+
+def _within(scope, outer) -> bool:
+    while scope is not outer:
+        if isinstance(scope, GlobalScope) or scope.parent is scope:
+            return False
+        scope = scope.parent
+    return True
+
+
+def _keeps_name(node: cst.Import, name: str) -> bool:
+    """``import a`` (no alias, no dot): the rewrite binds ``a`` again, so uses of ``a`` stay as written."""
+    return "." not in name and any(alias.asname is None and get_full_name_for_node(alias.name) == name
+                                   for alias in node.names)
 
 
 def _chain(node: cst.CSTNode, parents) -> cst.CSTNode:
@@ -616,7 +734,7 @@ def rewrite_source(source: str, path: str, plan: Plan) -> Result:
         wrapper = MetadataWrapper(cst.parse_module(source))
     except cst.ParserSyntaxError as error:
         return Result(path, error=f"{path}: parse error: {str(error).splitlines()[0]}")
-    rewriter = _Rewriter(plan, path, _binding_accesses(wrapper, plan.renames))
+    rewriter = _Rewriter(plan, path, *_binding_accesses(wrapper, plan.renames))
     if path != "<string>":
         rewriter.anchor(source)
     new = wrapper.visit(rewriter).code
@@ -726,10 +844,27 @@ def _moves_table(root: Path) -> dict[str, str]:
     return ast.literal_eval(node.value) if node is not None else {}
 
 
+def _config_keys(root: Path) -> frozenset[str]:
+    """Every dotted key path of ``DEFAULT_CONFIG`` (``agent``, ``agent.reasoning_effort``, ...)."""
+    keys: set[str] = set()
+    for path in git(root, "ls-files", "*hermes_cli/config_defaults.py").split():
+        body = ast.parse((root / path).read_text(encoding="utf-8-sig")).body
+        pending = [("", node.value) for node in body if isinstance(node, ast.Assign)
+                   and any(getattr(target, "id", None) == "DEFAULT_CONFIG" for target in node.targets)]
+        while pending:
+            prefix, value = pending.pop()
+            for key, item in zip(getattr(value, "keys", ()), getattr(value, "values", ())):
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    keys.add(prefix + key.value)
+                    pending.append((f"{prefix}{key.value}.", item))
+    return frozenset(keys)
+
+
 def build_plan(root: Path, commit: str) -> Plan:
     names = {old: found for old, (_, path) in moved_modules(root, commit).items()
              if (found := _module_names(root / path)) is not None}
-    return Plan(module_renames(root, commit), renamed_paths(root, commit), names, _moves_table(root))
+    return Plan(module_renames(root, commit), renamed_paths(root, commit), names, _moves_table(root),
+                config_keys=_config_keys(root))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -761,6 +896,12 @@ def main(argv: list[str] | None = None) -> int:
             if not args.check:
                 (root / result.path).write_bytes(result.source.encode("utf-8"))
     moves = update_moves(root, plan.renames, write=not args.check)
+    if not args.paths or "pyproject.toml" in args.paths:
+        toml_count, toml_flags = rewrite_pyproject(root, plan, write=not args.check)
+        flags += toml_flags
+        if toml_count:
+            counts["toml"] = toml_count
+            changed.append("pyproject.toml")
     for line in failed + flags:
         print(line)
     for reason in sorted(set(excluded)):
@@ -768,6 +909,8 @@ def main(argv: list[str] | None = None) -> int:
     kinds = " ".join(f"{kind}={n}" for kind, n in sorted(counts.items()))
     print(f"files={len(changed)} moves={moves} {kinds}".rstrip())
     print(f"rewritten={sum(counts.values())} flagged={len(flags)} failed={len(failed)}")
+    if changed and not args.check:
+        print(GENERATE_HINT)
     return 1 if failed or flags or (args.check and (changed or moves)) else 0
 
 

@@ -1140,6 +1140,7 @@ class GatewaySessionCommandsMixin:
         # provider cached _session_id at initialize() and would keep writing to the wrong session.
         self._evict_cached_agent(session_key)
         title = await self._session_db.get_session_title(target_id) or name
+        await self._follow_telegram_topic_switch(source, new_entry, title, reason="resume-command")
         try:
             history = await self.async_session_store.load_transcript(target_id)
         except TranscriptReadError:
@@ -1309,6 +1310,8 @@ class GatewaySessionCommandsMixin:
             return t("gateway.branch.switch_failed")
         self._clear_session_boundary_security_state(dest_key)
         self._evict_cached_agent(dest_key)
+        if in_place:
+            await self._follow_telegram_topic_switch(dest_source, new_entry, branch_title, reason="branch-command")
         msg_count = len([m for m in history if m.get("role") == "user"])
         if in_place:
             key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"

@@ -172,6 +172,17 @@ class GatewayTopicThreadsMixin:
         except Exception:
             logger.debug("telegram topic binding refresh failed (%s)", reason, exc_info=True)
 
+    async def _follow_telegram_topic_switch(self, source: SessionSource, session_entry, title: str, *,
+                                            reason: str) -> None:
+        """A command that repoints a topic lane at another session (/branch --here, /resume) rewrites
+        the persisted topic binding, else the next message's binding heal switches the topic straight
+        back to the old session (#58850); the topic is then renamed to the session it now holds."""
+        if not await asyncio.to_thread(self._is_telegram_topic_lane, source):
+            return
+        await asyncio.to_thread(self._sync_telegram_topic_binding, source, session_entry, reason=reason)
+        if title:
+            await self._rename_telegram_topic_for_session_title(source, session_entry.session_id, title)
+
     def _recover_telegram_topic_thread_id(self, source: SessionSource) -> Optional[str]:
         """Adapter-ingress recovery hook (sync, called off-loop before session keying): lobby recovery,
         except when ``dm_topic_auto_transfer`` is on — then the root-DM source is left alone so

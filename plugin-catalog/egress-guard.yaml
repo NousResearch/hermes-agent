@@ -1,7 +1,8 @@
 name: egress-guard
 repo: https://github.com/moussetea315/egress-guard
-sha: "da45bd37b16c59522fb34f3be8af0f8a747cddc9"
+sha: "6c127c471751c6a50731bd594e16d8f9e70932d3"
 description: >-
+  Automated output vetting for AI agents.
   Policy-driven guard for what leaves the agent. A pre_tool_call hook redacts credentials in
   tool arguments and sends shell commands that upload data to non-allowlisted destinations
   (curl/wget uploads, scp/rsync, cloud copies, gist create, git push to a URL, python/node

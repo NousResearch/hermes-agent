@@ -155,6 +155,26 @@ processes currently holding the database (`<db> is held by PID <n> (<command>)`)
 so you know what to stop; when the holder scan is partial or unavailable it says
 `cannot prove the database is quiet` instead of giving an all-clear.
 
+## Session Storage
+
+The `sessions:` section selects where a profile's sessions and their
+transcripts live:
+
+```yaml
+sessions:
+  # "local" (the default) keeps the profile's own state.db, behind the
+  # session storage ports. Any other name is a session storage provider
+  # plugin (plugins/session_storage/<name>/ or $HERMES_HOME/plugins/<name>/);
+  # a provider that is missing or unavailable is an error, never a fallback
+  # to the local store.
+  storage: local
+```
+
+The setting is read per profile from that profile's config, so a multiplexed
+gateway serves each profile's own choice. Turn writes (a turn's message
+appends and its admission ledger) go through the ports; a provider backend
+must prove it isolates tenants before it is used.
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:

@@ -309,8 +309,8 @@ class SessionTelegramTopicsMixin:
         """Bind one Telegram DM topic thread to one Hermes session. A session may be linked to
         only one topic: rebinding the same pair is idempotent; linking the session to a
         different topic raises ValueError. ``expected_session_id`` makes the rebind a
-        compare-and-swap: it only replaces a row still naming that id (a concurrent /new that
-        rebound the topic wins). Returns False when the CAS refused."""
+        compare-and-swap: it only replaces a row still naming that id (a concurrent /new or
+        /topic off that rebound or cleared the topic wins). Returns False when the CAS refused."""
         self.apply_telegram_topic_migration()
         now = time.time()
         chat_id, thread_id, user_id = str(chat_id), str(thread_id), str(user_id)
@@ -324,7 +324,7 @@ class SessionTelegramTopicsMixin:
                     "WHERE profile_name = ? AND chat_id = ? AND thread_id = ?",
                     (profile_name, chat_id, thread_id),
                 ).fetchone()
-                if current is not None and str(current[0]) != str(expected_session_id):
+                if current is None or str(current[0]) != str(expected_session_id):
                     return False
             existing_session = conn.execute("""
                 SELECT profile_name, chat_id, thread_id

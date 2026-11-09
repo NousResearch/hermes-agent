@@ -546,6 +546,23 @@ def _first_warning() -> "bool":
     return first
 
 
+def _engine_session_db(engine: "Any", db_path: "Path", read_only: "bool") -> "_SessionDB":
+    """The ``SessionDB`` Hermes hands a plugin context engine as ``session_db``. The stand-in's one warning goes to an
+    engine with a session hook that cannot take ``persistence``, naming its class."""
+    from agent.context_compressor_summary import _accepts_keyword_argument
+
+    db = _SessionDB(db_path, read_only=read_only)
+    hooks = [getattr(engine, name, None) for name in ("bind_session_state", "on_session_start")]
+    if not all(_accepts_keyword_argument(hook, "persistence") for hook in hooks if callable(hook)) and _first_warning():
+        _warnings.warn(
+            f"context engine {type(engine).__module__}.{type(engine).__qualname__} gets session_db, a "
+            f"hermes_state.SessionDB, which is deprecated and is removed in {_REMOVAL_RELEASE}; accept the "
+            "persistence= keyword in its bind_session_state and on_session_start to read through the agent's store "
+            "handle instead (https://hermes-agent.nousresearch.com/docs/developer-guide/context-engine-plugin"
+            "#session-storage).", DeprecationWarning, stacklevel=3)
+    return db
+
+
 def __getattr__(name: "str") -> "Any":
     if name not in _REPLACEMENTS:
         raise AttributeError(

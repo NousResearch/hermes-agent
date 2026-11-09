@@ -180,7 +180,8 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_audio_meta import (
     _coerce_duration_seconds, _probe_voice_duration_seconds, audio_player_fields, fit_thumbnail_jpeg)
 from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, direct_topic_retry_kwargs, private_chat, topic_gone
-from plugins.platforms.telegram.telegram_entities import expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text
+from plugins.platforms.telegram.telegram_entities import (
+    addressing_sources, addressing_text, expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text)
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
 from plugins.platforms.telegram.telegram_intake import effective_update_message
@@ -5641,16 +5642,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
         reply_user = getattr(replied, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
-    @staticmethod
-    def _entity_sources(message: Message):
-        """``(text, entities)`` pairs for the message text and caption; a text-less ``rich_message``
-        contributes its text minus code spans (as a code entity hides a handle) for the raw @handle fallback."""
-        text = getattr(message, "text", None) or ""
-        caption = getattr(message, "caption", None) or ""
-        yield text, getattr(message, "entities", None) or []
-        yield caption, getattr(message, "caption_entities", None) or []
-        if not text and not caption:
-            yield rich_message_text(message, skip_code=True), []
+    _entity_sources = staticmethod(addressing_sources)  # telegram_entities.py: text, caption, or rich blocks
 
     @staticmethod
     def _entity_type(entity) -> str:
@@ -5794,11 +5786,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
             return False
-        return any(
-            pattern.search(candidate)
-            for candidate in (getattr(message, "text", None), getattr(message, "caption", None),
-                              rich_message_text(message)) if candidate
-            for pattern in self._mention_patterns)
+        text = addressing_text(message)
+        return bool(text) and any(pattern.search(text) for pattern in self._mention_patterns)
 
     def _is_guest_mention(self, message: Message) -> bool:
         """Guest-mode bypass: explicit bot mention (caller already verified group chat)."""

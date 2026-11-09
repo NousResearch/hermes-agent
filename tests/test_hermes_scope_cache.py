@@ -13,7 +13,7 @@ from hermes_scope_cache import ScopedCache, UnscopedStateError, tenant_neutral
 
 
 def _hosted(tenant: str, agent: str) -> Scope:
-    return Scope(tenant, agent, Principal("p1"), owner=Group("g"), role="member")
+    return Scope(tenant, agent, Principal("p1"), owner=Group("g"), can_administer=False)
 
 
 def test_slots_are_per_tenant_and_agent():

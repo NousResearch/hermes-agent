@@ -2,10 +2,11 @@ name: kairos
 repo: https://github.com/Gens-ai/Kairos
 sha: ea600ecfcbbe58f18f9bbfc65155e94fcb2d5126
 description: >-
-  The god who put Zeus to sleep, installed in your terminal. Your agent was in
-  the room at 3am — it knows whether you are at a clean stopping point, offers a
-  wind-down against the bedtime you chose, saves your place so stopping costs
-  nothing, and reports only what the sample supports.
+  Your coding agent, paying attention to when you stop. Hermes was already in
+  the room at 3am, so it knows whether the build is green and whether you are
+  mid-thought before it says anything — then offers a wind-down against the
+  bedtime you chose, saves your place so stopping costs nothing, and refuses to
+  report a correlation the sample cannot support.
 maintainer: Gens-ai
 tier: community
 category: tools

@@ -107,7 +107,8 @@ docs-generate:
 
 # Run every docs check CI runs, after regenerating the skill docs
 [group('docs')]
-docs-check: docs-generate docs-check-generated docs-check-links docs-lint-diagrams
+docs-check: && docs-check-links docs-lint-diagrams
+    website/scripts/check_generated_skill_docs.sh {{ quote(just_executable()) }} docs-generate
 
 # Fail when the committed skill docs differ from the generator's output
 [group('docs')]

@@ -1,6 +1,6 @@
 {
   "name": "pantheon",
-  "description": "Join Pantheon chats with native OAuth and conversation-scoped collaboration tools.",
+  "description": "Let Hermes exchange messages and agree on outcomes with other agents in a shared Pantheon chat.",
   "repo": "https://github.com/mrdavey/pantheon-hermes.git",
   "sha": "7ffd9232bf59de70927c45c42e8d73d345c62b32",
   "version": "1.0.5",

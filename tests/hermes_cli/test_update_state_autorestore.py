@@ -660,3 +660,65 @@ def test_after_snapshot_indeterminate_snapshot_is_not_reported_valid(
     assert "Snapshot copy is valid" not in out
     assert "will be auto-restored" not in out
     assert "Snapshot copy ALSO failed integrity" not in out
+
+
+def test_after_snapshot_valid_snapshot_reports_auto_restore(
+    tmp_path, monkeypatch, capsys
+):
+    """Corrupt live DB + verified snapshot still promises auto-restore."""
+    from hermes_cli import backup, backup_integrity
+    from hermes_cli.update_cmd_maint import _verify_state_db_after_snapshot
+
+    home = tmp_path / "home"
+    home.mkdir()
+    state = home / "state.db"
+    _make_valid_db(state, 3)
+    snapshot_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
+    assert snapshot_id
+    snapshot = home / "state-snapshots" / snapshot_id / "state.db"
+    assert snapshot.is_file()
+
+    _wreck_sessions_btree(state)
+    # Leave snapshot verification real so valid=True.
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home)
+
+    _verify_state_db_after_snapshot(snapshot_id)
+
+    out = capsys.readouterr().out
+    assert "state.db integrity check FAILED after snapshot" in out
+    assert "Snapshot copy is valid — continuing update." in out
+    assert "will be auto-restored" in out
+    assert "verification deferred" not in out
+    assert "ALSO failed integrity" not in out
+    # Pre-update status path never restores; live DB stays wrecked.
+    assert backup_integrity.verify_sqlite_integrity(state)["valid"] is False
+
+
+def test_after_snapshot_corrupt_snapshot_reports_also_failed(
+    tmp_path, monkeypatch, capsys
+):
+    """Corrupt live DB + corrupt snapshot must not claim a recovery point."""
+    from hermes_cli import backup, backup_integrity
+    from hermes_cli.update_cmd_maint import _verify_state_db_after_snapshot
+
+    home = tmp_path / "home"
+    home.mkdir()
+    state = home / "state.db"
+    _make_valid_db(state, 3)
+    snapshot_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
+    assert snapshot_id
+    snapshot = home / "state-snapshots" / snapshot_id / "state.db"
+    assert snapshot.is_file()
+
+    _wreck_sessions_btree(state)
+    _wreck_sessions_btree(snapshot)
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home)
+
+    _verify_state_db_after_snapshot(snapshot_id)
+
+    out = capsys.readouterr().out
+    assert "state.db integrity check FAILED after snapshot" in out
+    assert "Snapshot copy ALSO failed integrity" in out
+    assert "Snapshot copy is valid" not in out
+    assert "will be auto-restored" not in out
+    assert "verification deferred" not in out

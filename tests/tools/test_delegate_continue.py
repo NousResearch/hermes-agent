@@ -7,6 +7,8 @@ Only the model is scripted: registry, child build, SessionDB, dispatch and compl
 
 import json
 import threading
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import hermes_yaml as yaml
@@ -243,3 +245,219 @@ def test_profile_routed_child_continues_inside_its_profile_scope(tmp_path, monke
     assert again["home"] == str(coder) and model.turns[1]["home"] == str(coder)
     assert (again["model"], again["api_key"]) == ("coder-model", "coder-key")
     assert [m["content"] for m in model.turns[1]["history"]] == ["work as coder", "done: work as coder"]
+
+
+@pytest.mark.parametrize("background", [False, True], ids=["synchronous", "sync-fallback"])
+def test_joined_result_handle_can_continue_the_same_child(background):
+    from tools import delegate_tool  # register the real handler
+
+    registry = delegate_tool.registry
+    model, parent = _ScriptedModel(), _parent()
+    with patch("run_agent.AIAgent", side_effect=model), \
+            patch("tools.delegate_tool_dispatch._resolve_async_wake_sid", return_value=None):
+        out = json.loads(registry.dispatch("delegate_task", {"goal": "write parser", "background": background},
+                                           parent_agent=parent))
+        if background:
+            assert "SYNCHRONOUSLY" in out["note"]
+        sid = out["results"][0]["subagent_id"]
+        again = json.loads(registry.dispatch("delegate_task", {
+            "action": "continue", "subagent_id": sid, "message": "add tests", "background": False,
+        }, parent_agent=parent))
+    assert again["results"][0]["subagent_id"] == sid
+    assert model.turns[1]["session_id"] == model.turns[0]["session_id"]
+    assert model.turns[1]["history"][-1]["content"] == "done: write parser"
+
+
+@pytest.mark.parametrize("caller", ["root", "rebuilt-root", "compressed-root"])
+def test_finished_grandchild_keeps_ancestor_continuation_ownership(caller):
+    from tools.delegate_tool import delegate_task
+
+    model, root = _ScriptedModel(), _parent("root-sess")
+    middle = _parent("middle-sess", db=root._session_db)
+    middle._delegate_parent_ref = weakref.ref(root)
+    with patch("run_agent.AIAgent", side_effect=model):
+        sid, _ = _spawn(middle, "grandchild work")
+        foreign = _parent("unrelated-sess", db=root._session_db)
+        refused = json.loads(delegate_task(action="continue", subagent_id=sid, message="foreign work",
+                                            background=True, parent_agent=foreign))
+        assert "not yours" in refused["error"]
+        immediate = json.loads(delegate_task(action="continue", subagent_id=sid, message="immediate follow-up",
+                                             background=True, parent_agent=middle))
+        assert immediate.get("status") == "dispatched", immediate
+        _completion(immediate["delegation_id"])
+        parent = root
+        if caller in {"rebuilt-root", "compressed-root"}:
+            parent = _parent("root-sess", db=root._session_db)
+        if caller == "compressed-root":
+            root._session_db.create_session("root-rotated", "cli", parent_session_id="root-sess")
+            root._session_db.end_session("root-sess", "compression")
+            parent.session_id = "root-rotated"
+        out = json.loads(delegate_task(action="continue", subagent_id=sid, message="more grandchild work",
+                                       background=True, parent_agent=parent))
+        assert out.get("status") == "dispatched", out
+        _completion(out["delegation_id"])
+    assert model.turns[2]["session_id"] == model.turns[0]["session_id"]
+
+
+def test_spawner_keeps_ownership_after_root_continues_grandchild():
+    from tools.delegate_tool import delegate_task
+
+    model, root = _ScriptedModel(), _parent("root-sess")
+    middle = _parent("middle-sess", db=root._session_db)
+    middle._delegate_parent_ref = weakref.ref(root)
+    foreign = _parent("unrelated-sess", db=root._session_db)
+    with patch("run_agent.AIAgent", side_effect=model):
+        sid, _ = _spawn(middle, "grandchild work")
+        out = json.loads(delegate_task(action="continue", subagent_id=sid, message="root follow-up",
+                                       background=True, parent_agent=root))
+        assert out.get("status") == "dispatched", out
+        _completion(out["delegation_id"])
+        refused = json.loads(delegate_task(action="continue", subagent_id=sid, message="foreign work",
+                                           background=True, parent_agent=foreign))
+        assert "not yours" in refused["error"], refused
+        again = json.loads(delegate_task(action="continue", subagent_id=sid, message="middle follow-up",
+                                         background=True, parent_agent=middle))
+        assert again.get("status") == "dispatched", again
+        _completion(again["delegation_id"])
+
+
+def test_resume_claim_checks_ownership_without_lock_and_only_one_claim_wins(monkeypatch):
+    from tools import delegate_tool_registry as registry
+    from tools.delegate_tool_continue import _claim_resume
+
+    parent, sid = _parent(), "sa-cont-claim-race"
+    _finished(sid, owner=parent.session_id)
+    spec = registry._recent_subagents[sid]["resume"]
+    owns = registry._owns_subagent_record
+    checked = threading.Barrier(2, timeout=10)
+
+    def check_ownership(record, caller):
+        acquired = registry._active_subagents_lock.acquire(blocking=False)
+        assert acquired, "ownership lookup must leave the registry available"
+        registry._active_subagents_lock.release()
+        result = owns(record, caller)
+        checked.wait()
+        return result
+
+    monkeypatch.setattr(registry, "_owns_subagent_record", check_ownership)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = [pool.submit(_claim_resume, sid, parent) for _ in range(2)]
+        results = [claim.result(timeout=15) for claim in claims]
+    assert sum(claimed is spec and error is None for claimed, error in results) == 1
+    assert sum(claimed is None and "No finished subagent" in error for claimed, error in results) == 1
+
+
+def test_resume_claim_refuses_a_record_replaced_during_ownership_check(monkeypatch):
+    from tools import delegate_tool_registry as registry
+    from tools.delegate_tool_continue import _claim_resume
+
+    parent, sid = _parent(), "sa-cont-replaced"
+    _finished(sid, owner=parent.session_id)
+    record = registry._recent_subagents[sid]
+    replacement = {**record, "resume": {**record["resume"]}}
+
+    def replace_record(*_):
+        monkeypatch.setitem(registry._recent_subagents, sid, replacement)
+        return True
+
+    monkeypatch.setattr(registry, "_owns_subagent_record", replace_record)
+    spec, error = _claim_resume(sid, parent)
+    assert spec is None and "No finished subagent" in error
+    assert "resume" in record and "resume" in replacement
+
+
+def test_timeout_continue_waits_for_worker_close_and_resource_cleanup(monkeypatch):
+    from tools import delegate_tool
+
+    parent, model = _parent(), _ScriptedModel()
+    worker_release, close_release, cleanup_release, next_release = [threading.Event() for _ in range(4)]
+    worker_started, close_started, close_done, cleanup_started, cleanup_done, next_started = [
+        threading.Event() for _ in range(6)]
+    resources = {}
+
+    def build(**kw):
+        child = model(**kw)
+        original_run = child.run_conversation.side_effect
+        first = len(model.builds) == 1
+
+        def run(**args):
+            if first:
+                result = original_run(**args)
+                worker_started.set()
+                assert worker_release.wait(30)
+                return result
+            resources[child.session_id] = "continued task"
+            next_started.set()
+            assert next_release.wait(30)
+            return original_run(**args)
+
+        def close():
+            if first:
+                close_started.set()
+                assert close_release.wait(30)
+            parent._session_db.end_session(child.session_id, "completed")
+            resources.pop(child.session_id, None)
+            if first:
+                close_done.set()
+
+        child.run_conversation.side_effect, child.close.side_effect = run, close
+        return child
+
+    def shutdown_kernels(session_id):
+        if close_done.is_set() and not next_started.is_set():
+            cleanup_started.set()
+            assert cleanup_release.wait(30)
+            resources.pop(session_id, None)
+            cleanup_done.set()
+
+    # Force the existing inactivity-timeout path only after the worker reaches its barrier.
+    def timeout_first(run, settled, future, timeout):
+        if len(model.builds) == 1:
+            assert worker_started.wait(10)
+            raise TimeoutError()
+        assert settled.wait(30)
+
+    monkeypatch.setattr("tools.delegate_tool_child_run._ChildRun.wait_liveness_aware", timeout_first)
+    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 1)
+    monkeypatch.setattr("tools.code_kernel.shutdown_kernels_for_delegated_child", shutdown_kernels)
+
+    def follow_up(sid):
+        return json.loads(delegate_tool.delegate_task(action="continue", subagent_id=sid, message="follow up",
+                                                      background=True, parent_agent=parent))
+
+    attempted = None
+    with patch("run_agent.AIAgent", side_effect=build):
+        try:
+            sid, _ = _spawn(parent, "timed out work")
+            attempted = follow_up(sid)
+            assert "still stopping" in attempted.get("error", ""), attempted
+            assert "Try again shortly; if this persists, spawn a new task." in attempted["error"]
+            assert len(model.builds) == 1
+            worker_release.set()
+            assert close_started.wait(10)
+            assert "still stopping" in follow_up(sid)["error"]
+            close_release.set()
+            assert cleanup_started.wait(10)
+            assert "still stopping" in follow_up(sid)["error"]
+            cleanup_release.set()
+            assert cleanup_done.wait(10)
+
+            def continue_when_ready():
+                out = follow_up(sid)
+                if "error" in out:
+                    assert "still stopping" in out["error"], out
+                    return None
+                return out
+
+            attempted = wait_until(continue_when_ready, what="resumable after complete old cleanup")
+            assert attempted["subagent_ids"] == [sid]
+            assert next_started.wait(10)
+            session_id = model.turns[0]["session_id"]
+            assert parent._session_db.get_session(session_id)["ended_at"] is None
+            assert resources[session_id] == "continued task"
+        finally:
+            for event in (worker_release, close_release, cleanup_release, next_release):
+                event.set()
+            assert close_done.wait(10)
+            if attempted and attempted.get("status") == "dispatched":
+                _completion(attempted["delegation_id"])

@@ -39,6 +39,11 @@ def _claim_resume(sid: str, parent_agent: Any) -> tuple[Optional[dict[str, Any]]
     if record is None or not _owns_subagent_record(record, parent_agent):
         return None, _NOT_FOUND.format(sid=sid)
     with _active_subagents_lock:
+        if _recent_subagents.get(sid) is not record:
+            return None, _NOT_FOUND.format(sid=sid)
+        if record.get("state") != "resumable":
+            return None, (f"Subagent '{sid}' is still stopping: its previous run has not exited yet. "
+                          "Try again shortly; if this persists, spawn a new task.")
         spec = record.pop("resume", None)
     return (spec, None) if spec else (None, _NOT_FOUND.format(sid=sid))
 

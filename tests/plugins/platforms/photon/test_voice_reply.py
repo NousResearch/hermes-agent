@@ -159,13 +159,14 @@ async def test_tts_reply_uploads_real_m4a_voice(sidecar, tmp_path, monkeypatch, 
     finally:
         _SESSION_PLATFORM.reset(token)
     assert output["success"], output
-    # This false flag on the pin must NOT prevent Photon audio routing.
-    assert output["voice_compatible"] is False
+    # Photon built-in audio is publicly voice-eligible after final packing.
+    assert output["voice_compatible"] is True
+    assert "[[audio_as_voice]]" in output["media_tag"]
     source = SessionSource(platform=adapter.platform, chat_id="any;-;+15555550100", user_id="synthetic-owner")
     event = MessageEvent(text="Reply with a voice note", source=source, message_id="synthetic-request")
     response = await adapter._extract_response_content(
         output["media_tag"], event, "synthetic-session", is_ephemeral_response=False)
-    assert response.media_files == [(output["file_path"], False)]
+    assert response.media_files == [(output["file_path"], True)]
     assert response.local_files == []
     results = []
     await adapter._deliver_attachments(event, response, {}, anything_sent=False, record_delivery=results.append)

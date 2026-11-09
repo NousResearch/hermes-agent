@@ -26,6 +26,9 @@ import { DialReadiness, GATEWAY_NOT_CONNECTED_MESSAGE, remainingRequestBudget } 
 // keep the short default so a genuinely-dead backend is still detected fast.
 export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
+// One-shot model calls (commit messages, project ideas) can outlive the generic
+// RPC deadline; the backend's run_oneshot alone allows 60 seconds for the model.
+const ONESHOT_REQUEST_TIMEOUT_MS = 120_000
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
 // stream / message.complete events, NOT by the RPC return. A long turn (MoA
 // presets running references + aggregator in series, deep reasoning, large tool
@@ -422,6 +425,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
+    timeoutMs ??= method === 'llm.oneshot' ? ONESHOT_REQUEST_TIMEOUT_MS : DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
     const generation = this.connectionGeneration
     const deadline = requestDeadline(timeoutMs)
 

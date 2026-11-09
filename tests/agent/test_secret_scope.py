@@ -309,6 +309,39 @@ class TestEnvFileParsing:
             "EMPTY": "",
         }
 
+    def test_quote_env_value_quotes_pipes(self):
+        """A pipe in a value must be quoted: bash reads it as a pipeline.
+
+        Coolify API tokens legitimately carry a pipe (prefix ``7|`` for MCP,
+        ``12|`` for REST). Unquoted, ``set -a; . file`` truncates the value at
+        the pipe and executes the remainder as a command, so the credential
+        silently changes shape between the dotenv parser and the shell.
+        """
+        from hermes_cli.config import _quote_env_value
+
+        assert _quote_env_value("7|abcDEF123") == '"7|abcDEF123"'
+        assert _quote_env_value("plainvalue") == "plainvalue"
+
+    def test_pipe_value_survives_bash_source_round_trip(self, tmp_path):
+        """A pipe-bearing .env must source cleanly in bash with the full value."""
+        import subprocess
+
+        from hermes_cli.config import _quote_env_value
+
+        value = "7|abcDEF123"
+        env_file = tmp_path / ".env"
+        env_file.write_text(f"MY_TOKEN={_quote_env_value(value)}\n")
+
+        result = subprocess.run(
+            ["bash", "-c", 'set -a; . "$1"; set +a; printf "%s" "$MY_TOKEN"', "_", str(env_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == ""
+        assert result.stdout == value
+
     def test_inline_comment_stripped_from_unquoted_value(self, tmp_path):
         """`KEY=value # comment` → `value` (python-dotenv semantics)."""
         (tmp_path / ".env").write_text("KEY=value # comment\nTABBED=foo\t#tabbed\n")

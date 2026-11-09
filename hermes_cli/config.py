@@ -2588,11 +2588,11 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
 
 
 def _quote_env_value(value: str) -> str:
-    """Quote .env values containing characters with special dotenv meaning. Any whitespace
-    (including internal runs) is quoted so ``set -a; . file`` word-splitting keeps paths intact."""
+    """Quote .env values containing characters with special dotenv meaning. Whitespace
+    (including internal runs) and ``|`` are quoted so ``set -a; . file`` keeps them intact."""
     if value == "":
         return value
-    if not ("#" in value or '"' in value or "'" in value or any(c.isspace() for c in value)):
+    if not ("#" in value or '"' in value or "'" in value or "|" in value or any(c.isspace() for c in value)):
         return value
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'

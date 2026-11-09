@@ -133,7 +133,11 @@ class PtyHermes:
         self._lock = threading.Lock()
         (root / "tmp").mkdir(parents=True, exist_ok=True)
         (root / "work").mkdir(parents=True, exist_ok=True)
-        env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL") if k in os.environ}
+        # HERMES_RUNTIME_DIR is the PM tool store (node, pnpm, python), not user state. Without it the
+        # sandbox HOME resolves an empty store: the TUI launcher finds no PM node, cannot read the
+        # dist receipt, and lazily downloads a whole toolchain into the sandbox before taking the
+        # terminal (a stalled download there is a timeout, not a UI bug).
+        env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "HERMES_RUNTIME_DIR") if k in os.environ}
         env.update(
             HOME=str(self.home), HERMES_HOME=str(self.hermes_home), PYTHONPATH=str(REPO_ROOT),
             TMPDIR=str(root / "tmp"), TERM="xterm-256color", COLORTERM="truecolor",

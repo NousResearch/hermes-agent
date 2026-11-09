@@ -1,8 +1,8 @@
 name: wp-manager
 title: "WP Website Manager"
 repo: https://github.com/danieljwonder/wp-manager
-sha: 180b770c29ac47dda76106020dd24829938ab642
-version: "0.1.3"
+sha: 78b783bd5e210b5501bd8de302169fe7b909bfaa
+version: "0.1.4"
 description: >-
   Look after a fleet of WordPress sites from Hermes: scan every site for plugin, theme, core and
   translation updates, install them behind Hermes's approval prompt with an automatic health check
@@ -23,10 +23,10 @@ requires_hermes: ">=0.22.5"
 docs_url: https://github.com/danieljwonder/wp-manager#readme
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/danieljwonder/wp-manager/180b770c29ac47dda76106020dd24829938ab642/docs/screenshots/sites.png
-  - https://raw.githubusercontent.com/danieljwonder/wp-manager/180b770c29ac47dda76106020dd24829938ab642/docs/screenshots/site-detail.png
-  - https://raw.githubusercontent.com/danieljwonder/wp-manager/180b770c29ac47dda76106020dd24829938ab642/docs/screenshots/add-site.png
-  - https://raw.githubusercontent.com/danieljwonder/wp-manager/180b770c29ac47dda76106020dd24829938ab642/docs/screenshots/approval.png
+  - https://raw.githubusercontent.com/danieljwonder/wp-manager/78b783bd5e210b5501bd8de302169fe7b909bfaa/docs/screenshots/sites.png
+  - https://raw.githubusercontent.com/danieljwonder/wp-manager/78b783bd5e210b5501bd8de302169fe7b909bfaa/docs/screenshots/site-detail.png
+  - https://raw.githubusercontent.com/danieljwonder/wp-manager/78b783bd5e210b5501bd8de302169fe7b909bfaa/docs/screenshots/add-site.png
+  - https://raw.githubusercontent.com/danieljwonder/wp-manager/78b783bd5e210b5501bd8de302169fe7b909bfaa/docs/screenshots/approval.png
 capabilities:
   provides_tools:
     - wp_sites

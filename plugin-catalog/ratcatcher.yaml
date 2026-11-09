@@ -1,12 +1,12 @@
 name: ratcatcher
 repo: https://github.com/Truthgeng/ratcatcher
-sha: f68b2d9729f962a0e5298763fd73c384cced824f
+sha: 41c9c676d45c6687f53588422753fc2283750331
 description: "Scam bouncer for Telegram groups: removes wallet drainers, fake airdrops, fake support and DM bait, doubling scams, look-alike phishing links and admin impersonators before members or Hermes read them, mutes then bans repeat offenders, and DMs admins a report with Release and Ban buttons. Hermes can check a pasted message, report catches, edit the blocklist and release false alarms. Disclosure — deletes group messages and mutes or bans members through your own Hermes bot; sends borderline messages (only) to your current model via ctx.llm when ai_review is on; stores catches, strikes and member join times in its own plugin data; no third-party network calls."
 maintainer: Truthgeng
 tier: community
 category: platform
-version: "0.3.5"
-image: https://raw.githubusercontent.com/Truthgeng/ratcatcher/f68b2d9729f962a0e5298763fd73c384cced824f/assets/banner.jpg
+version: "0.4.0"
+image: https://raw.githubusercontent.com/Truthgeng/ratcatcher/41c9c676d45c6687f53588422753fc2283750331/assets/banner.jpg
 docs_url: https://github.com/Truthgeng/ratcatcher
 readme: true
 platforms: [linux, macos, windows]
@@ -16,6 +16,7 @@ capabilities:
     - ratcatcher_report
     - ratcatcher_blocklist
     - ratcatcher_release
-  provides_hooks: []
+  provides_hooks:
+    - pre_tool_call
   provides_middleware: []
   requires_env: []

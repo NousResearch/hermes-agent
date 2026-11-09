@@ -480,3 +480,141 @@ def test_unreadable_header_and_unopenable_db_is_indeterminate(tmp_path, monkeypa
         db.chmod(0o644)
 
     assert result["valid"] is None, result
+
+
+def test_short_header_read_is_indeterminate(tmp_path, monkeypatch):
+    """A torn 1–15-byte header read must not accuse corruption (sd2389 / #150275).
+
+    Fall through like OSError/lock: with no PRAGMA asked, the verdict is None.
+    """
+    from hermes_cli import sqlite_safe_read
+    from hermes_cli.backup_integrity import _SQLITE_HEADER, verify_sqlite_integrity
+
+    db = tmp_path / "state.db"
+    _make_valid_db(db, 3)
+    short = _SQLITE_HEADER[:15]
+    assert len(short) < len(_SQLITE_HEADER)
+    monkeypatch.setattr(
+        sqlite_safe_read, "read_header_bytes_preopen", lambda *a, **k: short
+    )
+
+    result = verify_sqlite_integrity(db, check_header=True, run_pragma=False)
+
+    assert result["valid"] is None, result
+    assert "incomplete header read" in result["message"]
+
+
+def test_short_header_read_falls_through_to_pragma_on_healthy_db(tmp_path, monkeypatch):
+    """A short header read on a healthy DB still passes via the PRAGMA probe."""
+    from hermes_cli import sqlite_safe_read
+    from hermes_cli.backup_integrity import _SQLITE_HEADER, verify_sqlite_integrity
+
+    db = tmp_path / "state.db"
+    _make_valid_db(db, 3)
+    monkeypatch.setattr(
+        sqlite_safe_read,
+        "read_header_bytes_preopen",
+        lambda *a, **k: _SQLITE_HEADER[:8],
+    )
+
+    result = verify_sqlite_integrity(db, check_header=True, run_pragma=True)
+
+    assert result["valid"] is True, result
+
+
+def test_full_length_wrong_magic_is_corrupt(tmp_path, monkeypatch):
+    """A full-length non-SQLite header remains a definite False."""
+    from hermes_cli import sqlite_safe_read
+    from hermes_cli.backup_integrity import _SQLITE_HEADER, verify_sqlite_integrity
+
+    db = tmp_path / "state.db"
+    _make_valid_db(db, 3)
+    wrong = b"not a database!!"
+    assert len(wrong) == len(_SQLITE_HEADER)
+    assert wrong != _SQLITE_HEADER
+    monkeypatch.setattr(
+        sqlite_safe_read, "read_header_bytes_preopen", lambda *a, **k: wrong
+    )
+
+    result = verify_sqlite_integrity(db, check_header=True, run_pragma=False)
+
+    assert result["valid"] is False, result
+    assert "missing SQLite header magic" in result["message"]
+
+
+def test_restore_helper_defers_when_snapshot_reverify_is_indeterminate(
+    tmp_path, monkeypatch, capsys
+):
+    """Windows flip-flop: a passing check then a transient None on the restore
+    helper's second verify must hold back — never call the snapshot corrupt."""
+    from hermes_cli import backup_integrity
+    from hermes_cli.update_cmd_maint import _restore_state_db_from_snapshot
+
+    state = tmp_path / "state.db"
+    snap = tmp_path / "snap.db"
+    _make_valid_db(state, 10)
+    _make_valid_db(snap, 3)
+    before = state.read_bytes()
+    real = backup_integrity.verify_sqlite_integrity
+
+    def flip_flop(path, **kwargs):
+        if Path(path) == snap:
+            return {
+                "valid": None,
+                "message": "header check skipped: file temporarily unreadable",
+                "size": snap.stat().st_size,
+            }
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(backup_integrity, "verify_sqlite_integrity", flip_flop)
+
+    assert _restore_state_db_from_snapshot(state, snap) is False
+
+    assert state.read_bytes() == before
+    out = capsys.readouterr().out
+    assert "verification deferred" in out
+    assert "corrupted" not in out
+    assert "failed integrity" not in out
+
+
+def test_caller_defers_when_snapshot_verify_is_indeterminate(
+    tmp_path, monkeypatch, capsys
+):
+    """The post-update guard must not label an indeterminate snapshot check as failed."""
+    from hermes_cli import backup, backup_integrity, update_cmd
+
+    home = tmp_path / "home"
+    home.mkdir()
+    state = home / "state.db"
+    _make_valid_db(state, 10)
+    snap_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
+    assert snap_id
+    snap_state = home / "state-snapshots" / snap_id / "state.db"
+    _wreck_sessions_btree(state)
+    damaged = state.read_bytes()
+    real = backup_integrity.verify_sqlite_integrity
+
+    def snap_indeterminate(path, **kwargs):
+        if Path(path) == snap_state:
+            return {
+                "valid": None,
+                "message": "header check skipped: file temporarily unreadable",
+                "size": snap_state.stat().st_size,
+            }
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(backup_integrity, "verify_sqlite_integrity", snap_indeterminate)
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(backup, "_sibling_profile_homes", lambda _h: [])
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd_maint._restore_state_db_from_snapshot",
+        lambda *a, **k: pytest.fail("indeterminate snapshot must not enter restore"),
+    )
+
+    update_cmd._verify_and_restore_state_dbs_post_update(snap_id)
+
+    assert state.read_bytes() == damaged
+    out = capsys.readouterr().out
+    assert "verification deferred" in out
+    assert "failed state.db verification" not in out
+    assert "Auto-restored" not in out

@@ -421,7 +421,16 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     from hermes_cli.backup_restore import _safe_restore_db
 
     snap_state.stat()  # Preserve the caller's OSError reporting for missing snapshots.
-    if verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid") is not True:
+    # Tri-state: a transient OSError/sharing violation on this second check must defer
+    # (hold back) rather than accuse the snapshot (#147938 / Windows flip-flop).
+    snap_check = verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True)
+    if snap_check.get("valid") is None:
+        print(
+            "  ⚠ Snapshot state.db verification deferred: "
+            + snap_check.get("message", "unknown error")
+        )
+        return False
+    if snap_check.get("valid") is not True:
         return False
     try:
         live_mtime = state_path.stat().st_mtime
@@ -485,7 +494,14 @@ def _verify_and_restore_one_state_db(
                 "live database left unchanged."
             )
             return
-        if verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid") is not True:
+        snap_ok = verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True)
+        if snap_ok.get("valid") is None:
+            print(
+                f"  ⚠ Pre-update snapshot {snapshot_id} verification deferred; "
+                "live database left unchanged."
+            )
+            return
+        if snap_ok.get("valid") is not True:
             print(
                 f"  ⚠ Pre-update snapshot {snapshot_id} failed state.db verification; "
                 "live database left unchanged."

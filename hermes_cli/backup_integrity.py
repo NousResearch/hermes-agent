@@ -21,6 +21,9 @@ DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 << 30  # 2 GiB
 
 _SQLITE_HEADER = b"SQLite format 3\0"
 _LOCK_PRIMARY_CODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
+# Open/read access failures are not corruption — even when the raw header was readable
+# (Windows sharing / AV / filter drivers can allow a short raw read then refuse SQLite).
+_ACCESS_PRIMARY_CODES = frozenset({sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_IOERR})
 _CORRUPT_PRIMARY_CODES = frozenset({sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB})
 
 
@@ -52,10 +55,12 @@ def verify_sqlite_integrity(
     max_bytes: int = DEFAULT_INTEGRITY_CHECK_MAX_BYTES) -> dict:
     """Verify a SQLite database: existence + size, header magic, then a read-only probe.
 
-    A refused or ``OSError``-failed header read is not corruption: fall through to the
-    read-only ``PRAGMA``/schema probe. Only bad magic bytes, or a probe reporting
-    ``NOTADB``/``CORRUPT`` (or another non-lock failure), count as ``valid=False``.
-    When the byte probe is unavailable and nothing deeper can judge, return ``valid=None``.
+    A refused, ``OSError``-failed, or short/torn header read is not corruption: fall
+    through to the read-only ``PRAGMA``/schema probe. Probe ``CANTOPEN``/``IOERR`` (and
+    lock contention) stay ``valid=None`` even when the raw header was readable. Only a
+    full-length wrong magic, or a probe reporting ``NOTADB``/``CORRUPT`` (or another
+    non-access failure), counts as ``valid=False``. When the byte probe is unavailable
+    and nothing deeper can judge, return ``valid=None``.
     """
     header_note: Optional[str] = None
 
@@ -65,11 +70,13 @@ def verify_sqlite_integrity(
         return {"valid": valid, "message": message, "size": size}
 
     def _query_failure(message: str, exc: Exception, size: int) -> dict:
-        if _is_lock_contention(exc):
+        code = _primary_code(exc)
+        # Lock or open/IO access failure: no corruption verdict, regardless of whether
+        # the raw header was readable (#147938 / kvnloo counterexample).
+        if _is_lock_contention(exc) or code in _ACCESS_PRIMARY_CODES:
             return _done(message, valid=None, size=size)
-        # Header unreadable AND SQLite cannot open the file (CANTOPEN/IOERR under a hard
-        # sharing lock): nothing proved corruption, so no verdict (#147938).
-        if header_note and _primary_code(exc) not in _CORRUPT_PRIMARY_CODES:
+        # Header unreadable AND a non-corruption probe error: still no verdict.
+        if header_note and code not in _CORRUPT_PRIMARY_CODES:
             return _done(message, valid=None, size=size)
         return _done(message, size=size)
 
@@ -85,7 +92,8 @@ def verify_sqlite_integrity(
     if check_header:
         # Refused when a live connection exists (close() would cancel this process's POSIX
         # locks — see sqlite_safe_read). An OSError (Windows sharing conflict included)
-        # returns the same None. Neither is evidence of corruption on a live home (#147938).
+        # returns the same None; a short/torn read is treated the same way. None of these
+        # are evidence of corruption on a live home (#147938).
         from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
         head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
         if head is None:
@@ -95,6 +103,9 @@ def verify_sqlite_integrity(
                 )
             else:
                 header_note = "header check skipped: file temporarily unreadable"
+        elif len(head) < len(_SQLITE_HEADER):
+            # A torn/short read is not proof of bad magic — same deferral as OSError (#147938).
+            header_note = "header check skipped: incomplete header read"
         elif head != _SQLITE_HEADER:
             return _done(f"missing SQLite header magic (got {head[:16].hex()!r})", size=size)
     if max_bytes > 0 and size > max_bytes:

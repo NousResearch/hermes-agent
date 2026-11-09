@@ -1,0 +1,95 @@
+"""Windows MSVC builds PM stages carry the VC++ runtime their DLLs import.
+
+Every upstream Windows llama.cpp build (ggml-base.dll, llama-server-impl.dll, ggml-vulkan.dll, ...)
+imports MSVCP140.dll and VCRUNTIME140.dll, and the archives ship neither. A fresh Windows has no
+MSVCP140.dll, so the in-process device probe could not load ggml-base.dll and budgeted a
+discrete GPU from system RAM (#148249).
+"""
+
+from __future__ import annotations
+
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from pm import Lockfile, get_package, paths
+from pm.install import _prepare_artifacts
+
+_MACHINE = {"x64": 0x8664, "arm64": 0xAA64}
+_CRT = "Contents/VC/Redist/MSVC/14.51.36231/{arch}/Microsoft.VC145.CRT/"
+_DEBUG = "Contents/VC/Redist/MSVC/14.51.36231/debug_nonredist/{arch}/Microsoft.VC145.DebugCRT/"
+
+
+def _pe(arch: str) -> bytes:
+    return b"MZ" + bytes(58) + (64).to_bytes(4, "little") + b"PE\0\0" + _MACHINE[arch].to_bytes(2, "little")
+
+
+def _zip(path: Path, members: dict[str, bytes]) -> Path:
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+    return path
+
+
+def _redist(path: Path, arch: str) -> Path:
+    """Visual Studio's CRT redist payload: release DLLs, debug DLLs, and package metadata."""
+    crt, debug = _CRT.format(arch=arch), _DEBUG.format(arch=arch)
+    return _zip(path, {
+        "manifest.json": b"{}",
+        "[Content_Types].xml": b"<Types/>",
+        crt + "msvcp140.dll": _pe(arch),
+        crt + "vcruntime140.dll": _pe(arch),
+        # The ARM64 payload's CRT folder carries the x64 SEH helper for emulated code.
+        crt + "vcruntime140_1.dll": _pe("x64"),
+        debug + "msvcp140d.dll": _pe(arch),
+    })
+
+
+class _LocalArchives:
+    def __init__(self, archives: list[Path]):
+        self.archives = archives
+
+    def fetch_many(self, artifacts, scratch, **_kwargs):
+        return self.archives[:len(artifacts)]
+
+
+def _stage(tmp_path: Path, name: str, target: str, members) -> Path:
+    """Stage the locked artifacts through PM's unpack/merge/stage, from local stand-ins named as
+    the lock names them: the redist payload for a .vsix, ``members(filename)`` for the rest."""
+    package = get_package(name)
+    lock = Lockfile(paths.lockfile_path())
+    artifacts = lock.artifacts(name, target)
+    arch = target.split("-")[1]
+    archives = []
+    for index, artifact in enumerate(artifacts):
+        local = tmp_path / str(index) / artifact["url"].rsplit("/", 1)[-1]
+        local.parent.mkdir()
+        archives.append(_redist(local, arch) if local.name.endswith(".vsix") else _zip(local, members(local.name)))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    staged = _prepare_artifacts(package, _LocalArchives(archives), scratch, artifacts, lock.version(name), target)
+    return package.binary(staged, target)
+
+
+@pytest.mark.parametrize("name,target", [
+    ("llamacpp-cpu", "win32-x64"),
+    ("llamacpp-cpu", "win32-arm64"),
+    ("llamacpp-vulkan", "win32-x64"),
+    ("llamacpp-hip", "win32-x64"),
+    ("llamacpp-cuda", "win32-x64"),
+    ("llamacpp-cuda", "win32-arm64"),
+])
+def test_windows_engine_stages_the_vc_runtime_beside_llama_server(tmp_path, name, target):
+    arch = target.split("-")[1]
+
+    server = _stage(tmp_path, name, target, lambda filename: (
+        {"cudart64_13.dll": _pe(arch)} if filename.startswith("cudart-")
+        else {"llama-server.exe": _pe(arch), "ggml-base.dll": _pe(arch)}))
+
+    assert server.is_file()
+    beside = {p.name for p in server.parent.iterdir()}
+    assert {"msvcp140.dll", "vcruntime140.dll", "ggml-base.dll"} <= beside
+    assert ("vcruntime140_1.dll" in beside) is (arch == "x64")
+    assert "msvcp140d.dll" not in beside
+    assert not {"Contents", "manifest.json", "[Content_Types].xml"} & beside

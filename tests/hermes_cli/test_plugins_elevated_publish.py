@@ -86,7 +86,7 @@ def test_without_pywin32_one_inheritable_grant_covers_the_published_tree(staged_
     file, under the install lock) is one process launch per entry too many."""
     from hermes_cli.plugins_transaction import publish_plugin
 
-    staged, target, writes = staged_plugin
+    staged, target, _ = staged_plugin
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
 
     def no_pywin32(*_a, **_k):

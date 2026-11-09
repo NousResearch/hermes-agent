@@ -26,8 +26,8 @@ def main_era_venv(root: Path, *anchors: str, name: str = "venv", reinstalled_fro
 
 
 def pm_built_venv(root: Path, *anchors: str, name: str = ".venv") -> Path:
-    """``root/<name>`` as ``pm.build_env --source . --out .venv`` builds it: on PM's pinned Python,
-    from a tool store beside *root*."""
+    """``root/<name>`` as ``pm.build_env --source . --out .venv`` built it before PM marked its
+    environments: on PM's pinned Python, from a tool store beside *root*."""
     store = root.parent / "pm-tools"
     entry = store / "python-3.14.9+20261021-linux-x64"
     (entry / "bin").mkdir(parents=True, exist_ok=True)

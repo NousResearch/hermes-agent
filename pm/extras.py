@@ -391,21 +391,26 @@ def _pre_pm_site_packages(root: Path) -> list[Path]:
 
 
 def _built_by_pm(venv: Path) -> bool:
-    """Does ``venv`` run a Python from PM's tool store? PM builds every environment on its pinned
-    Python, which no pre-PM installer had.
+    """Did PM build ``venv``? No pre-PM installer used PM's environment builder.
 
-    ``pyvenv.cfg``'s ``home`` is that interpreter's directory inside a store entry (``bin/``, the
-    entry itself on Windows), and the store's ``facts.json`` holds a ``python`` row. An older pin's
-    entry still counts, so a test env survives the store moving to a newer Python.
+    PM marks every environment it creates in ``pyvenv.cfg`` (``pm.environment.PM_BUILT_KEY``), on
+    any interpreter, ``pm.build_env --python`` included. One built before that marker runs a Python
+    from PM's tool store: ``pyvenv.cfg``'s ``home`` is that interpreter's directory inside a store
+    entry (``bin/``, the entry itself on Windows), and the store's ``facts.json`` holds a ``python``
+    row. An older pin's entry still counts, so a test env survives the store moving to a newer Python.
     """
     import json
+
+    from pm.environment import PM_BUILT_KEY
 
     try:
         lines = (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
     except (OSError, ValueError):  # unreadable or not UTF-8: no PM-built env writes that
         return False
-    home = next((value.strip() for key, _, value in (line.partition("=") for line in lines)
-                 if key.strip() == "home"), "")
+    cfg = {key.strip(): value.strip() for key, _, value in (line.partition("=") for line in lines)}
+    if cfg.get(PM_BUILT_KEY) == "true":
+        return True
+    home = cfg.get("home", "")
     if not home:
         return False
     for entry in (Path(home), *Path(home).parents):

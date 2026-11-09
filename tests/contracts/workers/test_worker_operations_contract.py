@@ -7,7 +7,7 @@ import time
 import pytest
 
 from persistence import SessionId
-from persistence.conversation.sessions import END_REASON_COMPRESSION, NewSession
+from persistence.conversation.sessions import END_REASON_COMPRESSION, NewSession, SessionCwdUsage
 from persistence.conversation.usage import UsageDelta
 from persistence.core.fences import AuthorityEpoch
 from persistence.workers.delegations import WorkerDelegationPayload
@@ -129,6 +129,22 @@ def test_finish_retires_live_children_and_ends_their_rows(backend, scope_a):
     with refused("stale_generation"):
         store.worker_executions.append_transcript(epoch=epoch, execution_id=reserved.execution_id, session_id=reserved.session_id,
                                                   generation=reserved.generation, sequence=1, messages=[])
+
+
+def test_a_child_row_a_finish_ended_keeps_its_cwd_listed(backend, scope_a):
+    store, epoch = worker(backend, scope_a)
+    own = _reserve_child(store, epoch).child
+    retired = _reserve_child(store, epoch, sequence=2).child
+    store.sessions.update_cwd(own.session_id, "/w/own-finish")
+    store.sessions.update_cwd(retired.session_id, "/w/retired-by-parent")
+    store.worker_executions.finish(epoch=epoch, execution_id=own.execution_id, session_id=own.session_id, generation=own.generation, sequence=1)
+    store.worker_executions.finish(**ident(epoch, sequence=3))
+    ended = {sid: store.sessions.get(sid).ended_at for sid in (own.session_id, retired.session_id)}
+    assert [store.sessions.get(sid).end_reason for sid in ended] == ["agent_close", "agent_close"]
+    assert store.sessions.distinct_session_cwds() == (
+        SessionCwdUsage(cwd="/w/own-finish", sessions=1, last_active=ended[own.session_id]),
+        SessionCwdUsage(cwd="/w/retired-by-parent", sessions=1, last_active=ended[retired.session_id]),
+    )
 
 
 # ── child.reserve ─────────────────────────────────────────────────────────────

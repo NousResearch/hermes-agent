@@ -527,39 +527,41 @@ def _installed_plugins_dir() -> Path | None:
         return None
 
 
-def _declares_model_provider_kind(plugin_dir: Path) -> bool:
-    """Whether ``plugin_dir``'s manifest declares ``kind: model-provider``.
-
-    Only that kind is imported from the flat install directory — every other
-    plugin there belongs to ``PluginManager``, which owns its lifecycle and
-    consent flow. Parsed with ruamel.yaml when available, falling back to a line
-    scan so provider discovery never hard-depends on it.
-    """
+def _manifest_field(plugin_dir: Path, key: str) -> str | None:
+    """Top-level ``key`` of ``plugin_dir``'s manifest, or None. Parsed with ruamel.yaml when available,
+    falling back to a line scan so provider discovery never hard-depends on it."""
     for filename in ("plugin.yaml", "plugin.yml"):
         manifest = plugin_dir / filename
         if not manifest.is_file():
             continue
         try:
             text = manifest.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            return False
+        except OSError:
+            return None
+        from hermes_yaml import YAMLError
+        from utils import fast_safe_load
         try:
-            from utils import fast_safe_load
-
             data = fast_safe_load(text)
-            if isinstance(data, dict):
-                return str(data.get("kind", "")).strip() == "model-provider"
-        except Exception:
-            pass
+        except YAMLError:
+            data = None  # malformed third-party manifest: the line scan below recovers the field
+        if isinstance(data, dict):
+            value = data.get(key)
+            return None if value is None else str(value).strip()
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("#") or ":" not in stripped:
                 continue
-            key, _, value = stripped.partition(":")
-            if key.strip() == "kind":
-                return value.strip().strip("\"'") == "model-provider"
-        return False
-    return False
+            name, _, value = stripped.partition(":")
+            if name.strip() == key:
+                return value.strip().strip("\"'")
+        return None
+    return None
+
+
+def _declares_model_provider_kind(plugin_dir: Path) -> bool:
+    """Whether the manifest declares ``kind: model-provider``: only that kind is imported from the flat
+    install directory; every other plugin there belongs to ``PluginManager``."""
+    return _manifest_field(plugin_dir, "kind") == "model-provider"
 
 
 def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
@@ -592,50 +594,14 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
 
 
 def _plugin_disabled(plugin_dir: Path) -> bool:
-    """Whether the authoritative plugin selection (``plugins.disabled``) disables *plugin_dir*.
+    """Whether ``plugins.disabled`` names this plugin, so its import-time code never runs (#137671).
+    Names mirror ``gate_manifest``: the manifest name, the dir, and ``model-providers/<dir>``."""
+    from hermes_cli.plugins import _get_disabled_plugins
 
-    ``_discover_entry_point_providers`` already honours the deny-list; the filesystem scan must too,
-    or a plugin the user explicitly disabled keeps executing its import-time code and registering a
-    provider (#137671). Names mirror ``gate_manifest``'s ``{lookup_key, manifest.name}``: a flat
-    install keys by its manifest name, the legacy ``plugins/model-providers/<dir>/`` layout keys as
-    ``model-providers/<dir>``.
-    """
-    try:
-        from hermes_cli.plugins import _get_disabled_plugins
-    except ImportError:
-        return False
-    disabled = _get_disabled_plugins()  # malformed/absent config degrades to the empty set inside
+    disabled = _get_disabled_plugins()
     if not disabled:
         return False
-    names = {plugin_dir.name, f"model-providers/{plugin_dir.name}"}
-    for filename in ("plugin.yaml", "plugin.yml"):
-        manifest = plugin_dir / filename
-        if not manifest.is_file():
-            continue
-        try:
-            text = manifest.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            break
-        name = None
-        try:
-            from utils import fast_safe_load
-
-            data = fast_safe_load(text)
-            name = data.get("name") if isinstance(data, dict) else None
-        except Exception:  # health: allow BLE001 -- a malformed third-party manifest must not crash provider discovery; the line scan below recovers the name
-            name = None  # parse failed: recover via the line scan below
-        if name is None:
-            for line in text.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("#") or ":" not in stripped:
-                    continue
-                key, _, value = stripped.partition(":")
-                if key.strip() == "name":
-                    name = value.strip().strip("\"'")
-                    break
-        if isinstance(name, str) and name.strip():
-            names.add(name.strip())
-        break
+    names = {plugin_dir.name, f"model-providers/{plugin_dir.name}", _manifest_field(plugin_dir, "name")}
     return bool(names & disabled)
 
 

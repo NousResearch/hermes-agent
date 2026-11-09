@@ -84,6 +84,8 @@ def test_disabled_plugins_are_never_imported_or_registered(hermes_home):
         "plugins:\n  disabled:\n    - installed-acp\n    - model-providers/nested-acp\n", encoding="utf-8")
     _write_plugin(hermes_home / "plugins" / "installed-acp", name="installed-acp",
                   manifest='name: installed-acp\nkind: "model-provider"\n')
+    _write_plugin(hermes_home / "plugins" / "kept-acp", name="kept-acp",
+                  manifest='name: kept-acp\nkind: "model-provider"\n')
     _write_plugin(hermes_home / "plugins" / "model-providers" / "nested-acp", name="nested-acp",
                   manifest="name: nested-acp\nkind: model-provider\n")
     from providers import get_provider_profile, list_providers
@@ -94,6 +96,7 @@ def test_disabled_plugins_are_never_imported_or_registered(hermes_home):
     assert get_provider_profile("nested-acp") is None
     assert not [m for m in sys.modules if "installed_acp" in m or "nested_acp" in m]  # no import side effects
     assert get_provider_profile("openrouter") is not None  # bundled set unaffected
+    assert get_provider_profile("kept-acp").base_url == "acp://kept-acp"
 
 
 def test_disabled_by_manifest_name_when_directory_name_differs(hermes_home):
@@ -107,16 +110,3 @@ def test_disabled_by_manifest_name_when_directory_name_differs(hermes_home):
 
     assert get_provider_profile("claude-subscription-directsdk-experimental") is None
     assert not [m for m in sys.modules if "directsdk_experimental" in m]
-
-
-def test_enabled_plugin_still_discovered_when_another_is_disabled(hermes_home):
-    (hermes_home / "config.yaml").write_text(
-        "plugins:\n  disabled:\n    - disabled-acp\n", encoding="utf-8")
-    _write_plugin(hermes_home / "plugins" / "disabled-acp", name="disabled-acp",
-                  manifest='name: disabled-acp\nkind: "model-provider"\n')
-    _write_plugin(hermes_home / "plugins" / "kept-acp", name="kept-acp",
-                  manifest='name: kept-acp\nkind: "model-provider"\n')
-    from providers import get_provider_profile
-
-    assert get_provider_profile("disabled-acp") is None
-    assert get_provider_profile("kept-acp").base_url == "acp://kept-acp"

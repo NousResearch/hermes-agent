@@ -584,6 +584,7 @@ function NewTaskDialog({
   const isTriage = target === 'triage'
   const [title, setTitle] = useState('')
   const [bodyText, setBodyText] = useState('')
+  const [completionSummary, setCompletionSummary] = useState('')
   const [assignee, setAssignee] = useState('')
   const [priority, setPriority] = useState('0')
   const [skills, setSkills] = useState('')
@@ -619,6 +620,7 @@ function NewTaskDialog({
     if (target) {
       setTitle('')
       setBodyText('')
+      setCompletionSummary('')
       setAssignee('')
       setPriority('0')
       setSkills('')
@@ -635,8 +637,9 @@ function NewTaskDialog({
 
   const submit = async () => {
     const trimmed = title.trim()
+    const summary = completionSummary.trim()
 
-    if (!trimmed || !target || busy) {
+    if (!trimmed || !target || busy || (target === 'done' && !summary)) {
       return
     }
 
@@ -667,7 +670,7 @@ function NewTaskDialog({
       })
 
       if (task && task.status !== target) {
-        await patchTask(task.id, { status: target })
+        await patchTask(task.id, target === 'done' ? { result: summary, status: target, summary } : { status: target })
       }
 
       // Dispatcher-presence warning ("this ready task will sit idle") — not an
@@ -717,6 +720,16 @@ function NewTaskDialog({
             placeholder={k.descPlaceholder}
             value={bodyText}
           />
+          {target === 'done' && (
+            <Field label="Completion summary">
+              <Textarea
+                className="min-h-20"
+                onChange={event => setCompletionSummary(event.target.value)}
+                placeholder="Describe what was done…"
+                value={completionSummary}
+              />
+            </Field>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <Field label={k.priority}>
@@ -848,7 +861,7 @@ function NewTaskDialog({
           <Button onClick={onClose} variant="text">
             {k.cancel}
           </Button>
-          <Button disabled={!title.trim() || busy} onClick={() => void submit()}>
+          <Button disabled={!title.trim() || busy || (target === 'done' && !completionSummary.trim())} onClick={() => void submit()}>
             {busy ? k.creating : k.createTask}
           </Button>
         </DialogFooter>

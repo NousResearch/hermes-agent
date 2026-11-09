@@ -28,12 +28,22 @@ def waits_like_local(base_url: Any, provider: Any) -> bool:
     return _is_external_process_provider(str(provider or "")) or (bool(base_url) and is_local_endpoint(str(base_url)))
 
 
-def non_stream_stale_disabled(agent: Any, uses_implicit_default: bool) -> bool:
-    """No implicit wall-clock kill on a buffered call to a local server or an external process; the
-    process client's own per-event deadline bounds a dead child. Reasoning floors (240s for opus) are
-    for HTTP gateways that idle-kill, so they do not apply to a process, whatever the model (#149555)."""
+def implicit_non_stream_stale_timeout(agent: Any, uses_implicit_default: bool) -> float | None:
+    """The buffered-call stall budget when the cloud formula does not apply, else None.
+
+    A local server with nothing configured gets no kill. An external process with nothing configured
+    gets the request timeout its client is already given, for every model: reasoning floors (240s for
+    opus) are for HTTP gateways that idle-kill (#149555). The bound stays finite because a client
+    blocked writing a prompt to a child that stopped reading never reaches its own deadline (ACP).
+    """
     from hermes_cli.runtime_provider_backends import _is_external_process_provider
 
     if _is_external_process_provider(str(agent.provider or "")):
-        return not agent._stale_timeout_is_explicit()
-    return uses_implicit_default and is_local_server(getattr(agent, "_base_url", None) or agent.base_url, agent.provider)
+        if agent._stale_timeout_is_explicit():
+            return None
+        from agent.chat_completion_helpers import cap_to_run_budget
+
+        return cap_to_run_budget(agent, agent._resolved_api_call_timeout())
+    if uses_implicit_default and is_local_server(getattr(agent, "_base_url", None) or agent.base_url, agent.provider):
+        return float("inf")
+    return None

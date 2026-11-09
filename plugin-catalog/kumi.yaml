@@ -1,0 +1,32 @@
+name: kumi
+title: Kumi
+version: "1.24.79"
+repo: https://github.com/user1303836/kumi
+sha: ecdcc220c1bd80d5b3f2c618b2e6d2bd6456014e
+subdir: hermes-plugin
+description: "Kumi puts Hermes inside Ableton Live, REAPER and Renoise: it hears your mix, makes changes you can undo, and turns your samples into new sounds. Disclosure — after you approve setup, downloads the Kumi release this pin names for your platform (27–35 MB, SHA-256 checked) from github.com/user1303836/kumi/releases into HERMES_HOME/plugin-data/kumi/ and installs Kumi's part in your DAW (Live's Remote Script with its Kumi Ears device, a REAPER extension or a Renoise tool) at paths you approve; a newer release comes only with a new catalog pin. Runs Kumi's runtime and DAW bridge as local child processes on loopback that stop with the chat or after idling. Reads the open DAW project, the sample folders you list, HERMES_HOME/cache/generated/audio, VST3 metadata in the standard plug-in folders and, after you approve, an existing Kumi's DAW connection files. Writes the Max for Live devices, presets and wavetables you ask for as new files in Live's User Library, and copies your saved project beside it before some changes. Runs a DAW script you ask for with the DAW's access to your computer (asked first, with its code, once a chat has read outside content). Plays the project only for a listen or play you ask for. Sends FOCUS notes and measurements to your Hermes model, and with listen_interpretation on, a small band-energy image to the auxiliary model. Mirelo (paid, off by default): only with your key and a credit cap above 0, approved prompts and audio go to api.mirelo.ai and the transfer hosts it names. No telemetry."
+maintainer: user1303836
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/user1303836/kumi/blob/ecdcc220c1bd80d5b3f2c618b2e6d2bd6456014e/docs/en/HERMES.md
+image: https://raw.githubusercontent.com/user1303836/kumi/ecdcc220c1bd80d5b3f2c618b2e6d2bd6456014e/docs/assets/hermes/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/user1303836/kumi/ecdcc220c1bd80d5b3f2c618b2e6d2bd6456014e/docs/assets/hermes/screenshots/catalog-2-map.png
+  - https://raw.githubusercontent.com/user1303836/kumi/ecdcc220c1bd80d5b3f2c618b2e6d2bd6456014e/docs/assets/hermes/screenshots/catalog-8-make.png
+  - https://raw.githubusercontent.com/user1303836/kumi/ecdcc220c1bd80d5b3f2c618b2e6d2bd6456014e/docs/assets/hermes/screenshots/catalog-1-pane.png
+  - https://raw.githubusercontent.com/user1303836/kumi/ecdcc220c1bd80d5b3f2c618b2e6d2bd6456014e/docs/assets/hermes/screenshots/catalog-7-palette.png
+  - https://raw.githubusercontent.com/user1303836/kumi/ecdcc220c1bd80d5b3f2c618b2e6d2bd6456014e/docs/assets/hermes/screenshots/catalog-4-mastering.png
+  - https://raw.githubusercontent.com/user1303836/kumi/ecdcc220c1bd80d5b3f2c618b2e6d2bd6456014e/docs/assets/hermes/screenshots/catalog-5-beat-card.png
+readme: true
+platforms: []
+known_issues:
+  - "Your DAW runs on the computer that runs Hermes: Ableton Live 12 (macOS, Windows), REAPER 7+ or Renoise 3.5+ (macOS, Windows, Linux)."
+  - "In Hermes Desktop, switch Kumi on under Capabilities → Plugins to see its pane and sound map."
+  - "Kumi reads WAV and AIFF; MP3, FLAC and other compressed audio need an ffmpeg you already have, allowed at setup."
+  - "Listening in Live uses Max for Live: setup installs Kumi's Kumi Ears device."
+capabilities:
+  provides_tools: [kumi_status, kumi_setup, kumi_connect, kumi_observe, kumi_read, kumi_change, kumi_undo, kumi_history, kumi_listen, kumi_sounds, kumi_palette, kumi_library, kumi_job, kumi_generate, kumi_transport, kumi_script, kumi_variations, kumi_device, kumi_plugin_knowledge, kumi_preset_build, kumi_preset, kumi_judge, kumi_tune, kumi_wavetable, kumi_design, kumi_sound, kumi_audition, kumi_groove, kumi_render, kumi_form]
+  provides_hooks: [pre_tool_call, post_approval_response, post_tool_call, pre_llm_call, post_compaction, on_session_finalize, agent_loop_stopped, subagent_start]
+  provides_middleware: []
+  requires_env: []

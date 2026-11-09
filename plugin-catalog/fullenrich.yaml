@@ -1,0 +1,24 @@
+name: fullenrich
+title: FullEnrich
+repo: https://github.com/FullEnrich/fullenrich-skills
+sha: 82fd3a1be03f0701d0471e5e860990296597ad8b
+description: >-
+  Search B2B people and companies, enrich work emails and phone numbers, and export results through FullEnrich's hosted MCP server. Includes nine workflow skills for prospecting, CSV enrichment, outreach drafting, meeting preparation and recruiting.
+  Disclosure: MCP requests send search filters and contact identifiers or uploaded contact data to FullEnrich. A FullEnrich account is required; enrichment and exports can consume credits. Skills may use user-selected files and separately connected CRM or messaging tools; FullEnrich MCP itself does not send messages or write to a CRM. No local executable code, background service or telemetry implementation is bundled. OAuth is managed by Hermes through the separate sign-in command.
+maintainer: FullEnrich
+tier: community
+category: tools
+version: "1.0.4"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/FullEnrich/fullenrich-skills/blob/82fd3a1be03f0701d0471e5e860990296597ad8b/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "OAuth needs explicit configuration after plugin installation: hermes mcp add fullenrich --url https://mcp.fullenrich.com/mcp --auth oauth. This config takes precedence over the portable MCP entry."
+  - "Review credit costs before enrichment or export. Configure trust: untrusted on the fullenrich MCP server for Hermes write-capable tool approval prompts; read-only annotations do not guarantee free usage."
+  - "Package admission validation passed; end-to-end OAuth, search, enrichment and export in Hermes have not been tested by the submitter."

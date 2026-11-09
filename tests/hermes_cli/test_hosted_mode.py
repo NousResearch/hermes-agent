@@ -108,6 +108,26 @@ NON_ISOLATING_STORAGE_PLUGIN = STORAGE_PLUGIN.replace(
 
 HOSTED = {"enabled": True, "identity_verifier": "stub-verifier", "session_storage": "stub-storage"}
 
+# The reviewed pin the shipped catalog entry records for every curated stub in this file.
+_REVIEWED_PIN = "a" * 40
+# The catalog entries the deployment's image ships, by plugin name: the boot's curated check reads
+# the entry's tier and pin from here, never from the install record's own claims.
+_SHIPPED_CATALOG: dict = {}
+
+
+@pytest.fixture(autouse=True)
+def _shipped_catalog(monkeypatch):
+    """The catalog shipped with the deployment image: entries registered by ``_curated``. The
+    provenance check looks its entry up by name (tier and reviewed pin come from the shipped
+    entry — a fabricated install record's claims decide nothing)."""
+    from hermes_cli import plugin_catalog as pc_cat
+
+    _SHIPPED_CATALOG.clear()
+    monkeypatch.setattr(pc_cat, "get_catalog_entry",
+                        lambda name, catalog_dir=None: _SHIPPED_CATALOG.get(name))
+    yield _SHIPPED_CATALOG
+    _SHIPPED_CATALOG.clear()
+
 
 def _write_config(settings: dict) -> None:
     """The home's config.yaml, through the repo's own YAML writer."""
@@ -129,12 +149,20 @@ def _install_plugin(name: str, body: str, *, manifest: dict | None = None) -> Pa
 
 def _curated(plugin: Path, *, tier: str = "verified") -> None:
     """The installer-owned catalog record a curated install carries (an operator installing the
-    deployment's backends from the Hermes plugin catalog at its reviewed pin)."""
-    (get_hermes_home() / "plugins" / ".install-metadata.json").write_text(json.dumps({
-        plugin.name: {"catalog": {"name": plugin.name,
-                                  "repo": f"https://github.com/NousResearch/{plugin.name}",
-                                  "tier": tier, "pin": "0" * 40}},
-    }), encoding="utf-8")
+    deployment's backends from the Hermes plugin catalog at its reviewed pin): the shipped
+    entry's name, tier and pin, plus the code digest of the tree the installer published."""
+    from hermes_cli import plugin_catalog as pc_cat
+    from hermes_cli.plugins_cmd_catalog import installed_code_digest
+
+    repo = f"https://github.com/NousResearch/{plugin.name}"
+    _SHIPPED_CATALOG[plugin.name] = pc_cat.PluginCatalogEntry(
+        name=plugin.name, repo=repo, sha=_REVIEWED_PIN, description="d", maintainer="op", tier=tier)
+    metadata_path = get_hermes_home() / "plugins" / ".install-metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig")) if metadata_path.exists() else {}
+    metadata[plugin.name] = {"catalog": {"name": plugin.name, "repo": repo,
+                                         "tier": tier, "pin": _REVIEWED_PIN},
+                            "tree_digest": installed_code_digest(plugin)}
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
 
 def _clean_hosted_config() -> dict:
@@ -155,10 +183,15 @@ def verdict(monkeypatch):
 
 @pytest.fixture
 def empty_bundled(monkeypatch, tmp_path):
-    """No bundled plugins: the checks judge the home's own plugins, not the repo's tree."""
+    """No bundled plugins: the checks judge the home's own plugins, not the repo's tree. The
+    session-storage kind's bundled directory moves beside it — a hosted boot resolves named
+    providers only from the bundled tree, so the storage stubs install there."""
+    from plugins import session_storage
+
     bundled = tmp_path / "bundled"
-    bundled.mkdir()
+    (bundled / "session_storage").mkdir(parents=True)
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
+    monkeypatch.setattr(session_storage, "_PLUGINS_DIR", bundled / "session_storage")
 
 
 def _no_gateway_config():
@@ -214,6 +247,17 @@ def test_a_local_boot_consults_none_of_the_checks(verdict, empty_bundled, tmp_pa
 # One refusal per boot condition
 
 
+def _bundled_provider(name: str, body: str) -> Path:
+    """A named session-storage provider installed in the kind's BUNDLED directory — where a
+    hosted boot resolves its providers from (the deployment home's own dirs are refused)."""
+    from plugins import session_storage
+
+    provider = session_storage._PLUGINS_DIR / name
+    provider.mkdir(parents=True, exist_ok=True)
+    (provider / "__init__.py").write_text(textwrap.dedent(body), encoding="utf-8")
+    return provider
+
+
 def _clean_boot(**kwargs):
     """A hosted deployment that passes every check: the stub sandbox and storage plugins are
     discovered for real, and the boot call sees a clean environment."""
@@ -221,7 +265,7 @@ def _clean_boot(**kwargs):
     _install_plugin("stub-sandbox", SANDBOX_PLUGIN,
                     manifest={"name": "stub-sandbox", "version": "1.0"})
     _curated(get_hermes_home() / "plugins" / "stub-sandbox")
-    _install_plugin("stub-storage", STORAGE_PLUGIN)
+    _bundled_provider("stub-storage", STORAGE_PLUGIN)
     boot(env={"PATH": "/usr/bin", "HOME": "/home/op", "LC_ALL": "C"}, **kwargs)
 
 
@@ -344,6 +388,169 @@ def test_a_disabled_user_plugin_never_loads_and_never_refuses(clean_hosted):
     boot(env={"PATH": "/usr/bin"})  # no installer record for it either; it never loads
 
 
+# --------------------------------------------------------------------------------------------------
+# Discovery stays off until the import-free preflight passed
+
+
+MARKER_PLUGIN = '''
+from pathlib import Path
+
+Path(__file__).with_name("imported").write_text("ran")
+
+
+def register(ctx):
+    pass
+'''
+
+
+def test_plugin_discovery_stays_off_until_the_boot_preflight_passes(verdict, empty_bundled):
+    """Hosted: a would-load user plugin's code must not run just because something read config —
+    a config read discovers and imports plugins, so discovery stays suppressed until the
+    import-free preflight passed, and the preflight refuses the uncurated plugin before its
+    module ever imports."""
+    _write_config({"hosted": {"enabled": True}, "plugins": {"enabled": ["marker-probe"]}})
+    plugin = _install_plugin("marker-probe", MARKER_PLUGIN,
+                             manifest={"name": "marker-probe", "version": "1.0"})
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+    discover_plugins()  # the preflight has not passed: a no-op, not an import
+    assert get_plugin_manager()._discovered is False
+    assert not (plugin / "imported").exists()
+    with pytest.raises(HostedBootRefused, match="marker-probe"):
+        hosted_mode.hosted_boot_preflight(env={"PATH": "/usr/bin"})
+    assert not (plugin / "imported").exists()  # the refusal came before any import
+
+
+def test_discovery_runs_once_the_boot_preflight_passed(verdict, empty_bundled):
+    """A hosted boot that passes the preflight loads plugins exactly as before: the gate opens."""
+    _write_config({"hosted": {"enabled": True}})
+    hosted_mode.hosted_boot_preflight(env={"PATH": "/usr/bin"})
+    assert hosted_mode.plugin_loading_permitted() is True
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+    discover_plugins()
+    assert get_plugin_manager()._discovered is True
+
+
+def test_after_the_boot_records_its_config_no_hosted_read_touches_the_files(clean_hosted, monkeypatch):
+    """The boot's first read is its only one: once the preflight recorded the config it resolved,
+    the verdict and every boot check consult that object — the config reader itself must not be
+    reached again."""
+    def _no_reads(*args, **kwargs):
+        raise AssertionError("a hosted read re-read the profile's config files")
+
+    monkeypatch.setattr(hosted_mode, "_effective_config", _no_reads)
+    assert hosted_mode.is_hosted() is True  # the recorded verdict, no I/O
+    boot(env={"PATH": "/usr/bin"})  # the recorded config, no I/O
+
+
+# --------------------------------------------------------------------------------------------------
+# A named provider that exists only in the deployment home's writable dirs
+
+
+def test_a_user_dir_session_storage_provider_is_refused_before_import(clean_hosted):
+    """A named backend that exists only as a manifest-less directory in the home's plugin dirs
+    (the shape the shared named-provider loaders import directly): in a hosted process it is
+    refused BEFORE import, with the reason, and its code never runs."""
+    probe = get_hermes_home() / "plugins" / "userdir-storage"
+    probe.mkdir(parents=True)
+    (probe / "__init__.py").write_text(textwrap.dedent('''
+        from pathlib import Path
+
+        from hermes_state_port import SessionStorageProvider
+
+        Path(__file__).with_name("imported").write_text("ran")
+
+
+        class Probe(SessionStorageProvider):
+            @property
+            def name(self):
+                return "userdir-storage"
+
+            def open(self, db=None):
+                raise NotImplementedError
+
+            def assert_isolating(self):
+                return
+    '''), encoding="utf-8")
+    config = _clean_hosted_config()
+    config["hosted"] = dict(HOSTED, session_storage="userdir-storage")
+    _write_config(config)
+    with pytest.raises(HostedBootRefused, match="userdir-storage"):
+        boot(config=config, env={"PATH": "/usr/bin"})
+    assert not (probe / "imported").exists()  # its code never ran
+
+
+# --------------------------------------------------------------------------------------------------
+# Provenance: the shipped catalog and the tree's own digest corroborate an install record
+
+
+def _stub_sandbox_record() -> dict:
+    metadata_path = get_hermes_home() / "plugins" / ".install-metadata.json"
+    return json.loads(metadata_path.read_text(encoding="utf-8-sig"))["stub-sandbox"]
+
+
+def _write_stub_sandbox_record(record: dict) -> None:
+    metadata_path = get_hermes_home() / "plugins" / ".install-metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+    metadata["stub-sandbox"] = record
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def test_a_record_naming_an_entry_the_shipped_catalog_does_not_pin_refuses(clean_hosted):
+    """The install record lives in the tenant-writable home, so its claims decide nothing on
+    their own: a record naming an entry the shipped catalog has no pin for is a fabricated
+    record, and the boot refuses the plugin it vouches for."""
+    _SHIPPED_CATALOG.pop("stub-sandbox")
+    with pytest.raises(HostedBootRefused, match="stub-sandbox"):
+        boot(env={"PATH": "/usr/bin"})
+
+
+def test_a_record_off_the_shipped_pin_refuses(clean_hosted):
+    """The record's pin must be the reviewed pin the SHIPPED catalog entry records; a record that
+    pins anything else does not vouch for the code that is installed."""
+    record = _stub_sandbox_record()
+    record["catalog"]["pin"] = "b" * 40
+    _write_stub_sandbox_record(record)
+    with pytest.raises(HostedBootRefused, match="reviewed pin"):
+        boot(env={"PATH": "/usr/bin"})
+
+
+def test_a_record_without_the_installed_tree_digest_refuses(clean_hosted):
+    """An install record that pins no code digest cannot vouch for the tree on disk (a fabricated
+    record never carries one): the boot refuses the plugin it claims to have installed."""
+    record = _stub_sandbox_record()
+    record.pop("tree_digest")
+    _write_stub_sandbox_record(record)
+    with pytest.raises(HostedBootRefused, match="digest"):
+        boot(env={"PATH": "/usr/bin"})
+
+
+def test_a_tree_edited_after_install_refuses(clean_hosted):
+    """The record pins the code digest of the tree the installer published: edit one file of a
+    curated install afterwards and it is no longer the code the catalog reviewed."""
+    with (get_hermes_home() / "plugins" / "stub-sandbox" / "__init__.py").open("a") as handle:
+        handle.write("\n# a tenant's edit\n")
+    with pytest.raises(HostedBootRefused, match="digest"):
+        boot(env={"PATH": "/usr/bin"})
+
+
+def test_a_symlink_in_the_bundled_dir_is_not_a_bundled_plugin(clean_hosted, tmp_path):
+    """A symlink planted in the bundled plugins dir (or any dir whose realpath leaves that tree)
+    does not get the bundled trust: the boot judges it by provenance, and it refuses. The
+    linked tree lives outside the home's own plugin dirs, so only the bundled scan sees it —
+    the bundled label is the only thing that could carry it."""
+    target = tmp_path / "elsewhere" / "impostor"
+    target.mkdir(parents=True)
+    (target / "plugin.yaml").write_text("name: impostor\nversion: '1.0'\n", encoding="utf-8")
+    (target / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+    (plugins_mod.get_bundled_plugins_dir() / "impostor").symlink_to(target)
+    config = _clean_hosted_config() | {"plugins": {"enabled": ["stub-sandbox", "impostor"]}}
+    _write_config(config)
+    with pytest.raises(HostedBootRefused, match="impostor"):
+        boot(env={"PATH": "/usr/bin"})
+
+
 def test_no_identity_verifier_refuses_hosted_boot(clean_hosted):
     config = _clean_hosted_config()
     config["hosted"] = dict(HOSTED, identity_verifier="")
@@ -369,7 +576,7 @@ def test_a_missing_session_storage_provider_refuses_hosted_boot(clean_hosted):
 
 
 def test_a_session_storage_role_that_bypasses_isolation_refuses_hosted_boot(clean_hosted):
-    _install_plugin("leaky-storage", NON_ISOLATING_STORAGE_PLUGIN.replace(
+    _bundled_provider("leaky-storage", NON_ISOLATING_STORAGE_PLUGIN.replace(
         '"stub-storage"', '"leaky-storage"'))  # a second provider, so no cached module answers
     config = _clean_hosted_config()
     config["hosted"] = dict(HOSTED, session_storage="leaky-storage")

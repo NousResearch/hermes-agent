@@ -8,6 +8,8 @@ import sys
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from plugins.plugin_loader import load_plugin_module
 
 
@@ -182,3 +184,36 @@ def test_parent_shells_run_from_their_own_package_folders(tmp_path, monkeypatch)
         for name in tuple(sys.modules):
             if name.partition(".")[0] == "test_loader_root":
                 sys.modules.pop(name, None)
+def test_load_named_refuses_a_user_dir_in_a_hosted_process(tmp_path, monkeypatch):
+    """The shared named-provider seam: in a hosted process a provider directory outside the
+    bundled tree is refused BEFORE its loader (which would import it) runs — the deployment
+    home's plugin directories are tenant-writable, so hosted named providers resolve only from
+    the bundled tree."""
+    from hermes_cli import hosted_mode
+    from plugins.plugin_loader import NamedProviderRefused, load_named
+
+    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+
+    def _must_not_load(provider_dir):
+        raise AssertionError("a refused provider's loader ran")
+
+    with pytest.raises(NamedProviderRefused, match="bundled with Hermes"):
+        load_named("probe", tmp_path / "user-dir", _must_not_load, kind="Probe provider",
+                   noun="provider", logger=logging.getLogger(__name__))
+
+
+def test_load_named_loads_a_bundled_dir_in_a_hosted_process(tmp_path, monkeypatch):
+    """The same seam, bundled side: a provider inside the kind's bundled directory loads exactly
+    as before when the process is hosted."""
+    from hermes_cli import hosted_mode
+    from plugins.plugin_loader import load_named
+
+    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+
+    def _load(provider_dir):
+        return object()
+
+    assert load_named("probe", bundled, _load, kind="Probe provider", noun="provider",
+                      logger=logging.getLogger(__name__), bundled_root=bundled) is not None

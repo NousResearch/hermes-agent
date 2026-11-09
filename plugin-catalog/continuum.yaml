@@ -1,0 +1,62 @@
+name: continuum
+title: Continuum — Unified Self-Improving Agent Engine
+repo: https://github.com/aidonerightcorp/continuum
+sha: 1df00676e5f8bc997c1aeda44e209c01a6da0513
+description: >-
+  OmniNode-encased self-improving agent engine connecting five native Hermes
+  surfaces (ContextEngine, MemoryProvider, DelegationProvider, 18 continuum_*
+  agent tools with 4 lifecycle hooks and /continuum command, plus Hermes Desktop
+  SDK and Web Dashboard views) over 30 cooperating cybernetic engines (112
+  sub-engines), static AST CARD descriptors with .omni/cas SHA-256 lockfile
+  integrity, declarative >> // | @ pipeline shape composition emitting canonical
+  grid/1 cell receipts, shared 4-space nested embeddings (16d/32d/64d/128d),
+  Matryoshka Top-K JumpReLU SAE & Crosscoder latent probing with ELK
+  layer-divergence detection, surgical Null(A_anchor) activation steering (0.0
+  anchor drift), a 172-axis TT-Cross adaptive grid with zero-token offline
+  exploration, Cellular Sheaf consistency auditing, Split Conformal + Online ACI
+  prediction sets, Kronecker HyperLoRA, atomic SQLite task leasing with maker !=
+  checker verification, and portable compilation across 9 zero-dependency
+  runtimes (bare-metal #![no_std] Rust, WebGL2 GLSL, JS, Python, SQL, C99,
+  in-memory WASM, WAT, and WGSL, plus safetensors). Disclosure — runs 100%
+  locally in-process over profile-scoped SQLite WAL and .omni/ storage; zero
+  outbound network calls, zero background daemons, and zero external API keys
+  required.
+maintainer: aidonerightcorp
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/aidonerightcorp/continuum#readme
+readme: true
+image: https://raw.githubusercontent.com/aidonerightcorp/continuum/1df00676e5f8bc997c1aeda44e209c01a6da0513/docs/continuum-overview.png
+version: "1.3.0"
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools:
+    - continuum_fission_dag
+    - continuum_claim_and_fence
+    - continuum_verify_record
+    - continuum_compile_cartridge
+    - continuum_analyze_spectrum
+    - continuum_surgical_edit
+    - continuum_coupling_step
+    - continuum_morphism_transfer
+    - continuum_calibrate_effort
+    - continuum_manifold_status
+    - continuum_context_grep
+    - continuum_attractor_recall
+    - continuum_sheaf_consistency_audit
+    - continuum_conformal_calibrate
+    - continuum_hyperlora_modulate
+    - continuum_probe_latent_state
+    - continuum_steer_nullspace_vector
+    - continuum_compose_omninode
+  provides_hooks:
+    - on_session_start
+    - pre_tool_call
+    - post_tool_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

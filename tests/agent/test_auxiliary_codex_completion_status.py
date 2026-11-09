@@ -6,6 +6,7 @@ import pytest
 
 from agent.auxiliary_client import _CodexCompletionsAdapter
 from agent.context_compressor import ContextCompressor
+from agent.usage_pricing import normalize_usage
 
 
 def _message(text, *, phase: str | None = "final_answer", status="completed"):
@@ -35,6 +36,42 @@ def _adapter_response(final, *, streamed, base_url=""):
     return _CodexCompletionsAdapter(
         SimpleNamespace(base_url=base_url, responses=FakeResponses()), "aux-model",
     ).create(messages=[{"role": "user", "content": "Summarize the task."}])
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["response-object", "sse"])
+@pytest.mark.parametrize("as_mapping", [False, True], ids=["sdk-usage", "dict-usage"])
+def test_aux_adapter_preserves_cached_and_reasoning_usage(streamed, as_mapping):
+    usage = {
+        "input_tokens": 10000, "output_tokens": 100, "total_tokens": 10100,
+        "input_tokens_details": {"cached_tokens": 9000, "cache_creation_tokens": 200},
+        "output_tokens_details": {"reasoning_tokens": 40},
+    }
+    if not as_mapping:
+        usage = SimpleNamespace(**{
+            key: SimpleNamespace(**value) if isinstance(value, dict) else value
+            for key, value in usage.items()
+        })
+    final = SimpleNamespace(status="completed", output=[_message("CHECKPOINT")], usage=usage)
+
+    response = _adapter_response(final, streamed=streamed)
+    normalized = normalize_usage(response.usage, provider="custom", api_mode="chat_completions")
+
+    assert normalized.input_tokens == 800
+    assert normalized.cache_read_tokens == 9000
+    assert normalized.cache_write_tokens == 200
+    assert normalized.output_tokens == 100
+    assert normalized.reasoning_tokens == 40
+
+
+@pytest.mark.parametrize("usage", [None, {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}])
+def test_aux_adapter_accepts_missing_usage_details(usage):
+    final = SimpleNamespace(status="completed", output=[_message("CHECKPOINT")], usage=usage)
+
+    response = _adapter_response(final, streamed=False)
+    normalized = normalize_usage(response.usage, provider="custom", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == normalized.cache_write_tokens == normalized.reasoning_tokens == 0
+    assert normalized.input_tokens == (10 if usage else 0)
 
 
 def test_compressor_rejects_actual_adapter_partial_summary(monkeypatch):

@@ -83,13 +83,15 @@ class SkillIndex(ABC):
     @abstractmethod
     def get(self, name: str) -> Optional[dict[str, Any]]:
         """One resolved row (see :meth:`list`). ``None`` for a skill the pinned agent does not
-        offer: missing, another tenant's and another agent's look the same — and a name two
-        skills share, which resolves only by its exact ``load_name``."""
+        offer: missing, another tenant's and another agent's look the same. A name two skills
+        share is refused with today's ambiguity error, never guessed; it resolves by the exact
+        ``load_name`` its :meth:`list` row reports."""
 
     @abstractmethod
     def read_body(self, name: str, file_path: Optional[str] = None) -> Optional[str]:
         """The text of the skill's ``SKILL.md``, or of one supporting file under its directory.
         ``None`` for a skill the pinned agent does not offer, and for a file it does not hold.
+        A name two skills share is refused as in :meth:`get`, never guessed.
 
         Skill bodies live behind this one operation so a later store can move them without
         touching the port."""
@@ -110,7 +112,8 @@ class SkillIndex(ABC):
     @abstractmethod
     def delete(self, name: str, *, level: str = AGENT_LEVEL) -> bool:
         """Remove one skill, its directory and every file in it. ``False`` when the pinned agent
-        offers no such skill at *level* — a foreign skill looks the same as a missing one."""
+        offers no such skill at *level* — a foreign skill looks the same as a missing one. A
+        name two skills share is refused as in :meth:`get`, never guessed."""
 
     @abstractmethod
     def delete_file(self, name: str, file_path: str, *, level: str = AGENT_LEVEL) -> bool:

@@ -214,17 +214,30 @@ class LocalSkillIndex(SkillIndex):
                 "load_name": entry["load_name"], "level": AGENT_LEVEL}
 
     def _locate(self, name: str) -> Optional[dict[str, Any]]:
-        """The entry the index resolves *name* to: the unique owner of one of its aliases
-        (declared name, directory name, relative path), or the one entry whose exact
-        ``load_name`` it is. ``None`` for a name the agent does not offer."""
-        from pathlib import Path as _Path
-        for entry in self._scan():
-            aliases = {str(entry["name"]), _Path(entry["path"]).parent.name, entry["relative_path"]}
-            if entry["status"] == "unique" and name in aliases:
-                return entry
-            if name == entry["load_name"]:
-                return entry
-        return None
+        """The entry the index resolves *name* to, by the same aliases today's resolver accepts
+        (declared name, directory name, path relative to the skills root), selected by today's
+        candidate resolution: identical copies of one skill under one root resolve to the
+        shallowest, and a name two different skills share is refused with today's ambiguity
+        error, never guessed. ``None`` for a name the agent does not offer."""
+        from agent.skill_utils import (
+            AMBIGUOUS_SKILL_PREFIX, pick_skill_candidate, skill_candidate_rank,
+        )
+        matches = [entry for entry in self._scan()
+                   if name in {str(entry["name"]), Path(entry["path"]).parent.name,
+                               entry["relative_path"]}]
+        if len(matches) > 1:
+            won, _contenders = pick_skill_candidate([
+                (entry["tier"], str(entry["root"]), skill_candidate_rank(entry["path"], entry["root"]),
+                 entry["path"]) for entry in matches])
+            if won is None:
+                load_names = sorted({entry["relative_path"] for entry in matches} - {name})
+                raise ValueError(
+                    f"{AMBIGUOUS_SKILL_PREFIX}'{name}': "
+                    + (f"use one of {', '.join(load_names)}. " if load_names else "")
+                    + f"{len(matches)} different skills share this name in the same skills "
+                    "directory tier; refusing to guess.")
+            matches = [matches[won]]
+        return matches[0] if matches else None
 
     def list(self) -> list[dict[str, Any]]:
         self._pin()

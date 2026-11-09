@@ -370,6 +370,11 @@ class TestDoctorMemoryProviderSection:
         monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+        import hermes_cli.config as _cfg_mod
+        _cfg_mod._LOAD_CONFIG_CACHE.clear()
+        _cfg_mod._RAW_CONFIG_CACHE.clear()
         (tmp_path / "project").mkdir(exist_ok=True)
 
         # Stub tool availability (returns empty) so doctor runs past it
@@ -1553,8 +1558,13 @@ def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypat
         "background_review": {"provider": "no-such-provider", "model": "m"},
         "compression": {"provider": "openai", "model": "gpt-x", "base_url": "https://gateway.example/v1", "api_key": "gw"},
     }}))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+    import hermes_cli.config as _cfg_mod
+    _cfg_mod._LOAD_CONFIG_CACHE.clear()
+    _cfg_mod._RAW_CONFIG_CACHE.clear()
     issues = []
-    doctor_config._validate_auxiliary_config(cfg_file, issues)
+    doctor_config._validate_auxiliary_config(issues)
     assert len(issues) == 1 and "auxiliary.background_review" in issues[0] and "no-such-provider" in issues[0]
 
 

@@ -1,0 +1,27 @@
+name: prize-radar
+repo: https://github.com/cacx097/prize-radar
+sha: 9f477018dff663df664be645a373e86b38383cca
+description: >-
+  Hackathon and bounty scout: finds open Devpost hackathons and Superteam Earn bounties ranked by prize
+  per entrant, with exact deadlines in your time zone and eligibility for your country from the official
+  pages; sizes the competition, including GitHub pull-request hackathons (entry counts and themes no entry
+  covers); tracks your entries and reports each deadline change, closing and winner announcement once, at
+  the start of a session or through a daily automation blueprint. Disclosure — read-only, unauthenticated
+  requests to devpost.com, superteam.fun and api.github.com; one SQLite database under plugin-data; no
+  credentials, shell commands, background processes or telemetry; never registers, submits or posts.
+maintainer: cacx097
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+image: https://raw.githubusercontent.com/cacx097/prize-radar/9f477018dff663df664be645a373e86b38383cca/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/cacx097/prize-radar/9f477018dff663df664be645a373e86b38383cca/docs/search.png
+  - https://raw.githubusercontent.com/cacx097/prize-radar/9f477018dff663df664be645a373e86b38383cca/docs/gaps.png
+  - https://raw.githubusercontent.com/cacx097/prize-radar/9f477018dff663df664be645a373e86b38383cca/docs/deadline-moved.png
+  - https://raw.githubusercontent.com/cacx097/prize-radar/9f477018dff663df664be645a373e86b38383cca/docs/session-reminder.png
+capabilities:
+  provides_tools: [prize_search, prize_competition, prize_track, prize_list, prize_check]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

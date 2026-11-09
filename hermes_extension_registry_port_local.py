@@ -26,7 +26,7 @@ race a read-modify-write, and the last atomic replace wins.
 
 A registry's file is written in one shape only: an ``entries`` list of row objects and a
 ``switches`` object whose keys are the entry's identity — ``<level>:<name>`` — the only
-form the file has ever held. A file whose row containers are of the wrong type — a
+supported shape (files written by earlier unreleased revisions are not read). A file whose row containers are of the wrong type — a
 present ``entries`` that is not a list, or a present ``switches`` that is not an object
 — is refused by every operation rather than silently reset: carrying on would answer
 for rows a read cannot see and let a write reset rows it cannot know. An absent file,

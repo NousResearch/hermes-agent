@@ -125,7 +125,6 @@ def _make_runner(session_db=None):
     runner.session_store.switch_session = MagicMock(side_effect=_switch_session)
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     # Gateway holds the async facade; the slash handlers await it.
     if session_db is not None:

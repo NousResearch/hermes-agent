@@ -40,7 +40,6 @@ def _make_runner(**attrs):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-    runner._session_model_overrides = {}
     runner.adapters = {}
     runner.session_store = MagicMock()
     for key, value in attrs.items():

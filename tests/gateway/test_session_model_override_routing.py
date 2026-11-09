@@ -52,7 +52,6 @@ def _make_runner():
     runner._running_agents = {}
     runner._background_tasks = set()
     runner._session_db = None
-    runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()

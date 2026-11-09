@@ -12,7 +12,6 @@ def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
-    runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = None
@@ -92,6 +91,6 @@ custom_providers:
 
     assert result is not None
     session_key = runner._session_key_for_source(event.source)
-    assert runner._session_model_overrides[session_key]["request_overrides"] == {
+    assert runner._session_model_override(session_key)["request_overrides"] == {
         "extra_body": {"text": {"verbosity": "low"}},
     }

@@ -43,7 +43,6 @@ class TestTextDocumentNote:
             platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
         )
         runner.adapters = {}
-        runner._session_model_overrides = {}
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="text-document",

@@ -28,7 +28,6 @@ def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
-    runner._session_model_overrides = {}
     runner._running_agents = {}
     return runner
 
@@ -107,12 +106,12 @@ async def test_typed_model_expensive_confirm_once_applies_switch(tmp_path, monke
     runner._request_slash_confirm = _fake_request_slash_confirm
 
     await runner._handle_model_command(_make_event("/model openai/gpt-5.5-pro"))
-    assert runner._session_model_overrides == {}
+    assert all(state.conversation.model_override is None for state in runner._sessions_map().values())
 
     reply = await captured["handler"]("once")
 
     assert "gpt-5.5-pro" in reply
-    overrides = list(runner._session_model_overrides.values())
+    overrides = [s.conversation.model_override for s in runner._sessions_map().values() if s.conversation.model_override is not None]
     assert len(overrides) == 1
     assert overrides[0]["model"] == "openai/gpt-5.5-pro"
 
@@ -160,7 +159,7 @@ async def test_failed_inplace_swap_aborts_commit(tmp_path, monkeypatch):
     assert result is not None
     assert "failed" in result.lower()
     # The broken switch must NOT have been committed anywhere.
-    assert runner._session_model_overrides == {}
+    assert all(state.conversation.model_override is None for state in runner._sessions_map().values())
     # The working cached agent must NOT have been evicted.
     assert evicted == []
     # The agent stayed on its old model (rolled back).

@@ -47,7 +47,7 @@ async def test_reset_clears_a_persisted_override_after_restart(tmp_path, monkeyp
 
     assert "cfg-model" in reply
     assert store.get_model_override(key) is None
-    assert runner._session_model_overrides.get(key) is None
+    assert runner._session_model_override(key) is None
     assert runner._session_state(key).conversation.one_turn_restore is None  # an armed --once can't re-plant it
     assert evicted == [key]
     assert "pinned-model" in runner._pending_model_notes[key]

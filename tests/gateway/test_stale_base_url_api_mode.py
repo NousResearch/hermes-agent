@@ -47,7 +47,6 @@ def _make_runner(adapter=None):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {Platform.TELEGRAM: adapter} if adapter else {}
     runner._voice_mode = {}
-    runner._session_model_overrides = {}
     runner._running_agents = {}
     return runner
 

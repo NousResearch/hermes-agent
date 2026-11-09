@@ -644,7 +644,6 @@ class TestSlackModelPickerGatewayIntegration:
         runner = object.__new__(GatewayRunner)
         runner.adapters = {Platform.SLACK: adapter}
         runner._voice_mode = {}
-        runner._session_model_overrides = {}
         runner._running_agents = {}
 
         hermes_home = tmp_path / ".hermes"
@@ -695,7 +694,6 @@ class TestSlackModelPickerGatewayIntegration:
         runner = object.__new__(GatewayRunner)
         runner.adapters = {Platform.SLACK: adapter}
         runner._voice_mode = {}
-        runner._session_model_overrides = {}
         runner._running_agents = {}
 
         hermes_home = tmp_path / ".hermes"

@@ -67,7 +67,6 @@ async def test_model_picker_reads_routed_profile_config(tmp_path, monkeypatch):
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner.config = SimpleNamespace(multiplex_profiles=True)
     runner._voice_mode = {}
-    runner._session_model_overrides = {}
     runner._running_agents = {}
     runner._resolve_profile_home_for_source = lambda _source: secondary_home
     runner._thread_metadata_for_source = lambda *_args, **_kwargs: None

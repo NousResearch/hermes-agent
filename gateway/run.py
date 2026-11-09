@@ -2266,7 +2266,6 @@ _AGENT_PENDING_SENTINEL = object()
 # drifted whenever a new dict was added (#48031, #58403, #10702, #35809). - _agent_cache: has its own
 # eviction path (_evict_cached_agent) with resource cleanup; boundaries call it explicitly.
 _CONVERSATION_SCOPED_STATE: tuple = (
-    "_session_model_overrides",
     "_pending_model_notes",
     # Stall-watchdog "already notified" latch; cleared on /new so a fresh conversation can warn again.
     # See #72016.
@@ -3352,7 +3351,6 @@ class GatewayRunner(
 
     # Legacy per-session dict attrs as LIVE views over ``self._sessions``; new code: _session_state(key)
     _running_agents = legacy_dict_property("_running_agents")
-    _session_model_overrides = legacy_dict_property("_session_model_overrides")
     _pending_messages = legacy_dict_property("_pending_messages")
 
     def _sessions_map(self) -> dict[str, SessionState]:

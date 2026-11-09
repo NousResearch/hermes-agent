@@ -20,7 +20,6 @@ import gateway.run as gateway_run
 
 def _make_runner():
     runner = object.__new__(gateway_run.GatewayRunner)
-    runner._session_model_overrides = {}
     runner._service_tier = None
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()

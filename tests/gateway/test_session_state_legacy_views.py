@@ -26,6 +26,7 @@ MIGRATED = (
     "_busy_ack_ts",
     "_queued_events",
     "_pending_approvals",
+    "_session_model_overrides",
 )
 
 

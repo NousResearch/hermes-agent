@@ -73,7 +73,6 @@ def _make_runner():
     runner._session_db = None
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
-    runner._session_model_overrides = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(streaming=None)
     runner.session_store = SimpleNamespace(
@@ -204,7 +203,7 @@ async def test_fast_gate_follows_the_session_route(monkeypatch, tmp_path, defaul
     runner = _make_runner()
     event = _make_event(command)
     session_key = runner._session_key_for_source(event.source)
-    runner._session_model_overrides[session_key] = dict(override)
+    runner._session_state(session_key).conversation.model_override = dict(override)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: default_model)
@@ -234,7 +233,7 @@ async def test_fast_override_lands_under_the_recovered_telegram_topic_key(monkey
     raw_key = runner._session_key_for_source(source)
     turn_key = runner._session_key_for_source(dataclasses.replace(source, thread_id="77"))
     assert turn_key != raw_key
-    runner._session_model_overrides[turn_key] = dict(_ASTRA_ON_CODEX)
+    runner._session_state(turn_key).conversation.model_override = dict(_ASTRA_ON_CODEX)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "claude-sonnet-4-6")

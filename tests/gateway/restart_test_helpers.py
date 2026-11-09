@@ -84,7 +84,6 @@ def make_restart_runner(
     runner._stop_task = None
     runner._busy_input_mode = "interrupt"
     runner._voice_mode = {}
-    runner._session_model_overrides = {}
     runner._session_sources = OrderedDict()
     runner._session_sources_max = 512
     runner._update_runtime_status = MagicMock()

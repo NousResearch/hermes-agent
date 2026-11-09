@@ -220,7 +220,6 @@ class TestGatewayCleanupWiring:
         runner._restart_via_service = False
         runner._restart_drain_timeout = 0.1
         runner._voice_mode = {}
-        runner._session_model_overrides = {}
         runner._busy_input_mode = "interrupt"
         runner._agent_cache = {}
         runner._agent_cache_lock = threading.Lock()

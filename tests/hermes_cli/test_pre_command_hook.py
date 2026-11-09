@@ -247,7 +247,6 @@ def _make_runner():
     runner._session_sources = {}
     runner._background_tasks = {}
     runner._background_task_counter = 0
-    runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     runner._service_tier = None
     runner._fast_mode_by_session = {}

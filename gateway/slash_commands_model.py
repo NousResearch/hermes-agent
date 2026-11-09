@@ -246,7 +246,7 @@ class GatewayModelCommandsMixin:
             f"{'This override applies to the next turn only. ' if one_turn else ''}"
             f"Adjust your self-identification accordingly.]"
         )
-        self._session_model_overrides[ctx.session_key] = {
+        self._session_state(ctx.session_key).conversation.model_override = {
             "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
             "base_url": result.base_url, "api_mode": result.api_mode,
             # Catalog alias names carry no credential authority; only a direct alias endpoint does.
@@ -281,7 +281,8 @@ class GatewayModelCommandsMixin:
                 logger.warning("Failed to clear persisted session model override: %s", e)
                 global_error = t("gateway.model.err_stale_override", error=e)
             else:
-                self._session_model_overrides.pop(ctx.session_key, None)
+                if (_override_state := self._peek_session_state(ctx.session_key)) is not None:
+                    _override_state.conversation.model_override = None
         # Non-secret write-through so the override survives a restart (api_key/api_mode are
         # re-resolved on rehydration); a --once override must NOT outlive a restart.
         # Write-through the non-secret parts (model/provider/base_url) to the session store so the override
@@ -293,9 +294,10 @@ class GatewayModelCommandsMixin:
         # so a crash before the restore rehydrated the once-model permanently.)
         elif not one_turn:
             try:
-                await self.async_session_store.set_model_override(
-                    ctx.session_key, self._session_model_overrides[ctx.session_key]
-                )
+                _committed = self._session_model_override(ctx.session_key)
+                if _committed is None:  # cleared while the commit awaited: persist nothing
+                    raise KeyError(ctx.session_key)
+                await self.async_session_store.set_model_override(ctx.session_key, _committed)
             except Exception:
                 logger.debug("Failed to persist session model override", exc_info=True)
         self._evict_cached_agent(ctx.session_key)  # next turn builds fresh from the override
@@ -622,7 +624,7 @@ class GatewayModelCommandsMixin:
         ctx.read_config()
         if request.is_reset:
             return await self._handle_model_reset(event, ctx)
-        ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+        ctx.apply_override(self._session_model_override(session_key) or {})
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
         result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
@@ -665,8 +667,9 @@ class GatewayModelCommandsMixin:
         # A restart leaves the persisted override unloaded until first use: load it, or the reply
         # says "none active" while the store resurrects it on the next message.
         await asyncio.to_thread(self._rehydrate_session_model_override, session_key)
-        previous = self._session_model_overrides.pop(session_key, None)
+        previous = self._session_model_override(session_key)
         if (_otr_state := self._peek_session_state(session_key)) is not None:
+            _otr_state.conversation.model_override = None
             _otr_state.conversation.one_turn_restore = None
         try:
             await self.async_session_store.set_model_override(session_key, None)
@@ -769,20 +772,20 @@ class GatewayModelCommandsMixin:
 
         async def _switch() -> str:
             ctx.read_config()
-            ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+            ctx.apply_override(self._session_model_override(session_key) or {})
             result, error = await self._perform_model_switch(ctx, model_id, "nous", event.source)
             if error is not None:
                 return error
             return await self._commit_model_switch(result, ctx, source=event.source, picker=True)
 
-        before = self._session_model_overrides.get(session_key)
+        before = self._session_model_override(session_key)
         if profile_home is None:
             reply = await _switch()
         else:
             from gateway.run import _profile_runtime_scope
             with _profile_runtime_scope(profile_home):
                 reply = await _switch()
-        after = self._session_model_overrides.get(session_key)
+        after = self._session_model_override(session_key)
         switched = after is not None and after is not before and after.get("provider") == "nous"
         if switched:
             # Only after the switch landed (an error reply leaves the override unchanged). Exactly a typed /retry from the same sender (rewinds the refused turn, runs the message
@@ -966,7 +969,7 @@ class GatewayModelCommandsMixin:
             self._show_reasoning = getattr(_live, "show_reasoning", None) is True
         # Effective model (session /model override wins) so per-model reasoning_overrides display.
         _session_model = str(
-            ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {}).get("model") or ""
+            (self._session_model_override(session_key) or {}).get("model") or ""
         )
         self._reasoning_config = self._resolve_session_reasoning_config(
             source=event.source, session_key=session_key, model=_session_model,
@@ -980,7 +983,7 @@ class GatewayModelCommandsMixin:
         from agent.reasoning_effort import effort_display_label
         from gateway.run import _load_gateway_config
         from hermes_cli.codex_runtime_switch import get_current_runtime
-        _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
+        _session_route = self._session_model_override(session_key) or {}
         _model_cfg = {}
         with contextlib.suppress(Exception):  # fail-open on config read errors, like /model does
             _model_cfg = _load_gateway_config(config_path=self.config_path).get("model", {}) or {}

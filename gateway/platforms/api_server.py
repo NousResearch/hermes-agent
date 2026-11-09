@@ -2016,7 +2016,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             except Exception:
                 logger.debug(
                     "api_server failed to rehydrate session /model override for %s", session_key, exc_info=True)
-            override = runner._session_model_overrides.get(session_key)
+            override = runner._session_model_override(session_key)
             return dict(override) if isinstance(override, dict) else None
         except Exception:
             return None

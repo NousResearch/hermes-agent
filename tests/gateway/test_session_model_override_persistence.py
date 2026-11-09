@@ -1,6 +1,6 @@
 """Per-session /model overrides must survive gateway restarts (#3659 salvage).
 
-``GatewayRunner._session_model_overrides`` is in-memory, so before persistence
+The /model override (``SessionState.conversation.model_override``) is in-memory, so before persistence
 a gateway restart silently reverted every session to the global default model.
 The non-secret parts (model/provider/base_url) are now written through to the
 session store (``SessionEntry.model_override`` in sessions.json) and lazily
@@ -90,7 +90,6 @@ def _make_runner(store):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-    runner._session_model_overrides = {}
     runner.session_store = store
     return runner
 
@@ -118,7 +117,7 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     ):
         runner._rehydrate_session_model_override(session_key)
 
-    override = runner._session_model_overrides[session_key]
+    override = runner._session_model_override(session_key)
     assert override["model"] == "gpt-5o"
     assert override["provider"] == "openai"
     assert override["base_url"] == "https://api.openai.example/v1"
@@ -157,7 +156,7 @@ def test_rehydrate_llamacpp_override_follows_live_managed_port(store_factory):
     ):
         runner._rehydrate_session_model_override(session_key)
 
-    override = runner._session_model_overrides[session_key]
+    override = runner._session_model_override(session_key)
     assert override["base_url"] == "http://127.0.0.1:18434/v1"
     assert override["api_key"] == "local-key"
 
@@ -178,7 +177,7 @@ def test_rehydrate_opencode_override_heals_relay_url_for_rederived_wire(store_fa
     ):
         runner._rehydrate_session_model_override(session_key)
 
-    override = runner._session_model_overrides[session_key]
+    override = runner._session_model_override(session_key)
     assert (override["api_mode"], override["base_url"]) == ("chat_completions", "https://opencode.ai/zen/go/v1")
 
 

@@ -5,7 +5,7 @@ NOT expose ``/models`` (the path returns the marketing site's HTML 404).  This
 caused ``validate_requested_model`` to return ``accepted=False`` for every
 model on those providers, which in turn made ``switch_model()`` fail and the
 gateway's ``/model <name> --provider opencode-go`` command never write to
-``_session_model_overrides``.
+session /model override.
 
 These tests cover the catalog-fallback path: when ``fetch_api_models`` returns
 ``None``, the validator must consult ``provider_model_ids()`` for the provider

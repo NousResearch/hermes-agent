@@ -21,7 +21,6 @@ def _runner(monkeypatch, tmp_path):
     runner = object.__new__(GatewayRunner)
     runner.config = None
     runner.session_store = None
-    runner._session_model_overrides = {}
     return runner
 
 
@@ -45,7 +44,7 @@ def test_managed_session_override_reresolves_each_turn_and_keeps_route_on_auth_l
         "request_overrides": {"service_tier": "priority"}, "capabilities": {"vision": True},
         "credential_pool": object(),
     }
-    runner._session_model_overrides["session"] = override
+    runner._session_state("session").conversation.model_override = override
     signatures = set()
     for token in ("fixture-A", "fixture-B", "fixture-C"):
         _write_auth(tmp_path, provider, token)
@@ -165,7 +164,7 @@ def test_managed_session_route_bypasses_channel_resolution(tmp_path, monkeypatch
         "credential_pool": object(), "max_tokens": 123,
         "capabilities": {"vision": True}, "request_overrides": {"service_tier": "priority"},
     }
-    runner._session_model_overrides["session"] = override
+    runner._session_state("session").conversation.model_override = override
     channel_pool = object()
 
     def resolve(provider_name, **kwargs):
@@ -199,7 +198,7 @@ def test_managed_session_override_on_env_overridden_codex_host_follows_auth_stor
     host = "http://127.0.0.1:9/v1"
     monkeypatch.setenv("HERMES_CODEX_BASE_URL", host)
     (tmp_path / "config.yaml").write_text("model:\n  provider: openrouter\n  default: default-model\n")
-    runner._session_model_overrides["session"] = {
+    runner._session_state("session").conversation.model_override = {
         "model": "selected-model", "provider": "openai-codex", "api_key": "account-A",
         "base_url": host, "api_mode": "codex_responses", "credential_pool": None,
     }
@@ -218,7 +217,7 @@ def test_secondary_profile_scoped_codex_host_follows_its_auth_store(tmp_path, mo
     secondary_host = "http://127.0.0.1:9/secondary/v1"
     monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:9/launch-profile/v1")
     (tmp_path / "config.yaml").write_text("model:\n  provider: openrouter\n  default: default-model\n")
-    runner._session_model_overrides["session"] = {
+    runner._session_state("session").conversation.model_override = {
         "model": "selected-model", "provider": "openai-codex", "api_key": "account-A",
         "base_url": secondary_host, "api_mode": "codex_responses", "credential_pool": None,
     }

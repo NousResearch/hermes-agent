@@ -52,7 +52,6 @@ def _make_runner(adapter):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
-    runner._session_model_overrides = {}
     runner._running_agents = {}
     return runner
 
@@ -295,7 +294,7 @@ async def test_global_switch_clears_redundant_session_override(tmp_path, monkeyp
     runner.session_store.get_or_create_session(source)
     stale = {"model": "old-model", "provider": "openrouter"}
     runner.session_store.set_model_override(session_key, stale)
-    runner._session_model_overrides[session_key] = dict(stale)
+    runner._session_state(session_key).conversation.model_override = dict(stale)
 
     confirmation = await drive(runner)
 

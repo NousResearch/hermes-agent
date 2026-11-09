@@ -36,7 +36,6 @@ def _make_runner():
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
-    runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
 
@@ -71,14 +70,14 @@ async def test_new_command_only_clears_own_session():
     session_key = build_session_key(_make_source())
     other_key = "other_session_key"
 
-    runner._session_model_overrides[session_key] = {
+    runner._session_state(session_key).conversation.model_override = {
         "model": "gpt-4o",
         "provider": "openai",
         "api_key": "sk-test",
         "base_url": "",
         "api_mode": "openai",
     }
-    runner._session_model_overrides[other_key] = {
+    runner._session_state(other_key).conversation.model_override = {
         "model": "claude-sonnet-4-6",
         "provider": "anthropic",
         "api_key": "***",
@@ -92,8 +91,8 @@ async def test_new_command_only_clears_own_session():
 
     await runner._handle_reset_command(_make_event("/new"))
 
-    assert session_key not in runner._session_model_overrides
-    assert other_key in runner._session_model_overrides
+    assert runner._session_model_override(session_key) is None
+    assert runner._session_model_override(other_key) is not None
     assert runner._session_state(session_key).conversation.reasoning_override is None
     assert runner._session_state(other_key).conversation.reasoning_override is not None
     assert session_key not in runner._pending_model_notes

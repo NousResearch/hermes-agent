@@ -27,8 +27,9 @@ export function __resetGhRepoRefsCache(): void {
   ghRepoRefsPromises.clear()
 }
 
-function fetchGhRepoRefs(sessionId: string): Promise<GhRepoRefs | null> {
-  const cached = ghRepoRefsPromises.get(sessionId)
+function fetchGhRepoRefs(sessionId: string, cwd: string): Promise<GhRepoRefs | null> {
+  const key = `${sessionId}\u0000${cwd}`
+  const cached = ghRepoRefsPromises.get(key)
 
   if (cached) {
     return cached
@@ -42,14 +43,14 @@ function fetchGhRepoRefs(sessionId: string): Promise<GhRepoRefs | null> {
       requestGatewayForProfile<GhRepoRefs>(
         activeGatewayProfileKey(),
         'git.repo_refs',
-        { session_id: sessionId },
+        { cwd, session_id: sessionId },
         4_000
       )
     )
     .then(result => (result.available ? result : null))
     .catch(() => null)
 
-  ghRepoRefsPromises.set(sessionId, promise)
+  ghRepoRefsPromises.set(key, promise)
 
   return promise
 }
@@ -61,6 +62,9 @@ export const GhRefLink: FC<{
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
+  // The backend's live session wins over this cwd; it covers chats the
+  // gateway's session authority owns, which the TUI registry never holds.
+  const cwd = useStore(view.$cwd)
   const [refs, setRefs] = useState<GhRepoRefs | null>(null)
   const sessionId = runtimeId ?? storedId
 
@@ -71,7 +75,7 @@ export const GhRefLink: FC<{
 
     let cancelled = false
 
-    void fetchGhRepoRefs(sessionId).then(resolved => {
+    void fetchGhRepoRefs(sessionId, cwd).then(resolved => {
       if (!cancelled && resolved) {
         setRefs(resolved)
       }
@@ -80,7 +84,7 @@ export const GhRefLink: FC<{
     return () => {
       cancelled = true
     }
-  }, [sessionId])
+  }, [cwd, sessionId])
 
   if (!refs) {
     return <>{label}</>

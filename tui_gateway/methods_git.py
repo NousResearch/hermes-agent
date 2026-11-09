@@ -69,16 +69,15 @@ def _(rid, params: dict) -> dict:
     """GitHub coordinates for a session's cwd: ``{available, host, owner, repo}``.
     ``available`` is false outside a git repo, without a github.com origin, or when
     the desktop kill-switch (``desktop.autolink_issue_refs``) is off — callers then
-    render the prose untouched."""
+    render the prose untouched. A live session's own cwd wins; ``cwd`` covers sessions
+    this process does not hold (the gateway's session authority owns Desktop chats)."""
     sid = str(params.get("session_id") or "")
-    if not sid:
-        return _err(rid, _E_ARG, "session_id required")
+    if not sid and not params.get("cwd"):
+        return _err(rid, _E_ARG, "session_id or cwd required")
     if not _autolink_issue_refs_enabled():
         return _ok(rid, {"available": False})
-    session = _sessions.get(sid)
-    if session is None:
-        return _ok(rid, {"available": False})
-    cwd = str(session.get("cwd") or "")
+    session = _sessions.get(sid) if sid else None
+    cwd = str((session or {}).get("cwd") or params.get("cwd") or "")
     refs = _session_repo_refs(cwd) if cwd else None
     if refs is None:
         return _ok(rid, {"available": False})

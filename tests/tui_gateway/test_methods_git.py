@@ -63,6 +63,24 @@ def test_resolves_github_origin(_git_sessions, tmp_path):
     assert result["repo"] == "newsAgg"
 
 
+def test_session_not_held_here_resolves_from_its_cwd(_git_sessions, tmp_path):
+    """Desktop chats belong to the gateway's session authority (``local-*`` ids), so the
+    renderer's cwd is the only handle; a live session's own cwd still wins over it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo, "https://github.com/o/r.git")
+    other = tmp_path / "other"
+    other.mkdir()
+    _init_repo(other, "https://github.com/x/y.git")
+
+    result = _call("git.repo_refs", {"session_id": "local-abc", "cwd": str(repo)})
+    assert (result["owner"], result["repo"]) == ("o", "r")
+
+    _git_sessions["s1"] = {"cwd": str(other)}
+    result = _call("git.repo_refs", {"session_id": "s1", "cwd": str(repo)})
+    assert (result["owner"], result["repo"]) == ("x", "y")
+
+
 def test_resolves_ssh_origin(_git_sessions, tmp_path):
     repo = tmp_path / "hermes-agent"
     repo.mkdir()

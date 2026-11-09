@@ -2590,9 +2590,11 @@ export interface ProjectsForCwdResult {
   cwd: string
   branch?: string
 }
+/** A live session's own cwd wins over ``cwd`` (the renderer's view of it). */
 export interface GitRepoRefsParams {
   profile?: string | null
   session_id?: string
+  cwd?: string
 }
 /** ``methods_git``: ``available`` is false outside a repo, without a github.com ``origin``, or with ``desktop.autolink_issue_refs: false``; the other keys are present only when it is true. */
 export interface GitRepoRefsResult {

@@ -168,7 +168,10 @@ method("projects.for_cwd", params=ProjectsForCwdParams, result=ProjectsForCwdRes
 
 
 class GitRepoRefsParams(ProfileParams):
+    """A live session's own cwd wins over ``cwd`` (the renderer's view of it)."""
+
     session_id: str = ""
+    cwd: str = ""
 
 
 class GitRepoRefsResult(Result):

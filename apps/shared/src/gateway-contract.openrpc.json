@@ -19279,6 +19279,7 @@
       },
       "GitRepoRefsParams": {
         "additionalProperties": false,
+        "description": "A live session's own cwd wins over ``cwd`` (the renderer's view of it).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -19295,6 +19296,11 @@
           "session_id": {
             "default": "",
             "title": "Session Id",
+            "type": "string"
+          },
+          "cwd": {
+            "default": "",
+            "title": "Cwd",
             "type": "string"
           }
         },

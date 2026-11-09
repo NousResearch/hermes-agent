@@ -922,7 +922,8 @@ class GatewayAgentCacheMixin:
                     logger.warning("Could not resolve the owning profile for %s; releasing under the default profile",
                                    session_key, exc_info=True)
             owner_home = Path(owner) if owner else get_default_hermes_root()
-            if current_secret_scope() is None or hermes_home_key(get_hermes_home()) != hermes_home_key(owner_home):
+            # No key names no owner: an in-turn caller's own scope is the owner's, never swap it for the default.
+            if current_secret_scope() is None or (session_key and hermes_home_key(get_hermes_home()) != hermes_home_key(owner_home)):
                 scope = _profile_runtime_scope(owner_home)
         with scope:
             target(*args)

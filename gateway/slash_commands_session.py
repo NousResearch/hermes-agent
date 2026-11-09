@@ -178,9 +178,11 @@ class GatewaySessionCommandsMixin:
         arbitrarily), then session:end and session:reset."""
         platform_value = source.platform.value if source.platform else ""
         with contextlib.suppress(Exception):
+            # session_key: the reset runs unscoped (confirm button, main loop), so finalize enters the
+            # OWNING profile's scope, like the old agent's cleanup above (#151672).
             messages = await self._finalize_session_off_loop(
                 session_id=old_sid, platform=platform_value, reason="new_session",
-                old_session_id=old_sid, new_session_id=new_sid)
+                old_session_id=old_sid, new_session_id=new_sid, session_key=session_key)
             await self._deliver_session_end_messages(messages, source=source, session_key=session_key)
         hook_payload = {"platform": platform_value, "user_id": source.user_id, "session_key": session_key}
         await self.hooks.emit("session:end", dict(hook_payload))
@@ -262,14 +264,12 @@ class GatewaySessionCommandsMixin:
             except Exception:
                 logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
         _new_sid = new_entry.session_id if new_entry else None
-        # Plugin on_session_reset hook (new session guaranteed to exist); best-effort.
-        try:
-            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-            _invoke_hook("on_session_reset", session_id=_new_sid, reason="new_session",
-                         platform=source.platform.value if source.platform else "",
-                         old_session_id=_old_sid, new_session_id=_new_sid)
-        except Exception:
-            pass
+        # Plugin on_session_reset hook (new session guaranteed to exist); best-effort, off-loop and
+        # under the profile owning session_key (#151672), as the viewer-close /new path does.
+        await self._reset_session_off_loop(
+            session_key=session_key, session_id=_new_sid, reason="new_session",
+            platform=source.platform.value if source.platform else "",
+            old_session_id=_old_sid, new_session_id=_new_sid)
         try:
             from hermes_cli.tips import get_random_tip
             _tip_line = t("gateway.reset.tip", tip=get_random_tip())
@@ -797,7 +797,8 @@ class GatewaySessionCommandsMixin:
             finalize_context_engine_compression_notification(tmp_agent, committed=False)
             self._evict_cached_agent(session_key)  # next turn rebuilds the prompt from current files
             # Off-loop + bounded: teardown can block on subprocess/network/SQLite.
-            await self._cleanup_agent_resources_off_loop(tmp_agent, context="manual compression")
+            await self._cleanup_agent_resources_off_loop(tmp_agent, context="manual compression",
+                                                         session_key=session_key)
         return "\n".join(_manual_compression_reply_lines(summary, compressor, request.focus_topic))
 
     async def _build_manual_compression_agent(self, session_id: str, model, runtime_kwargs: dict):

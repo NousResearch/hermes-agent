@@ -593,10 +593,10 @@ def _format_exec_approval_fallback(
     allow_session: bool = True, smart_denied: bool = False) -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
-    steps a surface without buttons needs."""
+    steps a surface without buttons needs. The command is never cut: ``/approve`` must only ever
+    answer a command the user could read in full (#62359)."""
     from gateway.platforms.base_exec_approval import (
         approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
-    cmd_preview = BasePlatformAdapter._truncate_preview(command, BasePlatformAdapter._EA_CMD_BUDGET)  # as on a card
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
@@ -607,7 +607,7 @@ def _format_exec_approval_fallback(
             choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
     return (
-        t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
+        t("gateway.exec_approval.text_body", heading=heading, command=command,  # whole: send() splits it
           reason_label=ea_reason_label_text(), reason=description)
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])
@@ -3957,6 +3957,7 @@ class GatewayRunner(
             user_id=str(source.user_id) if source.user_id else "",
             user_id_alt=str(source.user_id_alt) if source.user_id_alt else "",
             user_name=str(source.user_name) if source.user_name else "",
+            actor_id=str(context.actor_user_id or ""), actor_name=str(context.actor_user_name or ""),
             scope_id=str(getattr(source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(source, "parent_chat_id", "") or ""),
             session_key=context.session_key,
@@ -3965,8 +3966,7 @@ class GatewayRunner(
             session_id=context.session_id or "",
             message_id=str(source.message_id) if source.message_id else "",
             profile=getattr(source, "profile", "") or "",
-            async_delivery=_async_delivery,
-            cron_session="", session_history_delivery=_history_delivery)
+            async_delivery=_async_delivery, cron_session="", session_history_delivery=_history_delivery)
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

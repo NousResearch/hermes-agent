@@ -625,6 +625,7 @@ gateway:
     action_always: "Immer erlauben"
     action_deny: "Ablehnen"
     deadline: "Wenn Sie nicht innerhalb von {window} antworten, wird er NICHT ausgeführt."
+    not_requester: "Nur {requester} kann diese Freigabe beantworten."
     text_choice_once: "Antworten Sie mit `{prefix}approve`, um ihn einmalig auszuführen"
     text_choice_session: "`{prefix}approve session`, um dieses Muster für den Rest dieser Sitzung zu erlauben"
     text_choice_always: "`{prefix}approve always`, um ihn dauerhaft zu erlauben"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", oder {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Vorschau gekürzt: Der vollständige Befehl ({total} Zeichen) steht in der Nachricht darüber."
+    truncated_deny_only: "Vorschau gekürzt ({total} Zeichen) und der vollständige Befehl konnte hier nicht angezeigt werden, daher ist nur Ablehnen möglich. Prüfe ihn in der CLI oder der Desktop-App."
+    text_prompt_deny_only: "Die vollständige Freigabeanfrage ist für diese Plattform zu lang, daher ist nur Ablehnen möglich. Prüfe sie in der CLI oder der Desktop-App."
   notify:
     media_kind:
       audio: "Audio"

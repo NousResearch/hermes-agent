@@ -245,9 +245,8 @@ def retry_invalid_response(
     else jittered backoff that preserves a pending redirect."""
     from agent.conversation_loop import _arm_fallback_restart
     from agent.retry_utils import jittered_backoff
-    from agent.turn_recovery import (
-        classify_codex_soft_failure, describe_invalid_response, interruptible_backoff_sleep,
-    )
+    from agent.turn_recovery import describe_invalid_response, interruptible_backoff_sleep
+    from agent.turn_recovery_codex import classify_codex_soft_failure
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> InvalidResponseVerdict:
         return InvalidResponseVerdict(

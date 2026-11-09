@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 from typing import Any
+from persistence.sqlite.conversation._store.compression import get_compression_chain
+from persistence.sqlite.conversation._store.portability import _get_session_rich_rows_batch
 
 
 def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: bool) -> list[dict[str, Any]]:
@@ -48,8 +50,3 @@ def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: b
         merged["continuation_kind"] = "compression"
         projected.append(merged)
     return projected
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.compression import get_compression_chain
-from persistence.sqlite.conversation._store.portability import _get_session_rich_rows_batch

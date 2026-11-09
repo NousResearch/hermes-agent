@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.messages import _bump_session_counters, _check_transcript_write_guards, _message_row_params
 from persistence.sqlite.conversation._store.rules import stamp_message_uid
 
 
@@ -56,7 +57,3 @@ def _append_detached_result(holder: StoreHolder, session_id: str, content: str, 
         return msg_id
 
     return holder._execute_write(_do, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import _bump_session_counters, _check_transcript_write_guards, _message_row_params

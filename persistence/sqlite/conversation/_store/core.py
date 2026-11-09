@@ -252,6 +252,7 @@ def is_kanban_owned_session(holder: StoreHolder, session_id: str) -> bool:
     of a worker (a DIFFERENT conversation) is not swept in. Plain classification, not a
     gate: the resume-time guard (``hermes_cli/kanban_resume_guard.py``) owns the decision
     and the dispatcher-owned exemption."""
+    from persistence.sqlite.conversation._store.messages import _resume_lineage_ids
     lineage = _resume_lineage_ids(holder, session_id)
     if not lineage:
         return False
@@ -260,7 +261,3 @@ def is_kanban_owned_session(holder: StoreHolder, session_id: str) -> bool:
         "AND (source = 'kanban' OR created_source = 'kanban') LIMIT 1",
         tuple(lineage))
     return bool(rows)
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import _resume_lineage_ids

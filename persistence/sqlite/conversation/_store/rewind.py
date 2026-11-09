@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from typing import Any, Optional
 from persistence.conversation.messages import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
 from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.messages import (
+    _decode_content, _decode_display_metadata, _encode_display_metadata, _loaded_view_content, get_active_message_ids,
+    get_messages_as_conversation, rewind_to_message,
+)
+from persistence.sqlite.conversation._store.mutation_transcript import rewind_in_transaction
 
 
 _HISTORY_CHANGED = "session history changed before the rewind could be persisted"
@@ -219,11 +224,3 @@ def plan_user_turn_rewind(
         expected_target_content=stored_view.get("content"), scaffold=scaffold, prefix=prefix,
         durable_prefix=durable_prefix, live_view=live_view, live_text=live_text, durable_user=durable_user,
         user_ordinal=user_ordinal)
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import (
-    _decode_content, _decode_display_metadata, _encode_display_metadata, _loaded_view_content, get_active_message_ids,
-    get_messages_as_conversation, rewind_to_message,
-)
-from persistence.sqlite.conversation._store.mutation_transcript import rewind_in_transaction

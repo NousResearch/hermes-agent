@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Optional
 from persistence.sqlite._schema_ddl import _sql_json_extract
+from persistence.sqlite.conversation._store.compression import _compression_tip_on
 
 
 def update_conversation_model_config_value(db, session_id: str, key: str,
@@ -38,7 +39,3 @@ def session_ids_with_model_config_key(db, key: str) -> list[str]:
             f"SELECT id FROM sessions WHERE {_sql_json_extract('model_config', '$.' + key)} IS NOT NULL "
             "ORDER BY started_at DESC").fetchall()
     return [row["id"] for row in rows]
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.compression import _compression_tip_on

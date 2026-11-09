@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.messages import _display_dedupe_key, _display_identity, _resume_lineage_ids
 
 
 _TODO_TOOLS = "tool_name IN ('todo_list', 'todo')"
@@ -110,7 +111,3 @@ def _removed_todo_copies(holder: StoreHolder, conn, session_ids: list[str]) -> d
 def _todo_copy_removed(holder: StoreHolder, row, removed: dict[Any, int]) -> bool:
     """A newer copy of *row* was removed: the display read hides it, so the resume must not restore it."""
     return bool(removed) and any(removed.get(copy, 0) > row["id"] for copy in _todo_copies(holder, row))
-
-
-# Sibling store modules import this module's copies in turn, so their copies are imported after these.
-from persistence.sqlite.conversation._store.messages import _display_dedupe_key, _display_identity, _resume_lineage_ids

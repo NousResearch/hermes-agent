@@ -27,10 +27,15 @@ whether the target exists, and no refusal, log line or error the store raises ev
 secret's value — nor is one still bound in any frame such an error's traceback passes through,
 not the raising implementation's own frames, not the frames of any helper the failed write
 handed it to, and not the frames of any exception chained to the error as context or cause:
-an implementation clears the value (or record) from all of them before the error propagates —
-on every path, a refusal, a validation error or a mid-write failure — because some error
-reporters render traceback frame locals. :func:`clear_plaintext_from_frames` is that clearing,
-for a backend's ``except`` block.
+some error reporters render traceback frame locals. The design is structural, not a cleanup
+pass — an implementation never mutates any frame it does not own. ``set`` and ``set_auth`` run
+the whole write in one inner helper frame that binds the value (or record), and on ANY failure
+they leave the except block, delete their own value binding and raise a fresh error of the
+port's own types OUTSIDE the except block with both chained-exception slots cleared
+(:func:`fresh_write_error` builds it): the fresh error's traceback holds only the raising
+method's frame and the caller's frames above it, every frame below that held the value is
+gone with the original failure, and the caller's own frames — a caller retrying the write
+from inside an ``except`` handler included — are never touched.
 
 Every operation reads its pin (tenant, agent, owner, actor) from ``hermes_scope.current_scope()``
 when it runs, never from a path, ``HERMES_HOME`` or an argument; a port exposes no way to pin
@@ -76,65 +81,48 @@ class SecretLevelRefused(PermissionError):
     exists, and never contains a secret's value."""
 
 
-def _plaintext_texts(value: Any) -> tuple[str, ...]:
-    """Every string *value* — itself a secret, or a record (dict, list, tuple) holding some —
-    is made of: the texts a failed write's frame locals must not still render."""
-    texts: list[str] = []
-
-    def collect(node: Any, seen: set[int]) -> None:
-        if id(node) in seen:  # a record that contains itself collects nothing twice
-            return
-        seen.add(id(node))
-        if isinstance(node, str):
-            if node:
-                texts.append(node)
-        elif isinstance(node, dict):
-            for held in node.values():
-                collect(held, seen)
-        elif isinstance(node, (list, tuple, set, frozenset)):
-            for held in node:
-                collect(held, seen)
-
-    collect(value, set())
-    return tuple(texts)
+class SecretWriteFailed(OSError):
+    """A credential write that failed part-way through the backend's own write path — a
+    plain I/O failure, re-made fresh with only the details the port itself authored
+    (:func:`fresh_write_error`): never the value or record the caller asked to store, and
+    no frame that held it survives on this error's chain."""
 
 
-def clear_plaintext_from_frames(exc: BaseException, value: Any) -> None:
-    """Clear *value* — a secret, or a record holding some — from the locals of every frame
-    *exc* passes through: every frame of its own traceback, and of every exception chained to
-    it, as context or cause, recursively (a chain that loops clears each frame once), and of
-    every ``ExceptionGroup`` member's — the raising backend's frames and the frames of every
-    helper the failed write handed the plaintext to, wherever that code lives. A frame local
-    that renders the plaintext is replaced with ``None`` (error reporters render traceback
-    frame locals, and a re-raised error keeps its tracebacks). Call this from the write path's
-    own ``except`` block, before re-raising, on every failure of a credential write — a
-    refusal, a validation error, a mid-write I/O failure.
+def fresh_write_error(exc: BaseException) -> BaseException:
+    """The fresh, value-free error a failed credential write raises in place of *exc*.
+
+    Only details the port itself authored ride along: the exception's class, and a message
+    this function writes — for an OSError its errno, strerror and filename (a path is not
+    a secret), for one of the store's own refusals the refusal's own message (the checks
+    that raise them read the pin and the level, never the value, and the contract already
+    forbids a refusal naming one). Anything else keeps its type with a message of the
+    port's, never *exc*'s own: the code that failed wrote it, and nothing vouches it free
+    of the write's value. An OSError becomes :class:`SecretWriteFailed`.
+
+    Raise what this returns OUTSIDE the except block, after ``del``-ing the value (or
+    record) binding of the write's own frame, with both chained-exception slots cleared
+    first: the fresh error's traceback then holds only the raising ``set``/``set_auth``
+    frame and the caller's frames above it — every lower frame that held the value is gone
+    with the original failure, and no chain of that failure survives. (Python itself still
+    chains the CALLER's own active exception to any raise made inside its handler, which
+    the cleared cause suppresses from display; that chain is the caller's, and the port
+    never touches it.)
     """
-    texts = _plaintext_texts(value)
-    if not texts:
-        return
-    pending: list[BaseException] = [exc]
-    seen: set[int] = set()
-    while pending:
-        linked = pending.pop()
-        if id(linked) in seen:
-            continue
-        seen.add(id(linked))
-        tb = linked.__traceback__
-        while tb is not None:
-            locals_ = tb.tb_frame.f_locals
-            for key in list(locals_):
-                try:
-                    if any(text in repr(locals_[key]) for text in texts):
-                        locals_[key] = None  # frame locals accept no deletion; None renders nothing
-                except Exception:  # health: allow BLE001 -- a binding whose repr or set raises is one that renders nothing
-                    continue
-            tb = tb.tb_next
-        for chained in (linked.__context__, linked.__cause__):
-            if chained is not None:
-                pending.append(chained)
-        if isinstance(linked, BaseExceptionGroup):
-            pending.extend(linked.exceptions)
+    if isinstance(exc, (SecretPinRefused, SecretAdminRefused, SecretLevelRefused)):
+        return type(exc)(str(exc))
+    if isinstance(exc, OSError):
+        detail = type(exc).__name__
+        if exc.errno is not None:
+            detail += f", errno {exc.errno}"
+        if exc.strerror:
+            detail += f" ({exc.strerror})"
+        if exc.filename:
+            detail += f", file {exc.filename}"
+        return SecretWriteFailed(f"the credential write failed: {detail}")
+    try:
+        return type(exc)(f"the credential write failed: {type(exc).__name__}")
+    except Exception:  # health: allow BLE001 -- a signature this port cannot call falls back to its own type
+        return SecretWriteFailed(f"the credential write failed: {type(exc).__name__}")
 
 
 class SecretStore(ABC):
@@ -144,8 +132,8 @@ class SecretStore(ABC):
     ``hermes_scope.current_scope()`` on every call. ``get`` and ``get_auth`` resolve through the
     bound scope's view — agent level, then the agent's owner's owner-wide entries, then
     tenant-wide — so a value defined at several levels is the agent level's. ``names`` is that
-    whole view's name set. A failed credential write clears its value (or record) from every
-    frame its error passes through before the error propagates (:meth:`set`)."""
+    whole view's name set. A failed credential write holds no value on any error path
+    (:meth:`set`)."""
 
     @abstractmethod
     def get(self, name: str) -> Optional[str]:
@@ -163,10 +151,17 @@ class SecretStore(ABC):
         with :class:`SecretAdminRefused` unless the bound scope may administer the agent, and
         with :class:`SecretLevelRefused` at a level this backend does not hold. Any error the
         write raises — a refusal, a level that is not one at all, a locked key, a mid-write I/O
-        failure — propagates with *value* bound in no frame the implementation's code owns, in
-        no frame of any helper it handed the value to, and in no frame of any exception chained
-        to the error as context or cause: clear them (:func:`clear_plaintext_from_frames`)
-        before re-raising — error reporters render traceback frame locals."""
+        failure — propagates with *value* bound in no frame the error's traceback passes
+        through, and none of any exception chained to it, because some error reporters render
+        traceback frame locals. The implementation is structural about it, never a cleanup
+        pass over frames it does not own: run the whole write in one inner helper frame that
+        binds *value* (every refusal and validation condition checked before it is passed to
+        any writer), and on ANY failure leave the except block, ``del`` the method's own
+        *value* binding and raise what :func:`fresh_write_error` built OUTSIDE the except
+        block with both chained-exception slots cleared. The fresh error's traceback then
+        holds only the ``set`` frame upward — no lower frame that held the value survives, and
+        the caller's own frames (a caller retrying from inside an ``except`` handler included)
+        are never touched."""
 
     @abstractmethod
     def delete(self, name: str, *, level: str) -> bool:
@@ -183,9 +178,11 @@ class SecretStore(ABC):
     def set_auth(self, provider: str, record: dict[str, Any]) -> None:
         """Write *provider*'s auth *record* at the agent level (where ``auth.json`` keeps it
         today). Administration, refused like :meth:`set` — and like it, any error the write
-        raises propagates with *record* cleared from every frame it passed through, the
-        implementation's own and any helper's, chained exceptions included
-        (:func:`clear_plaintext_from_frames`)."""
+        raises propagates with *record* bound in no frame the error's traceback passes
+        through, none of any exception chained to it: the same structural rule (run the whole
+        write in one inner helper frame, ``del`` the method's own *record* binding, raise
+        :func:`fresh_write_error`'s result outside the except block with the chain slots
+        cleared), and never a frame the store does not own touched."""
 
 
 class SecretStoreProvider(ABC):

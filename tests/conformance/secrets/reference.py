@@ -15,11 +15,13 @@ from hermes_conformance.secrets import Backend
 from hermes_scope import Group, Owner, Principal, Scope, current_scope
 from hermes_secret_port import (
     LEVELS, SecretAdminRefused, SecretPinRefused, SecretStore, SecretStoreProvider,
-    clear_plaintext_from_frames,
+    fresh_write_error,
 )
 
 
 TENANT = "t"
+#: The key the managed-key hook pins, as an administrator would.
+MANAGED_KEY = "ZZ_ADMINISTRATOR_PINNED_KEY"
 #: The agents the fixture serves, and each one's owner: a principal owning two, a group owning two.
 OWNERS: dict[str, Owner] = {
     "a": Principal("p1"), "b": Principal("p1"), "c": Group("g2"), "d": Group("g2"),
@@ -31,7 +33,15 @@ def _owner_key(owner: Owner) -> tuple[str, str]:
 
 
 class MemorySecretStore(SecretStore):
-    """Every level, keyed by what the bound scope names. Serves one tenant, and no pin at all."""
+    """Every level, keyed by what the bound scope names. Serves one tenant, and no pin at all.
+
+    As the port's contract requires, a failed write holds no value on any error path: the
+    whole write runs in one helper frame that binds the value (or record), and any failure
+    propagates as a fresh error raised outside the except block, with the value deleted
+    from this frame's own bindings and both chained-exception slots cleared
+    (:func:`hermes_secret_port.fresh_write_error`) — so the error's traceback holds only
+    this frame and the caller's, and the frame that held the value is gone.
+    """
 
     levels = frozenset(LEVELS)
 
@@ -79,18 +89,31 @@ class MemorySecretStore(SecretStore):
         return "tenant", None
 
     def set(self, name: str, value: str, *, level: str) -> None:
+        failure = None
         try:
-            where, key = self._place(level)
-            if self.provider.fail_writes:
-                # The fixture's injected mid-write failure: the caller's value is already bound
-                # in this frame, and must not outlive the error in any frame below the caller.
-                raise OSError("the store's write path failed part-way through")
-            self.state[where].setdefault(key, {})[name] = value
-        except BaseException as exc:  # health: allow BLE001 -- cleared and re-raised below
-            # Any failure — a refusal, a level that is not one at all, the injected mid-write
-            # error — propagates with the value bound in no frame it passed through.
-            clear_plaintext_from_frames(exc, value)
-            raise
+            self._write_secret(name, value, level)
+        except BaseException as exc:  # health: allow BLE001 -- only the fresh error below survives
+            failure = fresh_write_error(exc)
+        del value
+        if failure is not None:
+            failure.__context__ = None
+            failure.__cause__ = None
+            raise failure
+
+    def _write_secret(self, name: str, value: str, level: str) -> None:
+        """The whole write in one helper frame, so no frame binding the value survives a
+        failure (see :meth:`set`): the placement checks (every refusal and validation
+        condition) first, then the fixture's injected plain failures, then the write."""
+        where, key = self._place(level)
+        if name in self.provider.locked_keys:
+            # The fixture's managed-key write lock: an administrator pinned this key, and
+            # the store refuses changing it with a plain error, not the store's refusal.
+            raise ValueError("the key is pinned by an administrator; this store refuses to change it")
+        if self.provider.fail_writes:
+            # The fixture's injected mid-write failure: the caller's value is already bound
+            # in this frame, and must not outlive the error in any frame below the caller.
+            raise OSError("the store's write path failed part-way through")
+        self.state[where].setdefault(key, {})[name] = value
 
     def delete(self, name: str, *, level: str) -> bool:
         where, key = self._place(level)
@@ -105,16 +128,24 @@ class MemorySecretStore(SecretStore):
         return None
 
     def set_auth(self, provider: str, record: dict[str, Any]) -> None:
+        failure = None
         try:
-            key = self._pin(administering=True).agent
-            if self.provider.fail_writes:
-                # As set(): the fixture's injected mid-write failure, with the record bound here.
-                raise OSError("the store's write path failed part-way through")
-            self.state["auth"]["agent"].setdefault(key, {})[provider] = dict(record)
-        except BaseException as exc:  # health: allow BLE001 -- cleared and re-raised below
-            # As set(): the record is cleared from every frame the error passes through.
-            clear_plaintext_from_frames(exc, record)
-            raise
+            self._write_auth_record(provider, record)
+        except BaseException as exc:  # health: allow BLE001 -- only the fresh error below survives
+            failure = fresh_write_error(exc)
+        del record
+        if failure is not None:
+            failure.__context__ = None
+            failure.__cause__ = None
+            raise failure
+
+    def _write_auth_record(self, provider: str, record: dict[str, Any]) -> None:
+        """As :meth:`_write_secret`: the record's whole write in one helper frame."""
+        key = self._pin(administering=True).agent
+        if self.provider.fail_writes:
+            # As _write_secret: the fixture's injected mid-write failure, record bound here.
+            raise OSError("the store's write path failed part-way through")
+        self.state["auth"]["agent"].setdefault(key, {})[provider] = dict(record)
 
 
 class MemorySecretStoreProvider(SecretStoreProvider):
@@ -127,6 +158,9 @@ class MemorySecretStoreProvider(SecretStoreProvider):
         self.agents = agents or {}
         #: While true (the fixture's ``fail_writes`` hook), every write fails part-way through.
         self.fail_writes = False
+        #: The keys an administrator has pinned (the fixture's ``managed_key`` hook): the
+        #: store's own write lock refuses changing them with a plain error.
+        self.locked_keys: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -179,6 +213,17 @@ def reference_backend() -> Backend:
         finally:
             provider.fail_writes = False
 
+    @contextmanager
+    def managed_key():
+        """While active, the yielded key is pinned by an administrator (the store's own
+        write lock): writing it fails with a plain ``ValueError`` part-way through the
+        write — not the store's refusal."""
+        provider.locked_keys.add(MANAGED_KEY)
+        try:
+            yield MANAGED_KEY
+        finally:
+            provider.locked_keys.discard(MANAGED_KEY)
+
     return Backend(open=lambda agent: provider.open(agent), bind=bind, bind_member=bind_member,
-                   foreign_tenant=foreign_tenant, unbound=unbound, fail_writes=fail_writes,
-                   levels=provider.levels)
+                   foreign_tenant=foreign_tenant, unbound=unbound, managed_key=managed_key,
+                   fail_writes=fail_writes, levels=provider.levels)

@@ -22,12 +22,14 @@ Covered:
 - no leakage: through every refusal path, and a missing name under the agent's own pin, a
   secret's value never appears in a log line or in an exception message the store raises;
   through every refusal of a credential write, and every failure that is not one — a level that
-  is not a secret level at all, a key an administrator has pinned (a backend with such a write
-  lock supplies the ``managed_key`` hook), a mid-write I/O error (a backend that can inject one
-  supplies the ``fail_writes`` hook) — the value (or record) is bound in no frame the error's
-  traceback passes through below this suite, and none is bound in the frames of any exception
-  chained to it, as context or cause, recursively, or of an exception group's members (error
-  reporters render traceback locals);
+  is not a secret level at all, a key an administrator has pinned, a mid-write I/O error — the
+  value (or record) is bound in no frame the error's traceback passes through below this suite,
+  and none is bound in the frames of any exception chained to it, as context or cause,
+  recursively, or of an exception group's members (error reporters render traceback frame
+  locals, under str and repr and as JSON and bytes, and the escaped form a writer serialized is
+  as much a leak as the raw text); a failed write called from inside a caller's ``except``
+  handler leaves the caller's own bindings untouched — the store owns its frames alone and
+  never touches a frame it does not own;
 - resolution (backends that hold the owner-wide and tenant-wide levels,
   :class:`LeveledSecretConformance`): an owner-wide secret resolves on every agent its owner owns
   and on no other; a tenant-wide secret resolves on every agent of the tenant; the agent level
@@ -49,10 +51,11 @@ NOT covered. A backend that passes this suite may still violate these, and must 
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, cast
+from typing import Any, Callable, cast
 
 import pytest
 
@@ -73,13 +76,17 @@ class Backend:
     - ``unbound()``: run with no scope pinned. A local backend's pin is then the ambient
       profile, so its ``unbound`` names a third profile; a hosted one binds nothing.
     - ``levels``: the ownership levels the backend holds (:data:`LEVELS` names them).
-    - ``managed_key()``: while the context is active, the key it yields is pinned by an
-      administrator — the backend's own write lock refuses writing it with a plain error, not
-      the store's refusal. ``None`` for a backend with no such lock.
-    - ``fail_writes()``: while the context is active, the seeded agent ``"a"``'s writes fail
-      part-way through with an ``OSError``, with the caller's value (or record) already bound
-      in the writer's frames — a plain I/O failure, not the store's refusal. ``None`` for a
-      backend whose write path the fixture cannot break.
+    - ``managed_key()``: REQUIRED. While the context is active, the key it yields is
+      refused by the backend's write path with a plain error — not the store's refusal —
+      with the caller's value already bound in the write's own frames: a backend with a
+      managed-key write lock pins one. A backend that cannot hold managed keys must supply
+      a hook that fails the yielded key's write some other plain way, or this failure path
+      of its write goes untested.
+    - ``fail_writes()``: REQUIRED. While the context is active, the seeded agent ``"a"``'s
+      writes fail part-way through with an ``OSError``, with the caller's value (or record)
+      already bound in the writer's frames — a plain I/O failure, not the store's refusal.
+      A backend whose write path the fixture cannot break must supply a hook that fails
+      the write some other plain way, mid-path, or this failure path goes untested.
     """
 
     open: Callable[[str], SecretStore]
@@ -88,8 +95,8 @@ class Backend:
     foreign_tenant: Callable[[str], AbstractContextManager]
     unbound: Callable[[], AbstractContextManager]
     levels: frozenset[str]
-    managed_key: Optional[Callable[[], AbstractContextManager]] = None
-    fail_writes: Optional[Callable[[], AbstractContextManager]] = None
+    managed_key: Callable[[], AbstractContextManager]
+    fail_writes: Callable[[], AbstractContextManager]
 
 
 def _refused(call: Callable[[], Any]) -> str:
@@ -141,12 +148,71 @@ def _foreign_pins(backend, agent="a"):
     return [lambda: backend.bind("b"), lambda: backend.foreign_tenant(agent), backend.unbound]
 
 
+def _rendered_texts(value: Any) -> list[str]:
+    """Every way an error reporter might render a frame's local binding: its ``str`` and
+    ``repr``, its JSON form, its bytes decoded — and, because a container's rendering
+    escapes the strings nested inside it, each nested string read out of its container
+    raw. A writer that serialized the value leaves the escaped form where the raw text
+    never appears, and a multiline secret never appears in a ``repr`` at all, so every
+    rendering of every binding is checked."""
+    texts: list[str] = []
+
+    def add(node: Any) -> None:
+        if isinstance(node, (bytes, bytearray)):
+            try:
+                texts.append(node.decode("utf-8", "backslashreplace"))
+            except Exception:  # health: allow BLE001 -- a binding that cannot decode holds nothing to render
+                return
+        try:
+            texts.append(str(node))
+            texts.append(repr(node))
+        except Exception:  # health: allow BLE001 -- a binding that cannot render holds nothing
+            return
+        try:
+            texts.append(json.dumps(node, default=repr))
+        except Exception:  # health: allow BLE001 -- a binding JSON cannot serialize holds nothing to render
+            return
+
+    def walk(node: Any, seen: set[int]) -> None:
+        if id(node) in seen:  # a record that contains itself renders nothing twice
+            return
+        seen.add(id(node))
+        add(node)
+        if isinstance(node, dict):
+            for held in node.values():
+                walk(held, seen)
+        elif isinstance(node, (list, tuple, set, frozenset)):
+            for held in node:
+                walk(held, seen)
+
+    walk(value, set())
+    return texts
+
+
+def _plaintext_forms(marker: str) -> tuple[str, ...]:
+    """The *marker* and its serialized forms: the renderings a writer or reporter that
+    handled the value holds where the raw text never appears — the escaped forms that
+    quote it (JSON, ``repr``), and the form a writer that refuses multiline values
+    leaves."""
+    forms = {marker}
+    for escaped in (json.dumps(marker)[1:-1], repr(marker)[1:-1]):
+        if escaped != marker:
+            forms.add(escaped)
+    stripped = marker.replace("\n", "").replace("\r", "")
+    if stripped and stripped != marker:
+        forms.add(stripped)
+    return tuple(forms)
+
+
 def assert_no_frame_holds(exc: BaseException, marker: str) -> None:
-    """Assert the *marker* appears in the locals of no frame the exception *exc* passes through,
-    and none of the frames of any exception chained to it — as context or cause, recursively (a
-    chain that loops visits each exception once), or as an ``ExceptionGroup`` member — below
-    this suite's own frames. Error reporters render the frame locals of the whole chain, so the
-    check walks all of it; the suite's frames are skipped because it planted the marker."""
+    """Assert the *marker* — the plaintext, or its escaped forms — appears in the locals of
+    no frame the exception *exc* passes through, and none of the frames of any exception
+    chained to it — as context or cause, recursively (a chain that loops visits each
+    exception once), or as an ``ExceptionGroup`` member — below this suite's own frames.
+    Error reporters render the frame locals of the whole chain, so the check walks all of
+    it, under every rendering a reporter might use (:func:`_rendered_texts`); the suite's
+    frames are skipped because it planted the marker."""
+    forms = _plaintext_forms(marker)
     pending: list[BaseException] = [exc]
     seen: set[int] = set()
     while pending:
@@ -157,11 +223,14 @@ def assert_no_frame_holds(exc: BaseException, marker: str) -> None:
         tb = linked.__traceback__
         while tb is not None:
             if tb.tb_frame.f_code.co_filename != __file__:
-                leak = repr(tb.tb_frame.f_locals)
-                assert marker not in leak, (
-                    f"an exception kept the value in the locals of "
-                    f"{tb.tb_frame.f_code.co_filename}:{tb.tb_frame.f_lineno} "
-                    f"{tb.tb_frame.f_code.co_name!r}: {leak}")
+                for binding, local in tb.tb_frame.f_locals.items():
+                    for text in _rendered_texts(local):
+                        leaked = next((form for form in forms if form in text), None)
+                        if leaked is not None:
+                            raise AssertionError(
+                                f"an exception kept the plaintext in local {binding!r} of "
+                                f"{tb.tb_frame.f_code.co_filename}:{tb.tb_frame.f_lineno} "
+                                f"{tb.tb_frame.f_code.co_name!r}: {text!r}")
             tb = tb.tb_next
         for chained in (linked.__context__, linked.__cause__):
             if chained is not None:
@@ -295,10 +364,11 @@ class SecretPinningConformance:
         caller asked to store is bound in no frame the refusal's traceback passes through
         below this suite, and none is bound in the frames of any exception chained to the
         refusal, as context or cause, recursively, or of an exception group's members: error
-        reporters render the frame locals of the whole chain, so a refused write must clear
-        the plaintext from every frame it unwinds, wherever that code lives. This suite's own
-        frames are skipped: it planted the value."""
-        marker = "zRefusedFrameLocals3b8c"
+        reporters render the frame locals of the whole chain, under str and repr and as JSON
+        and bytes, so a refused write must leave the plaintext in no frame it unwinds, in no
+        rendering — not raw, not escaped. This suite's own frames are skipped: it planted the
+        value."""
+        marker = 'zRefused\nFrame "Locals" 3b8c'
         store = _seed(backend)
         record = {"token": marker, "refresh": marker}
 
@@ -324,12 +394,13 @@ class SecretPinningConformance:
         has pinned (the backend's own write lock), and a mid-write I/O error the fixture
         injects — the value (or record) is bound in no frame the failure's traceback passes
         through below this suite, nor in any frame of an exception chained to it, as context
-        or cause, recursively, or of an exception group's members. A backend clears its frames
-        on a refusal; it must clear them on every failure too: error reporters render the
-        frame locals of the whole chain, whatever broke the write. A backend without a
-        managed-key lock, or whose write path the fixture cannot break, supplies no hook, so
-        those paths are exercised where they exist."""
-        marker = "zFailedWriteFrameLocals9a4e"
+        or cause, recursively, or of an exception group's members. A backend clears its
+        frames on a refusal; it must hold no value on every failure too, whatever broke the
+        write: error reporters render the frame locals of the whole chain, under str and
+        repr and as JSON and bytes, so the serialized, escaped form is as much a leak as the
+        raw text. The managed-key and mid-write failure hooks are required fields of the
+        fixture, so both paths are exercised on every backend."""
+        marker = 'zFailed\nWrite "Locals" 9a4e'
         store = _seed(backend)
         record = {"token": marker, "refresh": marker}
 
@@ -338,7 +409,8 @@ class SecretPinningConformance:
                 call()
             assert not isinstance(failed.value, PermissionError), (
                 "the failure path surfaced as the store's own refusal")
-            assert marker not in str(failed.value)
+            for form in _plaintext_forms(marker):
+                assert form not in str(failed.value)
             assert_no_frame_holds(failed.value, marker)
 
         with backend.bind("a"):
@@ -347,13 +419,40 @@ class SecretPinningConformance:
             for level in cast(tuple[str, ...], ("participant", "", 123, [])):
                 failed_without_the_value((ValueError, TypeError),
                                          lambda level=level: store.set(NEW_NAME, marker, level=level))
-            if backend.managed_key is not None:
-                with backend.managed_key() as key:
-                    failed_without_the_value(ValueError, lambda: store.set(key, marker, level="agent"))
-            if backend.fail_writes is not None:
-                with backend.fail_writes():
-                    failed_without_the_value(OSError, lambda: store.set(NEW_NAME, marker, level="agent"))
-                    failed_without_the_value(OSError, lambda: store.set_auth(SEED_PROVIDER, record))
+            with backend.managed_key() as key:
+                failed_without_the_value(ValueError, lambda: store.set(key, marker, level="agent"))
+            with backend.fail_writes():
+                failed_without_the_value(OSError, lambda: store.set(NEW_NAME, marker, level="agent"))
+                failed_without_the_value(OSError, lambda: store.set_auth(SEED_PROVIDER, record))
+
+    def test_a_failed_write_from_an_error_handler_leaves_the_callers_bindings_untouched(self, backend):
+        """The caller-retry shape: a caller holds the value in its own frame and calls the
+        write from inside an ``except`` handler, to retry it. The store owns only its own
+        frames: a failed write leaves the caller's bindings, its live exception and its
+        traceback exactly as they were, so the retry finds the value it held — the store
+        never clears, rebinds or otherwise touches a frame it does not own."""
+        marker = "zCallerBindings4d61"
+        store = _seed(backend)
+
+        def retry_from_the_handler():
+            value = marker
+            try:
+                raise RuntimeError("the caller's own earlier failure")
+            except RuntimeError as own_failure:
+                try:
+                    store.set(NEW_NAME, value, level="agent")
+                except OSError:
+                    pass  # the write failed; the caller keeps its value to retry
+                return value, own_failure
+
+        with backend.bind("a"), backend.fail_writes():
+            value_after, own_failure = retry_from_the_handler()
+            assert value_after == marker, "the store cleared a binding in a frame it does not own"
+            assert str(own_failure) == "the caller's own earlier failure"
+            assert own_failure.__traceback__ is not None
+        with backend.bind("a"):  # the failure is over: the caller's own value still writes
+            store.set(NEW_NAME, value_after, level="agent")
+            assert store.get(NEW_NAME) == marker
 
 
 class LeveledSecretConformance:

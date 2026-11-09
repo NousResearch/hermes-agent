@@ -2001,7 +2001,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # again. See __init__. A preview taken before the reader's final drain is
             # partial and must not suppress the full completion.
             if not finalizing:
-                self._poll_observed.add(session_id)
+                self._poll_observed.add(session.id)
         if session.detached and not session.output_log:
             result.update(detached=True, note="Process recovered after restart -- output history unavailable")
         return result

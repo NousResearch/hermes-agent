@@ -253,6 +253,22 @@ class TestCompletionConsumed:
         assert not registry.is_completion_consumed("proc_gw")
         assert registry.completion_already_observed("proc_gw")
 
+    def test_short_poll_uses_canonical_id_for_completion_dedup(self, registry):
+        """#94455/#126518: an exited poll via a supported short ID must not replay
+        a completion keyed by the full process ID on any delivery surface."""
+        s = _make_session(sid="proc_a1b2c3d4", notify_on_complete=True, output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        assert registry.poll("a1b2")["status"] == "exited"
+        assert not registry.is_completion_consumed(s.id)  # poll stays read-only
+        assert registry.completion_already_observed(s.id)
+        assert registry.drain_notifications() == []
+
+
     def test_poll_while_running_keeps_exit_notification(self, registry):
         """#10156: a status poll while the process still runs must not suppress the
         notification for the exit that happens later."""

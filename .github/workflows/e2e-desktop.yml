@@ -60,10 +60,10 @@ jobs:
       # node-pty's native build is needed for the terminal pane.
       - uses: ./.github/actions/retry
         with:
-          command: pnpm install --frozen-lockfile
+          command: just js-install
 
       - name: Prepare locked Electron runtime
-        run: node scripts/build/electron-runtime.mjs --source .
+        run: just electron-runtime
 
       # ── Build desktop app ─────────────────────────────────────────────
       # The Playwright step below runs `pnpm run build` before testing so

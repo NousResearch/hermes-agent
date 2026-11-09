@@ -530,6 +530,15 @@ def _get_active_memory_provider() -> Optional[str]:
         return None
 
 
+def active_memory_provider_commands() -> set[str]:
+    """The ``hermes <name>`` command the active memory provider registers, as a set: empty when none is
+    selected or it ships no ``cli.py`` (the file :func:`discover_plugin_cli_commands` imports).
+    Never raises (config read errors count as no provider)."""
+    name = _get_active_memory_provider()
+    provider_dir = find_provider_dir(name) if name else None
+    return {name} if provider_dir is not None and (provider_dir / "cli.py").exists() else set()
+
+
 def parked_provider_notice(name: str) -> Optional[str]:
     """The user-facing reason a configured provider is not loading because ``plugins.disabled`` parks
     it, naming the update that did so when there was one; None when it is not parked."""

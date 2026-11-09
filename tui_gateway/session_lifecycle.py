@@ -134,8 +134,21 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
         _attach_lease(session, lease)
         return None
     from hermes_cli.active_sessions import SESSION_NOT_OWNED
-    if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
-        return None
+    if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED:
+        if _take_over_detached_runtime_lease(sid, session, key):
+            return None
+        # A live owner elsewhere (e.g. the gateway's own Telegram/Bot-Chat surface) holds this
+        # session's slot and its transport is NOT dead (a dead one already took the branch
+        # above). Previously this fell straight through to a flat, often-silent client-side
+        # refusal: only a canonical-ledger refusal (``_canonical_ledger_refusal`` above) ever
+        # reached the owner_forward relay (#106742/#140385 contract: one owner, one FIFO, with
+        # clients that submit). A live foreign owner is exactly the case that contract exists
+        # for, so queue this prompt behind it the same way instead of dropping it: mark this
+        # refusal forwardable so ``methods_prompt._slot_refusal`` relays it to the owner's FIFO
+        # instead of returning a bare 4090. Local-only fix for the Dashboard/TUI-vs-Telegram
+        # silent-drop bug: a legacy backend attached to a Telegram-owned session never surfaced
+        # SESSION_NOT_OWNED to the user and never forwarded the prompt either.
+        limit_message.ledger_status = "running"
     return limit_message
 
 

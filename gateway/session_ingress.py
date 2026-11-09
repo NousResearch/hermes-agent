@@ -304,6 +304,16 @@ async def execute_admission(authority, ref, row):
         if 'local_automation_v1' in row['payload']:
             from gateway.session_automation import restore_local_automation
             event = restore_local_automation(authority, ref, row)
+        elif 'local_operator_v1' in row['payload']:
+            # #140385/#106742 owner-forward relay: ``check_local_input`` (session_operator.py) has
+            # already proven this admission's authorization via its private ``local_operator_v1``
+            # provenance (profile_id/session_id/principal_id match), not via ``source.user_id`` — a
+            # group/topic session's stored ``live.source`` carries no single user_id at all. Without
+            # this, ``_hm_admit_event``'s generic ``_is_user_authorized_for_source`` gate re-checks
+            # ``source.user_id`` from scratch, finds it None and silently drops the turn (the
+            # Dashboard/TUI write vanishes with no error, no log, no reply). Marking it internal
+            # skips that redundant, already-settled check, mirroring ``local_automation_v1`` above.
+            event.internal = True
     if event.internal and 'gateway_session_id' in event.metadata:
         # Main's ownership proof (802fd5782f3): the session the pre-claim check just validated, so the
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.

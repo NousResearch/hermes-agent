@@ -334,11 +334,15 @@ class GatewaySessionCommandsMixin:
         # Non-DM: a shared key is one session for everyone; a per-user key compares the participant
         # it is built from, failing closed when either side lacks one. The TARGET's key decides: a
         # caller on a shared key (Telegram observe-mode commands) may still not take over another
-        # member's per-user session in the same chat (#151756).
+        # member's per-user session in the same chat (#151756). A participant-less origin (observe
+        # sessions stored before ``shared_session`` existed) is the shared key for a shared caller,
+        # as ``_row_is_shared_session`` rules for stored rows; a per-user caller still fails closed.
         if self._is_shared_session_source(origin):
             return True
         cur_pid = current.user_id_alt or current.user_id
         org_pid = origin.user_id_alt or origin.user_id
+        if not org_pid and getattr(current, "shared_session", False):
+            return True
         return bool(cur_pid and org_pid) and cur_pid == org_pid
 
     def _is_shared_session_source(self, source: SessionSource) -> bool:

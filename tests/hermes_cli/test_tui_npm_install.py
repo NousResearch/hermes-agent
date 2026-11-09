@@ -129,6 +129,23 @@ def test_failed_dependency_preparation_launches_the_previous_build(tui_source, m
         main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
 
 
+@pytest.mark.platforms("posix")
+def test_fallback_names_a_refusal_that_printed_nothing(tui_source, monkeypatch, capsys, caplog):
+    """PM refusing to fetch pnpm raises before any command prints: the fallback names that cause."""
+    from hermes_cli import source_build
+
+    root, _ = tui_source
+    _touch_tui_entry(root / "ui-tui")
+
+    def refuse():
+        raise RuntimeError("pnpm: not installed and lazy installs are disabled")
+
+    monkeypatch.setattr(source_build, "source_build_env", refuse)
+    main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert "lazy installs are disabled" in capsys.readouterr().err
+    assert "lazy installs are disabled" in caplog.text
+
+
 # The TUI's first write (ui-tui/src/entry.tsx): clear the screen and the scrollback.
 _TUI_CLEAR = "\\x1b[2J\\x1b[H\\x1b[3J"
 _FALLBACK_LAUNCH = f"""

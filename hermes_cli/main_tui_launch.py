@@ -261,7 +261,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool, notices: Optional[list] = None)
         # Acquiring pnpm is part of preparation: offline, it fails like the install.
         env = source_build_env()
         prepare_launch_dependencies(project_root, env=env)
-    except (OSError, subprocess.SubprocessError, RuntimeError):
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
         previous = tui_dir / "dist/entry.js"
         if tui_dev or _tui_force_build() or not previous.is_file():
             raise
@@ -271,8 +271,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool, notices: Optional[list] = None)
         notice = ("⚠ Could not prepare the TUI's Node dependencies, so the previous TUI build was started.\n"
                   "  It predates the current code and may not support all of it. Run `hermes update` again\n"
                   "  once the package registry is reachable, or use `hermes --cli`.")
-        print(f"{notice}\n  (The error is above.)", file=sys.stderr)
-        logger.warning("TUI launch fell back to the previous build: its Node dependencies could not be prepared")
+        # A failed command printed its own output; a refusal before it (PM acquiring pnpm) did not.
+        cause = "(The error is above.)" if isinstance(exc, subprocess.CalledProcessError) else f"({exc})"
+        print(f"{notice}\n  {cause}", file=sys.stderr)
+        logger.warning("TUI launch fell back to the previous build: its Node dependencies could not be prepared: %s", exc)
         if notices is not None:
             notices.append(notice)
         return [_tui_node_bin("node"), "--expose-gc", str(previous)], tui_dir

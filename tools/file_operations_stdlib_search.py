@@ -10,7 +10,7 @@ import fnmatch
 import os
 import re
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Iterator, Optional
 
 from tools.binary_extensions import BINARY_EXTENSIONS
 from tools.file_operations_common import SearchMatch, SearchResult
@@ -39,12 +39,12 @@ def _stdlib_binary_sample(sample: bytes, path: str) -> bool:
 
 def _stdlib_walk_files(
     root: Path, max_files: int
-) -> Tuple[Iterator[Path], Dict[str, bool]]:
+) -> tuple[Iterator[Path], dict[str, bool]]:
     """Walk *root* skipping hidden directories (ripgrep default).
 
     The returned state dict has ``truncated`` set when the walk stops early.
     """
-    state: Dict[str, bool] = {"truncated": False}
+    state: dict[str, bool] = {"truncated": False}
 
     def gen():
         count = 0
@@ -76,7 +76,7 @@ def stdlib_search_files(
 
     root_p = Path(root)
     gen, walk_state = _stdlib_walk_files(root_p, _STDLIB_SEARCH_MAX_FILES_SCANNED)
-    hits: List[Tuple[float, str]] = []
+    hits: list[tuple[float, str]] = []
     for fpath in gen:
         if not fnmatch.fnmatch(fpath.name, search_pattern):
             continue
@@ -110,9 +110,9 @@ def stdlib_search_content(
         return SearchResult(error=f"Invalid regex pattern: {exc}", total_count=0)
 
     gen, walk_state = _stdlib_walk_files(Path(root), _STDLIB_SEARCH_MAX_FILES_SCANNED)
-    matches: List[SearchMatch] = []
-    counts: Dict[str, int] = {}
-    files_only_order: List[str] = []
+    matches: list[SearchMatch] = []
+    counts: dict[str, int] = {}
+    files_only_order: list[str] = []
     files_only_seen: set = set()
     truncated_matches = False
     max_collect = min(

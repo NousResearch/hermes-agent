@@ -31,7 +31,7 @@ from tools.file_operations_common import (
     _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
-from tools.file_operations_stdlib_search import (  # noqa: F401
+from tools.file_operations_stdlib_search import (
     _search_tool_rg_grep_exits_ok,
     stdlib_search_content,
     stdlib_search_files,

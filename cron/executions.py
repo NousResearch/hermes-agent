@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
+from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
@@ -46,16 +47,31 @@ _PROCESS_ID = uuid.uuid4().hex
 
 # --- executions ledger --------------------------------------------------------------------------
 
+def _db_path() -> Path:
+    """Ledger file for this call.
+
+    A pinned ``EXECUTIONS_FILE`` wins. An active ``use_cron_store`` scope wins
+    next, so each profile tick writes its own database. Otherwise follow this
+    module's ``get_hermes_home`` (patchable, and live after import) rather than
+    the import-time home.
+    """
+    if EXECUTIONS_FILE is not None:
+        return Path(EXECUTIONS_FILE)
+    from cron.jobs import _cron_store_override, get_cron_dir
+
+    if _cron_store_override.get() is not None:
+        return get_cron_dir() / "executions.db"
+    return Path(get_hermes_home()) / "cron" / "executions.db"
+
+
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
     # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
     # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
-    from cron.jobs import _ensure_cron_dir, get_cron_dir
+    from cron.jobs import _ensure_cron_dir
     from hermes_cli.sqlite_util import open_db
 
-    # Follow the active cron store (use_cron_store / a live HERMES_HOME), not the
-    # import-time home. A pinned EXECUTIONS_FILE still wins for tests.
-    path = EXECUTIONS_FILE if EXECUTIONS_FILE is not None else get_cron_dir() / "executions.db"
+    path = _db_path()
     _ensure_cron_dir(path.parent)
     return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
 

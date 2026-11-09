@@ -499,7 +499,7 @@ def test_ledger_follows_hermes_home_changed_after_import(monkeypatch, tmp_path):
     sent every profile's attempts — and every test whose isolation fixture ran
     after import — into whichever home happened to be active at import.
     """
-    import cron.executions as executions
+    from cron import executions
 
     home = tmp_path / "profile-home"
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -513,8 +513,7 @@ def test_ledger_follows_hermes_home_changed_after_import(monkeypatch, tmp_path):
 
 def test_ledger_follows_use_cron_store_scope(monkeypatch, tmp_path):
     """Each profile's tick writes its own ledger, not the process default."""
-    import cron.executions as executions
-    import cron.jobs as jobs
+    from cron import executions, jobs
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", None)
@@ -536,7 +535,7 @@ def test_ledger_follows_use_cron_store_scope(monkeypatch, tmp_path):
 
 def test_repointed_module_constant_still_wins(monkeypatch, tmp_path):
     """The documented escape hatch keeps working for callers that pin a path."""
-    import cron.executions as executions
+    from cron import executions
 
     pinned = tmp_path / "pinned" / "executions.db"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "ignored-home"))

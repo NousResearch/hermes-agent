@@ -1,0 +1,21 @@
+name: watch-with-me
+repo: https://github.com/jcrabapple/watch-with-me
+sha: adb0c77fafd65d6302e51ea5b3b063cf894ec921
+version: "1.0.1"
+subdir: ""
+description: "Follows Plex playback and publishes sourced, spoiler-safe notes about the scene you are watching."
+maintainer: jcrabapple
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: "https://github.com/jcrabapple/watch-with-me#readme"
+platforms: []
+capabilities:
+  provides_tools:
+    - watch_with_me_status
+    - watch_with_me_start
+    - watch_with_me_stop
+    - watch_with_me_now
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

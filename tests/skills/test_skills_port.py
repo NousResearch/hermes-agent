@@ -6,6 +6,7 @@ real discovery (``$HERMES_HOME/plugins/<name>/``), and a missing one is an error
 fallback to the local index. The local backend serves only the local tenant and its own profile,
 and stores the agent level only.
 """
+import re
 import textwrap
 from pathlib import Path
 
@@ -144,7 +145,8 @@ def test_a_name_resolves_by_its_declared_name_its_directory_and_its_path(index, 
         assert index.get("missing") is None
 
 
-def test_a_name_two_skills_share_resolves_only_by_its_exact_path(index, tmp_path):
+def test_a_name_two_skills_share_is_refused_and_resolves_only_by_its_exact_path(
+        index, tmp_path):
     for category in ("one", "two"):
         skill_dir = tmp_path / "skills" / category / "alpha"
         skill_dir.mkdir(parents=True)
@@ -153,11 +155,45 @@ def test_a_name_two_skills_share_resolves_only_by_its_exact_path(index, tmp_path
     with bind_profile_scope(tmp_path):
         listed = {r["load_name"]: r["status"] for r in index.list()}
         assert listed == {"one/alpha": "ambiguous", "two/alpha": "ambiguous"}
-        assert index.get("alpha") is None  # two skills share it: no guess
-        assert index.get("one/alpha")["description"] == "The one copy."
-        assert index.read_body("alpha") is None
-        with pytest.raises(ValueError, match="Ambiguous skill name"):
-            index.put("alpha", _skill_md("alpha", "A third copy."))  # never guess which to write
+        refused = ("Ambiguous skill name 'alpha': use one of one/alpha, two/alpha. "
+                   "2 different skills share this name in the same skills directory tier; "
+                   "refusing to guess.")
+        for call in (lambda: index.get("alpha"),  # today's resolver refuses, never guesses
+                     lambda: index.read_body("alpha"),
+                     lambda: index.put("alpha", _skill_md("alpha", "A third copy.")),
+                     lambda: index.put_file("alpha", "references/x.md", "x"),
+                     lambda: index.delete("alpha"),
+                     lambda: index.delete_file("alpha", "references/x.md")):
+            with pytest.raises(ValueError, match=re.escape(refused)):
+                call()
+        assert index.get("one/alpha")["description"] == "The one copy."  # the exact path
+        assert index.get("two/alpha")["description"] == "The two copy."
+
+
+def test_a_directory_alias_two_skills_share_is_refused_never_guessed(index, tmp_path):
+    for category, declared in (("one", "first"), ("two", "second")):
+        skill_dir = tmp_path / "skills" / category / "shared"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            _skill_md(declared, f"The {declared} copy."), encoding="utf-8")
+    with bind_profile_scope(tmp_path):
+        # each declared name is unique; only the directory name is shared
+        assert {r["load_name"]: r["status"] for r in index.list()} == (
+            {"first": "unique", "second": "unique"})
+        refused = ("Ambiguous skill name 'shared': use one of one/shared, two/shared. "
+                   "2 different skills share this name in the same skills directory tier; "
+                   "refusing to guess.")
+        for call in (lambda: index.get("shared"), lambda: index.read_body("shared"),
+                     lambda: index.put("shared", _skill_md("shared", "A third copy.")),
+                     lambda: index.put_file("shared", "references/x.md", "x"),
+                     lambda: index.delete("shared"),
+                     lambda: index.delete_file("shared", "references/x.md")):
+            with pytest.raises(ValueError, match=re.escape(refused)):
+                call()
+        assert index.get("first")["description"] == "The first copy."
+        assert index.get("second")["description"] == "The second copy."
+        assert index.get("one/shared")["name"] == "first"  # the exact path resolves
+        assert index.get("two/shared")["name"] == "second"
 
 
 def test_supporting_files_live_behind_the_body_operation(index, tmp_path):

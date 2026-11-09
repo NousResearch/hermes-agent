@@ -1,0 +1,17 @@
+name: customs
+title: customs
+repo: https://github.com/pgreyy/customs
+sha: 817c68ce6753c5cea81dce72f7cc20a9b315fa42
+description: "Plants fake credential files on your machine and blocks a hijacked agent the moment a tool call reaches for one, before the tool runs. It also redacts its own fake values from tool results and from the request to the model provider, reads local scripts before they run, and asks for approval when an upload follows a credential search and packaging. Disclosure: it only recognizes its own bait files and fake values; it does not find or protect real credentials. It writes bait files (mode 600, never over an existing file, inside a Git repository only at paths Git ignores) under the home folder, and its own state in its plugin data folder. It reads the bait files it planted, the local scripts a command is about to run (up to 8 files, 512 KB each) and, during /customs blend, folder names under the home folder. It runs git check-ignore when planting inside a Git repository. No network calls by default; with alert_target set, alerts go out through hermes send on the user's own Hermes messaging route and carry the rule, the bait file's path, the likely source and a masked preview of the call (first 200 characters)."
+maintainer: pgreyy
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/pgreyy/customs/blob/817c68ce6753c5cea81dce72f7cc20a9b315fa42/README.md
+version: "0.6.4"
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call, transform_tool_result, post_approval_response]
+  provides_middleware: [llm_request]
+  requires_env: []

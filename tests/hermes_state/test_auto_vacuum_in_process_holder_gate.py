@@ -3,7 +3,8 @@
 ``foreign_state_db_holders`` skips ``os.getpid()``, so it can only ever prove other PROCESSES are
 away. Under the one-process-per-host multiplexer the dangerous holder is a sibling SessionDB in
 this very process: the VACUUM's TRUNCATE checkpoint retires the WAL generation that handle is
-still bound to.
+still bound to. A sibling that serves through the maintainer's own store holder is not another
+holder: it shares the one writer connection the VACUUM runs on.
 
 The mirror invariant matters just as much. A RETIRED generation (its file was replaced by a
 recovery swap, backup restore or snapshot) is already write-fenced with ``StateDbReplacedError``
@@ -46,14 +47,16 @@ def _make_prunable(db, session_id):
 
 
 def test_auto_vacuum_skips_while_a_live_sibling_holds_the_same_store(tmp_path):
-    """Invariant: a genuinely LIVE sibling SessionDB for this path defers the VACUUM."""
+    """Invariant: a genuinely LIVE sibling generation for this path defers the VACUUM a writer on a
+    holder of its own would run."""
     from hermes_state import SessionDB
+    from persistence.sqlite._holder import StoreHolder
 
     db_path = tmp_path / "state.db"
     _seed(db_path)
 
     live_sibling = registry.acquire(db_path)  # e.g. the gateway's own handle
-    maintainer = SessionDB(db_path=db_path)   # a second handle running housekeeping
+    maintainer = SessionDB(holder=StoreHolder(db_path))  # a second writer running housekeeping
     try:
         _make_prunable(maintainer, "old2")
         result = _auto_maintenance(maintainer)
@@ -73,6 +76,32 @@ def test_auto_vacuum_skips_while_a_live_sibling_holds_the_same_store(tmp_path):
         assert "vacuum_skipped_holders" not in again, again
     finally:
         quiet.close()
+
+
+def test_auto_vacuum_runs_beside_a_sibling_serving_through_the_same_holder(tmp_path):
+    """A second SessionDB for a path the process already holds serves through that path's one store holder:
+    one writer and one read pool, so it is not another holder, its VACUUM runs, and the sibling keeps
+    reading and writing afterwards."""
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    _seed(db_path)
+
+    live_sibling = registry.acquire(db_path)  # e.g. the gateway's own handle
+    maintainer = SessionDB(db_path=db_path)   # a second handle running housekeeping
+    try:
+        _make_prunable(maintainer, "old2")
+        result = _auto_maintenance(maintainer)
+        assert result["pruned"] >= 1, result
+        assert result["vacuumed"] is True, result
+        assert "vacuum_skipped_holders" not in result, result
+
+        live_sibling.create_session("after", "cli")
+        live_sibling.append_message("after", "user", "written after the VACUUM")
+        assert [m["content"] for m in live_sibling.get_messages("after")] == ["written after the VACUUM"]
+    finally:
+        maintainer.close()
+        registry.release(live_sibling)
 
 
 def test_auto_vacuum_is_not_starved_by_a_retired_write_fenced_generation(tmp_path):

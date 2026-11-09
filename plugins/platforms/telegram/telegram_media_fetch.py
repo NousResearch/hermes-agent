@@ -1,4 +1,4 @@
-"""Inbound Telegram file fetch with a bounded retry.
+"""Inbound Telegram file fetch with a bounded retry, and replied-to media attachment.
 
 ``get_file()`` + ``download_as_bytearray()`` is a pure read: replaying it can never post anything,
 so unlike the SEND paths (``telegram_send_errors``) a timeout is safe to retry. A stalled getFile
@@ -48,3 +48,32 @@ async def fetch_telegram_file(source: Any, what: str) -> tuple[Any, bytes]:
                            what, attempt, len(FETCH_RETRY_DELAYS) + 1, _redact_telegram_error_text(exc), delay)
             await asyncio.sleep(delay)
 
+
+async def cache_replied_media(adapter: Any, msg: Any, event: Any) -> None:
+    """Attach the media of the message this turn replies to. An attachment that cannot be cached
+    leaves a note (as the observed-media path does), so the agent never answers from the caption
+    alone. A person's replied voice note keeps the reply's own type: retyped AUDIO it skipped STT."""
+    reply_msg = getattr(msg, "reply_to_message", None)
+    if reply_msg is None:
+        return
+    status, cached = await adapter._download_observed_media(reply_msg, "replied-to media")
+    if status == "ok":
+        spoken = getattr(reply_msg, "voice", None) is not None and not getattr(
+            getattr(reply_msg, "from_user", None), "is_bot", False)
+        note = f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]"
+        if spoken:
+            note += " [Any transcript quoted above is that replied-to voice note, not this message.]"
+        adapter._attach_cached(event, cached, note, "[Telegram] Cached replied-to %s at %s", retype=not spoken)
+        return
+    if status == "oversized":
+        limit_mb = getattr(adapter, "_max_doc_bytes", 20 * 1024 * 1024) // (1024 * 1024)
+        note = f"[Replied-to Telegram attachment too large or unverifiable, not cached. Maximum: {limit_mb} MB.]"
+        logger.info("[Telegram] Replied-to attachment skipped (size=%s)", cached)
+    elif status == "failed":
+        note = "[Replied-to Telegram attachment could not be downloaded, not cached.]"
+    elif status == "unreadable":
+        note = "[Replied-to Telegram attachment could not be read, not cached.]"
+        logger.info("[Telegram] Replied-to attachment unreadable, not cached")
+    else:
+        return
+    event.text = adapter._append_observed_note(event.text, note)

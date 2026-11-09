@@ -1,4 +1,5 @@
-"""Inbound Telegram media survives one stalled getFile; a Bot API refusal is never retried."""
+"""Inbound Telegram media survives one stalled getFile, and a replied-to attachment that cannot be
+cached still leaves the agent a note."""
 
 from __future__ import annotations
 
@@ -63,3 +64,17 @@ async def test_inbound_voice_fetch_retries_only_transient_errors(adapter, failur
     assert bool(event.media_urls) is cached
     assert ("could not be downloaded" in (event.text or "")) is not cached
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status, payload, note", [
+    ("oversized", 33 * 1024 * 1024, "too large or unverifiable, not cached. Maximum: 20 MB"),
+    ("failed", None, "could not be downloaded, not cached"),
+    ("unreadable", None, "could not be read, not cached"),
+])
+async def test_uncacheable_replied_attachment_leaves_a_note(adapter, status, payload, note):
+    adapter._download_observed_media = AsyncMock(return_value=(status, payload))
+    event = MessageEvent(text="summarise this", message_type=MessageType.TEXT)
+    await adapter._cache_replied_media(SimpleNamespace(reply_to_message=SimpleNamespace(message_id=7)), event)
+    assert event.text.startswith("summarise this\n\n[Replied-to Telegram attachment ")
+    assert note in event.text
+    assert event.media_urls == [] and event.message_type == MessageType.TEXT

@@ -29,6 +29,18 @@ BRANCH_FORCE_DELETE_LONG = "git branch force delete (long flags)"
         ("git -C /tmp/r push --force origin x", FORCE_PUSH),
         ("git -C /tmp/r push -f origin x", FORCE_PUSH_SHORT),
         ('git -C "/tmp/my repo" push --force origin x', FORCE_PUSH),
+        # A joined quote is one shell word: the value must not be split at its first space, or the
+        # remainder leaves an unmatched fragment between the options and the verb.
+        ("git -C'/tmp/my repo with spaces' push --force origin x", FORCE_PUSH),
+        ("git -C'/tmp/my repo with spaces' push -f origin x", FORCE_PUSH_SHORT),
+        ("git --git-dir='/tmp/my repo with spaces/.git' push --force origin x", FORCE_PUSH),
+        ("git -c user.name='a b c' push --force origin x", FORCE_PUSH),
+        ("git -c core.pager=\"less -R\" push --force origin x", FORCE_PUSH),
+        ("git -C'/tmp/my repo' -c 'user.name=John Doe' push --force origin x", FORCE_PUSH),
+        ("git -C'/tmp/my repo with spaces' reset --hard HEAD~1", RESET_HARD),
+        ("git -C'/tmp/my repo with spaces' clean -fdx", CLEAN_FORCE),
+        ("git --work-tree='/tmp/my repo with spaces' clean -fdx", CLEAN_FORCE),
+        ("git -C'/tmp/my repo with spaces' branch -D old", BRANCH_FORCE_DELETE),
         ("git -C /tmp/r -c core.pager=cat push --force origin x", FORCE_PUSH),
         ("git --no-pager push --force", FORCE_PUSH),
         ("git --git-dir=/tmp/r/.git push --force origin x", FORCE_PUSH),
@@ -58,6 +70,11 @@ def test_git_global_options_do_not_hide_the_subcommand(command, description):
         "git -C /tmp/r checkout -b new-branch",
         "git --git-dir=/tmp/r/.git commit -m wip",
         "git -C /tmp/r -c core.pager=cat log",
+        "git -C'/tmp/my repo with spaces' status",
+        "git -C'/tmp/my repo with spaces' push origin main",
+        "git -C'/tmp/my repo with spaces' branch -d merged",
+        "git -C'/tmp/my repo with spaces' clean -n",
+        "git --git-dir='/tmp/my repo with spaces/.git' commit -m wip",
     ],
 )
 def test_safe_git_global_option_forms_stay_safe(command):
@@ -91,7 +108,8 @@ run = "--opt val --flag=x -q - " * 58
 command = f"git {run}-C /tmp/r push --force origin x"
 assert detect_dangerous_command(command)[0] is True, command[:60]
 for prefix in ("git", "git -C /tmp/r", "git --git-dir=/tmp/r/.git"):
-    for bulk in ("--exclude " * 58, "--opt val " * 58, "--opt=val " * 58):
+    for bulk in ("--exclude " * 58, "--opt val " * 58, "--opt=val " * 58,
+                 "-C'/tmp/a b' -c 'k=v' " * 58):
         assert detect_dangerous_command(f"{prefix} {bulk}log --oneline")[0] is False, prefix
 '''
     env = {**os.environ, "PYTHONPATH": REPO_ROOT}

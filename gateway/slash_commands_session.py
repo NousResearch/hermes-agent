@@ -185,8 +185,11 @@ class GatewaySessionCommandsMixin:
                 old_session_id=old_sid, new_session_id=new_sid, session_key=session_key)
             await self._deliver_session_end_messages(messages, source=source, session_key=session_key)
         hook_payload = {"platform": platform_value, "user_id": source.user_id, "session_key": session_key}
-        await self.hooks.emit("session:end", dict(hook_payload))
-        await self.hooks.emit("session:reset", dict(hook_payload))
+        # Gateway event-hook registries resolve from the ambient profile home. /new can
+        # arrive on an unscoped callback, so bind the routed session owner for both events.
+        async with self._async_profile_scope_for_source(source):
+            await self.hooks.emit("session:end", dict(hook_payload))
+            await self.hooks.emit("session:reset", dict(hook_payload))
 
     async def _fire_plugin_session_reset(self, source: SessionSource, session_key: str, old_sid, new_sid) -> None:
         """Plugin ``on_session_reset`` for the session /new opened: off-loop, bounded, and under the

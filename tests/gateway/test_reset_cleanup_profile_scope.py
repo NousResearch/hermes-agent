@@ -103,3 +103,46 @@ async def test_unkeyed_in_turn_cleanup_keeps_the_callers_named_profile(tmp_path,
         runner._housekeeping_executor.shutdown(wait=True)
     assert (seen["cleanup"], seen["secret"]) == (str(prof_b), "key-of-b")
     assert seen["guard"] is not None
+
+@pytest.mark.asyncio
+async def test_reset_gateway_events_reach_only_the_owning_profile_hooks(tmp_path, monkeypatch):
+    """An unscoped /new must not dispatch B's session events to default's installed hooks."""
+    from gateway.hooks import HookRegistry, ProfileHookRegistries
+    from hermes_constants import hermes_home_key
+
+    prof_b = _profile_b(tmp_path, monkeypatch)
+    key = "agent:b:telegram:dm:1"
+    runner = _runner({key: prof_b})
+    # Canonicalized inbound source resolves to B; the confirm callback itself is unscoped.
+    runner._profile_scope_key_for_source = lambda _source: prof_b
+    runner._finalize_session_off_loop = AsyncMock(return_value=[])
+    runner._deliver_session_end_messages = AsyncMock()
+    seen = []
+    hooks = ProfileHookRegistries()
+    for home, label in ((tmp_path / ".hermes", "default"), (prof_b, "b")):
+        registry = HookRegistry()
+
+        def record(event_type, payload, *, _label=label):
+            seen.append((
+                _label, event_type, payload["session_key"], str(get_hermes_home()),
+                (secret_scope.current_secret_scope() or {}).get("HINDSIGHT_LLM_API_KEY"),
+            ))
+
+        registry._handlers["session:end"] = [record]
+        registry._handlers["session:reset"] = [record]
+        hooks._by_home[hermes_home_key(home)] = registry
+    runner.hooks = hooks
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", user_id="1",
+                           chat_type="dm", profile="b")
+
+    secret_scope.set_multiplex_active(True)
+    try:
+        assert secret_scope.current_secret_scope() is None
+        await runner._fire_session_reset_hooks(source, key, "old", "new")
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert seen == [
+        ("b", "session:end", key, str(prof_b), "key-of-b"),
+        ("b", "session:reset", key, str(prof_b), "key-of-b"),
+    ]

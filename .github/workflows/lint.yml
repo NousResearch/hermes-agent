@@ -125,6 +125,12 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only agents-md
 
+      # Files at old module paths that shipped updaters still reach after a move are generated from
+      # hermes_agent/compat/{moves,required_names}.py and must match the generator byte for byte.
+      - name: Keep the move shims in sync with their generator
+        if: ${{ !cancelled() && steps.setup.outcome == success && inputs.python }}
+        run: just check --only shims
+
       # ── Advisory footgun-family reports (pull requests, python lane) ──────────────────────
 
       # Advisory: continue-on-error and a step timeout each, so neither a failure nor an overrun

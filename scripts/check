@@ -112,6 +112,7 @@ _GUARDS = {
     "profile-create-entry": ["scripts/check_profile_create_entry.py"],
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
     "agents-md": ["scripts/ci/check_agents_md_size.py"],
+    "shims": ["scripts/move/generate_shims.py", "--check"],
     "case-collisions": ["scripts/check-case-collisions.py"],
     "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
     "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],

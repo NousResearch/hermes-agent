@@ -458,7 +458,7 @@ def check_process_notifications_private(provider: RecordingSandboxProvider, a: S
         id=f"proc_{uuid.uuid4().hex[:12]}", command=f"echo {secret}", task_id=key, owner_task_id="t",
         session_key="shared", sandbox_key=key, notify_on_complete=True, exited=True,
         output_buffer=f"{secret}\n", watch_patterns=["PRIVATE"])
-    registry._completions_restored = True
+    registry._completions_restored = False  # a fresh process: its first drain below is a hosted one
     _drain_all(registry)
     sunk: list[str] = []
     previous_sink, registry.on_output = registry.on_output, lambda s, chunk: sunk.append(chunk)
@@ -481,6 +481,7 @@ def check_process_notifications_private(provider: RecordingSandboxProvider, a: S
                           lambda: registry.drain_notifications(),
                           lambda: _drain_gateway_watch_events(registry.completion_queue)):
                 assert secret not in json.dumps(drain(), default=str), "B received A's process event"
+        assert not registry._completions_restored, "a hosted drain spent the launch ledger's one replay"
         assert registry.drain_notifications() == [], "an unscoped drain received a hosted agent's event"
         assert len(registry.completion_queue.queue) == len(queued), "a foreign drain dropped A's events"
         with _bind(a):

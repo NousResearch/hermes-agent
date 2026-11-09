@@ -114,6 +114,7 @@ from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms import api_server_soul as _soul
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
@@ -1584,7 +1585,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("DELETE", "/api/jobs/{job_id}", self._handle_delete_job),
             ("POST", "/api/jobs/{job_id}/pause", self._handle_pause_job),
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
-            ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
+            ("POST", "/api/jobs/{job_id}/run", self._handle_run_job),
+            ("GET", "/api/soul", self._handle_get_soul),
+            ("PUT", "/api/soul", self._handle_put_soul)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
         if _CRON_AVAILABLE:
@@ -3452,6 +3455,107 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 extra_prompt = extra_prompt or None
         return self._job_response(
             lambda jid: _cron_trigger(jid, extra_prompt=extra_prompt), job_id, notify=False)
+
+    # -- Persona (SOUL.md) endpoints -------------------------------------------------
+
+    @_require_auth
+    async def _handle_get_soul(self, request: web.Request) -> web.Response:
+        """GET /api/soul — read the profile persona byte-exact, with the sha256 a
+        later PUT uses as the optimistic-concurrency base.
+
+        A missing SOUL.md is a legal state (a profile with no persona): this 404
+        carries the soul object marker so a client can tell it apart from the
+        plain-text 404 of a gateway without soul routes (old-server fallback).
+        """
+        from hermes_constants import get_hermes_home
+        try:
+            doc = _soul.read_soul(get_hermes_home())
+        except _soul.SoulNotFound as exc:
+            return web.json_response(
+                {"object": "hermes.soul", "error": "soul_not_found", "path": str(exc)},
+                status=404)
+        except OSError as exc:
+            logger.warning("[%s] GET /api/soul read failed: %s", self.name, exc)
+            return web.json_response(
+                {"object": "hermes.soul", "error": "soul_read_failed"}, status=500)
+        return web.json_response({"object": "hermes.soul", **doc})
+
+    @_require_auth
+    async def _handle_put_soul(self, request: web.Request) -> web.Response:
+        """PUT /api/soul — write the persona: hash gate (``base_sha256``),
+        timestamped backup, atomic replace, profile-wide prompt refresh, and an
+        audit line that never contains the persona content. Error codes form the
+        contract table in docs/specs/2026-11-09-miri-soul-direct-editor-design.md
+        (miri-app repo): invalid_content 400, soul_changed_since_read 409,
+        soul_missing 409, backup_collision 503, soul_write_failed 500."""
+        from hermes_constants import get_hermes_home
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"object": "hermes.soul", "error": "invalid_content",
+                 "detail": "body must be a JSON object"}, status=400)
+        try:
+            result = _soul.write_soul(
+                get_hermes_home(), body.get("content"), body.get("base_sha256"))
+        except _soul.InvalidSoulContent as exc:
+            return web.json_response(
+                {"object": "hermes.soul", "error": "invalid_content",
+                 "detail": str(exc)}, status=400)
+        except _soul.SoulChangedSinceRead as exc:
+            return web.json_response(
+                {"object": "hermes.soul", "error": "soul_changed_since_read",
+                 "current_sha256": exc.current_sha256}, status=409)
+        except _soul.SoulMissing:
+            # base_sha256 supplied, file vanished: refuse (recreating here would
+            # open a silent hole in the hash gate).
+            return web.json_response(
+                {"object": "hermes.soul", "error": "soul_missing",
+                 "current_sha256": None}, status=409)
+        except _soul.BackupCollision:
+            return web.json_response(
+                {"object": "hermes.soul", "error": "backup_collision"},
+                status=503, headers={"Retry-After": "1"})
+        except _soul.SoulWriteFailed as exc:
+            logger.warning("[%s] PUT /api/soul write failed: %s", self.name, exc)
+            return web.json_response(
+                {"object": "hermes.soul", "error": "soul_write_failed"}, status=500)
+
+        epoch, warnings = self._soul_request_prompt_refresh()
+        # Audit: identity + sizes only; the persona content never enters logs.
+        logger.info(
+            "[%s] PUT /api/soul: %d bytes, sha -> %s, backup %s, epoch %s %s",
+            self.name, result["bytes"], result["sha256"][:12],
+            result["backup"], epoch, self._request_audit_log_suffix(request))
+        return web.json_response({
+            "object": "hermes.soul",
+            "sha256": result["sha256"],
+            "bytes": result["bytes"],
+            "updated_at": result["updated_at"],
+            "backup": result["backup"],
+            "prompt_refresh_epoch": epoch,
+            "warnings": warnings,
+        })
+
+    def _soul_request_prompt_refresh(self) -> tuple[Optional[int], list[str]]:
+        """Record a profile-wide prompt refresh so a continuing session rebuilds
+        its stored system prompt on the next turn (``agent/prompt_refresh.py``).
+        One retry, then degrade: the persona file is already saved, so a state.db
+        hiccup must not fail the PUT — callers get ``prompt_refresh_epoch: null``
+        plus a warning instead."""
+        for attempt in (0, 1):
+            try:
+                db = self._ensure_session_db()
+                if db is None:
+                    break
+                return db.request_prompt_refresh(), []
+            except Exception:
+                if attempt == 0:
+                    logger.debug("[%s] prompt refresh record failed; retrying",
+                                 self.name, exc_info=True)
+        return None, ["prompt_refresh_failed"]
 
     async def _handle_cron_fire(self, request: web.Request) -> web.Response:
         """POST /api/cron/fire — Chronos fire webhook (NAS -> agent), authenticated by a

@@ -24,8 +24,10 @@ def _drain(receiver: socket.socket) -> list[str]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("watchdog_seconds,notify_socket", [(30, True), (30, False), (0, True)])
-async def test_secondary_boot_extends_systemd_start_timeout(tmp_path, monkeypatch, watchdog_seconds, notify_socket):
+@pytest.mark.parametrize("watchdog_seconds,notify_socket,connect_timeout",
+                         [(30, True, None), (30, False, None), (0, True, None), (30, True, "inf")])
+async def test_secondary_boot_extends_systemd_start_timeout(tmp_path, monkeypatch, watchdog_seconds, notify_socket,
+                                                           connect_timeout):
     home = tmp_path / ".hermes"
     for name, var in (("alpha", "DISCORD_BOT_TOKEN"), ("beta", "SLACK_BOT_TOKEN")):
         profile = home / "profiles" / name
@@ -36,8 +38,11 @@ async def test_secondary_boot_extends_systemd_start_timeout(tmp_path, monkeypatc
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
-    monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
-    address = f"hermes-test-extend-{os.getpid()}-{watchdog_seconds}-{notify_socket}"
+    if connect_timeout is None:
+        monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
+    else:  # an unbounded connect budget has no finite extension; every secondary must still connect
+        monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", connect_timeout)
+    address = f"hermes-test-extend-{os.getpid()}-{watchdog_seconds}-{notify_socket}-{connect_timeout}"
     receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     receiver.bind("\0" + address)
     receiver.setblocking(False)
@@ -74,7 +79,7 @@ async def test_secondary_boot_extends_systemd_start_timeout(tmp_path, monkeypatc
         receiver.close()
 
     assert len(seen_before_connect) == 2
-    if watchdog_seconds and notify_socket:
+    if watchdog_seconds and notify_socket and connect_timeout is None:
         # one fresh extension right before EACH serial secondary connect, sized past its connect budget
         budget = runner._platform_connect_timeout_secs(Platform.DISCORD, initial=True)
         for datagrams in seen_before_connect:

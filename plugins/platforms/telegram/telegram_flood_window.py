@@ -37,13 +37,18 @@ def skipped_draft(adapter: Any, chat_id: Any) -> Optional[SendResult]:
     return SendResult(success=True, message_id=None, raw_response={"skipped": True})
 
 
-async def _after_window(adapter: Any, chat_id: Any, delete: Callable[[], Awaitable[bool]]) -> bool:
+async def _after_window(adapter: Any, chat_id: Any, delete: Callable[[], Awaitable[bool]], *, inline: bool) -> bool:
+    """``inline`` (the caller awaits it): every wake re-checks the cap, so a window another request
+    extended meanwhile is handed to the background task instead of being slept on the caller's turn."""
+    from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS
     for waits in range(_MAX_WINDOW_WAITS + 2):  # re-check after the last allowed wait
         remaining = adapter._send_flood_cooldown_remaining(chat_id)
         if remaining is None:
             return await delete()
         if waits > _MAX_WINDOW_WAITS:
             break
+        if inline and remaining > _FLOOD_INLINE_WAIT_CAP_SECS:
+            return _defer(adapter, chat_id, delete, remaining)
         await asyncio.sleep(remaining)
     logger.warning("[%s] message delete in chat %s dropped: flood window kept re-arming", adapter.name, chat_id)
     return False
@@ -53,12 +58,12 @@ async def delete_outside_flood_window(adapter: Any, chat_id: Any, delete: Callab
     """Run ``delete`` once the chat's flood window is closed. A window longer than the inline cap is
     waited out by a tracked background task (shutdown cancels it) and the call returns True: the
     delete is owned by that task, so a caller's retry-on-False must not fire a second one into it."""
-    from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS
-    remaining = adapter._send_flood_cooldown_remaining(chat_id)
-    if remaining is None or remaining <= _FLOOD_INLINE_WAIT_CAP_SECS:
-        return await _after_window(adapter, chat_id, delete)
+    return await _after_window(adapter, chat_id, delete, inline=True)
+
+
+def _defer(adapter: Any, chat_id: Any, delete: Callable[[], Awaitable[bool]], remaining: float) -> bool:
     logger.info("[%s] deferring message delete in chat %s past its flood window (%.0fs)", adapter.name, chat_id, remaining)
-    task = asyncio.get_running_loop().create_task(_after_window(adapter, chat_id, delete))
+    task = asyncio.get_running_loop().create_task(_after_window(adapter, chat_id, delete, inline=False))
     tracked = getattr(adapter, "_background_tasks", None)
     if isinstance(tracked, set):
         tracked.add(task)

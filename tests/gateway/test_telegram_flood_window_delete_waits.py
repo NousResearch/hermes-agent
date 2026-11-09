@@ -49,3 +49,16 @@ async def test_a_window_closing_during_the_last_allowed_wait_still_deletes(monke
     assert await adapter.delete_message("4242", "55") is True
     assert len(slept) == _MAX_WINDOW_WAITS + 1
     adapter._bot.delete_message.assert_awaited_once_with(chat_id=4242, message_id=55)
+
+
+@pytest.mark.asyncio
+async def test_a_window_extended_during_an_inline_wait_moves_to_the_background(monkeypatch):
+    adapter = _adapter()
+    adapter._record_send_flood_cooldown("4242", 1.0)  # short: waited inline
+    slept = _scripted_sleep(monkeypatch, lambda n: adapter._record_send_flood_cooldown("4242", 240.0))
+
+    assert await adapter.delete_message("4242", "55") is True  # owned by the background task now
+    assert len(slept) == 1 and slept[0] <= _FLOOD_INLINE_WAIT_CAP_SECS  # never slept the long window inline
+    assert adapter._bot.delete_message.await_count == 0
+    assert [t for t in adapter._background_tasks if not t.done()]
+    await adapter.cancel_background_tasks()

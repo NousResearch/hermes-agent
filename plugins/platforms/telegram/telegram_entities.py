@@ -42,17 +42,24 @@ def _rich_inline(value: Any, depth: int = 0, skip_code: bool = False) -> str:
 
 
 def _rich_lines(blocks: Any, prefix: str = "", depth: int = 0, skip_code: bool = False) -> list[str]:
-    """One line per paragraph-like block; a list item's ``label`` (bullet/number) prefixes its first line."""
+    """One line per paragraph-like block (``details`` summary and math included) and per table row; a
+    list item's ``label`` (bullet/number) prefixes its first line."""
     lines: list[str] = []
     if depth > _MAX_RICH_DEPTH:
         return lines
     for block in blocks if isinstance(blocks, list) else []:
         if not isinstance(block, Mapping) or (skip_code and block.get("type") in _CODE_TYPES):
             continue
-        if "text" in block:
-            lines.append(prefix + _rich_inline(block["text"], skip_code=skip_code))
-            prefix = ""
-        for item in block.get("items") or []:
+        for key in ("text", "summary", "expression"):  # paragraph-like, details summary, math block
+            if key in block:
+                lines.append(prefix + _rich_inline(block[key], skip_code=skip_code))
+                prefix = ""
+        cells, items = block.get("cells"), block.get("items")
+        for row in cells if isinstance(cells, list) else []:  # table: one line per row
+            if isinstance(row, list):
+                lines.append(" | ".join(_rich_inline(c.get("text"), skip_code=skip_code)
+                                        for c in row if isinstance(c, Mapping)))
+        for item in items if isinstance(items, list) else []:
             if isinstance(item, Mapping):
                 label = str(item.get("label") or "-")
                 lines += _rich_lines(item.get("blocks") or [item], f"{label} ", depth + 1, skip_code)

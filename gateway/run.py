@@ -34,13 +34,13 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
-    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields, is_compaction_scaffolding, scaffolding_replay_fields
+from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields, is_compaction_scaffolding, replay_metadata_fields
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance, AwakeIdleMeter
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
@@ -103,7 +103,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
-    rf"|{re.escape(COMPACTION_DONE_STATUS)}"
+    rf"|{re.escape(COMPACTION_DONE_STATUS)}|{re.escape(COMPRESSION_REFUSED_WOULD_GROW_WARNING)}"
     r")",
     re.IGNORECASE | re.DOTALL)
 
@@ -593,10 +593,10 @@ def _format_exec_approval_fallback(
     allow_session: bool = True, smart_denied: bool = False) -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
-    steps a surface without buttons needs."""
+    steps a surface without buttons needs. The command is never cut: ``/approve`` must only ever
+    answer a command the user could read in full (#62359)."""
     from gateway.platforms.base_exec_approval import (
         approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
-    cmd_preview = BasePlatformAdapter._truncate_preview(command, BasePlatformAdapter._EA_CMD_BUDGET)  # as on a card
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
@@ -607,7 +607,7 @@ def _format_exec_approval_fallback(
             choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
     return (
-        t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
+        t("gateway.exec_approval.text_body", heading=heading, command=command,  # whole: send() splits it
           reason_label=ea_reason_label_text(), reason=description)
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])
@@ -1153,7 +1153,7 @@ def _build_replay_entry(
             entry[_rkey] = _rval
     if preserve_timestamp and msg.get("timestamp"):
         entry["timestamp"] = msg["timestamp"]
-    entry.update(scaffolding_replay_fields(msg))  # a proactive prune re-persists this view: keep the flags
+    entry.update(replay_metadata_fields(msg))  # a proactive prune re-persists this view: keep flags and stamp
     # Replay rebuilds the SAME conversation: every role keeps its uid and merge witness, so a context engine sees the
     # uids the store holds. Tool-call uid maps stay on rows that still carry their calls (those pass through whole).
     copy_identity_fields({key: msg[key] for key in (MESSAGE_UID, ABSORBED_MESSAGE_UIDS) if key in msg}, entry)
@@ -3957,6 +3957,7 @@ class GatewayRunner(
             user_id=str(source.user_id) if source.user_id else "",
             user_id_alt=str(source.user_id_alt) if source.user_id_alt else "",
             user_name=str(source.user_name) if source.user_name else "",
+            actor_id=str(context.actor_user_id or ""), actor_name=str(context.actor_user_name or ""),
             scope_id=str(getattr(source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(source, "parent_chat_id", "") or ""),
             session_key=context.session_key,
@@ -3965,8 +3966,7 @@ class GatewayRunner(
             session_id=context.session_id or "",
             message_id=str(source.message_id) if source.message_id else "",
             profile=getattr(source, "profile", "") or "",
-            async_delivery=_async_delivery,
-            cron_session="", session_history_delivery=_history_delivery)
+            async_delivery=_async_delivery, cron_session="", session_history_delivery=_history_delivery)
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

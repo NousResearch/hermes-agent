@@ -22,6 +22,9 @@ from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
+from hermes_cli.profiles_export_scrub import (
+    GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
+    scrub_export_secrets as _scrub_export_secrets)
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
@@ -145,6 +148,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
         ignored = _non_exportable_entries(directory, names)
         if at_root:
             ignored.update(root_exclude & set(names))
+            ignored.update(n for n in names if _GATEWAY_CONNECTION_STORE_RE.fullmatch(n.casefold()))
         return ignored
 
     return _ignore
@@ -183,6 +187,7 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "chrome-debug",                 # /browser connect Chrome profile (cookies, logins)
     "home",                         # subprocess HOME: gh, git, ssh, npm and skill-CLI credentials
     "backups", "state-snapshots",   # pre-update zips, config copies, update snapshots of the stores
+    *_GATEWAY_CONNECTION_STORES,    # saved gateways' session tokens + OAuth sign-ins (sidecars: _STORE_COPY_RE)
     *_OS_CREDENTIAL_STORES,
 })
 _CREDENTIAL_PATH_PARTS = tuple(tuple(p.casefold().split("/")) for p in PROFILE_CREDENTIAL_PATHS)
@@ -192,7 +197,7 @@ _CREDENTIAL_PATH_PARTS = tuple(tuple(p.casefold().split("/")) for p in PROFILE_C
 # writers' formats match (post_update ``.bak-<stamp>[.N]``, config_backups' legacy siblings), because a
 # hand-named ``config.yaml.bak-my-note`` is the user's and ships through the export scrub instead.
 _STORE_COPY_RE = re.compile(
-    r"auth\.json\..+|\.env\.bak.*"
+    r"auth\.json\..+|\.env\.bak.*|gateway-connections?(?:-tokens)?\.json\..+"
     r"|config\.yaml\.(?:bak-\d{8}t\d{6}z(?:\.\d+)?|bak\.\d+|corrupt\..*|bak-pre-migrate-.*)"
 )
 
@@ -2108,52 +2113,6 @@ def _export_credential_entries(directory: str, contents: list) -> set:
     parts = Path(directory).parts
     return {entry for entry in contents for store in _EXPORT_CREDENTIAL_PARTS
             if entry == store[-1] and parts[len(parts) + 1 - len(store):] == store[:-1]}
-
-# Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
-_EXPORT_REDACT_SUFFIXES = frozenset({
-    ".md", ".txt", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".ini", ".cfg", ".conf", ".py", ".sh",
-    ".bash", ".zsh", ".js", ".ts", ".tsx", ".jsx", ".css", ".html", ".xml", ".csv",
-})
-# ``Path(".cursorrules").suffix`` is "" — name-match; ``*.env.example`` uses endswith; a hand-named
-# config copy (``config.yaml.bak-my-note``) holds config.yaml's secrets under a suffix of its own.
-_EXPORT_REDACT_NAMES = frozenset({".cursorrules"})
-
-
-def _should_redact_export_file(path: Path) -> bool:
-    name = path.name
-    return (
-        name in _EXPORT_REDACT_NAMES
-        or name.lower().endswith(".env.example")
-        or name.lower().startswith("config.yaml.")
-        or path.suffix.lower() in _EXPORT_REDACT_SUFFIXES
-    )
-
-
-def _scrub_export_secrets(staged: Path) -> None:
-    """Force-redact secret-shaped strings in a staged export tree (same pass as ``hermes
-    sessions export --redact``). Runs on the staged copy only; symlinks to text files are
-    materialized when content changes so redaction never follows a link back into the source."""
-    from agent.redact import redact_sensitive_text
-    for path in staged.rglob("*"):
-        try:
-            is_link = path.is_symlink()
-            if not path.is_file():  # broken links, symlinked dirs, non-files
-                continue
-        except OSError:
-            continue
-        if not _should_redact_export_file(path):
-            continue
-        try:
-            text = path.read_text(encoding="utf-8-sig")
-        except (UnicodeDecodeError, OSError):
-            continue
-        redacted = redact_sensitive_text(text, force=True)
-        if redacted == text:
-            continue
-        if is_link:
-            path.unlink()
-        path.write_text(redacted, encoding="utf-8")
-
 
 def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, str]] = None) -> Path:
     """Export a profile to a tar.gz archive; credential files are excluded and staged text is

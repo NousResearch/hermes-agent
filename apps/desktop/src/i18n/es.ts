@@ -29,6 +29,11 @@ import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  gatewayGroupOpen: {
+    opening: "Abriendo el chat de grupo…",
+    lookupFailed: "No se pudo encontrar este grupo en la pasarela. Inténtalo de nuevo.",
+    missing: "Este chat de grupo ya no existe."
+  },
   sharedMetrics: esSharedMetrics,
   firstRun: esFirstRun,
   intro: introEs,

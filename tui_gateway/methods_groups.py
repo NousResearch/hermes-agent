@@ -235,21 +235,25 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS, _owner=_for
     from gateway.hosted_rooms import MAX_LOG_LIMIT, PROTOCOL_VERSION, local_authority_gateway_id
     service = get_hosted_room_service()
     driver_ready = bool(service and service.runtime.status()["running"])
+    # The first missing piece, named as gateway/session_group_peers.py::room_link names it: an
+    # approvals-off profile is a policy refusal, not a missing room key.
+    reason = "gateway_roomlink_secret_unavailable"
     try:
         from gateway.hosted_room_peer import gateway_room_grant_secret
         profile = _requested_profile(params)
+        reason = "durable_run_storage_required"
         if not _room_link_run_storage_durable():
             raise ValueError("durable run idempotency storage is required")
+        reason = "gateway_roomlink_secret_unavailable"
         gateway_room_grant_secret()
+        reason = "execution_policy_unsupported"
         policy = _profile_execution_policy(profile)
         catalog = _catalog(local_authority_gateway_id(), profile, policy)
         room_link = {
             "enabled": True, "profile": profile, "catalog": catalog,
             "endpoint": catalog["endpoint"]}
     except Exception:
-        room_link = {"enabled": False, "reason": (
-            "durable_run_storage_required" if not _room_link_run_storage_durable()
-            else "gateway_roomlink_secret_unavailable")}
+        room_link = {"enabled": False, "reason": reason}
     return _ok(rid, {
         "protocol_version": PROTOCOL_VERSION, "driver": driver_ready,
         "persistent_process": bool(room_link.get("catalog", {}).get("persistent_process", False)),

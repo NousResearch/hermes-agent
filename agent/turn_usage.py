@@ -70,6 +70,33 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def _split_cost_deltas(cost_result, moa_ref_cost):
+    """(estimated, actual) USD deltas for the token queue.
+
+    A provider-REPORTED cost (status "actual") is the request's real bill, not an
+    estimate: it lands in actual_cost_usd, which readers prefer over the estimate.
+    Estimates and MoA advisor dollars (already priced per-advisor at each advisor's
+    own model rate) stay in estimated_cost_usd so state.db's estimate matches the
+    folded token counts.
+    """
+    estimated = None
+    actual = None
+    if cost_result.amount_usd is not None:
+        amount = float(cost_result.amount_usd)
+        if cost_result.status == "actual":
+            actual = amount
+        else:
+            estimated = amount
+    if moa_ref_cost is not None:
+        try:
+            moa_cost = float(moa_ref_cost)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            moa_cost = None
+        if moa_cost is not None:
+            estimated = (estimated or 0.0) + moa_cost
+    return estimated, actual
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
@@ -235,19 +262,11 @@ def record_response_usage(
     )
     # Cost delta = aggregator + MoA advisor cost (already priced per-advisor at each
     # advisor's own model rate), so state.db's estimated_cost_usd matches the folded
-    # token counts.
-    _cost_delta = None
-    if cost_result.amount_usd is not None:
-        _cost_delta = float(cost_result.amount_usd)
-        agent.session_estimated_cost_usd += _cost_delta
-    if _moa_ref_cost is not None:
-        try:
-            _moa_cost = float(_moa_ref_cost)
-        except (TypeError, ValueError):  # pragma: no cover - defensive
-            _moa_cost = None
-        if _moa_cost is not None:
-            agent.session_estimated_cost_usd += _moa_cost
-            _cost_delta = (_cost_delta or 0.0) + _moa_cost
+    # token counts; a provider-REPORTED cost (status "actual") is the request's real
+    # bill and lands in actual_cost_usd instead.
+    _cost_delta, _actual_cost_delta = _split_cost_deltas(cost_result, _moa_ref_cost)
+    if _cost_delta is not None or _actual_cost_delta is not None:
+        agent.session_estimated_cost_usd += (_cost_delta or 0.0) + (_actual_cost_delta or 0.0)
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
 
@@ -270,6 +289,7 @@ def record_response_usage(
                 cache_write_tokens=canonical_usage.cache_write_tokens,
                 reasoning_tokens=canonical_usage.reasoning_tokens,
                 estimated_cost_usd=_cost_delta,
+                actual_cost_usd=_actual_cost_delta,
                 cost_status=cost_result.status,
                 cost_source=cost_result.source,
                 billing_provider=agent.provider,

@@ -924,3 +924,96 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+# ── OpenRouter provider-reported cost (usage.cost) ─────────────────────────
+
+
+def _openrouter_usage(cost=None, cost_details=None):
+    """Canonical usage from an OpenRouter response; ``usage.include`` payloads
+    carry ``cost``/``cost_details`` in the raw usage object."""
+    payload = {"prompt_tokens": 9, "completion_tokens": 18}
+    if cost is not None:
+        payload["cost"] = cost
+    if cost_details is not None:
+        payload["cost_details"] = cost_details
+    return normalize_usage(payload, provider="openrouter", api_mode="chat_completions")
+
+
+def test_openrouter_reported_cost_wins_as_actual(monkeypatch):
+    """OpenRouter bills the ENDPOINT that served the request (per-endpoint
+    rates differ from the model headline by up to ~13x), so a response-reported
+    cost is the actual bill: estimate_usage_cost must return it verbatim with
+    status "actual" and never touch the pricing table."""
+    import model_tools  # side effect: plugin discovery registers the profile
+
+    monkeypatch.setattr(
+        "agent.usage_pricing._openrouter_pricing_entry",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("pricing table should not be consulted")),
+    )
+    # Measured live: 9 prompt + 18 completion tokens on InferenceNet billed
+    # $0.000011106 (= $0.080/M prompt + $0.55/M completion), not the headline.
+    result = estimate_usage_cost(
+        "deepseek/deepseek-v4.1-flash-1017",
+        _openrouter_usage(cost=1.1106e-05, cost_details={
+            "upstream_inference_prompt_cost": 7.2e-07,
+            "upstream_inference_completions_cost": 9.986e-06,
+        }),
+        provider="openrouter",
+    )
+    assert result.status == "actual"
+    assert result.source == "provider_generation_api"
+    assert result.amount_usd == Decimal(str(1.1106e-05))
+    assert result.label == format_cost_label(Decimal(str(1.1106e-05)))
+
+
+def test_openrouter_response_without_reported_cost_falls_back_to_estimate(monkeypatch):
+    """Servers/routes that omit ``usage.cost`` keep the model-level estimate
+    path (status "estimated", never "actual")."""
+    import model_tools  # side effect: plugin discovery registers the profile
+    from agent.usage_pricing import PricingEntry
+
+    monkeypatch.setattr(
+        "agent.usage_pricing._openrouter_pricing_entry",
+        lambda route: PricingEntry(
+            input_cost_per_million=Decimal("0.006"),
+            output_cost_per_million=Decimal("0.03"),
+            source="provider_models_api",
+        ),
+    )
+    result = estimate_usage_cost(
+        "deepseek/deepseek-v4.1-flash-1017",
+        _openrouter_usage(),  # 9 prompt + 18 completion tokens, no cost field
+        provider="openrouter",
+    )
+    assert result.status == "estimated"
+    assert result.source == "provider_models_api"
+    assert result.amount_usd == (
+        Decimal(9) * Decimal("0.006") + Decimal(18) * Decimal("0.03")
+    ) / Decimal(1_000_000)
+
+
+def test_openrouter_reported_cost_beats_estimate_in_the_same_call(monkeypatch):
+    """Same request priced both ways: the reported figure is the bill the
+    account will actually see (headline-based estimate is a lower bound here)."""
+    import model_tools  # side effect: plugin discovery registers the profile
+    from agent.usage_pricing import PricingEntry
+
+    monkeypatch.setattr(
+        "agent.usage_pricing._openrouter_pricing_entry",
+        lambda route: PricingEntry(
+            input_cost_per_million=Decimal("0.006"),
+            output_cost_per_million=Decimal("0.03"),
+            source="provider_models_api",
+        ),
+    )
+    usage = _openrouter_usage(cost=1.1106e-05)
+    reported = estimate_usage_cost("m", usage, provider="openrouter")
+    assert reported.status == "actual"
+    estimate = estimate_usage_cost(
+        "m", normalize_usage({"prompt_tokens": 9, "completion_tokens": 18},
+                             provider="openrouter", api_mode="chat_completions"),
+        provider="openrouter",
+    )
+    assert estimate.status == "estimated"
+    assert reported.amount_usd > estimate.amount_usd

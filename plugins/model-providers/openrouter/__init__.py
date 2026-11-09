@@ -209,6 +209,44 @@ class OpenRouterProfile(ProviderProfile):
             top_level["extra_headers"] = {"x-grok-conv-id": grok_conv_id}
         return extra_body, top_level
 
+    def get_usage_cost(self, model: str, usage: Any) -> Any | None:
+        """Provider-reported request cost (``usage.cost``), when present.
+
+        OpenRouter bills the *endpoint* that served the request, not the
+        model-level headline price (per-endpoint rates differ by up to ~13x),
+        so a reported cost is the actual bill for the request. It is returned
+        with ``status="actual"`` so accounting records it as real spend rather
+        than an estimate. Returns ``None`` when the response carries no cost
+        (servers that predate the ``usage.include`` flag, routes that omit it)
+        so the model-level estimate path still applies.
+        """
+        from decimal import Decimal, InvalidOperation
+
+        from agent.usage_pricing import CostResult, format_cost_label
+
+        raw = getattr(usage, "raw_usage", None)
+        if not isinstance(raw, dict):
+            return None
+        try:
+            amount = Decimal(str(raw.get("cost")))
+        except InvalidOperation:
+            return None
+        if not amount.is_finite() or amount < 0:
+            return None
+        notes: tuple[str, ...] = ()
+        details = raw.get("cost_details")
+        if isinstance(details, dict):
+            parts = [f"{key}={value}" for key, value in sorted(details.items()) if value is not None]
+            if parts:
+                notes = (f"OpenRouter reported cost: {', '.join(parts)}",)
+        return CostResult(
+            amount_usd=amount,
+            status="actual",
+            source="provider_generation_api",
+            label=format_cost_label(amount),
+            notes=notes,
+        )
+
 
 openrouter = OpenRouterProfile(
     name="openrouter", aliases=("or",), env_vars=("OPENROUTER_API_KEY",), display_name="OpenRouter",

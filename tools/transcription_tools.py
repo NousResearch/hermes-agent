@@ -31,6 +31,7 @@ from tools.transcription_audio import (
     _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
     _validate_audio_file, _validate_audio_source_file)
 from tools.transcription_chunking import exceeds_upload_limit, transcribe_oversized, upload_limit
+from tools.transcription_prompt_echo import transcribe_with_prompt_echo_guard
 from tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
     _load_local_whisper_model, _looks_like_cuda_lib_error, _normalize_local_model,
@@ -464,7 +465,8 @@ def _transcribe_prepared_audio(
                 # Hints are resolved once for the whole recording, not once per segment.
                 hints = _resolve_dispatch_hints(file_path, provider, stt_config, model, source)
                 return transcribe_oversized(
-                    file_path, limit, lambda part: _route_stt_provider(part, provider, stt_config, *hints))
+                    file_path, limit,
+                    lambda part: transcribe_with_prompt_echo_guard(part, provider, stt_config, *hints))
         return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
 
 
@@ -515,7 +517,7 @@ def _dispatch_stt_provider(
     file_path: str, provider: str, stt_config: dict[str, Any], model: Optional[str] = None,
     source: Optional[str] = None) -> dict[str, Any]:
     """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
-    return _route_stt_provider(
+    return transcribe_with_prompt_echo_guard(
         file_path, provider, stt_config, *_resolve_dispatch_hints(file_path, provider, stt_config, model, source))
 
 

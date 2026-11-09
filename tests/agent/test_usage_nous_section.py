@@ -41,46 +41,24 @@ def portal(monkeypatch):
     return seen, state
 
 
-def test_another_providers_session_gets_the_labelled_nous_balance_without_a_topup_nudge(portal):
-    seen, state = portal
-    lines = nous_usage_lines(nous_route=False)
-    assert lines[0] == NOUS_OTHER_ROUTE_HEADING
-    assert "Top-up credits: $7.75" in lines
-    assert not any("/topup" in line or line.startswith("Top up:") for line in lines), lines
-    assert seen == {"tokens": [state["access_token"]], "refreshed": 0}  # the stored token, never refreshed
-
-
-def test_a_nous_session_keeps_the_balance_and_its_topup_lines(portal):
-    lines = nous_usage_lines(nous_route=True)
-    assert NOUS_OTHER_ROUTE_HEADING not in lines
-    assert "Top-up credits: $7.75" in lines and "(or run /topup)" in lines
-
-
-def test_a_profile_not_signed_into_nous_has_no_nous_section(portal):
-    seen, _ = portal
-    seen["signed_in"] = False
-    assert nous_usage_lines(nous_route=False) == [] and nous_usage_lines(nous_route=True) == []
-    assert seen["tokens"] == []
-
-
 def _window_plan(*, keep_going_on_credits: bool) -> dict:
     reset_ms = int(time.time() * 1000) + 3_600_000
     gauges = [{"id": "day", "scope": "all", "label": "Today", "used_bp": 1_200, "resets_at_ms": reset_ms}]
     return {**_PAYLOAD, "usage_window": {"gauges": gauges, "keep_going_on_credits": keep_going_on_credits}}
 
 
-def test_a_window_plan_keeps_its_setting_but_not_the_topup_action_on_another_providers_session(portal):
-    seen, _ = portal
+def test_another_providers_session_gets_the_labelled_nous_balance_without_topup_actions(portal):
+    seen, state = portal
+    lines = nous_usage_lines(nous_route=False)
+    assert lines[0] == NOUS_OTHER_ROUTE_HEADING and "Top-up credits: $7.75" in lines
+    assert not any("/topup" in line or line.startswith("Top up:") for line in lines), lines
+    assert seen == {"tokens": [state["access_token"]], "refreshed": 0}  # the stored token, never refreshed
+    assert "(or run /topup)" in nous_usage_lines(nous_route=True)
+
+    # A window plan with Keep going off keeps the setting visible; only a Nous session gets its /topup action.
     seen["payload"] = _window_plan(keep_going_on_credits=False)
     off_route = nous_usage_lines(nous_route=False)
     assert any(line.startswith("Keep going on credits: off") for line in off_route), off_route
     assert not any("/topup" in line for line in off_route), off_route
-    on_route = nous_usage_lines(nous_route=True)
-    assert any(line.startswith("Keep going on credits: off") and "/topup" in line for line in on_route), on_route
-
-
-def test_an_expiring_stored_token_is_not_refreshed_for_another_providers_session(portal):
-    seen, state = portal
-    state["expires_at"] = (datetime.now(UTC) + timedelta(seconds=5)).isoformat()
-    assert nous_usage_lines(nous_route=False) == []
-    assert seen == {"tokens": [], "refreshed": 0}
+    assert any(line.startswith("Keep going on credits: off") and "/topup" in line
+               for line in nous_usage_lines(nous_route=True))

@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent
+from gateway.model_publication import publication_lock
 from hermes_cli.config import atomic_config_write
 from utils import base_url_host_matches
 
@@ -371,7 +372,8 @@ class GatewayModelCommandsMixin:
         Entry for the picker / cost-confirm callbacks, which fire outside ``_handle_model_command``
         and take the switch lock themselves; the typed path already holds it."""
         async with self._model_switch_lock():
-            return await self._commit_model_switch_locked(result, ctx, source=source, picker=picker)
+            async with publication_lock(self, None if ctx.persist_global else ctx.session_key):
+                return await self._commit_model_switch_locked(result, ctx, source=source, picker=picker)
 
     def _channel_override_for(self, source):
         """This chat's ``channel_overrides`` entry (model/provider), or None."""
@@ -506,10 +508,12 @@ class GatewayModelCommandsMixin:
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
             async def _picker_switch(model_id: str, provider_slug: str) -> str:
                 # The picker callback binds the raw event source (pre-normalization).
-                result, error = await self._perform_model_switch(ctx, model_id, provider_slug, event.source)
-                if error is not None:
-                    return error
-                return await self._commit_model_switch(result, ctx, source=event.source, picker=True)
+                async with self._model_switch_lock():
+                    async with publication_lock(self, None if ctx.persist_global else ctx.session_key):
+                        result, error = await self._perform_model_switch(ctx, model_id, provider_slug, event.source)
+                        if error is not None:
+                            return error
+                        return await self._commit_model_switch_locked(result, ctx, source=event.source, picker=True)
 
             async def _on_model_selected(_chat_id: str, model_id: str, provider_slug: str) -> str:
                 if profile_home is None:
@@ -618,19 +622,21 @@ class GatewayModelCommandsMixin:
             reasoning_effort=request.reasoning_effort,
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
-        ctx.read_config()
-        if request.is_reset:
-            return await self._handle_model_reset(event, ctx)
-        ctx.apply_override(self._session_model_overrides.get(session_key, {}))
-        if not request.target and not request.explicit_provider:
-            return await self._model_listing_reply(event, ctx, profile_home)
-        result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
-        if error is not None:
-            return error
-        guard_fired, guard_reply = await self._model_selection_guard_reply(event, ctx, result)
-        if guard_fired:
-            return guard_reply
-        return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
+        # Reset only clears this route, even when ordinary picks persist by default.
+        async with publication_lock(self, None if ctx.persist_global and not request.is_reset else session_key):
+            ctx.read_config()
+            if request.is_reset:
+                return await self._handle_model_reset(event, ctx)
+            ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+            if not request.target and not request.explicit_provider:
+                return await self._model_listing_reply(event, ctx, profile_home)
+            result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
+            if error is not None:
+                return error
+            guard_fired, guard_reply = await self._model_selection_guard_reply(event, ctx, result)
+            if guard_fired:
+                return guard_reply
+            return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
 
     def _channel_default_route(self, source, config_path) -> tuple[str, str]:
         """``(model, provider)`` this chat runs with no session override: channel_overrides, else the

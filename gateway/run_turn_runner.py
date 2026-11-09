@@ -1106,14 +1106,18 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """Capture only after any in-progress model publication has completed."""
         from contextlib import nullcontext
         from gateway.session_authorities import active_authority
+        from gateway.model_publication import publication_lock
         authority = active_authority(self._runner)
         try:
             for _ in range(3):
                 owner = await asyncio.to_thread(authority.logical_owner, self._ctx.session_id) if authority else None
                 live = authority.sessions.get(owner) if authority else None
-                # Viewer mutations take the mount gate before the runner-wide model lock.
+                # Wait for this route before taking the global gate, so a pending session
+                # pick cannot make independent routes queue behind this capture.
                 async with live.mutation_lock if live else nullcontext():
-                    async with self._runner._model_switch_lock():
+                    route_gate = (publication_lock(self._runner, self._ctx.session_key)
+                                  if self._ctx.session_key is not None else nullcontext())
+                    async with route_gate, publication_lock(self._runner):
                         current_owner = (await asyncio.to_thread(authority.logical_owner, self._ctx.session_id)
                                          if authority else None)
                         current_live = authority.sessions.get(current_owner) if authority else None

@@ -41,10 +41,14 @@ class TelegramContactMixin:
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
-        if not self._gate_or_observe(msg, update, MessageType.TEXT):
+        proceed = self._should_process_message(msg)
+        if not proceed and not self._should_observe_unmentioned_group_message(msg):
             return
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = contact_text(contact)
+        if not proceed:  # observed chatter keeps the card, so a later mention can use it
+            self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id, event=event)
+            return
         await self.handle_message(self._apply_telegram_group_observe_attribution(event))
 
 

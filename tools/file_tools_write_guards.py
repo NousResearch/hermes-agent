@@ -603,9 +603,7 @@ def _stale_write_refusal(filepath: str, reason: str, resolved: str | None = None
     result = {
         "error": (
             f"Refusing to overwrite {filepath}: {reason} "
-            "The file was NOT modified. Reload the current contents with read_file "
-            "(every page, for a file that needs offset/limit), merge the requested "
-            "change, then call write_file again. For small edits, prefer patch so "
+            "The file was NOT modified. For small edits, prefer patch so "
             "existing unrelated changes are preserved."),
         "stale_write_blocked": True,
         "path": filepath,

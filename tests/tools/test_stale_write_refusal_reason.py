@@ -38,6 +38,8 @@ def test_refusal_after_the_repeat_guard_does_not_blame_pagination(tmp_path):
         error = _refusal_after(path, task)
         assert "offset/limit pagination" not in error
         assert "repeated" in error and "patch" in error
+        # A blocked repeat read cannot be retried to heal this baseline.
+        assert "Reload the current contents with read_file" not in error
     finally:
         clear_file_ops_cache(task)
 

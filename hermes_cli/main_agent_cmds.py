@@ -121,13 +121,13 @@ def cmd_insights(args):
     try:
         from agent.insights import InsightsEngine
         from hermes_cli.config import get_hermes_home
-        from persistence_assembly import open_persistence_reader, profile_scope, store_location
-        path = store_location(profile_scope(home=get_hermes_home()))
-        if path is None or not path.exists():
+        from persistence_assembly import open_persistence_reader, profile_scope, store_exists
+        scope = profile_scope(home=get_hermes_home())
+        if not store_exists(scope):
             from agent.i18n import t
             print(f"  {t('cli.insights.no_session_data')}")
             return
-        with open_persistence_reader(path) as reader:
+        with open_persistence_reader(scope.profile_dir) as reader:
             engine = InsightsEngine(None, persistence=reader)
             report = engine.generate(days=args.days, source=args.source)
             print(engine.format_terminal(report))

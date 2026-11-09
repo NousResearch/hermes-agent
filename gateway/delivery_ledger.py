@@ -165,19 +165,19 @@ def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optiona
     return _failed_stamp(updated_at) + _RETRY_BACKOFF_SECONDS[spent]
 
 
-def _db_path():
+def _scope():
     # Launch home, not get_hermes_home(): a multiplexed gateway records a served profile's replies
     # under that profile's home override, but the boot sweep reads from the launch context, so both
     # must open the one shared store (adapter_profile tells the bots apart). No get_hermes_home()
     # fallback for an unset HERMES_HOME: a default gateway run in the foreground has none.
-    from persistence_assembly import profile_scope, store_location
-    return store_location(profile_scope(home=get_process_hermes_home()))
+    from persistence_assembly import profile_scope
+    return profile_scope(home=get_process_hermes_home())
 
 
 def _store():
     """A handle on the ledger's store through the launch home's registered writer; the caller closes it."""
-    from persistence_assembly import open_persistence, profile_scope
-    return open_persistence(profile_scope(home=_db_path().parent))
+    from persistence_assembly import open_persistence
+    return open_persistence(_scope())
 
 
 def _start_time(pid: int) -> Optional[int]:

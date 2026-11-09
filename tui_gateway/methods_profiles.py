@@ -229,12 +229,12 @@ def _profile_session_fields(row, profile_path):
     read-only attach (a writable ``SessionDB()`` waits up to 20s for the write lock + runs DDL
     and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow)."""
     def _read() -> dict:
-        from persistence_assembly import open_persistence_reader, profile_scope, store_location
-        db_path = store_location(profile_scope(home=Path(profile_path)))
+        from persistence_assembly import open_persistence_reader, profile_scope, store_exists
+        scope = profile_scope(home=Path(profile_path))
         with contextlib.ExitStack() as handles:
             persistence = None
-            if _try(db_path.exists, False):
-                persistence = _try(lambda: handles.enter_context(open_persistence_reader(db_path)), None)
+            if _try(lambda: store_exists(scope), False):
+                persistence = _try(lambda: handles.enter_context(open_persistence_reader(scope.profile_dir)), None)
             last, worker = _latest_profile_session_rows(persistence)
             # Resolved server-side on every listing so no client carries a session pointer.
             return {"last_session": last, "worker_session": worker,

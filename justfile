@@ -209,8 +209,7 @@ eslint +files:
 move-rewrite *args:
     scripts/hermes-python -m scripts.ci.python_packages libcst==1.9.0 -- scripts/move/rewrite_imports.py "$@"
 
-# Regenerate files built from code and docstrings a move rewrote (after move-rewrite and move-docs); the parity
-# table only checks, since its scan roots come from the guards
+# Regenerate files built from docstrings a move rewrote (run after move-docs; the parity table only checks)
 [group('move')]
 move-generate:
     scripts/gen_gateway_contracts.py

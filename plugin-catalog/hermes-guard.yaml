@@ -1,7 +1,7 @@
 name: hermes-guard
 title: Hermes Guard
 repo: https://github.com/elianjuan-g/hermes-guard
-sha: 07a9c180eacb3cfa8bac7aa4e9900bc33dba140b
+sha: ccb0f5278e412351729cbd2dcfeb40f0d221efb7
 version: "1.1.1"
 description: >-
   Defensive prompt-injection guard for Hermes Agent: a pre_llm_call hook scans every inbound message locally (deterministic patterns, no model calls) for Unicode smuggling, hidden instructions, special tokens, and Base64-decoded payloads; a pre_tool_call hook blocks RCE/subshell patterns, sensitive credential paths, and call-ID races. High-confidence attacks are blocked; suspicious messages are quarantined for manual review via the guard_review tool (release is manual re-send by design). Includes a Predator pattern store (human-corrected signatures), a SHA-256 hash-chained ledger, secret redaction, a live Posture Score, a 28-vector simulation arena (21 message + 7 tool-arg), and a standalone Obsidian & Gold HUD. Python stdlib + SQLite only.

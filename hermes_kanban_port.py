@@ -303,21 +303,42 @@ class KanbanStorageProvider(ABC):
         default: a backend that has not checked must not pass."""
 
 
-def resolve_kanban_storage(name: str) -> KanbanStorageProvider:
+def _hosted_process(hosted: Optional[bool]) -> bool:
+    """Whether this process serves hosted tenants: the caller's explicit answer, else what the
+    hosted boot profile reports (``hermes_cli.hosted_mode.is_hosted``; a checkout without that
+    module is not hosted — the first hosted-capable caller passes the answer explicitly)."""
+    if hosted is not None:
+        return hosted
+    try:
+        from hermes_cli.hosted_mode import is_hosted
+    except ImportError:
+        return False
+    return bool(is_hosted())
+
+
+def resolve_kanban_storage(name: str, *, hosted: Optional[bool] = None) -> KanbanStorageProvider:
     """The provider named *name* (``"local"`` or empty: the local backend). Raises ``LookupError``
     with the reason for a named provider that is missing, refused or unavailable: storage never
-    falls back to another store."""
+    falls back to another store. A provider that keeps one board root shared across every profile
+    of a single-user machine (``LOCAL_SHARED_BOARD``, the local exception) is refused wherever
+    the process runs hosted: a shared deployment's tenants each get their own agents' boards,
+    behind a backend that pins the agent too."""
     name = name.strip()
     if name in ("", "local"):
         from hermes_kanban_port_local import LocalKanbanStorageProvider
-        return LocalKanbanStorageProvider()
-    from plugins.kanban_storage import KanbanStorageRefused, load_kanban_storage
-    try:
-        provider = load_kanban_storage(name)
-    except KanbanStorageRefused as refused:
-        raise LookupError(f"kanban storage {name!r}: {refused}") from refused
-    if provider is None:
-        raise LookupError(f"kanban storage {name!r}: no such kanban storage provider")
-    if not provider.is_available():
-        raise LookupError(f"kanban storage {name!r} is not available here")
+        provider = LocalKanbanStorageProvider()
+    else:
+        from plugins.kanban_storage import KanbanStorageRefused, load_kanban_storage
+        try:
+            provider = load_kanban_storage(name)
+        except KanbanStorageRefused as refused:
+            raise LookupError(f"kanban storage {name!r}: {refused}") from refused
+        if provider is None:
+            raise LookupError(f"kanban storage {name!r}: no such kanban storage provider")
+        if not provider.is_available():
+            raise LookupError(f"kanban storage {name!r} is not available here")
+    if _hosted_process(hosted) and getattr(type(provider), "LOCAL_SHARED_BOARD", False):
+        raise LookupError(
+            f"kanban storage {name!r} keeps one board root shared across every profile of a "
+            "single-user machine; it cannot serve hosted tenants")
     return provider

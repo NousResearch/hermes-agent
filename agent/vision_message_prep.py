@@ -253,7 +253,7 @@ class VisionMessagePrepMixin:
         )
         return summary
 
-    _try_shrink_image_parts_in_messages = _forward_static("agent.conversation_compression", "try_shrink_image_parts_in_messages")
+    _try_shrink_image_parts_in_messages = _forward_static("agent.conversation_compression_image_shrink", "try_shrink_image_parts_in_messages")
 
     def _try_strip_image_parts_from_tool_messages(
         self, api_messages: list, *, remember_model: bool = True

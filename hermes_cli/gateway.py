@@ -4886,6 +4886,11 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
 
 def gateway_command(args):
     """Handle gateway subcommands."""
+    # Before the served-by-host-gateway check below: that check exits 75 and would hide the refusal.
+    if getattr(args, "gateway_command", None) in (None, "run"):
+        from hermes_cli.gateway_run_guard import enforce_production_runtime
+
+        enforce_production_runtime(allow_scratch=getattr(args, "allow_scratch", False))
     try:
         return _gateway_command_inner(args)
     except UserSystemdUnavailableError as e:

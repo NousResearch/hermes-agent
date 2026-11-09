@@ -272,7 +272,10 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   }
 }
 
-async function enrichPreviewTarget(target: PreviewTarget | null, scope?: DesktopFsSessionScope): Promise<PreviewTarget | null> {
+async function enrichPreviewTarget(
+  target: PreviewTarget | null,
+  scope?: DesktopFsSessionScope
+): Promise<PreviewTarget | null> {
   if (
     !isDesktopFsRemoteMode() ||
     !target ||

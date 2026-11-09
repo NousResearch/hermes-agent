@@ -102,11 +102,16 @@ it('refuses the whole submit when a {!cmd} cannot run instead of sending a place
   const home = mkdtempSync(join(tmpdir(), 'ink-submit-'))
   vi.stubEnv('HERMES_HOME', home)
   resetUiState()
-  patchUiState({ sid: 'owner', info: { model: 'test', stored_session_id: 'stored-owner', skills: {}, tools: {} } as any })
+  patchUiState({
+    sid: 'owner',
+    info: { model: 'test', stored_session_id: 'stored-owner', skills: {}, tools: {} } as any
+  })
 
   // dokterdok N22: the interpolation's failure used to become the literal text `(error)`.
   const request = vi.fn((method: string) =>
-    method === 'shell.exec' ? Promise.reject(Object.assign(new Error('dangerous_command'), { code: 4001 })) : Promise.resolve({})
+    method === 'shell.exec'
+      ? Promise.reject(Object.assign(new Error('dangerous_command'), { code: 4001 }))
+      : Promise.resolve({})
   )
 
   let queue!: ReturnType<typeof useQueue>

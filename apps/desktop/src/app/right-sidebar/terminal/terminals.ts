@@ -311,9 +311,9 @@ export function createTerminal(cwd: string = $currentCwd.get(), gateway?: Termin
  *  changes: a later Sessions pick must not move a shell to another host. */
 export function adoptTerminalGateway(id: string, gateway: TerminalGateway): void {
   $terminals.set(
-    $terminals.get().map(term =>
-      term.id === id && term.kind === 'user' && !term.connectionId ? { ...term, ...gateway } : term
-    )
+    $terminals
+      .get()
+      .map(term => (term.id === id && term.kind === 'user' && !term.connectionId ? { ...term, ...gateway } : term))
   )
 }
 
@@ -333,7 +333,8 @@ export function forgetRemovedTerminalGateways(registered: ReadonlySet<string>): 
  *  tabs need a label too. */
 export const $terminalHostsMixed = computed(
   $terminals,
-  list => new Set(list.filter(term => term.kind === 'user' && term.connectionId).map(term => term.connectionId)).size > 1
+  list =>
+    new Set(list.filter(term => term.kind === 'user' && term.connectionId).map(term => term.connectionId)).size > 1
 )
 
 // Procs we've already surfaced a tab for — so closing an agent tab doesn't
@@ -489,13 +490,20 @@ export function closeTerminal(id: string): void {
     return
   }
 
-  if (closingTerminals.has(id)) {return}
+  if (closingTerminals.has(id)) {
+    return
+  }
   closingTerminals.add(id)
   // Keep the tab and its resume handle until the server confirms termination.
-  void closeSaved(id).then(closed => {
-    if (!closed) {throw new Error('Terminal close was not confirmed; retry closing this tab')}
-    removeExitedTerminal(id)
-  }).catch(error => notifyError(error, 'Could not close terminal')).finally(() => closingTerminals.delete(id))
+  void closeSaved(id)
+    .then(closed => {
+      if (!closed) {
+        throw new Error('Terminal close was not confirmed; retry closing this tab')
+      }
+      removeExitedTerminal(id)
+    })
+    .catch(error => notifyError(error, 'Could not close terminal'))
+    .finally(() => closingTerminals.delete(id))
 }
 
 export function removeExitedTerminal(id: string): void {
@@ -551,16 +559,19 @@ export function closeOtherTerminals(id: string): void {
   const keep = $terminals.get().find(term => term.id === id)
 
   if (keep) {
-    $terminals.get().filter(term => term.id !== id).forEach(term => closeTerminal(term.id))
+    $terminals
+      .get()
+      .filter(term => term.id !== id)
+      .forEach(term => closeTerminal(term.id))
     $activeTerminalId.set(keep.id)
   }
 }
 
 /** Server replay replaces renderer-only history once persistence is negotiated. */
 export function markTerminalPersistent(id: string): void {
-  $terminals.set($terminals.get().map(term =>
-    term.id === id ? { ...term, persistent: true, reviveBuffer: undefined } : term
-  ))
+  $terminals.set(
+    $terminals.get().map(term => (term.id === id ? { ...term, persistent: true, reviveBuffer: undefined } : term))
+  )
 }
 
 export function updateTerminalReviveBuffer(id: string, reviveBuffer: string): void {

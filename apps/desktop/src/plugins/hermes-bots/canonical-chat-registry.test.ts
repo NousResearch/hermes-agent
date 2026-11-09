@@ -105,11 +105,18 @@ describe('the registry row wins, always', () => {
     const { openBotCanonicalChat } = await loadModule()
 
     await expect(openBotCanonicalChat('ops', { intent: 'tab' })).resolves.toEqual({
-      openedId: 'tip', registryId: 'root'
+      openedId: 'tip',
+      registryId: 'root'
     })
-    expect(hostMock.openSession).toHaveBeenCalledWith('tip', expect.objectContaining({
-      intent: 'tab', profile: 'ops', workspaceMode: 'bots', workspaceOwnerKey: 'bot:ops'
-    }))
+    expect(hostMock.openSession).toHaveBeenCalledWith(
+      'tip',
+      expect.objectContaining({
+        intent: 'tab',
+        profile: 'ops',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:ops'
+      })
+    )
     expect(calls.map(call => call.method)).toEqual(['session.list'])
   })
 

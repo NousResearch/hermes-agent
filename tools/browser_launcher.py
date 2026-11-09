@@ -122,10 +122,14 @@ def running_in_docker() -> bool:
 
 
 def needs_chromium_sandbox_bypass() -> bool:
-    """True when Chromium needs --no-sandbox to start reliably (root, Docker, AppArmor userns)."""
+    """True when Chromium needs --no-sandbox to start reliably (root, container, AppArmor userns).
+
+    Containers are detected by the platform detector, not only ``running_in_docker()``: containerd
+    runtimes (ECS Fargate, Kubernetes) have neither ``/.dockerenv`` nor 'docker' in the cgroup."""
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         return True
-    if running_in_docker():
+    from hermes_platform.host.runtime import is_container
+    if running_in_docker() or is_container():
         return True
     return apparmor_restricts_unprivileged_userns()
 

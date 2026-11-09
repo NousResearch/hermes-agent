@@ -92,6 +92,18 @@ def _recover_or_remember_model(runner, skey, model):
     return model
 
 
+def _managed_oauth_env_host(provider: str) -> str:
+    """The profile's documented host override for a managed OAuth provider, read through the
+    secret scope like the resolver reads it: the process env holds the launch profile's value."""
+    from agent.secret_scope import get_secret_str
+    from hermes_cli.auth_xai import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
+
+    if provider == "openai-codex":
+        return get_secret_str("HERMES_CODEX_BASE_URL", "").strip()
+    raw = get_secret_str("HERMES_XAI_BASE_URL", "").strip() or get_secret_str("XAI_BASE_URL", "").strip()
+    return _xai_validate_inference_base_url(raw, fallback=DEFAULT_XAI_OAUTH_BASE_URL)
+
+
 def _session_override_uses_managed_oauth(override: Optional[dict]) -> bool:
     """Only official Codex/xAI routes borrow the profile's current OAuth credential.
 
@@ -99,18 +111,16 @@ def _session_override_uses_managed_oauth(override: Optional[dict]) -> bool:
     custom host's credential from the official provider's store (or the reverse).
     """
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.auth_codex import _codex_base_url
-    from hermes_cli.auth_xai import _xai_oauth_inference_base_url
 
     if not override or override.get("owns_credentials"):
         return False
     provider = str(override.get("provider") or "")
-    effective = {"openai-codex": _codex_base_url, "xai-oauth": _xai_oauth_inference_base_url}.get(provider)
-    if effective is None:
+    if provider not in ("openai-codex", "xai-oauth"):
         return False
-    # The managed host is the registry default OR its documented env override (HERMES_CODEX_BASE_URL /
+    # The managed host is the registry default OR its documented override (HERMES_CODEX_BASE_URL /
     # HERMES_XAI_BASE_URL): the auth store still owns the bearer for either.
-    managed_hosts = {PROVIDER_REGISTRY[provider].inference_base_url.rstrip("/"), effective().rstrip("/")}
+    managed_hosts = {PROVIDER_REGISTRY[provider].inference_base_url.rstrip("/"),
+                     _managed_oauth_env_host(provider).rstrip("/")} - {""}
     return (override.get("base_url") or "").rstrip("/") in managed_hosts
 
 

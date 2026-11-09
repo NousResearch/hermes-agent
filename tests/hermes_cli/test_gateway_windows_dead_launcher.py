@@ -116,24 +116,3 @@ def test_a_live_or_foreign_launcher_is_left_alone(store_update, monkeypatch):
     foreign = store_update.vbs.read_bytes()
     assert not gateway_windows.refresh_dead_launcher(store_update.home, store_update.name)
     assert store_update.vbs.read_bytes() == foreign
-
-
-@pytest.mark.platforms("windows")
-def test_ensure_repairs_a_ready_owners_launcher(store_update, monkeypatch):
-    """A gateway can be ready on the new payload (``hermes gateway start``, or the old payload cleaned up
-    behind a gateway that outlived the update) while its logon launcher names the deleted interpreter.
-    Ensure returns before discovery then, so it repairs the owner's launcher itself: here the root's,
-    for a named profile the root multiplexer serves."""
-    from hermes_cli import gateway_runtime as runtime
-
-    profile = store_update.home / "profiles" / "work"
-    profile.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(profile))
-    endpoint = runtime.GatewayEndpoint(profile_id=str(profile), instance_id="running", authority_epoch=1,
-                                       runtime_protocol=1, api_origin="http://127.0.0.1:9999", supervisor="windows",
-                                       capabilities=frozenset(), control_home=str(store_update.home))
-    monkeypatch.setattr(runtime, "_update_fenced", lambda *_: False)
-    monkeypatch.setattr(runtime, "_observe_replacing_stale", lambda *_: runtime.GatewayDiscovery("ready", endpoint=endpoint))
-
-    assert runtime.ensure_gateway_runtime(profile, timeout=1).state == "ready"
-    assert _interpreter(store_update.vbs) == str(store_update.new)

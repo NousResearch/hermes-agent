@@ -479,8 +479,6 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float | None = 
                 time.sleep(min(0.1, remaining(deadline)))
                 continue
             if observed.state not in {"absent", "starting"}:
-                from hermes_cli.gateway_runtime_service import refresh_ready_owner_launcher
-                refresh_ready_owner_launcher(home, observed)
                 return observed
             if status is not None and observed.state == "absent":
                 # The one start this invocation requested died without leaving an owner: waiting

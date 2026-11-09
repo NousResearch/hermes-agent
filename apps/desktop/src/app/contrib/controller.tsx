@@ -252,6 +252,7 @@ registry.registerMany([
     // its rail there). A real floor left a sliver of unusable terminal.
     data: {
       placement: 'bottom',
+      minWidth: 'var(--terminal-panel-min-width, 0px)',
       height: '20vh',
       maxHeight: '80vh',
       lifecycleKeepAlive: true,

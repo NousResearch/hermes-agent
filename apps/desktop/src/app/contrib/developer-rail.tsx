@@ -17,6 +17,7 @@ import { toggleReview } from '@/store/review'
 import { $focusedSessionIsTile } from '@/store/session-focus'
 import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
+import { hideDeveloperToolPanel, prepareDeveloperToolPanel } from '../redesign/developer-tool-panel'
 import { usePortalRedesign } from '../redesign/use-portal-redesign'
 import { toggleTerminalPane } from '../right-sidebar/terminal/reveal-focus'
 import { appViewForPath } from '../routes'
@@ -48,6 +49,7 @@ function DeveloperTools() {
 
   const tools = [
     {
+      paneId: 'files',
       label: t.sidebar.files,
       icon: 'files',
       action: 'view.showFiles',
@@ -55,6 +57,7 @@ function DeveloperTools() {
       run: () => (narrow ? setFileBrowserOpen(!overlays.has('files')) : togglePaneVisible('files'))
     },
     {
+      paneId: 'terminal',
       label: t.sidebar.terminal,
       icon: 'terminal',
       action: 'view.showTerminal',
@@ -62,13 +65,14 @@ function DeveloperTools() {
       run: toggleTerminalPane
     },
     {
+      paneId: 'review',
       label: t.sidebar.review,
       icon: 'git-compare',
       action: 'view.toggleReview',
       active: narrow ? overlays.has('review') : review,
       run: toggleReview
     },
-    { label: t.preview.tab, icon: 'globe', action: 'view.showBrowser', active: browser, run: toggleBrowserTab }
+    { paneId: `${PREVIEW_TILE_PREFIX}:${browserTab?.id ?? ''}`, label: t.preview.tab, icon: 'globe', action: 'view.showBrowser', active: browser, run: toggleBrowserTab }
   ]
 
   return (
@@ -78,12 +82,22 @@ function DeveloperTools() {
       style={{ '--titlebar-height': `${titlebarHeight}px` } as CSSProperties}
     >
       {tools.map(tool => (
-        <Tip key={tool.action} label={<TipKeybindLabel actionId={tool.action} text={tool.label} />}>
+        <Tip key={tool.action} label={<TipKeybindLabel actionId={tool.action} text={tool.label} />} placement="right-rail">
           <Button
             aria-label={tool.label}
             aria-pressed={tool.active}
             className={cn(tool.active && 'bg-(--chrome-action-hover) text-(--ui-text-primary)')}
-            onClick={() => tool.run()}
+            onClick={() => {
+              if (tool.active && hideDeveloperToolPanel(tool.paneId)) {return}
+              tool.run()
+
+              // Existing browser tabs move now; newly registered tabs use their dock hint.
+              const paneId = tool.action === 'view.showBrowser'
+                ? `${PREVIEW_TILE_PREFIX}:${browserTabFor($visiblePreviewTabs.get(), $rightRailActiveTabId.get())?.id ?? ''}`
+                : tool.paneId
+
+              prepareDeveloperToolPanel(paneId)
+            }}
             size="icon"
             variant="ghost"
           >

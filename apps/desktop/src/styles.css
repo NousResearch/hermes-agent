@@ -15,6 +15,7 @@
 }
 
 [data-portal-redesign] {
+  --terminal-panel-min-width: min(22rem, 40vw);
   --radius-scalar: 0.6;
   --global-nav-width: 3.75rem;
   --page-nav-width: clamp(13rem, 25vw, 20rem);

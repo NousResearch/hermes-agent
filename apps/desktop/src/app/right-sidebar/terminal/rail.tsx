@@ -21,6 +21,7 @@ import { $bindings } from '@/store/keybinds'
 import { setTerminalTakeover } from '../store'
 
 import { NewTerminalButton } from './rail-new-terminal'
+import { toggleTerminalPane } from './reveal-focus'
 import { terminalHost } from './terminal-gateway'
 import {
   $activeTerminalId,
@@ -49,7 +50,10 @@ export function TerminalRail() {
 
   return (
     <div
-      className="group/rail relative z-40 flex h-full w-9 shrink-0 flex-col items-center border-l border-(--ui-stroke-quaternary) bg-(--ui-terminal-surface-background)"
+      className={cn(
+        'group/rail relative z-40 flex shrink-0 items-center border-(--ui-stroke-quaternary) bg-(--ui-terminal-surface-background)',
+        redesigned ? 'h-9 w-full gap-1 border-b px-1' : 'h-full w-9 flex-col border-l'
+      )}
       // The rail sits at the pane's outer edge, under the collapsed sidebars'
       // hover-reveal triggers; mark it so those triggers go pointer-transparent
       // while it's hovered (see the suppression rules in styles.css) and a reach
@@ -58,31 +62,36 @@ export function TerminalRail() {
     >
       <ul
         aria-label={t.rightSidebar.terminalsAria}
-        className="flex min-h-0 flex-1 flex-col items-center gap-0.5 self-stretch overflow-y-auto overflow-x-hidden overscroll-contain py-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        aria-orientation={redesigned ? "horizontal" : "vertical"}
+        className={cn(
+          'flex min-h-0 min-w-0 flex-1 items-center gap-0.5 self-stretch overscroll-contain py-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
+          redesigned ? 'overflow-x-auto overflow-y-hidden' : 'flex-col overflow-y-auto overflow-x-hidden'
+        )}
         role="tablist"
       >
         {terminals.map((term, index) => (
           <TerminalRailItem
             active={term.id === activeId}
             canCloseOthers={terminals.length > 1}
+            horizontal={redesigned}
             index={index}
             key={term.id}
             term={term}
             toggleHint={toggleHint}
           />
         ))}
-        <NewTerminalButton className={RAIL_ACTION} />
+        <NewTerminalButton className={RAIL_ACTION} horizontal={redesigned} />
       </ul>
 
-      <div className="flex shrink-0 flex-col items-center pb-1.5">
-        <Tip label={t.rightSidebar.terminalHide} placement="right-rail">
+      <div className={cn('flex shrink-0 items-center', !redesigned && 'flex-col pb-1.5')}>
+        <Tip label={t.rightSidebar.terminalHide} placement={redesigned ? "toolbar" : "right-rail"}>
           <button
             aria-label={t.rightSidebar.terminalHide}
             className={cn(
               RAIL_ACTION,
               !redesigned && 'opacity-0 transition-opacity focus-visible:opacity-100 group-hover/rail:opacity-100'
             )}
-            onClick={() => setTerminalTakeover(false)}
+            onClick={() => redesigned ? toggleTerminalPane() : setTerminalTakeover(false)}
             type="button"
           >
             <Codicon name={redesigned ? 'close' : 'chevron-down'} size="0.8125rem" />
@@ -96,12 +105,13 @@ export function TerminalRail() {
 interface TerminalRailItemProps {
   active: boolean
   canCloseOthers: boolean
+  horizontal: boolean
   index: number
   term: TerminalEntry
   toggleHint?: string
 }
 
-function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: TerminalRailItemProps) {
+function TerminalRailItem({ active, canCloseOthers, horizontal, index, term, toggleHint }: TerminalRailItemProps) {
   const { t } = useI18n()
   const registry = useStore($connectionsRegistry)
   const mixed = useStore($terminalHostsMixed)
@@ -114,22 +124,23 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <li className="relative flex w-full justify-center [-webkit-app-region:no-drag]">
+        <li className={cn('relative flex justify-center [-webkit-app-region:no-drag]', horizontal ? 'shrink-0' : 'w-full')}>
           {active && (
             <span
               aria-hidden="true"
-              className="absolute inset-y-0.5 right-0 w-0.5 rounded-l-sm bg-(--ui-stroke-primary)"
+              className={cn('absolute bg-(--ui-stroke-primary)', horizontal ? 'inset-x-1 bottom-0 h-0.5' : 'inset-y-0.5 right-0 w-0.5 rounded-l-sm')}
             />
           )}
           <Tip
             label={<TipHintLabel hint={toggleHint && formatCombo(toggleHint)} text={label} />}
-            placement="right-rail"
+            placement={horizontal ? "toolbar" : "right-rail"}
           >
             <button
               aria-label={label}
               aria-selected={active}
               className={cn(
-                'relative grid size-7 place-items-center rounded-md transition-colors',
+                'relative flex h-7 items-center justify-center rounded-md transition-colors',
+                horizontal ? 'max-w-40 gap-1.5 px-2 text-xs' : 'w-7',
                 active
                   ? 'bg-(--chrome-action-hover) text-foreground'
                   : 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
@@ -145,6 +156,7 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
                 name={term.kind === 'agent' ? 'agent' : 'terminal'}
                 size="0.875rem"
               />
+              {horizontal && <span className="truncate">{term.title}</span>}
               {shown && (
                 <span
                   className="pointer-events-none absolute bottom-0 right-0.5 grid place-items-center rounded-sm bg-(--ui-terminal-surface-background)"
@@ -168,7 +180,7 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
         </ContextMenuItem>
         <ContextMenuItem onSelect={closeAllTerminals}>{t.rightSidebar.terminalCloseAll}</ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => setTerminalTakeover(false)}>{t.rightSidebar.terminalHide}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => horizontal ? toggleTerminalPane() : setTerminalTakeover(false)}>{t.rightSidebar.terminalHide}</ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   )

@@ -93,6 +93,23 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await page.getByRole('button', { name: 'Terminal', exact: true }).tap()
     const terminal = page.locator('[data-persistent-terminal][aria-hidden="false"] .xterm-helper-textarea').first()
     await expect(terminal).toBeVisible()
+    const tools = page.getByRole('navigation', { name: 'Right sidebar panels' })
+    const terminalPanel = page.locator('[data-persistent-terminal]')
+    await expect.poll(async () => (await terminalPanel.boundingBox())?.height ?? 0).toBeGreaterThan(600)
+    await page.screenshot({ path: test.info().outputPath('redesign-terminal.png') })
+
+    for (const name of ['Files', 'Review', 'Preview']) {
+      await tools.getByRole('button', { name, exact: true }).tap()
+      await expect(tools.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 })
+      await expect(tools.getByRole('button', { name: 'Terminal', exact: true })).toHaveAttribute('aria-pressed', 'false', { timeout: 10_000 })
+      await expect(terminalPanel).toHaveAttribute('aria-hidden', 'true')
+      await tools.getByRole('button', { name: 'Terminal', exact: true }).tap()
+      await expect(terminal).toBeVisible()
+      await expect(tools.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'false', { timeout: 10_000 })
+      await expect.poll(async () => (await terminalPanel.boundingBox())?.height ?? 0).toBeGreaterThan(600)
+      await expect.poll(async () => (await terminalPanel.boundingBox())?.width ?? 0).toBeGreaterThan(300)
+    }
+
     await page.getByRole('button', { name: 'Hide terminal', exact: true }).tap()
     await expect(page.locator('[data-persistent-terminal]')).toHaveAttribute('aria-hidden', 'true', { timeout: 5000 })
     await expect(page.locator('[data-persistent-terminal]')).toHaveAttribute('inert', '')

@@ -86,3 +86,14 @@ async def test_a_stuck_sibling_does_not_hold_the_album_forever(monkeypatch):
         await stuck
         await async_wait_until(lambda: adapter.handle_message.await_count == 2, timeout=5)
     assert adapter.handle_message.await_args.args[0].media_urls == ["/tmp/back.jpg"]  # late, but not lost
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (0.2, 0.2),
+    ("soon", TelegramAdapter.MEDIA_GROUP_WAIT_SECONDS),
+    (-1, TelegramAdapter.MEDIA_GROUP_WAIT_SECONDS),
+    (50, 10.0),
+])
+def test_album_debounce_reads_media_group_wait_seconds(raw, expected):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={"media_group_wait_seconds": raw}))
+    assert telegram_media_group.media_group_wait_seconds(adapter) == expected

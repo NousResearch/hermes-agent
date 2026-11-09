@@ -89,6 +89,31 @@ docs-install:
 docs-build:
     npm run build:fast --prefix website
 
+# Regenerate the skills dashboard data and the per-skill docs pages
+[group('docs')]
+docs-generate:
+    scripts/hermes-python website/scripts/extract-skills.py
+    scripts/hermes-python website/scripts/generate-skill-docs.py
+
+# Run every docs check CI runs, after regenerating the skill docs
+[group('docs')]
+docs-check: docs-generate docs-check-generated docs-check-links docs-lint-diagrams
+
+# Fail when the committed skill docs differ from the generator's output
+[group('docs')]
+docs-check-generated:
+    scripts/ci/check_generated_skill_docs.sh
+
+# Fail on cross-page links that break on GitHub or on the site
+[group('docs')]
+docs-check-links:
+    scripts/hermes-python website/scripts/check_doc_links.py
+
+# Lint docs for ASCII box diagrams (needs ascii-guard on PATH)
+[group('docs')]
+docs-lint-diagrams:
+    npm run lint:diagrams --prefix website
+
 # Refresh uv.lock after a pyproject.toml change, then re-sync the environment
 [group('deps')]
 lock:

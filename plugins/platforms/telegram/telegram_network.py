@@ -85,6 +85,16 @@ def ptb_request_kwargs() -> dict:
     }
 
 
+def getupdates_keepalive_connections() -> int:
+    """Pooled sockets the getUpdates long-poll may reuse. Windows keeps 0: a long-poll socket the
+    server closed sits in CLOSE_WAIT there and a reused one deadlocks polling (#87057). Elsewhere a
+    fresh TCP+TLS connection per ~10 s poll parks every closed socket in client-side TIME_WAIT,
+    which exhausts macOS's 16k ephemeral range after ~2 days and turns each connect blip on the
+    path into a polling gap (#107880); one reused socket is enough for the single in-flight poll."""
+    from hermes_platform.host.facts import os_family
+    return 0 if os_family() == "win32" else 1
+
+
 def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optional[str], verify=None) -> tuple:
     """The (general, getUpdates) ``request_cls`` (PTB ``HTTPXRequest``) pair the gateway adapter and
     the standalone sender both use: the fallback-IP transport when ``fallback_ips`` and no proxy,
@@ -94,8 +104,8 @@ def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optio
     CLOSE_WAIT fd leak (#31599, #18451): PTB builds its httpx client with only
     ``max_connections`` and httpx's default 5s keepalive, so behind an HTTP proxy a peer FIN can
     sit in CLOSE_WAIT and leak fds; ``platform_httpx_limits()`` keepalive tuning is injected while
-    keeping PTB's pool size. A long-poll is always active, so getUpdates never reuses a pooled
-    socket (``max_keepalive_connections=0``). httpx ignores client ``limits`` when a custom
+    keeping PTB's pool size. getUpdates keeps ``getupdates_keepalive_connections()`` sockets
+    (see there for the per-OS reason). httpx ignores client ``limits`` when a custom
     ``transport`` is supplied (#58790), so the fallback branch hands them to the transport."""
     from gateway.platforms._http_client_limits import platform_httpx_limits
     verify = platform_ssl_context() if verify is None else verify
@@ -105,7 +115,8 @@ def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optio
     if base is not None:
         pool = httpx.Limits(max_connections=kwargs["connection_pool_size"],
                             max_keepalive_connections=base.max_keepalive_connections, keepalive_expiry=base.keepalive_expiry)
-        updates = httpx.Limits(max_connections=kwargs["connection_pool_size"], max_keepalive_connections=0,
+        updates = httpx.Limits(max_connections=kwargs["connection_pool_size"],
+                               max_keepalive_connections=getupdates_keepalive_connections(),
                                keepalive_expiry=base.keepalive_expiry)
 
     def pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:

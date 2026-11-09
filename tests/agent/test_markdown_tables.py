@@ -65,6 +65,18 @@ def test_split_handles_code_spans_and_escaped_pipes_together():
 
 
 
+def test_split_preserves_cells_when_backticks_pair_across_boundaries():
+    # Regression for NousResearch/hermes-agent#151724 (kshitijk4poor).
+    assert split_table_row("| don`t | it`s | 3 |") == ["don`t", "it`s", "3"]
+    assert split_table_row("| `--out | path | `x` |") == ["`--out", "path", "`x`"]
+    assert split_table_row("| `` | x | `` |") == ["``", "x", "``"]
+
+
+def test_split_many_distinct_unmatched_backtick_runs():
+    cells = ["`" * width for width in range(1, 160)]
+    assert split_table_row("| " + " | ".join(cells) + " |") == cells
+
+
 def test_looks_like_table_row():
     assert looks_like_table_row("| a | b |")
     assert looks_like_table_row("a | b | c")          # no leading pipe, ≥2 pipes

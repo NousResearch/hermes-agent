@@ -11,6 +11,7 @@ sequences (``⚠️``); those clamp to 0 — a 1-cell drift beats widening every
 
 from __future__ import annotations
 
+from bisect import bisect_left
 import re
 from typing import List
 
@@ -28,24 +29,29 @@ def _disp_width(s: str) -> int:
     return max(wcswidth(s), 0)
 
 
-def _matching_code_span_end(row: str, start: int, delimiter_width: int) -> int | None:
-    """Return the end of the next exact-width backtick run, if one closes this span."""
-    i = start
-    while i < len(row):
-        if row[i] != "`":
-            i += 1
-            continue
-        end = i + 1
-        while end < len(row) and row[end] == "`":
-            end += 1
-        if end - i == delimiter_width:
-            return end
-        i = end
-    return None
-
-
 def split_table_row(row: str) -> list[str]:
     """Split a GFM row on unescaped pipes outside matched inline-code spans."""
+    # Pre-index runs by delimiter width: unmatched backticks must not rescan
+    # the rest of a long, model-generated table row.
+    next_run: dict[int, int] = {}
+    matching_ends: dict[int, int] = {}
+    scan = len(row) - 1
+    while scan >= 0:
+        if row[scan] != "`":
+            scan -= 1
+            continue
+        end = scan + 1
+        while scan >= 0 and row[scan] == "`":
+            scan -= 1
+        start = scan + 1
+        width = end - start
+        if width in next_run:
+            matching_ends[start] = next_run[width]
+        next_run[width] = end
+
+    # A spaced pipe is a cell boundary even if stray backticks in two cells
+    # happen to have equal widths. Unspaced pipes inside code still survive.
+    cell_edges = [m.start() + 1 for m in re.finditer(r" \| ", row)]
     separators: list[int] = []
     i = 0
     while i < len(row):
@@ -60,11 +66,13 @@ def split_table_row(row: str) -> list[str]:
             end = i + 1
             while end < len(row) and row[end] == "`":
                 end += 1
-            closing_end = _matching_code_span_end(row, end, end - i)
+            closing_end = matching_ends.get(i)
             if closing_end is not None:
-                i = closing_end
-                continue
-            i = end  # unmatched backticks are literal, so later cell pipes still count
+                edge = bisect_left(cell_edges, end)
+                if edge == len(cell_edges) or cell_edges[edge] >= closing_end - (end - i):
+                    i = closing_end
+                    continue
+            i = end  # unmatched or cross-cell backticks are literal
             continue
         if row[i] == "|":
             separators.append(i)

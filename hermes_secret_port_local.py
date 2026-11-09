@@ -24,15 +24,19 @@ from typing import Any, Optional
 from hermes_scope import LOCAL_TENANT, current_scope
 from hermes_secret_port import (
     LEVELS, SecretAdminRefused, SecretLevelRefused, SecretPinRefused, SecretStore, SecretStoreProvider,
+    clear_plaintext_from_frames,
 )
 
 
 class LocalSecretStore(SecretStore):
     """One profile home's secrets and auth records, pinned to that home.
 
-    A refused credential write re-raises with the caller's value (or record) cleared from the
-    refusing frames: traceback locals are rendered by some error reporters, and no frame this
-    backend owns may still hold the plaintext when the refusal propagates.
+    A failed credential write re-raises with the caller's value (or record) cleared from every
+    frame the failure's traceback passes through — this backend's own frames and the frames of
+    today's writers it hands the plaintext to, on any failure (a refusal, a validation error, a
+    mid-write I/O error), chained exceptions included: traceback locals are rendered by some
+    error reporters, and no frame this write path owns may still hold the plaintext when the
+    error propagates.
     """
 
     def __init__(self, home: str | Path) -> None:
@@ -76,21 +80,24 @@ class LocalSecretStore(SecretStore):
         return sorted(self._resolved())
 
     def set(self, name: str, value: str, *, level: str) -> None:
+        from hermes_cli.config import require_env_writable, save_env_value
         try:
+            # Every refusal condition is checked before the value reaches any other frame:
+            # the pin, the level, then today's write lock.
             self._pin(administering=True)
             self._require_agent_level(level)
-        except PermissionError:
-            # The refusal must propagate with the value bound in no frame this backend owns
-            # (error reporters render traceback locals), so clear it before re-raising.
-            del value
+            # Today's writer, at today's path (get_env_path() honors the profile-home override the
+            # pin just matched): the managed-scope write lock refuses by raising, the file gets the
+            # same serialized line every local writer produces, and the live process is published
+            # to exactly as it is today.
+            require_env_writable(name, "set")
+            save_env_value(name, value)
+        except BaseException as exc:  # health: allow BLE001 -- cleared and re-raised below
+            # Whatever failed — the pin's or the level's refusal, the write lock's plain
+            # refusal, a mid-write I/O error from today's writer — the caller's value is
+            # cleared from every frame the error passes through before it propagates.
+            clear_plaintext_from_frames(exc, value)
             raise
-        from hermes_cli.config import require_env_writable, save_env_value
-        # Today's writer, at today's path (get_env_path() honors the profile-home override the
-        # pin just matched): the managed-scope write lock refuses by raising, the file gets the
-        # same serialized line every local writer produces, and the live process is published
-        # to exactly as it is today.
-        require_env_writable(name, "set")
-        save_env_value(name, value)
 
     def delete(self, name: str, *, level: str) -> bool:
         self._pin(administering=True)
@@ -106,19 +113,20 @@ class LocalSecretStore(SecretStore):
         return auth._load_provider_state_with_source(auth._load_auth_store(), provider)[0]
 
     def set_auth(self, provider: str, record: dict[str, Any]) -> None:
+        from hermes_cli import auth
         try:
             self._pin(administering=True)
-        except PermissionError:
-            # As set(): the record is cleared from this frame before the refusal re-raises.
-            del record
+            # Today's transaction — the store's own advisory lock, the same 0600 atomic write —
+            # writing the record without changing the install's choice of active provider.
+            with auth._auth_store_lock():
+                store = auth._load_auth_store()
+                auth._store_provider_state(store, provider, dict(record), set_active=False)
+                auth._save_auth_store(store)
+        except BaseException as exc:  # health: allow BLE001 -- cleared and re-raised below
+            # As set(): the record is cleared from every frame the error passes through — this
+            # backend's and today's auth writer's — before the error re-raises.
+            clear_plaintext_from_frames(exc, record)
             raise
-        from hermes_cli import auth
-        # Today's transaction — the store's own advisory lock, the same 0600 atomic write —
-        # writing the record without changing the install's choice of active provider.
-        with auth._auth_store_lock():
-            store = auth._load_auth_store()
-            auth._store_provider_state(store, provider, dict(record), set_active=False)
-            auth._save_auth_store(store)
 
 
 class LocalSecretStoreProvider(SecretStoreProvider):

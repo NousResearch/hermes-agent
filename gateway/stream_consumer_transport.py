@@ -285,11 +285,11 @@ class StreamTransportMixin:
                 chat_id=self.chat_id, content=text, metadata=self._metadata_for_send(final=True))
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
-            if not self._send_failure_may_have_delivered(e):
+            if not await self._uncertain_send_fully_shown(e):
                 return False
             result = e  # a raised timeout may have landed too: same handling as a returned one
         if not getattr(result, "success", False):
-            if not self._send_failure_may_have_delivered(result):
+            if not await self._uncertain_send_fully_shown(result):
                 return False
             # The fresh final may be on screen with no id: editing the preview up to the same
             # text would show the answer twice. Keep the preview (no id to clean up against).
@@ -474,12 +474,12 @@ class StreamTransportMixin:
                 metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
         except Exception as exc:
             logger.error("Stream first send error: %s", exc, exc_info=True)
-            if self._send_failure_may_have_delivered(exc):
+            if await self._uncertain_send_fully_shown(exc):
                 return self._hold_ambiguous_first_send(text, raw_text, finalize=finalize)
             self._edit_supported = False
             return False
         if not result.success:
-            if self._send_failure_may_have_delivered(result):
+            if await self._uncertain_send_fully_shown(result):
                 return self._hold_ambiguous_first_send(text, raw_text, finalize=finalize)
             self._edit_supported = False
             return False

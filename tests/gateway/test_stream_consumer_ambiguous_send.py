@@ -176,14 +176,21 @@ async def test_timed_out_continuation_is_not_followed_by_the_whole_answer_again(
     assert consumer.delivered_final_matches("first part second part.") is not False
 
 
-def _timing_out_telegram(delivered: list) -> MagicMock:
+def _timing_out_telegram(delivered: list, *, outcomes: tuple = (), then=None) -> MagicMock:
     """A stream double whose sends go through the real TelegramAdapter send path (rich messages
-    on) to a bot whose every send reaches Telegram and then times out."""
+    on) to a bot whose every send reaches Telegram and then times out. ``outcomes`` scripts the
+    first bot calls (``None`` times out after landing) and ``then`` every later one; an exception
+    outcome is a refusal: nothing lands."""
     from gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from telegram.error import TimedOut
 
+    pending = list(outcomes)
+
     def lost_ack(text):
+        outcome = pending.pop(0) if pending else then
+        if isinstance(outcome, Exception):
+            raise outcome
         delivered.append(text)
         raise TimedOut("Timed out")
 
@@ -195,6 +202,7 @@ def _timing_out_telegram(delivered: list) -> MagicMock:
         side_effect=lambda method, api_kwargs: lost_ack(api_kwargs["rich_message"]["markdown"]))
     adapter = _telegram_flagged(_landing_adapter(delivered))
     adapter.format_message = telegram.format_message
+    adapter._resume_partial_send = telegram._resume_partial_send
 
     async def send(*, chat_id, content, reply_to=None, metadata=None):
         return await telegram.send(chat_id, content, reply_to, metadata)
@@ -215,16 +223,72 @@ async def _stream_then_tail(adapter: MagicMock, delivered: list, tail: str) -> G
     return consumer
 
 
-@pytest.mark.asyncio
-async def test_timed_out_continuation_that_telegram_splits_again_is_not_counted_as_shown():
-    """3,000 periods fit one fallback chunk raw but escape to two MarkdownV2 messages: when the
-    first times out, the second was never attempted, so the turn must stay undelivered for the
-    gateway's final send instead of silently losing that text."""
-    delivered: list = []
-    consumer = await _stream_then_tail(_timing_out_telegram(delivered), delivered, "." * 3000)
+_SPLIT = "." * 3000  # fits one stream send raw; escapes to two MarkdownV2 messages
 
-    assert len(delivered) == 2  # the preview and the first half of the split continuation
-    assert consumer.final_content_delivered is False
+
+async def _send_split_answer(site: str, adapter: MagicMock, delivered: list):
+    """Drive ``_SPLIT`` through one of the stream's sends that may land: the first send (as the
+    whole short answer, or as a preview), the fallback continuation, the fresh final and the
+    empty-fallback final."""
+    if site == "fallback_final":
+        return await _stream_then_tail(adapter, delivered, _SPLIT)
+    consumer = GatewayStreamConsumer(
+        adapter, "123", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
+    if site == "short_final":
+        consumer.on_delta(_SPLIT)
+        consumer.finish()
+        await asyncio.wait_for(consumer.run(), timeout=10)
+    elif site == "preview":
+        consumer.on_delta(_SPLIT)
+        task = asyncio.create_task(consumer.run())
+        await async_wait_until(lambda: delivered, timeout=5)
+        consumer.on_delta(" tail")
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=10)
+    elif site == "fresh_final":
+        assert await consumer._try_fresh_final(_SPLIT) is True
+    else:
+        assert await consumer._send_empty_fallback_final(_SPLIT) == "ambiguous"
+    return consumer
+
+
+_SITES = ["short_final", "preview", "fallback_final", "fresh_final", "empty_fallback"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("site", _SITES)
+async def test_timed_out_send_that_telegram_splits_again_sends_the_rest_once(site):
+    """The first of the two messages times out (it may be on screen); the second was never
+    attempted. Every period goes out exactly once: the timed-out head is not repeated and the
+    never-attempted tail is not lost behind a send counted as shown."""
+    delivered: list = []
+    consumer = await _send_split_answer(site, _timing_out_telegram(delivered), delivered)
+
+    assert sum(d.count("\\.") for d in delivered) == len(_SPLIT), [len(d) for d in delivered]
+    if site in {"short_final", "preview", "fallback_final"}:
+        assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("site", _SITES)
+async def test_refused_rest_of_a_timed_out_split_send_is_not_counted_as_shown(site):
+    """The never-attempted second message is then refused outright (so is every later send):
+    that text is not on screen, so the send is not counted as shown and the gateway's own final
+    send still runs."""
+    from telegram.error import BadRequest
+
+    delivered: list = []
+    lands = 2 if site == "fallback_final" else 1  # the fallback follows a timed-out preview
+    adapter = _timing_out_telegram(delivered, outcomes=(None,) * lands, then=BadRequest("Chat not found"))
+    if site == "fresh_final":
+        consumer = GatewayStreamConsumer(adapter, "123", StreamConsumerConfig())
+        assert await consumer._try_fresh_final(_SPLIT) is False
+    elif site == "empty_fallback":
+        consumer = GatewayStreamConsumer(adapter, "123", StreamConsumerConfig())
+        assert await consumer._send_empty_fallback_final(_SPLIT) == "failed"
+    else:
+        consumer = await _send_split_answer(site, adapter, delivered)
+        assert consumer.final_content_delivered is False
 
 
 @pytest.mark.asyncio

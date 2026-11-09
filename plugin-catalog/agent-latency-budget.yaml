@@ -1,7 +1,7 @@
 name: agent-latency-budget
 title: Agent Latency Budget
 repo: https://github.com/qawine/agent-latency-budget
-sha: "7ec1b6c9a20ef217265b5ee8a086df17cb3c651c"
+sha: "b72ab14bcf4e335df00e3fe2fb41c163a02d3d66"
 subdir: plugin
 description: >-
   Per-session tool latency observability for Hermes Agent. A pre/post tool hook

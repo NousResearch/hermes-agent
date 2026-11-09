@@ -579,7 +579,16 @@ class GatewayStartupMixin:
                     row["obligation_id"], "failed to release runtime delivery claim %s",
                     error=row.get("last_error") or "send_path_degraded",
                 )
-        return await self._redeliver_claimed_obligations(sendable)
+        try:
+            return await self._redeliver_claimed_obligations(sendable)
+        except asyncio.CancelledError:
+            # Cancelled mid-batch (profile stop, adapter replacement): the later sweeps only claim
+            # 'failed', so release every claim still 'attempting' (the guard skips sent rows) in one
+            # thread hop that a second cancel cannot cut short.
+            from gateway.delivery_ledger import release_runtime_claim
+            await asyncio.to_thread(lambda: [release_runtime_claim(
+                row["obligation_id"], row.get("last_error") or "send_path_degraded") for row in sendable])
+            raise
 
     def _resume_pending_candidates(self, platform=None) -> Optional[list]:
         """Snapshot resume-pending entries (optionally scoped to ``platform``); None when

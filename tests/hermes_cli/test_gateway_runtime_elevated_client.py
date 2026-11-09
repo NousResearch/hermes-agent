@@ -36,7 +36,8 @@ def test_detached_restart_from_an_elevated_client_names_the_remedy(tmp_path, cap
     from hermes_cli import gateway_runtime_start as start
 
     assert start.start_detached_replacement(tmp_path / "profile") == 1
-    assert "client_elevated" in capsys.readouterr().err and elevated == []
+    err = capsys.readouterr().err
+    assert "client_elevated" in err and "hermes gateway install" in err and elevated == []
 
 
 def test_an_elevated_client_still_starts_the_registered_task(tmp_path, monkeypatch, elevated):

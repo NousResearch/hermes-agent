@@ -286,6 +286,36 @@ async def test_list_channels_returns_none_on_contacts_timeout():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", ["receivedContactRequest", "contactRequest"])
+@pytest.mark.parametrize("auto_accept", [True, False])
+async def test_contact_request_acceptance_leaves_reader_available(event_type, auto_accept):
+    """Accept numeric request IDs without waiting on the reader's own response loop."""
+    adapter = _adapter_with_ws()
+    adapter.auto_accept = auto_accept
+
+    await asyncio.wait_for(adapter._handle_event({
+        "resp": {
+            "type": event_type,
+            "contactRequest": {"contactRequestId": 17, "localDisplayName": "alice"},
+        },
+    }), timeout=2)
+
+    if not auto_accept:
+        adapter._ws.send.assert_not_awaited()
+        return
+
+    adapter._ws.send.assert_awaited_once()
+    payload = json.loads(adapter._ws.send.call_args.args[0])
+    assert payload["cmd"] == "/_accept 17"
+    assert not adapter._pending_responses
+    # The next frame can be read immediately, including the acceptance response.
+    await adapter._handle_event({
+        "corrId": payload["corrId"], "resp": {"type": "acceptingContactRequest"},
+    })
+    assert payload["corrId"] not in adapter._pending_corr_ids
+
+
 # ---------------------------------------------------------------------------
 # 9. Standalone (out-of-process) send for cron
 # ---------------------------------------------------------------------------

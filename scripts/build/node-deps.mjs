@@ -321,8 +321,11 @@ function lockCheckout(source) {
         sleep(lockTiming.grace)
         return held
       }
-      if (held === undefined) seen = undefined
-      continue
+      // A failed rename (false) waits like a live owner, so the deadline still ends it.
+      if (held === undefined) {
+        seen = undefined
+        continue
+      }
     }
     // What matters comes first: a progress line cut to the terminal width still says it.
     const limit = lockTiming.wait >= 120_000 ? `${Math.round(lockTiming.wait / 60_000)} min` : `${Math.round(lockTiming.wait / 1000)} s`

@@ -1,6 +1,7 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
+import fs from 'node:fs'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { hostname, tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -610,6 +611,29 @@ test.skipIf(process.platform === 'win32')('a transient heartbeat error does not 
     process.kill(-install.pid, 'SIGKILL')
   }
 }, 60000)
+
+// A dead lock whose replacement keeps failing (an open handle on Windows) is waited on like a live
+// one: the wait still gives up at its limit instead of spinning.
+test('a dead lock that cannot be replaced still ends the wait', () => {
+  const { source, env } = fixture()
+  json(join(source, '.cache/node-deps.lock'), { token: 'dead', pid: 1, host: 'elsewhere' })
+  const rename = fs.renameSync
+  fs.renameSync = (from, to) => {
+    if (String(to).endsWith('node-deps.lock')) throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+    return rename(from, to)
+  }
+  syncBuiltinESMExports()
+  const timing = { ...lockTiming }
+  Object.assign(lockTiming, { stale: 1_000, wait: 3_000 })
+  try {
+    expect(() => prepareNodeDependencies({ source, workspaces: ['web'], reuse: true, env, install: false }))
+      .toThrow(/^node-deps: another install in this checkout is still running after 3 s/)
+  } finally {
+    Object.assign(lockTiming, timing)
+    fs.renameSync = rename
+    syncBuiltinESMExports()
+  }
+}, 20000)
 
 // A guard left by a killed remover is judged by whether it changes, not by its mtime: one dated
 // in the future (a network filesystem's clock ahead, or this clock stepped back) still ages out.

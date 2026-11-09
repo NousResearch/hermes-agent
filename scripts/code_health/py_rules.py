@@ -15,6 +15,7 @@ import itertools
 
 from scripts.code_health.py_ast import _FUNCS, Ctx, _call_name, _deferred_parts, _dotted, _eager
 from scripts.code_health.py_rules_ambient import ambient_state
+from scripts.code_health.py_rules_ambient_bindings import Bindings
 from scripts.code_health.py_rules_sleep import wall_clock_sleep
 
 _CAPTURE_CALLS = {
@@ -39,193 +40,22 @@ _SUBPROCESS_WAITS = {"run", "call", "check_call", "check_output"}
 _SHELL_IDENTITY = ("pgrep -f", "ps aux", "ps -ef", "ps -eo")
 
 
-@dataclass(frozen=True)
-class _Import:
-    """What one import binds a name to: the target module path (``m.X`` for ``from m import X``),
-    whether the name is an object of that module rather than a module (``from m import X`` and
-    ``from . import X``, not ``import m.n as a``), whether the import is relative, and its line."""
-
-    target: str
-    obj: bool = False
-    relative: bool = False
-    line: int = 0
-
-    def same(self, other: _Import) -> bool:
-        return (self.target, self.obj, self.relative) == (other.target, other.obj, other.relative)
-
-
-@dataclass
-class _Scope:
-    """One lexical scope's bindings: names an import binds, and names anything else binds."""
-
-    parent: _Scope | None = None
-    kind: str = "function"  # "module" | "class" | "function" | "comprehension"
-    imports: dict[str, _Import] = field(default_factory=dict)
-    others: set[str] = field(default_factory=set)
-    # Names a `global` / `nonlocal` statement hands to an outer scope: they bind nothing here.
-    declared: dict[str, str] = field(default_factory=dict)
-
-    def owner(self, name: str) -> _Scope:
-        """The scope that binds ``name`` for code in this one, following `global`/`nonlocal`."""
-        scope = self
-        while name in scope.declared:
-            if scope.declared[name] == "global":
-                while scope.parent is not None:
-                    scope = scope.parent
-                return scope
-            outer = scope.parent  # nonlocal: the nearest enclosing function that has it
-            while outer is not None and outer.parent is not None and (
-                    outer.kind == "class" or not outer.binds(name)):
-                outer = outer.parent
-            if outer is None or outer.parent is None:
-                return scope
-            scope = outer
-        return scope
-
-    def binds(self, name: str) -> bool:
-        return name in self.others or name in self.imports or name in self.declared
-
-    def resolve(self, name: str) -> _Import | None:
-        """The import ``name`` means here: the innermost scope binding it decides, and a
-        scope that binds it any other way (or by two imports) makes it a plain local. Class
-        bodies are invisible to the functions and comprehensions nested in them."""
-        scope: _Scope | None = self
-        while scope is not None:
-            if scope is self or scope.kind != "class":
-                if name in scope.declared:
-                    if name in scope.others:  # rebound before its outer binding was seen
-                        return None
-                    scope = scope.owner(name)
-                    return scope.imports.get(name) if name not in scope.others else None
-                if name in scope.others:
-                    return None
-                if name in scope.imports:
-                    return scope.imports[name]
-            scope = scope.parent
-        return None
-
-
-class _Binder(ast.NodeVisitor):
-    """Records each scope's bindings and the scope every loaded name is read in."""
-
-    def __init__(self) -> None:
-        self.module = self.scope = _Scope(kind="module")
-        self.loads: dict[int, _Scope] = {}
-
-    def _bind(self, name: str, scope: _Scope | None = None) -> None:
-        (scope or self.scope).owner(name).others.add(name)
-
-    def _import(self, name: str, imp: _Import) -> None:
-        """Bind *name* to *imp* in the scope that owns it; the first import of a name keeps its
-        line, and a second import of something else makes the name ambiguous there."""
-        scope = self.scope.owner(name)
-        known = scope.imports.get(name)
-        if known is None:
-            scope.imports[name] = imp
-        elif not known.same(imp):
-            self._bind(name)
-
-    def _enter(self, kind: str, nodes: Iterable[ast.AST]) -> None:
-        outer, self.scope = self.scope, _Scope(self.scope, kind)
-        for node in nodes:
-            self.visit(node)
-        self.scope = outer
-
-    def visit_Import(self, node: ast.Import) -> None:
-        for alias in node.names:
-            top = alias.name.split(".")[0]
-            self._import(alias.asname or top, _Import(alias.name if alias.asname else top, line=node.lineno))
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        # A relative import keeps its module path minus the dots: rules match the leaf.
-        for alias in node.names:
-            if alias.name != "*":
-                target = f"{node.module}.{alias.name}" if node.module else alias.name
-                self._import(alias.asname or alias.name,
-                             _Import(target, obj=True, relative=bool(node.level), line=node.lineno))
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, ast.Load):
-            self.loads[id(node)] = self.scope
-        else:
-            self._bind(node.id)
-
-    # A declaration selects the outer binding; only an assignment through it rebinds that.
-    def visit_Global(self, node: ast.Global) -> None:
-        self.scope.declared.update(dict.fromkeys(node.names, "global"))
-
-    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
-        self.scope.declared.update(dict.fromkeys(node.names, "nonlocal"))
-
-    def generic_visit(self, node: ast.AST) -> None:
-        # except-as, match captures and **rest bind a plain string attribute.
-        for attr in ("name", "rest"):
-            value = getattr(node, attr, None)
-            if isinstance(value, str) and not isinstance(node, ast.alias):
-                self._bind(value)
-        super().generic_visit(node)
-
-    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
-        """Decorators, defaults and annotations run in the enclosing scope; the body does not."""
-        args = node.args
-        every = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
-        params = [a for a in every if a is not None]
-        returns = getattr(node, "returns", None)
-        outer = [*getattr(node, "decorator_list", []), *args.defaults,
-                 *(d for d in args.kw_defaults if d is not None),
-                 *(a.annotation for a in params if a.annotation), *([returns] if returns else [])]
-        for expr in outer:
-            self.visit(expr)
-        if not isinstance(node, ast.Lambda):
-            self._bind(node.name)
-        self._enter("function", [*params, *(node.body if isinstance(node.body, list) else [node.body])])
-
-    visit_FunctionDef = visit_AsyncFunctionDef = visit_Lambda = _visit_function
-
-    def visit_arg(self, node: ast.arg) -> None:
-        self._bind(node.arg)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        for expr in (*node.decorator_list, *node.bases, *node.keywords):
-            self.visit(expr)
-        self._bind(node.name)
-        self._enter("class", node.body)
-
-    def _visit_comprehension(self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> None:
-        """The first iterable runs outside; targets, conditions and elements run inside."""
-        first, *rest = node.generators
-        self.visit(first.iter)
-        elements = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
-        inner = [first.target, *first.ifs, *(n for g in rest for n in (g.iter, g.target, *g.ifs))]
-        self._enter("comprehension", [*inner, *elements])
-
-    visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _visit_comprehension
-
-    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-        # A walrus in a comprehension binds in the enclosing function (PEP 572).
-        scope = self.scope
-        while scope.kind == "comprehension" and scope.parent is not None:
-            scope = scope.parent
-        self._bind(node.target.id, scope)
-        self.visit(node.value)
-
-
 def canonical_tree(tree: ast.Module) -> ast.Module:
     """``tree`` with every import-bound name spelled out: ``sp.run`` -> ``subprocess.run``,
     ``execute`` (``from subprocess import run as execute``) -> ``subprocess.run``.
 
     Rules then match canonical API names, so an alias neither hides a call nor lets a local
     helper that merely shares a leaf name (``def wait_for``) pass as the real API. Each read is
-    resolved in its own scope: a parameter or local of the same name shadows the import only
-    in the function that binds it, and a scope that rebinds the name itself (def, class,
-    assignment, parameter) leaves it alone there, since the name is ambiguous.
+    resolved in its own scope (the one binding walk, ``py_rules_ambient_bindings.Bindings``): a
+    parameter or local of the same name shadows the import only in the function that binds it,
+    and a scope that rebinds the name itself (def, class, assignment, parameter) leaves it alone
+    there, since the name is ambiguous.
     """
-    binder = _Binder()
-    binder.visit(tree)
+    bindings = Bindings(tree)
 
     class _Spell(ast.NodeTransformer):
         def visit_Name(self, node: ast.Name) -> ast.AST:
-            scope = binder.loads.get(id(node))
+            scope = bindings.loads.get(id(node))
             imp = scope.resolve(node.id) if scope else None
             if imp is None:
                 return node

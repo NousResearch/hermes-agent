@@ -959,6 +959,9 @@ hermes kanban assign <id> <profile>                    # or 'none' to unassign
 hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to a profile
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
         [--priority N]
+hermes kanban edit <id> [--goal-mode true|false]      # separate atomic operator-only edit
+        [--goal-max-turns N|clear] [--max-retries N|clear]
+        [--max-runtime-seconds N|clear]
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
 hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
@@ -1003,6 +1006,42 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 ```
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
+
+### Editing execution controls on stopped tasks
+
+An operator in a main context can adjust a stopped task without replacing it:
+
+```bash
+hermes kanban edit <id> --goal-mode true --goal-max-turns 2 --max-retries 1 --max-runtime-seconds 1800
+hermes kanban edit <id> --goal-mode false --goal-max-turns clear --max-retries clear --max-runtime-seconds clear
+```
+
+The native `kanban_db.edit_task` API accepts `goal_mode`, `goal_max_turns`,
+`max_retries`, and `max_runtime_seconds` keywords. The dashboard's supported
+`PATCH /api/plugins/kanban/tasks/{id}` route accepts the same JSON fields.
+Omission preserves the stored value. JSON `null` (Python `None`) explicitly clears
+a nullable limit; CLI `clear` does the same. `goal_mode` requires a boolean and
+cannot be null. Limits must be positive integers, not booleans, strings or floats,
+and fit SQLite's signed 64-bit integer range. Dashboard creation also accepts
+`max_retries`, with the same raw-type validation as native creation. A stored
+`goal_max_turns` is dormant while `goal_mode` is false, as on creation.
+
+Send execution controls separately from title/body/priority/result, assignment,
+model overrides, or status changes. Mixed requests are rejected before mutation.
+Only `blocked`, `todo`, `triage`, `scheduled`, and `done` tasks with no claim,
+worker identity, current run or unfinished historical run are editable. Ready,
+review, running and archived tasks are refused; there is no force override.
+Workers, delegated children and non-owned execution contexts are refused, even
+when editing another task. Existing board fences remain in effect.
+
+All four stored controls are written in one transaction, with old/new values in
+an `edited` audit event and the normal postcommit task-update hook. Read them
+back with `hermes kanban show <id> --json` or the dashboard response. The editor
+does not unblock, dispatch, retry, reset counters, rewrite dependencies or run
+history, or change any prior run's clock/limits. `max_retries=1` trips on the first
+failure; clearing inherits the dispatcher policy. Clearing runtime/goal limits
+restores their normal defaults. Profile run ceilings remain separate; this
+editor does not change profile configuration.
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 

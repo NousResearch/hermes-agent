@@ -183,7 +183,10 @@ class ReuseOwners:
             # A confirmed-absent container is not a failure to preserve: its row is
             # retired so dead entries do not linger in every sweep. A daemon-unavailable
             # (or every other inspect failure) keeps the row for a later pass.
-            output = exc.stderr if isinstance(exc, subprocess.SubprocessError) else str(exc)
+            if isinstance(exc, subprocess.CalledProcessError):
+                output = (exc.stdout or "") + (exc.stderr or "")
+            else:
+                output = str(exc)
             if "no such container" in output.lower():
                 logger.info("Reaped superseded container %s (already absent)", target)
                 return True

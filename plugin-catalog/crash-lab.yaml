@@ -1,6 +1,6 @@
 name: crash-lab
 repo: https://github.com/8JBern/hermes-crash-lab
-sha: 44c8071aa68a626e0d89d4afe697e3b7b864695e
+sha: 9a712f9714ff5687425f0ffc9ac7eb6f9eb441cb
 description: >-
   Fault-injection and recovery testing for AI agents. Crash Lab manufactures the failure
   modes that break real agent workflows — a write that succeeds while the API reports a
@@ -17,7 +17,7 @@ maintainer: 8JBern
 tier: community
 category: tools
 docs_url: https://github.com/8JBern/hermes-crash-lab#readme
-version: "1.0.0"
+version: "1.0.1"
 requires_hermes: ">=0.22.5"
 platforms: [linux, macos, windows]
 capabilities:

@@ -1008,35 +1008,35 @@ async def test_slow_update_does_not_block_other_chats(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unserved_update_not_receipted_and_logs_field_names(monkeypatch, caplog):
-    """#141570: an update that no group-0 handler serves (e.g. a dice message) must not be
+    """#141570: an update that no group-0 handler serves (e.g. a chat-title service message) must not be
     receipted by the group-99 observer's return — the receipt would suppress redelivery of
     an update nobody served, silently. Instead one INFO line names the update id and the
     field names only (never values), and a redelivery dispatches again."""
     import logging as stdlib_logging
 
-    dice_payload = {
+    unserved_payload = {
         "update_id": 77,
         "message": {
             "message_id": 473, "date": 1800000000,
             "chat": {"id": 42, "type": "private"},
             "from": {"id": 88, "is_bot": False, "first_name": "Human"},
-            "dice": {"emoji": "🎲", "value": 4},
+            "new_chat_title": "Lunch club",
         },
     }
     async with connected(monkeypatch) as (adapter, app, delivered):
         caplog.set_level(stdlib_logging.INFO, logger="plugins.platforms.telegram.update_admission")
-        dice = Update.de_json(dice_payload, app.bot)
-        await app.process_update(dice)
-        assert not delivered  # no core handler serves a dice message
+        unserved = Update.de_json(unserved_payload, app.bot)
+        await app.process_update(unserved)
+        assert not delivered  # no core handler serves a title change
         assert f"{app.bot.id}:77" not in adapter._seen_update_ids  # not receipted
         records = [r for r in caplog.records if "matched no core handler" in r.message]
         assert len(records) == 1
         text = records[0].getMessage()
         assert "Update 77" in text
-        assert "message(chat,date,dice,from,message_id)" in text  # field names only
-        assert "🎲" not in text and "473" not in text and "88" not in text  # never values
+        assert "message(chat,date,from,message_id,new_chat_title)" in text  # field names only
+        assert "Lunch" not in text and "473" not in text and "88" not in text  # never values
         # No receipt: a redelivery of the same id dispatches again instead of being dropped.
-        await app.process_update(dice)
+        await app.process_update(unserved)
         records = [r for r in caplog.records if "matched no core handler" in r.message]
         assert len(records) == 2
 

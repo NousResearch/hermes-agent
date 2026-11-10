@@ -328,9 +328,9 @@ def test_recovered_db_rows_survive_fallback_structural_save(monkeypatch, tmp_pat
         GatewayConfig(sessions_dir=sessions_dir, write_sessions_json=False),
     )
     # The failed open stays in its backoff through the load, however long the load takes.
-    store._db_handle_cache._unavailable[db_path].next_retry_at = float("inf")
+    store._db_handle_cache._unavailable[db_path.parent].next_retry_at = float("inf")
     store._ensure_loaded()
-    store._db_handle_cache._unavailable[db_path].next_retry_at = 0
+    store._db_handle_cache._unavailable[db_path.parent].next_retry_at = 0
 
     current = SessionEntry(
         session_key="agent:main:telegram:dm:current",

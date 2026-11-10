@@ -32,21 +32,26 @@ class LocalSecretStore(SecretStore):
     """One profile home's secrets and auth records, pinned to that home.
 
     As the port's contract requires, a failed credential write holds no value on any error
-    path — this backend never mutates a frame it does not own: every load and validation that
-    can fail (the pin, the level, today's write lock, the auth store a record's write merges
-    into) runs before the value (or record) is bound in any frame below the write method, and
-    the write itself calls nothing that logs with the live exception — today's loaders do log
-    their failures, so the auth store loads before the record reaches any frame. On any
-    failure the write path records only that the write failed — it never reads the writer's
-    exception, whose every attribute is text the failing code chose and a channel a hostile
-    writer can carry the value through (an errno property that raises with the value it saw,
-    an errno too large for Python to format, and reading one must never be able to preempt
-    the cleanup) — and once its except block has exited, dropping the failure and its
-    traceback, it deletes the method's own value (or record) binding and raises outside it
-    with ``from None``: the port's own refusal as it raised it, and any other failure as the
-    fixed error :func:`hermes_secret_port.write_failure` built — the error's traceback holds
-    only this method's frame and the caller's, and every frame that held the plaintext
-    is gone.
+    path — this backend never mutates a frame it does not own. Every check and validation
+    that can fail (the pin, the level, today's write lock) runs before the value (or record)
+    is bound in any frame below the write method, and the write itself — the only code that
+    binds the value — runs through :meth:`_run_writer`, the one boundary this class puts
+    around every writer it calls. The boundary's ``try`` sits inside any context manager the
+    write holds (today's auth store lock, held across the load, the merge and the save), so
+    a writer's failure is caught before the lock's machinery unwinds it: an ``__exit__``
+    hands the exception it is given to the generator it wraps and assigns its
+    ``__traceback__``, and a hostile writer's attribute hook would otherwise run right there,
+    while the record is still bound in the frames being unwound. The boundary records only
+    that the write failed — it never reads the writer's exception, whose every attribute is
+    text the failing code chose and a channel a hostile writer can carry the value through
+    (an errno property that raises with the value it saw, an errno too large for Python to
+    format, and reading one must never be able to preempt the cleanup) — and once its except
+    block has exited, dropping the failure and its traceback with it, it drops its own
+    bindings of the writer and the value (or record) they carried and raises the port's
+    fixed error (:func:`hermes_secret_port.write_failure`) with ``from None``. The write
+    method's own bindings leave its frame as the error unwinds it, so every frame that held
+    the plaintext is gone: the error's traceback holds only the boundary's frame, the write
+    method's and the caller's — none of them binding anything.
     """
 
     def __init__(self, home: str | Path) -> None:
@@ -93,6 +98,33 @@ class LocalSecretStore(SecretStore):
         self._pin()
         return sorted(self._resolved())
 
+    def _run_writer(self, operation: str, key: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """The one boundary every writer call crosses — today's ``save_env_value`` /
+        ``remove_env_value``, the ``hermes_cli.auth`` store's load, merge and save, the copy
+        of the record a write files: the only method that calls a writer, always from inside
+        any lock the write holds, so a writer's failure is caught before it reaches a context
+        manager's ``__exit__`` — a hostile exception's attribute hook must never be evaluated
+        while the value (or record) is still bound in a frame below this one. The handler
+        records only that the write failed: the writer's exception — its message, type,
+        errno, notes, group members, every attribute writer text — is never read and is gone
+        with its traceback when the block exits. The value (or record) reached this frame
+        only through *fn* and *args*, which are dropped before anything is raised, so the
+        fixed error :func:`hermes_secret_port.write_failure` builds — naming only the
+        operation and the key — is raised ``from None`` out of a frame binding nothing; the
+        write method's own cleanup finishes as the error unwinds it.
+        """
+        try:
+            result = fn(*args, **kwargs)
+        except Exception:  # health: allow BLE001 -- the writer's failure is never inspected or kept
+            result = None
+            failed = True
+        else:
+            failed = False
+        del fn, args, kwargs
+        if failed:
+            raise write_failure(operation, key) from None
+        return result
+
     def set(self, name: str, value: str, *, level: str) -> None:
         refusal = None
         try:
@@ -107,34 +139,18 @@ class LocalSecretStore(SecretStore):
             require_env_writable(name, "set")
         except BaseException as exc:  # health: allow BLE001 -- the port's own refusal, re-raised below
             refusal = exc
-        failed = False
-        if refusal is None:
-            try:
-                self._write_secret(name, value)
-            except Exception:  # health: allow BLE001 -- the writer's failure is never inspected or kept
-                # Only the fact that the write failed is recorded: the failure itself — its
-                # message, type, errno, notes, group members, every attribute writer text —
-                # is neither read nor kept, and it is gone with its traceback when this
-                # block exits. Reading it is what a hostile writer attacks through (an
-                # errno property that raises with the value it saw, an errno too large for
-                # Python to format), and reading it can never preempt the cleanup below.
-                failed = True
-        del value
         del level
         if refusal is not None:
+            del value
             raise refusal
-        if failed:
-            raise write_failure("set", name) from None
-
-    def _write_secret(self, name: str, value: str) -> None:
-        """The write itself — the only code that binds the value (see :meth:`set`): today's
-        writer, at today's path (``get_env_path()`` honors the profile-home override the pin
-        just matched), with every check and validation behind it. Today's writer logs nothing
-        with the live exception, so no failure it raises is ever retained by a log handler
-        with the value in a frame of its traceback; the fixed error :meth:`set` raises in
-        its place names only the operation and the key."""
         from hermes_cli.config import save_env_value
-        save_env_value(name, value)
+        try:
+            # The write itself — the only code that binds the value (the writer runs inside
+            # _run_writer, below this frame), and this frame's own binding leaves it as any
+            # error unwinds it, however the write fails.
+            self._run_writer("set", name, save_env_value, name, value)
+        finally:
+            del value
 
     def delete(self, name: str, *, level: str) -> bool:
         # As set: the level is caller-supplied text that can alias a value, so it leaves this
@@ -152,7 +168,12 @@ class LocalSecretStore(SecretStore):
         if refusal is not None:
             raise refusal
         from hermes_cli.config import remove_env_value
-        return remove_env_value(name)
+        # The delete is a write the same way a set is: today's writer reads the file, drops
+        # the key from the lines it holds and replaces the file atomically, so its failure —
+        # a disk that fills at the replace, with the stored secrets still bound in the
+        # writer's own frames — is caught inside the same boundary and replaced by the
+        # port's fixed error, never read and never the error the caller sees.
+        return self._run_writer("delete", name, remove_env_value, name)
 
     def get_auth(self, provider: str) -> Optional[dict[str, Any]]:
         self._pin()
@@ -166,41 +187,33 @@ class LocalSecretStore(SecretStore):
             self._pin(administering=True)
         except BaseException as exc:  # health: allow BLE001 -- the port's own refusal, re-raised below
             refusal = exc
-        failed = False
-        if refusal is None:
-            from hermes_cli import auth
-            try:
-                with auth._auth_store_lock():
-                    # The store loads and parses before the record is bound in any frame below
-                    # this one: today's loader logs a load failure with the live exception, and
-                    # a log handler that keeps that record renders its traceback frames later —
-                    # no frame it unwound holds the record (this frame deletes its own binding
-                    # before any error leaves it, and drops the loaded store before any raise).
-                    store = auth._load_auth_store()
-                    # The write itself: the only code that binds the record.
-                    self._write_auth_record(store, provider, record)
-            except Exception:  # health: allow BLE001 -- the writer's failure is never inspected or kept
-                # As ``set``: only the fact that the write failed is recorded; the failure
-                # itself, its text unread and its frames still holding the record, is gone
-                # when this block exits.
-                failed = True
-            store = None
-        del record
         if refusal is not None:
+            del record
             raise refusal
-        if failed:
-            raise write_failure("set_auth", provider) from None
-
-    def _write_auth_record(self, store: dict[str, Any], provider: str, record: dict[str, Any]) -> None:
-        """The record's merge and atomic replace — today's transaction tail, byte for byte: the
-        same store lock (held by :meth:`set_auth` across the load and this write), the same
-        merge into the loaded store, the same 0600 atomic write, writing the record without
-        changing the install's choice of active provider. The only code that binds the record,
-        and it calls nothing that logs with the live exception (today's auth writer logs
-        none), so no observer-kept exception ever unwinds a record-holding frame."""
         from hermes_cli import auth
-        auth._store_provider_state(store, provider, dict(record), set_active=False)
-        auth._save_auth_store(store)
+        try:
+            with auth._auth_store_lock():
+                # Every step that touches the record's bytes runs inside the writer boundary,
+                # inside the lock — the load first, so the store parses before the record is
+                # bound in any frame below this one (today's loader logs a load failure with
+                # the live exception, and a log handler that keeps that record renders its
+                # traceback frames later — no frame it unwound holds the record), then the
+                # record's own copy, the merge into the loaded store and the atomic save. The
+                # boundary catches each step's failure before the lock's context managers
+                # unwind it: their ``__exit__`` never evaluates a writer's exception while the
+                # record is still bound in a frame below this one.
+                store = self._run_writer("set_auth", provider, auth._load_auth_store)
+                record_copy = self._run_writer("set_auth", provider, dict, record)
+                self._run_writer("set_auth", provider, auth._store_provider_state,
+                                 store, provider, record_copy, set_active=False)
+                self._run_writer("set_auth", provider, auth._save_auth_store, store)
+        finally:
+            # This frame's own bindings leave it as any error unwinds it: the record the
+            # caller asked to store, the copy the write filed, and the loaded store holding
+            # the merged copy of it.
+            del record
+            record_copy = None
+            store = None
 
 
 class LocalSecretStoreProvider(SecretStoreProvider):

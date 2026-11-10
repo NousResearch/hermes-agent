@@ -33,7 +33,10 @@ binds the record in a helper frame that then loads and parses the store, putting
 every frame a load failure — logged with its live exception — unwinds. One more, against the
 suite's own coverage: ``local_logs_exc_info_only_on_an_encode_failure`` logs the failed write
 with the live exception only when the serialization itself fails, so a suite whose failure
-hook can break the write at one point alone never reaches it. Against the
+hook can break the write at one point alone never reaches it. And
+``local_delete_calls_the_writer_directly`` runs the delete's writer around the boundary every
+other credential write crosses, so a writer that fails part-way through its
+read-modify-write propagates the stored secrets in its own frames. Against the
 leveled reference backend: ``reference_reads_ignore_tenant`` drops the tenant half of the pin,
 ``reference_writes_skip_the_administration_check`` drops the administration check,
 ``reference_owner_wide_resolves_everywhere`` resolves another owner's entries,
@@ -342,8 +345,9 @@ def local_names_the_writers_exception_kind(monkeypatch):
             refusal = exc
         failed = None
         if refusal is None:
+            from hermes_cli.config import save_env_value
             try:
-                self._write_secret(name, value)
+                save_env_value(name, value)
             except BaseException as exc:  # health: allow BLE001 -- the suite kills this inspection
                 failed = SecretWriteFailed(
                     f"the credential write failed: set {name!r}, {type(exc).__name__}, errno {exc.errno}")
@@ -377,8 +381,9 @@ def local_chains_the_writers_failure_to_the_fresh_error(monkeypatch):
         except BaseException as exc:  # health: allow BLE001 -- re-raised below
             refusal = exc
         if refusal is None:
+            from hermes_cli.config import save_env_value
             try:
-                self._write_secret(name, value)
+                save_env_value(name, value)
             except BaseException as exc:  # health: allow BLE001 -- the suite kills this chain
                 del value
                 del level
@@ -448,17 +453,43 @@ def local_logs_exc_info_only_on_an_encode_failure(monkeypatch):
     the record, but only when the failure is the serialization's own ``TypeError``: a suite
     whose failure hook breaks the write at one point alone never reaches that path, and a
     backend that logs there passes it untouched."""
-    from hermes_secret_port_local import LocalSecretStore
-    original = LocalSecretStore._write_auth_record
+    from hermes_cli import auth
+    original = auth._save_auth_store
 
-    def _write_auth_record(self, store, provider, record):
+    def _save_auth_store(auth_store, target_path=None):
         try:
-            return original(self, store, provider, record)
+            return original(auth_store, target_path)
         except TypeError:
             logging.getLogger(__name__).error("the credential write failed", exc_info=True)
             raise
 
-    monkeypatch.setattr(LocalSecretStore, "_write_auth_record", _write_auth_record)
+    monkeypatch.setattr(auth, "_save_auth_store", _save_auth_store)
+
+
+def local_delete_calls_the_writer_directly(monkeypatch):
+    """The delete path calls today's writer directly, outside the boundary every other
+    credential write crosses: a writer that fails part-way through its read-modify-write —
+    a disk that fills at the atomic replace — propagates its own failure, the stored file's
+    every line still bound in the writer's own frames, and the caller reads the writer's
+    error in place of the port's fixed one."""
+    from hermes_secret_port_local import LocalSecretStore
+
+    def delete(self, name, *, level):
+        from hermes_cli.config import remove_env_value
+        refusal = None
+        try:
+            self._pin(administering=True)
+            self._require_agent_level(level)
+            from hermes_cli.config import require_env_writable
+            require_env_writable(name, "remove")
+        except BaseException as exc:  # health: allow BLE001 -- re-raised below
+            refusal = exc
+        del level
+        if refusal is not None:
+            raise refusal
+        return remove_env_value(name)
+
+    monkeypatch.setattr(LocalSecretStore, "delete", delete)
 
 
 def reference_reads_ignore_tenant(monkeypatch):
@@ -645,6 +676,10 @@ MUTANTS = {
         local_logs_exc_info_only_on_an_encode_failure,
         "tests/conformance/secrets/test_local.py::"
         "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set_auth-encode]"),
+    "local_delete_calls_the_writer_directly": (
+        local_delete_calls_the_writer_directly,
+        "tests/conformance/secrets/test_local.py::"
+        "test_a_failed_delete_is_the_ports_own_error_and_holds_no_stored_value"),
     "reference_reads_ignore_tenant": (
         reference_reads_ignore_tenant,
         _reference("TestReferencePinning::test_every_read_is_refused_for_any_pin_but_its_agents[get]")),

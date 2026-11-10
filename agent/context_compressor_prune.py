@@ -98,6 +98,18 @@ class ProactivePruneMixin:
         else:  # Require a full trigger-sized regrowth before the next cache-breaking rewrite.
             next_rearm_tokens, cold_credit = after + max(reclaimed, self.proactive_prune_tokens, gate), 0
         if session_db and session_id:
+            # A result produced in this turn may not have reached the session store yet.
+            # Neither the in-place writer nor archive_and_compact can archive a body
+            # that was never persisted. Defer until the original can be recovered.
+            marker = _cc()._DB_PERSISTED_MARKER
+            if any(
+                original != replacement and (
+                    not isinstance(original, dict) or not original.get(marker)
+                )
+                for original, replacement in zip(messages, pruned_msgs)
+            ):
+                self._warn_reclamation_no_op("prune:unpersisted_original", current_tokens, before=before)
+                return messages, 0
             _cc_ = _cc()
             from hermes_state_errors import HeldRowRewrittenError
             model_config_patch = {_cc_.PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens,

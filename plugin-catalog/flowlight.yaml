@@ -1,11 +1,7 @@
 name: flowlight
 repo: https://github.com/ayinmodeolarewaju-bot/hermes-flowlight
 sha: 8d6aacb1babc9136316f7b1777d436027771676b
-description: >
-  Watch public wallets and draw live on-chain money flows as glowing arcs.
-  Read-only. Uses public NEAR, Blockscout, and RPC endpoints. When Intents
-  Pay is installed, reads its invoice ledger and may GET 1-Click /v0/status.
-  Never signs or sends transactions and never handles keys.
+description: "Watch public wallets and draw live on-chain money flows as glowing arcs. Read-only. Uses public NEAR, Blockscout, and RPC endpoints. When Intents Pay is installed, reads its invoice ledger and may GET 1-Click /v0/status. Never signs or sends transactions and never handles keys. Disclosure — sends the wallet addresses you watch to public third-party APIs (Blockscout, nearblocks.io, public EVM and Solana RPC nodes, CoinGecko) and, when Intents Pay is installed, reads its invoice ledger and queries 1-Click status for its deposit addresses; `hermes flowlight serve` opens an unauthenticated loopback page on 127.0.0.1."
 maintainer: ayinmodeolarewaju-bot
 tier: community
 category: tools

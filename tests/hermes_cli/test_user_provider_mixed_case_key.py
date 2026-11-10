@@ -216,3 +216,21 @@ def test_dashboard_main_pick_of_builtin_named_key_runs_where_it_validated(key, m
 
     runtime = resolve_runtime_provider(target_model="m1")
     assert (runtime["base_url"].rstrip("/"), runtime["api_key"]) == (result.base_url.rstrip("/"), result.api_key)
+
+
+@pytest.mark.parametrize(("key", "env", "host"), [
+    ("deepseek", "DEEPSEEK_API_KEY", "api.deepseek.com"),
+    ("anthropic", "ANTHROPIC_API_KEY", "api.anthropic.com"),
+    ("lmstudio", "LM_API_KEY", "127.0.0.1:1234"),
+])
+def test_typed_model_on_a_tuning_only_builtin_block_keeps_the_builtin(key, env, host, monkeypatch):
+    """``/model <model>`` declared by a ``providers.<built-in>`` block with no base_url (tuning only)
+    switches to the built-in, never a ``custom:<key>`` provider that does not exist."""
+    monkeypatch.setenv(env, f"builtin-{key}-123456")
+    from hermes_cli.model_switch import switch_model
+
+    providers = {key: {"models": ["probe-model"], "request_timeout_seconds": 300}}
+    result = switch_model("probe-model", "bedrock", "x", is_global=True,
+                          user_providers=providers, custom_providers=[])
+    assert result.success, result.error_message
+    assert result.target_provider == key and host in result.base_url

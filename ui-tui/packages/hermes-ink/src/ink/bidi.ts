@@ -20,7 +20,7 @@
  * must be reordered here.
  *
  * Detection is overridable: HERMES_TUI_BIDI=1 forces software reordering on
- * (a terminal we misclassify, or a bidi-capable terminal the user wants
+ * (e.g. a terminal we misclassify, or a bidi-capable terminal the user wants
  * handled in-app); HERMES_TUI_BIDI=0 forces it off.
  */
 import bidiFactory from 'bidi-js'
@@ -136,16 +136,43 @@ function getBidi() {
   return bidiInstance
 }
 
+export type BidiReorderResult = {
+  /** Characters in visual order, ready for LTR cell placement. */
+  visual: ClusteredChar[]
+  /**
+   * Index map from visual position to LOGICAL position: `visual[i]` is the
+   * input character at `perm[i]` (modulo L4 mirroring, which is a glyph
+   * substitution applied at the same position). `undefined` when nothing was
+   * reordered — then `visual` IS the input array.
+   *
+   * The screen buffer only ever holds VISUAL order (that is what the terminal
+   * paints), so text selection must invert this map to hand back logical
+   * order. Without it, copying an RTL line out of the TUI yields the reversed
+   * run and pastes unreadable.
+   */
+  perm: number[] | undefined
+}
+
 /**
  * Reorder an array of ClusteredChars from logical order to visual order
- * using the Unicode Bidi Algorithm. Active on terminals that lack native
- * bidi support (Windows Terminal, conhost, WSL).
+ * using the Unicode Bidi Algorithm, also returning the position map needed
+ * to turn a visual column range back into logical order (see BidiReorderResult).
+ *
+ * Active on terminals that lack native bidi support (everything except macOS
+ * CoreText terminals, VTE-based terminals, Konsole and mlterm).
+ *
+ * Base direction stays UAX #9 'auto' (first-strong): a line that starts with
+ * neutral chrome and then RTL gets an RTL base and takes its indent with it.
+ * That's a policy question, tracked separately — this only hands back the map
+ * that turns visual columns into logical order.
  *
  * Returns the same array on bidi-capable terminals (no-op).
  */
-export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
+export function reorderBidiWithMapping(characters: ClusteredChar[]): BidiReorderResult {
+  const identity: BidiReorderResult = { visual: characters, perm: undefined }
+
   if (!needsBidi() || characters.length === 0) {
-    return characters
+    return identity
   }
 
   // Build a plain string from the clustered chars to run through bidi
@@ -153,7 +180,7 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
 
   // Check if there are any RTL characters — skip bidi if pure LTR
   if (!hasRTLCharacters(plainText)) {
-    return characters
+    return identity
   }
 
   const bidi = getBidi()
@@ -189,6 +216,11 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
   const reordered = visual
   const maxLevel = Math.max(...charLevels)
 
+  // Position map, permuted by exactly the same reversals so that after the
+  // loop `order[i]` is the logical index of the character now at visual
+  // position i. Selection copy inverts it (see BidiReorderResult.perm).
+  const order: number[] = visual.map((_, i) => i)
+
   for (let level = maxLevel; level >= 1; level--) {
     let i = 0
 
@@ -201,9 +233,11 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
           j++
         }
 
-        // Reverse the run in both arrays
+        // Reverse the run in all three arrays — keeping `order` in lockstep
+        // is what makes the map exact (no re-derivation at copy time).
         reverseRange(reordered, i, j - 1)
         reverseRangeNumbers(charLevels, i, j - 1)
+        reverseRangeNumbers(order, i, j - 1)
         i = j
       } else {
         i++
@@ -211,7 +245,16 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
     }
   }
 
-  return reordered
+  return { visual: reordered, perm: order }
+}
+
+/**
+ * Visual-order only wrapper around `reorderBidiWithMapping` — the render hot
+ * path only needs the characters. Returns the input array unchanged when
+ * reordering is off or the line is pure LTR.
+ */
+export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
+  return reorderBidiWithMapping(characters).visual
 }
 
 function reverseRange<T>(arr: T[], start: number, end: number): void {

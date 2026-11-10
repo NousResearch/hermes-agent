@@ -12,7 +12,7 @@
 
 import { clamp } from './layout/geometry.js'
 import type { Screen, StylePool } from './screen.js'
-import { cellAt, cellAtIndex, CellWidth, isWrittenCellAt, setCellStyleId } from './screen.js'
+import { type BidiRow, cellAt, cellAtIndex, CellWidth, isWrittenCellAt, setCellStyleId } from './screen.js'
 
 type Point = { col: number; row: number }
 
@@ -902,6 +902,17 @@ function extractRowText(screen: Screen, row: number, colStart: number, colEnd: n
   const rowOff = row * screen.width
   const contentEnd = row + 1 < screen.height ? screen.softWrap[row + 1]! : 0
   const lastCol = contentEnd > 0 ? Math.min(colEnd, contentEnd - 1) : colEnd
+
+  // A row the bidi reorderer touched holds VISUAL order in its cells. Copy
+  // must hand back LOGICAL order or the pasted run reads backwards — remap it.
+  const bidiRow = screen.bidiRows.get(row)
+
+  if (bidiRow && bidiRowOwnsRow(screen, row, bidiRow)) {
+    const mapped = mapBidiRowText(screen, row, bidiRow, colStart, lastCol)
+
+    return contentEnd > 0 ? mapped : mapped.replace(/\s+$/, '')
+  }
+
   let line = ''
 
   for (let col = colStart; col <= lastCol; col++) {
@@ -927,6 +938,92 @@ function extractRowText(screen: Screen, row: number, colStart: number, colEnd: n
   }
 
   return contentEnd > 0 ? line : line.replace(/\s+$/, '')
+}
+
+/** The record's columns must be the row's columns for the mapping to hold.
+ *  Blits/writes can in principle leave a record beside foreign cells (a
+ *  partial-width blit, a second writer); verify before trusting it. */
+function bidiRowOwnsRow(screen: Screen, row: number, rec: BidiRow): boolean {
+  const written = screen.written
+  const rowOff = row * screen.width
+  const end = rec.x + rec.width
+
+  for (let col = 0; col < screen.width; col++) {
+    if (written[rowOff + col] === 1 && (col < rec.x || col >= end)) {
+      return false
+    }
+  }
+
+  return true
+}
+
+/**
+ * Rebuild the LOGICAL text for a visual column range of a bidi-reordered row.
+ *
+ * `rec.perm` maps visual position to logical index, and `rec.clusterWidths`
+ * gives each logical cluster's column width, so walking the visual positions
+ * reproduces the exact cell columns. Clusters whose columns fall inside the
+ * selection are collected and re-emitted in logical order — the selection is
+ * a column range on screen, but what the user wants on the clipboard is the
+ * sentence as written. Columns outside the record are blank padding.
+ */
+function mapBidiRowText(screen: Screen, row: number, rec: BidiRow, colStart: number, colEnd: number): string {
+  const noSelect = screen.noSelect
+  const rowOff = row * screen.width
+  const first = Math.max(colStart, rec.x)
+  const last = Math.min(colEnd, rec.x + rec.width - 1)
+  const indices: number[] = []
+
+  if (first <= last) {
+    const hit = new Set<number>()
+    let col = rec.x
+
+    for (let i = 0; i < rec.perm.length; i++) {
+      const logicalIndex = rec.perm[i]!
+      const width = rec.clusterWidths[logicalIndex]!
+
+      if (width > 0 && col + width > first && col <= last) {
+        // Overlap — but only count a cluster the user can actually select.
+        const from = Math.max(col, first)
+        const to = Math.min(col + width - 1, last)
+
+        for (let c = from; c <= to; c++) {
+          if (noSelect[rowOff + c] !== 1) {
+            hit.add(logicalIndex)
+
+            break
+          }
+        }
+      }
+
+      col += width
+    }
+
+    for (const index of hit) {
+      indices.push(index)
+    }
+
+    indices.sort((a, b) => a - b)
+  }
+
+  const parts: string[] = []
+  const lead = Math.max(0, Math.min(colEnd, rec.x - 1) - colStart + 1)
+
+  if (lead > 0) {
+    parts.push(' '.repeat(lead))
+  }
+
+  if (indices.length > 0) {
+    parts.push(indices.map(index => rec.logical[index]!).join(''))
+  }
+
+  const tail = Math.max(0, colEnd - Math.max(colStart, rec.x + rec.width) + 1)
+
+  if (tail > 0) {
+    parts.push(' '.repeat(tail))
+  }
+
+  return parts.join('')
 }
 
 /** Accumulator for selected text that merges soft-wrapped rows back

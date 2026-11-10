@@ -1,0 +1,39 @@
+name: hermes-droid
+repo: https://github.com/dalroot/hermes-droid
+sha: a4c4749d2a7fa55e4dd1ab928281fce257693392
+subdir: plugin
+description: "Turn physical Android devices into automated hardware testbeds and QA companion nodes for Hermes Agent — wireless MQTT APK deployments, Logcat crash diagnostics, and screen captures."
+maintainer: dalroot
+tier: community
+category: platform
+requires_hermes: ">=0.19.0"
+docs_url: https://github.com/dalroot/hermes-droid#readme
+version: "0.1.0"
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools:
+    - android_device_info
+    - android_read_sms
+    - android_send_sms
+    - android_get_notifications
+    - android_reply_notification
+    - android_call_phone
+    - android_adb_shell
+    - android_install_apk
+    - android_toggle_setting
+    - android_clipboard_sync
+    - android_take_screenshot
+    - android_contacts_search
+    - android_media_recent_photos
+    - android_device_logs
+    - android_radio_silence
+    - android_camera_snapshot
+    - android_location_get
+    - android_device_alarm
+  provides_hooks:
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

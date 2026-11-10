@@ -637,3 +637,38 @@ def test_interrupting_the_tail_does_not_spend_the_retry_budget(tmp_path, monkeyp
     assert record.read_text(encoding="utf-8-sig").strip() == "1"
     assert record.stat().st_mtime == 5.0
     assert pending.is_file()
+
+@pytest.mark.parametrize("prior_attempts", [None, 3])
+def test_completion_spawn_failure_does_not_spend_retry_budget(
+        tmp_path, monkeypatch, prior_attempts):
+    """A transient OS exec failure cannot launch the owed tail: no attempt was made.
+
+    The marker must stay owed and automatic launches must not exhaust the budget
+    before a completion child can actually start (review of #145435).
+    """
+    import pm
+    from hermes_cli import _launchers, update_custody
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
+    pending = venv_sync.arm_completion(root)
+    record = venv_sync._completion_attempts_path(root)
+    if prior_attempts is not None:
+        record.write_text(f"{prior_attempts}\n", encoding="utf-8")
+        os.utime(record, (5.0, 5.0))
+
+    def cannot_spawn(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", sys.executable)
+
+    monkeypatch.setattr(update_custody, "run", cannot_spawn)
+    for _ in range(2):
+        with pytest.raises(FileNotFoundError):
+            venv_sync.prepare_launch(root, [])
+
+    if prior_attempts is None:
+        assert not record.exists(), "an unstarted child consumed a fresh retry budget"
+    else:
+        assert record.read_text(encoding="utf-8") == f"{prior_attempts}\n"
+        assert record.stat().st_mtime == 5.0, "a pre-spawn failure restarted the backoff clock"
+    assert pending.is_file(), "the unrun tail's pending obligation was lost"

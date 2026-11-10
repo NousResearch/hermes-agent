@@ -591,6 +591,10 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     except KeyboardInterrupt:
         _refund_completion_attempt(root, charged_over)
         raise
+    except OSError:
+        # A child that could not be spawned did not spend a completion attempt.
+        _refund_completion_attempt(root, charged_over)
+        raise
     if code != 0:
         # Already charged; the backoff window runs from this failure, not from the start.
         with suppress(OSError):

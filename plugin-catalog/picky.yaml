@@ -1,0 +1,25 @@
+name: picky
+repo: https://github.com/decentralpapi/picky
+sha: 58501e01835fa78355be1f76543ff2795f542573
+description: "Picks the best place to sleep (tonight or for your dates) and the best ride there, then sets up the reservation: real OpenStreetMap stays auto-ranked by OSRM drive time with a one-line why and backups, Uber/Bolt/Lyft options with rough fare and ETA estimates, and Booking.com/Airbnb/Expedia/Google Hotels links prefilled with dates and guests. Never books, never pays, never asks for a card: you make the final tap. Disclosure — sends the place names or coordinates you ask about to nominatim.openstreetmap.org (geocoding and a backup stay search, max 1 req/s), overpass-api.de and fallback overpass.kumi.systems (nearby OSM lodging), router.project-osrm.org (driving) and routing.openstreetmap.de (walking). When use_current_location / 'my location' is requested, also contacts ipinfo.io or ipapi.co once for a city-level approximate location (used once, never cached or stored). Returns (does not contact) www.booking.com, www.airbnb.com, www.expedia.com, www.google.com (Maps, Hotels), m.uber.com, lyft.com, bolt.eu, wa.me and www.openstreetmap.org links. No API keys, no credentials, no telemetry, no self-updater, no binaries. Map data © OpenStreetMap contributors (ODbL)."
+maintainer: Omimi
+tier: community
+category: tools
+version: "0.2.0"
+title: Picky
+docs_url: https://github.com/decentralpapi/picky#readme
+platforms: [linux, macos, windows]
+screenshots:
+  - https://raw.githubusercontent.com/decentralpapi/picky/58501e01835fa78355be1f76543ff2795f542573/previews/tonight-lagos.png
+  - https://raw.githubusercontent.com/decentralpapi/picky/58501e01835fa78355be1f76543ff2795f542573/previews/reserve-lagos.png
+  - https://raw.githubusercontent.com/decentralpapi/picky/58501e01835fa78355be1f76543ff2795f542573/previews/stay-dates-lagos.png
+  - https://raw.githubusercontent.com/decentralpapi/picky/58501e01835fa78355be1f76543ff2795f542573/previews/ride-london.png
+capabilities:
+  provides_tools:
+    - picky_tonight
+    - picky_stay
+    - picky_ride
+    - picky_reserve
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

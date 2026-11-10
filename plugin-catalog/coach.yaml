@@ -1,7 +1,7 @@
 name: coach
 repo: https://github.com/Printaga/Hermes-Coach
 sha: fb3e1d931dc87e441ad425d2830ea783e901bc85
-description: "Four modes: Consult on demand, Active per-turn review, Review before claiming done, and Decide for forks with Jev."
+description: "Four modes: Consult on demand, Active per-turn review, Review before claiming done, and Decide for forks with Jev. Disclosure — once you configure a coach model, Coach sends turn transcripts, tool-call summaries and up to 128,000 characters of `git` diff from your working repo to that model through Hermes' model routing; the optional Decide mode (off by default) sends the agent's question, options and state to `openrouter.ai` (Typesafe's Jev model, your `OPENROUTER_API_KEY`) or `api.typesafe.ai` (your `TYPESAFE_API_KEY`); it runs read-only `git` in your session directory, keeps a background review thread, can hold a \"done\" reply once for review, and `/coach grant` writes its own model-override permission into `config.yaml`."
 maintainer: Printaga Publishing LLC
 tier: community
 category: models

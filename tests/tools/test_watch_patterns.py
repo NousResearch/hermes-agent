@@ -270,6 +270,14 @@ class TestTerminalToolSchema:
         array_alts = [alt for alt in props["notify"]["anyOf"] if alt["type"] == "array"]
         assert array_alts and array_alts[0]["items"] == {"type": "string"}
 
+    def test_schema_documents_substring_semantics(self):
+        """The list form must advertise case-sensitive substring matching so a
+        model doesn't read 'exit' as an event keyword (#142509)."""
+        from tools.terminal_tool import TERMINAL_SCHEMA
+        desc = TERMINAL_SCHEMA["parameters"]["properties"]["notify"]["description"]
+        assert "substring" in desc
+        assert "notify=true" in desc
+
 
     def test_foreground_watch_patterns_rejected_with_teaching_error(self):
         """Background-only modifiers on a foreground call fail loud with the
@@ -346,6 +354,55 @@ class TestMutualExclusion:
         )
         assert resolved == ["ERROR"]
         assert note == ""
+
+
+# =========================================================================
+# Bare termination-intent patterns (#142509): substring semantics warning
+# =========================================================================
+
+class TestBareTerminationPatternNote:
+    def test_bare_termination_word_flagged(self):
+        """A bare 'exit' matches every line containing it ('exit 0'), so the
+        acceptance warns and points at notify=true for a completion ping."""
+        from tools.terminal_tool import _bare_termination_pattern_note
+
+        note = _bare_termination_pattern_note(["exit"])
+        assert "'exit'" in note
+        assert "notify=true" in note
+
+    def test_mixed_list_flags_each_collision_case_insensitively(self):
+        from tools.terminal_tool import _bare_termination_pattern_note
+
+        note = _bare_termination_pattern_note(["COMPLETED", "proc_", "exit"])
+        assert "'COMPLETED'" in note and "'exit'" in note
+        assert "'proc_'" not in note
+
+    def test_specific_patterns_pass_silently(self):
+        from tools.terminal_tool import _bare_termination_pattern_note
+
+        assert _bare_termination_pattern_note(["ready to accept", "proc_"]) == ""
+        assert _bare_termination_pattern_note([]) == ""
+        assert _bare_termination_pattern_note(None) == ""
+
+    def test_spawn_result_carries_the_note(self, monkeypatch):
+        """The background spawn result echoes the note so the model can correct
+        its next call (the #123345 stringified-notify workaround lands here)."""
+        import tools.terminal_tool_background as bg
+
+        monkeypatch.setattr(bg, "_spawn", lambda reg, **kw: type(
+            "ProcStub", (), {"id": "proc_note", "pid": 123, "watcher_platform": ""})())
+        monkeypatch.setattr(
+            "tools.terminal_tool._resolve_command_cwd", lambda **kw: kw["default_cwd"])
+        monkeypatch.setattr(
+            bg, "_apply_async_support", lambda ps, rd, n, w: (n, w))
+
+        result = json.loads(bg.spawn_background_process(
+            command="sleep 60", env=None, env_type="local", effective_task_id="t1",
+            task_id="t1", session_key="", workdir=None, cwd="/tmp", effective_pty=False,
+            notify_on_complete=False, watch_patterns=["exit"], approval_note=None,
+            pty_disabled_reason=None, heartbeat_seconds=0))
+        assert result["watch_patterns"] == ["exit"]
+        assert "notify=true" in result["watch_patterns_note"]
 
 
 # =========================================================================

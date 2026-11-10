@@ -163,3 +163,109 @@ def test_cross_resource_400_strips_cached_replay_and_retries_once():
     assert retried_again is False
     assert messages == expected
     assert api_messages == expected
+
+
+@pytest.mark.parametrize("replay_state", ["unverified", "current-route", "ids-only", "replay-disabled"])
+def test_recovery_rebuilds_input_without_stale_message_ids(monkeypatch, replay_state):
+    from agent.transports.codex import ResponsesApiTransport
+
+    agent, retry, transport = _Agent(), TurnRetryState(), ResponsesApiTransport()
+    monkeypatch.setattr(agent, "_get_transport", lambda api_mode=None: transport)
+    agent._codex_reasoning_replay_enabled = replay_state != "replay-disabled"
+    message_item = {
+        "type": "message", "role": "assistant", "id": "msg_stale",
+        "status": "incomplete", "phase": "commentary",
+        "content": [{"type": "output_text", "text": "Checking the page."}],
+    }
+    messages = [
+        {"role": "user", "content": "Check the page."},
+        {"role": "assistant", "content": "Checking the page.",
+         "codex_message_items": [message_item],
+         "tool_calls": [{"id": "call_test", "type": "function", "function": {
+             "name": "browser", "arguments": "{}",
+         }}]},
+        {"role": "tool", "tool_call_id": "call_test", "content": "Example page"},
+        {"role": "assistant", "content": "The title is Example page.",
+         "codex_message_items": [{**deepcopy(message_item), "id": "msg_final",
+                                  "status": "completed", "phase": "final_answer",
+                                  "content": [{"type": "output_text", "text": "The title is Example page."}]}]},
+        {"role": "user", "content": "Continue."},
+    ]
+    params = {"model": agent.model, "base_url": agent.base_url,
+              "replay_encrypted_reasoning": agent._codex_reasoning_replay_enabled}
+    transport.convert_messages(messages, **params)
+    if replay_state in {"unverified", "current-route"}:
+        reasoning = {"type": "reasoning", "id": "rs_test", "encrypted_content": "test-ciphertext"}
+        if replay_state == "current-route":
+            reasoning.update(_issuer_kind=transport._last_issuer_kind, _issuer_model=transport._last_issuer_model)
+        messages[1]["codex_reasoning_items"] = [reasoning]
+    original, api_messages, expected = deepcopy(messages), deepcopy(messages), deepcopy(messages)
+    expected[1].pop("codex_reasoning_items", None)
+    for index in (1, 3):
+        expected[index]["codex_message_items"][0].pop("id")
+    before = transport.convert_messages(api_messages, **params)
+    assert messages == original  # Normal serialization never mutates persisted history.
+    assert any(item.get("id") == "msg_final" for item in before)
+    err = _api_error(_CROSS_RESOURCE)
+    classified = classify_api_error(err, provider=agent.provider, model=agent.model)
+
+    retried, _ = recover_after_classification(
+        agent, err, classified, retry, status_code=400,
+        error_context=agent._extract_api_error_context(err), messages=messages, api_messages=api_messages,
+    )
+
+    assert retried is True
+    assert messages == expected
+    assert api_messages == expected
+    wire = transport.convert_messages(api_messages, **params)
+    assistant_items = [item for item in wire if item.get("type") == "message" and item.get("role") == "assistant"]
+    assert assistant_items == [expected[index]["codex_message_items"][0] for index in (1, 3)]
+    assert not any(item.get("type") == "reasoning" for item in wire)
+    calls = [item for item in wire if item.get("type") == "function_call"]
+    outputs = [item for item in wire if item.get("type") == "function_call_output"]
+    assert [(item["call_id"], item["name"], item["arguments"]) for item in calls] == [("call_test", "browser", "{}")]
+    assert [(item["call_id"], item["output"]) for item in outputs] == [("call_test", "Example page")]
+    assert agent.refresh_calls == 0
+    assert agent._codex_reasoning_replay_enabled is (replay_state != "replay-disabled")
+    assert agent._codex_reasoning_replay_rejected is (replay_state == "current-route")
+    retried_again, _ = recover_after_classification(
+        agent, err, classified, retry, status_code=400,
+        error_context=agent._extract_api_error_context(err), messages=messages, api_messages=api_messages,
+    )
+    assert retried_again is False
+    assert messages == api_messages == expected
+
+
+@pytest.mark.parametrize("message,status,api_mode,has_id,already_retried", [
+    pytest.param("Unsupported response format.", 400, "codex_responses", True, False, id="unrelated-error"),
+    pytest.param(_CROSS_RESOURCE, 400, "chat_completions", True, False, id="chat-completions"),
+    pytest.param("Token expired. Sign in again.", 401, "codex_responses", True, False, id="token-expired"),
+    pytest.param(_CROSS_RESOURCE, 400, "codex_responses", False, False, id="no-ids"),
+    pytest.param(_CROSS_RESOURCE, 400, "codex_responses", True, True, id="already-retried"),
+])
+def test_message_id_repair_does_not_consume_unrelated_recovery(message, status, api_mode, has_id, already_retried):
+    from agent.route_verdicts import route_visit
+
+    agent, retry = _Agent(), TurnRetryState()
+    agent.provider, agent.api_mode = "openai-codex", api_mode
+    messages = [{"role": "assistant", "content": "Saved answer.", "codex_message_items": [{
+        "type": "message", "role": "assistant", "id": "msg_saved",
+        "content": [{"type": "output_text", "text": "Saved answer."}],
+    }]}]
+    err = _api_error(message, status)
+    if status == 401:
+        err.body["error"]["code"] = "token_expired"
+    if not has_id:
+        messages[0]["codex_message_items"][0].pop("id")
+    if already_retried:
+        retry.invalid_encrypted_content_retry_visit = route_visit(agent)
+    api_messages, expected = deepcopy(messages), deepcopy(messages)
+    classified = classify_api_error(err, provider=agent.provider, model=agent.model)
+    retried, _ = recover_after_classification(
+        agent, err, classified, retry, status_code=err.status_code,
+        error_context=agent._extract_api_error_context(err), messages=messages, api_messages=api_messages,
+    )
+    assert retried is False
+    assert messages == api_messages == expected
+    assert agent._codex_reasoning_replay_rejected is False
+    assert agent.refresh_calls == (1 if status == 401 else 0)

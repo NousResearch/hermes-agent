@@ -6,7 +6,6 @@ import os
 from typing import Any
 
 from gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
-from gateway.platforms.base_log_safety import safe_url_for_log
 
 logger = logging.getLogger("plugins.platforms.slack.adapter")
 
@@ -15,7 +14,7 @@ _IMAGE_CT_EXTS = (("jpeg", "jpg"), ("jpg", "jpg"), ("gif", "gif"), ("webp", "web
 
 
 async def collect_image_uploads(
-    chunk: list[tuple[str, str]], unquote_fn, is_safe_url_fn, client_factory
+    chunk: list[tuple[str, str]], unquote_fn, is_safe_url_fn, client_factory, safe_url_for_log
 ) -> tuple[list[dict[str, Any]], list[str], list[tuple[str, str]]]:
     """``files_upload_v2`` entries for one batch: ``file://`` by path, remote via the SSRF-safe
     client. Returns ``(file_uploads, alt_texts, refused)``; ``refused`` holds the remote

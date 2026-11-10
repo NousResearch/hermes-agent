@@ -24,6 +24,7 @@ from hermes_scope import (
     Scope,
     ScopeSwitchRefused,
     StateToken,
+    TurnScope,
     current_scope,
     current_state,
     push_state,
@@ -103,8 +104,13 @@ def bind_state(
     piece is computed before anything is installed, so a failure leaves nothing bound.
 
     Inside a hosted scope, only a bind of the same tenant, agent, actor, owner and administration
-    right is allowed; anything else raises :class:`~hermes_scope.ScopeSwitchRefused`."""
+    right is allowed; anything else raises :class:`~hermes_scope.ScopeSwitchRefused`. Inside a
+    hosted turn such a bind keeps the bound turn, so its session, turn id and fence survive; a
+    newer turn (a :class:`~hermes_scope.TurnScope`) is bound as given."""
     _refuse_inside_hosted("a bind of another scope", unless=scope)
+    current = current_scope()
+    if isinstance(current, TurnScope) and not current.is_local and not isinstance(scope, TurnScope):
+        scope = current
     home = scope.home()
     if home is None:
         return push_state(scope=scope, home=None, secrets=None, terminal=None)

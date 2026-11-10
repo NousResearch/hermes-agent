@@ -576,6 +576,43 @@ def test_hosted_scope_refuses_a_bind_that_changes_who_it_acts_for(change):
         assert current_scope() == member
 
 
+def _hosted_turn() -> TurnScope:
+    member = Scope("acme", "bot", Principal("u"), owner=Group("support"), can_administer=False)
+    return member.for_turn("s1", "t1", Fence(2, 3))
+
+
+def test_a_same_identity_bind_inside_a_hosted_turn_keeps_the_turn_and_its_fence():
+    """Rebinding the same hosted scope inside a turn must not drop the turn's session, turn id or
+    fence: writes in the body are checked against that fence."""
+    turn = _hosted_turn()
+    plain = Scope("acme", "bot", Principal("u"), owner=Group("support"), can_administer=False)
+    with bind_state(turn):
+        with bind_state(plain):
+            inner = current_scope()
+            assert isinstance(inner, TurnScope)
+            assert (inner.session, inner.turn, inner.fence) == ("s1", "t1", Fence(2, 3))
+        assert current_scope() == turn
+
+
+def test_a_nested_turn_inside_a_hosted_turn_carries_the_newer_fence():
+    with bind_state(_hosted_turn()):
+        with bind_turn("s1", "t2", Fence(2, 4)) as inner:
+            assert (inner.turn, inner.fence) == ("t2", Fence(2, 4))
+            assert current_scope() == inner
+        assert current_scope().fence == Fence(2, 3)
+
+
+@pytest.mark.parametrize("change", [dict(actor=Principal("other")), dict(can_administer=True)])
+def test_a_hosted_turn_still_refuses_a_bind_that_changes_who_it_acts_for(change):
+    from dataclasses import replace
+    turn = _hosted_turn()
+    plain = Scope("acme", "bot", Principal("u"), owner=Group("support"), can_administer=False)
+    with bind_state(turn):
+        with pytest.raises(ScopeSwitchRefused):
+            bind_state(replace(plain, **change))
+        assert current_scope() == turn
+
+
 def test_claim_fence_reads_the_claimed_admission(tmp_path):
     """The fence a turn binds is the one the claim stamped on its admission row."""
     from contextlib import closing

@@ -70,7 +70,9 @@ def purge_profile_identity(profile: str) -> bool:
     Refuses a name that is a live profile again: the purge keys off the name alone, so a same-name
     profile created after the delete (the very case a failed settlement leaves behind) would
     otherwise have the new incarnation's routing/heartbeat identity deleted from under it. The
-    delete path tombstones the directory before calling this, so the guard never blocks it.
+    delete path tombstones the directory before calling this; the tombstone keeps the name dead
+    for the exists guard, and the per-profile database it makes unreachable through the registry
+    is settled with the directory's rmtree instead of a re-open (#132825).
     Idempotent: purging an already-purged profile succeeds. Returns False only when the identity was
     not settled — by this process or by the live gateway.
     """
@@ -115,17 +117,31 @@ def _purge_profile_identity(canon: str, live_mux: bool) -> bool:
         return False
 
     from hermes_cli.profiles import get_profile_dir
-    from hermes_constants import get_default_hermes_root
+    from hermes_constants import get_default_hermes_root, named_profile_is_deleted
     from hermes_state_registry import acquire, release_or_close
     root = get_default_hermes_root()
+    profile_db = get_profile_dir(canon) / "state.db"
     purged = True
-    for db_path in (root / "state.db", get_profile_dir(canon) / "state.db"):
+    for db_path in (root / "state.db", profile_db):
         if not db_path.exists():
             continue
         db = None
         try:
             db = acquire(db_path)
             db.purge_profile_state(canon)
+        except FileNotFoundError as exc:
+            # The registry's resurrection guard (#94590) refuses to re-open a tombstoned
+            # home, and the delete path tombstones before settling identity, so the
+            # per-profile database is unreachable by design here: its rows die with the
+            # directory the rmtree removes right after. Only the ROOT database's rows are
+            # this purge's to settle, so a guarded profile database counts as settled.
+            if db_path == profile_db and named_profile_is_deleted(db_path.parent):
+                continue
+            purged = False
+            print(
+                f"⚠ Profile was deleted, but identity purge failed for {db_path}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr)
         except Exception as exc:
             purged = False
             print(

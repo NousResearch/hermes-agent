@@ -630,3 +630,17 @@ def fetch_account_usage(
     remember_account_usage(provider, snapshot, identity_id=identity_id, base_url=base_url,
                            started_monotonic=started)
     return snapshot
+
+
+# Published plugin API (hermes_cli/data/plugin_api.json lists this whole module): names that moved to the Nous
+# sibling stay importable here. Bottom of the file because the sibling late-imports this facade.
+from agent.account_usage_nous import (
+    BP_FULL,
+    CreditsView,
+    apply_header_gauge,
+    build_credits_view,
+    build_nous_credits_snapshot,
+    nous_credits_lines,
+    nous_credits_usage_fields,
+    nous_credits_view,
+)

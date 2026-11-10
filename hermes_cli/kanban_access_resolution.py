@@ -207,6 +207,6 @@ def command(args) -> int:
     except AccessResolutionError as exc:
         _json_line({"error": exc.code})
         return 1
-    except Exception:
+    except Exception:  # health: allow BLE001 -- fixed public boundary must hide unknown effect details
         print("kanban access-resolution: internal_error", file=sys.stderr)
         return 1

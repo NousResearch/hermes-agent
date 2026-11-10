@@ -1,0 +1,121 @@
+{
+  "fixtureVersion": 1,
+  "protocolVersion": 1,
+  "digestDomain": "hermes-kanban-access-resolution/v1",
+  "orderedFields": [
+    "version",
+    "requestId",
+    "mode",
+    "machine",
+    "cardId",
+    "expectedAssignee",
+    "expectedStatus",
+    "expectedBlockKind",
+    "expectedBlockEventId",
+    "expectedBlockedAt",
+    "category",
+    "owner",
+    "evidenceRef",
+    "nextAction",
+    "author",
+    "comment"
+  ],
+  "vectors": [
+    {
+      "name": "route-ascii",
+      "request": {
+        "version": 1,
+        "requestId": "123e4567-e89b-12d3-a456-426614174000",
+        "payloadDigest": "3bd6d69ba12a1cb481fb528f363c4938c9058ab0021f7df5b18e14dd0d133d28",
+        "mode": "route",
+        "machine": "macpro",
+        "cardId": "t_1234abcd",
+        "expectedAssignee": "worker_1",
+        "expectedStatus": "blocked",
+        "expectedBlockKind": "capability",
+        "expectedBlockEventId": 9,
+        "expectedBlockedAt": 1799999999,
+        "category": "missing_tool_or_read_api",
+        "owner": "Owen",
+        "evidenceRef": null,
+        "nextAction": "Install the approved read-only tool.",
+        "author": "seth",
+        "comment": "Access is still unavailable.\nOwner: Owen"
+      },
+      "preimageHex": "6865726d65732d6b616e62616e2d6163636573732d7265736f6c7574696f6e2f763100690000000131730000002431323365343536372d653839622d313264332d613435362d3432363631343137343030307300000005726f75746573000000066d616370726f730000000a745f31323334616263647300000008776f726b65725f317300000007626c6f636b6564730000000a6361706162696c697479690000000139690000000a3137393939393939393973000000186d697373696e675f746f6f6c5f6f725f726561645f61706973000000044f77656e6e7300000024496e7374616c6c2074686520617070726f76656420726561642d6f6e6c7920746f6f6c2e7300000004736574687300000028416363657373206973207374696c6c20756e617661696c61626c652e0a4f776e65723a204f77656e",
+      "sha256": "3bd6d69ba12a1cb481fb528f363c4938c9058ab0021f7df5b18e14dd0d133d28"
+    },
+    {
+      "name": "route-unicode-nfc",
+      "request": {
+        "version": 1,
+        "requestId": "223e4567-e89b-12d3-a456-426614174000",
+        "payloadDigest": "ec2fa0c99e2bd44f17b3cd5fc6fdccb827e41afa92ecef9cf30b595aca82dfb5",
+        "mode": "route",
+        "machine": "macpro",
+        "cardId": "t_1234abcd",
+        "expectedAssignee": "worker_1",
+        "expectedStatus": "blocked",
+        "expectedBlockKind": "capability",
+        "expectedBlockEventId": 9,
+        "expectedBlockedAt": 1799999999,
+        "category": "missing_tool_or_read_api",
+        "owner": "José",
+        "evidenceRef": null,
+        "nextAction": "Install the approved read-only tool.",
+        "author": "seth",
+        "comment": "Accès indisponible.\nOwner: José"
+      },
+      "preimageHex": "6865726d65732d6b616e62616e2d6163636573732d7265736f6c7574696f6e2f763100690000000131730000002432323365343536372d653839622d313264332d613435362d3432363631343137343030307300000005726f75746573000000066d616370726f730000000a745f31323334616263647300000008776f726b65725f317300000007626c6f636b6564730000000a6361706162696c697479690000000139690000000a3137393939393939393973000000186d697373696e675f746f6f6c5f6f725f726561645f61706973000000054a6f73c3a96e7300000024496e7374616c6c2074686520617070726f76656420726561642d6f6e6c7920746f6f6c2e7300000004736574687300000021416363c3a87320696e646973706f6e69626c652e0a4f776e65723a204a6f73c3a9",
+      "sha256": "ec2fa0c99e2bd44f17b3cd5fc6fdccb827e41afa92ecef9cf30b595aca82dfb5"
+    },
+    {
+      "name": "grant-evidence",
+      "request": {
+        "version": 1,
+        "requestId": "323e4567-e89b-12d3-a456-426614174000",
+        "payloadDigest": "5fb59983093ace6c49296b3f342ea690c27da00c26d4540dab4b3b17fc19147c",
+        "mode": "grant",
+        "machine": "macpro",
+        "cardId": "t_1234abcd",
+        "expectedAssignee": "worker_1",
+        "expectedStatus": "blocked",
+        "expectedBlockKind": "capability",
+        "expectedBlockEventId": 9,
+        "expectedBlockedAt": 1799999999,
+        "category": "human_receipt",
+        "owner": "Owen",
+        "evidenceRef": "receipt://approved/42",
+        "nextAction": null,
+        "author": "seth",
+        "comment": "Receipt verified; exact capability block may resume."
+      },
+      "preimageHex": "6865726d65732d6b616e62616e2d6163636573732d7265736f6c7574696f6e2f763100690000000131730000002433323365343536372d653839622d313264332d613435362d34323636313431373430303073000000056772616e7473000000066d616370726f730000000a745f31323334616263647300000008776f726b65725f317300000007626c6f636b6564730000000a6361706162696c697479690000000139690000000a31373939393939393939730000000d68756d616e5f7265636569707473000000044f77656e7300000015726563656970743a2f2f617070726f7665642f34326e7300000004736574687300000034526563656970742076657269666965643b206578616374206361706162696c69747920626c6f636b206d617920726573756d652e",
+      "sha256": "5fb59983093ace6c49296b3f342ea690c27da00c26d4540dab4b3b17fc19147c"
+    },
+    {
+      "name": "integer-edges",
+      "request": {
+        "version": 1,
+        "requestId": "423e4567-e89b-12d3-a456-426614174000",
+        "payloadDigest": "23f6b8e7acf1153f4bc69b3fee6b63cd0be18a4861e64d5b23b89e6cebcc23f5",
+        "mode": "route",
+        "machine": "macpro",
+        "cardId": "t_1234abcd",
+        "expectedAssignee": "worker_1",
+        "expectedStatus": "blocked",
+        "expectedBlockKind": "capability",
+        "expectedBlockEventId": 9223372036854775807,
+        "expectedBlockedAt": 0,
+        "category": "missing_tool_or_read_api",
+        "owner": "Owen",
+        "evidenceRef": null,
+        "nextAction": "Install the approved read-only tool.",
+        "author": "seth",
+        "comment": "Access is still unavailable.\nOwner: Owen"
+      },
+      "preimageHex": "6865726d65732d6b616e62616e2d6163636573732d7265736f6c7574696f6e2f763100690000000131730000002434323365343536372d653839622d313264332d613435362d3432363631343137343030307300000005726f75746573000000066d616370726f730000000a745f31323334616263647300000008776f726b65725f317300000007626c6f636b6564730000000a6361706162696c69747969000000133932323333373230333638353437373538303769000000013073000000186d697373696e675f746f6f6c5f6f725f726561645f61706973000000044f77656e6e7300000024496e7374616c6c2074686520617070726f76656420726561642d6f6e6c7920746f6f6c2e7300000004736574687300000028416363657373206973207374696c6c20756e617661696c61626c652e0a4f776e65723a204f77656e",
+      "sha256": "23f6b8e7acf1153f4bc69b3fee6b63cd0be18a4861e64d5b23b89e6cebcc23f5"
+    }
+  ]
+}

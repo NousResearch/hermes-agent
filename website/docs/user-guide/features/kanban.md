@@ -71,6 +71,70 @@ rejected before any board mutation. The mutation form is unavailable from fenced
 `delegate_task` child contexts. This command is a local transactional primitive, not a
 network transport or permission grant by itself.
 
+The request has exactly these keys and no others:
+
+```text
+{version:1, requestId, payloadDigest, mode:'route'|'grant', machine, cardId,
+ expectedAssignee, expectedStatus:'blocked', expectedBlockKind:'capability',
+ expectedBlockEventId, expectedBlockedAt, category, owner,
+ evidenceRef:null|string, nextAction:null|string, author:'seth', comment}
+```
+
+`requestId` is a lowercase canonical UUID; `payloadDigest` is 64 lowercase hex bytes;
+`machine` is `[a-z][a-z0-9-]{0,31}`; `cardId` is `t_` plus eight lowercase hex
+characters; and `expectedAssignee` is 1–64 canonical profile-name ASCII bytes. Event
+IDs are positive signed 64-bit integers and blocked timestamps are nonnegative signed
+64-bit integers. Category is one of `credential_or_permission`,
+`missing_tool_or_read_api`, or `human_receipt`. After proving each string is already NFC,
+UTF-8 byte limits are: owner 1–256, evidence/next action 1–2048, and comment 1–8192.
+Unicode controls are forbidden except LF in comment. Grant requires evidence and forbids
+next action; route requires next action and forbids evidence.
+
+The digest excludes `payloadDigest` and hashes this exact order:
+
+```text
+version, requestId, mode, machine, cardId, expectedAssignee, expectedStatus,
+expectedBlockKind, expectedBlockEventId, expectedBlockedAt, category, owner,
+evidenceRef, nextAction, author, comment
+```
+
+The preimage is ASCII domain `hermes-kanban-access-resolution/v1`, one zero byte, then
+one token per value. Null is byte `n`. Integer/string tokens start with `i`/`s`, followed
+by a four-byte unsigned big-endian payload length and minimal decimal ASCII or exact NFC
+UTF-8 payload. The published cross-language fixture is
+`tests/fixtures/kanban_access_resolution_v1.json`, SHA-256
+`359861befec02a3304cb82c5e5c07f85d579b1ab5560323cca5ffef60d595f93`.
+
+A receipt has exactly:
+
+```text
+{version:1, receiptId, requestId, payloadDigest, mode, machine, cardId,
+ expectedBlockEventId, commentEventId, unblockEventId:null|integer,
+ statusAfter, blockEventIdAfter:null|integer, blockedAtAfter:null|integer,
+ replayed:boolean}
+```
+
+An internal/database failure writes only `kanban access-resolution: internal_error` to
+stderr. Timeout, EOF, malformed output, and internal failure after launch are unknown
+outcomes: retry the same request ID and digest to recover its stored receipt. Never mint
+a replacement ID merely because stdout was lost.
+
+For SSH, construct a fixed argv vector; do not interpolate any request field:
+
+```text
+ssh -o BatchMode=yes -o ConnectTimeout=<bounded> <allowlisted-target> \
+  /absolute/path/hermes kanban --board <allowlisted-disposable-board> \
+  access-resolution --json-stdin
+```
+
+Before activation, authorized host operators must verify the exact installed revision,
+`--describe` identity, and route/grant/replay/mismatch readback on disposable local and
+remote boards. Rollback disables consumer submissions first, then reconciles unknown
+requests by replaying their original ID/digest while the producer remains available.
+Never delete truthful receipts/comments/events or automatically re-block a granted card;
+restore the producer revision if an unresolved receipt must be replayed. Installation,
+restart, activation, and production-card use remain separate operator gates.
+
 This is the shape that covers the workloads `delegate_task` can't:
 
 - **Research triage** — parallel researchers + analyst + writer, human-in-the-loop.

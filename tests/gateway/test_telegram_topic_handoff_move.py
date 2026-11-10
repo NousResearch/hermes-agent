@@ -5,7 +5,7 @@ every handoff, ``/resume`` or refusal, and no two topics may route to one sessio
 """
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -27,7 +27,7 @@ def _real_runner(tmp_path):
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
         platform=Platform.TELEGRAM, chat_id=CHAT, name="DM", thread_id=None)
     runner._handle_message = AsyncMock(return_value=None)
-    runner._clear_conversation_scope = lambda *_a, **_kw: None
+    runner._clear_conversation_scope = MagicMock()
     db.create_session("cli-a", source="cli")
     db.append_message("cli-a", "user", "cli work")
     return runner, store, db
@@ -64,6 +64,9 @@ async def test_repeat_handoff_moves_the_topic_and_a_refusal_opens_no_topic(tmp_p
         assert result is None and runner._handle_message.await_count == 2
         assert _topic(store, db, "702") == ("cli-a", "cli-a")
         assert _topic(store, db, "701") == (None, None)
+        # 701 starts a new conversation: its /model, /reasoning etc. overrides go with the old one.
+        assert runner._clear_conversation_scope.call_args_list[-1].args == (
+            build_session_key(_make_source(thread_id="701")),)
     else:
         assert "already linked" in str(result)
         create.assert_not_awaited()

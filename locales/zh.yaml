@@ -514,6 +514,7 @@ gateway:
     not_git_repo: "✗ 不是 git 仓库 — 无法更新。"
     hermes_cmd_not_found: "✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python 解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。"
     start_failed: "✗ 启动更新失败：{error}"
+    already_running: "⏳ 已有更新正在运行；只有启动它的人可以回答它的提问。请等它完成后再试一次 /update。"
     starting: "☤ 正在启动 Hermes 更新…… 进度将在此处显示。"
     reply_failed: "✗ 向更新进程发送响应失败：{error}"
     reply_sent: "✓ 已向更新进程发送 `{label}`。"

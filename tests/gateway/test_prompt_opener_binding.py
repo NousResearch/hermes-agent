@@ -142,3 +142,28 @@ async def test_update_prompt_answers_only_its_opener(surface, sender, tmp_path, 
             assert query.answer.call_args.kwargs == {"text": REFUSAL, "show_alert": True}
     assert response.exists() is (sender == "alice")
     assert runner._session_state(key).persistent.update_prompt_pending is (surface == "telegram_button" or sender == "bob")
+
+
+@pytest.mark.asyncio
+async def test_second_update_while_one_runs_keeps_the_first_opener(tmp_path, monkeypatch):
+    """Bob's /update while Alice's is still running is refused before it touches the marker, so
+    Alice stays the only one (besides admins) who answers the running update's prompt."""
+    from gateway.approval_actor import update_prompt_refusal
+
+    runner = _runner(MagicMock(send=AsyncMock()))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "checkout" / "gateway").mkdir(parents=True)
+    (tmp_path / "checkout" / ".git").mkdir()
+    runner._schedule_update_notification_watch = lambda: None
+    with patch("gateway.slash_commands.__file__", str(tmp_path / "checkout" / "gateway" / "slash_commands.py")), \
+            patch("gateway.slash_commands._spawn_detached_update") as spawn, \
+            patch("gateway.run._resolve_hermes_bin", return_value=["hermes"]), \
+            patch("hermes_cli.config.is_managed", return_value=False), \
+            patch("hermes_cli.config.detect_install_method", return_value="git"):
+        await runner._handle_update_command(MessageEvent(text="/update", source=_source("alice")))
+        reply = await runner._handle_update_command(MessageEvent(text="/update", source=_source("bob")))
+    assert spawn.call_count == 1 and "already running" in reply
+    assert json.loads((tmp_path / ".update_pending.json").read_text())["user_id"] == "alice"
+    assert update_prompt_refusal("alice", extra={}) is None
+    assert update_prompt_refusal("bob", extra={}) == "Alice"

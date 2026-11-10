@@ -1379,6 +1379,8 @@ class GatewaySlashCommandsMixin(
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
             return t("gateway.update.hermes_cmd_not_found")
+        if self._update_in_flight():  # before any write: the marker names who answers its prompts
+            return t("gateway.update.already_running")
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"

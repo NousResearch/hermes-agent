@@ -105,8 +105,8 @@ def recreate_tui_worktree(cwd: str, session_id: str) -> Optional[str]:
         _git,
         _git_quiet,
         _retain_worktree_for_session,
+        _retention_store,
     )
-    from hermes_constants import get_hermes_home
 
     repo_root, tree, branch = entry["repo_root"], Path(entry["path"]), entry["branch"]
     if tree.exists():  # a file, or a dir that appeared since: never overwrite it
@@ -125,7 +125,7 @@ def recreate_tui_worktree(cwd: str, session_id: str) -> Optional[str]:
             logger.warning("could not recreate worktree %s: %s", tree, result.stderr.strip())
             return None
         _copy_worktree_includes(repo_root, tree)
-        _retain_worktree_for_session(repo_root, str(tree), session_id, get_hermes_home() / "state.db")
+        _retain_worktree_for_session(repo_root, str(tree), session_id, _retention_store())
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("could not recreate worktree %s: %s", tree, exc)
         return None

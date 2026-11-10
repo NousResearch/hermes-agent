@@ -13,7 +13,7 @@ description: >-
 maintainer: salch-cred
 tier: community
 category: models
-requires_hermes: ">=0.23"
+requires_hermes: ">=0.23.0"
 docs_url: https://github.com/salch-cred/sampler
 version: "0.1.0"
 

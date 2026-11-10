@@ -13,7 +13,7 @@ description: >-
 maintainer: salch-cred
 tier: community
 category: tools
-requires_hermes: ">=0.23"
+requires_hermes: ">=0.23.0"
 docs_url: https://github.com/salch-cred/teach-back
 version: "0.1.0"
 

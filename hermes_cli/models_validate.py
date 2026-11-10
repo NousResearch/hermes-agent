@@ -202,6 +202,11 @@ def provider_allows_model_whitespace(provider: Optional[str], base_url: Optional
     provider's own stock endpoint. A public host with no stock to compare
     against stays rejected, so a cloud URL cannot slip through a cold catalog.
     """
+    # The virtual MoA provider's "models" are preset config keys, not cloud catalog
+    # ids: ``_validate_moa`` accepts any key present in ``cfg["presets"]``, spaces
+    # included, so the picker filter must not drop them (#134864).
+    if _provider_token(provider) == "moa":
+        return True
     if _is_self_hosted_provider(provider):
         return True
     url = str(base_url or "").strip()

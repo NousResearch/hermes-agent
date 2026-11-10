@@ -18,6 +18,18 @@ logger = logging.getLogger("plugins.platforms.telegram.adapter")
 # Backoff (seconds) before each further attempt of one inbound file fetch.
 FETCH_RETRY_DELAYS = (2.0, 5.0)
 
+# Private event attributes, never ``event.metadata``: native admission refuses any metadata key
+# outside its allowlist, which dropped every Telegram reply carrying them (as ITEM_NOTES_ATTR).
+# TYPED_ATTR: a replying chunk's text before any replied-to note. VOICE_TYPED_ATTR: set when the
+# turn types a reply to a person's voice note; that typed text, not the speech, answers a clarify.
+TYPED_ATTR = "_telegram_typed_text"
+VOICE_TYPED_ATTR = "_telegram_replied_voice_typed_text"
+
+
+def replied_voice_typed_text(event: Any) -> str | None:
+    """The typed clarify answer the adapter recorded for *event*, or ``None``."""
+    return getattr(event, VOICE_TYPED_ATTR, None)
+
 
 def is_retryable_fetch_error(exc: Exception) -> bool:
     """A transport failure (PTB ``NetworkError``/``TimedOut`` or a bare httpx/OS error) other than a
@@ -58,7 +70,7 @@ async def cache_replied_media(adapter: Any, msg: Any, event: Any) -> None:
         return
     # The typed text before any replied-to note: a chunk merged beside a voice-note reply keeps
     # only this, so another reply's attachment note never joins the clarify answer.
-    event.metadata.setdefault("typed_text", (event.text or "").strip())
+    event.__dict__.setdefault(TYPED_ATTR, (event.text or "").strip())
     status, cached = await adapter._download_observed_media(reply_msg, "replied-to media")
     if status == "ok":
         spoken = getattr(reply_msg, "voice", None) is not None and not getattr(
@@ -66,7 +78,7 @@ async def cache_replied_media(adapter: Any, msg: Any, event: Any) -> None:
         note = f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]"
         if spoken:
             # The typed reply, not the replied-to speech or this note, answers a pending clarify.
-            event.metadata["replied_voice_typed_text"] = (event.text or "").strip()
+            setattr(event, VOICE_TYPED_ATTR, getattr(event, TYPED_ATTR))
             note += " [Any transcript quoted above is that replied-to voice note, not this message.]"
         adapter._attach_cached(event, cached, note, "[Telegram] Cached replied-to %s at %s", retype=not spoken)
         return
@@ -84,14 +96,25 @@ async def cache_replied_media(adapter: Any, msg: Any, event: Any) -> None:
     event.text = adapter._append_observed_note(event.text, note)
 
 
-def merged_replied_voice_typed_text(existing: Any, event: Any) -> str | None:
-    """The typed clarify answer once text chunk *event* merges into the pending batch *existing*:
-    both chunks' typed text in order, when either is a typed reply to a voice note. A chunk that
-    replied to anything records its pre-note text as ``typed_text``; one that replied to nothing
-    carries no note, so its text is its typed text. ``None``: nothing to change."""
-    key = "replied_voice_typed_text"
-    if existing is None or not (event.text or "").strip() or (
-            key not in existing.metadata and key not in event.metadata):
+def _typed_text(event: Any) -> str:
+    for attr in (VOICE_TYPED_ATTR, TYPED_ATTR):  # "" is a recorded value: a reply with no typed text
+        if (typed := getattr(event, attr, None)) is not None:
+            return typed
+    return (event.text or "").strip()
+
+
+def merged_typed_text(existing: Any, event: Any) -> tuple[str, bool] | None:
+    """For text chunk *event* about to merge into the pending batch *existing* (read BEFORE the merge
+    appends its text): the batch's typed text afterwards, every chunk's in order without replied-to
+    notes, and whether any chunk typed a reply to a voice note. ``None``: nothing to record."""
+    if existing is None or not (event.text or "").strip():
         return None
-    parts = (m.metadata.get(key, m.metadata.get("typed_text", (m.text or "").strip())) for m in (existing, event))
-    return "\n".join(p for p in parts if p)
+    voice = replied_voice_typed_text(existing) is not None or replied_voice_typed_text(event) is not None
+    return "\n".join(p for p in (_typed_text(existing), _typed_text(event)) if p), voice
+
+
+def record_typed_text(existing: Any, merged: tuple[str, bool]) -> None:
+    typed, voice = merged
+    existing.__dict__[TYPED_ATTR] = typed
+    if voice:
+        setattr(existing, VOICE_TYPED_ATTR, typed)

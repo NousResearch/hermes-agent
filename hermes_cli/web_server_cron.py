@@ -402,26 +402,28 @@ def _gateway_api_target(profile: str, home: Path) -> tuple[str, str]:
 def _listener_base(profile: str, listener: tuple[bool, str, Path], extra: dict) -> str:
     """Loopback base URL of *listener* (from :func:`_gateway_listener`) for *profile*.
 
-    Port resolution mirrors gateway/config.py's api_server load order for the LISTENER-OWNER
-    profile: ``platforms.api_server.extra.port`` in its config.yaml (*extra*), then
-    ``API_SERVER_PORT`` (process env for the active profile, the profile's own .env otherwise), then
-    8642. Loopback is safe: dashboard and gateway share a network namespace in every supported
-    deployment.
+    Port resolution mirrors the gateway's for the LISTENER-OWNER profile (process env for the active
+    profile, the profile's own .env otherwise): ``API_SERVER_PORT`` when ``API_SERVER_KEY`` is
+    usable, which the gateway loads over the configured port (gateway/config_env.py), then
+    ``platforms.api_server.extra.port`` in its config.yaml (*extra*), then ``API_SERVER_PORT``
+    (the adapter's own fallback), then 8642. Loopback is safe: dashboard and gateway share a
+    network namespace in every supported deployment.
     """
+    from hermes_cli.auth import has_usable_secret
     multiplex, listener_profile, listener_home = listener
-    port = 0
     try:
-        raw = extra.get("port")
-        port = int(raw) if raw else 0
+        configured = int(extra.get("port") or 0)
     except (TypeError, ValueError):
-        port = 0
-    if not port:
-        raw = _profile_setting(listener_profile, listener_home, "API_SERVER_PORT")
-        try:
-            port = int(raw) if raw else 0
-        except ValueError:
-            port = 0
-    port = port or 8642
+        configured = 0
+    try:
+        env_port = int(_profile_setting(listener_profile, listener_home, "API_SERVER_PORT") or 0)
+    except ValueError:
+        env_port = 0
+    env_key = _profile_setting(listener_profile, listener_home, "API_SERVER_KEY")
+    if env_port and has_usable_secret(env_key, min_length=16):
+        port = env_port
+    else:
+        port = configured or env_port or 8642
     if multiplex and profile != "default":
         return f"http://127.0.0.1:{port}/p/{profile}"
     return f"http://127.0.0.1:{port}"

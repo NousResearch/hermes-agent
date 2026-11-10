@@ -1,1 +1,27 @@
-name: "draftroom"title: "Draftroom"repo: "https://github.com/Techdox/hermes-draftroom"sha: "612bfb46747721276a01b6997566849e68ffc7e3"description: "A Markdown draft beside Hermes chat, with selected-text rewrites and explicit Accept/Reject review. Disclosure: stores drafts, suggestions and retained revisions in this profile's plugin-data; draft content goes through the existing conversation/model; polls its own backend while open; optional user-initiated repository commit requests use the existing agent tools and approvals. The plugin itself runs no Git or shell commands and adds no direct third-party requests, credentials, telemetry, background service or self-update."maintainer: "Techdox"tier: "community"category: "desktop"requires_hermes: ">=0.23.0"version: "0.1.2"docs_url: "https://github.com/Techdox/hermes-draftroom#readme"platforms: ["linux", "macos"]known_issues: ["Requires both Agent and local Desktop components; Linux/macOS backend with a recent Desktop SDK.", "Unsaved buffers are memory-only and do not survive plugin/window reload or quitting."]capabilities:  provides_tools: ["blog_draft"]  provides_hooks: []  provides_middleware: []  requires_env: []
+name: "draftroom"
+title: "Draftroom"
+repo: "https://github.com/Techdox/hermes-draftroom"
+sha: "612bfb46747721276a01b6997566849e68ffc7e3"
+description: >-
+  A Markdown draft beside Hermes chat, with selected-text rewrites and explicit
+  Accept/Reject review. Disclosure: stores drafts, suggestions and retained
+  revisions in this profile's plugin-data; draft content goes through the
+  existing conversation/model; polls its own backend while open; optional
+  user-initiated repository commit requests use the existing agent tools and
+  approvals. The plugin itself runs no Git or shell commands and adds no direct
+  third-party requests, credentials, telemetry, background service or self-update.
+maintainer: "Techdox"
+tier: "community"
+category: "desktop"
+requires_hermes: ">=0.23.0"
+version: "0.1.2"
+docs_url: "https://github.com/Techdox/hermes-draftroom#readme"
+platforms: ["linux", "macos"]
+known_issues:
+  - "Requires both Agent and local Desktop components; Linux/macOS backend with a recent Desktop SDK."
+  - "Unsaved buffers are memory-only and do not survive plugin/window reload or quitting."
+capabilities:
+  provides_tools: ["blog_draft"]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

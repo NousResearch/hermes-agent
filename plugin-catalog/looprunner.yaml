@@ -1,6 +1,6 @@
 name: looprunner
 repo: https://github.com/itxLikhith/looprunner
-sha: 7cb07d2cbd1307625c81c48996484b2d92be74ff
+sha: 2e96b6689b713ea966d8563a00224dd92ed60f49
 description: >-
   Set-and-forget autonomous QA loop runner for any repository. Runs your verify
   command each round, analyzes failures, applies minimal fixes on a working
@@ -9,7 +9,7 @@ maintainer: itxLikhith
 tier: community
 category: automation
 requires_hermes: ">=0.22.0"
-version: "0.7.1"
+version: "0.7.2"
 docs_url: https://github.com/itxLikhith/looprunner
 capabilities:
   provides_tools:

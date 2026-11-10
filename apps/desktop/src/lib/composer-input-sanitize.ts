@@ -9,7 +9,7 @@ const BRACKETED_PASTE_BOUNDARY_START = /(^|[\s\n>:\])])\[200~/g
 const BRACKETED_PASTE_BOUNDARY_END = /\[201~(?=$|[\s\n<[():;.,!?])/g
 // A digit and colon before a bare marker can be an unfinished clock time.
 const BRACKETED_PASTE_DEGRADED_START = /(^|[\s\n>\])]|(?<![0-9]):)00~/g
-const BRACKETED_PASTE_DEGRADED_END = /(?<![0-9]:)01~(?=$|[\s\n<[():;.,!?])/g
+const BRACKETED_PASTE_DEGRADED_END = /(?<![0-9][:.])01~(?=$|[\s\n<[():;.,!?])/g
 
 const DESKTOP_PASTE_ARTIFACT = '~[[e'
 

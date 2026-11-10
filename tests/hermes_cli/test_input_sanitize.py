@@ -42,6 +42,11 @@ class TestSanitizeUserPromptText:
         for text in ("id01~21:00~21:02", "21:00~21:02[200~tag"):
             assert sanitize_user_prompt_text(text) == text
 
+    def test_dotted_clock_time_survives_incremental_input(self):
+        # Some locales write clock times with a period between hour and minute.
+        for text in ("12.01~", "12.01~ 12.15"):
+            assert sanitize_user_prompt_text(text) == text
+
     def test_combines_wrapper_strip_and_tail_collapse(self):
         prefix = "hello["
         corrupted = prefix + "~[[e" * 8

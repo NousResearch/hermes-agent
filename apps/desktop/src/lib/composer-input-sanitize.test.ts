@@ -58,6 +58,12 @@ describe('sanitizeComposerInput', () => {
     }
   })
 
+  it('preserves dotted clock time during incremental input', () => {
+    for (const text of ['12.01~', '12.01~ 12.15']) {
+      expect(sanitizeComposerInput(text)).toBe(text)
+    }
+  })
+
   it('normalizes wrappers and repeated artifact tails together', () => {
     const corrupted = 'hello[' + '~[[e'.repeat(8)
     expect(sanitizeComposerInput(corrupted)).toBe('hello')

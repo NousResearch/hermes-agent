@@ -4400,6 +4400,11 @@ A bare or unknown invocation prints this message and exits non-zero instead of r
 # `python -m cron.scheduler` entry: MUST stay below the split-module imports so the worker /
 # tick paths see every name they need.
 if __name__ == "__main__":
+    # `--help` wins over every other mode (#152710): it must not boot the worker (which may relaunch
+    # the process before the payload is even read) and it must not run a tick.
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        print(_SCHEDULER_ENTRY_USAGE)
+        raise SystemExit(0)
     if "--external-worker-file" in sys.argv:
         finish_worker_boot()  # may relaunch: before the payload is read and the ack published
         import argparse
@@ -4426,9 +4431,6 @@ if __name__ == "__main__":
     # still launches the worker path above with `--external-worker-file`; a hand-run tick is now
     # explicit.
     _entry_args = sys.argv[1:]
-    if "-h" in _entry_args or "--help" in _entry_args:
-        print(_SCHEDULER_ENTRY_USAGE)
-        raise SystemExit(0)
     if _entry_args != ["--tick"]:
         print(_SCHEDULER_ENTRY_USAGE, file=sys.stderr)
         raise SystemExit(2)

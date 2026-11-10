@@ -59,6 +59,18 @@ def test_the_explicit_tick_still_runs(tmp_path):
     assert _tick_ran(tmp_path), "--tick no longer runs the scheduler"
 
 
+def test_help_wins_even_with_the_worker_flag(tmp_path):
+    """kvnloo's case: `--external-worker-file X --help` must print usage and exit 0, not argparse-error.
+
+    Handled before the worker branch on purpose: booting the worker may relaunch the process, which
+    must not happen for a help request.
+    """
+    done = _run(["--external-worker-file", str(tmp_path / "payload.json"), "--help"], tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert "usage: python -m cron.scheduler" in done.stdout
+    assert not _tick_ran(tmp_path)
+
+
 def test_the_worker_flag_keeps_its_own_parser(tmp_path):
     """The gateway launches this path; it must still refuse a half-specified worker, not tick."""
     done = _run(["--external-worker-file", str(tmp_path / "payload.json")], tmp_path)

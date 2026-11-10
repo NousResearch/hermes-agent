@@ -1,6 +1,6 @@
 name: factkit
 repo: https://github.com/MohamedElsiddig/hermes-plugin-factkit
-sha: 3ff5d1b581874fe89969a01aed6400d17bb63116
+sha: ffe3e255755e5b2b92bd5a06dfb89a0d549544d9
 description: >-
   Semantic recall for the built-in holographic memory provider. It reads the
   provider's store read-only and keeps its own embedding vectors in a separate
@@ -19,7 +19,7 @@ maintainer: MohamedElsiddig
 tier: community
 category: memory
 requires_hermes: ">=0.22.7"
-version: "0.3.1"
+version: "0.3.2"
 docs_url: https://github.com/MohamedElsiddig/hermes-plugin-factkit#readme
 readme: true
 capabilities:

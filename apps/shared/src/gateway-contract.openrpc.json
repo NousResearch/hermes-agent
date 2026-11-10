@@ -19716,6 +19716,29 @@
         "title": "GroupsCapabilitiesResult",
         "type": "object"
       },
+      "GroupsChangedPayload": {
+        "additionalProperties": true,
+        "description": "``change_watcher._groups_changed_payload``: the rooms whose log, tasks or live status moved; absent\nwhen something process-wide moved (every open room re-reads).",
+        "properties": {
+          "room_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Room Ids"
+          }
+        },
+        "title": "GroupsChangedPayload",
+        "type": "object"
+      },
       "GroupsContextParams": {
         "additionalProperties": false,
         "properties": {
@@ -21059,6 +21082,7 @@
       },
       "GroupsStateResult": {
         "additionalProperties": false,
+        "description": "``change_events``: this backend broadcasts ``groups.changed`` when the room moves, so a client's poll is\nonly a backstop (absent on older backends: keep polling at the old rate).",
         "properties": {
           "room": {
             "$ref": "#/components/schemas/Room"
@@ -21084,6 +21108,18 @@
               }
             ],
             "default": null
+          },
+          "change_events": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Change Events"
           }
         },
         "required": [
@@ -51116,6 +51152,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/GatewayReadyPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "groups.changed",
+      "summary": "A Group Chat log, task or live status moved; an open room re-reads its log delta and groups.state.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsChangedPayload"
           }
         }
       ]

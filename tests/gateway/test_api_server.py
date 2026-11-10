@@ -785,6 +785,12 @@ class TestRunEventCallback:
 # ---------------------------------------------------------------------------
 
 
+def test_cors_exposes_redirect_and_idempotency_headers():
+    from gateway.platforms.api_server import _CORS_HEADERS
+
+    assert _CORS_HEADERS["Access-Control-Expose-Headers"] == "Location, X-Request-Id, Idempotency-Key"
+
+
 class TestHealthEndpoint:
     @pytest.mark.asyncio
     async def test_security_headers_present(self, adapter):
@@ -800,6 +806,7 @@ class TestHealthEndpoint:
             assert resp.headers.get("X-Frame-Options") == "DENY"
             assert resp.headers.get("X-XSS-Protection") == "0"
             assert resp.headers.get("Referrer-Policy") == "no-referrer"
+            assert resp.headers.get("Cache-Control") == "no-store"
 
 
     @pytest.mark.asyncio

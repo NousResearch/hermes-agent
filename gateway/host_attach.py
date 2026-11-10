@@ -315,6 +315,11 @@ def standalone_rescan_message(profile: str) -> str:
         "to the host gateway before starting this profile's gateway.")
 
 
+def _matching_peer_identity(peer: HostGateway, home: Path) -> Optional[dict]:
+    identity = _identify(home)
+    return identity if isinstance(identity, dict) and _identity_matches(identity, peer, home) else None
+
+
 def _coexisting_gateways(owner: Optional[HostGateway]):
     """A standalone lock owner can hide a multiplexer launched beside it.
 
@@ -334,8 +339,10 @@ def _coexisting_gateways(owner: Optional[HostGateway]):
             continue
         seen.add(pid)
         peer = HostGateway(pid, home, (), served_known=False)
-        identity = _identify(home)
-        if isinstance(identity, dict) and _identity_matches(identity, peer, home):
+        # A peer that just started (the multiplexer won the host lock a moment ago) has a live
+        # pid before its control socket binds: give it the same bounded window as the owner.
+        identity = poll_until(lambda: _matching_peer_identity(peer, home), ATTACH_CHANNEL_WAIT_S, _CHANNEL_POLL_S)
+        if identity is not None:
             peer = HostGateway(pid, home, _served_from_identity(identity),
                                standalone=identity.get("multiplex") is False)
         yield peer

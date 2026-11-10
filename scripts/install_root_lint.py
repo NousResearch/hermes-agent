@@ -30,9 +30,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT))
-from hermes_agent.compat.paths import original_path
+from hermes_agent.compat.paths import current_path, original_path
 BASELINE = ROOT / "scripts" / "install_root_lint_baseline.json"
 KINDS = ("root_from_file", "module_sys_path")
+# A climb in a moved file that reached the root at the file's old depth now stops inside the package.
+MOVED = "moved_climb"
+# The owner looks for the folder that holds hermes_agent/, so its climb is right at either depth.
+OWNER = "hermes_cli/_startup_fast.py"
 FIX_HINT = ("Call hermes_cli._startup_fast.project_root_str() for the install root, and leave sys.path to"
             " the entry point. If the site is intended, run `python scripts/install_root_lint.py --update`"
             " and say why in the PR.")
@@ -142,17 +146,22 @@ def _generated_files(root: Path) -> set[str]:
 
 
 def collect(root: Path = ROOT) -> dict[str, list[str]]:
-    """Per kind, ``["<rel>:<line>", ...]``."""
-    found: dict[str, set[tuple[str, int]]] = {kind: set() for kind in KINDS}
+    """Per kind and ``MOVED``, ``["<rel>:<line>", ...]``. A climb reaches the root by the file's current depth."""
+    found: dict[str, set[tuple[str, int]]] = {kind: set() for kind in (*KINDS, MOVED)}
     generated = _generated_files(root)
     for rel in production_files(root):
         if rel.as_posix() in generated:
             continue
         text = (root / rel).read_text(encoding="utf-8-sig")
         tree = ast.parse(text)
+        old_depth = len(original_path(rel.as_posix()).split("/"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.expr) and (levels := climb(node)) is not None and levels >= len(original_path(rel.as_posix()).split("/")):
+            if not isinstance(node, ast.expr) or (levels := climb(node)) is None:
+                continue
+            if levels >= len(rel.parts):
                 found["root_from_file"].add((rel.as_posix(), node.lineno))
+            elif old_depth < len(rel.parts) and levels >= old_depth:
+                found[MOVED].add((rel.as_posix(), node.lineno))
         for stmt in _module_level(tree.body):
             if _edits_sys_path(stmt):
                 found["module_sys_path"].add((rel.as_posix(), stmt.lineno))
@@ -168,8 +177,15 @@ def read_baseline(path: Path = BASELINE) -> dict[str, dict[str, int]]:
 
 
 def regressions(current: dict[str, dict[str, int]], baseline: dict[str, dict[str, int]]) -> list[str]:
-    return [f"{kind}: {rel} ({n}, baseline {baseline.get(kind, {}).get(rel, 0)})" for kind in KINDS
+    return [f"{kind}: {current_path(rel)} ({n}, baseline {baseline.get(kind, {}).get(rel, 0)})" for kind in KINDS
             for rel, n in current[kind].items() if n > baseline.get(kind, {}).get(rel, 0)]
+
+
+def moved_climbs(found: dict[str, list[str]], baseline: dict[str, dict[str, int]]) -> list[str]:
+    """Climbs in moved files the baseline knew as root climbs, that no longer reach the root. A new file
+    in a moved package climbing to the package is not one: only baselined files climbed to the root."""
+    known = set(baseline.get("root_from_file", {})) - {OWNER}
+    return [site for site in found[MOVED] if original_path(site.rsplit(":", 1)[0]) in known]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -178,6 +194,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     found = collect()
     current = tally(found)
+    if stale := moved_climbs(found, read_baseline()):
+        print("moved files whose install-root climb now stops inside hermes_agent/:\n  " + "\n  ".join(stale)
+              + f"\n{FIX_HINT}", file=sys.stderr)
+        return 1
     if args.update:
         reasons = {rel: why for rel, why in read_baseline().get("reasons", {}).items()
                    if any(rel in current[kind] for kind in KINDS)}

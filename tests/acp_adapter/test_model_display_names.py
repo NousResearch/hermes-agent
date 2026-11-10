@@ -1,10 +1,4 @@
-"""ACP rows show a provider's own model name; ids and routing are untouched.
-
-ACP documents ``ModelInfo.name`` as the "human-readable name of the model". Every custom endpoint
-rendered its routing id instead, because discovery kept only ``data[].id``. These pin the ACP
-half for BOTH row kinds — named endpoints (providers:/custom_providers:) and canonical inventory
-rows — plus the invariant that a failed name lookup never changes which rows exist.
-"""
+"""ACP labels may change; routing IDs, descriptions and row membership must not."""
 
 from unittest.mock import patch
 
@@ -36,7 +30,7 @@ def _catalogs(names_result):
                return_value=[entry]), \
          patch("hermes_cli.model_switch_providers._fetch_picker_live_models",
                return_value=list(CATALOG)), \
-         patch("hermes_cli.models.fetch_api_model_names", **names_result):
+         patch("hermes_cli.models_catalog.fetch_api_model_names", **names_result):
         return model_catalog._named_custom_provider_catalogs()
 
 
@@ -85,11 +79,10 @@ class TestNamedEndpointRows:
 class TestFailedLookupKeepsRows:
 
     def test_failed_lookup_keeps_every_row(self):
-        catalogs = _catalogs({"side_effect": RuntimeError("endpoint down")})
-        assert [mid for mid, _ in catalogs[0][2]] == CATALOG
+        from hermes_cli.models_catalog import fetch_api_model_names
 
-    def test_empty_lookup_keeps_every_row(self):
-        catalogs = _catalogs({"return_value": {}})
+        with patch("hermes_cli.models.probe_api_models", side_effect=RuntimeError("endpoint down")):
+            catalogs = _catalogs({"wraps": fetch_api_model_names})
         assert [mid for mid, _ in catalogs[0][2]] == CATALOG
 
     def test_declared_only_endpoint_keeps_its_rows(self):
@@ -100,41 +93,38 @@ class TestFailedLookupKeepsRows:
                    return_value={"custom_providers": [entry]}), \
              patch("hermes_cli.config.get_compatible_custom_providers",
                    return_value=[entry]), \
-             patch("hermes_cli.models.fetch_api_model_names",
-                   side_effect=RuntimeError("no network")):
+             patch("hermes_cli.models_catalog.fetch_api_model_names",
+                   side_effect=RuntimeError("no network")) as fetch_names:
             catalogs = model_catalog._named_custom_provider_catalogs()
         assert catalogs[0][2] == [(CATALOG[0], "")]
+        fetch_names.assert_not_called()
+
+    def test_disabled_discovery_does_not_fetch_labels(self):
+        entry = _entry(discover_models=False, model=CATALOG[0])
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             patch("hermes_cli.config.get_compatible_custom_providers", return_value=[entry]), \
+             patch("hermes_cli.models_catalog.fetch_api_model_names") as fetch_names:
+            catalogs = model_catalog._named_custom_provider_catalogs()
+        assert catalogs[0][2] == [(CATALOG[0], "")]
+        fetch_names.assert_not_called()
 
 
 class TestCanonicalProviderRows:
     """Built-in providers get real names too, via the models.dev layer."""
 
-    def test_inventory_row_uses_the_name_from_models_dev(self):
+    @pytest.mark.parametrize("model, names, expected", [
+        ("x/y", {"x/y": "Friendly Model"}, "Friendly Model"),
+        ("x/y", {}, "Provider · x/y"),
+        ({"id": "x/y", "name": "Row Name"}, {"x/y": "Cached Name"}, "Row Name"),
+        ({"id": "x/y", "name": "x/y"}, {"x/y": "Friendly Model"}, "Friendly Model"),
+    ])
+    def test_inventory_label_priority(self, model, names, expected):
         cat = model_catalog._ModelCatalog(
             normalize_provider=lambda p: p, current_model="", current_choice_provider="",
-            current_base_url="", display_names={"gpt-5.6-sol": "GPT-5.6 Sol"})
+            current_base_url="", display_names=names)
         cat.add_inventory_rows(
-            [{"slug": "openai", "name": "OpenAI", "models": ["gpt-5.6-sol"]}],
-            lambda pid: pid.upper())
-        assert cat.models[0].name == "GPT-5.6 Sol"
-
-    def test_inventory_row_keeps_provider_prefixed_id_when_unnamed(self):
-        cat = model_catalog._ModelCatalog(
-            normalize_provider=lambda p: p, current_model="", current_choice_provider="",
-            current_base_url="", display_names={})
-        cat.add_inventory_rows(
-            [{"slug": "openai", "name": "OpenAI", "models": ["mystery/model"]}],
-            lambda pid: pid.upper())
-        assert cat.models[0].name == "OpenAI · mystery/model"
-
-    def test_dict_rows_carry_their_own_name(self):
-        cat = model_catalog._ModelCatalog(
-            normalize_provider=lambda p: p, current_model="", current_choice_provider="",
-            current_base_url="", display_names={})
-        cat.add_inventory_rows(
-            [{"slug": "p", "name": "P", "models": [{"id": "x/y", "name": "Row Name"}]}],
-            lambda pid: pid)
-        assert cat.models[0].name == "Row Name"
+            [{"slug": "p", "name": "Provider", "models": [model]}], lambda pid: pid)
+        assert cat.models[0].name == expected
 
 
 class TestRoutingIdentityUnchanged:
@@ -144,6 +134,7 @@ class TestRoutingIdentityUnchanged:
             "antigravity/gemini-3.8-flash-tiered": "Gemini 3.8 Flash Tiered"}}))
         without = _rows(_catalogs({"return_value": {}}))
         assert [r.model_id for r in with_names] == [r.model_id for r in without]
+        assert [r.description for r in with_names] == [r.description for r in without]
 
     def test_each_row_keeps_a_provider_prefixed_id(self):
         rows = _rows(_catalogs({"return_value": {}}))

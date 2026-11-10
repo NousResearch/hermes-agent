@@ -2300,20 +2300,6 @@ def _probe_neg_key(base_url: str) -> Optional[str]:
     return f"{host}:{port}" if host else None
 
 
-def _probe_result(
-    models, probed_url, resolved_base_url, suggested_base_url=None, used_fallback=False,
-    model_names=None,
-) -> dict[str, Any]:
-    return {
-        "models": models,
-        "probed_url": probed_url,
-        "resolved_base_url": resolved_base_url,
-        "suggested_base_url": suggested_base_url,
-        "used_fallback": used_fallback,
-        # ``{model_id: display_name}`` as published by the endpoint. Presentation only.
-        "model_names": model_names or {}}
-
-
 def probe_api_models(
     api_key: Optional[str], base_url: Optional[str], timeout: float = 5.0,
     api_mode: Optional[str] = None, request_headers: Optional[dict[str, str]] = None,
@@ -2321,6 +2307,8 @@ def probe_api_models(
     """Probe a ``/models`` endpoint with light URL heuristics (``base`` then ``base±/v1``).
     ``anthropic_messages`` mode sends ``x-api-key`` + ``anthropic-version`` instead of a bearer; the
     ``data[].id`` response shape is identical. ``models`` is None when no candidate answered."""
+    from hermes_cli.models_catalog import _probe_result, _published_name
+
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return _probe_result(None, None, "")
@@ -2546,66 +2534,6 @@ def fetch_api_models(
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint."""
     result = probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode, request_headers=headers)
     return result.get("models")
-
-
-def _published_name(item: dict) -> str:
-    """The row's own human label, whichever key the catalog publishes it under.
-
-    The OpenAI shape is ``name``; Anthropic's ``/v1/models`` uses ``display_name``. Both are
-    read so this works for every provider rather than one gateway's dialect. An id-shaped
-    alias carries no information; later keys may still contain a human-readable name."""
-    model_id = str(item.get("id") or "").strip()
-    for key in ("name", "display_name", "displayName"):
-        label = str(item.get(key) or "").strip()
-        if label and label != model_id:
-            return label
-    return ""
-
-
-def fetch_api_model_names(
-    api_key: Optional[str], base_url: Optional[str], timeout: float = 5.0,
-    api_mode: Optional[str] = None, headers: Optional[dict[str, str]] = None,
-) -> dict[str, str]:
-    """``{model_id: display_name}`` from the provider's ``/models`` endpoint (``{}`` on any miss).
-
-    Read from the same response :func:`fetch_api_models` parses, with the same auth and TLS
-    rules, so any picker can show a provider's own labels. Never raises: presentation must not
-    break on an unreachable or name-less catalog."""
-    try:
-        result = probe_api_models(
-            api_key, base_url, timeout=timeout, api_mode=api_mode, request_headers=headers)
-    except Exception:
-        return {}
-    names = result.get("model_names")
-    return dict(names) if isinstance(names, dict) else {}
-
-
-def model_display_names() -> dict[str, str]:
-    """``{model_id: display_name}`` from the bundled models.dev catalog, for every provider.
-
-    ``/v1/models`` is not the only source of human names: models.dev ships one per model for
-    the providers it covers. Read from cache/disk only (``allow_network=False``) — this feeds a
-    picker render, so it must never block on the registry host; a cold cache simply yields no
-    names and the caller falls back to model ids.
-    """
-    try:
-        from agent.models_dev import fetch_models_dev
-    except ImportError:
-        return {}
-    try:
-        data = fetch_models_dev(allow_network=False)
-    except Exception:
-        return {}
-    names: dict[str, str] = {}
-    for provider_data in (data or {}).values():
-        models = provider_data.get("models") if isinstance(provider_data, dict) else None
-        if not isinstance(models, dict):
-            continue
-        for model_id, entry in models.items():
-            label = str((entry or {}).get("name") or "").strip() if isinstance(entry, dict) else ""
-            if label and label != model_id and model_id not in names:
-                names[model_id] = label
-    return names
 
 
 def _custom_endpoint_fingerprint(

@@ -6122,9 +6122,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> str:
         """Merge ``event`` into ``pending[key]`` (media, caption, reply expectation) or seed it; return the lane used."""
-        from plugins.platforms.telegram.telegram_batching import merge_batched_event
+        from plugins.platforms.telegram.telegram_batching import merge_batched_event, resolve_routing
+        resolve_routing(self, event)  # routed BEFORE it may join a batch: one resolved session key per batch
         return merge_batched_event(pending, key, event, merge_caption=self._merge_caption,
-                                   route_key=lambda ev: self._event_session_key(ev))  # read only when both are pinned
+                                   route_key=lambda ev: ev.source and self._event_session_key(ev))
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""

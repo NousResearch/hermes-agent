@@ -1138,6 +1138,21 @@ def test_lazy_discovery_snapshots_callbacks_from_captured_manager(monkeypatch, t
     assert not producer.is_alive()
 
 
+def test_unknown_observer_does_not_suppress_status_but_keeps_moa_streaming(monkeypatch):
+    from agent.turn_api_call import _should_stream
+
+    agent = _agent()
+    agent.provider = "moa"
+    output = []
+    agent._print_fn = output.append
+    manager = _patch_test_callback_manager(monkeypatch, {})
+    manager._discovered = False
+    agent._vprint("request status")
+    assert output == ["request status"]
+    assert _should_stream(agent) is True
+    assert manager._discovered is False
+
+
 def test_busy_stream_observer_keeps_moa_streaming(monkeypatch):
     from agent.turn_api_call import _should_stream
 
@@ -1171,7 +1186,8 @@ def test_stream_capability_lookup_does_not_discover(monkeypatch, tmp_path):
     monkeypatch.setattr(psh, "stream_reasoning_deltas_enabled", lambda: True)
     token = set_hermes_home_override(home)
     try:
-        assert psh.has_stream_observer_hooks() is True
+        assert psh.has_stream_observer_hooks() is False
+        assert psh.has_stream_observer_hooks(include_unknown=True) is True
         assert psh.has_reasoning_stream_observer_hooks() is True
         assert discovery_calls == []
         assert manager._discovered is False

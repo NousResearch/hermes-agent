@@ -12,6 +12,7 @@ the submitter now, so it prints no tool feed. The owner, which already validates
 frame, appends one redacted line per call there (``TaskToolLog``) — append-only, never created
 or rotated here.
 """
+import asyncio
 import json
 import logging
 import os
@@ -35,6 +36,9 @@ _locks_guard = threading.Lock()
 # feed there itself; a managed card's dispatcher child is only the submitter, so the owner, which
 # already receives every tool frame, writes it. Every line starts with the tag and holds no line
 # break: tool output can never forge the submitter's exit trailer the dead-worker sweep reads.
+# The dispatcher's `_log_noise_prefixes` repeats this literal (it does not import the gateway), so
+# `_worker_final_output` never quotes tool output (web pages, file contents) into the board
+# diagnostic or the retry worker's context; a test binds the two.
 TASK_LOG_TAG = '[tool]'
 TASK_LOG_PREVIEW_CHARS = 240
 _LINE_BREAKS = re.compile('[\x00-\x1f\x7f\x85\u2028\u2029]+')
@@ -154,11 +158,17 @@ class TaskToolLog:
             # No log for this run (a direct kanban.run caller): nothing to feed, quietly.
             self._capped = True
             logger.debug('kanban tool feed %s not written (no per-task log)', self._path)
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- best-effort feed: never raises into the turn; logs the type only, a message may quote tool output
             if not self._warned:
                 self._warned = True
                 logger.warning('kanban tool feed %s not written (%s); dropping its lines',
                                self._path, type(exc).__name__)
+
+
+async def feed_task_log(task_log, frame):
+    """Append ``frame``'s line off the event loop; None (any non-Kanban session) is a no-op."""
+    if task_log is not None:
+        await asyncio.to_thread(task_log.write, frame)
 
 
 def drain_worker_stderr(stream, path, pid, scrub):

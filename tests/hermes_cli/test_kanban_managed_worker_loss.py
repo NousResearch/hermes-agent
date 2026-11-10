@@ -329,3 +329,7 @@ def test_worker_final_output_skips_tool_feed(board):
     output = kbd._worker_final_output("t_feed")
     assert output == "I could not finish because the provider refused the request."
     assert "[tool]" not in output and "a web page body" not in output
+    # The dispatcher repeats the gateway's tag as a literal (it does not import the gateway), so
+    # this binds the two: a change to either would silently stop filtering the feed.
+    from gateway.session_managed_worker_log import TASK_LOG_TAG
+    assert TASK_LOG_TAG in kbd._log_noise_prefixes()

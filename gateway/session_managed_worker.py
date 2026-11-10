@@ -664,7 +664,7 @@ async def execute_managed(authority, ref, row, policy):
     if spawned is None:
         return ''
     worker, process = spawned
-    from gateway.session_managed_worker_log import TaskToolLog
+    from gateway.session_managed_worker_log import TaskToolLog, feed_task_log
     # The Kanban card's Worker log feed; None for any other session.
     task_log = TaskToolLog.for_policy(policy, lambda: worker.secrets)
     workers = authority._managed_workers
@@ -708,8 +708,7 @@ async def execute_managed(authority, ref, row, policy):
                 authority.publish_execution(ref.session_id, row['generation'], 'message.delta', {'text': frame['text']})
                 continue
             if publish_worker_tool_event(authority, ref.session_id, row['generation'], frame):
-                if task_log is not None:
-                    await asyncio.to_thread(task_log.write, frame)
+                await feed_task_log(task_log, frame)
                 continue
             if kind == 'result' and set(frame) == {'type', 'result'} and accepted is None:
                 try:

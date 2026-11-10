@@ -69,13 +69,10 @@ async def test_handle_message_queues_followup_when_grace_env_is_malformed(monkey
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._busy_ack_ts = {}
     runner._draining = False
     runner._busy_text_mode = "interrupt"
     runner._busy_input_mode = "queue"
-    runner._queued_events = {}
     runner.adapters = {}
     runner.config = MagicMock()
     runner.config.group_sessions_per_user = True
@@ -86,9 +83,9 @@ async def test_handle_message_queues_followup_when_grace_env_is_malformed(monkey
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = True
     runner._is_user_authorized = lambda _source: True
-    runner._enqueue_fifo = lambda key, event, adapter: runner._queued_events.setdefault(
-        key, []
-    ).append(event)
+    runner._enqueue_fifo = lambda key, event, adapter: runner._session_state(
+        key
+    ).conversation.queued_events.append(event)
 
     adapter = MagicMock()
     adapter._pending_messages = {}
@@ -111,7 +108,7 @@ async def test_handle_message_queues_followup_when_grace_env_is_malformed(monkey
     agent = MagicMock()
     agent.get_activity_summary.return_value = {"seconds_since_activity": 0.0}
     runner._running_agents[sk] = agent
-    runner._running_agents_ts[sk] = time.time()
+    runner._session_state(sk).turn.started_ts = time.time()
 
     event = MessageEvent(
         text="follow-up with bad grace env",
@@ -123,7 +120,7 @@ async def test_handle_message_queues_followup_when_grace_env_is_malformed(monkey
     result = await GatewayRunner._handle_message(runner, event)
     assert result is None
     # Queued without raising on HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS=abc
-    queued = runner._queued_events.get(sk) or []
+    queued = runner._session_state(sk).conversation.queued_events
     pending = adapter._pending_messages.get(sk)
     assert queued or pending is event
     agent.interrupt.assert_not_called()

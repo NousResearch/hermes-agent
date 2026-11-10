@@ -56,6 +56,9 @@ async def cache_replied_media(adapter: Any, msg: Any, event: Any) -> None:
     reply_msg = getattr(msg, "reply_to_message", None)
     if reply_msg is None:
         return
+    # The typed text before any replied-to note: a chunk merged beside a voice-note reply keeps
+    # only this, so another reply's attachment note never joins the clarify answer.
+    event.metadata.setdefault("typed_text", (event.text or "").strip())
     status, cached = await adapter._download_observed_media(reply_msg, "replied-to media")
     if status == "ok":
         spoken = getattr(reply_msg, "voice", None) is not None and not getattr(
@@ -83,11 +86,12 @@ async def cache_replied_media(adapter: Any, msg: Any, event: Any) -> None:
 
 def merged_replied_voice_typed_text(existing: Any, event: Any) -> str | None:
     """The typed clarify answer once text chunk *event* merges into the pending batch *existing*:
-    both chunks' typed text in order, when either is a typed reply to a voice note (a chunk without
-    the key carries no replied-to note, so its text is its typed text). ``None``: nothing to change."""
+    both chunks' typed text in order, when either is a typed reply to a voice note. A chunk that
+    replied to anything records its pre-note text as ``typed_text``; one that replied to nothing
+    carries no note, so its text is its typed text. ``None``: nothing to change."""
     key = "replied_voice_typed_text"
     if existing is None or not (event.text or "").strip() or (
             key not in existing.metadata and key not in event.metadata):
         return None
-    parts = (m.metadata.get(key, (m.text or "").strip()) for m in (existing, event))
+    parts = (m.metadata.get(key, m.metadata.get("typed_text", (m.text or "").strip())) for m in (existing, event))
     return "\n".join(p for p in parts if p)

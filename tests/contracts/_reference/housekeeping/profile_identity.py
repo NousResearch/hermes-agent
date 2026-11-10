@@ -1,15 +1,18 @@
 """In-memory reference implementation of ``ProfileIdentityRepository`` (test fixture).
 
-Registered onto the assembled backend as the ``profile_identity`` attribute. The reference store has the sessions table (``profile_name``, ``session_key``, ``origin``), the heartbeat table, the routing index (routing scope -> session key -> a row with ``session_key`` and ``origin`` attributes) and, once ``RoutingRepository.prepare_topic_storage`` ran, the topic tables keyed by ``(profile, chat_id)`` and ``(profile, chat_id, thread_id)``. It has no delivery ledger: those facets count ``None``, as do the topic facets before the topic tables exist. Collisions are checked before the first write, so a refused rename leaves every table as it was.
+Registered onto the assembled backend as the ``profile_identity`` attribute. The reference store has the sessions table (``profile_name``, ``session_key``, ``origin``), the heartbeat table, the routing index (routing scope -> session key -> a row with ``session_key`` and ``origin`` attributes) and, once ``RoutingRepository.prepare_topic_storage`` ran, the topic tables keyed by ``(profile, chat_id)`` and ``(profile, chat_id, thread_id)``. API binding receipts are the scope's ``api_bindings`` receipts and local creation receipts the authority state's ``binding:`` meta entries; both are rewritten in the authority transaction, as stored dicts. It has no delivery ledger: those facets count ``None``, as do the topic facets before the topic tables exist. Collisions are checked before the first write, so a refused rename leaves every table as it was.
 """
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 from typing import Any, Mapping, Optional
 
 from persistence.housekeeping.profile_identity import ProfileIdentityCollision, ProfilePurgeCounts, ProfileRekeyCounts, profile_namespace
 
+from .._authority import authority_state
+from ..authority.bindings_lineage import RECEIPT_PREFIX, decode
 from ..backend import InMemoryBackend, register_repository
 
 __all__ = ["InMemoryProfileIdentityRepository"]
@@ -17,6 +20,36 @@ __all__ = ["InMemoryProfileIdentityRepository"]
 
 def _rekeyed(key: Any, old_ns: str, new_ns: str) -> Any:
     return new_ns + key[len(old_ns):] if isinstance(key, str) and key.startswith(old_ns) else key
+
+
+def _rekeyed_receipt(raw: Any, old: str, new: str, old_ns: str, new_ns: str) -> Optional[dict[str, Any]]:
+    """``raw`` with its ``route`` and ``entry['session_key']`` moved out of ``old_ns`` and ``entry['origin']['profile']`` renamed, or None when nothing changed or it does not decode as an object."""
+    try:
+        receipt = decode(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    receipt, changed = copy.deepcopy(receipt), False
+    if isinstance(receipt.get("route"), str) and receipt["route"].startswith(old_ns):
+        receipt["route"], changed = _rekeyed(receipt["route"], old_ns, new_ns), True
+    entry = receipt.get("entry")
+    if isinstance(entry, dict):
+        if isinstance(entry.get("session_key"), str) and entry["session_key"].startswith(old_ns):
+            entry["session_key"], changed = _rekeyed(entry["session_key"], old_ns, new_ns), True
+        origin = entry.get("origin")
+        if isinstance(origin, dict) and origin.get("profile") == old:
+            origin["profile"], changed = new, True
+    return receipt if changed else None
+
+
+def _rekey_stored(table: dict[str, Any], keys: list[str], *names: str) -> int:
+    moved = 0
+    for key in keys:
+        if (receipt := _rekeyed_receipt(table[key], *names)) is not None:
+            table[key] = receipt
+            moved += 1
+    return moved
 
 
 class InMemoryProfileIdentityRepository:
@@ -90,6 +123,15 @@ class InMemoryProfileIdentityRepository:
                 moved += 1
         return moved
 
+    def _rekey_receipts(self, *names: str) -> tuple[int, int]:
+        """The API binding and local creation receipts moved, in one authority transaction."""
+        with authority_state(self._backend, self._backend.scope).transaction() as staged:
+            receipts = staged.scope.get("api_bindings", {}).get("receipts", {})
+            meta = staged.authority["meta"]
+            api = _rekey_stored(receipts, list(receipts), *names)
+            local = _rekey_stored(meta, [key for key in meta if isinstance(key, str) and key.startswith(RECEIPT_PREFIX)], *names)
+        return api, local
+
     def rekey_profile(self, old_name: str, new_name: str) -> ProfileRekeyCounts:
         old, new = (old_name or "").strip(), (new_name or "").strip()
         if not old or not new or old == new:
@@ -101,12 +143,16 @@ class InMemoryProfileIdentityRepository:
         for row in heartbeats:
             row["profile"] = new
         topics = self._rekey_topics(old, new, old_ns, new_ns)
+        routing = self._rekey_routing(old, new, old_ns, new_ns)
+        api, local = self._rekey_receipts(old, new, old_ns, new_ns)
         return ProfileRekeyCounts(
             sessions_profile_name=owners,
             gateway_heartbeats_profile=len(heartbeats),
             sessions_session_key=keys,
             sessions_origin_json=origins,
-            gateway_routing=self._rekey_routing(old, new, old_ns, new_ns),
+            gateway_routing=routing,
+            api_binding_receipts=api,
+            local_policy_receipts=local,
             **topics,
         )
 

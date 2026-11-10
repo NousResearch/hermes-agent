@@ -1,18 +1,22 @@
 """Contract suite for the profile_identity capability.
 
-Every case runs a real assembled backend, seeds a profile's identity through the public sessions, routing and maintenance operations, and observes through public reads. The behaviour pinned for ``rekey_profile`` / ``purge_profile``: names stripped, empty or equal names a no-op with empty counts, collisions refused before any write, one count per facet the store has.
+Every case runs a real assembled backend, seeds a profile's identity through the public sessions, routing, bindings and maintenance operations, and observes through public reads. The behaviour pinned for ``rekey_profile`` / ``purge_profile``: names stripped, empty or equal names a no-op with empty counts, collisions refused before any write, one count per facet the store has, the API binding and local creation receipts moved with the name.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 
 import pytest
 
 from persistence import Conflict, ProfileScope, SessionId
+from persistence.authority.bindings import NewApiBinding, NewSessionBinding
 from persistence.conversation.sessions import NewSession
 from persistence.housekeeping.profile_identity import ProfileIdentityCollision, ProfilePurgeCounts, ProfileRekeyCounts, profile_namespace
+from tests.contracts.authority.test_bindings_api_contract import STAMP, STARTED
+from tests.contracts.authority.test_bindings_contract import begin
 
 NS = "telegram"
 NS_ALT = "discord"
@@ -186,6 +190,61 @@ def test_purge_after_rekey_finds_nothing_under_the_old_name(backend, scope_a):
     assert set(store_a.profile_identity.purge_profile(OLD).as_dict().values()) == {0}
     counts = store_a.profile_identity.purge_profile(NEW)
     assert (counts.gateway_routing, counts.telegram_dm_topic_bindings) == (2, 1)
+
+
+def bind_receipts(store, profile: str, tag: str) -> tuple[SessionId, SessionId]:
+    """One API binding and one local creation receipt minted by ``profile``: route and entry key under its namespace, origin naming it, ``profile_id`` the minting home."""
+    epoch = begin(store)
+    api_sid, local_sid = SessionId(f"api-{profile}-{tag}"), SessionId(f"local-{profile}-{tag}")
+    route = profile_namespace(profile) + f"api_server:dm:{api_sid}"
+    origin = {"platform": "api_server", "chat_id": api_sid, "user_id": "api", "chat_type": "dm", "profile": profile}
+    entry = {"session_key": route, "session_id": api_sid, "created_at": STAMP, "updated_at": STAMP, "origin": origin}
+    store.bindings.bind_api(epoch=epoch, binding=NewApiBinding(
+        session_id=api_sid, route=route, storage_source="api_server", title=None, declared_key=None, caller_key=None, origin=origin, entry=entry,
+        receipt={"profile_id": f"/homes/{profile}", "session_id": api_sid, "route": route, "entry": entry}, started_at=STARTED))
+    route = profile_namespace(profile) + f"local:dm:{local_sid}"
+    origin = {"platform": "local", "chat_id": local_sid, "user_id": "owner", "chat_type": "dm", "profile": profile}
+    store.bindings.reserve(epoch=epoch, owner=None, binding=NewSessionBinding(
+        profile_id=f"/homes/{profile}", principal_id="owner", request_id=f"req-{tag}", session_id=local_sid, route=route,
+        entry={"session_key": route, "session_id": local_sid, "created_at": STAMP, "updated_at": STAMP, "origin": origin},
+        policy={"source": "cli", "model": "model-a", "cwd": "/workspace", "request_json": "{}"}, created_source="cli"))
+    return api_sid, local_sid
+
+
+def _moved(receipt, profile: str):
+    """``receipt`` as a rename to ``profile`` leaves it: route and entry key in the new namespace, origin naming the new name, every other field as stored."""
+    route = profile_namespace(profile) + receipt.route.split(":", 2)[2]
+    return dataclasses.replace(receipt, route=route, entry={**receipt.entry, "session_key": route, "origin": {**receipt.entry["origin"], "profile": profile}})
+
+
+def test_rekey_moves_api_and_local_receipts_and_counts_them(backend, scope_a):
+    store_a = backend.open(scope_a)
+    api_sid, local_sid = bind_receipts(store_a, OLD, "t1")
+    api_keep, local_keep = bind_receipts(store_a, BYSTANDER, "t1")
+    api, local = store_a.bindings.api_binding(api_sid), store_a.bindings.receipt(local_sid)
+    kept = (store_a.bindings.api_binding(api_keep), store_a.bindings.receipt(local_keep))
+    counts = store_a.profile_identity.rekey_profile(OLD, NEW)
+    # CONTRACT: each receipt's route and entry key move to the new namespace and its origin to the new name; profile_id (the minting home), the id and the lineage stay as stored.
+    assert (counts.api_binding_receipts, counts.local_policy_receipts) == (1, 1)
+    assert store_a.bindings.api_binding(api_sid) == _moved(api, NEW)
+    assert store_a.bindings.receipt(local_sid) == _moved(local, NEW)
+    assert (store_a.bindings.api_binding(api_sid).profile_id, store_a.bindings.receipt(local_sid).profile_id) == (f"/homes/{OLD}", f"/homes/{OLD}")
+    # CONTRACT: another profile's receipts stay, ``alpha_x`` included (a whole-namespace match only).
+    assert (store_a.bindings.api_binding(api_keep), store_a.bindings.receipt(local_keep)) == kept
+    # CONTRACT: a repeated rename counts zero receipts and changes none.
+    moved = (store_a.bindings.api_binding(api_sid), store_a.bindings.receipt(local_sid))
+    again = store_a.profile_identity.rekey_profile(OLD, NEW)
+    assert (again.api_binding_receipts, again.local_policy_receipts) == (0, 0)
+    assert (store_a.bindings.api_binding(api_sid), store_a.bindings.receipt(local_sid)) == moved
+
+
+def test_rekey_counts_receipts_even_when_none_are_stored(backend, scope_a):
+    store_a = backend.open(scope_a)
+    seed_profile(backend, scope_a, OLD, "t1")
+    # CONTRACT: once the names are valid both receipt counts are present, zero when nothing moved.
+    facts = store_a.profile_identity.rekey_profile(OLD, NEW).as_dict()
+    assert (facts["api_binding_receipts"], facts["local_policy_receipts"]) == (0, 0)
+    assert list(facts)[-3:] == ["gateway_routing", "api_binding_receipts", "local_policy_receipts"]
 
 
 def test_profile_identity_is_scope_isolated(backend, scope_a, scope_b):

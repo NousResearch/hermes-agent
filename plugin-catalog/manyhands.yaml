@@ -1,8 +1,8 @@
 name: manyhands
 title: manyhands
 repo: https://github.com/PhiBao/manyhands
-sha: 312a903cde824766c8f8e832d9ae86628a3b2de9
-version: "0.5.0"
+sha: 0a7cb42a43db69a0bbaf882f600ad077fbb1e4e1
+version: "0.5.1"
 description: >-
   Identity, memory and permissions for every person who talks to one Hermes bot. A gateway is a
   single-operator agent: the platform already carries sender_id and platform into every turn and
@@ -43,10 +43,10 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/PhiBao/manyhands#readme
-image: https://raw.githubusercontent.com/PhiBao/manyhands/312a903cde824766c8f8e832d9ae86628a3b2de9/docs/approval.png
+image: https://raw.githubusercontent.com/PhiBao/manyhands/0a7cb42a43db69a0bbaf882f600ad077fbb1e4e1/docs/approval.png
 screenshots:
-  - https://raw.githubusercontent.com/PhiBao/manyhands/312a903cde824766c8f8e832d9ae86628a3b2de9/docs/approval.png
-  - https://raw.githubusercontent.com/PhiBao/manyhands/312a903cde824766c8f8e832d9ae86628a3b2de9/docs/roster.png
+  - https://raw.githubusercontent.com/PhiBao/manyhands/0a7cb42a43db69a0bbaf882f600ad077fbb1e4e1/docs/approval.png
+  - https://raw.githubusercontent.com/PhiBao/manyhands/0a7cb42a43db69a0bbaf882f600ad077fbb1e4e1/docs/roster.png
 platforms: []
 known_issues:
   - "Identity is only as good as the platform event, and a call that carries none fails closed: a session that never had a human turn on it, a subagent, and a tool called from inside `execute_code` (the host passes an empty session id there) all get the guest allowlist rather than the owner's. Set `unknown_session_policy: operator` if every caller on your machine is trusted. Machine-generated turns are recognised by a marker AND the absence of a sender, so a cron prompt is the operator's while a guest who types `[cron]` stays a guest."

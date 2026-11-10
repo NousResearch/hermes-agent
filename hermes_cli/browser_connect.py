@@ -347,8 +347,10 @@ def detect_default_chromium(system: str | None = None) -> str | None:
 
 
 # --- Real-profile SNAPSHOT launch -------------------------------------------------------
-# Never drive the live default user-data-dir: Chromium ≥136 (Google builds) refuses remote
-# debugging on it, and the user's running browser holds it (SingletonLock). Instead snapshot
+# Never drive the live default user-data-dir with --remote-debugging-port: Chromium ≥136 (Google
+# builds) refuses that flag on it, and the user's running browser holds it (SingletonLock). The
+# chrome://inspect toggle (Chrome ≥144, one Allow popup per connection) is the sanctioned route into
+# a live default profile; that is ``browser.live_chrome``, not this launcher. Here, snapshot
 # the real profile into ``~/.hermes/browser-profile/`` and launch the user's real binary on
 # the copy — with NO mock-keychain/basic-store switches, so OS-keyring-encrypted cookies
 # decrypt exactly as in the user's own browser.

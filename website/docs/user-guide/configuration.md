@@ -2988,6 +2988,7 @@ browser:
   # Chromium-family browser (as /browser connect does) instead of launching one.
   cdp_url: ""
   use_real_profile: false        # Browse on a managed copy of your real browser profile (opt-in)
+  live_chrome: false             # Drive your own running Chrome via chrome://inspect (opt-in, Chrome 144+)
   # Dialog supervisor — how native JS dialogs (alert / confirm / prompt / beforeunload) are handled
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)

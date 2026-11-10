@@ -451,6 +451,28 @@ Lightpanda has no graphical renderer, so `capture_screenshot()` is unavailable a
 
 **When the engine is ignored.** `browser.engine` is the lowest-precedence browser setting: a cloud provider (including the Nous subscription browser — and on never-configured setups, any `BROWSERBASE_API_KEY` / `BROWSER_USE_API_KEY` in `~/.hermes/.env` auto-selects one), a `browser.cdp_url` / `/browser connect` override, or `browser.use_real_profile` all take precedence. Picking Lightpanda in `hermes tools` writes `cloud_provider: local` for you; `/browser status` and `hermes doctor` report when the engine is configured but shadowed, and by what.
 
+## Your live Chrome
+
+`browser_exec` can drive the Chrome you are already using, signed in as you, through the route Chrome 144+ provides for this: the `chrome://inspect` remote-debugging toggle. It is **off by default**.
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  live_chrome: true
+```
+
+1. In Chrome, open `chrome://inspect/#remote-debugging` and tick **Allow remote debugging for this browser instance**.
+2. Ask Hermes to use the browser. Chrome shows an **"Allow remote debugging?"** popup and **you click Allow**. Chrome raises one popup for *each* connection, so expect one per new browser connection (for example after a Hermes daemon restart), not one per command. Hermes never clicks it for you, and the model is told not to try.
+
+How it behaves:
+
+- **Your Chrome, not Hermes's.** Hermes never launches or closes it. If Chrome is not running, the call fails with a message asking you to open it and enable the toggle above.
+- **Own tab.** Each session opens a new tab and works only there; your existing tabs are not driven. (Hermes also turns off the harness's tab-title marker so no existing tab is retitled.)
+- **One connection.** Hermes does not open a second CDP connection for dialog handling, so no second popup. `browser_vault` therefore reports `supervisor_required` while live mode drives the browser.
+- **Precedence.** An operator override (`BU_CDP_*`, `/browser connect`, `BROWSER_CDP_URL`, `browser.cdp_url`) wins. Otherwise live mode beats a cloud provider and `browser.use_real_profile` (and serves the `local` argument itself, so no profile snapshot is made). Private/LAN URLs still go to the [hybrid local sidecar](#cloud-browsers) when a cloud provider is configured, never into your signed-in Chrome.
+- **macOS permission.** macOS can block reading `~/Library/Application Support/Google/Chrome` with "Operation not permitted", depending on which app launched Hermes. Hermes then names the folder in its error; grant that app access under **System Settings → Privacy & Security** (Files and Folders or Full Disk Access) and restart it. Hermes does not work around the protection.
+- A harness daemon that is already running keeps the browser it started with; `live_chrome` takes effect when it next starts.
+
 ## Your own browser via CDP (`/browser connect`)
 
 Instead of the Chromium Hermes launches or a cloud provider, you can attach the browser tools to your own running Chrome, Brave, Chromium, or Edge instance via the Chrome DevTools Protocol (CDP). This is useful when you want to see what the agent is doing in real-time, interact with pages that require your own cookies/sessions, or avoid cloud browser costs.

@@ -28,6 +28,8 @@ from hermes_cli.process_identity import (
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import (daemon_env, daemon_identity, fit_default_socket_dir, harness_pid_file,
                                         namespace_harness_dirs)
+from tools.browser_use_live_chrome import (DESCRIPTION, LIVE_CHROME_SENTINEL, approval_attempt,
+                                           live_chrome_enabled, live_chrome_timeout_hint)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -160,6 +162,8 @@ def _code_url_verdict(code: str) -> _CodeUrlVerdict:
     resolves DNS unmemoised, so a rebinding host evaluated twice could relax the private-address floor and
     still route to the cloud provider."""
     from tools.browser_url_policy import evaluate_url_safety, hybrid_routes_locally
+    if refused := approval_attempt(code):  # live Chrome: the user clicks Allow, never the model
+        return _CodeUrlVerdict(refused, False)
     local_sidecar = False
     for url in _URL_RE.findall(code or ""):
         routes_local = hybrid_routes_locally(url)
@@ -350,6 +354,38 @@ def _sidecar_daemon_name(name: str) -> str:
     return f"_local_{name or 'default'}"[:64]
 
 
+def _live_daemon_name(name: str) -> str:
+    """BU_NAME of the harness daemon attached to the user's live Chrome (``browser.live_chrome``). A daemon
+    latches its browser at spawn and outlives the call, so sharing a name with the packaged/cloud route
+    would keep driving the signed-in Chrome after the switch is turned off (and the reverse). User session
+    names cannot start with ``_``."""
+    return f"_live_{name or 'default'}"[:64]
+
+
+def _name_route_daemon(env: dict, session: str, local_sidecar: bool, live_chrome: bool) -> None:
+    """Give the hybrid sidecar and the live-Chrome route their own daemon names (see the two name
+    functions above); any other route keeps the session's own BU_NAME."""
+    if local_sidecar:
+        env["BU_NAME"] = _sidecar_daemon_name(session)
+    elif live_chrome:
+        env["BU_NAME"] = _live_daemon_name(session)
+
+
+def _stop_live_daemons_if_off() -> None:
+    """``browser.live_chrome`` is a consent switch read on every call: once it reads off, stop every
+    live-Chrome daemon this process drove so nothing stays attached to the user's Chrome. The harness's
+    shutdown closes only the tab it opened, never the user's browser or tabs."""
+    if live_chrome_enabled():
+        return
+    home = hermes_home_key()  # the switch is this profile's: never stop another served profile's live daemon
+    with _driven_daemons_lock:
+        daemons = sorted(key for key, owner in _driven_daemons.items()
+                         if owner == home and str(key[-1]).startswith("_live_"))
+        for key in daemons:
+            _driven_daemons.pop(key, None)
+    _reload_daemons(daemons)
+
+
 def _export_real_profile_note(env: dict, key: str) -> None:
     """The session layer decides real profile vs fresh browser once per key; carry its note (if it fell
     back) so the result reports the browser this call actually drives."""
@@ -404,7 +440,8 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     env / ``browser.cdp_url`` (``/browser connect``); (3) a cloud provider via ``browser_session.get_session_info``
     (per-key cache, expiry, reaper, atexit; a provider failure falls back to a local browser);
     (4) the local engine — ``browser.engine: lightpanda`` or Hermes' packaged Chromium via the launcher
-    (never the harness's own discovery of the user's installed Chrome); (5) BU direct-API configs WITH
+    (never the harness's own discovery of the user's installed Chrome, except under ``browser.live_chrome``,
+    which sits between the sidecar and (3) and deliberately exports nothing); (5) BU direct-API configs WITH
     ``BROWSER_USE_API_KEY`` → None (checked before (3)): the CLI reaches BU cloud natively (BU_AUTOSPAWN); a
     keyless ``browser-use`` provider (managed-gateway autodetect, or a selection missing its key) takes (3).
     ``session_name`` (BU_NAME) keys the session cache so each name gets its OWN browser — what makes named
@@ -412,7 +449,9 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
 
     ``force_local_sidecar`` skips step (3): the call runs on the local engine under the ``::local`` cache
     key (hybrid routing; see ``browser_url_policy.hybrid_routes_locally``). It sits BELOW the two operator overrides, and the
-    sidecar verdict never fires while a CDP override is set."""
+    sidecar verdict never fires while a CDP override is set. With ``browser.live_chrome`` the sidecar still
+    serves private URLs (a cloud provider is configured and the URL is private), so those never reach the
+    user's signed-in Chrome."""
     if _has_cdp_env(env):
         return None
     from tools.browser_session import get_session_info
@@ -424,6 +463,8 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return None
     if force_local_sidecar:
         return _resolve_local_cdp(env, task_id, session_name, sidecar=True)
+    if live_chrome_enabled():
+        return _resolve_live_chrome(env)
     provider = _quiet(get_cloud_provider, None, "Cloud provider lookup failed")
     if provider is None:
         return _resolve_local_cdp(env, task_id, session_name)
@@ -475,6 +516,28 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     if err is None and session_name:
         env[_PRIVATE_BROWSER_SENTINEL] = "1"
     return err
+
+
+def _resolve_live_chrome(env: dict) -> Optional[str]:
+    """Attach to the user's running Chrome (``browser.live_chrome``): export NO ``BU_CDP_*`` so the harness
+    finds it itself (the Chrome >=144 chrome://inspect route). Local, but not private: the own-tab preamble
+    keeps each session in a tab it opened. Error string when Chrome is not reachable (see live_chrome)."""
+    from tools import browser_use_live_chrome as live
+    err = live.preflight()
+    if err:
+        return err
+    env[_BOT_DESKTOP_BROWSER_SENTINEL] = "local"
+    env[LIVE_CHROME_SENTINEL] = "1"
+    env["BH_TAB_MARKER"] = "0"  # the harness would retitle the user's existing tab it attaches to first
+    env.pop("BU_AUTOSPAWN", None)  # never fall back to a cloud browser behind the user's back
+    return None
+
+
+def _live_chrome_selected(env: dict) -> bool:
+    """``browser.live_chrome`` is on and no operator override (BU_CDP_* env, /browser connect,
+    BROWSER_CDP_URL, browser.cdp_url) owns the session."""
+    from tools.browser_session_cdp import get_cdp_override_raw
+    return live_chrome_enabled() and not _has_cdp_env(env) and not _quiet(get_cdp_override_raw, "")
 
 
 def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
@@ -529,6 +592,10 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
 
     ``force_local_sidecar`` (a call carrying a private URL) declines the cloud provider for the hybrid local
     sidecar; unlike ``local`` (the consent-gated real-profile browser) it never touches the user's profile."""
+    if _live_chrome_selected(env):
+        # The user's own running Chrome is the real profile, signed in: it serves ``local`` too, and the
+        # snapshot browser is never started.
+        return _resolve_backend_cdp(env, task_id, session_name=session, force_local_sidecar=force_local_sidecar)
     # ``real_profile=False``: this route already fell back, so it stays on its fresh browser instead
     # of swapping browsers mid-task once the profile frees up.
     rp_err = _resolve_real_profile_cdp(env, force_local=local) if real_profile else None
@@ -771,6 +838,17 @@ def _take_real_profile_note(route_key: str) -> dict:
     return {"real_profile_unavailable": _real_profile_fallback[route_key]}
 
 
+def _shares_browser_tabs(session: str, live_chrome: bool, private_browser: Any) -> bool:
+    """Whether the call needs the own-tab preamble: a named session on a shared browser, or any call on the
+    user's live Chrome (its default session too: the user's own tabs are there)."""
+    return bool(session or live_chrome) and not private_browser
+
+
+def _wants_cloud_autospawn(env: dict, live_chrome: bool) -> bool:
+    """Legacy Browser Use cloud configs autospawn a cloud browser, never behind the user's live Chrome."""
+    return "BU_AUTOSPAWN" not in env and not live_chrome and is_legacy_browser_use_cloud_config(_read_browser_cfg())
+
+
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
@@ -794,6 +872,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         return tool_error("browser-harness is missing from Hermes's Python environment. "
                           "Run `hermes update` to re-sync it.")
 
+    _stop_live_daemons_if_off()
     env = _base_subprocess_env()
     if session:
         if not _SESSION_RE.match(session):
@@ -804,8 +883,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         env, session, task_id, bool(local), local_sidecar, route_key)
     if route_err:
         return tool_error(route_err)
-    if local_sidecar:
-        env["BU_NAME"] = _sidecar_daemon_name(session)
+    live_chrome = bool(env.pop(LIVE_CHROME_SENTINEL, None))
+    _name_route_daemon(env, session, local_sidecar, live_chrome)
     fit_default_socket_dir(env)  # BU_NAME is final: a deep HOME's socket would overflow sun_path
     _exec_route_is_sidecar[route_key] = local_sidecar
     local_engine = env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None)
@@ -815,7 +894,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
-    if session and not private_browser:
+    if _shares_browser_tabs(session, live_chrome, private_browser):
         code = _OWN_TAB_PREAMBLE + code
     # Every backend: capture_screenshot() falls back to jpeg instead of hanging on a png a hidden tab never
     # renders; only on a cloud browser does it (and new_tab) bring the tab to the front (tools/browser_use_shot.py).
@@ -828,7 +907,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     # BU_AUTOSPAWN makes the CLI start a Browser Use cloud browser when no local
     # Chrome/CDP endpoint is reachable (their API key authenticates it)
-    if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+    if _wants_cloud_autospawn(env, live_chrome):
         env["BU_AUTOSPAWN"] = "1"
 
     timeout = _clamp_timeout(timeout_s)
@@ -847,9 +926,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:
             return {"error_result": tool_error(
-                f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
-                f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
-                "append to workspace files — anything already written to the workspace is preserved."
+                f"browser-use exec timed out after {timeout}s.{live_chrome_timeout_hint(live_chrome)} The daemon may "
+                f"still be working; retry with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into "
+                "several calls that append to workspace files — anything already written to the workspace is "
+                "preserved."
             )}
         except OSError as e:
             return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
@@ -970,6 +1050,8 @@ def _description_header() -> str:
 
 def _dynamic_schema_overrides() -> dict:
     overrides: dict = {"description": _description_header() + _HELPERS_DIGEST}
+    if live_chrome_enabled():
+        overrides["description"] += DESCRIPTION
     # ``local`` exists ONLY when the user consented to real-profile browsing — everyone
     # else's schema carries zero extra surface. The caller memoizes on config.yaml mtime,
     # so toggling consent applies next session, not mid-chat.

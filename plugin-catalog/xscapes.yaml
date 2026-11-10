@@ -1,0 +1,25 @@
+name: xscapes
+repo: https://github.com/donlucasx/hermes-xscapes
+sha: f32549c2ca638b98f67d8bf938410968f254700a
+subdir: ""
+title: xscapes
+description: 'Living ASCII scenes under Hermes in the terminal that show what the agent is doing while you wait:
+  the wind, the sea or the rain rises with the work, a thought cloud means it is thinking, owlets, crablets or
+  kittens arrive for subagents, the moon sinks as the context fills, and the companion knocks with a sound when
+  Hermes finishes or needs you (a question, a password prompt, an approval). Forwards fifteen lifecycle hooks to
+  the xscapes CLI (`xscapes hook <event> hermes`, stdin JSON, never waited on, never blocks); needs the xscapes
+  binary. No tools, middleware or env vars; no network.'
+maintainer: donlucasx
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://donlucasx.github.io/xscapes/
+version: "0.2.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: [on_session_start, on_session_reset, on_session_end, on_session_finalize, pre_llm_call,
+    post_llm_call, pre_tool_call, post_tool_call, pre_approval_request, post_approval_response,
+    subagent_start, subagent_stop, on_human_input_request, on_human_input_resolved, post_api_request]
+  provides_middleware: []
+  requires_env: []

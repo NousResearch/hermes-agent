@@ -76,7 +76,7 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   migrate/transform existing config (rename keys, restructure); new keys deep-merge automatically.
   Top-level sections (non-exhaustive): `model, agent, terminal, compression, display, stt, tts,
 memory, security, delegation, smart_model_routing, checkpoints, auxiliary, curator, skills,
-gateway, logging, cron, profiles, plugins, honcho`. `auxiliary` = per-task side-LLM overrides
+gateway, logging, cron, profiles, plugins`. `auxiliary` = per-task side-LLM overrides
   (`agent/AGENTS.md`); `curator` = `enabled, interval_hours, min_idle_hours, stale_after_days,
 archive_after_days, backup.*`.
 - **.env = SECRETS ONLY** (keys, tokens, passwords): add to `OPTIONAL_ENV_VARS` with

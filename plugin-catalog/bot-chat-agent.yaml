@@ -1,0 +1,23 @@
+name: bot-chat-agent
+repo: https://github.com/Tormen28/hermes-bot-chat-agent
+sha: 2bc1ba3a6543255c7cdda2cb03eee040f917649d
+subdir: ""
+title: Bot Chat Agent
+description: "Agentic reply style, a block-only safety guard (secrets, deletes, destructive git, protected-branch pushes, outbound messages, expensive models) and a quiet Desktop status bar for Bot Mode's canonical \"Bot Chat\" sessions. Other sessions untouched. Disclosure — in sessions titled \"Bot Chat\" (and their subagent children) it injects a reply-style instruction into each turn and blocks tool calls matching its rules (secrets, deletes, destructive git, protected-branch pushes, outbound messages, expensive models); opens <HERMES_HOME>/state.db read-only to resolve session titles."
+maintainer: Tormen28
+category: desktop
+tier: community
+requires_hermes: ">=0.22.5"
+version: "0.2.0"
+docs_url: https://github.com/Tormen28/hermes-bot-chat-agent#readme
+image: https://raw.githubusercontent.com/Tormen28/hermes-bot-chat-agent/2bc1ba3a6543255c7cdda2cb03eee040f917649d/docs/screenshots/03-short-answer.png
+screenshots:
+  - https://raw.githubusercontent.com/Tormen28/hermes-bot-chat-agent/2bc1ba3a6543255c7cdda2cb03eee040f917649d/docs/screenshots/01-loading.png
+  - https://raw.githubusercontent.com/Tormen28/hermes-bot-chat-agent/2bc1ba3a6543255c7cdda2cb03eee040f917649d/docs/screenshots/02-answer.png
+  - https://raw.githubusercontent.com/Tormen28/hermes-bot-chat-agent/2bc1ba3a6543255c7cdda2cb03eee040f917649d/docs/screenshots/03-short-answer.png
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, pre_tool_call]
+  provides_middleware: []
+  requires_env: []

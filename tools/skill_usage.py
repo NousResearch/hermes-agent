@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone, UTC
@@ -140,7 +141,7 @@ def _non_negative_int(value: Any) -> int:
 
 def activity_count(record: dict[str, Any]) -> int:
     """Total observed use+view+patch events."""
-    return sum(_non_negative_int(record.get(key)) for key in ("use_count", "view_count", "patch_count"))
+    return sum(_int_or_zero(record.get(key)) for key in ("use_count", "view_count", "patch_count"))
 
 
 # --- Provenance — which skills are agent-created (and thus eligible for curation) ---
@@ -366,14 +367,53 @@ def _report_row(name: str, raw: Any, **extra: Any) -> dict[str, Any]:
     return row
 
 
-def load_usage() -> dict[str, dict[str, Any]]:
-    """The whole .usage.json map (non-dict values dropped); {} on missing/corrupt."""
+def _recover_usage(text: str) -> dict[str, dict[str, Any]]:
+    """Read complete records from the native pretty-printed map or line-delimited maps."""
+    records = {}
+    # save_usage indents top-level keys by exactly two spaces. Split at those
+    # boundaries so a broken record cannot consume the next intact one.
+    entries = re.split(r'(?m)^  ("(?:[^"\\\r\n]|\\.)*")[ \t]*:[ \t]*', text)
+    if len(entries) > 1:
+        decoder = json.JSONDecoder()
+        for key, chunk in zip(entries[1::2], entries[2::2], strict=True):
+            try:
+                name = json.loads(key)
+                record, _ = decoder.raw_decode(chunk.lstrip())
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                records[name] = record
+        return records
+
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            records.update((name, record) for name, record in row.items() if isinstance(record, dict))
+    return records
+
+
+def load_usage(*, recover: bool = False, strict: bool = False) -> dict[str, dict[str, Any]]:
+    """Read the usage map. Only telemetry reporting should opt into partial recovery."""
     path = _usage_file()
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
-    except (OSError, json.JSONDecodeError) as e:
+        text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return {}
+    except OSError as e:
+        if strict:
+            raise
         logger.debug("Failed to read %s: %s", path, e)
         return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        if strict:
+            raise
+        logger.debug("Failed to parse %s: %s", path, e)
+        data = _recover_usage(text) if recover else {}
     return {str(k): v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
 
 
@@ -401,7 +441,8 @@ def _locked_update(skill_name: str, op: Callable[[dict[str, dict[str, Any]]], tu
         if guard is not None and not guard():
             return None
         with _usage_file_lock():
-            data = load_usage()
+            # Replacing a partly recovered map could erase unrecovered locks.
+            data = load_usage(strict=True)
             result, dirty = op(data)
             return None if dirty and not save_usage(data) else result
     except Exception as e:
@@ -587,8 +628,8 @@ def set_locked(skill_name: str, locked: bool) -> bool:
 
 def is_locked(skill_name: str) -> bool:
     """``locked`` flag of *skill_name*. Strict on purpose: a corrupt or unreadable sidecar RAISES
-    instead of reading as "unlocked" (``load_usage`` returns {} there), so the write guard can fail
-    closed rather than silently relax a lock the user set."""
+    instead of treating an unrecovered record as "unlocked", so the write guard can fail closed
+    rather than silently relax a lock the user set."""
     path = _usage_file()
     if not path.exists():
         return False
@@ -663,7 +704,7 @@ def archive_skill(skill_name: str) -> tuple[bool, str]:
     except OSError as e:
         return False, f"failed to create archive dir: {e}"
     if dest.exists():
-        dest = dest.with_name(f"{skill_name}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}")
+        dest = dest.with_name(f"{skill_dir.name}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}")
     # complete_package: consolidation may have re-homed support files first, so a disk-only capture can come
     # back hollow; the fill from the newest curator backup keeps rollback restorable.
     return _relocate(skill_dir, dest, skill_name, "archive", complete_package=True, skill=skill_name)
@@ -765,9 +806,16 @@ def provenance(skill_name: str) -> str:
 
 
 def usage_report() -> list[dict[str, Any]]:
-    """Usage rows for EVERY skill on disk (built-ins and hub included); ``curated_report()`` is the managed subset."""
-    if not (base := _skills_dir()).exists():
-        return []
-    data = load_usage()
-    return [_report_row(n, data.get(n), provenance=provenance(n), _persisted=n in data)
-            for n in sorted({name for name, _md in _iter_skill_mds(base, local_only=False)})]
+    """Usage rows for EVERY skill on disk (built-ins and hub included) plus the enabled plugins' skills;
+    ``curated_report()`` is the managed subset."""
+    data = load_usage(recover=True)
+    names = ({name for name, _md in _iter_skill_mds(base, local_only=False)}
+             if (base := _skills_dir()).exists() else set())
+    rows = [_report_row(n, data.get(n), provenance=provenance(n), _persisted=n in data) for n in names]
+    # Plugin skills live in the plugin's own directory and are counted under their qualified name
+    # ("meshy:meshy-3d"), so a walk of the skills directory never sees them.
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    discover_plugins()
+    rows += [_report_row(n, data.get(n), provenance="plugin", _persisted=n in data)
+             for n in (meta["name"] for meta in get_plugin_manager().list_plugin_skill_metadata()) if n not in names]
+    return sorted(rows, key=lambda r: r["name"])

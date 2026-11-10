@@ -56,6 +56,51 @@ assume:
 - **Preserve reference identity on no-ops.** Handing React a fresh array that
   contains the same data re-renders expensive trees for nothing.
 
+## Voice detection follows audio, not paint
+
+Microphone endpointing and barge-in detection use `voice-level-meter.ts` and its
+AudioWorklet's audio timestamps. Never put functional detection back on
+`requestAnimationFrame`, or keep a whole window painting to make voice work.
+The worklet reports at 60 Hz and preserves the 256-sample byte-domain RMS scale
+used by existing sensitivity preferences. Its output is silent; it does not
+play microphone input through the speakers. Hidden windows skip cosmetic
+meter-state updates, not speech detection or PCM capture.
+
+Do not report listening or start MediaRecorder until the meter's `ready` promise
+settles. Cancellation settles pending readiness immediately and cannot restart
+capture or reacquire a dictation lease. A turn that becomes busy during startup
+re-arms listening when it returns idle.
+
+The capture owner closes its AudioContext through `mic-meter-context.ts`.
+Stopping the meter fences pending module loads and queued samples. A failed
+meter must release a pending conversation capture without transcribing a
+potentially truncated command; explicit cancellation delivers nothing.
+Detach recorder handlers even after `stop()` has made the recorder inactive:
+its final events can still be queued.
+Resume an initially suspended context independently of worklet loading so a
+failed meter preserves manual recording and the PCM fallback. Once running,
+a suspended audio clock is a meter failure: release a pending barge capture
+without submitting partial audio rather than waiting for silence that cannot arrive.
+
+Process queued audio levels in order, including historical speech. Rotate quiet
+pre-roll or end capture only when the audio clock is still inside that sample's
+reporting interval. The worklet supplies the next report timestamp, including
+frame rounding; a delayed quiet sample must not discard already-recorded speech
+that its queued successors have not reported yet. Cancellation and meter-failure
+cleanup do not wait for a fresh sample.
+Playback state is observed at delivery time: use the current audio clock for
+playback-onset grace and gap bookkeeping, never a queued sample's historical
+timestamp. Queued samples preceding the observed stop retain the playback
+threshold; new quiet-room speech uses the ordinary lower threshold. Speech
+windows still use capture time. Forward that capture-phase playback flag to the
+conversation's echo guard, which must still reject speaker bleed delivered
+during a later sentence gap without discarding genuine interruptions.
+
+The worklet is a Vite-emitted local asset, not a blob/data-URL fallback or a
+reason to weaken CSP. This removes a paint-clock dependency, not the main
+thread's role in handling voice messages. It does not change native window
+scheduling or establish a GPU/battery improvement percentage.
+
 ## Switching context is a re-home, not a reboot
 
 Changing profile, connection, or mode is a workspace switch, not a cold start.
@@ -162,6 +207,31 @@ reopens the gesture-less forced-navigation class the advisory closed.
   from the retention budget.
 - Root geometry variables are not theme changes. Authored custom CSS can depend
   on those variables, so it must retain full repaint notifications.
+- Streaming keeps visible native windows painting even while blurred or occluded.
+  Hidden/minimized windows retain default throttling; show/restore reapplies the
+  current stream policy. Do not use focus as visibility or stop background data
+  delivery. Native activity leases can wake a hidden owner without restoring it.
+  Only window-local live voice conversations retain streaming paint: their speech
+  output still consumes frame-published text, even though microphone detection
+  follows the audio clock. The shared read-aloud preference is not ownership.
+  Completed interim replies publish without waiting for a frame so read-aloud
+  can speak tool-progress narration while hidden; partial text stays coalesced.
+  Interims and finals that arrive before ownership IPC settles share the pending
+  turn claim; message claims stay distinct so only the newest eligible reply plays.
+- Functional stream deadlines are not display loops. Delta coalescing and the
+  400 ms post-commit journal debounce use `src/lib/stream-work-clock.ts`, racing
+  the ordinary renderer timer with one pending native wake per owning renderer.
+  Incoming events can also drain overdue work; they cannot finish a quiet tail.
+  Do not replace the native fallback with rAF or re-enable hidden painting.
+- `electron/stream-work-clock.ts` accepts only bounded relative delays from the
+  owning window's main frame. Cancellation/generation tokens fence late wakes;
+  navigation, renderer loss and destruction clear native work. No pending work
+  means no wake timer. This preserves coalescing, not a real-time crash-loss bound
+  through blocked event loops, storage failures or OS sleep.
+- Stop commits already-received queued deltas before marking the turn interrupted.
+  Journal snapshots must continue advancing while display callbacks are parked.
+  Verify the quiet tail with the provider paused, not only a continuously arriving
+  stream that can hide a throttled-timer bug.
 - Idle preview guests use Chromium's background throttling. Owned activity
   leases wake the guest and its embedding window; the window controller still
   arbitrates streaming and Wayland fullscreen policy. One operation finishing
@@ -175,6 +245,10 @@ reopens the gesture-less forced-navigation class the advisory closed.
   new script. Reapply again at script dispatch after loading as a backstop:
   Electron's stored throttling flag does not prove a replacement widget is awake.
   Preserve the existing script completion-value contract and plugin consent.
+  Registered preview reads must use the same owned script lease; a direct
+  `webview.executeJavaScript` call bypasses hidden-window readiness guarantees.
+  First-party page reads have an eight-second deadline and abort when their
+  reader registration is removed, so a stalled page cannot retain a wake hold.
 - Capture leases cover paint waits and image capture, not waiting for a user's
   next annotation. Keep action acquisition cancellable and bounded without
   imposing an arbitrary deadline on approved plugin scripts or long typing.
@@ -198,10 +272,10 @@ Verify scheduling changes with native hidden/minimized windows and real preview
 navigation, typing and capture. Browser automation's focus emulation can keep
 hidden frames awake and conceal regressions; disable it for these checks.
 Software-rendered VM timings are not hardware GPU or battery measurements.
-With a graphical session (or Xvfb), `npm run test:preview-activity-native
---workspace apps/desktop` exercises real hidden-frame navigation (including
+With a graphical session (or Xvfb), `pnpm --dir apps/desktop run
+test:preview-activity-native` exercises real hidden-frame navigation (including
 lease-only rAF and capture), overlapping operations, cancellation and plugin
-completion values in a disposable profile. Add `-- --minimized` with a running
+completion values in a disposable profile. Add `--minimized` with a running
 window manager to exercise actual iconification rather than hiding the window.
 
 ## Nous free tier: state is pulled, never latched in the renderer

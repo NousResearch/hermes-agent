@@ -17,7 +17,7 @@ import importlib
 import logging
 import os
 import threading
-from typing import Optional
+from typing import Any, Iterable, Optional
 
 from utils import env_var_enabled, is_truthy_value
 from agent.i18n import t
@@ -33,10 +33,11 @@ from tools.approval_detection import (
     detect_hardline_command,
 )
 from tools.approval_floors import (
-    _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
+    _command_matches_permanent_allowlist, _hardline_block_result, _matching_permanent_allowlist_entry, _match_user_deny_rule, _sudo_stdin_block_result,
     _user_deny_block_result,
 )
 from tools.approval_gateway_wait import _await_gateway_decision
+from tools.approval_provenance import allowlisted_result, preapproved_result
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
 from tools.approval_smart import _smart_verdict
 
@@ -49,7 +50,7 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
 # --- Per-session approval state (thread-safe) -----------------------------------------------------------------------
 
-_lock = threading.Lock()
+_lock = threading.RLock()  # re-entrant: a card settle checks and resolves under one hold
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
@@ -177,6 +178,49 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
+def _card_target(session_key: str, request_id: Optional[str]):
+    """The entry a card tap resolves: its own request, never another. Caller holds ``_lock``."""
+    if not request_id:
+        return None
+    return next((e for e in _gateway_queues.get(session_key) or [] if e.data.get("request_id") == request_id), None)
+
+
+def restrict_gateway_approval_card_to_deny(session_key: str, request_id: Optional[str], restricted: bool = True) -> None:
+    """Mark a pending request whose card could not show the whole command: a card tap may only deny it.
+    Every request starts marked; ``restricted=False`` lifts the mark once its card shows the whole command."""
+    with _lock:
+        entry = _card_target(session_key, request_id)
+        if entry is not None:
+            entry.card_deny_only = restricted
+
+
+def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Optional[str], *,
+                                  actor_id: Any = None, admin_ids: Iterable[str] = (), extra: Any = None) -> int:
+    """Resolve the approval a native button card was rendered for.
+
+    Only the card's own request can resolve: a card whose request already settled (timed out, answered
+    by ``/approve``) resolves nothing instead of the next queued approval in the same session. A tap
+    without a request id (a card from an older build) cannot say which request it was rendered for, so
+    it resolves nothing; typed ``/approve`` stays the way to answer one. A request stays Deny-only from
+    its creation until its card shows the whole command, so a forged or early approve tap resolves
+    nothing.
+
+    With *actor_id* the clicker's authority (``gateway.approval_actor.may_answer``, with the platform
+    *extra* / *admin_ids*) is checked against that same entry. The Deny-only check, the authority check
+    and the settle are one critical section."""
+    if not request_id:
+        return 0
+    with _lock:  # re-entrant: the settle below takes it again
+        target = _card_target(session_key, request_id)
+        if target is not None and choice != "deny" and target.card_deny_only:
+            return 0
+        if target is not None and actor_id is not None:
+            from gateway.approval_actor import may_answer
+            if not may_answer(target.authority, actor_id, admin_ids, extra):
+                return 0
+        return resolve_gateway_approval(session_key, choice, request_id=request_id)
+
+
 def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:
     """Withdraw one pending approval nobody can answer (the only attached client cannot render it).
     The waiter wakes at once with ``cancelled=cause`` — a withdrawal, never a user deny — instead of
@@ -198,6 +242,12 @@ def list_gateway_approvals(session_key: str) -> list[dict]:
     """Return replay-safe snapshots of unresolved approvals for one session."""
     with _lock:
         return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
+
+
+def list_gateway_approval_authority(session_key: str) -> list[dict]:
+    """Per unresolved approval: its ``request_id`` and who may answer it (requester, approvers)."""
+    with _lock:
+        return [{"request_id": e.data.get("request_id"), **e.authority} for e in _gateway_queues.get(session_key, [])]
 
 
 def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
@@ -379,13 +429,25 @@ def _sync_permanent_from_disk(approved: set, key: str) -> None:
     _permanent_baseline_by_home[key] = on_disk
 
 
-def is_approved(session_key: str, pattern_key: str) -> bool:
-    """Session-scoped or permanent approval. Accepts the canonical key and the legacy
-    regex-derived key so existing command_allowlist entries survive key migrations."""
+def _approval_scope(session_key: str, pattern_key: str) -> str | None:
+    """``'permanent'``, ``'session'`` or None for one key, from ONE read of both stores, so the
+    decision and its provenance label cannot disagree when a grant is revoked concurrently.
+    Accepts the canonical key and the legacy regex-derived key so existing command_allowlist
+    entries survive key migrations."""
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
-        approved = _permanent_set() | _session_approved.get(session_key, set())
-    return any(alias in approved for alias in aliases)
+        permanent = _permanent_set()
+        session = _session_approved.get(session_key, set())
+        if any(alias in permanent for alias in aliases):
+            return "permanent"
+        if any(alias in session for alias in aliases):
+            return "session"
+    return None
+
+
+def is_approved(session_key: str, pattern_key: str) -> bool:
+    """Session-scoped or permanent approval (see :func:`_approval_scope`)."""
+    return _approval_scope(session_key, pattern_key) is not None
 
 
 def _is_permanently_approved(pattern_key: str) -> bool:
@@ -666,20 +728,48 @@ def _unattended_contexts() -> list[_Unattended]:
     return contexts
 
 
-def _unapproved_findings(command: str, approved) -> tuple[list[str], str] | None:
-    """``(pattern_keys, description)`` still needing consent, or None. The first match plus every
-    content-level rule (credential upload, invisible Unicode) each need their own approval, so an
-    approved pipe-to-shell cannot wave through the credential upload in the same command; overlapping
-    verb rules keep the first key only. ``approved(key)`` is the session or permanent check."""
+def _command_findings(command: str) -> list[tuple[str, str]]:
+    """``[(pattern_key, description)]`` that each need their own consent; empty when clean. The first
+    match plus every content-level rule (credential upload, invisible Unicode), so an approved
+    pipe-to-shell cannot wave through the credential upload in the same command; overlapping verb
+    rules keep the first key only."""
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
-        return None
-    findings = [(pattern_key, description)]
-    findings += [(key, key) for key in detect_content_rule_keys(command) if key != pattern_key]
+        return []
+    return [(pattern_key, description)] + [
+        (key, key) for key in detect_content_rule_keys(command) if key != pattern_key]
+
+
+def _pending_findings(findings: list[tuple[str, str]], approved) -> tuple[list[str], str] | None:
+    """``(pattern_keys, description)`` of *findings* still needing consent, or None.
+    ``approved(key)`` is the session or permanent check."""
     pending = [(key, text) for key, text in findings if not approved(key)]
     if not pending:
         return None
     return [key for key, _ in pending], "; ".join(text for _, text in pending)
+
+
+def _unapproved_findings(command: str, approved) -> tuple[list[str], str] | None:
+    """:func:`_pending_findings` over :func:`_command_findings` of *command*."""
+    return _pending_findings(_command_findings(command), approved)
+
+
+def _approved_with_provenance(findings: list[tuple[str, str]], scopes: dict[str, str | None]) -> dict:
+    """Approved result for a command whose *findings* (possibly none) an earlier answer covers.
+    *scopes* are the :func:`_approval_scope` reads the approval check itself accepted; rereading the
+    stores here could label a grant revoked since the check as a session answer."""
+    if not findings:
+        return _approved()
+    return preapproved_result(findings, scopes.__getitem__)
+
+
+def _allowlisted(command: str) -> dict:
+    """Approved result for a ``command_allowlist`` match; names the entry when the command was flagged."""
+    findings = _command_findings(command)
+    rule = _matching_permanent_allowlist_entry(command)
+    if not findings or rule is None:
+        return _approved()
+    return allowlisted_result(rule, "; ".join(text for _, text in findings))
 
 
 def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
@@ -1133,14 +1223,16 @@ def check_dangerous_command(command: str, env_type: str,
     blocked = _floor_block(command)
     if blocked is not None:
         return blocked
-    if _yolo_active():
+    if _yolo_active() or approval_context._get_approval_mode() == "off":
         return _approved()
     if _command_matches_permanent_allowlist(command):
-        return _approved()
+        return _allowlisted(command)
     session_key = get_current_session_key()
-    pending = _unapproved_findings(command, lambda key: is_approved(session_key, key))
+    findings = _command_findings(command)
+    scopes = {key: _approval_scope(session_key, key) for key, _ in findings}
+    pending = _pending_findings(findings, lambda key: scopes[key] is not None)
     if pending is None:
-        return _approved()
+        return _approved_with_provenance(findings, scopes)
     keys, description = pending
     return _run_approval_gate(
         pattern_key=keys[0], pattern_keys=keys, description=description, display_target=command,
@@ -1203,7 +1295,7 @@ def check_all_command_guards(command: str, env_type: str,
     if _yolo_active() or approval_mode == "off":
         return _approved()
     if _command_matches_permanent_allowlist(command):
-        return _approved()
+        return _allowlisted(command)
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     # Outside CLI/gateway/ask flows we never block on approvals: each
@@ -1216,9 +1308,11 @@ def check_all_command_guards(command: str, env_type: str,
         return _approved()
 
     session_key = get_current_session_key()
-    pending = _unapproved_findings(command, lambda key: is_approved(session_key, key))
+    findings = _command_findings(command)
+    scopes = {key: _approval_scope(session_key, key) for key, _ in findings}
+    pending = _pending_findings(findings, lambda key: scopes[key] is not None)
     if pending is None:
-        return _approved()
+        return _approved_with_provenance(findings, scopes)
     keys, description = pending
     # One combined prompt; a session/always answer persists every key in it.
     return _human_decision(

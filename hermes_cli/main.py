@@ -15,7 +15,7 @@ Usage:
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 # A `hermes update` killed while git was writing the new tree leaves a mix of old and new files that
@@ -81,7 +81,7 @@ def _exit_after_oneshot(rc: object) -> None:
     during ``Py_FinalizeEx``, *after* the response printed. Flush, shut down
     file logging, then ``os._exit`` past finalization. The ``atexit`` chain is
     deliberately skipped — several handlers re-enter native code that may be
-    the abort source; stateful cleanup lives in ``_cleanup_oneshot_runtime``.
+    the abort source.
 
     See #30387, #43055.
     """
@@ -90,99 +90,14 @@ def _exit_after_oneshot(rc: object) -> None:
             stream.flush()
         except Exception:
             pass
+    from hermes_cli.cpu_profile import write_cpu_profile
+
+    write_cpu_profile()  # atexit never runs past os._exit
     try:
         logging.shutdown()
     except Exception:
         pass
     os._exit(rc if isinstance(rc, int) else (0 if rc is None else 1))
-
-
-_oneshot_cleanup_done = False
-# (module, attr, kwargs, exceptions swallowed). MCP shutdown may raise
-# BaseException-derived errors from executor teardown; the rest are Exception.
-_ONESHOT_CLEANUPS = (
-    ("tools.terminal_tool", "cleanup_all_environments", {}, Exception),
-    ("tools.async_delegation", "interrupt_all", {"reason": "oneshot shutdown"}, Exception),
-    ("tools.browser_session_lifecycle", "emergency_cleanup_all_sessions", {}, Exception),
-    ("tools.mcp_tool_lifecycle", "shutdown_mcp_servers", {}, BaseException),
-    ("agent.auxiliary_client", "shutdown_cached_clients", {}, Exception),
-    # A no-op unless this run booted the managed llama-server (atexit's hook is skipped here).
-    ("hermes_cli.local_runtime.bootstrap", "shutdown_local_runtime", {}, Exception),
-    # The atexit hook that closes the metrics session never runs past os._exit.
-    ("hermes_cli.observability.relay_shared_metrics", "shutdown_runtimes", {}, Exception),
-)
-
-
-def _cleanup_oneshot_runtime() -> None:
-    """Best-effort process-global cleanup before one-shot hard exit.
-
-    ``run_oneshot`` owns the agent-local cleanup (memory provider, agent.close,
-    session_db.close — all in ``_run_agent``'s finally block). This mirrors the
-    process-global pieces from ``cli.py:_run_cleanup()`` that would otherwise
-    be skipped by ``os._exit``.
-    """
-    global _oneshot_cleanup_done
-    if _oneshot_cleanup_done:
-        return
-    _oneshot_cleanup_done = True
-    import importlib
-
-    for module, attr, kwargs, swallow in _ONESHOT_CLEANUPS:
-        try:
-            getattr(importlib.import_module(module), attr)(**kwargs)
-        except swallow:
-            pass
-
-
-def _run_and_exit_oneshot(
-    prompt: str,
-    *,
-    model: object = None,
-    provider: object = None,
-    toolsets: object = None,
-    skills: object = None,
-    usage_file: object = None,
-    resume: object = None,
-    reasoning: object = None,
-) -> None:
-    try:
-        from hermes_cli.oneshot import run_oneshot
-
-        rc = run_oneshot(
-            prompt,
-            model=model,
-            provider=provider,
-            toolsets=toolsets,
-            skills=skills,
-            usage_file=usage_file,
-            resume=resume,
-            reasoning=reasoning,
-        )
-    except KeyboardInterrupt:
-        rc = 130
-    except SystemExit as exc:
-        if exc.code is not None and not isinstance(exc.code, int):
-            print(exc.code, file=sys.stderr)
-            rc = 1
-        else:
-            rc = exc.code
-    except BaseException:
-        # ``run_oneshot`` already maps agent failures to an int rc; anything
-        # still escaping means it malfunctioned. Print it but never fall
-        # through to interpreter teardown (the SIGABRT path this routine fixes).
-        import traceback
-        try:
-            traceback.print_exc()
-        except Exception:
-            pass
-        rc = 1
-    try:
-        _cleanup_oneshot_runtime()
-    finally:
-        # Even an interrupt during cleanup must not fall back into interpreter
-        # finalization, where the native SIGABRT occurs.
-        # The hard exit is the safety boundary for #43055.
-        _exit_after_oneshot(rc)
 
 
 def _warn_if_unsupervised_pid1(pid: int | None = None) -> None:
@@ -401,6 +316,7 @@ from hermes_cli.subcommands.checkpoints import build_checkpoints_parser
 from hermes_cli.subcommands.bundles import build_bundles_parser
 from hermes_cli.subcommands.curator import build_curator_parser
 from hermes_cli.subcommands.pets import build_pets_parser
+from hermes_cli.subcommands.clipboard import build_clipboard_parser
 from hermes_cli.subcommands.journey import build_journey_parser
 from hermes_cli.subcommands.computer_use import build_computer_use_parser
 from hermes_cli.subcommands.sessions import build_sessions_parser, cmd_sessions_lazy
@@ -816,6 +732,7 @@ from hermes_cli.main_dashboard import (
     _install_hangup_protection,
     _is_electron_packaged_web_dist,
     _maybe_setup_dashboard_auth_interactively,
+    _dashboard_validate_serve_args,
     _read_ssh_session_token_file,
     _report_dashboard_status,
     _resolve_dashboard_web_dist,
@@ -2427,19 +2344,19 @@ def cmd_update(args):
 
 
 def _coalesce_session_name_args(argv: list) -> list:
-    """Join unquoted multi-word session names after -c/--continue and -r/--resume.
-
-    ``hermes -c Pokemon Agent Dev`` → ``['-c', 'Pokemon Agent Dev']``; tokens
-    are collected until the next flag (``-*``) or known top-level subcommand.
-    """
+    """Join unquoted multi-word session names after -c/--continue and -r/--resume: ``hermes -c Pokemon
+    Agent Dev`` → ``['-c', 'Pokemon Agent Dev']``, up to the next flag or known top-level subcommand."""
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "login", "logout",
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
         "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve", "webapp",
-        "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
+        "desktop", "gui", "claw", "plugins", "security", "acp", "webhook", "peer",
         "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
+    if _SESSION_FLAGS.intersection(argv):  # the active memory provider registers ``hermes <name>``
+        from plugins.memory import active_memory_provider_commands
+        _SUBCOMMANDS |= active_memory_provider_commands()
 
     result = []
     i = 0
@@ -2448,7 +2365,6 @@ def _coalesce_session_name_args(argv: list) -> list:
         if token in _SESSION_FLAGS:
             result.append(token)
             i += 1
-            # Collect subsequent non-flag, non-subcommand tokens as one name
             parts: list = []
             while (
                 i < len(argv)
@@ -2492,33 +2408,6 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
 
         result = _kill_stale_dashboard_processes(reason="requested via --stop", scope_home=own_home)
         sys.exit(1 if result["failed"] else 0)
-
-
-def _dashboard_validate_serve_args(args, headless_backend, token_file):
-    """Headless-serve argument checks -> ssh_owner_nonce (or None)."""
-    # `hermes serve` is headless/non-interactive: fail closed on a corrupt
-    # config.yaml instead of silently starting on defaults where provider
-    # auto-detection can adopt unnamed .env credentials (issue #81952).
-    # Same policy + escape hatch as _guard_noninteractive_user_config.
-    if headless_backend:
-        from hermes_cli.config import (
-            InvalidUserConfigError,
-            require_parseable_user_config,
-        )
-
-        try:
-            require_parseable_user_config(
-                ignore_user_config=bool(getattr(args, "ignore_user_config", False))
-            )
-        except InvalidUserConfigError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            raise SystemExit(2) from exc
-    ssh_owner_nonce = getattr(args, "ssh_owner_nonce", None)
-    if ssh_owner_nonce and not re.fullmatch(r"[0-9a-f]{16}", ssh_owner_nonce):
-        raise SystemExit("--ssh-owner-nonce must be 16 lowercase hex characters")
-    if token_file and not headless_backend:
-        raise SystemExit("--ssh-session-token-file is only valid with hermes serve")
-    return ssh_owner_nonce
 
 
 def _dashboard_sanitize_desktop_env(headless_backend) -> None:
@@ -2758,16 +2647,13 @@ def cmd_console(args):
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "codex-runtime", "completion",
-        "computer-use", "connectors",
+        "clipboard", "computer-use", "connectors",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
-        "project", "proxy",
-        "prompt-size",
-        "resume",
-        "send", "sessions", "setup",
+        "project", "proxy", "prompt-size", "resume", "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
@@ -2830,10 +2716,8 @@ def _resolve_deferred_platform_cli_command(command_name: str | None) -> None:
 
 
 _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
-_AGENT_SUBCOMMANDS = {
-    "cron": ("cron_command", {"run", "tick"}),
-    "gateway": ("gateway_command", {"run"}),
-}
+_AGENT_SUBCOMMANDS = {"cron": ("cron_command", {"run", "tick"}), "gateway": ("gateway_command", {"run"}),
+                      "curator": ("curator_command", {"run"})}  # curator run fires post_curator_run
 
 
 def _is_tui_chat_launch(args) -> bool:
@@ -2855,7 +2739,7 @@ def _is_tui_chat_launch(args) -> bool:
 
 
 def _agent_subcommand_selected(args) -> bool:
-    """True for ``cron run/tick``, ``gateway run`` (see _AGENT_SUBCOMMANDS)."""
+    """True for ``cron run/tick``, ``gateway run``, ``curator run`` (see _AGENT_SUBCOMMANDS)."""
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     return bool(_sub_attr and getattr(args, _sub_attr, None) in _sub_set)
 
@@ -3025,6 +2909,13 @@ def _run_oneshot_from_args(args) -> None:
     sys.exit(launch_gateway_chat(args))
 
 
+def _enable_cpu_profile(args) -> None:
+    """Honour ``--cpu-profile`` right after a launch path parses argv, before it branches."""
+    from hermes_cli.cpu_profile import enable_cpu_profile_from_args
+
+    enable_cpu_profile_from_args(args)
+
+
 def _light_chat_parser():
     """Top-level + chat parser only (no subcommand tree); chat dispatches to cmd_chat."""
     from hermes_cli._parser import build_top_level_parser
@@ -3118,6 +3009,7 @@ def _try_fast_chat_launch() -> bool:
     if getattr(args, "command", None) not in {None, "chat"}:
         return False
 
+    _enable_cpu_profile(args)
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
     _prepare_agent_startup(args)
@@ -3158,6 +3050,7 @@ def _try_termux_fast_cli_launch() -> bool:
 
     parser = _light_chat_parser()
     args = parser.parse_args(_coalesce_session_name_args(argv))
+    _enable_cpu_profile(args)  # before any branch: the interactive one defers agent startup
 
     if getattr(args, "version", False):
         _print_version_info(check_updates=True)
@@ -3216,6 +3109,7 @@ def _try_termux_fast_tui_launch() -> bool:
     if not _resolve_use_tui(args):
         return False
 
+    _enable_cpu_profile(args)
     cmd_chat(args)
     return True
 
@@ -3363,6 +3257,7 @@ def _build_cli_parser():
 
     build_curator_parser(subparsers)
     build_pets_parser(subparsers)
+    build_clipboard_parser(subparsers)
     build_journey_parser(subparsers)
     build_memory_parser(subparsers, cmd_memory=cmd_memory)
     build_tools_parser(subparsers, cmd_tools=cmd_tools)
@@ -3517,6 +3412,7 @@ def main():
         sys.exit(1)  # unreachable: execvp replaces the process or raises
 
     args = _parse_cli_args(parser, subparsers, sys.argv[1:])
+    _enable_cpu_profile(args)
 
     if args.version:
         cmd_version(args)

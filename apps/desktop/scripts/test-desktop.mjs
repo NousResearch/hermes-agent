@@ -113,7 +113,7 @@ function ensurePackagedApp() {
     return
   }
 
-  run('npm', ['run', 'pack'])
+  run('pnpm', ['run', 'pack'])
 }
 
 function resolveDmgPath() {
@@ -158,7 +158,7 @@ function ensureDmg() {
   if (process.env.HERMES_DESKTOP_SKIP_BUILD === '1' && exists(resolveDmgPath())) {
     return
   }
-  run('npm', ['run', 'dist:mac:dmg'])
+  run('pnpm', ['run', 'dist:mac:dmg'])
 }
 
 function ensureMsix() {
@@ -168,7 +168,7 @@ function ensureMsix() {
   if (process.env.HERMES_DESKTOP_SKIP_BUILD === '1' && resolveMsixPath()) {
     return
   }
-  run('npm', ['run', 'dist:win:msix'])
+  run('pnpm', ['run', 'dist:win:msix'])
 }
 
 function openApp() {
@@ -441,7 +441,7 @@ function validateBundle() {
 
   // The payload may be the real pm bundle (staged by scripts/bundles/desktop.py /
   // `hermes pm bundle --out build/agent-payload`) or the external stub
-  // (plain `npm run pack` in the PR/JS lane — the app fetches the runtime at
+  // (plain `pnpm run pack` in the PR/JS lane — the app fetches the runtime at
   // first launch via the stage protocol). Validate the payload only when a
   // real one is present; the stub is the thin-installer contract.
   const payloadRoot = path.join(APP.resourcesPath, 'agent-payload')
@@ -551,17 +551,17 @@ function printArtifacts(options = {}) {
 
 function help() {
   console.log(`Usage:
-  npm run test:desktop:existing  # build packaged app, launch with normal PATH/existing Hermes
-  npm run test:desktop:fresh     # build packaged app, launch with temp userData + HERMES_HOME
-  npm run test:desktop:dmg       # (macOS only) build DMG and open it
-  npm run test:desktop:msix      # (win32 only) build MSIX package
-  npm run test:desktop:all       # build the platform package and validate the payload
+  pnpm run test:desktop:existing # build packaged app, launch with normal PATH/existing Hermes
+  pnpm run test:desktop:fresh    # build packaged app, launch with temp userData + HERMES_HOME
+  pnpm run test:desktop:dmg      # (macOS only) build DMG and open it
+  pnpm run test:desktop:msix     # (win32 only) build MSIX package
+  pnpm run test:desktop:all      # build the platform package and validate the payload
 
 Fast rerun (skip rebuild if the packaged app already exists):
-  HERMES_DESKTOP_SKIP_BUILD=1 npm run test:desktop:fresh
+  HERMES_DESKTOP_SKIP_BUILD=1 pnpm run test:desktop:fresh
 
 Automated packaged lifecycle (no host side effects; isolated userData + HERMES_HOME):
-  npm run test:desktop:lifecycle
+  pnpm run test:desktop:lifecycle
   # start packaged app → real serve backend ready (/api/health 200) → graceful
   # quit → relaunch → preserved-home check → full teardown of our own processes.
   # Requires a backend root the packaged app may use (backend-resolution rung 1):

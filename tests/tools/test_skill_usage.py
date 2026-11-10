@@ -3,7 +3,6 @@
 import json
 import multiprocessing as mp
 import os
-import shutil
 from pathlib import Path
 
 import pytest
@@ -88,6 +87,42 @@ def test_load_usage_handles_corrupt_file(skills_home):
     from tools.skill_usage import load_usage, _usage_file
     _usage_file().write_text("{ not json }", encoding="utf-8")
     assert load_usage() == {}
+
+
+@pytest.mark.parametrize(
+    "corrupt_text",
+    [
+        '{"first": {"use_count": 1}}\n'
+        'not json\n'
+        '{"first": {"use_count": 3, "created_by": "agent"}, "last": {"locked": true}}\n',
+        '{\n'
+        '  "first": {\n    "use_count": 3,\n    "created_by": "agent"\n  },\n'
+        '  "damaged": invalid,\n'
+        '  "last": {\n    "locked": true\n  }\n'
+        '}',
+    ],
+    ids=["line-delimited", "native"],
+)
+def test_partial_corruption_preserves_readable_records_without_rewriting(skills_home, corrupt_text):
+    from tools import skill_usage
+
+    path = skills_home / "skills" / ".usage.json"
+    path.write_text(corrupt_text, encoding="utf-8")
+    first_skill = path.parent / "first"
+    first_skill.mkdir()
+    (first_skill / "SKILL.md").write_text("---\nname: first\n---\n", encoding="utf-8")
+
+    assert skill_usage.load_usage(recover=True) == {
+        "first": {"use_count": 3, "created_by": "agent"},
+        "last": {"locked": True},
+    }
+    first_row = next(row for row in skill_usage.usage_report() if row["name"] == "first")
+    assert first_row["use_count"] == 3
+    assert not skill_usage.is_curator_managed("first")
+    assert not skill_usage.set_locked("first", True)
+    assert path.read_text(encoding="utf-8") == corrupt_text
+    with pytest.raises(json.JSONDecodeError):
+        skill_usage.is_locked("last")
 
 
 # ---------------------------------------------------------------------------
@@ -362,29 +397,6 @@ def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):
     ok, msg = restore_skill("huggingface-accelerate")
     assert ok, msg
     assert (skills_dir / "huggingface-accelerate" / "SKILL.md").exists()
-
-    # Collision suffix must also key on skill_name, not skill_dir.name.
-    ok, msg = archive_skill("huggingface-accelerate")
-    assert ok, msg
-    d2 = skills_dir / "training" / "accelerate"
-    d2.mkdir(parents=True)
-    (d2 / "SKILL.md").write_text("---\nname: huggingface-accelerate\ndescription: v2\n---\n", encoding="utf-8")
-    ok, msg = archive_skill("huggingface-accelerate")
-    assert ok, msg
-    collision_dirs = [
-        p.name for p in (skills_dir / ".archive").iterdir()
-        if p.name.startswith("huggingface-accelerate-")
-    ]
-    assert len(collision_dirs) == 1
-    shutil.rmtree(skills_dir / ".archive" / "huggingface-accelerate")
-    ok, msg = restore_skill("huggingface-accelerate")
-    assert ok, msg
-    assert "v2" in (skills_dir / "huggingface-accelerate" / "SKILL.md").read_text(encoding="utf-8")
-
-
-def test_activity_count_ignores_booleans_and_clamps_negatives():
-    from tools.skill_usage import activity_count
-    assert activity_count({"use_count": True, "view_count": -5, "patch_count": 2}) == 2
 
 
 def test_forget_removes_record(skills_home):

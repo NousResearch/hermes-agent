@@ -186,8 +186,8 @@ method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,
 
 
 class ProfilesCreateParams(ProfileParams):
-    """``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on
-    so a headless bot has a provider."""
+    """``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` and
+    ``share_auth`` default on (the bot page's defaults) so a headless bot has a provider."""
 
     name: str
     description: str | None = None
@@ -204,7 +204,8 @@ class ProfilesCreateParams(ProfileParams):
 
 
 class ProfileMirrored(Result):
-    """What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``."""
+    """What was copied from the launch profile; ``auth`` is ``"shared"`` when the new profile has no
+    auth.json of its own and reads the default root's."""
 
     env: bool = False
     auth: bool | Literal["shared"] = False
@@ -219,6 +220,7 @@ class ProfilesCreateResult(Result):
     soul_written: bool = False
     model_set: bool = False
     mirrored: ProfileMirrored
+    warnings: list[str] = []  # best-effort steps that did not fully apply (create still succeeded)
 
 
 method("profiles.create", params=ProfilesCreateParams, result=ProfilesCreateResult,
@@ -460,6 +462,7 @@ class VaultItem(Result):
     identifier: str | None = None
     identifier_type: str | None = None
     has_otp: bool | None = None
+    allowed_origins: list[str] | None = None
     backend: str
 
 
@@ -516,6 +519,27 @@ class VaultUnlockResult(Result):
 
 method("vault.unlock", params=VaultUnlockParams, result=VaultUnlockResult,
        doc="Unlock a password manager for this session with its master password.")
+
+
+class VaultPreviewFillParams(ProfileParams):
+    """``target`` is the opaque binding the renderer minted for one in-app browser tab."""
+
+    handle: str
+    target: str
+
+
+class VaultPreviewFillResult(Result):
+    """Counts and the page origin only: never a secret."""
+
+    success: bool
+    filled_fields: int | None = None
+    origin: str | None = None
+    error: str | None = None
+    error_type: str | None = None
+
+
+method("vault.preview.fill", params=VaultPreviewFillParams, result=VaultPreviewFillResult,
+       doc="Fill a saved login into the in-app browser tab the renderer pinned (never submits).")
 
 
 class VaultLockParams(ProfileParams):
@@ -649,6 +673,8 @@ class SubagentSnapshot(Result):
     tool_count: int | None = None
     last_tool: str | None = None
     accepting_steer: bool | None = None
+    #: The child's own stored session (``session.transcript`` reads it by ``subagent_id``); None until it has one.
+    child_session_id: str | None = None
 
 
 class FailedDelegation(Result):

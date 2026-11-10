@@ -1,19 +1,18 @@
 // Stream-aware background throttling for chat windows.
 //
-// Chat windows must paint the live transcript while blurred, occluded, or
-// minimized — but a static `backgroundThrottling: false` in webPreferences
-// costs far more than that feature needs: it pins the renderer's
-// `document.visibilityState` to 'visible' for the life of the window, which
-// turns every visibility-gated poll and clock tick in the renderer into an
-// always-on timer. An idle, hidden Hermes burned ~20% CPU forever.
+// Visible chat windows must paint the live transcript while blurred or occluded,
+// but hidden and minimized windows need not paint it. A static
+// `backgroundThrottling: false` pins `document.visibilityState` to 'visible',
+// turning visibility-gated polls and clocks into always-on timers. An idle,
+// hidden Hermes burned ~20% CPU forever.
 //
 // So throttling is a runtime dial instead: the renderers already report
 // "which chats are mid-turn" for the quit guard (`hermes:active-work`), and
 // this controller rides the merged edge of those reports. Any turn in flight →
-// every registered chat window gets `setBackgroundThrottling(false)`, exactly
-// the streaming behavior the static flag used to provide. All turns done →
-// after a short trailing delay (so tail flushes land at full cadence) Chromium's
-// default throttling returns and hidden windows go quiet.
+// visible, non-minimized chat windows get `setBackgroundThrottling(false)`.
+// Native visibility transitions reapply that policy; bounded activity holds
+// can still wake one hidden owner. All turns done → after a short trailing
+// delay, Chromium's default throttling returns.
 //
 // On native Wayland only, a fullscreen chat may be misclassified as occluded
 // after sitting idle (#94865). The caller can opt into keeping the fleet
@@ -30,6 +29,8 @@ const RETHROTTLE_DELAY_MS = 5_000
 
 export interface ThrottleWindowLike {
   isDestroyed(): boolean
+  isVisible(): boolean
+  isMinimized(): boolean
   isFullScreen?: () => boolean
   webContents?: {
     isDestroyed(): boolean
@@ -49,13 +50,15 @@ export interface StreamThrottleOptions {
 }
 
 export interface StreamThrottle {
-  /** True while the fleet is unthrottled (streaming or trailing). */
+  /** True while global paint demand is active; hidden windows may still throttle. */
   isUnthrottled(): boolean
   /** Track a chat window; applies the current state immediately and stops
    * tracking on close. */
   register(win: ThrottleWindowLike & { on?: (event: string, fn: () => void) => void }): void
   /** Keep one window's timers awake for bounded native work; release is idempotent. */
   holdWindow(win: ThrottleWindowLike): () => void
+  /** Speech output still consumes frame-published text; preserve its streaming cadence. */
+  setVoiceActive(win: ThrottleWindowLike, active: boolean): void
   /** Report whether any turn is in flight across all renderers. */
   update(busy: boolean): void
 }
@@ -67,6 +70,7 @@ export function createStreamThrottle(
 ): StreamThrottle {
   const windows = new Set<ThrottleWindowLike>()
   const windowHolds = new WeakMap<ThrottleWindowLike, number>()
+  const voiceWindows = new WeakSet<ThrottleWindowLike>()
   const keepFullscreenPainting = options.keepFullscreenPainting === true
   let unthrottled = false
   let trailing: unknown = null
@@ -105,7 +109,8 @@ export function createStreamThrottle(
     }
 
     try {
-      contents.setBackgroundThrottling(!(unthrottled || windowHolds.has(win)))
+      const needsStreamPaint = unthrottled && ((win.isVisible() && !win.isMinimized()) || voiceWindows.has(win))
+      contents.setBackgroundThrottling(!(needsStreamPaint || windowHolds.has(win)))
     } catch {
       // A window mid-teardown can throw; it's about to leave the set anyway.
     }
@@ -132,6 +137,20 @@ export function createStreamThrottle(
   return {
     isUnthrottled: () => unthrottled,
 
+    setVoiceActive(win, active) {
+      if (!windows.has(win) || voiceWindows.has(win) === active) {
+        return
+      }
+
+      if (active) {
+        voiceWindows.add(win)
+      } else {
+        voiceWindows.delete(win)
+      }
+
+      apply(win)
+    },
+
     holdWindow(win) {
       if (!windows.has(win) || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) {
         throw new Error('Preview owner is not a live registered window')
@@ -140,7 +159,7 @@ export function createStreamThrottle(
       const held = windowHolds.get(win) ?? 0
       windowHolds.set(win, held + 1)
 
-      if (!held && !unthrottled) {
+      if (!held) {
         apply(win)
       }
 
@@ -163,9 +182,7 @@ export function createStreamThrottle(
         } else {
           windowHolds.delete(win)
 
-          if (!unthrottled) {
-            apply(win)
-          }
+          apply(win)
         }
       }
     },
@@ -177,6 +194,9 @@ export function createStreamThrottle(
         windowHolds.delete(win)
         armRethrottleIfIdle()
       })
+      for (const event of ['show', 'hide', 'minimize', 'restore']) {
+        win.on?.(event, () => apply(win))
+      }
 
       if (keepFullscreenPainting) {
         win.on?.('enter-full-screen', () => {

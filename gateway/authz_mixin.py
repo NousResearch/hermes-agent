@@ -475,7 +475,7 @@ class GatewayAuthorizationMixin:
     def _adapter_flag(self, platform, name: str, profile) -> bool:
         """Adapter-declared boolean, False when unknown. ``authorization_is_upstream`` (relay: a trusted
         authenticated upstream decides) is honored directly; ``enforces_own_access_policy`` (WeCom, Weixin,
-        Yuanbao, QQBot, WhatsApp gate at intake) is NOT "already authorized" — those adapters default to
+        QQBot, WhatsApp and plugin adapters that gate at intake) is NOT "already authorized" — those adapters default to
         ``open``, so ``_is_user_authorized`` only trusts them under an actual ``allowlist`` policy."""
         if not platform:
             return False
@@ -568,11 +568,14 @@ class GatewayAuthorizationMixin:
         if adapter is None:
             return False
         extra = _adapter_config_extra(adapter)
-        # ``group_allow_from`` is a separate group list (Telegram); an adapter with a single user
-        # allowlist (Discord) declares ``allow_from_covers_groups`` so its groups read ``allow_from``.
-        groups_use_allow_from = getattr(adapter, "allow_from_covers_groups", False) is True
-        group_key = "allow_from" if groups_use_allow_from else "group_allow_from"
-        adapter_allow = extra.get(group_key if is_group else "allow_from")
+        # ``group_allow_from`` is a group-only list. An adapter whose ``allow_from`` is global (Telegram:
+        # "DMs + groups"; Discord: its one user list) declares ``allow_from_covers_groups``, so its groups
+        # read ``allow_from`` (plus ``group_allow_from`` only where the platform has a group user list, as
+        # the env path's _GROUP_USER_ENV); otherwise groups read ``group_allow_from`` alone.
+        keys = ("group_allow_from",) if is_group else ("allow_from",)
+        if is_group and getattr(adapter, "allow_from_covers_groups", False) is True:
+            keys = ("allow_from", "group_allow_from") if source.platform in _GROUP_USER_ENV else ("allow_from",)
+        adapter_allow = [entry for key in keys for entry in _coerce_allow_set(extra.get(key))]
         if not adapter_allow:
             # Plugin platforms (Buzz, DingTalk) spell their env allowlist as ``extra.allowed_users``;
             # under multiplex only the default profile's list reaches the env (first-writer-wins
@@ -703,6 +706,31 @@ class GatewayAuthorizationMixin:
                 source.platform.value if source.platform else "", source.chat_id, source.user_id,
             )
         return allowed
+
+    def _admit_bot_chain(self, event) -> bool:
+        """The chain rules for one admitted inbound message (``BotLoopGuard.chain_admit``), read under the
+        transport profile like the budget. A human message resets its conversation's chain; a bot message
+        past ``max_hops``, a repeat of the same ask, or a bot answering the reply this bot just gave it
+        starts no turn (#137027)."""
+        from gateway.session_ingress import executing_admission
+        source = event.source
+        is_bot = bool(getattr(source, "is_bot", False))
+        # A committed admission re-enters the handler to execute; ingress already judged that message.
+        if executing_admission.get() or getattr(event, "internal", False) or (
+                not is_bot and not self._bot_loop_guard_instance().tracking_chains):
+            return True
+        allowed, state = self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().chain_admit(
+            self._bot_loop_guard_conversation(source), str(source.user_id or ""), str(event.text or ""), is_bot=is_bot))
+        if not allowed:
+            logger.info("Bot loop guard ended a bot exchange in %s chat %s (%s from %s; gateway.bot_loop_guard).",
+                        source.platform.value if source.platform else "", source.chat_id, state, source.user_id)
+        return allowed
+
+    def _note_bot_reply(self, source) -> None:
+        """This turn's reply to a bot peer went out: its next message answers an answer."""
+        if getattr(source, "is_bot", False):
+            self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().note_reply(
+                self._bot_loop_guard_conversation(source), str(source.user_id or "")))
 
     def _is_user_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool = True) -> bool:
         """Whether a user may use the bot.

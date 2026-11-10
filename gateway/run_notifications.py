@@ -177,6 +177,9 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
         # A local completion persists as the async-result card the in-process TUI wrote, and a tick
         # carries its CLI receipt; messaging rows stay internal_notification, as on main.
         metadata.update(_local_completion_card(evt))
+        from tools.process_registry_notifications import delegation_wakes_parent
+        if delegation_wakes_parent(evt):
+            metadata["completion_wakes_parent"] = True
     proven_session_id = str(evt.get("proven_session_id") or "").strip()
     if proven_session_id:
         metadata["gateway_proven_session_id"] = proven_session_id
@@ -206,8 +209,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
+        from gateway.bot_peer_notices import automatic_notices_allowed
         from gateway.run import _is_slack_ignored_channel
-        adapter = self._delivery_adapter_for(source)
+        adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
         if not adapter:
             return
         config = getattr(self, "config", None)
@@ -1606,8 +1610,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         consolidated = "\n\n".join([header, *blocks])
         if getattr(self, 'session_authority', None) is not None:
             from gateway.session_automation import producer_identity
+            from tools.process_registry_notifications import delegation_wakes_parent
             primary_evt = dict(primary_evt, _automation_identities=[
-                producer_identity(self, event) for event in [primary_evt, *(e for e, _ in siblings)]])
+                producer_identity(self, event) for event in [primary_evt, *(e for e, _ in siblings)]],
+                # One admission carries the whole batch: a failed sibling wakes the parent too.
+                **({"_sibling_failed": True} if any(delegation_wakes_parent(e) for e, _ in siblings) else {}))
         delivered = await self._deliver_completion_notification(
             consolidated, primary_evt, sibling_claims=siblings,
         )

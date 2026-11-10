@@ -1,0 +1,21 @@
+name: fast-chat
+title: Hermes Fast Chat
+repo: https://github.com/iyoda/hermes-fast-chat
+sha: e244ada6f1a8f6bf08fc82e339c0f8ba31897e93
+description: "Launch a CLI or TUI session with an explicit model and Fast mode. Disclosure — `hermes fast-chat` runs the Hermes executable (or the one given with --hermes-bin) without a shell to bootstrap the gateway and may start a long-running gateway that keeps running after it exits; on Hermes releases without `gateway attach` it obtains a single-use session ticket over the local same-user gateway control socket; sessions it creates use the Fast/ultrafast service tier, which can cost more with the provider; no telemetry, no credential reads."
+maintainer: iyoda
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+version: "0.1.2"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Requires plugins.isolation: in_process; CLI command registration is skipped in host mode."
+  - "Verified on macOS; Linux has not been tested against a live Gateway. Windows is not included in this listing."
+  - "Legacy bootstrap depends on the same-user Gateway control protocol; incompatible Gateway contracts fail at launch."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -18,8 +18,7 @@ RESTART_FLAGS = ["restart_with_redirected_messages", "restart_with_rebuilt_messa
 MAX_RETRIES = 3
 
 
-def _apply(agent, flag: str | None, restart_count: int, response=None):
-    """Run one iteration's restart handling; ``flag=None`` with a response means the model answered."""
+def _apply(agent, flag: str, restart_count: int, rebuilt_restart_count: int = 0):
     _retry = TurnRetryState()
     if flag:
         setattr(_retry, flag, True)
@@ -27,7 +26,7 @@ def _apply(agent, flag: str | None, restart_count: int, response=None):
         agent, _retry=_retry, response=response, interrupted=False, messages=[],
         conversation_history=[], user_message="hi", api_kwargs={}, current_turn_user_idx=0,
         final_response=None, retry_count=0, max_retries=MAX_RETRIES, api_call_count=1,
-        restart_count=restart_count, length_continue_retries=0,
+        restart_count=restart_count, rebuilt_restart_count=rebuilt_restart_count or restart_count, length_continue_retries=0,
         _preflight_compression_blocked=True, _turn_exit_reason="unknown",
     )
 
@@ -35,7 +34,7 @@ def _apply(agent, flag: str | None, restart_count: int, response=None):
 def _agent():
     budget = SimpleNamespace(refunds=0)
     budget.refund = lambda: setattr(budget, "refunds", budget.refunds + 1)
-    agent = SimpleNamespace(iteration_budget=budget, steered=[])
+    agent = SimpleNamespace(iteration_budget=budget, steered=[], _fallback_chain=[])
     agent._drain_pending_redirect = lambda: "last correction"
     agent.steer = agent.steered.append
     return agent
@@ -60,12 +59,41 @@ def test_back_to_back_restart_refunds_are_bounded(flag):
     restart_count, verdicts = 0, []
     while len(verdicts) < MAX_RETRIES + 5 and (not verdicts or verdicts[-1].action != "break"):
         verdicts.append(_apply(agent, flag, restart_count))
-        restart_count = verdicts[-1].restart_count
+        restart_count = (
+            verdicts[-1].rebuilt_restart_count if flag == "restart_with_rebuilt_messages"
+            else verdicts[-1].restart_count
+        )
     assert [v.action for v in verdicts] == ["continue"] * MAX_RETRIES + ["break"]
     assert agent.iteration_budget.refunds == MAX_RETRIES
     assert verdicts[-1]._turn_exit_reason.endswith("restart_limit_exceeded")
     # The correction that tripped the redirect cap is handed back as the next user turn.
     assert agent.steered == (["last correction"] if flag == "restart_with_redirected_messages" else [])
+
+
+def test_rebuilt_restart_ceiling_scales_with_fallback_chain_depth():
+    """A 4-provider fallback chain must survive 3 consecutive rebuilt-message
+    restarts even when api_max_retries (max_retries here) is 1 — the ceiling for
+    this restart is independent of max_retries and sized off the chain length
+    (#2026-09-30 incident: chain died after 1 hop, never reaching providers 3-4)."""
+    agent = _agent()
+    agent._fallback_chain = [{"provider": "p1"}, {"provider": "p2"}, {"provider": "p3"}, {"provider": "p4"}]
+    _retry = TurnRetryState()
+    _retry.restart_with_rebuilt_messages = True
+    rebuilt_restart_count = 0
+    verdicts = []
+    for _ in range(3):
+        verdict = apply_retry_restarts(
+            agent, _retry=_retry, response=None, interrupted=False, messages=[],
+            conversation_history=[], user_message="hi", api_kwargs={}, current_turn_user_idx=0,
+            final_response=None, retry_count=0, max_retries=1, api_call_count=1,
+            restart_count=0, rebuilt_restart_count=rebuilt_restart_count, length_continue_retries=0,
+            _preflight_compression_blocked=True, _turn_exit_reason="unknown",
+        )
+        verdicts.append(verdict)
+        rebuilt_restart_count = verdict.rebuilt_restart_count
+        _retry.restart_with_rebuilt_messages = True  # simulate the next hop re-arming it
+    assert [v.action for v in verdicts] == ["continue", "continue", "continue"]
+    assert agent.iteration_budget.refunds == 3
 
 
 def _interrupted_agent(tool_interrupt_reason):

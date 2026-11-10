@@ -329,12 +329,13 @@ def gateway_lifecycle_block(
         # MY background job", and re-rolling the same over-broad spelling is what takes the gateway down.
         if lifecycle_scan_root_within_budget(command) and contains_host_interpreter_kill(command):
             return _blocked_json(HOST_INTERPRETER_KILL_REJECTION, "error")
+        from hermes_cli.gateway_lifecycle_guards import GATEWAY_DUPLICATE_RECOVERY_HINT
         return _blocked_json(
             "Blocked: command or referenced script cannot restart, stop, or "
             "uninstall the gateway from inside the gateway process. The gateway would "
             "kill this command before it could complete (SIGTERM propagates "
             "to child processes). Run `hermes gateway restart` from a "
-            "separate shell outside the running gateway.",
+            "separate shell outside the running gateway.\n" + GATEWAY_DUPLICATE_RECOVERY_HINT,
             "error",
         )
     return None

@@ -24,6 +24,21 @@ from typing import Any, Optional
 
 INTERRUPT_FLAG = "--yes"
 
+GATEWAY_DUPLICATE_RECOVERY_HINT = (
+    "If a legacy installation or an explicit `--force` launch left duplicate foreground gateways, "
+    "identify the owner with `hermes gateway status` from a separate shell. "
+    "Stop only the conflicting foreground process; see the multi-profile gateway recovery guide."
+)
+
+
+def gateway_self_targeting_message(verb: str, reason: str) -> str:
+    return (
+        f"Refusing to {verb} the gateway from inside the gateway process.\n"
+        f"This command was blocked to prevent {reason}.\n"
+        f"Use `hermes gateway {verb}` from a separate shell outside the running gateway.\n"
+        + GATEWAY_DUPLICATE_RECOVERY_HINT
+    )
+
 
 def _live_work_from_state(home: Path) -> Optional[dict[str, Any]]:
     """``active_agents`` from a fresh ``gateway_state.json`` whose writer is alive (older gateways)."""

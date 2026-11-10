@@ -1,0 +1,16 @@
+name: memtomem-memory
+repo: https://github.com/memtomem/memtomem
+sha: 465e1abdf5285b2ebdce15e7c8fc6dd9d1a55601
+subdir: packages/memtomem-hermes-memory
+version: "0.2.0"
+description: "Memory provider backed by memtomem: on eligible user turns (not greetings or slash commands) it asks memtomem for the notes most relevant to the message, through Hermes's own connection to a memtomem MCP entry, and injects what returns within its time budget as context, without a model tool call. Optionally (mirror_writes, off by default) it also copies what Hermes's built-in memory tool adds, replaces or removes in MEMORY.md / USER.md into memtomem. Needs Hermes with MCP support, memory.provider: memtomem-memory, the grant plugins.entries.memtomem-memory.mcp_allowlist: [memtomem], and a memtomem MCP entry with trust: full running memtomem 0.6.8 or later (0.7.8 or later for mirroring): the memtomem catalog plugin, or your own mcp_servers.memtomem. Disclosure — each recall sends the turn's full message as the search query to whatever server that entry connects, local or remote; with mirroring on, each added, replaced or removed entry's text is sent too (a replace or remove also sends the full text of the entry it changed), and memtomem keeps the accepted ones in its database and renders them into a hermes-mirror/<profile hash>/<target>.md note that every profile on the same store can recall (a removed entry keeps only its key; an entry matching a memtomem privacy pattern is refused). It shares that entry's connection, call queue and circuit breaker with the model's memtomem tools. It starts no server, reads no credentials and uses the standard library only."
+maintainer: memtomem
+tier: community
+category: memory
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/memtomem/memtomem/tree/465e1abdf5285b2ebdce15e7c8fc6dd9d1a55601/packages/memtomem-hermes-memory
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

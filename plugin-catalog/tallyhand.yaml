@@ -1,6 +1,6 @@
 name: tallyhand
 repo: https://github.com/RezaHarirchian/hermes-tallyhand
-sha: 86ec24e240646bb15aa6efb4a32aa01624269ea3
+sha: 04efeb6236ad2301d89871497f871735b530a8bc
 title: Tallyhand
 description: "Twitch chat for Hermes Agent that treats chat as untrusted input. Roles come from chat badges and are enforced in code before every tool call: viewers get no moderation tools, and bans, unbans and long timeouts wait for the streamer's approval. The streamer also gets Twitch and OBS tools, chat commands that need no model call, viewer notes kept only with consent, and replies in the stream's language."
 maintainer: Reza Harirchian
@@ -8,7 +8,7 @@ tier: community
 category: platform
 requires_hermes: ">=0.22.7"
 docs_url: https://github.com/RezaHarirchian/hermes-tallyhand#readme
-version: "0.1.0"
+version: "0.1.1"
 capabilities:
   provides_tools:
     - twitch_stream_info

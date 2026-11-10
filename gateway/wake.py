@@ -82,7 +82,7 @@ def session_owned_by_profile(config: Any, profile: Optional[str], session_id: An
         logger.debug("wake: session ownership check unavailable for %s/%s: %s", profile, session_id, exc)
         return False
     try:
-        with open_persistence_reader(Path(home) / "state.db") as store:
+        with open_persistence_reader(Path(home)) as store:
             row = store.sessions.get(str(session_id))
     except Exception as exc:
         logger.debug("wake: session ownership lookup failed for %s/%s: %s", profile, session_id, exc)

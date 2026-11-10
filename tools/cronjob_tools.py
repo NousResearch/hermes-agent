@@ -511,7 +511,7 @@ def _run_session_usage(job_id: str, execution_id: Optional[str]) -> dict[str, An
     from persistence_assembly import open_persistence_reader
     # A missing or locked state.db costs the notice its usage line, never the completion.
     try:
-        with open_persistence_reader(get_hermes_home() / "state.db") as reader:
+        with open_persistence_reader(get_hermes_home()) as reader:
             run = next((r for r in reader.sessions.list_cron_job_runs(job_id, SessionWindow(limit=50))
                         if r.cron_execution_id == execution_id), None)
             if run is None:

@@ -307,18 +307,13 @@ def _launch_home() -> Path:
     return Path(home)
 
 
-def _launch_state_db_path() -> Path:
-    """Launch profile's ``state.db`` (see :func:`_launch_home`)."""
-    return _launch_home() / "state.db"
-
-
 def _get_db():
     global _db, _db_error
     if _db is None:
         from persistence_assembly import open_persistence, profile_scope
         try:
             # Launch home, never the context-local override (#102526); resolved at first
-            # use, not import time (#112692). See _launch_state_db_path.
+            # use, not import time (#112692). See _launch_home.
             _db, _db_error = open_persistence(profile_scope(home=_launch_home()), eager=True), None
         except Exception as exc:
             _db_error = str(exc)
@@ -352,12 +347,13 @@ def _open_profile_session_db(profile_home):
     """Open a DEDICATED handle on ``profile_home``'s ``state.db`` — FAIL CLOSED: a silent fallback to the
     launch ``state.db`` would bleed rows into the wrong profile's store exactly when the profile store is
     briefly unopenable (locked, mid-restore); callers let the error abort the build (→ ``agent_error``)."""
-    from persistence_assembly import open_persistence, profile_scope
-    db_path = Path(profile_home) / "state.db"
+    from persistence_assembly import open_persistence, profile_scope, store_location
+    scope = profile_scope(home=Path(profile_home))
     try:
-        return open_persistence(profile_scope(home=Path(profile_home)), eager=True)
+        return open_persistence(scope, eager=True)
     except Exception as exc:
-        raise RuntimeError(f"profile session store unavailable: {db_path}: {exc}") from exc
+        raise RuntimeError(
+            f"profile session store unavailable: {store_location(scope) or scope.profile_dir}: {exc}") from exc
 
 
 @contextlib.contextmanager
@@ -380,8 +376,13 @@ def _profile_db(params: dict | None = None, *, writer: bool = False):
                 db = open_persistence(profile_scope(home=Path(profile_home)), eager=True)
             else:
                 from hermes_cli.web_server_sessions import _open_session_db_at_path
-                _bootstrap_served_profile_store(Path(profile_home) / "state.db")
-                db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
+                from persistence_assembly import profile_scope, store_location
+                scope = profile_scope(home=Path(profile_home))
+                if (db_path := store_location(scope)) is None:
+                    raise RuntimeError("Browsing a profile's sessions needs a file-backed session store; "
+                                       "this profile's store has no file.")
+                _bootstrap_served_profile_store(scope.profile_dir)
+                db = _open_session_db_at_path(db_path, read_only=True)
             owns = True
         except Exception as exc:
             logger.warning("TUI profile session store unavailable for %s: %s", profile, exc)

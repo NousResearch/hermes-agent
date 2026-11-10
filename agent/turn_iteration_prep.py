@@ -120,22 +120,22 @@ def _neutralise_replay_echo_ghosts(seq: list[dict[str, Any]]) -> tuple[list[dict
     """(new list, neutralised); never mutates ``seq`` or its row dicts."""
     from agent.agent_runtime_helpers_placeholders import (
         _INTERRUPTED_PLACEHOLDER,
-        _LEGACY_INTERRUPTED_PLACEHOLDER,
+        is_interrupt_placeholder_echo,
     )
-    from agent.conversation_loop import _INTERRUPT_SCAFFOLD_MARKER
-    # Retire only spellings that predate the #132949 wording change: the scaffold
-    # (#81841) and the old placeholder, both reproduced verbatim. The current
-    # placeholder is the post-fix value — it stays (this is also what
-    # neutralisation rewrites to, so the rewrite does not retrigger the filter).
-    hazards = {_INTERRUPT_SCAFFOLD_MARKER, _LEGACY_INTERRUPTED_PLACEHOLDER}
     neutralised = 0
     out: list[dict[str, Any]] = []
     for m in seq:
         if (
-            m.get("display_kind") == "hidden" and m.get("role") == "assistant"
-            and any(isinstance(m.get(k), str) and m[k].strip() in hazards for k in ("content", "api_content"))
+            m.get("role") == "assistant"
+            and not m.get("tool_calls")
+            and any(is_interrupt_placeholder_echo(m.get(k)) for k in ("content", "api_content"))
+            and not (
+                m.get("display_kind") == "hidden"
+                and m.get("content") == ""
+                and m.get("api_content") == _INTERRUPTED_PLACEHOLDER
+            )
         ):
-            m = {**m, "content": "", "api_content": _INTERRUPTED_PLACEHOLDER}
+            m = {**m, "content": "", "display_kind": "hidden", "api_content": _INTERRUPTED_PLACEHOLDER}
             neutralised += 1
         out.append(m)
     return (out if neutralised else seq), neutralised

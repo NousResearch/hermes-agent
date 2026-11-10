@@ -183,7 +183,8 @@ class TestCoalescing:
         ]
 
         db.create_session("s-eq", "test")
-        db._apply_token_batch(list(batch))
+        # Queued outside any claimed turn: no fence provenance (the third field).
+        db._apply_token_batch([(sid, kwargs, None) for sid, kwargs in batch])
 
         seq_db = SessionDB(db_path=tmp_path / "sequential.db")
         try:
@@ -254,7 +255,7 @@ class TestReaderFlush:
         db.update_token_counts = gated
         try:
             db._token_queue.append(
-                ("s-cc", dict(input_tokens=4, api_call_count=1))
+                ("s-cc", dict(input_tokens=4, api_call_count=1), None)
             )
             results = {}
             t_a = threading.Thread(
@@ -313,7 +314,7 @@ class TestRouteSwitchBarrier:
         db._token_queue.append(("s-sw", dict(
             input_tokens=10, model="m1", billing_provider="p1",
             api_call_count=1,
-        )))
+        ), None))
 
         db.update_session_model("s-sw", "m2")
         db.update_session_billing_route(
@@ -494,7 +495,7 @@ class TestWriterFailure:
         db.update_token_counts = gated
         try:
             db._token_queue.append(
-                ("s-stopdrain", dict(input_tokens=6, api_call_count=1))
+                ("s-stopdrain", dict(input_tokens=6, api_call_count=1), None)
             )
             t = threading.Thread(target=db._stop_token_writer)
             t.start()

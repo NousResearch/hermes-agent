@@ -24,6 +24,8 @@ from hermes_scope import (
     Scope,
     ScopeSwitchRefused,
     StateToken,
+    OWNER_OPERATION,
+    TurnMark,
     current_scope,
     current_state,
     push_state,
@@ -175,18 +177,55 @@ def claim_fence(row: Mapping[str, Any]) -> Fence:
 
 
 @contextmanager
-def bind_turn(session_id: str, turn_id: str, fence: Fence) -> Iterator[Scope | None]:
+def bind_turn(session_id: str, turn_id: str, fence: Fence, *,
+              store: str | Path | None = None) -> Iterator[Scope | None]:
     """Mark the body as one turn of the bound scope, claimed under *fence*: the scope becomes a
     :class:`~hermes_scope.TurnScope` with the same tenant, agent, actor, owner and administration
     right; nothing else changes. With no scope bound (a single-profile gateway keeps its ambient
-    scope) this binds nothing."""
+    scope) no scope is bound either.
+
+    Either way the turn's storage provenance is recorded (:class:`~hermes_scope.TurnMark`): *store*
+    is the path of the session store that issued the claim (default: the bound profile's
+    ``state.db``), and that store refuses the turn's writes once the fence no longer holds its
+    session's lease (``hermes_state_fence``). Work the body starts (tasks, threads) copies the
+    context and stays the turn's for its lifetime: nothing closes when the body exits."""
     current = current_scope()
-    if current is None:
-        yield None
-        return
-    turn = current.for_turn(session_id, turn_id, fence)
-    with push_state(scope=turn):
+    turn = None if current is None else current.for_turn(session_id, turn_id, fence)
+    if store is not None:
+        from hermes_state_fence import store_key
+        key = store_key(store)
+    else:
+        from hermes_scope import scope_store
+        key = scope_store(turn)
+    mark = TurnMark(session_id, turn_id, fence, key)
+    with push_state(turn=mark) if turn is None else push_state(scope=turn, turn=mark):
         yield turn
+
+
+@contextmanager
+def outlive_turn() -> Iterator[None]:
+    """Run the body as work designed to outlive the turn whose context it runs in (an async
+    delegation reports back after the turn): its writes keep only the owner-epoch half of the turn's
+    fence, so another owner taking the profile over still refuses them while the session's next
+    claim does not. Outside a turn it changes nothing."""
+    from dataclasses import replace
+    from hermes_scope import current_turn
+    mark = current_turn()
+    if mark is None or mark.outlives:
+        yield
+        return
+    with push_state(turn=replace(mark, outlives=True)):
+        yield
+
+
+@contextmanager
+def owner_operation() -> Iterator[None]:
+    """Run the body as the owner's own work, not any turn's: settlement, ledger writes and the
+    drains the owner schedules. They keep their own guards (``hermes_state_runtime``'s owner epoch
+    and generation checks); a claimed turn's fence does not apply to them, also when they start from
+    a context a turn copied. A turn bound inside the body is fenced as usual."""
+    with push_state(turn=OWNER_OPERATION):
+        yield
 
 
 def legacy_switch(

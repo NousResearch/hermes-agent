@@ -84,6 +84,19 @@ def _reset_session_context_vars():
     _reset_all()
 
 
+def claimed_row(db, session_id, admission_id, request_id, text=""):
+    """The admission row a claim of *session_id* stamps, with *db* left as that claim leaves it
+    (an owner epoch and the session's runtime generation): the owner bridge fences the run's
+    writes by this claim, so a row the store never issued would refuse them."""
+    from hermes_state_runtime import begin_runtime_epoch
+
+    epoch = begin_runtime_epoch(db, instance_id="cron-owner")
+    db._write_sql("UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?", (session_id,))
+    generation = db.get_session(session_id)["runtime_generation"]
+    return {"admission_id": admission_id, "request_id": request_id, "principal_id": "cron-owner",
+            "owner_epoch": epoch, "generation": generation, "payload": {"text": text}}
+
+
 def owner_execution_runner():
     """The production owner execution seam as a ``run_canonical_job`` replacement.
 
@@ -105,8 +118,7 @@ def owner_execution_runner():
             db=db, sessions={ref.session_id: SimpleNamespace(
                 source=SimpleNamespace(user_id="cron-owner"))}, pending_results={})
         request_id = execution_id or identity
-        row = {"admission_id": identity, "request_id": request_id,
-               "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": extra_prompt or ""}}
+        row = claimed_row(db, ref.session_id, identity, request_id, extra_prompt or "")
         policy = SimpleNamespace(request_json=json.dumps({
             "cron_job": job, "extra_prompt": extra_prompt, "request_id": request_id}))
 

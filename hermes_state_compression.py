@@ -839,7 +839,11 @@ class SessionCompressionMixin:
             conn.execute(
                 "DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
                 (conversation_id, holder))
-        self._execute_write(_do)
+        # Holder-qualified, so it can only drop this holder's own row: a turn that lost its claim
+        # still releases it, or the session's next turn waits out the TTL (``hermes_state_fence``).
+        from hermes_state_fence import writes_as
+        with writes_as(None):
+            self._execute_write(_do)
 
     def get_compression_lock_holder(self, session_id: str) -> Optional[str]:
         """Current (non-expired) holder for ``session_id``, or None. Diagnostic only."""

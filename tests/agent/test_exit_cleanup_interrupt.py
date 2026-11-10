@@ -19,16 +19,21 @@ async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, m
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HOME", str(tmp_path))
     (home / "config.yaml").write_text("model:\n  default: test/model\n  provider: custom\n")
+    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+
     db = acquire(home / "state.db")
     ref = SessionRef(str(home), "cron-cleanup-session")
     db.create_session(ref.session_id, source="cron")
+    epoch = begin_runtime_epoch(db, instance_id="test")
     authority = SimpleNamespace(
-        db=db, sessions={ref.session_id: SimpleNamespace(
+        db=db, epoch=epoch, sessions={ref.session_id: SimpleNamespace(
             source=SimpleNamespace(user_id="cron-owner"))}, pending_results={})
     job = {"id": "test-job-1", "name": "test cleanup", "prompt": "hello",
            "schedule": "0 9 * * *", "model": "test/model"}
-    row = {"admission_id": "cleanup-admission", "request_id": "cleanup-request",
-           "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""}}
+    # Claimed the way the owner's drain claims it: the cron run's writes are fenced by the claim.
+    admit_session_input(db, epoch=epoch, principal_id="cron-owner", session_id=ref.session_id,
+                        request_id="cleanup-request", payload={"text": ""})
+    row = claim_session_input(db, epoch=epoch, session_id=ref.session_id)
     policy = SimpleNamespace(request_json=json.dumps({
         "cron_job": job, "extra_prompt": None, "request_id": row["request_id"]}))
     runtime = {"provider": "custom", "api_key": "test-key",

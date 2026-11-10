@@ -692,6 +692,14 @@ def auto_title_session(
         _report_failure(failure_callback, e, "Auto-title")
 
 
+def _auto_title_outliving_turn(*args, **kwargs) -> None:
+    """The upgrade names the session from this turn's ask; it is not a reply that could interleave with
+    the next turn, so the session's next claim must not refuse it (a takeover still does)."""
+    from agent.runtime_scope import outlive_turn
+    with outlive_turn():
+        auto_title_session(*args, **kwargs)
+
+
 def _is_real_user_turn(message: Any) -> bool:
     """A question a person actually asked (Hermes persists machinery under ``role="user"``)."""
     if not isinstance(message, dict) or message.get("role") != "user":
@@ -789,7 +797,7 @@ def maybe_auto_title(
     if isinstance(title_preview, str) and title_preview.strip():
         upgrade_kwargs["title_preview"] = title_preview
     upgrade = spawn_context_thread(
-        auto_title_session, name="auto-title",
+        _auto_title_outliving_turn, name="auto-title",
         args=(session_db, session_id, user_message),
         kwargs=upgrade_kwargs,
     )

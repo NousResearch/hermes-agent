@@ -193,6 +193,20 @@ class SessionTurnLeaseLostError(RuntimeError):
     be persisting a newer turn, and landing this one would interleave a stale reply."""
 
 
+class TurnFenceSupersededError(SessionTurnLeaseLostError):
+    """A claimed turn wrote with a fence its session's lease no longer holds: the owner epoch moved
+    (another owner took the profile over) or the session's runtime generation moved (a newer claim,
+    or a mutation that invalidated the turn). Checked inside the write's own transaction, so nothing
+    of the write lands (``hermes_state_fence``). A ``SessionTurnLeaseLostError``: every caller that
+    already treats a lost turn lease as "another writer owns this turn" handles it the same way."""
+
+
+class TurnFenceRequiredError(RuntimeError):
+    """A turn-path write (``SessionStore.append_turn``) ran with no claimed turn of its store bound,
+    so there is no fence to check it against. Writes outside a claimed turn use the non-turn
+    operations instead."""
+
+
 class SessionActiveWriteGuardError(RuntimeError):
     """Raised when an active turn lease or compression lock rejects session deletion."""
 

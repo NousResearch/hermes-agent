@@ -39,6 +39,7 @@ from hermes_state_pidns import holder_pid_checkable
 from hermes_state_health import (
     STORAGE_CORRUPT, mark_storage_corrupt, note_storage_error, storage_corrupt_reason, storage_state,
 )
+from hermes_state_fence import check_turn_lease, store_turn
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
@@ -1012,6 +1013,8 @@ class SessionDB(
     ) -> T:
         """Run *fn(conn)* inside BEGIN IMMEDIATE with jittered lock retry; commit
         is handled here (callers must not commit). Returns *fn*'s result.
+        Inside a claimed turn of this store the turn's fence is checked first, in the same
+        transaction (``hermes_state_fence``): a turn that lost its lease writes nothing.
         BEGIN IMMEDIATE takes the WAL write lock up front so contention surfaces
         immediately; on locked/busy the Python lock is released, a jitter slept,
         and the WHOLE callback retried — *fn* must stay idempotent under retry."""
@@ -1026,6 +1029,7 @@ class SessionDB(
         # settlement unknown and must propagate — this helper owns non-idempotent transcript/counter
         # mutations, not just idempotent UPSERTs.
         ioerr_begin_retried = False
+        turn = store_turn(self)
         while True:
             self._raise_if_db_corrupt(storage=True)
             # NOTE: the replaced/generation live probe runs INSIDE the lock below,
@@ -1046,6 +1050,7 @@ class SessionDB(
                         self._reopen_after_close_locked(context="write")
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
+                        check_turn_lease(self._conn, turn)
                         fn_started = True
                         result = fn(self._conn)
                         self._conn.commit()

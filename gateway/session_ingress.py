@@ -412,7 +412,8 @@ async def _admission_scope(authority, ref, home, row, event, captured):
     turn (``session_producer_lifecycle``; a no-op for every other admission)."""
     from agent.runtime_scope import bind_turn, claim_fence
     async with producer_turn(authority, row, event, captured):
-        with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)):
+        with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row),
+                                                                store=getattr(authority.db, 'db_path', None)):
             yield
 
 

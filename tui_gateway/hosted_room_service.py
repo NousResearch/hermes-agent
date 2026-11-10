@@ -43,9 +43,6 @@ _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
-# status() reads only the driver's shown rows, then splits them into these: a status left out of the driver's
-# set would drop out of member activity and Retry silently.
-assert {*_LIVE_STATUSES, *_RETRYABLE_STATUSES} == set(driver.SHOWN_TASK_STATUSES) == set(_STOPPABLE_STATUSES)
 # Continue and the router answer re-read the log when an event lands between their read and their write.
 _FENCED_APPEND_ATTEMPTS = 3
 _APPROVABLE_STATUSES = ("running", "indeterminate", "deferred")

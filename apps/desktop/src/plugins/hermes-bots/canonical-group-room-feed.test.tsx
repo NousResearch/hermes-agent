@@ -179,6 +179,55 @@ it('a signal that lands during a read runs one more read after it', async () => 
   await screen.findByText('m2')
 })
 
+it('reads once for one broadcast that reaches it on every open socket, and again for any other broadcast', async () => {
+  const room = { log: [message(1)], changeEvents: true }
+  serveRoom(room)
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await screen.findByText('m1')
+  const serve = request.getMockImplementation()!
+
+  let release: () => void = () => {}
+
+  // Hold each state answer: a push that lands meanwhile queues one more read unless it is a copy.
+  const hold = () => request.mockImplementation(async (...args: Parameters<typeof serve>) => {
+    if (args[1] === 'groups.state') {await new Promise<void>(resolve => { release = resolve })}
+
+    return serve(...args)
+  })
+
+  const settle = async (text: string) => {
+    request.mockImplementation(serve)
+    await act(async () => { release() })
+    await screen.findByText(text)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })  // any queued read runs now
+  }
+
+  const push = (id?: string) => emit('groups.changed', { connectionId: 'local', payload: { room_ids: ['feed'], ...(id ? { broadcast_id: id } : {}) } })
+  let before = stateReads()
+  hold()
+  room.log.push(message(2))
+  push('p1:7'); push('p1:7'); push('p1:7'); push('p1:7')  // one frame on the primary, the lease and two more sockets
+  await settle('m2')
+  expect(stateReads() - before).toBe(1)
+
+  // A later broadcast with the same rooms (or another backend's), landing before the held answer: not a copy.
+  before = stateReads()
+  hold()
+  push('p1:8')
+  room.log.push(message(3))
+  push('p1:9')
+  await settle('m3')
+  expect(stateReads() - before).toBe(2)
+
+  // A backend that sends no id: every push queues a read.
+  before = stateReads()
+  hold()
+  room.log.push(message(4))
+  push(); push()
+  await settle('m4')
+  expect(stateReads() - before).toBe(2)
+})
+
 it('rebuilds from the start when the room log is shorter than the view (re-hosted)', async () => {
   const room = { log: [message(1), message(2), message(3)], changeEvents: true }
   serveRoom(room)

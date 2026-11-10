@@ -4,6 +4,7 @@ rebound onto server.py's globals at install time (method_ctx.bind_module)."""
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -432,11 +433,20 @@ def _wake_room_drivers() -> None:
                 service.wakeup()
 
 
+# One ``groups.changed`` frame goes to every socket a window holds open to this process; its id (this process's
+# replay epoch, the token gateway.ready already carries, + a counter) tells a view that a copy is one it already
+# read for, and nothing else.
+_groups_broadcast_count = itertools.count(1)
+
+
 def _groups_changed_payload(before: dict, after: dict) -> dict:
     """``{"room_ids": [...]}``: the rooms whose log or status moved since the last broadcast, so an open
-    view of another room does not re-read. ``{}`` (every view refreshes) when process-wide state moved."""
+    view of another room does not re-read. No ``room_ids`` (every view refreshes) when process-wide state
+    moved. ``broadcast_id`` names this one broadcast, unique per process lifetime."""
     moved = {room_id for room_id in before.keys() | after.keys() if before.get(room_id) != after.get(room_id)}
-    return {} if "" in moved else {"room_ids": sorted(moved)}
+    scope = {} if "" in moved else {"room_ids": sorted(moved)}
+    from tui_gateway.event_replay import replay_epoch
+    return {**scope, "broadcast_id": f"{replay_epoch()}:{next(_groups_broadcast_count)}"}
 
 
 def _skills_sig():

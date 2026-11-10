@@ -179,6 +179,9 @@ script or tool in this repository, so the commands below also work without
 | `just docs-install`, `just docs-build` | the website's `npm ci` and `build:fast` |
 | `just docs-generate`, `just docs-check` | regenerate the skill docs pages; then every docs check CI runs (committed pages match, links, diagrams) |
 | `just lock` | `scripts/relock.sh`: refreshes `uv.lock` after a `pyproject.toml` change, then re-syncs |
+| `just check-repo-guards`, `just check-uv-lock` | the repo-guards history, contributor and supply-chain steps, and the `uv.lock` check, through `scripts/ci/local_step.sh` against the merge base with `origin/main` |
+| `just check-icons`, `just lint-docker`, `just check-plugin-catalog`, `just check-nix` | the committed-icons check, hadolint and shellcheck on the container inputs, the catalog validator, `nix flake check` |
+| `just test-catalog`, `just test-whatsapp-bridge`, `just test-rust` | the plugin-catalog tests, the WhatsApp bridge's node tests (after `just js-install-whatsapp-bridge`), the bootstrap installer's `cargo test --lib` |
 
 Recipes that run Python go through `scripts/run-in-hermes-env`, so they work in
 a shell that was never activated. A new developer command is a script under

@@ -178,6 +178,10 @@ CASES = {
     # skill edit must still run Python.
     "skill md → python + site": (["skills/github/SKILL.md"], _lanes(python=True, site=True)),
     "dockerfile → docker meta": (["Dockerfile"], _lanes(docker_meta=True)),
+    # The hadolint step runs it, so editing it alone must still run that step.
+    "docker lint script → docker meta, no image build": (
+        ["scripts/ci/lint_docker.sh"], _lanes(python=True, docker_meta=True, docker=False),
+    ),
     # Only the flake reads these, so they run nix alone. No Python test opens
     # them, unlike pyproject.toml and uv.lock below.
     "nix module → nix only": (["nix/homeManagerModules.nix"], _lanes(nix=True)),

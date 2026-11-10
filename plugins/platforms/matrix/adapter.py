@@ -2551,7 +2551,8 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._send_invalid_reaction_feedback(room_id, reacts_to, t("platform.matrix.approval.invalid_reaction"))
             return True
         from gateway.approval_actor import approval_refusal, refusal_text
-        if requester := approval_refusal(prompt.session_key, sender, extra=self.config.extra, request_id=prompt.request_id):
+        if requester := approval_refusal(prompt.session_key, sender, extra=self.config.extra, request_id=prompt.request_id,
+                                         choice=choice):
             await self._send_invalid_reaction_feedback(room_id, reacts_to, refusal_text(requester))
             return True
         try:

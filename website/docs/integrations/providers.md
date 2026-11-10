@@ -1325,6 +1325,8 @@ providers:
 
 Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `session_affinity_header` (name of a header that carries the conversation id, for session-aware proxies; off unless set), `ssl_ca_cert` / `ssl_verify`, `catalog_provider` (see below), and `enabled: false` to hide an entry without deleting it.
 
+An entry keyed like a built-in provider (`openrouter:`, `Anthropic:`, `deepseek:`, in any case) that sets its own `api`/`base_url` **is** what that name means: `--provider openrouter`, `/model`, `hermes model` and the dashboard save it as `custom:openrouter` and every turn goes to your endpoint. When the entry declares a key (`api_key` or `key_env`), that key is used and the built-in's env key is never sent; an entry with no key falls back to the built-in's env key, the same as `custom:<name>`. A same-named block without an endpoint (for example `providers.openrouter: {request_timeout_seconds: 300}`) only tunes the built-in. `hermes doctor` warns when `model.provider` names a built-in that such an entry takes over.
+
 #### Command-minted credentials (`key_cmd`)
 
 Vision, thinking, and native local-model capability probes materialize the same

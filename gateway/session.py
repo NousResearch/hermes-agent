@@ -185,6 +185,7 @@ class SessionContext:
     # Keep that trusted event identity task-local; it must never alter the stored route.
     actor_user_id: Optional[str] = None
     actor_user_name: Optional[str] = None
+    turn_event: Any = None  # the MessageEvent the actor came from; a later fold may clear it (session_context)
     shared_multi_user_session: bool = False
     session_key: str = ""
     session_id: str = ""
@@ -1297,6 +1298,33 @@ class SessionStore(
                         len(dropped), "y" if len(dropped) == 1 else "ies", session_id)
         return len(dropped)
 
+    def release_route(self, session_key: str, session_id: str) -> bool:
+        """Drop *session_key*'s routing entry while it still names *session_id*: the conversation
+        moved onto another lane (a handoff into another Telegram topic), so this one starts a fresh
+        conversation at its next message instead of sharing it. Nothing is ended. True = dropped."""
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None or entry.session_id != session_id:
+                return False
+            self._entries.pop(session_key, None)
+            self._save()
+        return True
+
+    def restore_route(self, entry: SessionEntry, *, expected_session_id: str) -> bool:
+        """Undo a ``switch_session`` that could not complete: put *entry* (the route as it was, pins
+        and overrides included) back while its key still names *expected_session_id*, and reopen the
+        row the switch ended. False = the route moved on since (a newer switch owns it)."""
+        with self._lock:
+            current = self._entry_locked(entry.session_key)
+            if current is None or current.session_id != expected_session_id:
+                return False
+            self._entries[entry.session_key] = entry
+            self._save()
+        if self._db_for_key(entry.session_key):
+            self._reopen_session_row(entry.session_key, entry.session_id)
+        self._announce_route(entry.session_key, entry)
+        return True
+
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
     # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).
@@ -1407,7 +1435,7 @@ def build_session_context(
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,
         actor_user_id=getattr(actor, "user_id", None), actor_user_name=getattr(actor, "user_name", None),
-        home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
+        turn_event=event, home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
     )
     if session_entry:
         context.session_key = session_entry.session_key

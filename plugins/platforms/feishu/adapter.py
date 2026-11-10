@@ -2316,7 +2316,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         open_id, chat_id, user_name, user_id, union_id = checked
         from gateway.approval_actor import approval_refusal, refusal_text
         # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
-        if requester := approval_refusal(state["session_key"], user_id or open_id, extra=self.config.extra, request_id=state.get("request_id")):
+        if requester := approval_refusal(state["session_key"], user_id or open_id, extra=self.config.extra,
+                                         request_id=state.get("request_id"), choice=choice):
             return self._card_toast(refusal_text(requester))  # only the clicker sees it; card unchanged
         if not self._submit_on_loop(loop, self._resolve_approval(
                 approval_id=approval_id, choice=choice, user_name=user_name, open_id=open_id, chat_id=chat_id,
@@ -2741,6 +2742,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             self._pending_media_batches[key] = event
             self._schedule_media_batch_flush(key)
             return
+        existing.absorb_turn_input(event)
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         existing.media_text_inlined.extend(event.media_text_inlined)
@@ -3005,6 +3007,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             return
 
         existing.text = next_text
+        existing.absorb_turn_input(event)
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         existing.media_text_inlined.extend(event.media_text_inlined)

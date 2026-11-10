@@ -1,0 +1,41 @@
+name: "tablekeeper"
+repo: "https://github.com/kaverimeshram/tablekeeper"
+sha: "a5cde35ec584c2b71b5b032a186478fdd4f291d0"
+subdir: "tablekeeper"
+description: "Tabletop RPG campaigns for Hermes group chats. Code rolls the dice and owns hit points, positions, initiative and turn order, each player controls only their own character, and the model narrates the results. SRD 5.1 monsters, characters and spells. Disclosure: Storage. `<hermes home>/plugin-data/tablekeeper/campaigns.sqlite3`, resolved per profile, WAL mode, file mode 0600. The Desktop pane and dashboard route open it read-only; Prompt. In a chat that has a campaign, a compact state summary of at most about 600 tokens is added to each turn, and the reply passes through the narration guard. Chats without a campaign are untouched; Network and processes. None. The plugin makes no network requests, starts no subprocess and reads no credentials; Identity. Platform, chat id and sender id from the turn context, used as the campaign and owner keys."
+maintainer: "kaverimeshram"
+tier: "community"
+category: "desktop"
+requires_hermes: ">=0.23.1"
+docs_url: "https://github.com/kaverimeshram/tablekeeper"
+version: "0.2.0"
+title: "Tablekeeper"
+readme: true
+image: "https://raw.githubusercontent.com/kaverimeshram/tablekeeper/a5cde35ec584c2b71b5b032a186478fdd4f291d0/docs/cover.png"
+screenshots:
+  - "https://raw.githubusercontent.com/kaverimeshram/tablekeeper/a5cde35ec584c2b71b5b032a186478fdd4f291d0/docs/pane.png"
+capabilities:
+  provides_tools:
+    - "tk_state"
+    - "tk_new_campaign"
+    - "tk_claim_character"
+    - "tk_roll"
+    - "tk_check"
+    - "tk_save"
+    - "tk_attack"
+    - "tk_cast"
+    - "tk_move"
+    - "tk_next_turn"
+    - "tk_death_save"
+    - "tk_rest"
+    - "tk_start_combat"
+    - "tk_damage"
+    - "tk_heal"
+    - "tk_condition"
+    - "tk_recap"
+  provides_hooks:
+    - "pre_llm_call"
+    - "post_tool_call"
+    - "transform_llm_output"
+  provides_middleware: []
+  requires_env: []

@@ -651,7 +651,8 @@ class TeamsAdapter(BasePlatformAdapter):
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
         from gateway.approval_actor import approval_refusal, refusal_text
         clicker = getattr(ctx.activity.from_, "aad_object_id", None) or getattr(ctx.activity.from_, "id", "")
-        if requester := approval_refusal(session_key, clicker, extra=self.config.extra, request_id=data.get("request_id")):
+        if requester := approval_refusal(session_key, clicker, extra=self.config.extra, request_id=data.get("request_id"),
+                                         choice=choice):
             return self._invoke_message(refusal_text(requester))  # shown to the clicker; card keeps its buttons
         # Cards from an older build carry cmd/desc in the button data instead.
         cmd, desc = self._approval_previews.get(data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", "")))

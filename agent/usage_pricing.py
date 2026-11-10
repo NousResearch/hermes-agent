@@ -418,6 +418,23 @@ def resolve_billing_route(
     provider_name = (provider or "").strip().lower()
     base = (base_url or "").strip().lower()
     model = (model_name or "").strip()
+    # WebUI/legacy session metadata can retain an explicit @provider:model
+    # selection. Normalize only complete, non-conflicting routes: a mismatched
+    # explicit provider or malformed custom route stays untouched/unknown.
+    if model.startswith("@"):
+        hinted_provider, separator, hinted_model = model[1:].partition(":")
+        hinted_provider = hinted_provider.strip().lower()
+        if hinted_provider == "custom" and ":" in hinted_model:
+            custom_name, _, custom_model = hinted_model.partition(":")
+            if custom_name and custom_model:
+                hinted_provider = f"custom:{custom_name.strip().lower()}"
+                hinted_model = custom_model
+            else:
+                hinted_provider = ""
+        if separator and hinted_provider and hinted_model:
+            if not provider_name or provider_name == hinted_provider:
+                provider_name = hinted_provider
+                model = hinted_model
     if not provider_name and "/" in model:
         inferred_provider, bare_model = model.split("/", 1)
         if inferred_provider in {"anthropic", "openai", "google"}:
@@ -451,7 +468,10 @@ def resolve_billing_route(
         if snapshot_provider == "openai" and (not url or host("api.openai.com")):
             bare = strip_codex_context_variant_suffix(bare)
         return BillingRoute(provider=snapshot_provider, model=bare, base_url=url, billing_mode="official_docs_snapshot")
-    if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
+    if (
+        provider_name in {"custom", "local"} or provider_name.startswith("custom:")
+        or (base and base_url_hostname(base) in ("localhost", "127.0.0.1"))
+    ):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=url, billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=bare if model else "", base_url=url, billing_mode="unknown")
 

@@ -3,21 +3,7 @@ repo: https://github.com/projectvail/vail-agent-assurance
 sha: b987cb9c459568eca591a4cdcd130fb24ea7aa15
 subdir: plugins/vail-assurance-panel
 title: VAIL Assurance Panel
-description: >-
-  A Hermes Desktop page that assures every Hermes profile (each bot) with the VAIL Agent Assurance
-  Engine: scan a profile in one click, then see its behavior risks by severity, probe coverage,
-  whether it changed since the last scan, and which risks were fixed locally with probes passing
-  before and after. Pairs with the vail-agent-assurance plugin, which does the testing and fixing.
-  Native package with a desktop/plugin.js page and a dashboard backend; needs a VAIL personal access
-  token as VAIL_TOKEN (secret setting) and the Desktop half switched on in Capabilities → Plugins.
-  Disclosure — the backend calls agents.projectvail.com (or the vail_url you set) with your token;
-  Scan with VAIL uploads the chosen profile's SOUL.md, AGENTS.md, config.yaml, its own skills and
-  plugins (text files only; never .env or hidden files, credentials, sessions, memories, logs or
-  databases; token-shaped strings and secret-looking config values replaced with <redacted>) only
-  after you confirm a dialog listing every file; while a scan runs, a thread in the gateway checks
-  VAIL every 15 seconds and starts probe generation (at most 45 minutes); it reads each profile's
-  SOUL.md, config.yaml, skills, plugins and .vail/improvement records, and writes only links.json in
-  its own data directory. No telemetry, no shell commands.
+description: "A Hermes Desktop page that assures every Hermes profile (each bot) with the VAIL Agent Assurance Engine: scan a profile in one click, then see its behavior risks by severity, probe coverage, whether it changed since the last scan, and which risks were fixed locally with probes passing before and after. Pairs with the vail-agent-assurance plugin, which does the testing and fixing. Native package with a desktop/plugin.js page and a dashboard backend; needs a VAIL personal access token as VAIL_TOKEN (secret setting) and the Desktop half switched on in Capabilities → Plugins. Disclosure — the backend calls agents.projectvail.com (or the vail_url you set) with your token; Scan with VAIL uploads the chosen profile's SOUL.md, AGENTS.md, config.yaml, its own skills and plugins (text files only; never .env or hidden files, credential-named files, sessions, memories, logs or databases; token-shaped strings and config.yaml values under secret-looking keys are replaced with <redacted> by pattern matching, so review the file list) only after you confirm a dialog listing every file; it reads SOUL.md, AGENTS.md, config.yaml, skills, plugins and .vail/improvement records of every profile on this machine; while a scan runs, a thread in the Hermes backend checks VAIL every 15 seconds and starts probe generation (at most 45 minutes); it writes only links.json in its own data directory. No telemetry, no shell commands."
 maintainer: projectvail
 tier: community
 category: desktop

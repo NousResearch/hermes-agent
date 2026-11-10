@@ -41,6 +41,8 @@ log = logging.getLogger(__name__)
 _TOKEN_QUERY = 0x0008
 _TOKEN_USER = 1
 _TOKEN_ELEVATION = 20
+_TOKEN_ELEVATION_TYPE = 18
+TOKEN_ELEVATION_TYPE_DEFAULT = 1  # no split token: UAC off, or the built-in Administrator
 
 FILE_ATTRIBUTE_DIRECTORY = 0x10
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
@@ -77,6 +79,19 @@ def process_elevation(pid: int | None = None) -> bool | None:
     grants below, the refused-owner naming in ``gateway.runtime_bootstrap_windows`` and the
     Windows service installer all read it. None when the process or its token cannot be opened
     (across an elevation boundary that refusal is itself an answer the caller interprets)."""
+    value = _token_dword(pid, _TOKEN_ELEVATION)
+    return None if value is None else bool(value)
+
+
+def process_elevation_type() -> int | None:
+    """This process's ``TokenElevationType``: 1 Default (no split token: UAC off, or the built-in
+    Administrator without Admin Approval Mode), 2 Full (UAC-elevated, with a normal twin), 3 Limited.
+    None off Windows or on any error."""
+    return _token_dword(None, _TOKEN_ELEVATION_TYPE) if sys.platform == "win32" else None
+
+
+def _token_dword(pid: int | None, info_class: int) -> int | None:
+    """One DWORD-sized ``GetTokenInformation`` class of *pid*'s token (default: this process)."""
     import ctypes
     from ctypes import wintypes
 
@@ -98,11 +113,11 @@ def process_elevation(pid: int | None = None) -> bool | None:
     try:
         if not advapi.OpenProcessToken(process, _TOKEN_QUERY, ctypes.byref(token)):
             return None
-        elevated, size = wintypes.DWORD(), wintypes.DWORD()
-        if not advapi.GetTokenInformation(token, _TOKEN_ELEVATION, ctypes.byref(elevated),
-                                          ctypes.sizeof(elevated), ctypes.byref(size)):
+        value, size = wintypes.DWORD(), wintypes.DWORD()
+        if not advapi.GetTokenInformation(token, info_class, ctypes.byref(value),
+                                          ctypes.sizeof(value), ctypes.byref(size)):
             return None
-        return bool(elevated.value)
+        return value.value
     finally:
         if token:
             kernel.CloseHandle(token)

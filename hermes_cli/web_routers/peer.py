@@ -198,13 +198,14 @@ def _bot_chat_only() -> JSONResponse:
 
 
 async def _outside_the_bot_chat(client: httpx.AsyncClient, base: str, key: str, template: str,
-                                segments: list[str], query: str, body: Optional[dict]) -> Optional[JSONResponse]:
+                                segments: list[str], query: list[tuple[str, str]],
+                                body: Optional[dict]) -> Optional[JSONResponse]:
     """The refusal for a messaging pass's request that would reach beyond the agent's canonical Bot
     Chat (other chats' titles and previews, turns in them, a session of its own), or None. A
     session id is checked by its title on the gateway itself, which keeps that title unique."""
     from tools.bot_mode_probe import BOT_CHAT_TITLE
     if template == "api/sessions" and body is None:  # the listing: only the exact-title lookup
-        titles = [value for name, value in urllib.parse.parse_qsl(query, keep_blank_values=True) if name == "title"]
+        titles = [value for name, value in query if name == "title"]
         return None if titles and all(title.strip() == BOT_CHAT_TITLE for title in titles) else _bot_chat_only()
     if template == "api/sessions":
         return None if str(body.get("title") or "").strip() == BOT_CHAT_TITLE else _bot_chat_only()
@@ -271,10 +272,13 @@ async def peer_forward(request: Request, path: str):
     base, key = upstream_target
     if not key:
         return _refusal("peer_gateway_unavailable", "This agent's API server has no key configured.", 503)
-    query = (request.scope.get("query_string") or b"").decode("latin-1")
+    # The query goes on re-encoded from the pairs checked here: raw, a ``#`` in it would end the URL
+    # built below, and the gateway would read a different query than the one checked.
+    pairs = urllib.parse.parse_qsl((request.scope.get("query_string") or b"").decode("latin-1"), keep_blank_values=True)
+    query = urllib.parse.urlencode(pairs)
     client = _gateway_client(request.app.state)
     if not control:
-        refused = await _outside_the_bot_chat(client, base, key, template, segments, query, body)
+        refused = await _outside_the_bot_chat(client, base, key, template, segments, pairs, body)
         if refused is not None:
             return refused
     target = "/" + "/".join(urllib.parse.quote(segment, safe="") for segment in segments)

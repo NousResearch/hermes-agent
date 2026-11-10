@@ -286,7 +286,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
 from gateway.platforms.helpers import cancel_task
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from utils import env_int
 
 
@@ -456,8 +456,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         _, raw_groups = self._select_allowlist(
             extra, ("group_allow_from", "groupAllowFrom"), ("WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_GROUP_ALLOWED_USERS"), _wenv)
         self._group_allow_from = self._coerce_allow_list(raw_groups)
-        rr = extra.get("send_read_receipts", False)
-        self._send_read_receipts = rr if isinstance(rr, bool) else str(rr or "").strip().lower() in {"1", "true", "yes", "on"}
+        self._send_read_receipts = self._flag(extra.get("send_read_receipts"))
+        self._reactions = self._flag(extra.get("reactions"))
+        self._mark_online = self._flag(extra.get("mark_online"))
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = self._bridge_log = self._poll_task = self._http_session = None
@@ -466,6 +467,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
         # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
         self._configure_text_batch_delays()
+
+    @staticmethod
+    def _flag(value: Any) -> bool:
+        return value if isinstance(value, bool) else str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"
@@ -554,13 +559,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
                 return False
             running_hash, disk_hash = data.get("scriptHash", ""), _file_content_hash(bridge_path)
-            if running_hash and disk_hash and running_hash == disk_hash and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts:
+            if running_hash and disk_hash and running_hash == disk_hash and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts and bool(data.get("markOnline", False)) == self._mark_online:
                 print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                 self._mark_connected()
                 self._attach_to_bridge(None)  # Not managed by us
                 self._wire_plugin_handlers(None)
                 return True
-            stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "send_read_receipts config changed"
+            stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "send_read_receipts/mark_online config changed"
             print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
         except TimeoutError:
             self._bridge_probe_timed_out = True  # something holds the port but gave no identity; connect() leaves it
@@ -582,6 +587,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         else:
             bridge_env.pop("WHATSAPP_REPLY_PREFIX", None)
         bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = "true" if self._send_read_receipts else "false"
+        bridge_env["WHATSAPP_MARK_ONLINE"] = "true" if self._mark_online else "false"
         for _key, _v in [("WHATSAPP_MODE", _wenv("WHATSAPP_MODE", "self-chat"))] + [(k, _wenv(k)) for k in _BRIDGE_PASSTHROUGH_ENV]:
             if _v:
                 bridge_env[_key] = _v
@@ -1079,6 +1085,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     logger.warning("[%s] WhatsApp read receipt failed with HTTP %s", self.name, resp.status)
         except Exception as exc:
             logger.warning("[%s] WhatsApp read receipt failed: %s", self.name, exc)
+
+    async def _react(self, event: MessageEvent, emoji: str) -> None:
+        """Set (or, with ``""``, clear) our reaction on the inbound message; WhatsApp keeps one reaction per sender."""
+        key = (event.raw_message or {}).get("readReceiptKey")
+        if not self._reactions or not self._http_session or not isinstance(key, dict):
+            return
+        payload = {"chatId": to_whatsapp_jid(event.source.chat_id), "key": key, "emoji": emoji}
+        async with self._bridge_req("post", "react", 10, json=payload) as resp:
+            if resp.status != 200:
+                logger.warning("[%s] WhatsApp reaction failed with HTTP %s", self.name, resp.status)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        await self._react(event, "👀")
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        await self._react(event, {ProcessingOutcome.SUCCESS: "✅", ProcessingOutcome.FAILURE: "❌"}.get(outcome, ""))
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 

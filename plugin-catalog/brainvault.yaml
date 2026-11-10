@@ -1,4 +1,4 @@
-name: wave-brainvault-mint
+name: brainvault
 title: "Wave | BrainVault Mint"
 repo: https://github.com/xBuildyTeam/wave-os-hermes
 sha: 76fc8fe297b6f75362e54e7ba5c45c6c39179c81
@@ -17,17 +17,18 @@ readme: true
 platforms: []
 capabilities:
   provides_tools:
-  - brainvault_recall
-  - brainvault_remember
-  - brainvault_make_cards
-  - brainvault_forget
-  - brainvault_status
-  - brainvault_send_to_wave
-  - brainvault_set_wallet
-  - brainvault_pair
-  - brainvault_sync
-  - wave_guide
-  - brainvault_doctor
+    - brainvault_recall
+    - brainvault_remember
+    - brainvault_make_cards
+    - brainvault_forget
+    - brainvault_status
+    - brainvault_send_to_wave
+    - brainvault_set_wallet
+    - brainvault_pair
+    - brainvault_sync
+    - wave_guide
+    - brainvault_doctor
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+requires_hermes: ">=0.21.7"

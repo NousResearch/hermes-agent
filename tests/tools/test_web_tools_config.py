@@ -554,6 +554,14 @@ class TestExaClientConfig:
         assert result["success"], result
         assert result["data"]["web"][0]["description"] == "key-env"
 
+    def test_client_sets_standard_user_agent(self, monkeypatch):
+        """Cloudflare 403 (error 1010) rejects the Exa SDK default User-Agent."""
+        from plugins.web.exa.provider import _get_exa_client
+        monkeypatch.setenv("EXA_API_KEY", "real-key")
+        client = _get_exa_client()
+        assert "Hermes-Agent" in client.headers["User-Agent"]
+        assert client.headers["x-exa-integration"] == "hermes-agent"
+
 
 class TestWebSearchSchema:
     """Test suite for web_search tool schema and handler wiring."""

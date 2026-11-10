@@ -1,6 +1,7 @@
 """Read-only native picker history; enumeration never adopts a transcript."""
 import base64
 import binascii
+import hashlib
 import json
 
 from hermes_state_local_migration import client_history_row, validate_legacy_row
@@ -31,19 +32,26 @@ def check_page_params(params):
         raise RuntimeStoreError('invalid_params', field='cursor')
 
 
+def _binding_digest(binding):
+    """The filters a cursor pages, at a fixed size: a cursor must fit ``_CURSOR_MAX_CHARS`` whatever their length."""
+    return hashlib.sha256(json.dumps(list(binding)).encode()).hexdigest()[:32]
+
+
 def _encode_cursor(offset, binding):
     """*offset*: the storage offset of the first row no page has examined; *binding*: the filters it pages."""
-    return base64.urlsafe_b64encode(json.dumps([_CURSOR_TAG, offset, *binding]).encode()).decode().rstrip('=')
+    held = [_CURSOR_TAG, offset, _binding_digest(binding)]
+    return base64.urlsafe_b64encode(json.dumps(held).encode()).decode().rstrip('=')
 
 
 def _decode_cursor(cursor, binding):
     try:
         if len(cursor) > _CURSOR_MAX_CHARS:
             raise ValueError('cursor too long')
-        tag, offset, *held = json.loads(base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)))
+        tag, offset, held = json.loads(base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)))
     except (TypeError, ValueError, binascii.Error):
         raise RuntimeStoreError('invalid_params', field='cursor') from None
-    if tag != _CURSOR_TAG or type(offset) is not int or not 0 <= offset < 2**63 or held != list(binding):
+    if (tag != _CURSOR_TAG or type(offset) is not int or not 0 <= offset < 2**63
+            or held != _binding_digest(binding)):
         raise RuntimeStoreError('invalid_params', field='cursor')
     return offset
 

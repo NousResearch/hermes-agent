@@ -8,9 +8,10 @@ import pytest
 
 
 @asynccontextmanager
-async def _stored(tmp_path, monkeypatch, rows):
+async def _stored(tmp_path, monkeypatch, rows, cwd=None):
     """A native reader over old local rows *rows*: ``(id, title, offered)``, oldest first. A row that is not
-    offered belongs to another profile, so the stored listing reads it from storage and skips it."""
+    offered belongs to another profile, so the stored listing reads it from storage and skips it.
+    *cwd*: the folder the rows ran in (default: *tmp_path*)."""
     from gateway import run
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
@@ -22,7 +23,8 @@ async def _stored(tmp_path, monkeypatch, rows):
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
     for sid, title, offered in rows:
-        db.create_session(sid, source='cli', model='m', cwd=str(tmp_path), profile_name=None if offered else 'other')
+        db.create_session(sid, source='cli', model='m', cwd=cwd or str(tmp_path),
+                          profile_name=None if offered else 'other')
         if title:
             db.set_session_title(sid, title)
         db.append_message(sid, 'user', f'{sid} question')
@@ -83,6 +85,17 @@ async def test_query_lists_only_matching_titles_and_pages_with_its_own_cursor(tm
         assert len(pages) == 2
         assert (await listing(scope='stored', query='no such title'))['result'] == {
             'sessions': [], 'scope': 'stored', 'next_cursor': None}
+
+
+@pytest.mark.asyncio
+async def test_a_cursor_continues_a_listing_with_long_non_ascii_filters(tmp_path, monkeypatch):
+    # The longest title a session can have, in a script JSON escapes, in a deeply nested folder.
+    title = '\u4f1a\u8bdd\u6807\u9898' * 24
+    folder = str(tmp_path.joinpath(*['\u9879\u76ee' * 20] * 12))
+    rows = [(f'deep{n}', f'{title} {n}', True) for n in range(3)]
+    async with _stored(tmp_path, monkeypatch, rows, cwd=folder) as listing:
+        pages = await _follow(listing, query=title, workspace=folder, limit=1)
+        assert sorted(sid for page in pages for sid in page) == ['deep0', 'deep1', 'deep2']
 
 
 @pytest.mark.asyncio

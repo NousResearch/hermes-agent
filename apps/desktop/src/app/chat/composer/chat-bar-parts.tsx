@@ -1,12 +1,25 @@
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import { cn } from '@/lib/utils'
+
+import { COMPOSER_FADE_BACKGROUND } from './composer-utils'
+
+interface ComposerDockGlowProps {
+  dockProximity: number
+  dragging: boolean
+  poppedOut: boolean
+}
 
 /**
  * Radial dock-target glow shown while a popped-out composer is dragged.
  * Intensity tracks how close the composer is to the dock (1 = peak).
  */
-export function ComposerDockGlow({ dockProximity }: { dockProximity: number }) {
+export function ComposerDockGlow({ dockProximity, dragging, poppedOut }: ComposerDockGlowProps) {
+  if (!dragging || !poppedOut) {
+    return null
+  }
+
   return (
     <div
       aria-hidden
@@ -26,6 +39,43 @@ export function ComposerDockGlow({ dockProximity }: { dockProximity: number }) {
         opacity: `calc(${0.1 + dockProximity * 0.57} * var(--dock-glow-scale, 1))`
       }}
     />
+  )
+}
+
+interface ComposerPopoutChromeProps {
+  dragging: boolean
+  onToggle: () => void
+  popoutAllowed: boolean
+  poppedOut: boolean
+}
+
+/** The fade and grab margin sit behind the surface, never over its controls. */
+export function ComposerPopoutChrome({
+  dragging,
+  onToggle,
+  popoutAllowed,
+  poppedOut
+}: ComposerPopoutChromeProps) {
+  return (
+    <>
+      {!poppedOut && (
+        <div
+          className="pointer-events-none absolute inset-0 rounded-[inherit]"
+          style={{ background: COMPOSER_FADE_BACKGROUND }}
+        />
+      )}
+      {/* The surface's z-4 leaves only its transparent margin draggable.
+          Hover hatching and opacity are owned by styles.css. */}
+      {popoutAllowed && (
+        <div
+          aria-hidden
+          className={cn('pointer-events-auto absolute inset-0', dragging ? 'cursor-grabbing' : 'cursor-grab')}
+          data-dragging={dragging ? '' : undefined}
+          data-slot="composer-drag-region"
+          onDoubleClick={onToggle}
+        />
+      )}
+    </>
   )
 }
 

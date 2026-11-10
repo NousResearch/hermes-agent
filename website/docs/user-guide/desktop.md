@@ -1102,6 +1102,12 @@ HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway pnpm run dev
 pnpm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
+Before sharing a source commit, verify it in a separate clean checkout: install
+with `pnpm install --frozen-lockfile`, then run `pnpm run typecheck` and
+`pnpm run build` from `apps/desktop`. A build in a development working tree can
+succeed using untracked modules or unstaged companion changes that a pull will
+not contain.
+
 Build installers:
 
 ```bash

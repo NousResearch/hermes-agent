@@ -35,9 +35,12 @@ _TERMINAL_HOLD_REASONS = frozenset({
     "auth_permanent",
 })
 
-# Observed diagnostic / final_response shapes from agent/turn_recovery.py and
-# agent/conversation_loop.py, plus the sanitized gateway.errors.provider_kept_failing
-# rewrite that would otherwise keep the loop alive after sanitization.
+# Phrase inventory observed in terminal diagnostic / final_response emitters:
+# agent/turn_recovery.py (_emit_diagnostic_status ~1049-1050, ~1191-1196) and
+# agent/conversation_loop.py (_billing_terminal_label ~588-596) and
+# agent/turn_failure_copy.py (nonretryable_copy / _NONRETRYABLE_DEFAULT_COPY
+# ~251-253, provider_policy_blocked ~233-237). An unanchored search of these
+# phrases is not enough: ordinary prose can quote the same words.
 _RAW_DIAGNOSTIC_RE = re.compile(
     r"("
     r"retrying\s+won'?t\s+help"
@@ -45,6 +48,21 @@ _RAW_DIAGNOSTIC_RE = re.compile(
     r"|provider\s+reported\s+usage/credit\s+exhaustion"
     r"|credits\s+exhausted\s*[—\-:]"
     r")",
+    re.IGNORECASE,
+)
+
+# Billing final_response prefixes from _billing_terminal_label. A body that
+# merely *starts* with "credits exhausted" is not an observed emitter.
+_BILLING_ENVELOPE_PREFIXES = (
+    "billing or credits exhausted",
+    "provider reported usage/credit exhaustion",
+)
+
+# nonretryable_copy chat envelopes start with a provider label, then one of
+# these clauses — not with the short phrase alone.
+_NONRETRYABLE_COPY_ENVELOPE_RE = re.compile(
+    r"^.+? (?:rejected the request and retrying won'?t help"
+    r"|didn't answer and retrying won'?t help)\b",
     re.IGNORECASE,
 )
 
@@ -73,15 +91,22 @@ def looks_like_terminal_nonretryable_diagnostic(text: str) -> bool:
     if not body or len(body) > 2000 or body.count("\n") > 6:
         return False
     if _RAW_DIAGNOSTIC_RE.search(body):
-        # Error phrases quoted in an ordinary reply or human question are not
-        # diagnostic envelopes. The emitted terminal copies start with an error
-        # glyph or one of the bare terminal labels.
-        return body.startswith("❌") or body.lower().startswith((
-            "billing or credits exhausted",
-            "provider reported usage/credit exhaustion",
-            "credits exhausted",
-        ))
+        # Quoted error words in ordinary prose or a human question are not
+        # envelopes. Terminal copies start with ❌ (status), a billing label
+        # (final_response), or the nonretryable_copy clause after a provider
+        # label. The ⚠️ eager-fallback lines in turn_recovery._eager_fallback_status
+        # (~1741-1754) use the same billing words but are not terminal.
+        return _has_observed_terminal_envelope_prefix(body)
     return bool(_HTTP_CLIENT_ERROR_LINE_RE.match(body))
+
+
+def _has_observed_terminal_envelope_prefix(body: str) -> bool:
+    if body.startswith("❌"):
+        return True
+    if body.lower().startswith(_BILLING_ENVELOPE_PREFIXES):
+        return True
+    first_line = body.splitlines()[0]
+    return bool(_NONRETRYABLE_COPY_ENVELOPE_RE.match(first_line))
 
 
 def looks_like_api_error_echo(text: str) -> bool:

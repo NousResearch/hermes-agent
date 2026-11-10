@@ -155,3 +155,72 @@ def test_human_question_quoting_retry_diagnostic_releases_hold():
     assert not looks_like_api_error_echo(question)
     assert should_drop_text_under_api_error_hold(entry, question) == (False, True)
     assert not api_error_hold_active(entry)
+
+
+# Real terminal envelopes from the emitters, beyond the fixtures at the top of
+# this file. These must stay recognized after the predicate is anchored.
+_UNVERIFIED_BILLING_FINAL = (
+    "Provider reported usage/credit exhaustion (unverified — the same "
+    "error can be a content-filter rejection, not billing): HTTP 402 spend limit exceeded"
+)
+_UNVERIFIED_BILLING_STATUS = (
+    "❌ Provider reported usage/credit exhaustion "
+    "(unverified — may be a content-filter rejection) — HTTP 402 spend limit exceeded"
+)
+_NONRETRYABLE_COPY_FINAL = (
+    "OpenRouter rejected the request and retrying won't help. Pick another model with /model, "
+    "or check the details in `/home/user/.hermes/logs/agent.log`."
+    "\n\nProvider said: HTTP 403 forbidden"
+)
+_POLICY_COPY_FINAL = (
+    "OpenRouter refused this request because of a policy on your account (its data/privacy "
+    "settings, or a block the model's upstream provider placed on the account), so the model "
+    "didn't answer and retrying won't help. Check the account with the provider, or switch "
+    "models with /model."
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _UNVERIFIED_BILLING_FINAL,
+        _UNVERIFIED_BILLING_STATUS,
+        _NONRETRYABLE_COPY_FINAL,
+        _POLICY_COPY_FINAL,
+    ],
+)
+def test_real_emitter_envelopes_stay_detected(text):
+    assert looks_like_terminal_nonretryable_diagnostic(text)
+    assert looks_like_api_error_echo(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The message 'Billing or credits exhausted' means the account has no credit.",
+        "What does 'retrying won't help' mean for my API key?",
+        "Notes: 'Provider reported usage/credit exhaustion' is the unverified wording.",
+        "⚠️ Billing or credits exhausted — switching to fallback provider...",
+        "⚠️ Provider reported usage/credit exhaustion "
+        "(unverified — may be a content-filter rejection) "
+        "— switching to fallback provider...",
+    ],
+)
+def test_quoted_phrases_and_fallback_status_are_not_terminal_diagnostics(text):
+    assert not looks_like_terminal_nonretryable_diagnostic(text)
+
+
+def test_messaging_still_sanitizes_real_nonretryable_copy():
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, _NONRETRYABLE_COPY_FINAL)
+    assert sanitized
+    assert sanitized != _NONRETRYABLE_COPY_FINAL
+    assert "retrying won't help" not in sanitized.lower()
+    assert looks_like_api_error_echo(sanitized)
+
+
+def test_messaging_still_sanitizes_unverified_billing_final():
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, _UNVERIFIED_BILLING_FINAL)
+    assert sanitized
+    assert sanitized != _UNVERIFIED_BILLING_FINAL
+    assert "usage/credit exhaustion" not in sanitized.lower()
+    assert looks_like_api_error_echo(sanitized)

@@ -702,6 +702,44 @@ describe('overlayLiveLanes', () => {
     }
   )
 
+  it('files a live session in the deepest folder of a project, never in an invented main lane of its parent folder', () => {
+    // One project holding a folder /work/app (not a repo) and the folder that
+    // contains it, /work (not a repo either). The backend seeds both as repo
+    // nodes and files the session under the inner folder's lane.
+    const session = makeCwdSession('/work/app', { id: 'app-chat', git_repo_root: null, git_branch: null })
+
+    const project = projectNode({
+      id: 'p_app',
+      path: '/work/app',
+      repos: [
+        {
+          id: '/work/app',
+          label: 'app',
+          path: '/work/app',
+          sessionCount: 1,
+          groups: [
+            lane({ id: '/work/app::branch::main', label: 'app', isMain: true, path: '/work/app', sessions: [session] })
+          ]
+        },
+        { id: '/work', label: 'work', path: '/work', groups: [], sessionCount: 0 }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [session])
+    const placements = overlaid.repos.flatMap(repo =>
+      repo.groups.filter(g => g.sessions.some(s => s.id === 'app-chat')).map(g => `${repo.label} / ${g.label}`)
+    )
+
+    expect(placements).toEqual(['app / app'])
+    expect(overlaid.repos.find(r => r.id === '/work')?.groups).toEqual([])
+    // A session in the parent folder itself, outside every nested folder, still lands there.
+    const parentChat = makeCwdSession('/work/notes', { id: 'work-chat', git_repo_root: null })
+    const withParent = overlayLiveLanes(project, [session, parentChat])
+    expect(withParent.repos.find(r => r.id === '/work')?.groups.flatMap(g => g.sessions.map(s => s.id))).toEqual([
+      'work-chat'
+    ])
+  })
+
   it('keeps an overview preview visible when the hydrated drill-in is stale', () => {
     const staleHistory = makeCwdSession('/www/app', {
       id: 'stale-history',

@@ -700,10 +700,22 @@ const NO_REMOVED: ReadonlySet<string> = new Set()
 export function overlayRepoLanes(
   repo: SidebarWorkspaceTree,
   live: SessionInfo[],
-  removed: ReadonlySet<string> = NO_REMOVED
+  removed: ReadonlySet<string> = NO_REMOVED,
+  /** Paths of the project's other repo nodes: a session inside a deeper one is that node's, never this one's. */
+  projectRepoPaths: readonly (null | string | undefined)[] = []
 ): SidebarWorkspaceTree {
   const repoRootKey = pathKey(repo.path)
   let changed = false
+
+  // A project can hold nested folders (a parent-of-repos folder and a folder
+  // inside it). The backend files a session under the DEEPEST one; placing it
+  // here too would invent a `main` lane in the outer folder and list the
+  // session twice ("work / main" beside "app").
+  const root = repo.path
+
+  const deeperRepoPaths = root
+    ? projectRepoPaths.filter((p): p is string => Boolean(p) && pathKey(p) !== repoRootKey && isPathUnder(root, p!))
+    : []
   // Lanes that arrived with no rows are not eviction casualties — they're real
   // structure (a `git worktree list` lane, or one whose sessions are pinned
   // away). The prune below is only allowed to drop lanes IT emptied.
@@ -725,7 +737,7 @@ export function overlayRepoLanes(
   for (const session of live) {
     const sessionPath = livePathForRepo(repo.path ?? '', session)
 
-    if (removed.has(session.id) || !sessionPath) {
+    if (removed.has(session.id) || !sessionPath || deeperRepoPaths.some(p => isPathUnder(p, sessionPath))) {
       continue
     }
 
@@ -947,8 +959,10 @@ export function overlayLiveLanes(
     return !owner || owner === project.id
   })
 
+  const repoPaths = project.repos.map(repo => repo.path)
+
   const repos = project.repos.map(repo => {
-    const next = overlayRepoLanes(repo, projectLive, removed)
+    const next = overlayRepoLanes(repo, projectLive, removed, repoPaths)
 
     changed ||= next !== repo
 

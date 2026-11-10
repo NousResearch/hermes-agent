@@ -1,13 +1,13 @@
 name: agent-autocommit
 version: "1.0.0"
 repo: https://github.com/gatoarmen/agent-autocommit
-sha: 3a29042cdb4300afee5b4bf8d06327946b1e32e9
+sha: 9cbda5c13cf5d4061f320ff364ffa9c5d0b46a4d
 subdir: agent_autocommit
 description: "The operational nervous system for autonomous multi-agent teams. Gives every agent turn its own local git commit without staging pollution, binds edits to Kanban cards & Why: reasons, and auto-generates WHY.md changelogs. Does nothing until you set roots. Disclosure — runs local git commands (status, hash-object, commit-tree, update-ref) in repos under your configured roots; skips repos with a remote by default; saves first-edit file snapshots and a commits.jsonl log under <hermes root>/cache/agent-autocommit; reads kanban.db files read-only to get card titles; no network calls, no credentials, no telemetry."
 maintainer: gatoarmen
 tier: community
 category: automation
-docs_url: https://github.com/gatoarmen/agent-autocommit/blob/3a29042cdb4300afee5b4bf8d06327946b1e32e9/README.md
+docs_url: https://github.com/gatoarmen/agent-autocommit/blob/9cbda5c13cf5d4061f320ff364ffa9c5d0b46a4d/README.md
 platforms: [linux, macos]
 capabilities:
   provides_tools: []

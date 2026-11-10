@@ -1,6 +1,6 @@
 name: understory
 repo: https://github.com/projectmehari/understory
-sha: 38d9f0e08963207361c59992ebfb2a0460d9ca6a
+sha: 74036f603f180260b23f6d75078bb00bc2bf6b14
 description: >-
   Understory draws the family tree of music labels — parents, imprints,
   sub-labels and same-founder lineages — as a time-scaled chronogram in its own
@@ -26,7 +26,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/projectmehari/understory#readme
-version: "0.1.2"
+version: "0.1.3"
 platforms: []
 readme: true
 capabilities:

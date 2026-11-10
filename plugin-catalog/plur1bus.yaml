@@ -5,16 +5,7 @@ sha: 59d31b693d13091358ce3401bfac707279097c08
 subdir: catalog/plur1bus
 version: "7.19.3-hermes.1"
 requires_hermes: ">=0.23.0"
-description: >-
-  Profile-scoped long-term memory and Langzeitgedächtnis for Hermes:
-  Memory Engine, semantic search and recall, automatic capture, embeddings,
-  reranking, Semantic Lens, Layer 1.5 (Schicht 1.5), Continuity Engine, Emotion and memory
-  dynamics, Persona Voice, consolidation, Dream Echo, Obsidian and Skill Workshop.
-  Includes a Desktop memory browser, model and storage settings, and diagnostics.
-  Disclosure — records and indexes live in the active profile by default;
-  configured remote model routes can receive the text needed for their task.
-  Opt-in Jev sends eligible capture text to api.typesafe.ai. Model setup can
-  download weights. Obsidian and workshop workflows use configured local paths.
+description: "Profile-scoped long-term memory and Langzeitgedächtnis for Hermes: Memory Engine, semantic search and recall, automatic capture, embeddings, reranking, Semantic Lens, Layer 1.5 (Schicht 1.5), Continuity Engine, Emotion and memory dynamics, Persona Voice, consolidation, Dream Echo, Obsidian and Skill Workshop. Includes a Desktop memory browser, model and storage settings, and diagnostics. Disclosure — records and indexes live in the active profile by default; configured remote embedding, reranker and model routes (OpenAI-compatible hosts, api.cohere.com, a local oMLX server by default) receive the text needed for their task; opt-in Jev automatic chunking sends capture text (up to 60,000 characters per message) to api.typesafe.ai; model setup downloads weights from huggingface.co; approved Skill Workshop proposals are written as skills into the profile's skills folder; the separate OpenClaw migration commands can rewrite the profile's SOUL.md and install per-user launchd/systemd/Task Scheduler jobs; an optional, user-run script builds a separately patched copy of Hermes Desktop (the plugin works without it)."
 maintainer: Cyb3rb1ade
 tier: community
 category: memory

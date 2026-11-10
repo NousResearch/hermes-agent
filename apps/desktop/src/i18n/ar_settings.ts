@@ -73,7 +73,7 @@ export const arSettings = {
       voiceSpeech: 'تحويل النص إلى كلام',
       advancedRuntime: 'حدود الوكيل',
       advancedTools: 'الوصول إلى الأدوات',
-      advancedTerminal: 'خلفية الطرفية',
+      advancedTerminal: 'خلفية Terminal',
       advancedOutput: 'حدود المخرجات',
       advancedDelegation: 'الوكلاء الفرعيون',
       advancedDesktop: 'سطح المكتب وبدء التشغيل',
@@ -265,14 +265,15 @@ export const arSettings = {
         },
         backgroundDone: {
           label: 'اكتملت مهمة الخلفية',
-          description: 'اكتمل أمر طرفية يعمل في الخلفية.'
+          description: 'اكتمل أمر Terminal يعمل في الخلفية.'
         }
       },
       browserPermission: {
         title: 'إشعارات المتصفح',
         allow: 'السماح',
         states: {
-          default: 'يعرض هذا المتصفح التنبيهات عندما تكون علامة التبويب في الخلفية. إلى أن تسمح بذلك، يومض عنوان علامة التبويب فقط.',
+          default:
+            'يعرض هذا المتصفح التنبيهات عندما تكون علامة التبويب في الخلفية. إلى أن تسمح بذلك، يومض عنوان علامة التبويب فقط.',
           granted: 'مسموح. تظهر التنبيهات عندما تكون علامة التبويب هذه في الخلفية، ويومض عنوانها أيضًا.',
           denied: 'محظور في إعدادات الموقع لهذا المتصفح. سيظل عنوان علامة التبويب يومض.',
           insecure: 'يتطلب HTTPS، مثل Tailscale serve. عبر HTTP العادي يومض عنوان علامة التبويب فقط.',
@@ -292,6 +293,7 @@ export const arSettings = {
       completionSoundPreview: 'معاينة'
     },
     sections: {
+      browser: 'المتصفح',
       model: 'النموذج',
       chat: 'المحادثة',
       appearance: 'المظهر',
@@ -369,7 +371,7 @@ export const arSettings = {
       introSplashTitle: 'شاشة المقدمة',
       introSplashDesc: 'الشعار النصي والعبارة التمهيدية في محادثة فارغة.',
       modelPricingTitle: 'أسعار النماذج',
-      modelPricingDesc: 'عرض أسعار الإدخال والإخراج وقراءة ذاكرة التخزين المؤقت لكل مليون رمز في منتقي النماذج.',
+      modelPricingDesc: 'عرض أسعار الإدخال والإخراج وقراءة ذاكرة التخزين المؤقت لكل مليون Tokens في منتقي النماذج.',
       reactionsTitle: 'تفاعلات الرسائل',
       reactionsDesc: 'تفاعلات إيموجي بأسلوب iMessage — تفاعل مع الرسائل، ويمكن لـ Hermes التفاعل مع رسائلك.',
       tipsTitle: 'نصائح داخل التطبيق',
@@ -449,7 +451,7 @@ export const arSettings = {
     fieldLabels: {
       model: 'النموذج الافتراضي',
       modelContextLength:
-        'يتجاوز نافذة السياق المكتشفة لنموذج المحادثة الرئيسي فقط (بالرموز). اتركه 0 لاستخدام القيمة المكتشفة للنموذج المحدد. لا يؤثر على النماذج المساعدة أو نماذج MoA.',
+        'يتجاوز نافذة السياق المكتشفة لنموذج المحادثة الرئيسي فقط (بوحدات Tokens). اتركه 0 لاستخدام القيمة المكتشفة للنموذج المحدد. لا يؤثر على النماذج المساعدة أو نماذج MoA.',
       fallbackProviders: 'النماذج الاحتياطية',
       toolsets: 'مجموعات الأدوات المفعلة',
       timezone: 'المنطقة الزمنية',
@@ -470,7 +472,7 @@ export const arSettings = {
       'terminal.modalImage': 'صورة Modal',
       'terminal.daytonaImage': 'صورة Daytona',
       fileReadMaxChars: 'حد قراءة الملفات',
-      'toolOutput.maxBytes': 'حد مخرجات الطرفية',
+      'toolOutput.maxBytes': 'حد مخرجات Terminal',
       'toolOutput.maxLines': 'حد صفحات الملفات',
       'toolOutput.maxLineLength': 'حد طول السطر',
       'codeExecution.mode': 'نمط تنفيذ الكود',
@@ -545,7 +547,7 @@ export const arSettings = {
       timezone: 'تستخدم عندما يحتاج Hermes إلى سياق الوقت المحلي. اتركها فارغة لاستخدام منطقة النظام.',
       'agent.imageInputMode': 'يتحكم في طريقة إرسال مرفقات الصور إلى النموذج.',
       'agent.maxTurns': 'الحد الأعلى لدورات استدعاء الأدوات قبل أن يوقف Hermes التشغيل.',
-      'terminal.cwd': 'مجلد المشروع الافتراضي لعمل الأدوات والطرفية.',
+      'terminal.cwd': 'مجلد المشروع الافتراضي لعمل الأدوات وTerminal.',
       'terminal.persistentShell': 'يحافظ على حالة الصدفة بين الأوامر عندما تدعمها الخلفية.',
       'terminal.envPassthrough': 'متغيرات البيئة التي تمرر إلى تنفيذ الأدوات.',
       'terminal.dockerImage': 'صورة الحاوية المستخدمة عند اختيار Docker كخلفية تنفيذ.',
@@ -572,7 +574,7 @@ export const arSettings = {
       'stt.enabled': 'يفعل التفريغ الصوتي المحلي أو عبر مزود.',
       'stt.elevenlabs.languageCode': 'رمز لغة ISO-639-3 اختياري. اتركه فارغاً للاكتشاف التلقائي.',
       'updates.nonInteractiveLocalChanges':
-        'عندما يحدّث Hermes نفسه من التطبيق دون موجه طرفية، احتفظ بتعديلات المصدر المحلية أو تجاهلها.'
+        'عندما يحدّث Hermes نفسه من التطبيق دون موجه Terminal، احتفظ بتعديلات المصدر المحلية أو تجاهلها.'
     },
     about: {
       updates: 'التحديثات',
@@ -675,7 +677,8 @@ export const arSettings = {
         'يعمل Webapp دائمًا على مضيف Hermes الذي يقدّمه. الاتصالات المحفوظة أدناه هي قائمة هذا الجهاز، مشتركة مع تطبيق Hermes Desktop؛ ويتم الوصول إلى البوابات الأخرى عبر هذا المضيف.',
       webappOauthPaste: {
         title: 'إكمال تسجيل الدخول',
-        description: 'إذا انتهت علامة تبويب تسجيل الدخول على عنوان لا يُحمَّل (هذا المتصفح ليس على جهاز البوابة)، فالصق ذلك العنوان هنا.',
+        description:
+          'إذا انتهت علامة تبويب تسجيل الدخول على عنوان لا يُحمَّل (هذا المتصفح ليس على جهاز البوابة)، فالصق ذلك العنوان هنا.',
         placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
         finish: 'إكمال',
         failed: 'تعذّر إكمال تسجيل الدخول'
@@ -711,7 +714,7 @@ export const arSettings = {
       pasteSessionToken: 'ألصق رمز الجلسة',
       keychainEncryptionTitle: 'تشفير الأسرار المحفوظة باستخدام سلسلة مفاتيح النظام',
       keychainEncryptionDesc:
-        'معطّل افتراضياً. عند التفعيل، تُشفَّر رموز البوابة وبيانات تسجيل الدخول باستخدام سلسلة مفاتيح النظام (Keychain Access أو GNOME Keyring أو Windows DPAPI) — وقد يطلب النظام إذناً أو كلمة مرور. عند التعطيل، تُخزَّن كملفات عادية لا يقرؤها سوى حساب المستخدم الحالي.',
+        'معطّل افتراضياً. عند التفعيل، تُشفَّر Tokens البوابة وبيانات تسجيل الدخول باستخدام سلسلة مفاتيح النظام (Keychain Access أو GNOME Keyring أو Windows DPAPI) — وقد يطلب النظام إذناً أو كلمة مرور. عند التعطيل، تُخزَّن كملفات عادية لا يقرؤها سوى حساب المستخدم الحالي.',
       keychainEncryptionFailed: 'تعذّر تغيير إعداد تشفير الأسرار',
       testRemote: 'اختبار البعيد',
       saveForRestart: 'حفظ للتشغيل القادم',
@@ -741,7 +744,8 @@ export const arSettings = {
       saveFailed: 'تعذر حفظ إعدادات البوابة',
       webAccess: {
         title: 'الوصول عبر الويب',
-        intro: 'افتح Hermes الموجود على هذا الحاسوب من هاتفك أو من حاسوب آخر، مع تسجيل الدخول بحساب Nous. من يسجّل الدخول يمكنه تشغيل الأوامر على هذا الحاسوب.',
+        intro:
+          'افتح Hermes الموجود على هذا الحاسوب من هاتفك أو من حاسوب آخر، مع تسجيل الدخول بحساب Nous. من يسجّل الدخول يمكنه تشغيل الأوامر على هذا الحاسوب.',
         failed: 'تعذّر تغيير الوصول عبر الويب',
         running: 'قيد التشغيل',
         stopped: 'متوقف',
@@ -757,7 +761,8 @@ export const arSettings = {
         pendingOn: 'تم الحفظ. ستقدّم البوابة تطبيق الويب بعد إعادة تشغيلها.',
         pendingOff: 'تم الإيقاف، لكن البوابة تواصل تقديم تطبيق الويب حتى إعادة تشغيلها.',
         unavailableDetail: reason => `تعذّر على البوابة تقديم تطبيق الويب: ${reason}`,
-        restartBusy: 'تم الحفظ. توجد محادثة قيد التشغيل، لذا لم تُعَد تشغيل البوابة. اختر «إعادة تشغيل البوابة» عند انتهائها.',
+        restartBusy:
+          'تم الحفظ. توجد محادثة قيد التشغيل، لذا لم تُعَد تشغيل البوابة. اختر «إعادة تشغيل البوابة» عند انتهائها.',
         restartFailed: 'تم الحفظ، لكن تعذّرت إعادة تشغيل البوابة. اختر «إعادة تشغيل البوابة» للمحاولة مجددًا.',
         restartFailedBecause: reason => `تعذّرت إعادة تشغيل البوابة: ${reason}`,
         startTimedOut: 'لم تقدّم البوابة تطبيق الويب خلال 90 ثانية.',
@@ -777,7 +782,8 @@ export const arSettings = {
         lanUnencrypted: 'الاتصال غير مشفّر: يمكن لآخرين على هذه الشبكة قراءة ما ترسله وتستقبله.',
         noLan: 'لا يملك هذا الحاسوب عنوان شبكة يمكن للأجهزة الأخرى الوصول إليه.',
         modePublic: 'عنواني الخاص',
-        modePublicDetail: port => `عنوان HTTPS تديره بالفعل، مثل Tailscale Serve أو نفق، يحوّل إلى http://127.0.0.1:${port}.`
+        modePublicDetail: port =>
+          `عنوان HTTPS تديره بالفعل، مثل Tailscale Serve أو نفق، يحوّل إلى http://127.0.0.1:${port}.`
       }
     },
     keys: {
@@ -938,13 +944,13 @@ export const arSettings = {
       connectAnother: 'ربط مزود آخر',
       otherProviders: 'مزودون آخرون',
       disconnect: 'قطع الاتصال',
-      disconnectInTerminal: 'قطع الاتصال (يشغّل أمر الإزالة في الطرفية)',
+      disconnectInTerminal: 'قطع الاتصال (يشغّل أمر الإزالة في Terminal)',
       removeConfirm: provider => `إزالة ${provider}؟`,
       removeExternalGeneric: provider => `${provider} يُدار عبر CLI خاص به — أزله من هناك.`,
       removeKeyManaged: provider => `${provider} مُعدّ من مفتاح API. أزله من مفاتيح API.`,
       removeTerminalConfirm: (provider, command) =>
-        `قطع اتصال ${provider}؟ هذا يشغّل "${command}" في الطرفية لمسح بيانات الاعتماد.`,
-      removeTerminalRunning: provider => `جار تشغيل قطع اتصال ${provider} في الطرفية…`,
+        `قطع اتصال ${provider}؟ هذا يشغّل "${command}" في Terminal لمسح بيانات الاعتماد.`,
+      removeTerminalRunning: provider => `جار تشغيل قطع اتصال ${provider} في Terminal…`,
       removedTitle: 'تمت إزالة الحساب',
       removedMessage: provider => `تمت إزالة ${provider}.`,
       failedRemove: provider => `تعذّرت إزالة ${provider}`,
@@ -988,9 +994,10 @@ export const arSettings = {
       browserRealProfile: {
         reimportSignins: 'إعادة استيراد تسجيلات الدخول',
         signinsImportedTitle: 'تسجيلات الدخول في المتصفح المدمج',
-        signinsImported: count => `تم تسجيل الدخول إلى المتصفح المدمج باستخدام ${count} من ملفات تعريف الارتباط من ملف متصفحك.`,
+        signinsImported: count =>
+          `تم تسجيل الدخول إلى المتصفح المدمج باستخدام ${count} من ملفات تعريف الارتباط من ملف متصفحك.`,
         signinsRemote: 'تعمل هذه الواجهة الخلفية على جهاز آخر، لذا لا يُستورد ملف متصفحها إلى المتصفح المدمج.',
-        signinsFailed: 'تعذر استيراد تسجيلات الدخول إلى المتصفح المدمج',
+        signinsFailed: 'تعذر استيراد تسجيلات الدخول إلى المتصفح المدمج'
       },
       loadingConfig: 'جار تحميل الإعدادات',
       savedTitle: 'تم حفظ بيانات الاعتماد',
@@ -1088,11 +1095,11 @@ export const arSettings = {
     sessionNote: 'يحدده الوضع البسيط. التغيير هنا يستمر لهذه الجلسة فقط؛ بدّل إلى المتقدم لجعله خيارك.',
     simple: {
       label: 'بسيط',
-      description: 'للتحدث مع Hermes. الشريط الجانبي والدردشة؛ بلا طرفية أو لوحات ملفات أو فروقات.'
+      description: 'للتحدث مع Hermes. الشريط الجانبي والدردشة؛ بلا Terminal أو لوحات ملفات أو فروقات.'
     },
     advanced: {
       label: 'متقدم',
-      description: 'للمطورين. الطرفية والملفات والفروقات وشريط الحالة والتخطيطات، كما أعددتها.'
+      description: 'للمطورين. Terminal والملفات والفروقات وشريط الحالة والتخطيطات، كما أعددتها.'
     }
   }
 } satisfies Pick<

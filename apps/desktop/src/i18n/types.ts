@@ -3844,6 +3844,7 @@ export interface Translations extends NoticeTranslations {
   }
 
   zones: {
+    presetNames: Record<string, string>
     showTabStrip: string
     hideTabStrip: string
     showStripTab: (title: string) => string

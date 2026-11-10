@@ -1,5 +1,6 @@
 import { group, mirrorTreeHorizontal, split } from '@/components/pane-shell/tree/model'
 import { registerBundledPresets } from '@/components/pane-shell/tree/presets'
+import { runtimeTranslations, subscribeRuntimeI18nLocale } from '@/i18n/runtime'
 
 // ---------------------------------------------------------------------------
 // Layout presets — CHAT (main) always dominates.
@@ -99,7 +100,7 @@ const QUAD_TREE = split(
 export function registerLayoutPresets() {
   // Simple is always the Basic arrangement; its one choice is which side the
   // sidebar sits. The decks are Advanced — arranging tooling is the point.
-  return registerBundledPresets([
+  const presets = [
     { id: 'sidebar-left', title: 'Sidebar left', order: 0, tree: BASIC_TREE, resting: BASIC_RESTING, tier: 'simple' },
     {
       id: 'sidebar-right',
@@ -122,5 +123,21 @@ export function registerLayoutPresets() {
     },
     { id: 'quad', title: 'Quad', order: 30, tree: QUAD_TREE, tier: 'advanced' },
     { id: DEMO_LAYOUT_ID, listed: false, title: 'Demo', order: 40, tree: DEMO_TREE }
-  ])
+  ] as const
+
+  const register = () =>
+    registerBundledPresets(
+      presets.map(preset => ({
+        ...preset,
+        title: runtimeTranslations().zones.presetNames[preset.id] ?? preset.title
+      }))
+    )
+
+  const dispose = register()
+  const unsubscribe = subscribeRuntimeI18nLocale(register)
+
+  return () => {
+    unsubscribe()
+    dispose()
+  }
 }

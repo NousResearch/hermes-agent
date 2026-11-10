@@ -479,16 +479,23 @@ export const zhHantChrome = {
     terminalCloseAll: '全部關閉',
     terminalNewOn: '新增終端機於…',
     terminalGatewayRemoved: '已移除的閘道',
-    terminalGatewayRemovedBody:
-      '此終端機所在的閘道已被移除，無法重新開啟。請關閉此分頁。',
-    terminalGatewayNoShellBody:
-      '此閘道不提供 Shell 存取，此終端機無法重新開啟。請關閉此分頁。',
-    terminalDisconnectedBody:
-      '終端機已中斷連線。按 Enter 啟動新的 shell；捲動記錄會保留。',
+    terminalGatewayRemovedBody: '此終端機所在的閘道已被移除，無法重新開啟。請關閉此分頁。',
+    terminalGatewayNoShellBody: '此閘道不提供 Shell 存取，此終端機無法重新開啟。請關閉此分頁。',
+    terminalDisconnectedBody: '終端機已中斷連線。按 Enter 啟動新的 shell；捲動記錄會保留。',
     addToChat: '新增至聊天'
   },
 
   zones: {
+    presetNames: {
+      'sidebar-left': '左側邊欄',
+      'sidebar-right': '右側邊欄',
+      default: '預設',
+      basic: '基礎',
+      focus: '專注',
+      'terminal-deck': '終端工作區',
+      quad: '四分區',
+      demo: '示範'
+    },
     showTabStrip: '顯示分頁',
     hideTabStrip: '隱藏分頁',
     showStripTab: title => `顯示 ${title}`,

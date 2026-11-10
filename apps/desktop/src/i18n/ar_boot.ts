@@ -21,7 +21,7 @@ export const arBoot = {
       desktopBootFailed: 'فشل تشغيل سطح المكتب',
       gatewayConnectionLost: 'انقطع الاتصال بالبوابة',
       gatewayConnectionLostDetail:
-        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
+        'لا تزال إعادة المحاولة جارية في الخلفية. يمكنك مواصلة القراءة وكتابة المسودات — افتح إعدادات البوابة إذا استمرت المشكلة.',
       gatewaySignInRequired: 'تسجيل الدخول للبوابة مطلوب',
       ipcBridgeUnavailable: 'جسر IPC لسطح المكتب غير متاح.'
     },
@@ -105,7 +105,7 @@ export const arBoot = {
       rebuild: 'جار إعادة بناء تطبيق سطح المكتب...',
       restart: 'جار إعادة تشغيل Hermes...',
       done: 'اكتمل التحديث',
-      manual: 'التحديث من الطرفية',
+      manual: 'التحديث من Terminal',
       guiSkew: 'تحديث تطبيق سطح المكتب',
       error: 'تم إيقاف التحديث مؤقتا'
     },
@@ -174,9 +174,9 @@ export const arBoot = {
     maybeLater: 'ربما لاحقا',
     moreChanges: count => `+ ${count} تغيير${count === 1 ? '' : 'ات'} إضافي مُضمَّن.`,
     copyFullLog: 'نسخ سجل التغييرات الكامل',
-    manualTitle: 'التحديث من الطرفية',
+    manualTitle: 'التحديث من Terminal',
     manualUnavailableTitle: 'لا يمكن التحديث من هنا',
-    manualBody: 'لقد ثبّتت Hermes من سطر الأوامر، لذا تُجرى التحديثات من هناك أيضا. الصق هذا في طرفيتك:',
+    manualBody: 'لقد ثبّتت Hermes من سطر الأوامر، لذا تُجرى التحديثات من هناك أيضا. الصق هذا في Terminal لديك:',
     manualBodyBackend: 'تتم إدارة خادم Hermes خارج هذا التطبيق. نفّذ هذا الأمر على الخادم الذي يستضيفه:',
     manualPickedUp: 'سيلتقط Hermes الإصدار الجديد في المرة التالية التي تشغّله فيها.',
     manualPickedUpBackend: 'سيحمّل الخادم الإصدار الجديد بعد اكتمال التحديث.',
@@ -197,7 +197,7 @@ export const arBoot = {
     blockerBody: 'يحتاج Hermes إلى إيقاف هذه المعاينات المحلية قبل التحديث. لن يؤدي ذلك إلى تعديل ملفاتك أو حذفها.',
     foreignBlockerTitle: 'أغلق العمليات الأخرى لتحديث Hermes',
     foreignBlockerBody:
-      'لا يمكن لـ Hermes إغلاق هذه العمليات تلقائيًا بأمان. أغلق التطبيق أو الطرفية أو الخدمة التي تشغّل كل عملية، ثم حاول التحديث مرة أخرى.',
+      'لا يمكن لـ Hermes إغلاق هذه العمليات تلقائيًا بأمان. أغلق التطبيق أو Terminal أو الخدمة التي تشغّل كل عملية، ثم حاول التحديث مرة أخرى.',
     mixedBlockerBody:
       'يمكن لـ Hermes إغلاق المعاينات المحلية المدرجة أدناه. يجب إغلاق العمليات الأخرى يدويًا قبل متابعة التحديث.',
     closePreviewsAndUpdate: 'إغلاق المعاينات والتحديث',
@@ -241,7 +241,7 @@ export const arBoot = {
     },
     oneTimeTitle: 'يحتاج Hermes إلى تثبيت لمرة واحدة',
     unsupportedDesc: platform =>
-      `التثبيت التلقائي عند أول تشغيل غير متاح على ${platform} بعد. افتح الطرفية وشغّل الأمر أدناه، ثم أعد تشغيل هذا التطبيق. ستتخطى عمليات التشغيل اللاحقة هذه الخطوة.`,
+      `التثبيت التلقائي عند أول تشغيل غير متاح على ${platform} بعد. افتح Terminal وشغّل الأمر أدناه، ثم أعد تشغيل هذا التطبيق. ستتخطى عمليات التشغيل اللاحقة هذه الخطوة.`,
     installCommand: 'أمر التثبيت',
     copyCommand: 'نسخ الأمر',
     viewDocs: 'عرض مستندات التثبيت',
@@ -321,7 +321,7 @@ export const arBoot = {
     flowSubtitles: {
       pkce: 'يفتح المتصفح لتسجيل الدخول ثم يتابع هنا',
       device_code: 'يفتح صفحة تحقق في المتصفح — يتصل Hermes تلقائياً',
-      external: 'سجل الدخول مرة واحدة في الطرفية ثم عد إلى المحادثة'
+      external: 'سجل الدخول مرة واحدة في Terminal ثم عد إلى المحادثة'
     },
     startingSignIn: provider => `جار بدء تسجيل الدخول لـ ${provider}...`,
     verifyingCode: provider => `جار التحقق من الرمز عبر ${provider}...`,
@@ -339,7 +339,7 @@ export const arBoot = {
     reopenAuthPage: 'إعادة فتح صفحة التفويض',
     waitingAuthorize: 'بانتظار التفويض...',
     externalPending: provider =>
-      `${provider} يسجل الدخول عبر أداة سطر الأوامر الخاصة به. شغّل هذا الأمر في الطرفية، ثم عد واختر "سجلت الدخول":`,
+      `${provider} يسجل الدخول عبر أداة سطر الأوامر الخاصة به. شغّل هذا الأمر في Terminal، ثم عد واختر "سجلت الدخول":`,
     signedIn: 'سجلت الدخول',
     deviceCodeOpened: provider => `فتحنا ${provider} في المتصفح. أدخل هذا الرمز هناك:`,
     reopenVerification: 'إعادة فتح صفحة التحقق',
@@ -348,7 +348,7 @@ export const arBoot = {
     freeTier: 'الطبقة المجانية',
     pro: 'مدفوع',
     free: 'مجاني',
-    price: (input, output) => `${input} إدخال / ${output} إخراج لكل مليون رمز`,
+    price: (input, output) => `${input} إدخال / ${output} إخراج لكل مليون Tokens`,
     change: 'تغيير',
     startChatting: 'ابدأ',
     docs: provider => `وثائق ${provider}`

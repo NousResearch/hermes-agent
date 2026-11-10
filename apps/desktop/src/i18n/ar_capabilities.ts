@@ -103,6 +103,6 @@ export const arCapabilities = {
     ageHours: hours => `قبل ${hours} س`,
     durationSeconds: seconds => `${seconds} ث`,
     durationMinutes: (minutes, seconds) => `${minutes} د ${seconds} ث`,
-    tokens: value => `${value} رمز`
+    tokens: value => `${value} Tokens`
   }
 } satisfies Pick<TranslationOverrides, 'skillDeepLink' | 'skills' | 'agents'>

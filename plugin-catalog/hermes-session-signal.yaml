@@ -1,12 +1,12 @@
 name: hermes-session-signal
 repo: https://github.com/raitoxlol/hermes-session-signal
-sha: 25393aeca199e67e8431b2be7cc97480558b03a7
+sha: 838bb895798626a6f4368ba9635979047042f1c0
 title: Session Signal
-description: 'T3 Code inspired session rows for Hermes Desktop: slim rows, quiet Working / Input / Done labels, and titlebar counts that jump to the next session needing you. Desktop-only. No tools, hooks, middleware, network, or env vars.'
+description: 'SDK-backed Working labels and titlebar navigation for visible Hermes Desktop sessions. Native row layout stays under Hermes control. Input/Done deferred pending SDK support. Desktop-only; no tools, hooks, middleware, direct network calls, or env vars.'
 maintainer: raitoxlol
 tier: community
 category: desktop
-version: "0.2.0"
+version: "0.3.0"
 docs_url: https://github.com/raitoxlol/hermes-session-signal#readme
 platforms: [macos]
 capabilities:

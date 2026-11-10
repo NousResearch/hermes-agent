@@ -33,7 +33,8 @@ import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '
 import {
   $workspaceOwnerLabels,
   workspaceOwnerTitle,
-  workspaceSessionRenameable
+  workspaceSessionRenameable,
+  workspaceStoredTitle
 } from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -42,6 +43,7 @@ import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
+import { $botChatScopes } from '@/store/bot-chat-scope'
 import { createComposerAttachmentScope, draftTitleFor, takeSessionDraft } from '@/store/composer'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
@@ -62,7 +64,6 @@ import {
 import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import {
-  $botChatScopes,
   $sessionStates,
   $sessionTileDelegateRevision,
   $sessionTiles,
@@ -742,9 +743,11 @@ export function startTileBackendIdentityGuard(activeConnection = () => $connecti
  *  skipping the re-register that hands the tab back to this string. */
 function tileTitle(storedSessionId: string): string {
   const stored = tileStoredRow(storedSessionId)
-  const explicit = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.workspaceTabTitle
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
 
-  return stored ? sessionTitle(stored) : explicit || NEW_SESSION_TITLE
+  return stored
+    ? (workspaceStoredTitle(stored.title, tile) ?? sessionTitle(stored))
+    : tile?.workspaceTabTitle || NEW_SESSION_TITLE
 }
 
 /** The tile's workspace scope — the same fields `workspaceOwnerTitle` reads,
@@ -773,7 +776,7 @@ function tileDragPayload(storedSessionId: string): SessionDragPayload {
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
 
   const title = stored
-    ? sessionTitle(stored)
+    ? (workspaceStoredTitle(stored.title, tile) ?? sessionTitle(stored))
     : tile?.workspaceTabTitle || draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
 
   return { id: storedSessionId, profile: stored?.profile ?? '', title: workspaceOwnerTitle(title, tile) }

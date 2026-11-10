@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { setWorkspaceOwnerLabel } from '@/components/pane-shell/workspace-scope'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
 import { makeSessionInfo } from '../test/session-info'
 
+import { $botChatScopes } from './bot-chat-scope'
 import { type BrowserTabStatus, browserTabTitle, installBrowserTabTitle } from './browser-tab-title'
 import { $selectedStoredSessionId, $sessions, $unreadFinishedSessionIds, setSessions } from './session'
-import { clearAllSessionStates, publishSessionState } from './session-states'
+import { clearAllSessionStates, publishSessionState, setSessionTileWorkspaceScope } from './session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from './session-unread'
 
 const row = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ message_count: 3, ...over })
@@ -27,6 +29,7 @@ function reset() {
 
   uninstall = () => {}
   clearAllSessionStates()
+  $botChatScopes.set({})
   $sessions.set([])
   $selectedStoredSessionId.set(null)
   $sessionSeenCounts.set({})
@@ -102,6 +105,22 @@ describe('installBrowserTabTitle', () => {
     uninstall = installBrowserTabTitle()
 
     expect(document.title).toBe('Hermes')
+  })
+
+  it('captions a Bot Chat held by main (no tile) by its bot, even while its row is untitled', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    setWorkspaceOwnerLabel('bot:sylar', 'Sylar')
+    setSessionTileWorkspaceScope('tip', {
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:sylar',
+      workspaceTabTitle: 'Bot Chat'
+    })
+    // A compression tip before the canonical title is carried onto it.
+    setSessions([row({ id: 'tip', profile: 'sylar', title: null })])
+    $selectedStoredSessionId.set('tip')
+    uninstall = installBrowserTabTitle()
+
+    expect(document.title).toBe(tabTitle({ caption: 'Sylar' }))
   })
 
   it('leaves the native window title alone', () => {

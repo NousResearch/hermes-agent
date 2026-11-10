@@ -1210,6 +1210,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._username_resolved_ids: set = set()  # IDs resolved from username entries (gateway authz union)
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
+        # Live clarify cards by clarify_id -> (channel id, message id, buttons view or None), so
+        # retire_clarify_card can rewrite a card the gateway ends without a click.
+        self._clarify_cards: dict[str, tuple[str, str, Any]] = {}
         # Gate env snapshot captured in connect() inside the owning profile's scope; None until then.
         # None until then; accessors fall back to live scope-aware reads (issue #72348).
         self._gate_env_snapshot: Optional[dict[str, str]] = None
@@ -5777,8 +5780,46 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             send_kwargs = {"content": content, "embed": embed}
             if view:
                 send_kwargs["view"] = view
+            card["view"] = view
             return send_kwargs, view
-        return await self._send_prompt(chat_id, metadata, _build, fail_log="send_clarify")
+        card: dict[str, Any] = {}
+        result = await self._send_prompt(chat_id, metadata, _build, fail_log="send_clarify")
+        if result.success and result.message_id:
+            self._clarify_cards[clarify_id] = (_prompt_target_id(chat_id, metadata), result.message_id, card.get("view"))
+            # Cards answered by a click are never retired; keep only the newest ones.
+            while len(self._clarify_cards) > self._CLARIFY_CARD_MAX:
+                self._clarify_cards.pop(next(iter(self._clarify_cards)))
+        return result
+
+    _CLARIFY_CARD_MAX = 200
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        """Rewrite a still-live clarify card into a terminal, button-less state.
+
+        The gateway calls this when a clarify ends without a button click: a typed answer (a
+        numeric pick, or text after "Other"), a timeout, a session reset or superseding prose.
+        Without it the card kept its buttons and gave no sign that a typed reply was taken.
+        Stops the view (so its own timeout cannot stamp "expired" over the answer), drops the
+        buttons and stamps ``notice`` in the embed footer. Keyed by clarify_id and popped before
+        the first await, so a second or late call is a no-op.
+        """
+        card = self._clarify_cards.pop(clarify_id, None)
+        if card is None or not self._client:
+            return
+        target, message_id, view = card
+        if view is not None:
+            view.resolved = True  # a late click gets "already answered"
+            view.stop()
+        try:
+            channel = await self._resolve_channel(target)
+            msg = await channel.fetch_message(int(message_id))
+            embed = msg.embeds[0] if msg.embeds else None
+            if embed:
+                embed.color = discord.Color.green() if notice.startswith("✅") else discord.Color.greyple()
+                embed.set_footer(text=_truncate_discord_component_text(notice, 2048))
+            await msg.edit(embed=embed, view=None)
+        except Exception:
+            logger.debug("[%s] Could not retire clarify card %s", self.name, clarify_id, exc_info=True)
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",

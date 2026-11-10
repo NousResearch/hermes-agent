@@ -7,6 +7,7 @@ from gateway.kanban_watchers_common import (
     _release_singleton_lock,
 )
 from gateway.run import GatewayRunner
+from hermes_cli import kanban_db_review as kbr
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -715,7 +716,7 @@ def _review_handoff_task(
         )
         kb.claim_task(conn, tid)
         run_id = kb.get_task(conn, tid).current_run_id
-        assert kb.request_review(
+        assert kbr.request_review(
             conn, tid, summary=summary, expected_run_id=run_id,
         ) is True
         return tid

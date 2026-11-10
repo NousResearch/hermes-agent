@@ -3,6 +3,7 @@ import pytest
 
 from pathlib import Path
 from types import SimpleNamespace
+from hermes_cli import kanban_db_review as kbr
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -565,7 +566,7 @@ async def test_notifier_wakes_origin_for_review_and_keeps_subscription(kanban_ho
         )
         task = kb.claim_task(conn, task_id, claimer="builder:1")
         assert task is not None
-        assert kb.request_review(
+        assert kbr.request_review(
             conn,
             task_id,
             summary="Implementation and tests ready.",
@@ -861,7 +862,7 @@ async def test_notifier_uploads_review_handoff_artifacts(kanban_home, tmp_path, 
         run_id = kb.get_task(conn, tid).current_run_id
         # The summary names the scratch original, which still exists at
         # handoff time: it must not ride along as a second upload.
-        assert kb.request_review(
+        assert kbr.request_review(
             conn, tid, summary=f"ready for review: {scratch}",
             metadata={"artifacts": [str(scratch)]}, expected_run_id=run_id)
         handoff = [e for e in kb.list_events(conn, tid) if e.kind == "review_requested"][-1]

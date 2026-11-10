@@ -973,7 +973,7 @@ hermes kanban block <id> "<reason>" [--ids <id>...]
 hermes kanban unblock <id>...
 hermes kanban archive <id>...
 
-hermes kanban request-review <id> [--summary "..."] [--metadata JSON] [--reviewer PROFILE]
+hermes kanban request-review <id> [--summary "..."] [--metadata JSON] [--reviewer PROFILE] [--from-done]
 hermes kanban request-changes <id> "<required changes>"               # active reviewer -> implementer
 hermes kanban reopen-review  <id>... [--reason "..."]                 # changes requested: 'review' -> ready/todo
 
@@ -1003,6 +1003,16 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 ```
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
+
+If a task was completed before its review handoff, use
+`hermes kanban request-review <id> --from-done --reviewer <profile>` to send the
+same card to review. Omitted summary and metadata inherit its last completion;
+the original run, result, and durable attachments remain available. The event
+records the prior completion time and run, while the card's current completion
+time is cleared. Descendants that relied on the completed task return to `todo`
+until the reviewed task is completed again; their running workers are stopped
+after the audit records commit. Ordinary `request-review`, including `--force`,
+continues to reject completed cards without `--from-done`.
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 

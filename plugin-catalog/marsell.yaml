@@ -1,0 +1,18 @@
+name: marsell
+title: Marsell
+repo: https://github.com/Marsell-Official/mcp
+sha: c7ed59d832bc95622419e2b0f3eeb1f79e93ab27
+version: "1.0.0"
+description: "Run Marsell, an AI for marketing, sales and content creation, from Hermes through Marsell's hosted MCP server (Streamable HTTP at https://getmarsell.com/mcp, OAuth sign-in, no keys in config): read what Marsell planned, made and found for each project, answer the decisions waiting for the owner, read and update the brand, plan posts and other work, make pictures and films, run series, and check results and token balances. Bundles the marsell workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to Marsell's hosted server (getmarsell.com) and acts on the user's Marsell account with their current role; the tool set is served by that server at runtime and is not covered by the pinned sha. Tools that write change the owner's Marsell projects, and answering a waiting card in the owner's name can publish, send or spend as the chosen option says. Tools that make pictures, films and voice-overs, and some others such as research and page changes, spend Marsell tokens from the owner's plan; each says so in its description and asks the agent to give the price first. Ad spend needs the owner's approval in Marsell: an ad spends nothing until someone allowed to spend presses Start on its card there. Mission tools give the agent messages Marsell wrote for the owner's own Reddit, X or LinkedIn accounts, to send word for word from a signed-in browser, only where the owner said yes to that in Marsell. Upload tools give the agent a one-time address and a curl command that sends files from the user's machine, such as a logo or voice recordings, to Marsell. Sign-in runs the pinned mcp-remote@0.15.2 through npx (Node.js and npm required), which opens a browser and a local callback port the first time a tool needs the account and stores OAuth tokens under ~/.mcp-auth. The package has no telemetry and no self-updater. It marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: Marsell
+tier: community
+category: tools
+docs_url: https://github.com/Marsell-Official/mcp#hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

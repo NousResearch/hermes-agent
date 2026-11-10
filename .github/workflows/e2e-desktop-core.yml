@@ -57,15 +57,14 @@ jobs:
       # explicit binary preparation before the native fixtures launch.
       - uses: ./.github/actions/retry
         with:
-          command: pnpm install --frozen-lockfile
+          command: just js-install
 
       - name: Prepare locked Electron runtime
-        run: node scripts/build/electron-runtime.mjs --source .
+        run: just electron-runtime
 
       - name: Build the desktop app
-        working-directory: apps/desktop
         # The generator uses the runtime's Pillow + resvg-py, not a build-only venv.
-        run: pnpm run build
+        run: just desktop-build
 
       # webapp-gateway-attach.spec.ts drives the Webapp from a real browser: it needs the
       # Webapp renderer and a Chromium Playwright can launch.

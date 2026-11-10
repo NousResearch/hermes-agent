@@ -227,6 +227,9 @@ def _maybe_title_session_at_turn_start(
     platform = str(getattr(agent, "platform", "") or "").lower()
     if platform in _UNTITLED_PLATFORMS:
         return
+    from agent.oneshot_footprint import agent_is_oneshot
+    if agent_is_oneshot(agent):  # nothing shows a one-shot's title, and the call is a second paid request
+        return
     try:
         from agent.message_content import flatten_message_text
         from agent.title_generator import apply_subagent_title, maybe_auto_title
@@ -662,6 +665,7 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     # the aggregate incomplete count so a visible partial resets it (#67321).
     ("_codex_reasoning_only_streak", 0),
     ("_thinking_prefill_retries", 0), ("_post_tool_empty_retried", False),
+    ("_empty_response_retry_hint", None),
     ("_last_content_with_tools", None), ("_last_content_tools_all_housekeeping", False),
     ("_reused_response_text", None),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),

@@ -1,0 +1,28 @@
+name: zotero
+title: Zotero Research
+repo: https://github.com/suhas-svg/hermes_zotero
+sha: ee8a7ad87bcda0f98250eba7e9b0385fd77b3a75
+version: "1.0.1"
+description: "Research with your own Zotero library: search it, read your PDF highlights and full text, cite with Zotero's citation engine (any CSL style, BibTeX/RIS export), add papers by DOI/arXiv with PDFs, and check a draft's citations against the library. Reads Zotero desktop's local API on loopback; zotero_add alone writes to the library and calls Crossref/arXiv. No telemetry, no credentials."
+maintainer: suhas-svg
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/suhas-svg/hermes_zotero#readme
+readme: true
+platforms: []
+known_issues:
+  - "Requires Zotero 7+ desktop running with Settings -> Advanced -> 'Allow other applications on this computer to communicate with Zotero' enabled."
+  - "zotero_add saves into the collection currently selected in Zotero."
+capabilities:
+  provides_tools:
+    - zotero_status
+    - zotero_search
+    - zotero_item
+    - zotero_fulltext
+    - zotero_cite
+    - zotero_add
+    - zotero_verify
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

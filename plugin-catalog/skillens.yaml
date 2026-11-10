@@ -1,0 +1,21 @@
+name: skillens
+repo: https://github.com/PhucNguyen-Dev/skillens
+sha: b788910f661705b06d0f94415cc02b4897cbfa85
+description: "Live skill-execution fidelity - watches whether the agent actually performs the steps a loaded skill requires, with a checklist pane, an in-session corrective nudge, and a status-bar fidelity score. Disclosure — records every tool call's arguments and the first 1,500 characters of its result (which can include secrets printed by tools) in a local SQLite file under `$HERMES_HOME/plugin-data/skillens/` with no automatic pruning, and adds a one-time corrective context note to the model's next turn when a loaded skill's numbered steps show no matching tool calls; no network."
+maintainer: PhucNguyen-Dev
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+image: https://raw.githubusercontent.com/PhucNguyen-Dev/skillens/b788910f661705b06d0f94415cc02b4897cbfa85/docs/screenshot-checklist.png
+screenshots:
+  - https://raw.githubusercontent.com/PhucNguyen-Dev/skillens/b788910f661705b06d0f94415cc02b4897cbfa85/docs/screenshot-analytics.png
+  - https://raw.githubusercontent.com/PhucNguyen-Dev/skillens/b788910f661705b06d0f94415cc02b4897cbfa85/docs/screenshot-multi-skill.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

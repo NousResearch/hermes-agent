@@ -167,7 +167,7 @@ for mode, status in [("sync", 402), ("async", 402), ("sync", 429)]:
         error = {
             "type": type(exc).__name__,
             "status": getattr(exc, "status_code", None),
-            "payment": aux._is_payment_error(exc),
+            "payment": aux.aux_errors.benches_provider(aux.aux_errors.classify_attempt(exc, "")),
         }
     failure_requests = requests[start:]
     cache = {

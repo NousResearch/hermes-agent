@@ -78,6 +78,8 @@ class MCPServerRunMixin:
         if keepalive_interval is None and not self._session_proven:
             proof_at = time.monotonic() + _core._DEFAULT_KEEPALIVE_INTERVAL
         shutdown_task, reconnect_task = self._event_waiters()
+        from tools.mcp_oauth_refresh import start_token_maintenance
+        oauth_tasks = start_token_maintenance(self)
         rpc_idle_task = None
         waiters = [shutdown_task, reconnect_task]
         try:
@@ -145,7 +147,7 @@ class MCPServerRunMixin:
                     # Clear the rapid-drop budget (#62212).
                     self._mark_session_proven()
         finally:
-            await self._cancel_waiters(*waiters)
+            await self._cancel_waiters(*waiters, *oauth_tasks)
         if self._shutdown_event.is_set():
             self._fail_inflight_calls("shutdown")
             return "shutdown"

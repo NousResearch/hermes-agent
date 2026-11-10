@@ -5,7 +5,9 @@ write's transaction instead of inside it; ``unfenced_create``, ``auxiliary_commi
 and ``preflight_gate`` are the create, accounting and admission-gate holes; the reads and the owner
 lock leak through a tenant-blind pin (``reads_ignore_tenant``, ``unpinned_admission_reads``,
 ``tenant_blind_owner``); ``epoch_committed_before_refusal`` commits state before refusing, and
-``resolve_unknown_current_epoch`` ignores the caller's epoch. Each mutant is applied
+``resolve_unknown_current_epoch`` ignores the caller's epoch. ``dropped_lease_arguments``
+accepts append_turn's durable lease holder and TTL but discards them, so a replaced lease no
+longer refuses the stale transcript and the holder's append renews nothing. Each mutant is applied
 by the ``backend`` fixture when ``HERMES_STORAGE_MUTANT`` names it.
 """
 
@@ -261,6 +263,20 @@ def _resolve_unknown_current_epoch(monkeypatch):
     monkeypatch.setattr(LocalTurnAdmission, "resolve_unknown", resolve_unknown)
 
 
+def _dropped_lease_arguments(monkeypatch):
+    """append_turn accepts the caller's durable turn lease holder and TTL but discards them: a
+    lease replaced while the turn still runs no longer refuses the stale transcript, and the
+    holder's append no longer renews the lease it still owns. Passed the suite whole before the
+    lease conformance cases."""
+    from hermes_state_port_local import LocalSessionStore
+    original = LocalSessionStore.append_turn
+
+    def append_turn(self, session_id, messages, *, turn_lease_holder=None, turn_lease_ttl_seconds=300.0):
+        return original(self, session_id, messages)
+
+    monkeypatch.setattr(LocalSessionStore, "append_turn", append_turn)
+
+
 MUTANTS = {
     "foreign_metadata": _foreign_metadata,
     "ignored_claim_preconditions": _ignored_claim_preconditions,
@@ -276,6 +292,7 @@ MUTANTS = {
     "tenant_blind_owner": _tenant_blind_owner,
     "epoch_committed_before_refusal": _epoch_committed_before_refusal,
     "resolve_unknown_current_epoch": _resolve_unknown_current_epoch,
+    "dropped_lease_arguments": _dropped_lease_arguments,
 }
 
 

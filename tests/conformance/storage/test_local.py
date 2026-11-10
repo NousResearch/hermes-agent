@@ -8,6 +8,7 @@ fixture cannot vary participant, actor or owner.
 
 import sqlite3
 import threading
+import time
 from contextlib import closing, contextmanager
 
 import pytest
@@ -44,6 +45,26 @@ def local_backend(tmp_path, monkeypatch):
                        store=db.db_path):
             yield
 
+    def acquire_lease(storage, session_id, holder, *, ttl_seconds=300.0):
+        # The launcher's acquisition of the durable turn lease; the fixture's world never leaves
+        # a live lease another holder must wait out, so this succeeds at once.
+        assert storage.sessions.db.acquire_session_turn_lease(
+            session_id, holder, ttl_seconds=ttl_seconds, wait_seconds=10)
+        return True
+
+    def release_lease(storage, session_id, holder):
+        storage.sessions.db.release_session_turn_lease(session_id, holder)
+
+    def starve_lease(storage, session_id, holder):
+        # A starved refresher: the holder still owns the row, its expiry already past.
+        with closing(sqlite3.connect(str(storage.sessions.db.db_path))) as conn:
+            conn.execute("UPDATE session_turn_leases SET expires_at = ? WHERE holder = ?",
+                         (time.time() - 5, holder))
+            conn.commit()
+
+    def lease_expires_at(storage, session_id, holder):
+        return storage.sessions.db.session_turn_lease_expires_at(session_id, holder)
+
     def foreign_tenant(agent):
         return bind_state(Scope("acme", str(homes[agent]), Principal("u"), owner=Group("g"), can_administer=False))
 
@@ -75,6 +96,8 @@ def local_backend(tmp_path, monkeypatch):
 
     backend = Backend(open=connect, replica=connect, bind=lambda agent: bind_profile_scope(homes[agent]),
                       foreign_tenant=foreign_tenant, unbound=unbound, turn=turn,
+                      acquire_lease=acquire_lease, release_lease=release_lease,
+                      starve_lease=starve_lease, lease_expires_at=lease_expires_at,
                       contend_takeover=lambda agent: contend(agent, True),
                       hold_writer=lambda agent: contend(agent, False))
     return backend, handles

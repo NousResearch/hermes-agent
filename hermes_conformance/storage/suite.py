@@ -15,6 +15,11 @@ Covered:
   upsert of an existing row included) is refused whole inside a claimed turn whose owner epoch or
   generation moved, with no accounting left behind, including a takeover that commits from
   another replica while the write waits for the writer (transaction-local, not a preflight);
+- the durable turn lease an append can name (``append_turn``'s holder arguments): an append
+  naming a holder whose lease was replaced is refused whole with the port's lease-lost error,
+  an append by the current holder renews an expired lease it still owns by the TTL it named,
+  and an append naming no holder ignores the lease exactly as an append that had none to name
+  always did;
 - claims: a moved head claims nothing, a refusing gate rolls the claim back, a gate that closes
   while the claim waits for the writer still refuses it (asked inside the claim's transaction,
   not before it), one FIFO per session across producers admitting and claiming through different
@@ -44,6 +49,7 @@ from __future__ import annotations
 
 import contextvars
 import threading
+import time
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -66,6 +72,17 @@ class Backend:
     - ``unbound()``: run with no scope pinned. A local backend's pin is then the ambient profile,
       so its ``unbound`` names a third profile; a hosted one binds nothing.
     - ``turn(storage, session_id, claimed)``: bind the claimed turn's fence for the body.
+    - ``acquire_lease(storage, session_id, holder, *, ttl_seconds)``: REQUIRED. Acquire the
+      session's durable turn lease for *holder* as the launcher does before a turn runs,
+      succeeding at once (``True``); the fixture's world never leaves a live lease behind, so
+      nothing waits. ``release_lease(storage, session_id, holder)``: REQUIRED, the holder's
+      own release, idempotent — the two together replace a lease: the holder releases,
+      another acquires.
+    - ``starve_lease(storage, session_id, holder)``: REQUIRED. Force *holder*'s lease to be
+      expired while it still owns the row (a starved refresher), so a renewing append is
+      observable.
+    - ``lease_expires_at(storage, session_id, holder)``: REQUIRED. The committed expiry of
+      *holder*'s lease, or ``None`` when it holds none.
     - ``contend_takeover(agent)``: hold the agent's writer from another replica for the body.
       ``__enter__`` returns a ``threading.Event`` the backend sets once a write is waiting behind
       the hold; on exit another owner's takeover (a new owner epoch) commits before the hold is
@@ -80,6 +97,10 @@ class Backend:
     foreign_tenant: Callable[[str], AbstractContextManager]
     unbound: Callable[[], AbstractContextManager]
     turn: Callable[[SessionStorage, str, dict], AbstractContextManager]
+    acquire_lease: Callable[..., bool]
+    release_lease: Callable[..., None]
+    starve_lease: Callable[..., None]
+    lease_expires_at: Callable[..., Optional[float]]
     contend_takeover: Optional[Callable[[str], AbstractContextManager]] = None
     hold_writer: Optional[Callable[[str], AbstractContextManager]] = None
 
@@ -478,6 +499,63 @@ class FenceConformance:
             assert (after[sid] or {}).get("messages") == (before[sid] or {}).get("messages")
             assert (after[sid] or {}).get("title") == (before[sid] or {}).get("title")
         assert after["s1"]["row"].get("input_tokens") == before["s1"]["row"].get("input_tokens")
+
+    # --- the durable turn lease an append can name (append_turn's holder arguments) -------
+
+    def test_an_append_naming_a_replaced_lease_holder_is_refused_and_writes_nothing(self, backend):
+        """A caller that names its durable turn lease in ``append_turn`` is fenced by it: the
+        lease was replaced while the turn still ran (the holder released, another acquired),
+        and the append naming the stale holder is refused with the port's lease-lost error,
+        landing nothing and leaving the lease it no longer owns untouched — the refusal
+        renews nothing, deletes nothing."""
+        storage, _epoch, claimed = _owned_claim(backend, "a")
+        with backend.bind("a"):
+            assert backend.acquire_lease(storage, "s1", "the-stale-holder")
+            backend.release_lease(storage, "s1", "the-stale-holder")
+            assert backend.acquire_lease(storage, "s1", "the-replacement")
+            before_expiry = backend.lease_expires_at(storage, "s1", "the-replacement")
+        before = observe(backend, storage)
+        with backend.bind("a"), backend.turn(storage, "s1", claimed):
+            with pytest.raises(SessionTurnLeaseLostError):
+                storage.sessions.append_turn("s1", [{"role": "assistant", "content": "stale"}],
+                                             turn_lease_holder="the-stale-holder",
+                                             turn_lease_ttl_seconds=30.0)
+        assert observe(backend, storage) == before
+        with backend.bind("a"):
+            assert backend.lease_expires_at(storage, "s1", "the-replacement") == before_expiry
+
+    def test_an_append_by_the_lease_holder_renews_its_expired_lease(self, backend):
+        """The holder's own append renews the lease it still owns: a starved refresher left the
+        lease expired but the holder's, and the append naming it both lands and moves the
+        lease's committed expiry forward by the TTL the caller named — the renewal rides the
+        write, so an append that never landed (the replaced holder's, above) renews nothing."""
+        storage, _epoch, claimed = _owned_claim(backend, "a")
+        with backend.bind("a"):
+            assert backend.acquire_lease(storage, "s1", "the-holder")
+            backend.starve_lease(storage, "s1", "the-holder")
+            assert backend.lease_expires_at(storage, "s1", "the-holder") <= time.time()
+        with backend.bind("a"), backend.turn(storage, "s1", claimed):
+            assert storage.sessions.append_turn("s1", [{"role": "assistant", "content": "renewed"}],
+                                                turn_lease_holder="the-holder",
+                                                turn_lease_ttl_seconds=299.0) == 1
+        assert _texts(backend, "a", storage) == ["renewed"]
+        with backend.bind("a"):
+            renewed = backend.lease_expires_at(storage, "s1", "the-holder")
+        assert renewed is not None and renewed > time.time() + 200
+
+    def test_an_append_without_a_holder_ignores_a_live_lease(self, backend):
+        """An append naming no holder behaves exactly as today's append, which had no holder to
+        name: another holder's live lease neither refuses the append nor is renewed or released
+        by it."""
+        storage, _epoch, claimed = _owned_claim(backend, "a")
+        with backend.bind("a"):
+            assert backend.acquire_lease(storage, "s1", "another-holder")
+            before_expiry = backend.lease_expires_at(storage, "s1", "another-holder")
+        with backend.bind("a"), backend.turn(storage, "s1", claimed):
+            assert storage.sessions.append_turn("s1", [{"role": "assistant", "content": "as today"}]) == 1
+        assert _texts(backend, "a", storage) == ["as today"]
+        with backend.bind("a"):
+            assert backend.lease_expires_at(storage, "s1", "another-holder") == before_expiry
 
 
 

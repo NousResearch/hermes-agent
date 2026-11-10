@@ -61,6 +61,20 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "nous:claude-opus-4.8" in info
 
+    def test_named_custom_provider_shown_by_its_name(self, runner, tmp_path):
+        """A named custom provider resolves to the runtime class ``custom``; the banner must
+        print the configured name (as /model does), not the generic class."""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: deepseek-v4.1-flash\n  provider: engy\n  base_url: https://api.engy.ai/v1\n",
+            "deepseek-v4.1-flash",
+            {"provider": "custom", "requested_provider": "engy",
+             "base_url": "https://api.engy.ai/v1", "api_key": ""})
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "Provider: engy" in info
+        assert "Provider: custom" not in info
+
     def test_named_custom_provider_keeps_context_pin_without_model_base_url(
         self, runner, tmp_path
     ):

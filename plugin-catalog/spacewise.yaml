@@ -27,7 +27,7 @@ description: >-
 maintainer: ardianreffa
 tier: community
 category: tools
-requires_hermes: ">=0.23.0"
+requires_hermes: ">=0.22.6"
 docs_url: https://github.com/ardianreffa/spacewise#readme
 version: "0.1.1"
 platforms: []

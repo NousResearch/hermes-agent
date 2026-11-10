@@ -6120,10 +6120,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             self._pending_photo_batches, self._pending_photo_batch_tasks, batch_key, self._media_batch_delay_seconds, "photo",
             lambda ev: logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(ev.media_urls)))
 
-    def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> None:
-        """Merge ``event`` into ``pending[key]`` (media, caption, reply expectation) or seed it."""
+    def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> str:
+        """Merge ``event`` into ``pending[key]`` (media, caption, reply expectation) or seed it; return the lane used."""
         from plugins.platforms.telegram.telegram_batching import merge_batched_event
-        merge_batched_event(pending, key, event, merge_caption=self._merge_caption)
+        return merge_batched_event(pending, key, event, merge_caption=self._merge_caption,
+                                   route_key=lambda ev: self._event_session_key(ev))  # read only when both are pinned
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
@@ -6131,7 +6132,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="photo-enqueue")
             return
-        self._merge_into_pending(self._pending_photo_batches, batch_key, event)
+        batch_key = self._merge_into_pending(self._pending_photo_batches, batch_key, event)
         self._accept_update()
         prior_task = self._pending_photo_batch_tasks.get(batch_key)
         if prior_task and not prior_task.done():

@@ -1,7 +1,7 @@
 name: blind-accessibility-reader
 title: Blind Accessibility Video and Image Reader
 repo: https://github.com/ella0333/hermes-blind-accessibility-reader
-sha: 746019123a18eb142941a805d3911f417d755f6a
+sha: e63ed9163ca9dc7f656573a54e2d9f303eca5a5b
 description: >-
   Describes the images and videos on any website for blind and low vision
   people, through their screen reader or an AI voice. A bundled Chrome

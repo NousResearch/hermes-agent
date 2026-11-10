@@ -452,15 +452,18 @@ class GatewayVoiceMixin:
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+    async def _send_voice_reply(self, event: MessageEvent, text: str, session_id: str = "") -> None:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool
         may return one combined file or several separately valid ones (combination unavailable /
         over a platform limit); legacy single-file results keep working."""
         audio_path, actual_paths = None, []
         try:
+            from tools.tts_spoken_text_hook import apply_spoken_text_hook
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
-            tts_text = _strip_markdown_for_tts(text)
+            tts_text = await asyncio.to_thread(
+                apply_spoken_text_hook, _strip_markdown_for_tts(text), surface="voice_reply",
+                platform=event.source.platform.value, session_id=session_id)
             if not tts_text:
                 return
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an

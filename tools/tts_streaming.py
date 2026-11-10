@@ -70,6 +70,17 @@ SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
 _THINK_NAMES = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
 _THINK_BLOCK_RE = re.compile(rf"<({_THINK_NAMES})[\s>].*?</\1>", flags=re.DOTALL | re.IGNORECASE)
 _THINK_OPEN_RE = re.compile(rf"<(?:{_THINK_NAMES})(?=[\s>]|$)", flags=re.IGNORECASE)
+# Bracketed delivery cues (``[sighs]``, ``[whispers. softly]``) are spoken whole: an unclosed ``[``
+# holds sentence cuts until it closes, unless it opened more than this many characters ago.
+_OPEN_TAG_MAX_CHARS = 64
+
+
+def _open_tag_start(text: str) -> int:
+    """Index of a trailing unclosed ``[`` still within ``_OPEN_TAG_MAX_CHARS``, else -1."""
+    start = text.rfind("[")
+    if start < 0 or "]" in text[start:] or len(text) - start > _OPEN_TAG_MAX_CHARS:
+        return -1
+    return start
 
 
 class SentenceChunker:
@@ -97,10 +108,10 @@ class SentenceChunker:
         if _THINK_OPEN_RE.search(self.buf):
             return []  # open think tag — the closing tag may arrive next delta
         out: list[str] = []
-        start = 0  # skip boundaries that would leave the head too short
+        start = 0  # skip boundaries that would leave the head too short or cut an open tag
         while m := SENTENCE_BOUNDARY_RE.search(self.buf, start):
             head = self.buf[: m.end()]
-            if len(head.strip()) < self.min_len:
+            if len(head.strip()) < self.min_len or _open_tag_start(self.buf[: m.start()]) >= 0:
                 start = m.end()
                 continue
             out.append(head)
@@ -108,11 +119,14 @@ class SentenceChunker:
             start = 0
         return out
 
-    def flush(self) -> list[str]:
-        """Drain the tail (end-of-text or long-idle flush)."""
+    def flush(self, *, hold_open_tag: bool = False) -> list[str]:
+        """Drain the tail (end-of-text or long-idle flush). *hold_open_tag* (idle / segment flushes
+        mid-reply) keeps a trailing unclosed ``[`` tag buffered so its rest can still arrive."""
         tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf), ""
         if m := _THINK_OPEN_RE.search(tail):
             tail = tail[: m.start()]  # unterminated reasoning block: never speak it
+        if hold_open_tag and (tag_start := _open_tag_start(tail)) >= 0:
+            tail, self.buf = tail[:tag_start], tail[tag_start:]
         tail = tail.strip()
         return [tail] if tail else []
 

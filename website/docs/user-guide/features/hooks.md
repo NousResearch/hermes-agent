@@ -457,6 +457,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `conversation_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
+| [`transform_spoken_text`](#transform_spoken_text) | Transform | On every path where Hermes speaks a reply, after the TTS normalizer and before synthesis (once per sentence when streaming); first `str` replaces the spoken text, `""` speaks nothing. | `text`, `surface`, `platform`, `session_id`, `index` | Full reply text. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message; the first valid `{"action": "block", "message": ...}` ends the turn before any inference request. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `side_question_token` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
@@ -1809,6 +1810,51 @@ def register(ctx):
 ```
 
 Pairs with `transform_tool_result`, which runs afterward for every tool, including `terminal`.
+
+---
+
+### `transform_spoken_text`
+
+Fires on every path where Hermes speaks a reply itself, after its text-to-speech normalizer and **before** synthesis. Lets a plugin adapt the text the TTS provider receives (for example, add delivery cues such as `[sighs]` for a provider that understands them) without being the TTS provider. It changes only what is spoken; the chat text is untouched.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    text: str,
+    surface: str,
+    platform: str,
+    session_id: str,
+    index: int,
+    **kwargs,
+) -> str | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `text` | `str` | The normalized text about to be synthesized: the whole reply, or one sentence on `streaming` and the desktop speak-stream. |
+| `surface` | `str` | `"voice_reply"` (gateway voice reply to a text message), `"auto_tts"` (gateway voice reply to a voice message), `"cli_voice"` (CLI / TUI voice mode, whole reply), `"read_aloud"` (desktop app), `"streaming"` (CLI / TUI speaker pipeline and gateway streaming audio, per sentence). |
+| `platform` | `str` | `"cli"`, `"tui"`, `"desktop"`, or the gateway platform (`"telegram"`, `"discord"`, ...). |
+| `session_id` | `str` | The session being spoken for; empty on `read_aloud`, where no session reaches the server. Key per-reply plugin state on it. |
+| `index` | `int` | The sentence's position in the reply on per-sentence paths (restarts at `0` for each reply); `0` for a whole reply. |
+
+**Return value:** The first `str` result replaces the spoken text, including `""`, which speaks nothing for that call (no audio for a whole reply; the sentence is skipped when streaming). `None` and any other value leave the text unchanged. A raising or timed-out callback falls back to the unchanged text, so a broken plugin never costs the voice reply.
+
+```python
+def add_cues(text, surface, **kwargs):
+    if text.startswith("Unfortunately"):
+        return f"[sighs] {text}"
+    return None
+
+def register(ctx):
+    ctx.register_hook("transform_spoken_text", add_cues)
+```
+
+Things to know:
+
+- On whole-reply paths, and per sentence for providers without a streaming API, the result goes through `text_to_speech_tool`, which normalizes it again: bracketed `[tags]` survive, but markdown and SSML-style `<...>` markup do not.
+- The model's own `text_to_speech` tool calls do not fire this hook; adjust those with `pre_tool_call`.
+- The desktop app's client-direct synthesis (the app calling the provider with the profile's own key) never reaches Hermes, so the hook cannot fire there.
 
 ---
 

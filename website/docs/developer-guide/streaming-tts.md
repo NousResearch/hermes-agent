@@ -19,7 +19,11 @@ The streaming pipeline has four parts:
 1. **Producer** — the LLM emits text deltas as it generates a response
 2. **Sentence chunker** — `tools.tts_streaming.SentenceChunker` accumulates
    deltas, strips `<think>` blocks (even split across deltas), and flushes
-   complete sentences
+   complete sentences. A bracketed delivery cue (`[sighs]`, `[whispers. softly]`)
+   is never cut: a sentence boundary inside an unclosed `[` is skipped until the
+   `]` arrives, and idle or segment flushes keep the open tag buffered. A `[`
+   that stays open for more than 64 characters is treated as text. The
+   end-of-reply flush drains everything.
 3. **TTS provider** — a registered `StreamingTTSProvider` turns each sentence
    into raw PCM chunks (int16 mono at the provider's declared `sample_rate`)
 4. **Audio sink** — `sounddevice.OutputStream` for local playback
@@ -29,7 +33,9 @@ The streaming pipeline has four parts:
 Providers with no chunked API still get per-*sentence* playback via the proven
 sync `text_to_speech_tool` path, so edge (the default) is conversational too.
 All spoken text is cleaned by `tools.tts_text_normalize.prepare_spoken_text`
-(one cleaner, all paths).
+(one cleaner, all paths), then passed through the
+[`transform_spoken_text`](../user-guide/features/hooks.md#transform_spoken_text)
+plugin hook once per sentence before synthesis.
 
 ## How to pick a provider
 

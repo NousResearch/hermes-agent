@@ -161,6 +161,12 @@ VALID_HOOKS: set[str] = {
     # provider, model, language, prompt, source. Return None or a dict mutating prompt/language/
     # model (registration order, last-writer-wins; file_path is read-only).
     "pre_transcription",
+    # transform_spoken_text: on every path where Hermes speaks a reply, after the TTS normalizer and
+    # BEFORE synthesis (tools/tts_spoken_text_hook.py). Kwargs: text, surface ("voice_reply" |
+    # "auto_tts" | "cli_voice" | "read_aloud" | "streaming"), platform, session_id, index (sentence
+    # position on "streaming", else 0). Return a replacement str (first str wins; "" speaks
+    # nothing) or None. Fail-open.
+    "transform_spoken_text",
     # Kanban task observers (hermes_cli.kanban_db), fired AFTER the DB commit so a slow plugin never
     # holds the SQLite write lock; returns ignored. claimed fires in the DISPATCHER right before
     # spawn; completed/blocked fire in the WORKER (or whichever process drove it). Kwargs: task_id,

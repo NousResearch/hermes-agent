@@ -33,9 +33,10 @@ class StreamingTTSConsumer:
 
     def __init__(self, adapter: Any, chat_id: str, tts_config: dict[str, Any],
                  loop: asyncio.AbstractEventLoop, *, metadata: Optional[dict[str, Any]] = None,
-                 audio_format: Optional[AudioFormat] = None) -> None:
+                 audio_format: Optional[AudioFormat] = None, session_id: str = "") -> None:
         from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         self._adapter, self._chat_id, self._loop, self._metadata = adapter, chat_id, loop, metadata
+        self._session_id, self._spoken_count = session_id, 0  # transform_spoken_text identity + index
         # Resolved once; None => inactive, gateway falls back to whole-file TTS.
         self._streamer = resolve_streaming_provider(tts_config)
         self._chunker = SentenceChunker.from_config(tts_config)
@@ -77,7 +78,7 @@ class StreamingTTSConsumer:
         """Receive text, or flush a ``None`` segment boundary without ending audio. Non-blocking."""
         if self._aborted or not self.active or self._finished:
             return
-        clauses = self._chunker.flush() if text is None else self._chunker.feed(text)
+        clauses = self._chunker.flush(hold_open_tag=True) if text is None else self._chunker.feed(text)
         self._enqueue_clauses(clauses, "streaming TTS queue full, dropping clause",
                               log_errors=True)
 
@@ -192,6 +193,8 @@ class StreamingTTSConsumer:
                 self._strip_markdown = lambda t: t
         if not (cleaned := self._strip_markdown(clause).strip()):
             return
+        if not (cleaned := await self._spoken_text(cleaned)):
+            return
         iterator = iter(self._streamer.stream(cleaned))
         while True:
             # next() runs in a thread so a blocking provider never stalls the loop.
@@ -206,6 +209,15 @@ class StreamingTTSConsumer:
             await self._adapter.write_streaming_tts(self._handle, chunk)
             if not was_audible:
                 self._handle.audible = self._suppress_whole_file = True
+
+    async def _spoken_text(self, cleaned: str) -> str:
+        """``transform_spoken_text`` for one clause, off the loop (plugin callbacks are sync)."""
+        from tools.tts_spoken_text_hook import apply_spoken_text_hook
+        platform = getattr(self._adapter, "platform", None)
+        index, self._spoken_count = self._spoken_count, self._spoken_count + 1
+        return await asyncio.to_thread(
+            apply_spoken_text_hook, cleaned, surface="streaming",
+            platform=str(getattr(platform, "value", platform or "")), session_id=self._session_id, index=index)
 
     async def _safe_abort(self, reason: str) -> None:
         """Abort the adapter stream, swallowing errors (idempotent)."""

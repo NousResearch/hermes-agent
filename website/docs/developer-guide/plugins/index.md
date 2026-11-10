@@ -1652,6 +1652,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_human_input_request` / `on_human_input_resolved` | `tools/human_input_hooks.py` `human_input_request` |
 | `on_room_member_activity` | `tui_gateway/hosted_room_member_activity.py` `emit_room_member_activity` |
 | `pre_transcription` | `tools/transcription_command.py` `_apply_pre_transcription_hook` |
+| `transform_spoken_text` | `tools/tts_spoken_text_hook.py` `apply_spoken_text_hook`, called from `gateway/run_voice.py` `_send_voice_reply`, `gateway/platforms/base_auto_tts.py` `synthesize_auto_tts`, `hermes_cli/cli_voice_mixin.py` `_voice_speak_response`, `hermes_cli/voice.py` `_speak_whole_file`, `hermes_cli/web_routers/audio.py` `speak_stream_ws` / `speak_text`, `tools/tts_tool_speaker.py` `stream_tts_to_speaker` and `gateway/streaming_tts_consumer.py` `StreamingTTSConsumer._spoken_text` |
 | `kanban_task_claimed` | `hermes_cli/kanban_db.py` `claim_task` (through `_fire_task_hook`) |
 | `kanban_task_completed` | `hermes_cli/kanban_db.py` `complete_task` (through `_fire_task_hook`); `hermes_cli/kanban_swarm.py` `create_swarm` |
 | `kanban_task_blocked` | `hermes_cli/kanban_db.py` `block_task` (through `_fire_task_hook`) |

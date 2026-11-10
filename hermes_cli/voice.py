@@ -560,7 +560,7 @@ _LEGACY_TTS_STRIP = [
 ]
 
 
-def _speak_streaming(text: str, stop_event: Optional[threading.Event]) -> bool:
+def _speak_streaming(text: str, stop_event: Optional[threading.Event], session_id: str = "") -> bool:
     """Speak via the CLI's ``stream_tts_to_speaker`` pipeline when the configured provider has a
     chunked streamer (audio starts on sentence one); False → caller uses the whole-file path.
 
@@ -584,11 +584,12 @@ def _speak_streaming(text: str, stop_event: Optional[threading.Event]) -> bool:
     text_queue.put(text)
     text_queue.put(None)  # end-of-text sentinel
     done_event = threading.Event()
-    stream_tts_to_speaker(text_queue, stop_event or threading.Event(), done_event)
+    stream_tts_to_speaker(
+        text_queue, stop_event or threading.Event(), done_event, session_id=session_id, platform="tui")
     return done_event.is_set()
 
 
-def _speak_whole_file(text: str) -> None:
+def _speak_whole_file(text: str, session_id: str = "") -> None:
     """Sync path: clean, synthesize to a temp MP3 via ``text_to_speech_tool``, play, unlink."""
     from tools.tts_tool import text_to_speech_tool
 
@@ -602,6 +603,8 @@ def _speak_whole_file(text: str) -> None:
         for pattern, repl in _LEGACY_TTS_STRIP:
             tts_text = pattern.sub(repl, tts_text)
         tts_text = tts_text.strip()
+    from tools.tts_spoken_text_hook import apply_spoken_text_hook
+    tts_text = apply_spoken_text_hook(tts_text, surface="cli_voice", platform="tui", session_id=session_id)
     if not tts_text:
         return
 
@@ -632,7 +635,7 @@ def _speak_whole_file(text: str) -> None:
         _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
 
 
-def speak_text(text: str, stop_event: Optional[threading.Event] = None) -> None:
+def speak_text(text: str, stop_event: Optional[threading.Event] = None, session_id: str = "") -> None:
     """Synthesize ``text`` with the configured TTS provider and play it.
 
     While playback is in flight ``_tts_playing`` is cleared so the continuous loop waits before
@@ -658,11 +661,11 @@ def speak_text(text: str, stop_event: Optional[threading.Event] = None) -> None:
     try:
         # One dispatcher: streaming when a chunked streamer resolves, else the whole-file path.
         try:
-            if _speak_streaming(text, stop_event):
+            if _speak_streaming(text, stop_event, session_id):
                 return
         except Exception as e:
             _debug(f"speak_text: streaming dispatch unavailable ({e}); using sync path")
-        _speak_whole_file(text)
+        _speak_whole_file(text, session_id)
     except Exception as e:
         logger.warning("Voice TTS playback failed: %s", e)
         _debug(f"speak_text raised {type(e).__name__}: {e}")

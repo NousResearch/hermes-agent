@@ -295,6 +295,16 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     return {"available": True, "voices": voices}
 
 
+def _read_aloud_text(text: str) -> str:
+    """``transform_spoken_text`` for the whole-reply fallback; the raw text when no plugin changed
+    it, since ``text_to_speech_tool`` normalizes its input either way. No session id reaches here."""
+    from tools.tts_spoken_text_hook import apply_spoken_text_hook
+    from tools.tts_text_normalize import prepare_spoken_text
+    spoken = prepare_spoken_text(text, max_chars=None)
+    replaced = apply_spoken_text_hook(spoken, surface="read_aloud", platform="desktop")
+    return text if replaced == spoken else replaced
+
+
 @router.post("/api/audio/speak")
 async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     """Synthesize speech and return audio as base64 data URL.
@@ -312,7 +322,7 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     with http_failure("Desktop voice TTS failed", 500, "Speech synthesis failed"):
         from tools.tts_tool import text_to_speech_tool
 
-        result_json = await _run_config_scoped(profile, lambda: text_to_speech_tool(text))
+        result_json = await _run_config_scoped(profile, lambda: text_to_speech_tool(_read_aloud_text(text)))
 
     try:
         result = json.loads(result_json) if isinstance(result_json, str) else result_json
@@ -694,10 +704,12 @@ async def speak_stream_ws(ws: WebSocket) -> None:
 
     def _synthesize():
         nonlocal produced_audio, synthesis_failed
+        from tools.tts_spoken_text_hook import apply_spoken_text_hook
         from tools.tts_streaming import SentenceChunker
         from tools.tts_text_normalize import _strip_markdown_for_tts
 
         chunker = SentenceChunker.from_config(cfg)  # the requesting profile's tts.streaming.min_len
+        spoken_count = 0  # transform_spoken_text index
 
         # The session stays open for a whole agent turn and no text arrives
         # during tool execution, so without an idle flush a narration line with
@@ -719,7 +731,7 @@ async def speak_stream_ws(ws: WebSocket) -> None:
                     if not buffered or ("<think" in chunker.buf and "</think>" not in chunker.buf):
                         continue
                     if buffered.endswith((".", "!", "?", "…", ":")) or idle_polls >= idle_polls_before_force_flush:
-                        yield from chunker.flush()
+                        yield from chunker.flush(hold_open_tag=True)
                     continue
                 idle_polls = 0
                 if delta is None:
@@ -730,6 +742,10 @@ async def speak_stream_ws(ws: WebSocket) -> None:
         try:
             for sentence in _sentences():
                 cleaned = _strip_markdown_for_tts(sentence)
+                if not cleaned:
+                    continue
+                cleaned = apply_spoken_text_hook(cleaned, surface="read_aloud", platform="desktop", index=spoken_count)
+                spoken_count += 1
                 if not cleaned:
                     continue
                 for piece in _split_text_for_speak_stream(cleaned, cap):

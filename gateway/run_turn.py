@@ -1102,7 +1102,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
     def _run_agent_start_streaming_tts(
         self, source: SessionSource, message_type: Optional[str],
-        _status_thread_metadata: Optional[dict[str, Any]], streaming_tts_consumer_holder: list,
+        _status_thread_metadata: Optional[dict[str, Any]], streaming_tts_consumer_holder: list, session_id: str = "",
     ) -> None:
         """Start the streaming-TTS consumer for a voice-input turn on an auto-TTS chat.
 
@@ -1125,7 +1125,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             _stts_consumer = StreamingTTSConsumer(
                 adapter=_stts_adapter, chat_id=source.chat_id, tts_config=_load_tts_config(),
                 loop=self._gateway_loop or asyncio.get_event_loop(),
-                metadata=_status_thread_metadata,
+                metadata=_status_thread_metadata, session_id=session_id or "",
             )
             if _stts_consumer.active:
                 streaming_tts_consumer_holder[0] = _stts_consumer
@@ -2114,7 +2114,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # Two independent quiet reasons: a muted diagnostic wake (ours) and a scheduled heartbeat.
         if not (scheduled_heartbeat or turn_ctx.mute_notification_reply):
             self._run_agent_start_streaming_tts(
-                source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
+                source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder, session_id=session_id,
             )
 
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).

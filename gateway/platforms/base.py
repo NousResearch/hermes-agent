@@ -4065,11 +4065,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
     async def _synthesize_auto_tts(self, text_content: str, source: Optional[SessionSource] = None,
-                                   ) -> tuple[list[str], Optional[str]]:
+                                   session_key: str = "") -> tuple[list[str], Optional[str]]:
         """``(existing_paths, requested_path)``, synthesized in ``source``'s profile scope (the turn's
         scope is gone post-handler); platform-aware path built HERE (HERMES_SESSION_PLATFORM is cleared)."""
         from gateway.platforms.base_auto_tts import synthesize_auto_tts
-        return await synthesize_auto_tts(self, text_content, source, build_auto_tts_output_path)
+        return await synthesize_auto_tts(self, text_content, source, build_auto_tts_output_path, session_key)
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
                         text_content: str, media_files: list) -> bool:
@@ -4405,7 +4405,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content, event.source)
+                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(
+                        text_content, event.source, session_key)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):

@@ -470,6 +470,7 @@ def activate_dependencies(project_root: Path) -> None:
     import sys
 
     state = install_state_dir(project_root)
+    release = None
     if state.is_dir():
         from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
         # The lock's holder may be another profile's backend running a full dependency rebuild;
@@ -506,12 +507,15 @@ def activate_dependencies(project_root: Path) -> None:
     # wrappers resolve beside unloadable extensions (#122555, #152211). Read the
     # environment's metadata because Windows site-packages paths carry no version.
     if built_for is not None and built_for != sys.version_info[:2]:
-        print(
-            f"hermes: dependency environment {environment} targets Python "
-            f"{built_for[0]}.{built_for[1]}; keeping the Python "
-            f"{sys.version_info[0]}.{sys.version_info[1]} launch environment",
-            file=sys.stderr,
-        )
+        if release is not None:
+            release()
+        if (stream := sys.stderr or sys.__stderr__) is not None:
+            print(
+                f"hermes: dependency environment {environment} targets Python "
+                f"{built_for[0]}.{built_for[1]}; keeping the Python "
+                f"{sys.version_info[0]}.{sys.version_info[1]} launch environment",
+                file=stream,
+            )
         return
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")

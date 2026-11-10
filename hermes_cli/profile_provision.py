@@ -91,7 +91,7 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
         name=request.name, clone_from=request.clone_from, clone_all=request.clone_all,
         clone_config=request.clone_config, no_skills=request.no_skills,
         description=request.description, clone_channels=request.clone_channels,
-        sync_imports=request.sync_imports, soul=request.soul,
+        sync_imports=request.sync_imports, soul=request.soul, seed_model=request.mirror_credentials,
     )
     result = ProvisionResult(path=path)
 

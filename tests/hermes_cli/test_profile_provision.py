@@ -47,8 +47,13 @@ def test_isolated_auth_copies_auth_once(launch):
 
 
 def test_no_credentials_copies_nothing_from_the_launch_profile(launch):
+    # An inline endpoint key in the launch config must not ride in on core's model seed either.
+    (launch / "config.yaml").write_text("model:\n  default: m\n  provider: lab\n"
+                                        "providers:\n  lab:\n    base_url: http://lab\n    api_key: sk-inline\n")
     result = provision_profile(ProfileCreateRequest(name="work", mirror_credentials=False))
     assert "OPENROUTER_API_KEY" not in (result.path / ".env").read_text()
+    config = result.path / "config.yaml"
+    assert not config.exists() or "sk-inline" not in config.read_text()
     assert not (result.path / "auth.json").exists()
     # No auth.json of its own: it still reads the root's logins, and says so.
     assert result.mirrored == {"env": False, "auth": "shared", "model_inherited": False, "voice": False}

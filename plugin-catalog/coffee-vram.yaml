@@ -1,14 +1,17 @@
 name: coffee-vram
 repo: https://github.com/jimmy77733/coffee-vram
-sha: 50d4ff582fa4ba5e6e33c1cfa31834b3062a6639
+sha: 4576bc9e2837f6830bd0bde00335a8d58e61732a
 subdir: ""
-description: "VRAM fit-check, call queue, keep-warm and idle eviction for local Ollama models, with a desktop status chip showing the active Hermes model (cloud or local), context, and tok/s, plus /vram. Disclosure — when a local Ollama model won't fit, Coffee holds that call for up to the queue timeout (default 600 s) and, by default, unloads idle Ollama models (including ones other apps loaded, unless pinned) to make room; it also refreshes keep-alive on loaded models and polls the configured Ollama URL and NVIDIA telemetry in the background."
+description: "VRAM fit-check, call queue, keep-warm and idle eviction for local Ollama models, with a desktop status chip showing the active Hermes model (cloud or local), context, and tok/s, plus /vram. The panel includes a Performance pet and host stats (GPU, RAM, CPU, network). Disclosure — when a local Ollama model won't fit, Coffee holds that call for up to the queue timeout (default 600 s) and, by default, unloads idle Ollama models (including ones other apps loaded, unless pinned) to make room; it also refreshes keep-alive on loaded models and polls the configured Ollama URL and NVIDIA telemetry in the background."
 maintainer: jimmy77733
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
 version: "0.1.3"
-image: https://raw.githubusercontent.com/jimmy77733/coffee-vram/50d4ff582fa4ba5e6e33c1cfa31834b3062a6639/assets/cover.jpg
+image: https://raw.githubusercontent.com/jimmy77733/coffee-vram/4576bc9e2837f6830bd0bde00335a8d58e61732a/assets/cover.jpg
+screenshots:
+  - https://raw.githubusercontent.com/jimmy77733/coffee-vram/4576bc9e2837f6830bd0bde00335a8d58e61732a/assets/screenshots/01-desktop-overview.png
+  - https://raw.githubusercontent.com/jimmy77733/coffee-vram/4576bc9e2837f6830bd0bde00335a8d58e61732a/assets/screenshots/02-panel.png
 capabilities:
   provides_tools: [vram_status]
   provides_hooks: [post_api_request, api_request_error]

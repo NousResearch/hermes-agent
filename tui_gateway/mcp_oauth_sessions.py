@@ -172,3 +172,23 @@ def deliver_callback_flow(
     except ValueError as exc:
         return {"ok": False, "error_message": str(exc)}
     return {"ok": True, "session_id": session_id}
+
+
+def deliver_callback_by_state(
+    server_name: str, *, code: Optional[str], state: Optional[str],
+    error: Optional[str] = None, iss: Optional[str] = None,
+) -> dict[str, Any]:
+    """Deliver a public Webapp redirect without an RPC session id. The OAuth state identifies
+    the owning flow across profiles; the flow still checks state and rejects duplicate callbacks."""
+    with _sessions_lock:
+        candidates = [rec["flow"] for rec in _sessions.values() if rec["server_name"] == server_name]
+    flow = next((flow for flow in candidates
+                 if flow.status == "authorization_required" and flow.expected_state is not None
+                 and state is not None and secrets.compare_digest(flow.expected_state, state)), None)
+    if flow is None:
+        return {"ok": False}
+    try:
+        flow.deliver_callback(code=code, state=state, error=error, iss=iss)
+    except ValueError as exc:
+        return {"ok": False, "error_message": str(exc)}
+    return {"ok": True}

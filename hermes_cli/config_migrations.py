@@ -675,7 +675,8 @@ def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
             )(results, quiet)
 
 
-#: Registry of (target_version, step), strictly ascending; simple default-flip steps are
+#: Registry of (target_version, step), strictly ascending (one step per version: a failing step
+#: is retried whole); simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
 #: configs already AT v12 still get every step below; only configs BELOW 12 are refused by the
@@ -704,6 +705,33 @@ def _migrate_to_49(results: dict[str, Any], quiet: bool) -> None:
         _c.remove_env_value("TERMINAL_VERCEL_RUNTIME")
         if not quiet:
             print("  ✓ Cleared TERMINAL_VERCEL_RUNTIME from .env (was the old default; the image is used instead)")
+
+
+_CURATOR_44 = (  # key, old default, new default, message
+    ("stale_after_days", 30, 14, "  ✓ curator.stale_after_days 30→14 — unused skills are flagged stale after two weeks."),
+    ("archive_after_days", 90, 30, (
+        "  ✓ curator.archive_after_days 90→30 — skills unused for a month are archived to skills/.archive/ "
+        "(recoverable with `hermes curator restore`). Set it back to 90 to keep the old window.")),
+)
+
+
+def _migrate_to_44(results: dict[str, Any], quiet: bool) -> None:
+    # 43 → 44: curator prunes faster — stale 30→14 days, archive 90→30 days. A skill nobody has
+    # touched in a month is prompt weight, not knowledge; archival is recoverable. Only the OLD
+    # defaults are rewritten; an explicit user value is preserved. One write for both: a step is
+    # retried whole, so a half-landed one would rewrite again a value the user set back since.
+    config = read_raw_config()
+    curator = config.get("curator")
+    due = [row for row in _CURATOR_44 if isinstance(curator, dict) and curator.get(row[0]) == row[1]]
+    if not due:
+        return
+    for key, _old, new, _message in due:
+        curator[key] = new
+    _persist_migration(config)
+    for key, old, new, message in due:
+        results["config_added"].append(f"curator.{key}={new} (was: {old})")
+        if not quiet:
+            print(message)
 
 
 _RETIRED_TIRITH_KEYS = ("tirith_enabled", "tirith_path", "tirith_timeout", "tirith_fail_open")
@@ -854,19 +882,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
             "  ✓ Removed gateway.multiplex_profile_allowlist — the multiplexing gateway now serves "
             "every profile under profiles/. Delete or archive a profile you do not want served."),
         extra_guard=lambda raw: "multiplex_profile_allowlist" in raw)),
-    # 43 → 44: curator prunes faster — stale 30→14 days, archive 90→30 days. A skill nobody has
-    # touched in a month is prompt weight, not knowledge; archival is recoverable. Only the OLD
-    # defaults are rewritten; an explicit user value is preserved.
-    (44, _rewrite_stale_default(
-        section="curator", key="stale_after_days", old=30, new=14,
-        added="curator.stale_after_days=14 (was: 30)",
-        message="  ✓ curator.stale_after_days 30→14 — unused skills are flagged stale after two weeks.")),
-    (44, _rewrite_stale_default(
-        section="curator", key="archive_after_days", old=90, new=30,
-        added="curator.archive_after_days=30 (was: 90)",
-        message=(
-            "  ✓ curator.archive_after_days 90→30 — skills unused for a month are archived to "
-            "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
+    # 43 → 44: curator prunes faster (see _migrate_to_44).
+    (44, _migrate_to_44),
     # 44 → 45: saved platform_toolsets lists predate the connections toolset (see _migrate_to_45).
     (45, _migrate_to_45),
     # 45 → 46: legacy editor `disabled: true` on MCP servers becomes `enabled: false` (see _migrate_to_46).

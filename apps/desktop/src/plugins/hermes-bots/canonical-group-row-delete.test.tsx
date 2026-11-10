@@ -1,0 +1,137 @@
+/**
+ * #143571: a gateway Group Chat row in the Bots roster offers Disband from its
+ * right-click menu. Disband confirms, disbands the room on its own gateway
+ * (`groups.disband`), drops it from the list, forgets its bindings and closes
+ * a pane still showing it. A refused disband keeps the row and says why.
+ *
+ * Real SDK components and stores; only the gateway transport is mocked.
+ */
+
+import type * as HermesSdk from '@hermes/plugin-sdk'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { atom } from 'nanostores'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+
+import { translateBotsIn } from './i18n-test-helper'
+
+const { notify, requestProfile } = vi.hoisted(() => ({ notify: vi.fn(), requestProfile: vi.fn() }))
+
+vi.mock('@hermes/plugin-sdk', async importOriginal => {
+  const sdk = await importOriginal<typeof HermesSdk>()
+
+  return {
+    ...sdk,
+    host: {
+      ...sdk.host,
+      notify,
+      requestProfile,
+      state: { ...sdk.host.state, connectionId: atom<null | string>('local'), gateway: atom('open'), profile: atom('default') }
+    },
+    usePluginI18n: () => translateBotsIn('en')
+  }
+})
+
+import { $canonicalGroupBindings, publishCanonicalGroup } from './canonical-group-registry'
+import { renderGatewayRooms } from './gateway-group-rooms-test-harness'
+import { $groupChatWorkspace } from './group-chat'
+import { dropGroupMainTab, recordGroupMainTab } from './group-panes'
+
+const room = { room_id: 'room-1', name: 'Launch crew', members: [{ member_id: 'm1', profile: 'work', handle: 'work' }] }
+let rooms: (typeof room)[] = []
+let refuse = ''
+
+beforeEach(() => {
+  rooms = [room]
+  refuse = ''
+  requestProfile.mockImplementation(async (_route: unknown, method: string, params: { room_id?: string }) => {
+    if (method === 'groups.list') {
+      return { rooms, next_offset: null }
+    }
+
+    if (method === 'groups.disband') {
+      if (refuse) {
+        throw new Error(refuse)
+      }
+
+      rooms = rooms.filter(r => r.room_id !== params.room_id)
+
+      return { tombstone: { room_id: params.room_id, disbanded_at: 1 } }
+    }
+
+    return {}
+  })
+})
+
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+  $canonicalGroupBindings.set({})
+  $groupChatWorkspace.set(null)
+  dropGroupMainTab('Launch crew')
+  dropGroupMainTab('Other crew')
+})
+
+async function openDisbandConfirm() {
+  fireEvent.contextMenu(await screen.findByRole('button', { name: 'Launch crew' }))
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Disband' }))
+
+  return within(await screen.findByRole('dialog'))
+}
+
+it('disbands a group chat from its row menu: confirm, disband on its gateway, gone from the list', async () => {
+  const onOpen = vi.fn()
+  renderGatewayRooms(onOpen)
+  const dialog = await openDisbandConfirm()
+  const key = 'canonical:local:default:room-1'
+  $groupChatWorkspace.set(key)
+
+  expect(dialog.getByText('Launch crew')).toBeTruthy()
+  fireEvent.click(dialog.getByRole('button', { name: 'Disband' }))
+
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Launch crew' })).toBeNull())
+  // The re-read after the disband no longer lists it.
+  await waitFor(() => expect(requestProfile.mock.calls.filter(([, method]) => method === 'groups.list').length).toBeGreaterThan(1))
+  const disband = requestProfile.mock.calls.filter(([, method]) => method === 'groups.disband')
+  expect(disband).toHaveLength(1)
+  expect(disband[0][0]).toMatchObject({ connectionId: 'local', profile: 'default' })
+  expect(disband[0][2]).toMatchObject({ room_id: 'room-1' })
+  expect($canonicalGroupBindings.get()[key]).toBeUndefined()
+  expect($groupChatWorkspace.get()).toBeNull()
+  expect(notify).toHaveBeenCalledWith({ kind: 'success', message: 'Disbanded “Launch crew”' })
+  expect(onOpen).not.toHaveBeenCalled()
+})
+
+it('keeps the row and explains that the group chat was kept when disband fails', async () => {
+  refuse = 'room is busy'
+  renderGatewayRooms()
+  const dialog = await openDisbandConfirm()
+  fireEvent.click(dialog.getByRole('button', { name: 'Disband' }))
+
+  expect(await dialog.findByText(/The group chat has been kept/)).toBeTruthy()
+  expect(screen.getByRole('button', { hidden: true, name: 'Launch crew' })).toBeTruthy()
+  expect(notify).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
+})
+
+it('closes the tab and selection opened under the room name, and leaves another room open', async () => {
+  const other = { room_id: 'room-2', name: 'Other crew', members: [] }
+  rooms = [room, other]
+  const route = { connectionId: 'local', profile: 'default' }
+  publishCanonicalGroup(route, room.name, { authority: route, room }, 'name')
+  publishCanonicalGroup(route, other.name, { authority: route, room: other }, 'name')
+  const closeAlias = vi.fn()
+  const closeOther = vi.fn()
+  recordGroupMainTab(room.name, closeAlias)
+  recordGroupMainTab(other.name, closeOther)
+  $groupChatWorkspace.set(room.name)
+
+  renderGatewayRooms()
+  fireEvent.click((await openDisbandConfirm()).getByRole('button', { name: 'Disband' }))
+
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Launch crew' })).toBeNull())
+  await waitFor(() => expect(requestProfile.mock.calls.filter(([, method]) => method === 'groups.list').length).toBeGreaterThan(1))
+  expect(closeAlias).toHaveBeenCalledTimes(1)
+  expect($groupChatWorkspace.get()).toBeNull()
+  expect(closeOther).not.toHaveBeenCalled()
+  expect(Object.values($canonicalGroupBindings.get()).map(b => b.roomId)).toEqual(expect.arrayContaining(['room-2']))
+  expect(Object.values($canonicalGroupBindings.get()).some(b => b.roomId === 'room-1')).toBe(false)
+})

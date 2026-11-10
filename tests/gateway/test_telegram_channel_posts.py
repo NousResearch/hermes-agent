@@ -1,0 +1,270 @@
+"""Regression tests for Telegram channel_post updates.
+
+Telegram channel broadcasts are delivered as ``Update.channel_post`` rather than
+``Update.message``.  The adapter should use ``effective_message`` so channel
+posts are converted into Hermes gateway events instead of being silently
+ignored.
+"""
+
+import importlib
+import importlib.util
+import sys
+import types
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from gateway.config import PlatformConfig
+from gateway.platforms.event import MessageType
+
+
+def _build_telegram_stubs():
+    telegram_mod = types.ModuleType("telegram")
+    telegram_mod.Update = object
+    telegram_mod.Bot = object
+    telegram_mod.Message = object
+    telegram_mod.InlineKeyboardButton = object
+    telegram_mod.InlineKeyboardMarkup = object
+    telegram_mod.LinkPreviewOptions = object
+
+    telegram_ext_mod = types.ModuleType("telegram.ext")
+    telegram_ext_mod.Application = object
+    telegram_ext_mod.CommandHandler = object
+    telegram_ext_mod.CallbackQueryHandler = object
+    telegram_ext_mod.InlineQueryHandler = object
+    telegram_ext_mod.MessageHandler = object
+    telegram_ext_mod.ContextTypes = SimpleNamespace(DEFAULT_TYPE=type(None))
+    telegram_ext_mod.filters = SimpleNamespace()
+
+    telegram_constants_mod = types.ModuleType("telegram.constants")
+    telegram_constants_mod.ParseMode = SimpleNamespace(MARKDOWN_V2="MarkdownV2")
+    telegram_constants_mod.ChatType = SimpleNamespace(
+        GROUP="group",
+        SUPERGROUP="supergroup",
+        CHANNEL="channel",
+        PRIVATE="private",
+    )
+
+    telegram_request_mod = types.ModuleType("telegram.request")
+    telegram_request_mod.HTTPXRequest = object
+
+    telegram_mod.ext = telegram_ext_mod
+    telegram_mod.constants = telegram_constants_mod
+    telegram_mod.request = telegram_request_mod
+
+    return {
+        "telegram": telegram_mod,
+        "telegram.ext": telegram_ext_mod,
+        "telegram.constants": telegram_constants_mod,
+        "telegram.request": telegram_request_mod,
+    }
+
+
+@pytest.fixture
+def telegram_adapter_cls(monkeypatch):
+    """Import TelegramAdapter without leaking temporary telegram stubs."""
+    module_name = "plugins.platforms.telegram.adapter"
+    existing_module = sys.modules.get(module_name)
+    if existing_module is not None:
+        yield existing_module.TelegramAdapter
+        return
+
+    telegram_pkg = sys.modules.get("telegram")
+    installed = isinstance(getattr(telegram_pkg, "__file__", None), str)
+    if telegram_pkg is None:
+        try:
+            installed = importlib.util.find_spec("telegram") is not None
+        except ValueError:
+            installed = False
+
+    if not installed:
+        for name, module in _build_telegram_stubs().items():
+            monkeypatch.setitem(sys.modules, name, module)
+
+    module = importlib.import_module(module_name)
+    try:
+        yield module.TelegramAdapter
+    finally:
+        if not installed:
+            sys.modules.pop(module_name, None)
+
+
+def _make_adapter(telegram_adapter_cls):
+    a = telegram_adapter_cls(PlatformConfig(enabled=True, token="***", extra={}))
+    # Channel posts have from_user=None.  After PR #28494's fail-closed
+    # auth, the empty-allowlist adapter rejects all messages including
+    # channel posts.  These tests focus on routing, not auth gating.
+    a._is_callback_user_authorized = lambda user_id, **_kw: True
+    return a
+
+
+def _make_channel_message(text="channel id test @hermes_bot"):
+    chat = SimpleNamespace(
+        id=-1003950368353,
+        type="channel",
+        title="wzrd",
+        full_name=None,
+        is_forum=False,
+    )
+    return SimpleNamespace(
+        chat=chat,
+        from_user=None,
+        text=text,
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=None,
+        is_topic_message=False,
+        message_id=11,
+        reply_to_message=None,
+        quote=None,
+        date=None,
+        forum_topic_created=None,
+    )
+
+
+def _make_channel_update(msg):
+    return SimpleNamespace(
+        update_id=12345,
+        message=None,
+        channel_post=msg,
+        effective_message=msg,
+    )
+
+
+def test_build_message_event_uses_channel_identity_for_channel_posts(telegram_adapter_cls):
+    adapter = _make_adapter(telegram_adapter_cls)
+    msg = _make_channel_message()
+
+    event = adapter._build_message_event(msg, MessageType.TEXT, update_id=12345)
+
+    assert event.source.chat_type == "channel"
+    assert event.source.chat_id == "-1003950368353"
+    # Channel posts often have no from_user.  Preserve an identity so the
+    # gateway authorization layer can allowlist the channel by numeric ID.
+    assert event.source.user_id == "-1003950368353"
+    assert event.source.user_name == "wzrd"
+    assert event.platform_update_id == 12345
+
+
+def _make_channel_photo_message(caption="report @hermes_bot"):
+    """A channel broadcast carrying a photo attachment."""
+    chat = SimpleNamespace(
+        id=-1003950368353,
+        type="channel",
+        title="wzrd",
+        full_name=None,
+        is_forum=False,
+    )
+    photo = SimpleNamespace(
+        get_file=AsyncMock(
+            return_value=SimpleNamespace(
+                download_as_bytearray=AsyncMock(return_value=bytearray(b"\x89PNG")),
+                file_path="photo.png",
+            )
+        )
+    )
+    return SimpleNamespace(
+        chat=chat,
+        from_user=None,
+        text=None,
+        caption=caption,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=None,
+        is_topic_message=False,
+        message_id=11,
+        reply_to_message=None,
+        quote=None,
+        date=None,
+        forum_topic_created=None,
+        photo=[photo],
+        sticker=None,
+        voice=None,
+        audio=None,
+        video=None,
+        document=None,
+        media_group_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_media_handler_uses_effective_message_for_channel_post(
+    telegram_adapter_cls, monkeypatch
+):
+    """Channel broadcasts deliver media as ``channel_post``, not ``message``.
+
+    Regression for #51543: ``_handle_media_message`` guarded on
+    ``update.message`` alone and silently dropped every channel-post
+    attachment.  It must resolve via ``_effective_update_message`` like the
+    text/command handlers and route the photo into the caching pipeline.
+    """
+    adapter = _make_adapter(telegram_adapter_cls)
+    msg = _make_channel_photo_message()
+    update = _make_channel_update(msg)
+
+    adapter._should_process_message = lambda m: True
+    adapter._apply_telegram_group_observe_attribution = lambda e: e
+    adapter._photo_batch_key = MagicMock(return_value="batch-key")
+    adapter._enqueue_photo_event = MagicMock()
+
+    adapter_module = sys.modules["plugins.platforms.telegram.adapter"]
+    async def _cache(*_a, **_k):
+        return "/cache/photo.png"
+
+    monkeypatch.setattr(adapter_module, "cache_image_from_bytes_async", _cache)
+
+    await adapter._handle_media_message(update, MagicMock())
+
+    # The photo was routed into the caching pipeline rather than dropped.
+    adapter._enqueue_photo_event.assert_called_once()
+    event = adapter._enqueue_photo_event.call_args.args[1]
+    assert event.media_urls == ["/cache/photo.png"]
+    assert event.source.chat_type == "channel"
+    assert event.source.chat_id == "-1003950368353"
+
+
+@pytest.mark.asyncio
+async def test_media_handler_blocks_unauthorized_channel_post(
+    telegram_adapter_cls, monkeypatch
+):
+    """The auth prefilter must see the resolved channel-post message.
+
+    Companion to the positive caching test: when the broadcast's
+    ``sender_chat`` is not on the adapter allowlist, the intake prefilter
+    (#40863) must reject it BEFORE any caching or enqueueing.  Passing
+    ``update.message`` (None for channel posts) instead of the resolved
+    message would skip sender_chat authorization entirely.
+    """
+    adapter = telegram_adapter_cls(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"group_allow_from": ["424242"]},
+        )
+    )
+    msg = _make_channel_photo_message()
+    # Give the broadcast an authorizable channel identity that is NOT on the
+    # allowlist above.
+    msg.sender_chat = SimpleNamespace(id=-1003950368353, title="wzrd")
+    update = _make_channel_update(msg)
+
+    adapter._should_process_message = lambda m: True
+    adapter._apply_telegram_group_observe_attribution = lambda e: e
+    adapter._enqueue_photo_event = MagicMock()
+
+    cache_calls = []
+    adapter_module = sys.modules["plugins.platforms.telegram.adapter"]
+    async def _cache(*a, **_k):
+        cache_calls.append(a)
+        return "/cache/photo.png"
+
+    monkeypatch.setattr(adapter_module, "cache_image_from_bytes_async", _cache)
+
+    await adapter._handle_media_message(update, MagicMock())
+
+    # Rejected at intake: nothing cached, nothing enqueued.
+    assert cache_calls == []
+    adapter._enqueue_photo_event.assert_not_called()
+    msg.photo[0].get_file.assert_not_awaited()

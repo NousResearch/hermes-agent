@@ -1,0 +1,14 @@
+name: screenpipe
+repo: https://github.com/vdimarco/hermes-screenpipe
+sha: 1df1a3852462ddcdacdc250330e6f1a4013a607e
+description: "Ambient retro-recall from the user's local Screenpipe screen+audio corpus — fail-silent pre-turn context injection, search/timeline/status tools, /recall. Disclosure — auto-recall is on by default: before a turn it searches your local Screenpipe server (http://localhost:3030 unless you change `api_url`) and adds up to 600 characters of matching OCR'd screen text and audio transcripts to the prompt, so captured screen and audio content is sent to your model provider; the search and timeline tools return more of it on request. Set `enabled: false` in the plugin config to keep only the tools and `/recall`."
+maintainer: vdimarco
+tier: community
+category: memory
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+capabilities:
+  provides_tools: [screenpipe_search, screenpipe_around, screenpipe_status]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: [SCREENPIPE_API_KEY]

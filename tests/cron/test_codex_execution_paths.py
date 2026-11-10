@@ -1,0 +1,159 @@
+import asyncio
+import json
+import sys
+import types
+from types import SimpleNamespace
+
+sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
+sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
+sys.modules.setdefault("fal_client", types.SimpleNamespace())
+
+import run_agent
+
+
+def _run_owned_job(job, tmp_path):
+    """Exercise the production owner bridge with an isolated canonical store."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_cron import current_execution, execute
+    from hermes_state_registry import acquire, release
+
+    ref = SessionRef("test-profile", "cron-owner-session")
+    admission_id = "cron-owner-admission"
+    request_id = "cron-owner-request"
+    db = acquire(tmp_path / "state.db")
+    db.create_session(ref.session_id, source="cron")
+    authority = SimpleNamespace(
+        db=db,
+        sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
+        pending_results={},
+    )
+    row = {
+        "admission_id": admission_id, "request_id": request_id,
+        "principal_id": "cron-owner", "payload": {"text": ""},
+    }
+    policy = SimpleNamespace(request_json=json.dumps({
+        "cron_job": job, "extra_prompt": None, "request_id": request_id,
+    }))
+
+    async def run():
+        previous = current_execution()
+        try:
+            await execute(authority, ref, row, policy)
+        except RuntimeError as exc:
+            # Failed scheduler tuples are published before execute raises.
+            saved = authority.pending_results.get(admission_id)
+            if saved is None:
+                raise
+            assert str(exc) == saved["result"]["cron_result"][3]
+        assert current_execution() is previous
+        assert authority._cron_cancellations == {}
+        return tuple(authority.pending_results[admission_id]["result"]["cron_result"])
+
+    try:
+        return asyncio.run(run())
+    finally:
+        release(db)
+
+
+def _patch_agent_bootstrap(monkeypatch):
+    monkeypatch.setattr(
+        "model_tools.get_tool_definitions",
+        lambda **kwargs: [
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Run shell commands.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+
+def _codex_message_response(text: str):
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+class _UnauthorizedError(RuntimeError):
+    def __init__(self):
+        super().__init__("Error code: 401 - unauthorized")
+        self.status_code = 401
+
+class _FakeOpenAI:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    def close(self):
+        return None
+
+class _Codex401ThenSuccessAgent(run_agent.AIAgent):
+    refresh_attempts = 0
+    last_init = {}
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("skip_context_files", True)
+        kwargs.setdefault("skip_memory", True)
+        kwargs.setdefault("max_iterations", 4)
+        type(self).last_init = dict(kwargs)
+        super().__init__(*args, **kwargs)
+        self._cleanup_task_resources = lambda task_id: None
+        self._persist_session = lambda messages, history=None: None
+        self._save_trajectory = lambda messages, user_message, completed: None
+
+    def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
+        type(self).refresh_attempts += 1
+        return True
+
+    def run_conversation(self, user_message: str, conversation_history=None, task_id=None):
+        calls = {"api": 0}
+
+        def _fake_api_call(api_kwargs):
+            calls["api"] += 1
+            if calls["api"] == 1:
+                raise _UnauthorizedError()
+            return _codex_message_response("Recovered via refresh")
+
+        self._interruptible_api_call = _fake_api_call
+        return super().run_conversation(user_message, conversation_history=conversation_history, task_id=task_id)
+
+
+def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch, tmp_path):
+    _patch_agent_bootstrap(monkeypatch)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(run_agent, "AIAgent", _Codex401ThenSuccessAgent)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, **kwargs: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    _Codex401ThenSuccessAgent.refresh_attempts = 0
+    _Codex401ThenSuccessAgent.last_init = {}
+
+    success, output, final_response, error = _run_owned_job(
+        {"id": "job-1", "name": "Codex Refresh Test", "prompt": "ping", "model": "gpt-5.3-codex"},
+        tmp_path,
+    )
+
+    assert success is True
+    assert error is None
+    assert final_response == "Recovered via refresh"
+    assert "Recovered via refresh" in output
+    assert _Codex401ThenSuccessAgent.refresh_attempts == 1
+    assert _Codex401ThenSuccessAgent.last_init["provider"] == "openai-codex"
+    assert _Codex401ThenSuccessAgent.last_init["api_mode"] == "codex_responses"

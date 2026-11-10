@@ -1,0 +1,21 @@
+name: decision-ledger
+title: Decision Ledger
+repo: https://github.com/GeoffP17/hermes-decision-ledger
+sha: 551e8825d410c2f4e63f5dde91db56a6a4ab0f6e
+description: "Durable scoped decision receipts; models draft, a human reviews and confirms in a separate local terminal. Not an execution gate."
+maintainer: GeoffP17
+tier: community
+category: tools
+platforms: [linux]
+requires_hermes: ">=0.22.4"
+version: "0.3.1"
+readme: true
+known_issues:
+  - Live Hermes 0.22.4 /decisions gateway mutation refuses LOCAL context; use bundled direct foreground operator console.
+  - Same-UID Python and SQLite access can bypass application-level approval checks.
+  - Manual terminal step required; historical-source-backed proposals require another verified reviewer.
+capabilities:
+  provides_tools: [decision_ledger]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

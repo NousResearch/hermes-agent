@@ -1,0 +1,25 @@
+name: synento
+repo: https://github.com/Synento/hermes-plugin
+sha: 1ace129e88fa595bd2f6963df6dfcee9218ca0d2
+description: "Live video sessions that record themselves. The agent uses a restricted server key, then checks the recording before calling the integration working. Disclosure — connects to Synento's hosted MCP server (api.synento.com) and needs a Synento account; after sign-in its write tools can create projects and sessions, mint a short-lived connection token and a restricted server key (shown once in chat, then written to your app's env file), and run a synthetic media check, which use plan allowance and can fire your project's webhook. The package marks the server `trust: untrusted` so those calls ask first; sign-in needs a native `mcp_servers.synento` entry with `auth: oauth`, which replaces the package's server settings, so keep `trust: untrusted` in it. The remote tool list can change without a new pin."
+maintainer: Synento
+tier: community
+category: tools
+# First stable tag whose agent_plugins.py has portable streamable-http and
+# server trust. Trust merged as 1e347ccf2a61e828a24e8059420517ee770f088e on
+# 2026-10-07. v0.21.6, published 2026-10-08, contains that commit. There is
+# no stable v0.21.5 tag. plugin.json has no requires_hermes field, so this
+# line is the only floor. Do not bump it to whatever Hermes happened to be
+# installed for the receipt unless a newer key is actually required.
+requires_hermes: ">=0.21.6"
+version: "1.0.0"
+readme: true
+docs_url: https://synento.com/docs/guides/mcp
+known_issues:
+  - "Portable mcp.json cannot complete OAuth. Add mcp_servers.synento with url https://api.synento.com/mcp, auth: oauth, and trust: untrusted, then run hermes mcp login synento and hermes mcp test synento."
+  - "Write tools can create projects, sessions, restricted keys, and a synthetic call. Those use plan allowance and can fire project webhooks. The remote tool list can change without a new pin of this package."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

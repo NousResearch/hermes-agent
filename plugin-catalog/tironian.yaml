@@ -1,0 +1,49 @@
+# Community catalog entry: tironian
+#
+# Owner-submitted: the PR author owns and maintains the repo below.
+# Exact-SHA pin, no self-updating code. The trainer runs only when the user starts it.
+name: tironian
+repo: https://github.com/angelraph/tironian
+sha: "9b590cc094f4b65cd70e979f632e1783424526a8"
+subdir: plugin
+title: Tironian
+description: >-
+  Trains a small local model on the requests you keep repeating in Hermes, tests it on held-out
+  steps from your own past sessions, and lets it answer those requests only after it passes, checking
+  every answer and falling back to your usual model silently. Capture uses llm_execution middleware and
+  observer hooks; secrets and personal details are masked before anything is stored. Disclosure: reads
+  this profile's state.db read only on first use and on `hermes tironian import`; stores masked contexts,
+  grades, datasets and GGUF files under plugin-data/tironian; makes no network calls during normal use
+  (the router talks only to student_endpoint, Hermes's local model server on 127.0.0.1 by default);
+  `hermes tironian trainer setup`, run by the user, creates a venv in plugin data and installs the modal
+  client from PyPI; training starts only on an explicit user action and then uploads that family's masked
+  examples to a private Volume in the user's own Modal account (deleted after the run), or runs on the
+  user's own GPU; the optional judge (off by default) sends held-out examples, and in shadow mode differing
+  answers within a daily budget, to the model assigned to the "Tironian judge" auxiliary slot. No telemetry.
+maintainer: angelraph
+tier: community
+category: models
+requires_hermes: ">=0.22.3"
+version: "0.1.0"
+docs_url: https://tironian.vercel.app/docs
+image: https://raw.githubusercontent.com/angelraph/tironian/9b590cc094f4b65cd70e979f632e1783424526a8/web/assets/og.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - post_llm_call
+    - post_tool_call
+    - api_request_error
+    - on_session_end
+    - on_session_finalize
+    - on_session_delete
+    - post_approval_response
+    - subagent_start
+  provides_middleware:
+    - llm_execution
+  requires_env: []
+known_issues:
+  - "Hermes v0.22/v0.23 log 'unknown manifest field: provides_middleware' when loading; it is required by `hermes plugins validate` and harmless."
+  - "Live routing supports chat_completions and anthropic_messages providers; Responses API sessions are captured but not routed."

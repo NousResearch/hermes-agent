@@ -502,6 +502,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
+| `shared` | bool | Stdio only, multi-profile gateways. `true`: profiles whose entry is identical share one child process instead of one each; `false`: always one per profile. Default: `mcp.share_across_profiles` (off). See [Sharing stdio servers across profiles](#sharing-stdio-servers-across-profiles) |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
 | `events` | bool | If `true`, register the experimental MCP events tools for this server (default `false`). See [MCP Events](#mcp-events-experimental) |
 | `tools` | mapping | Per-server tool filtering and utility policy |
@@ -514,6 +515,26 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
 ```
+
+### Sharing stdio servers across profiles
+
+A gateway that serves several profiles (`gateway.multiplex_profiles`) connects MCP servers per profile. Every stdio child is spawned with its profile's own `HERMES_HOME` in its environment, so by default no two profiles ever share a child, even with identical entries: N profiles with M stdio servers run N x M child processes (12 profiles with ~14 servers each came to ~124 processes and ~12 GB of RAM). If your stdio servers are stateless and do not read `HERMES_HOME`, let identical entries share one child:
+
+```yaml
+mcp:
+  share_across_profiles: true   # default for every stdio server; default false
+
+mcp_servers:
+  filesystem:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/srv/data"]
+  playwright:
+    command: npx
+    args: ["@playwright/mcp"]
+    shared: false               # holds per-client state (browser): one per profile
+```
+
+Entries are shared only when everything else is identical too (command, args, `env`, `cwd`, resolved secrets); each profile keeps its own tool registration, tool filters and trust policy. The shared child runs with the HERMES_HOME of the profile that started it. Use `shared: false` for browser/desktop drivers or anything that keeps per-client state. HTTP servers and `auth: oauth` entries are unchanged.
 
 ### Recycling memory-heavy stdio servers
 

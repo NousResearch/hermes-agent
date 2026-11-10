@@ -1647,8 +1647,12 @@ class GatewayBusySessionMixin:
             counter = self._slash_confirm_counter = _itertools.count(1)
         confirm_id = f"{next(counter)}"
 
-        # Register FIRST so a fast button click cannot race the send_slash_confirm return.
-        _slash_confirm_mod.register(session_key, confirm_id, command, handler)
+        # Register FIRST so a fast button click cannot race the send_slash_confirm return. The
+        # command runs outside any turn: its sender is the requester, never a bound turn's actor.
+        from tools.approval_context import prompt_authority
+        actor = event if event.user_id is not None else source  # as session_context binds it
+        _slash_confirm_mod.register(session_key, confirm_id, command, handler, authority=prompt_authority(
+            str(event.sender_id() or ""), str(actor.user_name or ""), str(getattr(source, "chat_type", None) or "")))
 
         adapter = self._delivery_adapter_for(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))

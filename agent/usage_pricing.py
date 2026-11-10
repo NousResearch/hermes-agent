@@ -197,9 +197,9 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "claude-opus-5": _OPUS,
         "claude-opus-5-5": _OPUS_5_5,
     }),
-    # Fable 5.2: cache hits are 0.025x input.
+    # Fable 5.2 and Mythos 5.2 share rates; cache hits are 0.025x input.
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-11", {
-        "claude-fable-5-2": _FABLE_5_2,
+        ("claude-fable-5-2", "claude-mythos-5-2"): _FABLE_5_2,
     }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
@@ -353,7 +353,7 @@ _ANTHROPIC_FAST_MODE_PRICING: dict[str, PricingEntry] = {
     for _models, _rates in (
         (("claude-opus-4-8", "claude-opus-5"), ("10.00", "50.00", "1.00", "12.50")),
         (("claude-opus-5-5",), ("8.00", "40.00", "0.40", "10.00")),
-        (("claude-fable-5-2",), ("16.00", "80.00", "0.40", "20.00")),
+        (("claude-fable-5-2", "claude-mythos-5-2"), ("16.00", "80.00", "0.40", "20.00")),
     )
     for _model in _models
 }
@@ -675,9 +675,11 @@ def normalize_usage(
 
     # Responses API: output_tokens_details.reasoning_tokens. Chat Completions
     # (OpenAI, OpenRouter, DeepSeek, ...): completion_tokens_details.reasoning_tokens.
-    # Hidden thinking dominates output spend on reasoning models, so read both.
+    # Anthropic Messages: output_tokens_details.thinking_tokens (the full thinking, not the summary).
+    # Hidden thinking dominates output spend on reasoning models, so read all three.
     reasoning_tokens = _first_nonzero(
-        u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens")
+        u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens"),
+        ("output_tokens_details", "thinking_tokens"),
     )
 
     # On MiniMax-M3's Anthropic wire, cache_read_input_tokens carries a constant

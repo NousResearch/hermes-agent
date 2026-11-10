@@ -74,9 +74,7 @@ def _make_runner():
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -104,7 +102,7 @@ def _make_runner():
         "max_iterations": 60,
     }
     runner._running_agents[sk] = agent_mock
-    runner._running_agents_ts[sk] = time.time()
+    runner._session_state(sk).turn.started_ts = time.time()
     return runner
 
 
@@ -154,7 +152,7 @@ async def test_fresh_ancient_turn_remains_controllable(monkeypatch):
         "api_call_count": 1186,
         "max_iterations": 2000,
     }
-    runner._running_agents_ts[sk] = time.time() - 31_471
+    runner._session_state(sk).turn.started_ts = time.time() - 31_471
     runner._handle_verbose_command = AsyncMock(return_value="tool progress: new")
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
 

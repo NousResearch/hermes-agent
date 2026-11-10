@@ -15,7 +15,7 @@ Two guards, both notice/re-prompt-only:
 These assert behavior contracts, not message snapshots.
 """
 
-from agent.agent_runtime_helpers import trailing_continue_intent
+from agent.agent_runtime_helpers import refreshed_stall_budget, trailing_continue_intent
 from agent.tool_guardrails import (
     IDENTICAL_RESULT_STUB_MIN_CHARS,
     STALL_GUARD_IDENTICAL_CALL_THRESHOLD,
@@ -380,6 +380,87 @@ def test_ignores_conversational_future_offers():
     )
 
 
+def test_detects_trailing_cjk_action_announcements():
+    # CJK action-announcement tails from a local-model stall: the model announces work
+    # (现在/同时/并行/继续 + verb) and stops without tool calls.
+    for tail in (
+        "三件事并行推进：",
+        "抱歉，刚才在跑浏览器登录和搜索，没汇报。现在立刻三件事一起推进：",
+        "浏览器会话已重置（about:blank），重新导航登录 GitHub，同时继续推进：",
+        "先并行查下载源 + 确认 Fable 是否完整。",
+        "WeKnora 容器在启动中（后台 `docker compose up -d`），同时查 Fable 入库状态。",
+        "继续推进，稍等。",
+    ):
+        assert trailing_continue_intent(tail), tail
+
+
+def test_detects_trailing_cjk_self_plans():
+    for tail in (
+        "让我确认一下：",
+        "先查 docker-compose.yml 和容器状态，再一起启动 WeKnora。",
+    ):
+        assert trailing_continue_intent(tail), tail
+
+
+def test_cjk_controls_do_not_fire():
+    for tail in (
+        "让我先看下。答案是 42。",
+        "现在几点？",
+        "数据处理已经完成，结果全部写入报告。",
+        "上面就是完整的部署流程说明，请确认。",
+    ):
+        assert not trailing_continue_intent(tail), tail
+
+
+def test_detects_cjk_bare_colon_tails():
+    # A CJK reply ending on a bare colon announced a list/action and stopped —
+    # nothing after the colon means nothing was delivered (local-model v3 shape).
+    for tail in (
+        "找到了 YouTube 播放列表，开始下载：",
+        "以下是要点：",
+        "马上安装：",
+    ):
+        assert trailing_continue_intent(tail), tail
+
+
+def test_ignores_non_cjk_colon_tails():
+    # English colon tails keep the old behavior (a colon can be legit formatting).
+    for tail in (
+        "The answer is 42:",
+        "Here is the plan:",
+        "时间：12:30",
+    ):
+        assert not trailing_continue_intent(tail), tail
+
+
+# ── consecutive stall budget (v4) ───────────────────────────────────────────
+
+
+def test_stall_budget_refreshes_after_tool_progress():
+    """Real tool work since the last nudge refreshes the consecutive budget, so a long
+    multi-step task is never abandoned after two stops (each stop followed progress)."""
+    assert refreshed_stall_budget(2, 1) == 0
+    assert refreshed_stall_budget(1, 7) == 0
+
+
+def test_stall_budget_kept_without_tool_progress():
+    """No tool rows since the last nudge: the count persists and the 2-nudge cap holds,
+    so a model that only announces actions still ends its turn."""
+    assert refreshed_stall_budget(1, 0) == 1
+    assert refreshed_stall_budget(2, 0) == 2
+
+
+def test_stall_budget_zero_stays_zero():
+    assert refreshed_stall_budget(0, 0) == 0
+
+
+def test_stall_exhausted_hint_names_the_resume_action():
+    """The plan-tail backstop never ends silently: the hint tells the user how to resume."""
+    from agent.turn_final_response import _STALL_EXHAUSTED_HINT
+
+    assert "continue" in _STALL_EXHAUSTED_HINT.lower()
+
+
 # ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────
 
 
@@ -485,3 +566,36 @@ def test_promoted_reasoning_detector_ignores_thai_stated_answers():
         "พรุ่งนี้จะฝนตกทั่วประเทศ",  # "tomorrow it will rain" — not a first-person action verb
     ):
         assert not promoted_reasoning_announces_action(text), text
+
+
+def test_promoted_reasoning_detector_catches_cjk_plan_tails():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    # Reasoning-only stalls in Chinese: same announcement shapes as the visible detector.
+    for tail in (
+        "现在同时推进三件事：",
+        "状况已确认。同时推进这两个任务：",
+        "先跑一遍检查，再对比配置。",
+        "嗯，就这样。继续推进：",
+    ):
+        assert promoted_reasoning_announces_action(tail), tail
+
+
+def test_promoted_reasoning_detector_ignores_cjk_stated_answers():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for text in (
+        "答案就是 42，检查完毕。",
+        "数据处理已经完成，结果全部写入了报告文件。",
+    ):
+        assert not promoted_reasoning_announces_action(text), text
+
+
+def test_promoted_reasoning_detector_catches_cjk_bare_colon_tails():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for tail in (
+        "好，开始下载：",
+        "找到了列表，下面是全部条目：",
+    ):
+        assert promoted_reasoning_announces_action(tail), tail

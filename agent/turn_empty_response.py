@@ -89,7 +89,8 @@ def _retry_empty(
     n = agent._empty_content_retries
     wait_time = jittered_backoff(n, base_delay=5.0, max_delay=60.0)
     logger.warning(
-        "Empty response (no content or reasoning) — retry %d/%d in %.1fs (model=%s)",
+        "Empty response (%s) — retry %d/%d in %.1fs (model=%s)",
+        "reasoning but no visible content" if observed_generation else "no content or reasoning",
         n, budget, wait_time, agent.model,
     )
     _budget_note = (

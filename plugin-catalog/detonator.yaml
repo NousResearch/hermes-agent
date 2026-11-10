@@ -1,0 +1,27 @@
+name: detonator
+repo: https://github.com/shreyasudupi/hermes-plugin-detonator
+sha: 4026b2f8748bbecd826be372cbecf343ec2f7d12
+description: >-
+  Dynamic sandbox for plugins you did not write. After you approve the run, /detonate
+  fetches a plugin at an exact commit and loads it inside a disposable Docker container
+  (no network, read-only, non-root, all capabilities dropped) with a throwaway Hermes home
+  full of decoy keys, then drives its hooks and tools and reports what it actually did:
+  decoy secrets read, network attempts, shell commands, persistence, prompt injection,
+  tool poisoning, monkeypatching. Deterministic rules with a plain-language reason and
+  MITRE ATT&CK / ATLAS IDs per finding; advisory only, a clean run is evidence, not proof.
+  Disclosure — requires Docker; runs git (fetches the target repo over the network) and
+  docker (one-time image build pulls a digest-pinned python:3.11-slim) on your machine,
+  only after you approve each run; refuses to run unattended; writes reports under its
+  own plugin-data folder; never reads your real keys or Hermes credentials.
+maintainer: shreyasudupi
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/shreyasudupi/hermes-plugin-detonator#readme
+version: "0.2.1"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [detonate_plugin, detonator_report]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

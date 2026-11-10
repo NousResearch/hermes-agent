@@ -35,6 +35,7 @@ async def probe(peer):
     from gateway.session_envelope import prepare_native, restore_native
     from hermes_cli import web_server
     from persistence.core.errors import AuthorityRefusal
+    from tests.fixtures.storage_holder import raw_holder
     from tests.waiting import async_wait_until
 
     sockets, outgoing, frames = [], [], []
@@ -114,9 +115,9 @@ async def probe(peer):
 
         try:
             failed_insert = asyncio.Event()
-            authority.persistence.holder()._execute_write(lambda conn: conn.create_function(
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.create_function(
                 'ingress_failure_witness', 0, lambda: failed_insert.set() or 1))
-            authority.persistence.holder()._execute_write(lambda conn: conn.execute("CREATE TRIGGER fail_relay BEFORE INSERT ON session_admissions BEGIN SELECT ingress_failure_witness(); SELECT RAISE(ABORT, 'owned storage failure'); END"))
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute("CREATE TRIGGER fail_relay BEFORE INSERT ON session_admissions BEGIN SELECT ingress_failure_witness(); SELECT RAISE(ABORT, 'owned storage failure'); END"))
             await connector_ws.send(json.dumps({'type': 'inbound', 'event': raw,
                                                'bufferId': 'durable-buffer-1'}) + '\n')
             await asyncio.wait_for(failed_insert.wait(), 10)
@@ -124,7 +125,7 @@ async def probe(peer):
             connector_ws = await asyncio.wait_for(ready.get(), 5)
             assert not any(f.get('type') == 'inbound_ack' for f in outgoing), outgoing
             assert not peer.requests
-            authority.persistence.holder()._execute_write(lambda conn: conn.execute('DROP TRIGGER fail_relay'))
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute('DROP TRIGGER fail_relay'))
             rows = await send(raw)
             sid = next(iter(authority.sessions))
             warm_agent = authority.agent(SessionRef('default', sid))

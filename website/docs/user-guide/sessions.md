@@ -545,6 +545,20 @@ Without `--yes` the command asks for confirmation, and it refuses (exit code 2) 
 The lost input stays in the transcript. Some of its actions may already have run, so check their effects before
 you resend it. Inputs queued behind it run once it is discarded.
 
+### Stop a Running Turn From a Script
+
+Killing a `hermes chat -q` client only detaches it: the turn it submitted keeps running at the gateway.
+To stop that turn from a supervisor (a watchdog, a CI wrapper, a dispatcher), send the same fenced
+control as interactive `/stop` by session id or title:
+
+```bash
+hermes sessions interrupt 20250305_091523_a1b2c3d4          # alias: hermes sessions stop
+hermes sessions interrupt 20250305_091523_a1b2c3d4 --json   # one JSON result line
+```
+
+Exit code 0 means the interrupt was delivered, 3 means the session has no running turn, and 1 is an
+error (no gateway, unknown session). Background delegations the turn started keep running, as with `/stop`.
+
 ### Pin a Session
 
 Pinning sets a durable "keep" flag: pinned sessions are exempt from the

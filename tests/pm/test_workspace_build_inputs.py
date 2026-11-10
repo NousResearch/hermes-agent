@@ -353,6 +353,47 @@ def test_a_package_root_named_in_where_travels_into_the_snapshot(tmp_path):
     assert (destination / "agent").is_dir()
 
 
+def test_locales_travel_into_the_snapshot(tmp_path):
+    """agent.i18n resolves its catalogs from its own module location, so a generation without
+    ``locales/`` served every translated string as its raw key (#152630). ``locales/`` sits beside
+    the packages and no ``packages.find`` pattern names it, so nothing copied it."""
+    core = tmp_path / "core"
+    (core / "agent").mkdir(parents=True)
+    (core / "agent" / "i18n.py").write_text("", encoding="utf-8")
+    (core / "locales").mkdir()
+    (core / "locales" / "en.yaml").write_text("platform:\n  picker: Model Configuration\n", encoding="utf-8")
+    (core / "locales" / "pt.yaml").write_text("platform:\n  picker: Configuração de Modelo\n", encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["agent"]\n',
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "locales" / "en.yaml").read_text(encoding="utf-8") == "platform:\n  picker: Model Configuration\n"
+    assert (destination / "locales" / "pt.yaml").is_file()
+    assert (destination / "agent" / "i18n.py").is_file()
+
+
+def test_a_core_without_locales_still_copies(tmp_path):
+    core = tmp_path / "core"
+    (core / "agent").mkdir(parents=True)
+    (core / "agent" / "i18n.py").write_text("", encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["agent"]\n',
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "agent" / "i18n.py").is_file()
+    assert not (destination / "locales").exists()
+
+
 def test_a_packaging_change_without_a_lock_change_needs_a_new_environment(tmp_path, monkeypatch):
     """The stamp hashed uv.lock and the selection only, so moving packages (a new ``where``) with no
     dependency change kept the old generation current and its snapshot kept serving moved code."""

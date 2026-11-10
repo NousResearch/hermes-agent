@@ -319,11 +319,14 @@ def _lease_row_matches(row: Row | None, lease: DriverLease) -> bool:
     ) == (lease.gateway_id, lease.authority_epoch, lease.process_generation, lease.lease_generation)
 
 
-# The lease row; refuses a changed room authority or a lease that is stale, released or expired.
-def _require_active_lease(conn: sqlite3.Connection, lease: DriverLease, *, now: float) -> Row:
+# The lease row; refuses a changed room authority or a lease that is stale, released or (unless ``allow_expired``)
+# expired.
+def _require_active_lease(conn: sqlite3.Connection, lease: DriverLease, *, now: float, allow_expired: bool = False) -> Row:
     _require_room_authority(conn, lease.room_id, lease.gateway_id, lease.authority_epoch)
     row = conn.execute(_SELECT_LEASE, (lease.room_id,)).fetchone()
-    if not _lease_row_matches(row, lease) or row["released_at"] is not None or float(row["expires_at"]) <= now:
+    if not _lease_row_matches(row, lease) or row["released_at"] is not None or (
+        not allow_expired and float(row["expires_at"]) <= now
+    ):
         raise StaleLeaseError("driver lease is stale or expired")
     return row
 
@@ -368,12 +371,14 @@ class SQLiteHostedRoomDriverRepository:
         self, placement: HostedPlacement, identity: HostedTaskIdentity, *, sql: str, set_params: tuple[Any, ...],
         fence_params: tuple[Any, ...], stale: str, now: float, lease: DriverLease | None = None,
         lease_first: bool = True, replay: Replay | None = None, guard: Callable[[Row], None] | None = None,
+        allow_expired_lease: bool = False,
     ) -> dict[str, Any]:
         """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
         ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
         is raised. ``lease_first`` checks the lease before the row load (recovery paths) instead of after the
-        replay (settlement paths: an identical replay still succeeds after the lease moved on).
+        replay (settlement paths: an identical replay still succeeds after the lease moved on);
+        ``allow_expired_lease`` relaxes only that post-replay check and never the lease-first one.
         """
         params = (*set_params, identity.room_id, identity.task_id, *fence_params)
 
@@ -384,7 +389,7 @@ class SQLiteHostedRoomDriverRepository:
             if replay is not None and (replayed := replay(row)) is not None:
                 return replayed
             if lease is not None and not lease_first:
-                _require_active_lease(conn, lease, now=now)
+                _require_active_lease(conn, lease, now=now, allow_expired=allow_expired_lease)
             if guard is not None:
                 guard(row)
             fenced_update(conn, sql, params, StaleTaskError(stale))
@@ -578,13 +583,16 @@ class SQLiteHostedRoomDriverRepository:
             return self._files._hosted_write(placement, _txn, immediate=True)
 
     # Settles a running attempt; the replay check comes before the lease check, so an identical settlement replays.
+    # ``allow_expired_lease`` (the live in-process settle) drops only that check's expiry term.
     def settle_task(self, attempt: TaskAttempt, *, placement: HostedPlacement, settlement_id: str,
-                    status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
+                    status: TerminalStatus, result: JsonValue, now: float | None = None,
+                    allow_expired_lease: bool = False) -> Mapping[str, JsonValue]:
         now = clock(now)
         replay, set_params = _settlement(settlement_id, status, result, now)
         return self._run_fence_transition(
             placement, attempt, guard_stale="task attempt is stale or cancelled", lease_first=False, now=now,
-            replay=replay, sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement")
+            replay=replay, sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement",
+            allow_expired_lease=allow_expired_lease)
 
     # Settles a stopping task; the replay check comes before the lease check.
     def settle_stopping_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,

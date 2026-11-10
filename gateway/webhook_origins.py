@@ -210,7 +210,7 @@ async def _hook_or_admit(authority, adapter, event, prompt, transformed, payload
     event.text, event.raw_message = prompt, transformed
     event.source._webhook_target_pin = value['target_pin']
     hooks = [name for name in ('pre_gateway_dispatch', POST_ADMISSION_HOOK) if has_hook(name)]
-    receipt = await _admit_once(authority, event, True, hooks, (payload, []))
+    receipt = await _admit_once(authority, event, True, hooks, False, (payload, []))
     if receipt is None:
         return await tracked_write(authority, partial(_finish, authority, value, 'hook_reply',
             getattr(event, '_consumer_reply', None)))

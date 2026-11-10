@@ -23,11 +23,9 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
         return False
     if agent_result.get("compression_exhausted"):
         return True
-    # A provider safety-filter block is deterministic for the unchanged request and carries its
-    # own refusal copy; it is never an overflow. Treating it as one skips transcript persistence
-    # and forces the /compress remedy onto a session nowhere near its limit, and the unchanged
-    # history re-trips the same filter on every retry until /reset (#134261).
-    if agent_result.get("failure_reason") == "content_policy_blocked":
+    # An already-classified non-overflow 400 beats the long-history guess: a content safety
+    # refusal (#134261) or a rejected reasoning.effort setting (#100536) cannot be compressed away.
+    if agent_result.get("failure_reason") in ("content_policy_blocked", "reasoning_mandatory"):
         return False
     err = str(agent_result.get("error") or "").lower()
     return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)

@@ -88,3 +88,22 @@ class TestOverflowHeuristicsUnchanged:
     def test_transient_429_is_still_not_overflow(self):
         agent_result = {"failed": True, "error": "API call failed after 3 retries: 429 Too Many Requests"}
         assert not is_context_overflow_failure_result(agent_result, history_len=407)
+
+
+class TestClassifiedReasoningRejectionIsNotOverflow:
+    """#100536: an invalid reasoning.effort request is not a context overflow."""
+
+    def test_reasoning_mandatory_400_on_long_history_is_not_overflow(self):
+        # The agent classifies a provider's invalid_reasoning_effort as reasoning_mandatory
+        # (agent/error_classifier.py). The gateway must keep that verdict for 407 messages.
+        agent_result = {
+            "failed": True,
+            "completed": False,
+            "error": (
+                "HTTP 400: {'error': {'param': 'reasoning.effort', "
+                "'error_code': 'invalid_reasoning_effort', 'retryable': false}}"
+            ),
+            "failure_reason": "reasoning_mandatory",
+            "failure_retryable": False,
+        }
+        assert not is_context_overflow_failure_result(agent_result, history_len=407)

@@ -1,6 +1,7 @@
 """Module renames recorded by a move commit: the paths ``git mv`` changed, as dotted module names."""
 from __future__ import annotations
 
+import ast
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -77,6 +78,22 @@ def module_renames(repo: Path, commit: str) -> dict[str, str]:
         if current_name(old, others) == renames[old]:
             del renames[old]
     return renames
+
+
+def config_keys(root: Path) -> frozenset[str]:
+    """Every dotted key path of ``DEFAULT_CONFIG`` (``agent``, ``agent.max_turns``, ...), read by AST."""
+    keys: set[str] = set()
+    for path in git(root, "ls-files", "*hermes_cli/config_defaults.py").split():
+        body = ast.parse((root / path).read_text(encoding="utf-8-sig")).body
+        pending = [("", node.value) for node in body if isinstance(node, ast.Assign)
+                   and any(getattr(target, "id", None) == "DEFAULT_CONFIG" for target in node.targets)]
+        while pending:
+            prefix, value = pending.pop()
+            for key, item in zip(getattr(value, "keys", ()), getattr(value, "values", ())):
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    keys.add(prefix + key.value)
+                    pending.append((f"{prefix}{key.value}.", item))
+    return frozenset(keys)
 
 
 def git(repo: Path, *args: str) -> str:

@@ -29,6 +29,15 @@ def _disp_width(s: str) -> int:
     return max(wcswidth(s), 0)
 
 
+def _not_a_code_span(row: str, opener: int, opener_end: int, closing_end: int) -> bool:
+    """A backtick pair that crosses a spaced pipe without being code: glued to a word on its outside
+    (``don`t | it`s``: apostrophes), or a run alone in its cell (`` `` | x | `` ``)."""
+    closer = closing_end - (opener_end - opener)
+    content = row[opener_end:closer].strip()
+    return ((opener > 0 and row[opener - 1].isalnum()) or (closing_end < len(row) and row[closing_end].isalnum())
+            or content.startswith("|") or content.endswith("|"))
+
+
 def split_table_row(row: str) -> list[str]:
     """Split a GFM row on unescaped pipes outside matched inline-code spans."""
     # Pre-index runs by delimiter width: unmatched backticks must not rescan
@@ -49,8 +58,8 @@ def split_table_row(row: str) -> list[str]:
             matching_ends[start] = next_run[width]
         next_run[width] = end
 
-    # A spaced pipe is a cell boundary even if stray backticks in two cells
-    # happen to have equal widths. Unspaced pipes inside code still survive.
+    # A span may hold a spaced pipe (`` `ls | grep x` ``), but backticks used
+    # as apostrophes in two cells (``don`t | it`s``) never pair across one.
     cell_edges = [m.start() + 1 for m in re.finditer(r" \| ", row)]
     separators: list[int] = []
     i = 0
@@ -69,7 +78,8 @@ def split_table_row(row: str) -> list[str]:
             closing_end = matching_ends.get(i)
             if closing_end is not None:
                 edge = bisect_left(cell_edges, end)
-                if edge == len(cell_edges) or cell_edges[edge] >= closing_end - (end - i):
+                within_cell = edge == len(cell_edges) or cell_edges[edge] >= closing_end - (end - i)
+                if within_cell or not _not_a_code_span(row, i, end, closing_end):
                     i = closing_end
                     continue
             i = end  # unmatched or cross-cell backticks are literal

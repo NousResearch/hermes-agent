@@ -1376,6 +1376,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+        if stream_consumer is not None:
+            # Previews follow the agent's per-response ``literal_think_tags`` decision.
+            stream_consumer.keeps_think_tags = getattr(
+                agent, "_stream_keeps_think_tags", stream_consumer.keeps_think_tags)
         from gateway.run_turn_progress import local_viewer_turn
         local_sinks = None
         if local_viewer_turn(self) and not ctx.mute_notification_reply:

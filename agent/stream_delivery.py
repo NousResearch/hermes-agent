@@ -89,6 +89,8 @@ class StreamDeliveryMixin:
         self._native_reasoning_streamed = False
         # Next stream re-reads plugins.stream_reasoning_deltas (config edits land per request).
         self._stream_reasoning_hooks_enabled = None
+        # Next response re-resolves its route's ``literal_think_tags`` opt-in (a fallback may have moved it).
+        self._stream_literal_think_tags = None
 
         def deliver(tail: str) -> None:
             # Recorded only once shown (as ``_fire_stream_delta``): a held tail must not become an
@@ -329,6 +331,16 @@ class StreamDeliveryMixin:
     def _emit_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
         self._enqueue_stream_hook("on_stream_end", final_text=final_text, finished=finished, error=error)
 
+    def _stream_keeps_think_tags(self) -> bool:
+        """Whether this model response's route opted in to ``literal_think_tags``, resolved once per
+        response: deltas are hot, and the route only changes between responses."""
+        keep = getattr(self, "_stream_literal_think_tags", None)
+        if keep is None:
+            from agent.route_capabilities import literal_think_tags_capability
+
+            keep = self._stream_literal_think_tags = literal_think_tags_capability(self)
+        return keep
+
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
         # A superseded stream must not interleave its tokens alongside the retry that replaced it.
@@ -349,12 +361,14 @@ class StreamDeliveryMixin:
             think_scrubber = getattr(self, "_stream_think_scrubber", None)
             # See #5719.
             scrubber = getattr(self, "_stream_context_scrubber", None)
-            text = think_scrubber.feed(text) if think_scrubber is not None else self._strip_think_blocks(text)
-            # Providers that inline reasoning (MiniMax-M3 <think>…</think>) send no reasoning delta, so the
-            # live reasoning pane would stay empty; forward what the scrubber stripped instead (#89647).
-            hidden = think_scrubber.last_hidden if think_scrubber is not None else ""
-            if hidden and not getattr(self, "_native_reasoning_streamed", False):
-                self._fire_reasoning_delta(hidden, inline=True)
+            # A ``literal_think_tags`` route sends reasoning out of band: its think tags are answer text.
+            if not self._stream_keeps_think_tags():
+                text = think_scrubber.feed(text) if think_scrubber is not None else self._strip_think_blocks(text)
+                # Providers that inline reasoning (MiniMax-M3 <think>…</think>) send no reasoning delta, so
+                # the live reasoning pane would stay empty; forward what the scrubber stripped (#89647).
+                hidden = think_scrubber.last_hidden if think_scrubber is not None else ""
+                if hidden and not getattr(self, "_native_reasoning_streamed", False):
+                    self._fire_reasoning_delta(hidden, inline=True)
             text = scrubber.feed(text) if scrubber is not None else sanitize_context(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             # Check the parts list, not the joined property (joining per token copies the whole reply).

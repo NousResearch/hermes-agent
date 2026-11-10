@@ -140,6 +140,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # ``_run_agent_mark_streamed_delivery`` must not fire for it (#105341). Default True: every
         # other construction site (incl. the proxy path) creates consumers only when streaming is on.
         self.stream_deltas_enabled = True
+        # The agent's per-response ``literal_think_tags`` decision (wired by the turn runner): such a
+        # route keeps think tags as answer text, so the preview filter must not hide them.
+        self.keeps_think_tags: Callable[[], bool] = lambda: False
         # Only platforms needing an explicit finalize call (DingTalk AI Cards) force a
         # redundant final edit; ``is True`` keeps MagicMock adapters out.
         self._adapter_requires_finalize = getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True

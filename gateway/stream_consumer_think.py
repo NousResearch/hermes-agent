@@ -57,6 +57,10 @@ class StreamThinkFilterMixin:
         """
         buf = self._think_buffer + text
         self._think_buffer = ""
+        if self.keeps_think_tags() is True:  # ``is True`` keeps MagicMock agents out
+            # The agent kept this response's think tags as answer text (``literal_think_tags``).
+            self._append_accumulated(buf)
+            return
 
         while buf:
             # Case-insensitive: models emit <Think>, <THINKING>, …

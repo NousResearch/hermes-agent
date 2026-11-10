@@ -41,3 +41,24 @@ def flatten_message_text(content: Any, *, sep: str = "\n") -> str:
         return str(content)
     except Exception:
         return ""
+
+
+def flatten_content_text(content: Any) -> str:
+    """Flatten list/dict content (e.g. Anthropic-via-OpenRouter block lists) to text: a raw list
+    hitting ``re.sub`` raises TypeError and the loop retries forever. Thinking/reasoning blocks
+    are dropped outright; their text key varies per provider."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part if isinstance(part, str) else part.get("text")
+            for part in content
+            if isinstance(part, str) or (
+                isinstance(part, dict)
+                and str(part.get("type") or "").strip().lower() not in {"thinking", "reasoning", "redacted_thinking"}
+                and isinstance(part.get("text"), str) and part.get("text")
+            )
+        )
+    if isinstance(content, dict):
+        return str(content.get("text") or content.get("content") or "")
+    return str(content)

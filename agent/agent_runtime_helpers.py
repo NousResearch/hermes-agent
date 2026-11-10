@@ -25,6 +25,8 @@ from agent.cache_bounds import publish_lru
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.route_verdicts import ROUTE_VERDICT_FIELDS, reset_route_verdicts, reset_route_verdicts_if_moved
+from agent.message_content import flatten_content_text
+from agent.route_capabilities import literal_think_tags_capability
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
@@ -812,27 +814,6 @@ def repair_message_sequence_with_cursor(agent, messages: list[dict]) -> int:
     return repairs
 
 
-def _flatten_content_text(content: Any) -> str:
-    """Flatten list/dict content (e.g. Anthropic-via-OpenRouter block lists) to text: a raw list
-    hitting ``re.sub`` raises TypeError and the loop retries forever. Thinking/reasoning blocks
-    are dropped outright; their text key varies per provider."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(
-            part if isinstance(part, str) else part.get("text")
-            for part in content
-            if isinstance(part, str) or (
-                isinstance(part, dict)
-                and str(part.get("type") or "").strip().lower() not in {"thinking", "reasoning", "redacted_thinking"}
-                and isinstance(part.get("text"), str) and part.get("text")
-            )
-        )
-    if isinstance(content, dict):
-        return str(content.get("text") or content.get("content") or "")
-    return str(content)
-
-
 # Order matters: closed pairs first (case-insensitive so mixed-case tags don't fall through to the
 # unterminated pass and eat trailing content), then tool-call XML blocks, the boundary+name-gated
 # <function> block, the unterminated reasoning block, stray orphan reasoning tags, and finally stray
@@ -843,15 +824,21 @@ _THINK_STRIP_PATTERNS = (
     _UNTERMINATED_REASONING_BLOCK_PATTERN, _ORPHAN_REASONING_TAG_PATTERN,
     _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN,
 )
+# A ``literal_think_tags`` route keeps think-tag text as answer text: only the tool-call passes run.
+_TOOL_CALL_STRIP_PATTERNS = tuple(p for p in _THINK_STRIP_PATTERNS if p not in {
+    *_REASONING_BLOCK_PATTERNS, _UNTERMINATED_REASONING_BLOCK_PATTERN, _ORPHAN_REASONING_TAG_PATTERN})
 
 
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text: closed tag
     pairs, unterminated open tags at a block boundary (mirrors ``gateway/stream_consumer.py``),
     stray orphan tags (all case-insensitive variants), and standalone tool-call XML blocks some
-    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive."""
-    content = _flatten_content_text(content) if content else ""
-    for pattern in _THINK_STRIP_PATTERNS if content else ():
+    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive. A
+    ``literal_think_tags`` route (reasoning arrives out of band) keeps every think tag as text."""
+    content = flatten_content_text(content) if content else ""
+    keep_think_tags = bool(content) and literal_think_tags_capability(agent)
+    patterns = _TOOL_CALL_STRIP_PATTERNS if keep_think_tags else _THINK_STRIP_PATTERNS
+    for pattern in patterns if content else ():
         content = pattern.sub('', content)
     return content
 

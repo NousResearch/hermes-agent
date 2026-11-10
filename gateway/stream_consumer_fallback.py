@@ -72,32 +72,37 @@ class StreamFallbackMixin:
         lead = len(final_text) - len(final_text.lstrip())
         if prefix and final_text[lead:].startswith(prefix):
             cut = lead + len(prefix)
-            # ``prefix`` is whatever the last successful edit put on screen. Edits
-            # fire on a throttle tick, not at a word boundary, so that prefix can
-            # end inside a word.  Back the cut up to the last space or newline so
-            # the continuation re-sends the broken word's tail and reads as an
-            # ordinary continuation.  A prefix with no boundary (one very long
-            # token) keeps the original cut rather than re-sending the whole reply.
-            # A prefix that already ends on a whole word needs no back-up: doing it
-            # re-sent that word at the seam.
-            if cut < len(final_text) and not final_text[cut].isspace() and not final_text[cut - 1].isspace():
-                boundary = max(
-                    final_text.rfind(" ", 0, cut),
-                    final_text.rfind("\n", 0, cut),
-                )
-                if boundary >= 0:
-                    cut = boundary + 1
             span = open_code_fence_span(final_text, cut)
             if span is None:
-                return final_text[cut:].lstrip()
+                return final_text[self._prose_resume_point(final_text, cut):].lstrip()
             # The tail starts inside a code block the user saw closed: reopen it with the model's
             # own opener (a cut inside its language tag must not turn the tag's rest into code),
-            # and keep the code's indentation. A tail that is only the closing fence adds nothing
-            # the closed preview did not already show.
+            # and keep the code's indentation. A cut mid-line re-sends that whole line: a code
+            # line resumed from a word boundary loses its indentation and its first tokens, so
+            # neither message would hold the complete line. A tail that is only the closing
+            # fence adds nothing the closed preview did not already show.
             start, end = span
+            if cut > end and "\n" not in (final_text[cut - 1], final_text[cut:cut + 1] or "\n"):
+                cut = final_text.rfind("\n", 0, cut) + 1
             tail = final_text[max(cut, end):].lstrip("\n")
             return f"{final_text[start:end]}\n{tail}" if tail.replace("```", "").strip() else ""
         return final_text
+
+    @staticmethod
+    def _prose_resume_point(final_text: str, cut: int) -> int:
+        """Back a prose cut up to the last space or newline.
+
+        ``cut`` follows whatever the last successful edit put on screen. Edits fire on a
+        throttle tick, not at a word boundary, so it can fall inside a word; re-sending the
+        broken word's tail reads as an ordinary continuation. A prefix with no boundary (one
+        very long token) keeps the original cut rather than re-sending the whole reply, and a
+        prefix that already ends on a whole word needs no back-up (it would repeat that word).
+        """
+        if cut < len(final_text) and not final_text[cut].isspace() and not final_text[cut - 1].isspace():
+            boundary = max(final_text.rfind(" ", 0, cut), final_text.rfind("\n", 0, cut))
+            if boundary >= 0:
+                return boundary + 1
+        return cut
 
     @staticmethod
     def _split_text_chunks(text: str, limit: int, len_fn: Callable[[str], int] = len,

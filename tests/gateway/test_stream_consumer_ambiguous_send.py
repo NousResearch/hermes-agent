@@ -158,6 +158,30 @@ async def test_timed_out_preview_inside_open_code_block_sends_only_the_unseen_co
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("preview,rest,expected", [
+    ("Code:\n```python\ndef f():\n    result = fo", "o()\n    return result\n```",
+     "```python\n    result = foo()\n    return result\n```"),
+    ("Code:\n```python\ndef f():\n", "    return 1\n```", "```python\n    return 1\n```"),
+    ("```python\nx = fo", "o(1)\n```", "```python\nx = foo(1)\n```"),
+], ids=["indented_line_cut_mid_identifier", "cut_at_line_start", "cut_on_first_code_line"])
+async def test_timed_out_preview_cut_mid_code_line_resends_the_whole_line(preview, rest, expected):
+    """A preview cut inside a code line: the continuation repeats that whole line with its
+    indentation, so one message holds the complete line; a cut at a line start repeats nothing."""
+    delivered: list = []
+    consumer = GatewayStreamConsumer(
+        _telegram_flagged(_landing_adapter(delivered)), "chat",
+        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
+    consumer.on_delta(preview)
+    task = asyncio.create_task(consumer.run())
+    await async_wait_until(lambda: delivered, timeout=5)
+    consumer.on_delta(rest)
+    consumer.finish()
+    await asyncio.wait_for(task, timeout=10)
+
+    assert delivered[1:] == [expected], delivered
+
+
+@pytest.mark.asyncio
 async def test_timed_out_continuation_is_not_followed_by_the_whole_answer_again():
     """The preview and the tail sent after it both time out after landing: each went out once and
     the turn counts as delivered, so the gateway's normal final send does not repeat it all."""

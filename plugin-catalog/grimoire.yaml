@@ -1,6 +1,6 @@
 name: grimoire
 repo: https://github.com/bettersandeep/grimoire
-sha: 357d2aecfe951eec4d3853beb914fa4204a4c8b1
+sha: 5d32356897707147a1030ac8f85002c02f53b247
 title: Grimoire
 description: "Ask about your CSV, JSON, Parquet and SQLite files in plain words: DuckDB answers with one SQL query, every number in the reply is checked against the query results, and a Data page gives charts, pivots, drill-down, data health and learning cards with no model tokens. Disclosure: reads only the data files you or the model name, read-only (private folders such as ~/.ssh refused), with DuckDB's network, extension and other file access locked; copies SQLite files to a temp folder as CSV; a pre_tool_call hook blocks raw reads of large data files by other tools; no network calls, shell commands, background processes, credentials or telemetry; stores saved queries and settings in its plugin data; installs the duckdb Python package."
 maintainer: bettersandeep
@@ -8,15 +8,15 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/bettersandeep/grimoire#readme
-version: "0.25.4"
-image: https://raw.githubusercontent.com/bettersandeep/grimoire/357d2aecfe951eec4d3853beb914fa4204a4c8b1/assets/banner.jpg
+version: "0.25.5"
+image: https://raw.githubusercontent.com/bettersandeep/grimoire/5d32356897707147a1030ac8f85002c02f53b247/assets/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/bettersandeep/grimoire/357d2aecfe951eec4d3853beb914fa4204a4c8b1/assets/screenshots/race.png
-  - https://raw.githubusercontent.com/bettersandeep/grimoire/357d2aecfe951eec4d3853beb914fa4204a4c8b1/assets/screenshots/chat-check.png
-  - https://raw.githubusercontent.com/bettersandeep/grimoire/357d2aecfe951eec4d3853beb914fa4204a4c8b1/assets/screenshots/data-page.png
-  - https://raw.githubusercontent.com/bettersandeep/grimoire/357d2aecfe951eec4d3853beb914fa4204a4c8b1/assets/screenshots/charts.png
-  - https://raw.githubusercontent.com/bettersandeep/grimoire/357d2aecfe951eec4d3853beb914fa4204a4c8b1/assets/screenshots/learning-card.png
-  - https://raw.githubusercontent.com/bettersandeep/grimoire/357d2aecfe951eec4d3853beb914fa4204a4c8b1/assets/screenshots/data-health.png
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/5d32356897707147a1030ac8f85002c02f53b247/assets/screenshots/race.png
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/5d32356897707147a1030ac8f85002c02f53b247/assets/screenshots/chat-check.png
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/5d32356897707147a1030ac8f85002c02f53b247/assets/screenshots/data-page.png
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/5d32356897707147a1030ac8f85002c02f53b247/assets/screenshots/charts.png
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/5d32356897707147a1030ac8f85002c02f53b247/assets/screenshots/learning-card.png
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/5d32356897707147a1030ac8f85002c02f53b247/assets/screenshots/data-health.png
 readme: true
 platforms: []
 capabilities:

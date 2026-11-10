@@ -588,12 +588,35 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
     return _set_status_direct(conn, task_id, s)
 
 
+def _drag_completion_evidence(conn, task_id: str) -> Optional[str]:
+    """Completion evidence for a board-driven close (a drag or the card menu).
+
+    A drag carries no summary, and ``complete_task`` refuses a non-review completion that
+    would leave the card with no evidence (``_gate_empty_completion``) — so a human cannot
+    close a card from the board without typing a full summary, which is the one thing the
+    board exists to spare them. The card's own conversation is the honest record: the
+    owner's last words become the evidence, and when they said nothing the close is still
+    attributed and timestamped.
+    """
+    row = conn.execute(
+        "SELECT body FROM task_comments WHERE task_id=? ORDER BY id DESC LIMIT 1", (task_id,)
+    ).fetchone()
+    body = ((row[0] if row else "") or "").strip()
+    if body:
+        return body[:4000]
+    return time.strftime("Closed from the dashboard by a human (%Y-%m-%d %H:%M) — no comment.")
+
+
 # Status verb dispatch shared by PATCH /tasks/{id} and POST /tasks/bulk: (conn, task_id,
 # payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
 # detection) and ``done`` pass ``force=True``: a dashboard action is a human override of a live worker claim.
 _STATUS_HANDLERS: dict[str, Any] = {
     "done": lambda conn, tid, p: kanban_db.complete_task(
-        conn, tid, result=p.result, summary=p.summary, metadata=p.metadata, force=True),
+        conn, tid, result=p.result,
+        # A drag sends neither result nor summary; fall back to the card's own record
+        # rather than refusing the close with an error the board never shows.
+        summary=(p.summary or p.result or _drag_completion_evidence(conn, tid)),
+        metadata=p.metadata, force=True),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(

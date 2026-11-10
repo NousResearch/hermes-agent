@@ -185,6 +185,17 @@ async def _json_object(request: Request) -> tuple[Optional[dict], Optional[JSONR
     return body, None
 
 
+def _control_only_parts(method: str, template: str, body: dict) -> list[str]:
+    """What in a body only a control pass may send: fields ``hermes peer`` never sends, and a turn
+    whose message is not plain text (a list ``input`` stands in for the history, and list content
+    skips the hand-off to a Desktop holding the Bot Chat)."""
+    parts = sorted(set(body) - _MESSAGING_FIELDS[(method, template)])
+    text = "input" if template == "v1/runs" else "message"
+    if (method, template) in _TURNS and text in body and not isinstance(body[text], str):
+        parts.append(f"a non-text {text}")
+    return parts
+
+
 def _holder_author(claimed, principal) -> dict:
     """The turn's author with the verified pass holder as its id, which is what memory attributes
     the turn to, so a pass holder cannot credit a turn to anyone else. The caller's display name,
@@ -257,12 +268,12 @@ async def peer_forward(request: Request, path: str):
         body, invalid = await _json_object(request)
         if invalid is not None:
             return invalid
-        extra = sorted(set(body) - _MESSAGING_FIELDS[(method, template)])
-        if extra and not control:
+        parts = [] if control else _control_only_parts(method, template, body)
+        if parts:
             audit_log(AuditEvent.TOKEN_AUTH_FAILURE, reason="insufficient_scope", principal=principal.principal,
                       method=method, path=request.url.path, ip=client_ip(request))
-            named = ", ".join(name[:64] for name in extra[:5])
-            return _refusal("insufficient_scope", f"Setting {named} here needs {CONTROL}.", 403)
+            named = ", ".join(part[:64] for part in parts[:5])
+            return _refusal("insufficient_scope", f"Sending {named} here needs {CONTROL}.", 403)
         if (method, template) in _TURNS:
             body["author"] = _holder_author(body.get("author"), principal)
 

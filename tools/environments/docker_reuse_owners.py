@@ -54,9 +54,11 @@ class ReuseOwners:
             db.execute("INSERT OR IGNORE INTO metadata VALUES ('namespace', ?)", (uuid.uuid4().hex,))
             nonce = db.execute("SELECT value FROM metadata WHERE key='namespace'").fetchone()[0]
             identity = self.path.parent.stat()
-            # A copied runtime registry is not proof of ownership on another host/store.
+            # A copied runtime registry is not proof of ownership on another store: a copy
+            # lands on a new directory inode. st_dev is deliberately excluded — it names
+            # the mount, which a remount of the same store changes along with nothing else.
             self.namespace = hashlib.sha256(
-                f"{nonce}:{identity.st_dev}:{identity.st_ino}".encode()).hexdigest()[:32]
+                f"{nonce}:{identity.st_ino}".encode()).hexdigest()[:32]
 
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Connection, None, None]:
@@ -115,9 +117,12 @@ class ReuseOwners:
         try:
             with self.transaction() as db:
                 db.execute("DELETE FROM owners WHERE token=?", (lease.token,))
+            # The lease lock file is the abandonment evidence: it may only vanish once
+            # the row is committed. On a failed transaction both survive, so a retry can
+            # still release (or the reaper keeps protecting) the container.
+            lease.lock.path.unlink(missing_ok=True)
         finally:
             lease.lock.__exit__(None, None, None)
-        lease.lock.path.unlink(missing_ok=True)
 
     def supersede(self, labels: dict[str, str], fingerprint: str) -> None:
         scope = _retirement_scope(labels)
@@ -132,20 +137,30 @@ class ReuseOwners:
                               "AND superseded<=? AND (? IS NULL OR profile=?)",
                               (time.time() - max_age_seconds, profile, profile)).fetchall()
         for (name,) in candidates:
-            with self.transaction() as db:
+            with ExitStack() as locks:
                 # A claimant may have revived this container since the inventory.
-                row = db.execute("SELECT container_id, fingerprint FROM containers WHERE name=? "
-                                 "AND retired=0 AND superseded<=?", (name, time.time() - max_age_seconds)).fetchone()
-                if row is None:
-                    continue
-                container_id, fingerprint = row
-                with ExitStack() as locks:
+                with self.transaction() as db:
+                    row = db.execute("SELECT container_id, fingerprint FROM containers WHERE name=? "
+                                     "AND retired=0 AND superseded<=?", (name, time.time() - max_age_seconds)).fetchone()
+                    if row is None:
+                        continue
                     if not self._owners_abandoned(db, name, locks):
                         continue
-                    if self._remove(docker, container_id or name, name, fingerprint):
-                        db.execute("UPDATE containers SET retired=1 WHERE name=?", (name,))
-                        db.execute("DELETE FROM owners WHERE name=?", (name,))
-                        removed += 1
+                    container_id, fingerprint = row
+                # Docker waits run without a write transaction: a held BEGIN IMMEDIATE
+                # would starve every other registry process for the whole stop/remove.
+                if not self._remove(docker, container_id or name, name, fingerprint):
+                    continue
+                with self.transaction() as db:
+                    # Re-check nothing changed underneath (a claim clears superseded):
+                    # a container revived in between is not retired by the dead row.
+                    if db.execute("SELECT 1 FROM containers WHERE name=? AND retired=0 "
+                                  "AND superseded IS NOT NULL AND fingerprint=?",
+                                  (name, fingerprint)).fetchone() is None:
+                        continue
+                    db.execute("UPDATE containers SET retired=1 WHERE name=?", (name,))
+                    db.execute("DELETE FROM owners WHERE name=?", (name,))
+                    removed += 1
         return removed
 
     def _owners_abandoned(self, db: sqlite3.Connection, name: str, locks: ExitStack) -> bool:
@@ -164,6 +179,17 @@ class ReuseOwners:
 
         try:
             result = run_capture([docker, "inspect", "--format", "{{json .}}", target], timeout=10, check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            # A confirmed-absent container is not a failure to preserve: its row is
+            # retired so dead entries do not linger in every sweep. A daemon-unavailable
+            # (or every other inspect failure) keeps the row for a later pass.
+            output = exc.stderr if isinstance(exc, subprocess.SubprocessError) else str(exc)
+            if "no such container" in output.lower():
+                logger.info("Reaped superseded container %s (already absent)", target)
+                return True
+            logger.debug("Could not verify/reap superseded container %s: %s", target, exc)
+            return False
+        try:
             record = json.loads(result.stdout)
             labels = record["Config"]["Labels"]
             if (not isinstance(labels, dict) or not isinstance(record["Id"], str)

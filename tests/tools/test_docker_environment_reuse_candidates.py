@@ -24,24 +24,32 @@ def _teardowns_finish_under_the_fakes():
     assert docker_env.DockerEnvironment.wait_for_all_teardowns(timeout=10)
 
 
-def _stateful_docker(monkeypatch, fail_start: bool = False):
+def _stateful_docker(monkeypatch, fail_start: bool = False, *, long_ids: bool = False):
     """Fake docker boundary with per-container state, labels, image and network."""
     containers: dict[str, dict] = {}
     calls: list[list[str]] = []
+
+    def _resolve(cid):
+        """Docker resolves an id prefix; the fake models that for truncated lookups."""
+        if cid in containers:
+            return cid
+        return next((full for full in containers if full.startswith(cid)), None)
 
     def _ps(cmd):
         filters = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "--filter"]
         labels = [pair[6:].split("=", 1) for pair in filters if pair.startswith("label=")]
         states = [pair[7:] for pair in filters if pair.startswith("status=")]
+        # The daemon shows 12-char ids unless --no-trunc is given (#84969 review).
+        shown = lambda cid: cid if not long_ids or "--no-trunc" in cmd else cid[:12]
         return "".join(
-            (f"{cid}\t{rec['state']}\n" if "{{.State}}" in cmd[-1] else f"{cid}\n")
+            (f"{shown(cid)}\t{rec['state']}\n" if "{{.State}}" in cmd[-1] else f"{shown(cid)}\n")
             for cid, rec in containers.items()
             if all(rec["labels"].get(k) == v for k, v in labels)
             and (not states or rec["state"] in states)
         ), 0
 
     def _create(cmd):
-        cid = f"cid-{len(containers)}"
+        cid = (f"{len(containers)}" + "a" * 63) if long_ids else f"cid-{len(containers)}"
         containers[cid] = {
             "image": cmd[-3],
             "network": "none" if "--network=none" in cmd else "bridge",
@@ -55,7 +63,10 @@ def _stateful_docker(monkeypatch, fail_start: bool = False):
         return cid, 0
 
     def _inspect(cmd):
-        rec = containers[cmd[-1]]
+        full = _resolve(cmd[-1])
+        if full is None:
+            return "Error: No such container: " + cmd[-1], 1
+        rec = containers[full]
         record = {"Id": cmd[-1], "Name": "/" + rec["name"],
                   "Config": {"Labels": rec["labels"], "User": ""}, "Mounts": [],
                   "State": {"Running": rec["state"] == "running"}}
@@ -80,16 +91,16 @@ def _stateful_docker(monkeypatch, fail_start: bool = False):
 
     def _set_state(state):
         def _handler(cmd):
-            cid = cmd[-1]
-            if cid not in containers:
+            cid = _resolve(cmd[-1])
+            if cid is None:
                 return "", 1
             containers[cid]["state"] = state
             return "", 0
         return _handler
 
     def _rm(cmd):
-        cid = cmd[-1]
-        if cid not in containers:
+        cid = _resolve(cmd[-1])
+        if cid is None:
             return "", 0
         if "-f" in cmd or containers[cid]["state"] != "running":
             del containers[cid]

@@ -120,7 +120,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/subscription` (/upgrade) | refused | HermesCLI._show_subscription | sidecar: subscription.state | slash.exec: refused | slash.exec: refused | client-local (cli_only) |
 | `/suggestions` (/suggest) | read (bare only) | HermesCLI._handle_suggestions_command | slash.exec | slash.exec | slash.exec |  |
 | `/timestamps` (/ts) | refused | HermesCLI._handle_timestamps_command | config.set | action: timestamps | slash.exec: refused | client-local (cli_only) |
-| `/title` | control | HermesCLI._cmd_title | canonical route | action: title | session.mutate rename (bare: slash.exec) |  |
+| `/title` (/rename) | control | HermesCLI._cmd_title | canonical route | action: title | session.mutate rename (bare: slash.exec) |  |
 | `/tools` | refused | HermesCLI._handle_tools_command | refused: not available yet | slash.exec: refused | session.info | client-local (cli_only) |
 | `/toolsets` | read | HermesCLI.show_toolsets | slash.exec | unavailable: terminal | slash.exec | client-local (cli_only) |
 | `/topic` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | slash.exec: refused | messaging-only |

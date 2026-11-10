@@ -1,22 +1,22 @@
 name: storage-utility
 repo: https://github.com/ShawnCRMer/hermes-tune-up
-sha: "a5822f94f2c9f3db2b4b2f43f02cab5af3a32567"
+sha: "da17207c57933d23f938dc3d313fc0828e97751f"
 title: Tune-up
-description: "Keep Hermes fast, healthy and tidy from one Desktop panel. Clean up sorts the Hermes home into Safe to clean, Take a quick look and Kept safe on purpose, with plain-language answers to what is it, is it safe and can I undo; it reviews exact items before anything happens and reports the measured space recovered. It runs the maintenance Hermes ships but few people find (sessions prune with preview, pm gc, uv cache prune, checkpoints, worktree prune, session-database packing), finds folders Hermes created elsewhere from its own session history, and moves reviewable items to a restorable 30-day Trash. Checkup explains down or crash-looping Hermes services and stops leftover agent processes; Explore shows a size map with folder descriptions and duplicate finding; optional consented AI explanation via its own auxiliary task. Disclosure: no network except the optional, consented AI explanation (folder totals and counts only, no names or contents) through Hermes's routing; reads home metadata, session history, /proc and systemctl status; on user confirmation runs allow-listed hermes/uv/git maintenance commands (no shell), systemctl start/restart/stop/disable on Hermes services, can write a Restart=always drop-in and run 'hermes plugins enable disk-cleanup' when asked, sends SIGTERM to selected leftovers, and briefly stops and restarts Hermes services to pack state.db; never opens credential files; state in <home>/storage-utility; no telemetry."
+description: "Keep Hermes fast, healthy and tidy from one Desktop panel. Clean up sorts the Hermes home into Safe to clean, Take a quick look and Kept safe on purpose, with plain-language answers to what is it, is it safe and can I undo; it reviews exact items before anything happens and reports the measured space recovered. It runs the maintenance Hermes ships but few people find (sessions prune with preview, pm gc, uv cache prune, checkpoints, worktree prune, session-database packing), finds folders Hermes created elsewhere from its own session history, and moves reviewable items to a restorable 30-day Trash. Checkup explains down or crash-looping Hermes services and stops leftover agent processes; Explore shows a size map with folder descriptions and duplicate finding; optional consented AI explanation via its own auxiliary task. Disclosure: no network except the optional, consented AI explanation (folder totals and counts only, no names or contents) through Hermes's routing; never reads credentials (no .env, auth.json, service env files, start scripts or /proc/<pid>/environ; service home from systemd Environment=/User= only) and gives non-Hermes child processes only PATH, HOME and locale; reads home metadata, tool caches, session history, /proc process and open-file info, systemd unit settings, journal lines, crontab and git ls-files; on user confirmation deletes chosen files in Hermes-created project folders and tool caches (~/.cache, ~/.npm, ~/.pnpm-store), runs allow-listed hermes/uv/pnpm/git maintenance commands plus journalctl --vacuum-size and apt-get clean when root (no shell), systemctl start/restart/stop/disable on Hermes services, can write a Restart=always drop-in and run 'hermes plugins enable disk-cleanup' when asked, sends SIGTERM to selected leftovers, and briefly stops and restarts Hermes services to pack state.db; state in <home>/storage-utility; no telemetry."
 maintainer: ShawnCRMer
 tier: community
 category: tools
-version: "0.7.2"
+version: "0.7.3"
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/ShawnCRMer/hermes-tune-up#readme
-image: https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/card.png
+image: https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/da17207c57933d23f938dc3d313fc0828e97751f/docs/card.png
 screenshots:
-  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/home.png
-  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/clean-up-review.png
-  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/clean-up-done.png
-  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/take-a-look.png
-  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/explore.png
-  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/explorer-page.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/da17207c57933d23f938dc3d313fc0828e97751f/docs/home.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/da17207c57933d23f938dc3d313fc0828e97751f/docs/clean-up-review.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/da17207c57933d23f938dc3d313fc0828e97751f/docs/clean-up-done.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/da17207c57933d23f938dc3d313fc0828e97751f/docs/take-a-look.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/da17207c57933d23f938dc3d313fc0828e97751f/docs/explore.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/da17207c57933d23f938dc3d313fc0828e97751f/docs/explorer-page.png
 readme: true
 platforms: [linux]
 known_issues:

@@ -177,11 +177,9 @@ def _get_service_pids(all_profiles: bool = False) -> set:
     if is_macos():
         labels = {get_launchd_label()}
         if all_profiles:
-            # Whole fleet, mirroring the systemd ``hermes-gateway*`` glob above.
-            # Every gateway LaunchAgent, not just the invoking profile's — mirrors the systemd branch's
-            # ``hermes-gateway*`` pattern above. The update path restarts the whole fleet, and its
-            # stale-process sweep must not mistake a sibling service's fresh PID for a manual gateway it
-            # should kill (#41403).
+            # Every gateway LaunchAgent, as the systemd branch globs ``hermes-gateway*`` above: the update
+            # path restarts the whole fleet, and its stale-process sweep must not mistake a sibling
+            # service's fresh PID for a manual gateway it should kill (#41403).
             labels.update(launchd_gateway_labels_for_install())
         for label in sorted(labels):
             try:
@@ -207,6 +205,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                                 pass
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
+        pids |= osascript_job_gateways(pids)  # the job PID is osascript; the gateway runs below it
 
     return pids
 
@@ -3920,6 +3919,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 
 from hermes_cli.gateway_launchd import (
     get_launchd_label,
+    osascript_job_gateways,
     _probe_launchd_domain_for_label,
     _launchd_domain,
     _LAUNCHD_JOB_UNLOADED_EXIT_CODES,

@@ -237,18 +237,9 @@ def _launchd_command(argv: list[str]) -> tuple[list[str], bool]:
     so no shell operator, substitution, extra JXA or foreign osascript rides along."""
     if argv[:1] != ["/usr/bin/osascript"]:
         return argv, False
-    from hermes_cli.gateway_launchd import launchd_program_arguments
-    # Recover the inputs, then let the installer rebuild the whole argv: the comparison is the check.
-    script, opener = argv[-1], "$.system("
-    try:
-        shell = json.JSONDecoder().raw_decode(script, script.index(opener) + len(opener))[0]
-        tokens = shlex.split(shell) if isinstance(shell, str) else []
-    except ValueError:
-        tokens = []
-    if len(tokens) < 6 or tokens[0] != "exec" or tokens[-4] != ">>" or tokens[-2] != "2>>":
-        _unverified("the osascript wrapper is not the installer's")
-    command = tokens[1:-4]
-    if launchd_program_arguments(command, Path(tokens[-3]), Path(tokens[-1])) != argv:
+    from hermes_cli.gateway_launchd import launchd_wrapped_command
+    command = launchd_wrapped_command(argv)
+    if command is None:
         _unverified("the osascript wrapper is not the installer's")
     return command, True
 

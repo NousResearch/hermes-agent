@@ -2611,11 +2611,6 @@ export const deOverrides = {
       openLog: 'Log öffnen',
       actionLog: 'Aktionsprotokoll',
       alreadyInstalled: (name: string) => `"${name}" ist bereits installiert`,
-      pickerTitle: 'Skills Hub',
-      pickerBrowse: 'Den ganzen Hub durchstöbern',
-      pickerHide: 'Hub-Durchsucher ausblenden',
-      pickerHint:
-        'Klicken Sie bei einem beliebigen Skill auf „+ Zu diesem Agenten hinzufügen“ – er wird installiert und erscheint in der Liste oben.',
       loadFailed: 'Skill-Hub konnte nicht geladen werden',
       previewFailed: 'Skill-Vorschau fehlgeschlagen',
       scanFailed: 'Sicherheitsscan fehlgeschlagen',

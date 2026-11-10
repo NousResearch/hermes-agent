@@ -1,7 +1,7 @@
 name: agent-si
 repo: https://github.com/joelbrilliant/hermes-agent-si
-sha: 674726c073db80185ed77cbc4a9430232bb923e0
-version: "0.1.3"
+sha: 51aa30e3278ec815c6813602d43387b01fb70970
+version: "0.2.0"
 description: "Anti-hallucination memory for Hermes: your agent stops inventing answers and answers from facts it can quote from you. One search over your past Hermes, Claude Code, Codex and Grok sessions, both sides shown when sources disagree, never a guess. No LLM, no key, no network, no dependencies. Disclosure — none"
 maintainer: joelbrilliant
 tier: community

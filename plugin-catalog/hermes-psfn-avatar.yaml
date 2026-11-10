@@ -1,6 +1,6 @@
 name: hermes-psfn-avatar
 repo: https://github.com/axAilotl/hermes-psfn-avatar
-sha: 516f630f37bd16e25ee4b8ce872a6080b22303a4
+sha: 5e7d0b0453a3749ed686cb8ee500242eeb32299f
 title: PSFN 3D VRM Avatar
 description: "3D VRM VTuber and companion avatar overlay for Hermes Desktop and the Web Dashboard (Three.js + @pixiv/three-vrm, built-in articulated 3D Holo-Rig, 42 baked ARDY humanoid motion clips, 28 GoEmotions mood performances, lip-sync, touch reactions, and optional PSFN Lite continuous emotional-state bridge). Disclosure — stores avatar state and user-uploaded .vrm/.glb models under ~/.hermes/plugin-data/hermes-psfn-avatar/; when psfn_lite_bridge is enabled and ~/.hermes/psfn-lite.json configures a loopback garden endpoint, queries GET <garden.url>/api/lite/inner-life on localhost using the profile's secret scope; no external network calls, shell commands, or telemetry."
 maintainer: axAilotl

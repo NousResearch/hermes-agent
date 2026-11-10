@@ -2,7 +2,10 @@
 
 The shared board's hosted refusal sits at the one opener of its database
 (``hermes_cli.kanban_db_connect.connect`` — read-write or read-only, explicit
-path, environment pin or resolved board; see ``test_raw_reader_refusal.py``).
+path, environment pin or resolved board; see ``test_raw_reader_refusal.py``),
+and in the lowest arms ``connect`` delegates to (``_sqlite_connect`` and
+``_open_readonly``, each refusing a hosted process by itself — see
+``test_board_byte_boundaries.py``).
 A raw ``sqlite3.connect`` on a board file anywhere else would bypass that
 refusal silently, which is exactly how the subscription counter, the claim
 checks, the worker-result read, the export snapshot and the repair probe each
@@ -26,10 +29,11 @@ SCAN_ROOTS = ("hermes_cli", "gateway", "tools", "agent")
 _BOARD_PATH_HELPERS = {"kanban_home", "kanban_db_path", "boards_root", "workspaces_root"}
 
 #: The choke point itself. ``connect`` opens the database read-write through
-#: ``_sqlite_connect`` and read-only through ``_open_readonly``; those two are
-#: connect's own arms (every caller reaches them through ``connect``, whose
-#: hosted refusal runs first) — no other function in this module may open raw.
-_CHOKE_POINT_OPENERS = {"connect", "_sqlite_connect", "_open_readonly"}
+#: ``_sqlite_connect`` and read-only through ``_open_readonly``; those arms are
+#: the lowest openers of a board database, and each refuses a hosted process by
+#: itself (whoever calls it, inside ``connect`` or imported directly) — no other
+#: function in this module may open raw.
+_CHOKE_POINT_OPENERS = {"_sqlite_connect", "_open_readonly"}
 
 #: Named exceptions: (module path, function name) -> what database it opens.
 #: Each entry opens a SQLite database that is not a kanban board; the comment
@@ -45,9 +49,19 @@ _NAMED_NON_BOARD_EXCEPTIONS = {
     ("hermes_cli/kanban_owner_recovery.py", "_admission_row"):
         "the owner's session-state admission ledger (state.db) named by an owner receipt, "
         "never a kanban board",
+    ("hermes_cli/backup_sqlite.py", "_safe_copy_db"):
+        "the generic SQLite snapshot copier behind backups and quick snapshots: opens whatever "
+        "database file it is handed (state.db, response_store.db, ...); it asks the one board "
+        "predicate (hermes_cli.kanban_board_paths.is_board_path, aliased as "
+        "hermes_cli.kanban_db.is_board_path) and refuses a hosted process before "
+        "opening or copying a kanban board",
+    ("hermes_cli/backup_sqlite.py", "preflight_state_db"):
+        "the session state database (state.db) read-only for the update preflight, never a "
+        "kanban board",
     ("hermes_cli/kanban_transfer.py", "_open_staged_export_copy"):
         "the export's staged snapshot copy under a temp dir (a private file the export just "
-        "created); the live source board opens through the guarded connect in _snapshot_db",
+        "created); the live source board opens through the guarded connect in _snapshot_db, and "
+        "the helper itself refuses a hosted process before opening anything",
 }
 
 

@@ -41,6 +41,18 @@ provider class is defined in) and the shared board itself refuses at its own acc
 its root resolution and every open (``hermes_cli.kanban_db``) — so a wrapper, a forwarding proxy
 or a provider that opens the local backend under another name fails at the board, whoever calls
 it.
+
+Hosted contract. In hosted mode no Hermes kanban code path opens, copies or creates the
+profile-shared board, and the hosted gateway runs with the shared-board features (the dispatcher,
+the notifier and the board watchers) disabled, each with one log line and no exception: the refusal
+sits in the board's own lowest arms (``hermes_cli.kanban_db.kanban_home`` and the two connect arms
+of ``hermes_cli.kanban_db_connect``, plus the export's staged-copy helper and the backup code's
+SQLite receiver behind ``hermes_cli.kanban_board_paths.is_board_path`` (aliased as
+``hermes_cli.kanban_db.is_board_path``). Generic host-file access is not
+kanban's to govern: the hosted tool allowlist confines ``read_file`` and the other filesystem tools
+to the tenant's own sandbox — a lexical path policy with no host filesystem — so a board path is
+unreachable through them (the sandbox interface, hosted tool policy and their allowlist live in
+https://github.com/NousResearch/hermes-agent/pull/149924, not in this port).
 """
 
 from __future__ import annotations

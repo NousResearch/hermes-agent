@@ -21,6 +21,7 @@ from gateway.kanban_watchers_common import (
     _release_singleton_lock,
     _resolve_auto_decompose_settings,
     _gc_retention_days,
+    _serves_hosted_tenants,
     _to_thread_process_service,
     logger,
 )
@@ -68,6 +69,10 @@ class GatewayKanbanWatchersMixin:
         dispatcher respawned a crashed task). All SQLite work runs in a thread;
         one tick's failure never stops the next.
         """
+        if _serves_hosted_tenants():
+            logger.info("kanban notifier: disabled in a hosted process "
+                        "(the shared board refuses to open here)")
+            return
         try:
             from hermes_cli.config import load_config as _load_config
 
@@ -213,6 +218,10 @@ class GatewayKanbanWatchersMixin:
         toggle which is re-read every tick. The env var is an escape hatch to
         disable without editing YAML.
         """
+        if _serves_hosted_tenants():
+            logger.info("kanban dispatcher: disabled in a hosted process "
+                        "(the shared board refuses to open here)")
+            return None
         try:
             from hermes_cli.config import load_config as _load_config
         except Exception:

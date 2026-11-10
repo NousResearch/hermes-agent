@@ -73,7 +73,12 @@ def _snapshot_db(source: Path, target: Path) -> None:
 def _open_staged_export_copy(path: Path) -> sqlite3.Connection:
     """Open the export's staged snapshot copy — a private file this export just
     created under a temp dir, never a live board database (the live source
-    board opens through the guarded board connect in :func:`_snapshot_db`)."""
+    board opens through the guarded board connect in :func:`_snapshot_db`).
+    Refuses wherever the process serves hosted tenants (see
+    ``kanban_db._refuse_shared_board_if_hosted``): the staged copy holds the
+    board's rows, so a hosted process must not open it whatever path it is
+    handed."""
+    kb._refuse_shared_board_if_hosted()
     return sqlite3.connect(str(path))
 
 

@@ -47,7 +47,7 @@ QUEUE_MAX_SIZE = 256
 _registered: set[tuple[str, str, str]] = set()
 _registered_lock = threading.Lock()
 
-_delivery_queue: queue.Queue[Optional[dict[str, Any]]] = queue.Queue(maxsize=QUEUE_MAX_SIZE)
+_delivery_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=QUEUE_MAX_SIZE)
 _worker_lock = threading.Lock()
 _worker: Optional[threading.Thread] = None
 
@@ -248,11 +248,8 @@ def _serialize_payload(event: str, kwargs: dict[str, Any], delivery_id: str) -> 
     """Render the POST body: shell-hooks stdin shape plus delivery metadata.  ``delivery_id``
     (also the ``X-Hermes-Delivery`` header) and ``timestamp`` live inside the HMAC-signed
     body, so they double as replay protection."""
-    # Profile resolved at fire time so a multiplexed gateway's receivers can tell which profile emitted.
-    # See #92674.
-    from hermes_cli.profiles import get_active_profile_name
     payload = {
-        "hook_event_name": event, "profile": get_active_profile_name(), **_payload_fields(kwargs),
+        "hook_event_name": event, **_payload_fields(kwargs),  # ``profile`` is resolved at fire time (#92674)
         "delivery_id": delivery_id, "timestamp": _utc_now_iso(),
     }
     return json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
@@ -292,10 +289,9 @@ def _worker_loop() -> None:
     while True:
         delivery = _delivery_queue.get()
         try:
-            if delivery is not None:
-                _deliver(delivery)
+            _deliver(delivery)
         except Exception:  # pragma: no cover — defensive
-            label = delivery.get("label") if isinstance(delivery, dict) else "?"
+            label = delivery["label"]
             logger.warning("outbound webhook delivery crashed (target=%s)", label, exc_info=True)
         finally:
             _delivery_queue.task_done()

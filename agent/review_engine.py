@@ -83,7 +83,7 @@ def collect_parent_loaded_skills(parent_agent, messages: list[dict[str, Any]], l
                 continue
             try:
                 args = json.loads(fn.get("arguments") or "{}")
-            except Exception:
+            except (TypeError, ValueError):  # malformed or non-string arguments from the model
                 continue
             # Only whole-skill loads seed the reviewer; a reference-file read is a detail
             # of the parent's task covered by loading the SKILL.md.

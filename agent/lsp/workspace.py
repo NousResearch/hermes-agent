@@ -71,7 +71,9 @@ def find_git_worktree(start: str) -> Optional[str]:
                 break
         except OSError:
             break  # permission error on a parent dir — bail out cleanly
-    _workspace_cache[str(start_path)] = (resolved, resolved is not None)
+    if resolved is None:
+        return None  # not cached: a later ``git init`` must enable LSP here
+    _workspace_cache[str(start_path)] = (resolved, True)
     if len(_workspace_cache) > _WORKSPACE_CACHE_CAP:
         _workspace_cache.clear()  # a stat cache: resetting is a few re-stats, and one atomic op is thread-safe
     return resolved

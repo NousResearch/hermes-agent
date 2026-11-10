@@ -119,3 +119,13 @@ def test_warmup_timeout_applies_to_cold_root_only(tmp_path, monkeypatch):
     finally:
         svc.shutdown()
     assert budgets == [30.0, 1.0]
+
+
+def test_malformed_wait_timeout_falls_back_to_the_default():
+    from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT
+
+    svc = _service_from({"wait_timeout": "5s", "install_strategy": "manual"})
+    try:
+        assert svc.get_status()["wait_timeout"] == DIAGNOSTICS_DOCUMENT_WAIT
+    finally:
+        svc.shutdown()

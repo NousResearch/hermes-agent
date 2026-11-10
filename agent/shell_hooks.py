@@ -332,7 +332,7 @@ def _consented(spec: ShellHookSpec, accept: bool, allowed: set[tuple[str, str]],
 
 def iter_configured_hooks(cfg: Optional[dict[str, Any]]) -> list[ShellHookSpec]:
     """Parse config hooks without registering (``hermes hooks list`` / doctor)."""
-    return _parse_hooks_block(cfg.get("hooks")) if isinstance(cfg, dict) else []
+    return _parse_hooks(cfg.get("hooks"))[0] if isinstance(cfg, dict) else []
 
 
 def re_register_config_hooks() -> None:
@@ -365,11 +365,6 @@ def reset_for_tests() -> None:
 
 
 # --- Config parsing ---
-
-def _parse_hooks_block(hooks_cfg: Any) -> list[ShellHookSpec]:
-    """Normalise ``hooks:`` into specs; malformed entries warn-and-skip, never raise."""
-    return _parse_hooks(hooks_cfg)[0]
-
 
 def _parse_hooks(hooks_cfg: Any) -> tuple[list[ShellHookSpec], bool]:
     """``(specs, complete)``: ``complete`` is False when an entry was dropped as malformed (a typo

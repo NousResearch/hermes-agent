@@ -589,9 +589,6 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
                 return candidate
             logger.debug("Skipping %s title: a higher-authority title already holds session %s", source, session_id)
             return None
-        legacy_fn = getattr(session_db, "set_auto_title_if_empty", None)  # older store without provenance
-        if legacy_fn is not None:
-            return candidate if legacy_fn(session_id, candidate) else None
         if session_db.set_session_title(session_id, candidate) is False:
             raise RuntimeError(f"session {session_id} not found when storing title")
         return candidate

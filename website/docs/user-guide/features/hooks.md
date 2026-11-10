@@ -2271,11 +2271,11 @@ Each firing POSTs a JSON body with the same top-level shape as shell hooks' stdi
 ```json
 {
   "hook_event_name": "on_session_end",
-  "profile": "default",
   "tool_name": null,
   "tool_input": null,
   "session_id": "sess_abc123",
   "cwd": "/home/user/project",
+  "profile": "default",
   "extra": {"completed": true, "interrupted": false, "model": "...", "platform": "cli"},
   "delivery_id": "3f2c9a...",
   "timestamp": "2026-07-22T14:00:00Z"

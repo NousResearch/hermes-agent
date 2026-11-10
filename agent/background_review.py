@@ -136,9 +136,6 @@ def cancel_background_review_for_live_turn(
     past the bounded deadline, warn and let the live turn proceed — self-improvement work must
     never block a user-facing turn.
 
-    Foreground priority is preserved: if the review does not acknowledge within the bounded deadline, a
-    warning is logged and the live turn proceeds anyway. See #84423.
-
     Despite the name, this is also the session-teardown/interrupt cancellation path
     (``tui_gateway.session_lifecycle._finalize_session`` and ``_interrupt_session_turn``, #102895): a
     session ending or being explicitly stopped while its background review is still running must
@@ -152,9 +149,6 @@ def cancel_background_review_for_live_turn(
         run = getattr(agent, "_background_review_run", None)
         legacy_agent = getattr(agent, "_background_review_agent", None)
     review_agent = legacy_agent if run is None else run.cancel()
-    # Attribute the review fork's usage to the PARENT session. Snapshot BEFORE unregister/close so counters
-    # survive teardown. Placed in this finally so a fork that consumed tokens and THEN raised is still
-    # attributed (issue #87250). Best-effort: the recorder never raises into the review thread.
     if review_agent is not None:
         _interrupt_background_review(review_agent, message=message, tool_reason=tool_reason)
     if run is None:
@@ -1131,21 +1125,6 @@ def _review_tool_whitelist(
     whitelist |= {"read_file", "search_files"}
     # ``extra_tools`` admits named parent tools (e.g. a human-gated proposal tool). The whitelist
     # can only admit, never advertise: a listed tool must already exist in the inherited schema.
-    # Read-only file tools are whitelisted too (#61521, #39996): the model naturally reaches for
-    # read_file/search_files to inspect a skill before patching it. Denying them caused a per-review denial
-    # storm (~142 denials + ~204 read-before-write refusals over 2 days on one deployment) that starved the
-    # self-improvement loop — the model never loaded SKILL.md the way the read-before-write guard requires,
-    # so almost no patch landed. This is a DISPATCH-side change only: the advertised ``tools[]`` stays
-    # byte-identical to the parent's, so prompt-cache parity is untouched. read_file registers the read with
-    # the read-before-write guard (tools/file_tools.py), so a read_file → skill_manage(patch) sequence now
-    # succeeds. Write tools (write_file/patch/terminal) stay denied — autonomous maintenance must go through
-    # skill_manage's validation, and the deny message below names that substitute so one denial redirects
-    # the model instead of a storm.
-    # Profile-configured opt-in tools (#44672, salvage #82146 by @BrinShadewater):
-    # ``auxiliary.background_review.extra_tools`` admits named parent tools to the review whitelist — e.g. a
-    # human-gated proposal tool or a memory-provider write surface. Read from task_cfg (the
-    # auxiliary.background_review block already loaded for this spawn) so no extra config I/O happens per
-    # review.
     configured_extra_tools: set = set()
     try:
         extra_raw = _background_review_task_config(task_cfg).get("extra_tools", [])
@@ -1290,26 +1269,12 @@ def _run_review_in_thread(
     try:
         # Silence stdout/stderr for THIS thread only: a process-global redirect would blank every
         # other thread's console for the whole review.
-        # A process-global ``contextlib.redirect_stdout(devnull)`` here would also blank
-        # ``sys.stdout``/``sys.stderr`` for every other thread — including a gateway event-loop thread
-        # driving a Telegram long-poll — for the full duration of the review (tens of seconds), swallowing
-        # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
-        # to devnull and leaves all other threads on the real streams.
         from tools.skills_tool import bind_turn_secret_capture
         with thread_scoped_silence(), bind_turn_secret_capture(_bg_review_skip_secret):
             _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.
         try:
-            # Scan the review agent's messages for successful tool actions and surface a compact summary to
-            # the user. Tool messages already present in messages_snapshot must be skipped, since the review
-            # agent inherits that history and would otherwise re-surface stale "created"/"updated" messages
-            # from the prior conversation as if they just happened (issue #14944). ``_change`` returned as a
-            # list instead of a dict, #59437) must NOT take down the whole review with an AttributeError,
-            # since the caller's outer except logs only "Background memory/skill review failed" and discards
-            # every successful action the fork DID complete before the crash. Coerce an exception into an
-            # empty actions list so the partial valid actions from earlier in the messages are returned
-            # instead.
             actions = summarize_background_review_actions(
                 st.review_messages, messages_snapshot,
                 notification_mode=getattr(agent, "memory_notifications", "on"),

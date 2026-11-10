@@ -24,16 +24,13 @@ from pathlib import Path
 from typing import Any
 
 from agent import i18n_layers
-from agent.i18n_languages import language_options
+from agent.i18n_languages import BUNDLED_LANGUAGE_INFO, language_options
 
 logger = logging.getLogger(__name__)
 
 # Bundled catalogs (compat: tests and the parity check iterate this). ``supported_languages()`` is the
 # live set including overlay and pack languages.
-SUPPORTED_LANGUAGES: tuple[str, ...] = (
-    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
-)
+SUPPORTED_LANGUAGES: tuple[str, ...] = ("en", *sorted(set(BUNDLED_LANGUAGE_INFO) - {"en"}))
 DEFAULT_LANGUAGE = "en"
 
 # Natural aliases so "chinese" / "zh-CN" / "jp" hit the right catalog instead of
@@ -163,11 +160,6 @@ def _load_bundled(lang: str) -> dict[str, str]:
         return {}
 
 
-def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
-    """Flatten a nested mapping into ``out`` (text leaves only)."""
-    i18n_layers.flatten(node, prefix, out)
-
-
 def _load_catalog(lang: str, home: str | None = None) -> dict[str, str]:
     """Merged catalog for ``lang`` in ``home`` (packs > overlay > bundled); cached per (home, lang)."""
     home = home or _current_home()
@@ -210,10 +202,6 @@ def _config_language_cached(hermes_home: str) -> str | None:
     except Exception as exc:
         logger.debug("Could not read display.language from config: %s", exc)
         return None
-
-
-def _config_language() -> str | None:
-    return _config_language_cached(_current_home())
 
 
 def reset_language_cache() -> None:

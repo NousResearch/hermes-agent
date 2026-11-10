@@ -5,9 +5,8 @@
 spawned client per ``(server_id, workspace_root)`` — servers flagged ``multi_root`` (pyright) get ONE
 client per ``server_id`` and further roots (typically sibling git worktrees) are attached to the running
 process via ``workspace/didChangeWorkspaceFolders`` — a **broken-set** of pairs that failed
-to spawn/initialize (retried only after ``lsp.broken_retry_seconds``; never, by default), and a **delta baseline**
-per file (``snapshot_baseline()`` runs BEFORE a write; the next ``get_diagnostics_sync()``
-returns only diagnostics not in it).  Off unless config enables it.
+to spawn/initialize (retried only after ``lsp.broken_retry_seconds``; never, by default).  Post-write
+checks run through :mod:`agent.lsp.edit_check`.
 """
 from __future__ import annotations
 
@@ -214,7 +213,7 @@ class LSPService:
         return cls(
             enabled=bool(lsp_cfg.get("enabled", True)),
             wait_mode=lsp_cfg.get("wait_mode", "document"),
-            wait_timeout=float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT)),
+            wait_timeout=_float_or(lsp_cfg.get("wait_timeout"), DIAGNOSTICS_DOCUMENT_WAIT),
             install_strategy=lsp_cfg.get("install_strategy", "auto"),
             binary_overrides={n: c["command"] for n, c in servers.items()
                               if isinstance(c.get("command"), list) and c["command"]},

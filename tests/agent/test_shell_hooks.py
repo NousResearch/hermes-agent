@@ -258,11 +258,11 @@ class TestCallbackSubprocess:
 
 class TestParseHooksBlock:
     def test_valid_entry(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks._parse_hooks({
             "pre_tool_call": [
                 {"matcher": "terminal", "command": "/tmp/hook.sh", "timeout": 30},
             ],
-        })
+        })[0]
         assert len(specs) == 1
         assert specs[0].event == "pre_tool_call"
         assert specs[0].matcher == "terminal"
@@ -274,32 +274,32 @@ class TestParseHooksBlock:
         # transform_api_error_classification returns a classification directive that
         # _parse_response has no channel for — a shell registration would
         # be silently ignored, so it must be refused with a warning.
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks._parse_hooks({
             "transform_api_error_classification": [
                 {"command": "/tmp/hook.sh"},
             ],
-        })
+        })[0]
         assert specs == []
 
     def test_timeout_clamped_to_max(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks._parse_hooks({
             "post_tool_call": [
                 {"command": "/tmp/slow.sh", "timeout": 9999},
             ],
-        })
+        })[0]
         assert specs[0].timeout == shell_hooks.MAX_TIMEOUT_SECONDS
 
 
     def test_none_hooks_block(self):
-        assert shell_hooks._parse_hooks_block(None) == []
-        assert shell_hooks._parse_hooks_block("string") == []
-        assert shell_hooks._parse_hooks_block([]) == []
+        assert shell_hooks._parse_hooks(None)[0] == []
+        assert shell_hooks._parse_hooks("string")[0] == []
+        assert shell_hooks._parse_hooks([])[0] == []
 
     def test_non_tool_event_matcher_warns_and_drops(self):
         """matcher: is only honored for pre/post_tool_call; must drop it
         on other events so the spec reflects runtime."""
         cfg = {"pre_llm_call": [{"matcher": "terminal", "command": "/bin/echo"}]}
-        specs = shell_hooks._parse_hooks_block(cfg)
+        specs = shell_hooks._parse_hooks(cfg)[0]
         assert len(specs) == 1 and specs[0].matcher is None
 
 
@@ -395,52 +395,52 @@ class TestAllowlistConcurrency:
 
 class TestFailClosedParsing:
     def test_fail_closed_parsed(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks._parse_hooks({
             "pre_tool_call": [
                 {"command": "/tmp/h.sh", "fail_closed": True},
             ],
-        })
+        })[0]
         assert len(specs) == 1
         assert specs[0].fail_closed is True
 
     def test_fail_closed_defaults_false(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks._parse_hooks({
             "pre_tool_call": [{"command": "/tmp/h.sh"}],
-        })
+        })[0]
         assert specs[0].fail_closed is False
 
     def test_failclosed_camel_alias(self):
         """Cursor/Claude Code configs spell it failClosed."""
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks._parse_hooks({
             "pre_tool_call": [
                 {"command": "/tmp/h.sh", "failClosed": True},
             ],
-        })
+        })[0]
         assert specs[0].fail_closed is True
 
     def test_canonical_wins_over_alias(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks._parse_hooks({
             "pre_tool_call": [
                 {"command": "/tmp/h.sh", "fail_closed": False,
                  "failClosed": True},
             ],
-        })
+        })[0]
         assert specs[0].fail_closed is False
 
     def test_non_bool_warns_and_defaults_false(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks._parse_hooks({
             "pre_tool_call": [
                 {"command": "/tmp/h.sh", "fail_closed": "yes"},
             ],
-        })
+        })[0]
         assert specs[0].fail_closed is False
 
     def test_fail_closed_on_non_blocking_event_warns_and_ignores(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks._parse_hooks({
             "on_session_start": [
                 {"command": "/tmp/h.sh", "fail_closed": True},
             ],
-        })
+        })[0]
         assert specs[0].fail_closed is False
 
 

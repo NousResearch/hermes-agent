@@ -115,6 +115,12 @@ def test_find_git_worktree_cache_is_capped(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(ws, "_WORKSPACE_CACHE_CAP", 4)
     for i in range(6):
         d = tmp_path / f"d{i}"
-        d.mkdir()
-        assert find_git_worktree(str(d)) is None
+        (d / ".git").mkdir(parents=True)
+        assert find_git_worktree(str(d)) == str(d)
     assert len(ws._workspace_cache) <= 4
+
+
+def test_find_git_worktree_sees_a_repository_initialised_after_a_miss(tmp_path: Path):
+    assert find_git_worktree(str(tmp_path)) is None
+    (tmp_path / ".git").mkdir()
+    assert find_git_worktree(str(tmp_path)) == str(tmp_path)

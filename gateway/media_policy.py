@@ -16,12 +16,13 @@ import logging
 import os
 from typing import Any, Optional
 
+from utils import TRUTHY_STRINGS as _TRUTHY
+
 logger = logging.getLogger(__name__)
 
 _FLAG_ENVS = (("strict", "HERMES_MEDIA_DELIVERY_STRICT"), ("trust_recent_files", "HERMES_MEDIA_TRUST_RECENT_FILES"))
 _ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
 _TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 def _routed_gateway_cfg() -> Optional[dict[str, Any]]:

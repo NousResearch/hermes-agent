@@ -27,7 +27,7 @@ from gateway.relay.transport import InboundHandler
 
 logger = logging.getLogger(__name__)
 
-try:  # lazy/optional dep — mirrors gateway/platforms/feishu.py
+try:  # lazy/optional dep
     import websockets
 except ImportError:  # pragma: no cover - exercised only when the extra is absent
     websockets = None  # type: ignore[assignment]

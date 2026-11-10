@@ -171,9 +171,10 @@ def relay_fronted_platforms() -> set[str]:
     Same env source the live adapter's identity set comes from, so config-time
     validation (cron delivery preflight) and fire-time routing can never disagree —
     and it needs no live adapter, so a standalone scheduler can use it."""
-    if relay_explicitly_disabled():
+    fronted = {p for p, _ in relay_platform_identities() if p != "relay"}
+    if not fronted or relay_explicitly_disabled():
         return set()
-    return {p for p, _ in relay_platform_identities() if p != "relay"}
+    return fronted
 
 
 def _relay_bot_ids_map() -> dict:

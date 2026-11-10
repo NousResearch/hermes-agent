@@ -1572,6 +1572,6 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
             _unregister_approval_notify(self._run_approval_sessions.get(run_id))
             _retire_live_run(self, run_id)
     for run_id, status in list(self._run_statuses.items()):
-        if (status.get("status") in {"completed", "failed", "cancelled"}
+        if (status.get("status") in TERMINAL_STATUSES
                 and now - float(status.get("updated_at", 0) or 0) > self._RUN_STATUS_TTL):
             _forget_run(self, run_id, self._run_statuses, self._run_idempotency_ids)

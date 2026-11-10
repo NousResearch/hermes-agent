@@ -46,10 +46,6 @@ def strip_slash(value: str) -> str:
     return value.rstrip("/")
 
 
-def strip_lower(value: str) -> str:
-    return value.strip().lower()
-
-
 def truthy_token(value: str) -> bool:
     return value.lower() in {"true", "1", "yes", "on"}
 

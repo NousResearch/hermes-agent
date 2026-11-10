@@ -23,11 +23,10 @@ from gateway.platforms._shared import (
     get_scoped_secret as _get_wsecret
 )
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from utils import TRUTHY_STRINGS as _TRUTHY
 
 
 logger = logging.getLogger(__name__)
-
-_TRUTHY = {"true", "1", "yes", "on"}
 
 
 def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:

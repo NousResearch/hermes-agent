@@ -642,8 +642,8 @@ class PairingStore:
         if fails >= MAX_FAILED_ATTEMPTS:
             limits[f"_lockout:{platform}"] = time.time() + LOCKOUT_SECONDS
             limits[fail_key] = 0
-            print(f"[pairing] Platform {platform} locked out for {LOCKOUT_SECONDS}s "
-                  f"after {MAX_FAILED_ATTEMPTS} failed attempts", flush=True)
+            logger.warning("[pairing] Platform %s locked out for %ss after %s failed attempts",
+                           platform, LOCKOUT_SECONDS, MAX_FAILED_ATTEMPTS)
         self._save_limits(limits)
 
     def _reset_failed_attempts(self, platform: str) -> None:

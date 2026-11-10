@@ -18,7 +18,7 @@ import secrets
 import time
 from collections import OrderedDict
 from functools import partial
-from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional, Tuple, Union
+from typing import Any, Awaitable, Callable, NamedTuple, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -37,6 +37,7 @@ from gateway.relay.egress import (
 from gateway.relay.media import RelayMediaClient
 from gateway.relay.transport import RelayTransport
 from datetime import UTC
+from utils import TRUTHY_STRINGS as _TRUTHY
 
 logger = logging.getLogger(__name__)
 # Native admission refusals a redelivery cannot change (sender, route or payload).
@@ -65,7 +66,6 @@ _URL_RE = re.compile(r"https?://|<https?:|\]\(https?:")
 # connector redelivery) reads as a repeat, not a stale prompt.
 _RESOLVED_PROMPT_MEMORY = 256
 
-_TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
 
 _SLACK = Platform.SLACK.value

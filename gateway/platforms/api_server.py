@@ -3958,7 +3958,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "placeholder/too short, or strength unverifiable — see the "
                 "error logged above). Generate a strong secret (e.g. "
                 "`openssl rand -hex 32`), set API_SERVER_KEY, then "
-                "`/platform resume api_server`.",
+                "restart the gateway (`hermes gateway restart`).",
                 retryable=False)
             return False
         try:
@@ -4034,11 +4034,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         # (observed: 1568+ retries over 5 days across multi-profile setups all defaulting
                         # to the same port, #52132), filling errors.log and leaking the adapter's ResponseStore
                         # fds each retry. Non-retryable drops it from the reconnect queue; the operator
-                        # recovers with ``/platform resume api_server`` after changing the port.
+                        # recovers with ``hermes gateway restart`` after changing the port.
                         "api_server_port_in_use",
                         f"Port {self._port} already in use. Set "
                         f"platforms.api_server.port in config.yaml to a "
-                        f"different value, then `/platform resume api_server`.",
+                        f"different value, then restart the gateway (`hermes gateway restart`).",
                         retryable=False)
                 logger.error(
                     "[%s] Could not bind %s:%d: %s. Set a different port in "

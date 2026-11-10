@@ -30,7 +30,7 @@ class _PortTakenAdapter(BasePlatformAdapter):
         self._set_fatal_error(
             "api_server_port_in_use",
             "Port 8642 already in use. Set platforms.api_server.port in config.yaml to a different "
-            "value, then `/platform resume api_server`.",
+            "value, then restart the gateway (`hermes gateway restart`).",
             retryable=False,
         )
         return False

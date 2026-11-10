@@ -1961,11 +1961,9 @@ class TestRunIdempotency:
         assert body["last_event"] == "run.interrupted"
 
 
-    def test_status_sweep_prunes_in_memory_ownership_mirrors(self, adapter):
-        adapter._run_statuses["run_old"] = {
-            "status": "completed",
-            "updated_at": 1,
-        }
+    @pytest.mark.parametrize("status", ["completed", "interrupted"])
+    def test_status_sweep_prunes_in_memory_ownership_mirrors(self, adapter, status):
+        adapter._run_statuses["run_old"] = {"status": status, "updated_at": 1}
         adapter._run_idempotency_ids.add("run_old")
         adapter._run_owners["run_old"] = "scope"
 

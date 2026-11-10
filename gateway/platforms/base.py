@@ -23,7 +23,7 @@ from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_fo
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
 
-from utils import normalize_proxy_url, unlink_files_older_than
+from utils import TRUTHY_STRINGS as _TRUTHY, normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -953,9 +953,6 @@ def _parse_docker_volume_mounts() -> list[tuple[Path, Path]]:
         if (host_path := _resolve_path(Path(host_expanded))) is not None:  # container_raw is POSIX on any OS
             mounts.append((host_path, Path(container_raw)))
     return mounts
-
-
-_TRUTHY = {"1", "true", "yes", "on"}
 
 
 def _docker_env_active() -> bool:
@@ -2677,10 +2674,13 @@ class BasePlatformAdapter(ABC):
                 logger.debug("[%s] Ephemeral delete failed for %s/%s: %s", self.name, chat_id, message_id, e)
         coro = _run_delete()
         try:
-            asyncio.create_task(coro)
+            task = asyncio.create_task(coro)
         except RuntimeError:
             # No running loop (unit tests): close the coroutine to avoid a never-awaited warning.
             coro.close()
+            return
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     # ── ``_format_exec_approval`` templates; adapters override only the MARKUP (bold, HTML,
     # fences) — the words come from ``gateway.platforms.base_exec_approval`` so every surface

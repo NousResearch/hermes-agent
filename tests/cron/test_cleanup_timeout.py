@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cron.scheduler import _teardown_cron_agent, run_job
+from cron.scheduler import _finalize_cron_session, _teardown_cron_agent, run_job
 from cron.scheduler_detached_worker import defer_teardown_to_running_worker
 
 
@@ -44,6 +44,33 @@ class HangingSessionDB:
     def get_compression_tip(self, _session_id):
         self.entered.set()
         self.release.wait()
+
+    def end_session(self, *_args, **_kwargs):
+        return None
+
+    def close(self):
+        return None
+
+
+class _HangingTitleSessionDB:
+    """A SessionDB whose title write never returns; the bounded proxy disables itself."""
+
+    def __init__(self, release: threading.Event):
+        self.release = release
+        self.title_entered = threading.Event()
+
+    def get_compression_tip(self, _session_id):
+        return None
+
+    def set_session_title(self, _session_id, _title):
+        self.title_entered.set()
+        self.release.wait()
+
+    def get_next_title_in_lineage(self, base):
+        return f"{base} #2"
+
+    def session_lifecycle_statuses(self, _session_ids):
+        return {}
 
     def end_session(self, *_args, **_kwargs):
         return None
@@ -91,6 +118,25 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
         assert success is True
         assert final_response == "ok"
         assert error is None
+    finally:
+        release.set()
+
+
+def test_finalize_survives_disabled_cleanup_proxy():
+    """Finalization must not raise after a title-write timeout disables the bounded proxy.
+
+    The disabled proxy raises on every later call, including the lineage-title lookup
+    that used to be evaluated in the fallback loop's iterable — outside the loop's
+    own try — so the RuntimeError escaped _finalize_cron_session and masked the real
+    cleanup failure (#138160)."""
+    release = threading.Event()
+    fake_db = _HangingTitleSessionDB(release)
+
+    try:
+        with patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02):
+            _finalize_cron_session(fake_db, MagicMock(), "cleanup-disabled", "test",
+                                   "cron_cleanup-disabled", workdir=None)
+        assert fake_db.title_entered.wait(timeout=2.0)
     finally:
         release.set()
 

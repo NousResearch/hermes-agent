@@ -629,6 +629,7 @@ def _mcp_entry_enabled(entry: dict) -> bool:
 def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
     """Write the ``enabled`` flag every runtime resolver reads (``enabled_mcp_server_names``,
     coding_context, oneshot); the legacy ``disabled`` key is dropped so old configs migrate."""
+    from tools.mcp_tool_common import write_mcp_server_enabled
     wanted = _clean_names(enabled)
     mcp_cfg = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
     for srv in wanted:
@@ -636,8 +637,7 @@ def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
             mcp_cfg[srv] = dict(launch_mcp[srv])
     for srv, entry in mcp_cfg.items():
         if isinstance(entry, dict):
-            entry["enabled"] = srv in wanted
-            entry.pop("disabled", None)
+            write_mcp_server_enabled(entry, srv in wanted)
     if mcp_cfg:
         cfg["mcp_servers"] = mcp_cfg
     save_config(cfg)

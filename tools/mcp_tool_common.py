@@ -158,6 +158,13 @@ def mcp_server_enabled(cfg: dict) -> bool:
             and not _parse_boolish(cfg.get("disabled", False), default=False))
 
 
+def write_mcp_server_enabled(cfg: dict, on: bool) -> None:
+    """Switch ``mcp_servers.<name>`` on or off for every writer. A legacy ``disabled`` is dropped
+    in the same write: the reader above lets it win, so leaving it would undo an enable."""
+    cfg["enabled"] = bool(on)
+    cfg.pop("disabled", None)
+
+
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:
     """Optional positive lifecycle timeout from top-level/nested ``lifecycle`` config (``0``
     disables; negatives and non-numbers are warned about and ignored)."""

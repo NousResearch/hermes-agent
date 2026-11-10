@@ -112,6 +112,10 @@ def _agent_persisted_flag(result, agent) -> bool:
     explicit = result.get("agent_persisted")
     if explicit is not None:
         return bool(explicit)
+    # A DB handle is not evidence of a successful flush. Incremental write failures
+    # are returned as a failed turn, but the gateway still owns the retryable user row.
+    if str(result.get("failure_reason") or "").startswith("session_persistence_failed:"):
+        return False
     return agent is not None and getattr(agent, "_session_db", None) is not None
 
 

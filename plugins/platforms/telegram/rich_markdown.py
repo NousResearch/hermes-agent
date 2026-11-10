@@ -1,6 +1,7 @@
 """Normalization for Telegram's permissive Rich Markdown block parser."""
 
 import re
+from bisect import bisect_right
 
 # An email-shaped token (incl. provider-prefixed ``openai:user@example.com``): Telegram's rich entity
 # detection can auto-link it into an invalid email entity and reject the whole message
@@ -18,10 +19,14 @@ RICH_EMAIL_TOKEN_RE = re.compile(
 # Literal code/math regions: a block fence (opened only at a line start, after any quote/list
 # prefixes, and unfinished in a streaming draft), an inline code span (which also owns inline
 # ```x```), or display math. Both transforms below consume these first so their contents survive.
+# An inline span is a backtick run closed by the next run of exactly its length. A regex
+# ``(`+).*?\1`` rescans to the end of the text for every unclosed run (6.5 s on a 32 KB draft of
+# distinct-length runs), so the regex only spots a backtick and the closer comes from an index of
+# runs by length: one pass, then a bisect per backtick.
 _BLOCK_PREFIX = r"[ \t]*(?:(?:>[ \t]*|[-+*][ \t]+|\d+[.)][ \t]+))*"
 _RICH_LITERAL_REGION = (
     r"^" + _BLOCK_PREFIX + r"(?P<fence>`{3,}(?=[^`\n]*\n)|~{3,})[^\n]*\n.*?(?:(?P=fence)(?![`~])|\Z)"
-    r"|(?P<ticks>`+)(?!`).*?(?<!`)(?P=ticks)(?!`)"
+    r"|(?P<tick>`)"
     r"|\$\$.*?(?:\$\$|\Z)"
 )
 _RICH_LITERAL_REGION_RE = re.compile(_RICH_LITERAL_REGION, re.MULTILINE | re.DOTALL)
@@ -29,6 +34,35 @@ _LITERAL_HASH_RE = re.compile(
     _RICH_LITERAL_REGION + r"|(?P<prefix>^" + _BLOCK_PREFIX + r")(?P<hashes>#+)(?=[^\s#])",
     re.MULTILINE | re.DOTALL,
 )
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+def _iter_literal_tokens(pattern: re.Pattern[str], text: str):
+    """Yield ``(start, end, match)`` for each *pattern* token in order; ``match`` is ``None`` for
+    an inline code span. Like the regex it replaces, an opener may be the tail of a longer run
+    (each later start is retried when a run has no closer) and an unclosed run is plain text."""
+    run_starts: list[int] = []
+    run_ends: list[int] = []
+    starts_by_len: dict[int, list[int]] = {}
+    for run in _BACKTICK_RUN_RE.finditer(text):
+        run_starts.append(run.start())
+        run_ends.append(run.end())
+        starts_by_len.setdefault(run.end() - run.start(), []).append(run.start())
+    pos = 0
+    while (m := pattern.search(text, pos)) is not None:
+        if m.group("tick") is None:
+            yield m.start(), m.end(), m
+            pos = m.end()
+            continue
+        start = m.start()
+        end = run_ends[bisect_right(run_starts, start) - 1]
+        same_len = starts_by_len[end - start] if end - start in starts_by_len else []
+        i = bisect_right(same_len, end)
+        if i < len(same_len):
+            pos = same_len[i] + end - start
+            yield start, pos, None
+        else:
+            pos = start + 1
 
 
 def escape_literal_hash_prefixes(text: str) -> str:
@@ -38,13 +72,13 @@ def escape_literal_hash_prefixes(text: str) -> str:
     standard Markdown. Escape only such block-start hashes, not real headings,
     inline references, links, code, or already escaped prefixes.
     """
-    def replace(match: re.Match[str]) -> str:
-        hashes = match.group("hashes")
-        if hashes is None:
-            return match.group(0)
-        return match.group("prefix") + r"\#" * len(hashes)
-
-    return _LITERAL_HASH_RE.sub(replace, text)
+    out: list[str] = []
+    last = 0
+    for start, end, match in _iter_literal_tokens(_LITERAL_HASH_RE, text):
+        if match is not None and match.group("hashes") is not None:
+            out.append(text[last:start] + match.group("prefix") + r"\#" * len(match.group("hashes")))
+            last = end
+    return "".join(out) + text[last:]
 
 
 # Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
@@ -76,8 +110,8 @@ def _rich_separate_ordered_lists(text: str) -> str:
     """
     # Inline code / display math spanning lines is literal text; block fences keep the line scan below.
     # A backtick span cannot cross a blank line (CommonMark ends the paragraph first).
-    spans = [m.span() for m in _RICH_LITERAL_REGION_RE.finditer(text)
-             if not m.group("fence") and not (m.group("ticks") and "\n\n" in m.group(0))]
+    spans = [(start, end) for start, end, m in _iter_literal_tokens(_RICH_LITERAL_REGION_RE, text)
+             if not (m.group("fence") if m else "\n\n" in text[start:end])]
     out: list[str] = []
     state = None  # None, "paragraph", "container", or "fence" — the block the previous line built
     offset = span_idx = 0

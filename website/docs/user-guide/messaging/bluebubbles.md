@@ -168,6 +168,9 @@ Auto-marking messages as read is controlled by the `send_read_receipts` key unde
 ### Text Messaging
 Send and receive iMessages. Markdown is automatically stripped for clean plain-text delivery.
 
+### Streamed Message Editing
+With the Private API helper connected, Hermes updates the current iMessage as the answer streams. Previews reserve the last of Apple's five edit slots for the final answer; longer answers continue in new bubbles. If the edit budget is exhausted, the final answer is sent as a new message.
+
 ### Rich Media
 - **Images:** Photos appear natively in the iMessage conversation
 - **Voice messages:** Audio files sent as iMessage voice messages
@@ -189,6 +192,7 @@ You can address chats by email or phone number — Hermes resolves them to BlueB
 ## Private API
 
 Some features require the BlueBubbles [Private API helper](https://docs.bluebubbles.app/helper-bundle/installation):
+- Streamed message editing
 - Tapback reactions
 - Typing indicators
 - Read receipts

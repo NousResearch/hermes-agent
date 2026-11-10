@@ -1,14 +1,18 @@
 import './catalog.css'
 
+import { compactNumber } from '@hermes/shared'
 import { type ReactNode, useState } from 'react'
 
+import { Badge } from '@/components/ui/badge'
+import { Codicon } from '@/components/ui/codicon'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { Lock } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { type CatalogEntry, catalogLabel } from './catalog-data'
-import { CatalogDates, CatalogHeaderMeta, CatalogMetadata } from './catalog-metadata'
+import { CatalogMetadata } from './catalog-metadata'
 
 export function catalogIcon(category: string) {
   const icons: Record<string, string> = {
@@ -40,7 +44,7 @@ export function CatalogImage({ src, className }: { src: string; className?: stri
   return failed ? null : (
     <img
       alt=""
-      className={cn('block w-full object-contain', className)}
+      className={cn('block w-full object-cover', className)}
       decoding="async"
       loading="lazy"
       onError={() => setFailed(true)}
@@ -61,6 +65,19 @@ const CARD_ACCENTS = [
   '[--catalog-accent:var(--ui-cyan)]',
   '[--catalog-accent:var(--ui-yellow)]'
 ]
+
+function isFeaturedSource(source: string) {
+  const value = source.trim().toLowerCase()
+
+  return (
+    value === 'built-in' ||
+    value === 'builtin' ||
+    value === 'official' ||
+    value === 'bundled' ||
+    value === 'community' ||
+    value === 'verified'
+  )
+}
 
 interface CatalogCardProps {
   entry: CatalogEntry
@@ -85,10 +102,21 @@ export function CatalogCard({
   onTag,
   onSearch
 }: CatalogCardProps) {
+  const { t } = useI18n()
+  const author = entry.author || catalogLabel(entry.source)
+  const version = entry.version ? (entry.version.startsWith('v') ? entry.version : `v${entry.version}`) : null
+  const featured = isFeaturedSource(entry.source)
+  const sourceKey = entry.source.trim().toLowerCase()
+  const sourceLabel = !entry.source
+    ? null
+    : sourceKey === 'built-in' || sourceKey === 'builtin' || sourceKey === 'bundled'
+      ? t.catalog.builtIn
+      : catalogLabel(entry.source)
+
   return (
     <article
       className={cn(
-        'group relative flex min-w-0 flex-col overflow-hidden rounded-lg border',
+        'group relative flex min-w-0 flex-col overflow-hidden rounded-2xl border border-[#e4eaf4] bg-white dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-chat-bubble-background)',
         CARD_ACCENTS[accentIndex % CARD_ACCENTS.length]
       )}
       data-catalog-card
@@ -96,48 +124,65 @@ export function CatalogCard({
       data-locked={locked ? '' : undefined}
     >
       <div className={cn('flex min-h-0 flex-1 flex-col', locked && 'pointer-events-none select-none blur-[3px]')}>
-      {entry.imageUrl && <CatalogImage className="aspect-[2/1]" key={entry.imageUrl} src={entry.imageUrl} />}
-      <div className="flex min-h-0 w-full flex-1 flex-col gap-2 p-3">
-        <div className="flex min-w-0 items-center gap-2.5">
-          {/* Its ::after stretches over the whole card, so any empty spot opens the
-              detail; real controls sit above it (`relative`). One focus stop per card. */}
-          <RowButton
-            aria-haspopup="dialog"
-            aria-label={entry.name}
-            className="min-w-0 flex-1 text-left font-semibold leading-snug after:absolute after:inset-0 after:rounded-[inherit] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-primary focus-visible:after:-outline-offset-2"
-            onClick={() => onOpen(entry)}
-          >
-            <span className="line-clamp-2 min-w-0 break-words text-lg">{entry.name}</span>
-          </RowButton>
-          {action && !locked && (
-            <span className="relative shrink-0 opacity-[.66] transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-              {action}
-            </span>
-          )}
+        {entry.imageUrl ? (
+          <CatalogImage className="h-[120px] shrink-0" key={entry.imageUrl} src={entry.imageUrl} />
+        ) : null}
+        <div className="flex min-h-0 w-full flex-1 flex-col gap-2.5 p-3.5">
+          <div className="flex min-w-0 items-start justify-between gap-2.5">
+            {/* Its ::after stretches over the whole card, so any empty spot opens the
+                detail; real controls sit above it (`relative`). One focus stop per card. */}
+            <RowButton
+              aria-haspopup="dialog"
+              aria-label={entry.name}
+              className="min-w-0 flex-1 text-left after:absolute after:inset-0 after:rounded-[inherit] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-primary focus-visible:after:-outline-offset-2"
+              onClick={() => onOpen(entry)}
+            >
+              <span className="line-clamp-1 min-w-0 break-words text-[14px] font-bold text-[#0f172a] dark:text-foreground">
+                {entry.name}
+              </span>
+              {author ? (
+                <span className="mt-0.5 block truncate text-[12px] font-medium text-[#64748b]">{author}</span>
+              ) : null}
+            </RowButton>
+            {action && !locked ? <span className="relative z-[1] shrink-0 pt-0.5">{action}</span> : null}
+          </div>
+
+          <div className="relative z-[1] flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+            {sourceLabel ? (
+              <Badge
+                className={
+                  featured
+                    ? 'rounded-lg border border-[#9db7f0] bg-[#e3ecfd] px-2 py-[3px] text-[11px] font-semibold text-[#2f5bea]'
+                    : 'rounded-lg'
+                }
+                size="xs"
+                variant={featured ? 'default' : 'muted'}
+              >
+                <span className="truncate">{sourceLabel}</span>
+              </Badge>
+            ) : null}
+            {version ? <span className="shrink-0 text-[11px] font-medium tabular-nums text-[#64748b]">{version}</span> : null}
+            {entry.stars !== null && entry.stars > 0 ? (
+              <span className="flex shrink-0 items-center gap-1 text-[11px] font-semibold text-[#334155]">
+                <Codicon name="star-full" size="0.75rem" />
+                {compactNumber(entry.stars)}
+              </span>
+            ) : null}
+          </div>
+
+          <p className="line-clamp-2 min-h-0 text-[12px] leading-normal text-[#475569]">{entry.description}</p>
+
+          <div className="mt-auto [&_button]:relative">
+            <CatalogMetadata
+              entry={entry}
+              limit={6}
+              onCategory={onCategory}
+              onOpen={() => onOpen(entry)}
+              onSearch={onSearch}
+              onTag={onTag}
+            />
+          </div>
         </div>
-        {/* In a fixed-height grid cell the description is what gives way. */}
-        <div className="flex min-h-0 min-w-0 flex-col gap-2">
-          <span className="flex w-full items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            <span className="min-w-0 flex-1 truncate">{entry.author || catalogLabel(entry.source)}</span>
-            <CatalogHeaderMeta entry={entry} />
-          </span>
-          <span className="line-clamp-4 min-h-0 text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">
-            {entry.description}
-          </span>
-        </div>
-      </div>
-      <div className="px-3 pb-3 [&_button]:relative">
-        <CatalogMetadata
-          entry={entry}
-          onCategory={onCategory}
-          onOpen={() => onOpen(entry)}
-          onSearch={onSearch}
-          onTag={onTag}
-        />
-      </div>
-      <div className="mt-auto px-3 pb-3">
-        <CatalogDates entry={entry} />
-      </div>
       </div>
       {locked ? (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/35 backdrop-blur-[2px]">

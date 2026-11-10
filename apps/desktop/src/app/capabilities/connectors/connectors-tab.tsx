@@ -1,8 +1,11 @@
+import './connectors.css'
+
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGateway, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -243,53 +246,94 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   const busySlug = switcher.pending ?? connector.pending
   const busyKey = installing ?? (busySlug === null ? null : hostedCardKey(busySlug))
 
+  const addConnectorButton = (
+    <Button
+      className="h-auto gap-2 rounded-full border-0 bg-gradient-to-r from-[#4361ee] to-[#c04de2] px-[18px] py-[11px] text-[14px] font-bold text-white shadow-none hover:brightness-105 hover:text-white"
+      data-connectors-cta
+      disabled={mcp.profilePending}
+      onClick={() => setAddOpen(true)}
+      size="sm"
+      type="button"
+      variant="ghost"
+    >
+      <Codicon name="add" size="1rem" />
+      {copy.page.addConnector}
+    </Button>
+  )
+
+  const addYourOwnButton = (
+    <Button
+      className="h-auto rounded-full border border-[#e2e8f0] bg-white px-3.5 py-2 text-[13px] font-semibold text-[#0f172a] shadow-none hover:bg-[#f8fafc]"
+      disabled={mcp.profilePending}
+      onClick={() => setAddOpen(true)}
+      size="xs"
+      type="button"
+      variant="outline"
+    >
+      {copy.add.action}
+    </Button>
+  )
+
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 px-4 pb-2">
-      <DiscordPanel profile={profile} />
-      <ConnectorsDirectory
-        addYourOwn={
-          <Button disabled={mcp.profilePending} onClick={() => setAddOpen(true)} size="xs" variant="outline">
-            {copy.add.action}
-          </Button>
-        }
-        busyKey={busyKey}
-        cards={cards}
-        filter={filter}
-        hostedFailed={hosted.phase === 'failed'}
-        isLocked={card => !freeConnectorAllowed(card.slug, capabilitiesUnlocked(brand))}
-        lockedLabel={FREE_LOCK_MESSAGE}
-        loading={(hosted.phase === 'loading' || mcp.configLoading || mcp.catalogLoading) && cards.length === 0}
-        notices={<HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />}
-        onFilterChange={setFilter}
-        onOpen={card => {
-          if (!freeConnectorAllowed(card.slug, capabilitiesUnlocked(brand))) {
-            notify({ kind: 'info', title: 'Locked', message: FREE_LOCK_MESSAGE })
-            return
-          }
+    <div className="flex h-full min-h-0 flex-col overflow-hidden" data-connectors-page>
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <header className="flex items-start justify-between gap-4 px-7 pb-4 pt-5">
+          <div className="min-w-0 space-y-1.5">
+            <h1 className="text-[40px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {copy.title}
+            </h1>
+            <p className="max-w-2xl text-[15px] text-[#475569] dark:text-(--ui-text-tertiary)">
+              {copy.page.subtitle}
+            </p>
+          </div>
+          {addConnectorButton}
+        </header>
 
-          setOpenKey(cardKey(card))
-        }}
-        onPrefetch={card => {
-          if (card.ways.hosted) {
-            prefetchConnectorTools(profile, card.slug)
-          }
-        }}
-        onRetryHosted={hosted.refetch}
-        onServerToggle={(card, next) => {
-          const unlocked = capabilitiesUnlocked($brandSession.get())
+        <div className="flex flex-col gap-4 px-7 pb-5">
+          <DiscordPanel profile={profile} />
+          <ConnectorsDirectory
+          addConnector={addConnectorButton}
+          addYourOwn={addYourOwnButton}
+          busyKey={busyKey}
+          cards={cards}
+          filter={filter}
+          hostedFailed={hosted.phase === 'failed'}
+          isLocked={card => !freeConnectorAllowed(card.slug, capabilitiesUnlocked(brand))}
+          lockedLabel={FREE_LOCK_MESSAGE}
+          loading={(hosted.phase === 'loading' || mcp.configLoading || mcp.catalogLoading) && cards.length === 0}
+          notices={<HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />}
+          onFilterChange={setFilter}
+          onOpen={card => {
+            if (!freeConnectorAllowed(card.slug, capabilitiesUnlocked(brand))) {
+              notify({ kind: 'info', title: 'Locked', message: FREE_LOCK_MESSAGE })
+              return
+            }
 
-          if (next && !freeConnectorAllowed(card.slug, unlocked)) {
-            notify({ kind: 'info', title: 'Locked', message: FREE_LOCK_MESSAGE })
-            return
-          }
+            setOpenKey(cardKey(card))
+          }}
+          onPrefetch={card => {
+            if (card.ways.hosted) {
+              prefetchConnectorTools(profile, card.slug)
+            }
+          }}
+          onRetryHosted={hosted.refetch}
+          onServerToggle={(card, next) => {
+            const unlocked = capabilitiesUnlocked($brandSession.get())
 
-          if (card.plugin === undefined) {
-            void mcp.setServerEnabled(localServerName(card), next)
-          }
-        }}
-        onVerb={runVerb}
-        selectedKey={openKey}
-      />
+            if (next && !freeConnectorAllowed(card.slug, unlocked)) {
+              notify({ kind: 'info', title: 'Locked', message: FREE_LOCK_MESSAGE })
+              return
+            }
+
+            if (card.plugin === undefined) {
+              void mcp.setServerEnabled(localServerName(card), next)
+            }
+          }}
+          onVerb={runVerb}
+          selectedKey={openKey}
+        />
+        </div>
+      </div>
 
       {openCard && openCard.ways.hosted === null ? (
         <LocalConnectorDialog
@@ -374,20 +418,28 @@ function HostedNotice({ hasGuest, phase }: { hasGuest: boolean; phase: HostedPha
 
   if (phase === 'signedOut') {
     return (
-      <p className="flex shrink-0 items-center gap-1 text-[0.7rem] text-(--ui-text-tertiary)">
-        {copy.signInLine}
+      <div className="flex shrink-0 items-center gap-2 px-3.5 py-2.5 text-[13px] font-medium" data-connectors-notice>
+        <span>{copy.signInLine}</span>
         <Button onClick={() => openFreeTierSignIn()} size="xs" variant="text">
           {copy.signIn}
         </Button>
-      </p>
+      </div>
     )
   }
 
   if (phase === 'unavailable') {
-    return <p className="shrink-0 text-[0.7rem] text-(--ui-text-tertiary)">{copy.managedUnavailable}</p>
+    return (
+      <div className="shrink-0 px-3.5 py-2.5 text-[13px] font-medium" data-connectors-notice>
+        {copy.managedUnavailable}
+      </div>
+    )
   }
 
-  return hasGuest ? <p className="shrink-0 text-[0.7rem] text-(--ui-text-tertiary)">{copy.freeTierNote}</p> : null
+  return hasGuest ? (
+    <div className="shrink-0 px-3.5 py-2.5 text-[13px] font-medium" data-connectors-notice>
+      {copy.freeTierNote}
+    </div>
+  ) : null
 }
 
 function useOpenFromRoute(cards: readonly ConnectorCardModel[], open: (key: string) => void): void {

@@ -34,6 +34,8 @@ import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-con
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
+import './chat-settings.css'
+
 import { ConfigField } from './config-field'
 import { configSubpageForField } from './config-subpages'
 import {
@@ -305,6 +307,8 @@ function ConfigSettingsInner({
 
   const showDesktopSettings = activeSectionId === 'advanced' && (subpage === undefined || subpage === 'desktop')
   const showAttachments = activeSectionId === 'chat' && (subpage === undefined || subpage === 'attachments')
+  const showChatBehavior = activeSectionId === 'chat' && subpage === 'behavior'
+  const showChatAttachments = activeSectionId === 'chat' && subpage === 'attachments'
   const showSharedMetrics = activeSectionId === 'safety' && subpage === 'privacy'
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
@@ -432,7 +436,19 @@ function ConfigSettingsInner({
     return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
-  const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
+  // Main Model owns provider/model/reasoning/context in ModelSettings (Figma cards).
+  const modelOwnedKeys = new Set(['model', 'model_context_length', 'agent.reasoning_effort', 'agent.service_tier'])
+  const visibleFields = fields.filter(([key]) => {
+    if (activeSectionId === 'voice' && !voiceFieldVisible(key, config)) {
+      return false
+    }
+
+    if (showModelSettings && (subpage === undefined || subpage === 'main') && modelOwnedKeys.has(key)) {
+      return false
+    }
+
+    return true
+  })
 
   const showEmptyState =
     visibleFields.length === 0 &&
@@ -471,10 +487,9 @@ function ConfigSettingsInner({
           <QuickEntrySettings />
         </>
       )}
-      {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
-          where image-attachment behavior already lives, so this sits above the
-          schema fields for that section. */}
-      {showAttachments ? <AttachmentSizeSetting /> : null}
+      {/* Device-local attach/preview byte cap (main-process IPC guard). On the
+          Attachments subpage it lives inside the Figma card with image mode. */}
+      {showAttachments && !showChatAttachments ? <AttachmentSizeSetting /> : null}
       {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}
@@ -483,7 +498,56 @@ function ConfigSettingsInner({
       ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
-      ) : visibleFields.length === 0 ? null : (
+      ) : showChatAttachments ? (
+        <section className="grid gap-3.5" data-chat-attachments="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.chatAttachments}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#475569]">{c.attachmentsDesc}</p>
+          </header>
+
+          <div data-chat-attachments-card="">
+            <div className="scroll-mt-6" data-chat-settings-row="">
+              <AttachmentSizeSetting />
+            </div>
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : visibleFields.length === 0 ? null : showChatBehavior ? (
+        <section className="grid gap-3.5" data-chat-behavior="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.chatBehavior}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#475569]">{c.behaviorDesc}</p>
+          </header>
+
+          <div data-chat-behavior-card="">
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : (
         <div className="grid gap-1">
           {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
@@ -498,6 +562,7 @@ function ConfigSettingsInner({
                     ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
+                layout={key === 'fallback_providers' && subpage === 'fallbacks' ? 'page' : undefined}
                 onChange={value => updateConfig(setNested(config, key, value))}
                 optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                 schema={field}
@@ -564,7 +629,7 @@ function AttachmentSizeSetting() {
         <div className="flex items-center gap-2">
           <Input
             aria-label={c.attachmentSizeLabel}
-            className="w-20"
+            className="h-10 w-[4.5rem] rounded-xl border-[#e2e8f0] bg-[#f7f9fc] text-center text-[14px] font-semibold text-[#0f172a] shadow-none dark:bg-(--ui-bg-quinary)"
             inputMode="numeric"
             max={DATA_URL_READ_MAX_MAX_MB}
             min={DATA_URL_READ_MIN_MAX_MB}
@@ -578,9 +643,7 @@ function AttachmentSizeSetting() {
             type="number"
             value={draft}
           />
-          <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            {c.attachmentSizeUnit}
-          </span>
+          <span className="text-[13px] font-semibold text-[#64748b]">{c.attachmentSizeUnit}</span>
         </div>
       }
       description={c.attachmentSizeDesc}

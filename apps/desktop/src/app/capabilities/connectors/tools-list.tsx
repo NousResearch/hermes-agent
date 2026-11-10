@@ -4,6 +4,8 @@ import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 
+import './connectors.css'
+
 import {
   availableQuickActions,
   categoryCounts,
@@ -222,8 +224,8 @@ function StatusColumn({
 
 function Line({ action, label }: { action?: ReactNode; label: string }) {
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-(--ui-stroke-tertiary) px-3.5 py-1.5">
-      <span className="min-w-0 flex-1 text-[0.7rem] text-(--ui-text-tertiary)">{label}</span>
+    <div className="flex shrink-0 items-center gap-2 border-b border-[#e2e8f0] bg-white px-5 py-2 dark:border-(--ui-stroke-tertiary) dark:bg-transparent">
+      <span className="min-w-0 flex-1 text-[13px] text-[#64748b] dark:text-(--ui-text-tertiary)">{label}</span>
       {action}
     </div>
   )
@@ -233,14 +235,16 @@ function UnavailableLine({ onRetry }: { onRetry: () => void }) {
   const { t } = useI18n()
 
   return (
-    <Line
-      action={
-        <Button onClick={onRetry} size="inline" variant="textStrong">
+    <div className="shrink-0 border-b border-[#e2e8f0] bg-white px-5 py-3 dark:border-(--ui-stroke-tertiary) dark:bg-transparent">
+      <div className="flex items-center gap-3 px-3 py-2.5" data-connector-alert="">
+        <span className="min-w-0 flex-1 text-[13px] text-[#475569] dark:text-(--ui-text-secondary)">
+          {t.connectorsPage.tools.unavailableLine}
+        </span>
+        <Button className="text-[13px] font-semibold text-[#2f5bea]" onClick={onRetry} size="inline" variant="textStrong">
           {t.connectorsPage.tools.retry}
         </Button>
-      }
-      label={t.connectorsPage.tools.unavailableLine}
-    />
+      </div>
+    </div>
   )
 }
 
@@ -328,7 +332,7 @@ function DeprecatedToggle({ count, onToggle, shown }: { count: number; onToggle:
   const copy = t.connectorsPage.tools
 
   return (
-    <div className="flex shrink-0 border-t border-(--ui-stroke-tertiary) px-3.5 py-1">
+    <div className="flex shrink-0 border-t border-[#e2e8f0] bg-white px-5 py-1.5 dark:border-(--ui-stroke-tertiary) dark:bg-transparent">
       <Button aria-pressed={shown} onClick={onToggle} size="xs" variant="text">
         {shown ? copy.hideDeprecated(count) : copy.showDeprecated(count)}
       </Button>
@@ -515,7 +519,7 @@ function DirtyFooter({
 
   return (
     <div
-      className="flex shrink-0 items-center gap-2.5 border-t border-(--ui-stroke-tertiary) bg-(--ui-bg-chrome) px-3.5 py-2"
+      className="flex shrink-0 items-center gap-2.5 border-t border-[#e2e8f0] bg-[#f7f9fc] px-5 py-2.5 dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-bg-chrome)"
       data-slot="tools-dirty-footer"
     >
       <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--theme-primary)" />

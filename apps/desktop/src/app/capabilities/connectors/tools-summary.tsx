@@ -69,7 +69,7 @@ export function ToolsSummary({
   const copy = t.connectorsPage.tools
 
   return (
-    <div className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto px-3.5 py-3" data-slot="tools-summary">
+    <div className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto bg-white px-5 py-4 dark:bg-transparent" data-slot="tools-summary">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="min-w-0 truncate text-xs font-medium text-(--ui-text-primary)">
           {title ?? (preview ? copy.summaryPreviewTitle(connectorName) : copy.summaryTitle(connectorName))}
@@ -90,7 +90,7 @@ export function ToolsSummary({
 
           return (
             <li
-              className="flex items-center gap-3 border-t border-(--ui-stroke-tertiary) py-2 first:border-t-0"
+              className="flex items-center gap-3 border-t border-[#e2e8f0] py-2 first:border-t-0 dark:border-(--ui-stroke-tertiary)"
               key={row.facet}
             >
               <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-medium text-(--ui-text-primary)">

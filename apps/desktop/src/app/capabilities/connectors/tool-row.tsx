@@ -79,7 +79,7 @@ export function ToolRow({ expanded, on, onExpand, onToggle, preview = false, rea
       data-slot="tool-row"
       data-tool={tool.slug}
     >
-      <div className="flex items-center gap-2.5 px-3.5" style={{ height: TOOL_ROW_HEIGHT }}>
+      <div className="flex items-center gap-2.5 px-5" style={{ height: TOOL_ROW_HEIGHT }}>
         <span className="flex w-7 shrink-0 items-center">
           {preview ? null : locked ? (
             <Lock aria-hidden className="size-3 text-(--ui-text-quaternary)" />

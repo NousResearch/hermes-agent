@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils'
 
 import { DetailColumn, ListColumn, MasterDetail } from '../../master-detail'
 import { PanelEmpty } from '../../overlays/panel'
+import { brandingLockedSlice } from '../free-tier'
 import { LockFog, useLockFogTop } from '../lock-fog'
 
 import { CatalogAlert } from './catalog-alert'
@@ -70,8 +71,9 @@ const TAG_LIMIT = 16
 // Discovery shelves preview a category; "See all" opens the full list. Every
 // rendered card is restyled whenever a modal locks the page.
 const SHELF_SIZE = 6
-/** On: masonry lanes. Off: fallback grid whose rows share one height (`.catalog-grid`). */
-const CATALOG_MASONRY = true
+/** On: masonry lanes. Off: fallback grid whose rows share one height (`.catalog-grid`).
+ *  Marketplace mock is a uniform card grid, so keep masonry off. */
+const CATALOG_MASONRY = false
 
 /** Merge the public feed with installed rows: a catalog entry that matches an
  *  installed one takes the installed id (so selection and install state line
@@ -291,7 +293,11 @@ export const CatalogBrowser = memo(function CatalogBrowser({
 
   const sortControl = (
     <Select onValueChange={value => filters.setSort(value as CatalogSort)} value={sort}>
-      <SelectTrigger aria-label={c.sortBy} className="w-full" size="sm">
+      <SelectTrigger
+        aria-label={c.sortBy}
+        className="h-[38px] w-full rounded-xl border-[#e2e8f0] bg-[#f7f9fc] px-3 text-[13px] font-semibold text-[#0f172a] shadow-none hover:bg-[#f7f9fc]"
+        size="sm"
+      >
         <SelectValue placeholder={c.sortBy} />
       </SelectTrigger>
       <SelectContent>
@@ -308,56 +314,78 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const filterKey = [facets.sources, facets.categories, facets.tags].map(list => list.join(',')).join(':')
 
   return (
-    <div className="@container/catalog flex h-full min-h-0 min-w-0" data-catalog={kind} ref={root}>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col @[48rem]/catalog:flex-row">
+    <div
+      className="@container/catalog flex h-full min-h-0 min-w-0 flex-col bg-gradient-to-b from-[#e6effb] to-[#f7f9fc] to-45% dark:bg-(--ui-chat-surface-background) dark:bg-none"
+      data-catalog={kind}
+      ref={root}
+    >
+      {/* Figma: page header is full-width above Discover + grid */}
+      <header className="shrink-0 space-y-4 px-7 pb-4 pt-5" data-catalog-header>
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1.5">
+            <h1 className="text-[40px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {kind === 'plugins' ? c.pageTitlePlugins : c.pageTitleSkills}
+            </h1>
+            <p className="max-w-2xl text-[15px] text-[#475569] dark:text-(--ui-text-tertiary)">
+              {kind === 'plugins' ? c.pageSubtitlePlugins : c.pageSubtitleSkills}
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2.5" data-catalog-actions>
+            {headerActions}
+            {kind === 'skills' ? (
+              <Tip label={viewToggleLabel}>
+                <Button
+                  aria-label={viewToggleLabel}
+                  className="size-auto rounded-full border border-[#e2e8f0] bg-white px-3 py-[11px] text-[#0f172a] shadow-none hover:bg-[#f8fafc]"
+                  onClick={() => {
+                    setDetailOpen(false)
+                    $catalogCardView.set(!cardView)
+                  }}
+                  size="icon-xs"
+                  type="button"
+                  variant="outline"
+                >
+                  <Codicon name={cardView ? 'list-unordered' : 'extensions'} />
+                </Button>
+              </Tip>
+            ) : null}
+          </div>
+        </div>
+        <SearchField
+          containerClassName="w-full min-w-0"
+          onChange={value => onQueryChange?.(value)}
+          placeholder={kind === 'plugins' ? c.searchPlugins : c.searchSkills}
+          shortcutHint={c.searchShortcut}
+          value={query ?? ''}
+          variant="box"
+        />
+      </header>
+
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 px-7 pb-5 @[48rem]/catalog:flex-row">
         <CatalogFilters
           categories={catalogCategories(visible, kind)}
-          className="max-h-52 shrink-0 gap-0 pt-3 @[48rem]/catalog:max-h-none @[48rem]/catalog:w-48"
+          className="max-h-64 shrink-0 overflow-y-auto @[48rem]/catalog:max-h-none"
           facets={facets}
           onCategory={filters.toggleCategory}
           onClear={clearFilters}
           onInstalled={filters.toggleInstalled}
           onSource={filters.toggleSource}
           onTag={filters.toggleTag}
-          resultCount={filtered.length}
-          sidebarActions={actions && <div className="flex flex-wrap items-center gap-1.5">{actions}</div>}
+          resultCount={visible.length}
+          sidebarActions={actions && <div className="flex flex-wrap items-center gap-1.5 pt-2">{actions}</div>}
           sortControl={sortControl}
           sources={catalogSources(visible)}
-          tags={catalogTags(visible, facets.tags, TAG_LIMIT)}
+          tags={[]}
         />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-catalog-results>
-          {/* Search owns the header; kind-specific setup actions and the view toggle share the end slot. */}
-          <header
-            className="grid shrink-0 grid-cols-1 items-center gap-2 px-3 pb-1 pt-3 @[48rem]/catalog:grid-cols-[minmax(0,1fr)_auto] @[48rem]/catalog:gap-4"
-            data-catalog-header
-          >
-            <SearchField
-              containerClassName="w-full min-w-0"
-              onChange={value => onQueryChange?.(value)}
-              placeholder={kind === 'plugins' ? c.searchPlugins : c.searchSkills}
-              value={query ?? ''}
-              variant="box"
-            />
-            <div
-              className="flex min-w-0 flex-wrap items-center justify-end gap-3 justify-self-end"
-              data-catalog-actions
-            >
-              {headerActions}
-              <Tip label={viewToggleLabel}>
-                <Button
-                  aria-label={viewToggleLabel}
-                  onClick={() => {
-                    setDetailOpen(false)
-                    $catalogCardView.set(!cardView)
-                  }}
-                  size="icon-xs"
-                  variant="ghost"
-                >
-                  <Codicon name={cardView ? 'list-unordered' : 'extensions'} />
-                </Button>
-              </Tip>
-            </div>
-          </header>
+          <div className="mb-3 flex min-w-0 items-center justify-between gap-3 text-[13px] text-[#64748b]">
+            <span>
+              {c.showingCount(Math.min(filtered.length, cardView ? limit : filtered.length), filtered.length)}
+            </span>
+            <span className="hidden sm:inline">
+              {c.sortBy}: <span className="font-semibold text-[#0f172a] dark:text-foreground">{sortLabels[sort]}</span>
+            </span>
+          </div>
           {notice}
           {error && entries.length > 0 && (
             <CatalogAlert onRetry={() => void refetch()} retryLabel={c.retry} title={c.loadFailed}>
@@ -402,7 +430,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                           </div>
                         </div>
                         <div className="catalog-grid mt-3" data-catalog-hover-group>
-                          {lockedEntries.slice(0, 18).map((entry, index) => card(entry, freeEntries.length + index))}
+                          {brandingLockedSlice(lockedEntries).map((entry, index) => card(entry, freeEntries.length + index))}
                         </div>
                       </div>
                       {fogTop > 0 ? (
@@ -502,7 +530,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                             />
                           ))}
                         </div>
-                        {lockedEntries.slice(0, 24).map(entry => (
+                        {brandingLockedSlice(lockedEntries).map(entry => (
                           <CatalogListRow
                             entry={entry}
                             installed={isInstalled(entry)}

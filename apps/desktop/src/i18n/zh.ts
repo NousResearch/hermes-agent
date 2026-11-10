@@ -1396,7 +1396,9 @@ export const zh = defineLocale({
       voiceShortcutHintTitle: '语音录制快捷键',
       voiceShortcutHintDesc:
         '请在“设置 → 键盘快捷键”中设置语音录制快捷键（“开始 / 停止语音对话”）。voice.record_key 配置项仅适用于 CLI 和 TUI。',
-      showOptions: '显示选项'
+      showOptions: '显示选项',
+      behaviorDesc: '影响新会话默认行为的设置。',
+      attachmentsDesc: '聊天附件文件与图片的限制和默认设置。'
     },
     hudModifier: {
       title: '轻按唤出 HUD',
@@ -1753,6 +1755,7 @@ export const zh = defineLocale({
       moaReferenceToggle: (enabled, index) => `${enabled ? '禁用' : '启用'}参考 ${index}`,
       moaReferenceTitle: index => `参考 ${index}`,
       moaAddReference: '添加参考模型',
+      moaReferenceModels: '参考模型',
       loading: '正在加载模型配置...',
       appliesDesc: '应用于新会话。可在输入框的模型选择器中临时切换当前对话。',
       provider: '提供方',
@@ -1776,8 +1779,12 @@ export const zh = defineLocale({
       autoUseMain: '自动 · 使用主模型',
       inheritMainEffort: '继承 · 主模型推理强度',
       providerDefault: '(提供方默认)',
+      fallbackTitle: '备用模型',
+      fallbackDesc: '默认模型失败时尝试的备用 provider:model 条目。',
       fallbackAdd: '添加备用模型',
       fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
+      fallbackEmptyTitle: '暂无备用模型',
+      fallbackEmptyDesc: '默认使用主模型；添加备用模型后，主模型不可用时会话仍可继续。',
       notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
       moaTitle: '混合智能体（Mixture of Agents）',
       moaPreset: '预设',

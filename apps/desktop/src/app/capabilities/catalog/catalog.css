@@ -18,20 +18,18 @@
   initial-value: 0;
 }
 
-/* Each card carries one accent (`--catalog-accent`, set by class). Its gradient
-   keeps one shape and strength and only its center drifts toward the pointer,
-   onto it when on the card. Light surfaces show tint far more than dark ones,
-   so light gets a softer wash from the bottom-left; `:root.dark` restores
-   the stronger top-left glow. */
+/* Each card carries one accent (`--catalog-accent`, set by class). Soft wash
+   only — the marketplace mock uses clean white cards with a light blue tint. */
+/* Card chrome — Figma node 317:6924 (white, #e4eaf4, radius 16). Soft accent wash. */
 [data-catalog-card] {
-  /* How far the gradient leans from its rest point toward the pointer: all the
-     way on the card itself, falling off fast with distance to the box. */
   --catalog-follow: calc(var(--catalog-near) * var(--catalog-near));
   --catalog-rest-x: 0%;
   --catalog-rest-y: 100%;
-  --catalog-tint: 10%;
-  --catalog-edge: 20%;
-  border-color: color-mix(in srgb, var(--catalog-accent) var(--catalog-edge), var(--ui-stroke-tertiary));
+  --catalog-tint: 6%;
+  --catalog-edge: 14%;
+  border-radius: 16px;
+  border-color: #e4eaf4;
+  box-shadow: none;
   background:
     radial-gradient(
       140% 100% at calc(var(--catalog-rest-x) + (var(--catalog-x) - var(--catalog-rest-x)) * var(--catalog-follow))
@@ -39,7 +37,7 @@
       color-mix(in srgb, var(--catalog-accent) var(--catalog-tint), transparent),
       transparent 70%
     )
-    var(--ui-chat-bubble-background);
+    #fff;
   transition:
     border-color 0.1s ease,
     box-shadow 0.1s ease,
@@ -53,31 +51,81 @@
 :root.dark [data-catalog-card] {
   --catalog-rest-x: 0%;
   --catalog-rest-y: 0%;
-  --catalog-tint: 18%;
-  --catalog-edge: 24%;
+  --catalog-tint: 14%;
+  --catalog-edge: 20%;
+  border-color: var(--ui-stroke-tertiary);
+  background:
+    radial-gradient(
+      140% 100% at calc(var(--catalog-rest-x) + (var(--catalog-x) - var(--catalog-rest-x)) * var(--catalog-follow))
+        calc(var(--catalog-rest-y) + (var(--catalog-y) - var(--catalog-rest-y)) * var(--catalog-follow)),
+      color-mix(in srgb, var(--catalog-accent) var(--catalog-tint), transparent),
+      transparent 70%
+    )
+    var(--ui-chat-bubble-background);
 }
 
 [data-catalog-card]:hover {
-  /* Matches the selected-option treatment (`border-primary ring-2 ring-primary/20`). */
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 20%, transparent);
+  border-color: #9db7f0;
+  box-shadow: 0 8px 24px rgba(38, 64, 140, 0.08);
 }
 
-/* Uniform alternative to Masonry: same column tracks, cards in a row share one
-   height. Rows start at a complete text card (4-line description, two chip
-   rows, dates ≈ 250px) and grow for a card with a hero image, so image and
-   description always show in full. */
+:root.dark [data-catalog-card]:hover {
+  border-color: color-mix(in srgb, var(--ui-blue) 35%, var(--ui-stroke-tertiary));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ui-blue) 18%, transparent),
+    0 8px 24px color-mix(in srgb, var(--dt-foreground) 6%, transparent);
+}
+
+/* Marketplace grid — Figma cards ~277px, gap ~14px. */
 .catalog-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
-  grid-auto-rows: minmax(16rem, auto);
-  gap: calc(var(--spacing) * 3);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17.25rem), 1fr));
+  grid-auto-rows: minmax(17.5rem, auto);
+  gap: 0.875rem;
 }
 
-/* Store-browsing feel: hovering one card dims its siblings in the same group. */
+[data-catalog='plugins'] .catalog-grid {
+  grid-auto-rows: minmax(18rem, auto);
+}
+
 [data-catalog-hover-group]:has([data-catalog-card]:hover) [data-catalog-card]:not(:hover) {
   opacity: 1;
-  filter: saturate(0.8);
+  filter: saturate(0.88);
+}
+
+/* Discover rail — Figma node 310:4216 (248×, radius 20, soft blue shadow). */
+[data-catalog-filters] {
+  width: 248px;
+  padding: 16px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(38, 64, 140, 0.06);
+}
+
+:root.dark [data-catalog-filters] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-bubble-background);
+  box-shadow: none;
+}
+
+/* Featured sort control — Figma node 310:4220 */
+[data-catalog-filters] [data-catalog-sort] [data-slot='select-trigger'] {
+  height: 38px;
+  border-radius: 12px;
+  border-color: #e2e8f0;
+  background: #f7f9fc;
+  padding-inline: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  box-shadow: none;
+}
+
+:root.dark [data-catalog-filters] [data-catalog-sort] [data-slot='select-trigger'] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-bg-quinary);
+  color: var(--ui-text-primary);
 }
 
 @media (prefers-reduced-motion: reduce) {

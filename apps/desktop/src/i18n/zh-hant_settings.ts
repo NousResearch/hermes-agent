@@ -780,7 +780,9 @@ export const zhHantSettings = {
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
-      showOptions: '顯示選項'
+      showOptions: '顯示選項',
+      behaviorDesc: '影響新對話預設行為的設定。',
+      attachmentsDesc: '聊天附件檔案與圖片的限制與預設設定。'
     },
     hudModifier: {
       title: '輕按叫出 HUD',
@@ -1017,6 +1019,7 @@ export const zhHantSettings = {
       moaReferenceToggle: (enabled, index) => `${enabled ? '停用' : '啟用'}參考 ${index}`,
       moaReferenceTitle: index => `參考 ${index}`,
       moaAddReference: '新增參考模型',
+      moaReferenceModels: '參考模型',
       loading: '正在載入模型設定...',
       appliesDesc: '套用至新工作階段。可在輸入框的模型選擇器中臨時切換目前對話。',
       provider: '提供方',

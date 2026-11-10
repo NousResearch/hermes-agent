@@ -28,7 +28,9 @@ import type {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
-import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
+import './model-settings.css'
+
+import { AlertTriangle, Cpu, Loader2, Plus } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { findCatalogProvider } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
@@ -44,7 +46,7 @@ import { PanelEmpty } from '../overlays/panel'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
-import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
+import { SectionHeading } from './primitives'
 import { dismissStaleAux, readStaleAuxDismissal, staleAuxFingerprint } from './stale-aux-dismissal'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
@@ -55,28 +57,83 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
   return (
     <div className="grid gap-6" data-slot="model-settings-skeleton">
       {(subpage === undefined || subpage === 'main') && (
-        <section>
-          <Skeleton className="mb-3 h-3 w-72 max-w-full" />
-          <div className="flex flex-wrap items-center gap-2">
-            <Skeleton className="h-8 w-40" />
-            <Skeleton className="h-8 w-60 max-w-full" />
-            <Skeleton className="h-8 w-16" />
+        <section className="grid gap-3.5">
+          <div className="space-y-2">
+            <Skeleton className="h-9 w-48" />
+            <Skeleton className="h-4 w-full max-w-xl" />
           </div>
-          <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
-            <Skeleton className="h-3 w-16" />
-            <Skeleton className="h-8 w-28" />
-            <Skeleton className="h-6 w-20" />
+          <div className="rounded-[20px] border border-[#e2e8f0] bg-white p-5 shadow-[0_4px_16px_rgba(38,64,140,0.06)]">
+            <Skeleton className="mb-4 h-3 w-14" />
+            <Skeleton className="mb-4 h-12 w-full rounded-xl" />
+            <Skeleton className="mb-4 h-4 w-28" />
+            <div className="flex gap-3">
+              <Skeleton className="h-8 w-20 rounded-full" />
+              <Skeleton className="h-8 w-24 rounded-full" />
+              <Skeleton className="h-8 w-28 rounded-full" />
+            </div>
+          </div>
+          <div className="rounded-[20px] border border-[#e2e8f0] bg-white p-5 shadow-[0_4px_16px_rgba(38,64,140,0.06)]">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0 flex-1 space-y-2">
+                <Skeleton className="h-4 w-64" />
+                <Skeleton className="h-8 w-full max-w-lg" />
+              </div>
+              <Skeleton className="h-10 w-[88px] rounded-[10px]" />
+            </div>
           </div>
         </section>
       )}
 
-      {(subpage === undefined || subpage === 'auxiliary' || subpage === 'moa') && (
-        <section>
-          <SectionHeadingSkeleton />
-          <div className="grid gap-1">
-            {[0, 1, 2, 3].map(row => (
-              <ListRowSkeleton key={row} />
+      {(subpage === undefined || subpage === 'auxiliary') && (
+        <section className="grid gap-3.5">
+          <div className="space-y-2">
+            <Skeleton className="h-9 w-64" />
+            <Skeleton className="h-4 w-full max-w-2xl" />
+          </div>
+          <div className="overflow-hidden rounded-[20px] border border-[#e2e8f0] bg-white shadow-[0_4px_16px_rgba(38,64,140,0.06)]">
+            {[0, 1, 2, 3, 4].map(row => (
+              <div className="flex items-center justify-between gap-4 border-t border-[#e2e8f0] px-5 py-4 first:border-t-0" key={row}>
+                <div className="min-w-0 flex-1 space-y-2">
+                  <Skeleton className="h-4 w-48" />
+                  <Skeleton className="h-3 w-36" />
+                </div>
+                <div className="flex gap-2">
+                  <Skeleton className="h-8 w-24 rounded-[10px]" />
+                  <Skeleton className="h-8 w-20 rounded-[10px]" />
+                </div>
+              </div>
             ))}
+          </div>
+        </section>
+      )}
+
+      {subpage === 'moa' && (
+        <section className="grid gap-3.5">
+          <div className="space-y-2">
+            <Skeleton className="h-9 w-72" />
+            <Skeleton className="h-4 w-full max-w-3xl" />
+            <Skeleton className="h-4 w-2/3 max-w-xl" />
+          </div>
+          <div className="space-y-4 rounded-[20px] border border-[#e2e8f0] bg-white p-5 shadow-[0_4px_16px_rgba(38,64,140,0.06)]">
+            <Skeleton className="h-3 w-14" />
+            <Skeleton className="h-10 w-full rounded-xl" />
+            <div className="flex flex-wrap gap-2">
+              <Skeleton className="h-8 w-28 rounded-[10px]" />
+              <Skeleton className="h-8 w-24 rounded-[10px]" />
+              <Skeleton className="h-8 w-20 rounded-[10px]" />
+              <Skeleton className="h-8 flex-1 rounded-xl" />
+              <Skeleton className="h-9 w-32 rounded-[10px]" />
+            </div>
+          </div>
+          <div className="space-y-3 rounded-[20px] border border-[#e2e8f0] bg-white p-5 shadow-[0_4px_16px_rgba(38,64,140,0.06)]">
+            <Skeleton className="h-4 w-36" />
+            <Skeleton className="h-36 w-full rounded-2xl" />
+            <Skeleton className="h-36 w-full rounded-2xl" />
+            <Skeleton className="h-10 w-full rounded-xl" />
+          </div>
+          <div className="space-y-3 rounded-[20px] border border-[#e2e8f0] bg-white p-5 shadow-[0_4px_16px_rgba(38,64,140,0.06)]">
+            <Skeleton className="h-4 w-28" />
+            <Skeleton className="h-10 w-full rounded-xl" />
           </div>
         </section>
       )}
@@ -636,13 +693,20 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
   const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
 
+  const contextLength = Number(getNested(config ?? {}, 'model_context_length') ?? 0) || 0
+  const [contextDraft, setContextDraft] = useState(String(contextLength))
+
+  useEffect(() => {
+    setContextDraft(String(contextLength))
+  }, [contextLength])
+
   // Persist a single agent.* default as a sparse patch (PUT /api/config
   // deep-merges onto disk). Never send the whole cached record: it is a
   // default-expanded snapshot, and echoing it back rewrites every key another
   // surface changed meanwhile — a CLI-pinned auxiliary slot came back as
   // provider "auto" / model "" (#95460). Optimistic, with rollback on failure.
   const writeAgentDefault = useCallback(
-    async (key: string, value: string) => {
+    async (key: string, value: string | number) => {
       if (!config) {
         return
       }
@@ -660,6 +724,17 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     },
     [config, m.defaultsFailed, scopeProfile, setConfig, writeScope]
   )
+
+  const commitContextLength = useCallback(() => {
+    const parsed = contextDraft.trim() === '' ? 0 : Number(contextDraft)
+    const next = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : contextLength
+
+    setContextDraft(String(next))
+
+    if (next !== contextLength) {
+      void writeAgentDefault('model_context_length', next)
+    }
+  }, [contextDraft, contextLength, writeAgentDefault])
 
   // Paste an API key for the selected `api_key` provider, persist it, then
   // refresh so the now-authenticated provider's models populate. Auto-selects
@@ -946,11 +1021,24 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     <div className="grid gap-6">
       {!showMain && errorNotice}
       {showMain && (
-        <section>
-          <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
-          <div className="flex flex-wrap items-center gap-2">
+        <section className="grid gap-3.5" data-model-main>
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.modelMain}
+            </h1>
+            <p className="text-[14px] text-[#475569]">{m.appliesDesc}</p>
+          </header>
+
+          <div className="flex flex-col gap-4 rounded-[20px] border border-[#e2e8f0] bg-white p-5 shadow-[0_4px_16px_rgba(38,64,140,0.06)] dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-chat-bubble-background) dark:shadow-none">
+            <p className="text-[13px] font-semibold text-[#64748b]">{m.model}</p>
+
             <Select onValueChange={setSelectedProvider} value={selectedProviderRow?.slug ?? selectedProvider}>
-              <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
+              <SelectTrigger
+                className={cn(
+                  'h-12 w-full rounded-xl border-[#e2e8f0] bg-[#f7f9fc] px-4 text-[15px] font-semibold text-[#0f172a] shadow-none dark:bg-(--ui-bg-quinary)',
+                  CONTROL_TEXT
+                )}
+              >
                 <SelectValue placeholder={m.provider} />
               </SelectTrigger>
               <SelectContent>
@@ -961,9 +1049,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                 ))}
               </SelectContent>
             </Select>
+
             {needsSetup ? (
               setupIsApiKey ? (
-                <>
+                <div className="flex flex-wrap items-center gap-2">
                   <Input
                     autoComplete="off"
                     className={cn('min-w-60 flex-1', CONTROL_TEXT)}
@@ -985,16 +1074,21 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                     {activating && <Loader2 className="size-3.5 animate-spin" />}
                     {activating ? 'Activating...' : 'Activate'}
                   </Button>
-                </>
+                </div>
               ) : (
-                <Button onClick={startProviderSetup} size="sm" variant="textStrong">
+                <Button
+                  className="h-auto justify-start p-0 text-[14px] font-semibold text-[#2f5bea] hover:bg-transparent hover:text-[#1d4ed8]"
+                  onClick={startProviderSetup}
+                  size="sm"
+                  variant="ghost"
+                >
                   {m.setUpProvider(selectedProviderRow?.name ?? m.setupProviderFallback)}
                 </Button>
               )
             ) : (
-              <>
+              <div className="flex flex-wrap items-center gap-2" data-model-select-row>
                 <ModelSelect
-                  className="min-w-60"
+                  className="min-w-0 flex-1"
                   models={selectedProviderModels}
                   onValueChange={setSelectedModel}
                   provider={selectedProviderRow}
@@ -1009,98 +1103,144 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                   {applying && <Loader2 className="size-3.5 animate-spin" />}
                   {applying ? m.applying : t.common.apply}
                 </Button>
-              </>
+              </div>
             )}
-          </div>
-          {needsSetup && !setupIsApiKey && selectedProviderRow && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              {selectedProviderRow?.auth_type === 'api_key'
-                ? `${selectedProviderRow?.name} needs an API key — set it up to choose a model.`
-                : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
-            </p>
-          )}
-          {config && mainModel && (reasoningSupported || fastSupported) && (
-            <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
-              <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
-              {reasoningSupported && (
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="shrink-0 whitespace-nowrap">{m.reasoning}</span>
-                  <Select
-                    onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
-                    value={effortValue}
-                  >
-                    <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {REASONING_EFFORT_VALUES.map(value => (
-                        <SelectItem key={value} value={value}>
-                          {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              {fastSupported && (
-                <label className="flex items-center gap-2 text-xs">
-                  {t.shell.modelOptions.fast}
-                  <Switch
-                    checked={fastOn}
-                    onCheckedChange={checked =>
-                      void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
-                    }
-                    size="xs"
-                  />
-                </label>
-              )}
-            </div>
-          )}
-          {errorNotice}
-          {switchStaleAux.length > 0 && (
-            <div className="mt-2">
+
+            {needsSetup && !setupIsApiKey && selectedProviderRow ? (
+              <p className="text-[13px] text-[#64748b]">
+                {selectedProviderRow?.auth_type === 'api_key'
+                  ? `${selectedProviderRow?.name} needs an API key — set it up to choose a model.`
+                  : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
+              </p>
+            ) : null}
+
+            {config && mainModel && (reasoningSupported || fastSupported) ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="rounded-full border border-[#9db7f0] bg-[#e3ecfd] px-3.5 py-2 text-[13px] font-semibold text-[#2f5bea]">
+                  {m.defaultsLabel}
+                </span>
+                {reasoningSupported ? (
+                  <div className="flex items-center">
+                    <span className="rounded-full bg-white px-3.5 py-2 text-[13px] font-semibold text-[#0f172a] dark:bg-transparent dark:text-foreground">
+                      {m.reasoning}
+                    </span>
+                    <Select
+                      onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
+                      value={effortValue}
+                    >
+                      <SelectTrigger
+                        className={cn(
+                          'h-auto min-w-[6.5rem] rounded-full border-[#e2e8f0] bg-white py-2 pl-3.5 pr-3 text-[13px] font-semibold text-[#0f172a] shadow-none dark:bg-(--ui-bg-quinary)',
+                          CONTROL_TEXT
+                        )}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {REASONING_EFFORT_VALUES.map(value => (
+                          <SelectItem key={value} value={value}>
+                            {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
+                {fastSupported ? (
+                  <label className="flex items-center gap-2 rounded-full border border-[#e2e8f0] bg-white px-3.5 py-2 text-[13px] font-semibold text-[#0f172a] dark:bg-(--ui-bg-quinary) dark:text-foreground">
+                    {t.shell.modelOptions.fast}
+                    <Switch
+                      checked={fastOn}
+                      className="data-[state=checked]:border-transparent data-[state=checked]:bg-[#7c3aed]"
+                      onCheckedChange={checked =>
+                        void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
+                      }
+                      size="xs"
+                    />
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
+
+            {errorNotice}
+            {switchStaleAux.length > 0 ? (
               <StaleAuxWarning
                 applying={applying}
                 onReset={() => void resetAuxiliaryModels()}
                 slots={switchStaleAux}
                 taskLabel={auxiliaryTaskLabel}
               />
+            ) : null}
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-[20px] border border-[#e2e8f0] bg-white p-5 shadow-[0_4px_16px_rgba(38,64,140,0.06)] dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-chat-bubble-background) dark:shadow-none">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <h2 className="text-[16px] font-semibold text-[#0f172a] dark:text-foreground">
+                {t.settings.fieldLabels.modelContextLength}
+              </h2>
+              <p className="max-w-3xl text-[13px] leading-snug text-[#475569]">
+                {t.settings.fieldDescriptions.modelContextLength}
+              </p>
             </div>
-          )}
+            <Input
+              aria-label={t.settings.fieldLabels.modelContextLength}
+              className="h-10 w-[88px] rounded-[10px] border-[#e2e8f0] bg-[#f7f9fc] text-center text-[15px] font-semibold text-[#0f172a] shadow-none dark:bg-(--ui-bg-quinary)"
+              inputMode="numeric"
+              min={0}
+              onBlur={commitContextLength}
+              onChange={event => setContextDraft(event.target.value)}
+              onKeyDown={event => {
+                if (isSubmitEnter(event)) {
+                  event.currentTarget.blur()
+                }
+              }}
+              type="number"
+              value={contextDraft}
+            />
+          </div>
         </section>
       )}
 
       {showAuxiliary && (
-        <section>
-          <div className={cn('mb-2.5 flex items-center', subpage === undefined ? 'justify-between' : 'justify-end')}>
-            {subpage === undefined && <SectionHeading icon={Cpu} title={m.auxiliaryTitle} />}
+        <section className="grid gap-3.5" data-model-auxiliary>
+          <header className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              {subpage === undefined ? (
+                <SectionHeading icon={Cpu} title={m.auxiliaryTitle} />
+              ) : (
+                <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+                  {m.auxiliaryTitle}
+                </h1>
+              )}
+              <p className="max-w-3xl text-[14px] text-[#475569]">{m.auxiliaryDesc}</p>
+            </div>
             <Button
+              className="shrink-0 text-[13px] font-semibold text-[#2f5bea] hover:bg-transparent hover:text-[#1d4ed8]"
               disabled={!mainModel || applying}
               onClick={() => void resetAuxiliaryModels()}
               size="sm"
-              variant="textStrong"
+              variant="ghost"
             >
               {m.resetAllToMain}
             </Button>
-          </div>
-          <p className="mb-2 text-xs text-muted-foreground">{m.auxiliaryDesc}</p>
-          {(switchStaleAux.length === 0 || !showMain) && persistentStaleAux.length > 0 && !staleAuxDismissed && (
-            <div className="mb-2.5">
-              <StaleAuxWarning
-                applying={applying}
-                onDismiss={() => {
-                  const mainProvider = mainModel?.provider ?? ''
+          </header>
 
-                  dismissStaleAux(scopeProfile, mainProvider, persistentStaleAux)
-                  setDismissedStaleAux(staleAuxFingerprint(mainProvider, persistentStaleAux))
-                }}
-                onReset={() => void resetAuxiliaryModels()}
-                slots={persistentStaleAux}
-                taskLabel={auxiliaryTaskLabel}
-              />
-            </div>
+          {(switchStaleAux.length === 0 || !showMain) && persistentStaleAux.length > 0 && !staleAuxDismissed && (
+            <StaleAuxWarning
+              applying={applying}
+              onDismiss={() => {
+                const mainProvider = mainModel?.provider ?? ''
+
+                dismissStaleAux(scopeProfile, mainProvider, persistentStaleAux)
+                setDismissedStaleAux(staleAuxFingerprint(mainProvider, persistentStaleAux))
+              }}
+              onReset={() => void resetAuxiliaryModels()}
+              slots={persistentStaleAux}
+              taskLabel={auxiliaryTaskLabel}
+            />
           )}
-          <div className="grid gap-1">
+
+          <div data-model-auxiliary-card="">
             {AUX_TASKS.map(meta => {
               const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }
               const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
@@ -1108,124 +1248,136 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
               const isEditing = editingAuxTask === meta.key
 
               return (
-                <div className="scroll-mt-6 rounded-lg" id={`aux-task-${meta.key}`} key={meta.key}>
-                  <ListRow
-                    action={
-                      !isEditing && (
-                        <div className="flex shrink-0 items-center gap-1.5">
-                          <Button
-                            disabled={!mainModel || applying}
-                            onClick={() => void setAuxiliaryToMain(meta.key)}
-                            size="sm"
-                            variant="text"
-                          >
-                            {m.setToMain}
-                          </Button>
-                          <Button
-                            disabled={!providers.length || applying}
-                            onClick={() => beginAuxiliaryEdit(meta.key)}
-                            size="sm"
-                            variant="textStrong"
-                          >
-                            {m.change}
-                          </Button>
-                        </div>
-                      )
-                    }
-                    below={
-                      isEditing && (
-                        <div className="mt-2 grid gap-2 pt-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Select
-                              onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
-                              value={findCatalogProvider(providers, auxDraft.provider)?.slug ?? auxDraft.provider}
-                            >
-                              <SelectTrigger
-                                aria-label={`${copy.label} provider`}
-                                className={cn('min-w-32', CONTROL_TEXT)}
-                              >
-                                <SelectValue placeholder={m.provider} />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {providerOptions.map(provider => (
-                                  <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                                    {provider.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                            <ModelSelect
-                              aria-label={`${copy.label} model`}
-                              className="min-w-48"
-                              models={auxDraftProviderModels}
-                              onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                              provider={findCatalogProvider(providers, auxDraft.provider)}
-                              providerSlug={auxDraft.provider}
-                              value={auxDraft.model}
-                            />
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2 text-xs">
-                            <span className="text-muted-foreground">{m.reasoning}</span>
-                            <Select
-                              onValueChange={value => setAuxDraft(prev => ({ ...prev, reasoningEffort: value }))}
-                              value={auxDraft.reasoningEffort}
-                            >
-                              <SelectTrigger
-                                aria-label={`${copy.label} reasoning effort`}
-                                className={cn('min-w-32', CONTROL_TEXT)}
-                              >
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="__inherit__">{m.inheritMainEffort}</SelectItem>
-                                {REASONING_EFFORT_VALUES.map(value => (
-                                  <SelectItem key={value} value={value}>
-                                    {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                              disabled={!auxDraft.provider || !auxDraft.model || applying}
-                              onClick={() => void applyAuxiliaryDraft(meta.key)}
-                              size="sm"
-                            >
-                              {applying ? m.applying : t.common.apply}
-                            </Button>
-                            <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
-                              {t.common.cancel}
-                            </Button>
-                          </div>
-                        </div>
-                      )
-                    }
-                    description={
-                      <span className="font-mono text-[0.68rem]">
+                <div
+                  className="scroll-mt-6 px-5 py-4"
+                  data-model-auxiliary-row=""
+                  id={`aux-task-${meta.key}`}
+                  key={meta.key}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+                        <span className="text-[15px] font-semibold text-[#0f172a] dark:text-foreground">{copy.label}</span>
+                        <span className="text-[13px] font-medium text-[#94a3b8]">{copy.hint}</span>
+                      </div>
+                      <p className="text-[13px] text-[#64748b]">
                         {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
-                        {!isAuto && current.base_url && (
-                          <span className="text-muted-foreground"> · {current.base_url}</span>
-                        )}
-                        {current?.reasoning_effort && (
-                          <span className="text-muted-foreground">
-                            {' · '}
-                            {current.reasoning_effort === 'none'
-                              ? `${m.reasoning} ${m.reasoningOff}`
-                              : isReasoningEffort(current.reasoning_effort)
-                                ? t.shell.modelOptions[current.reasoning_effort]
-                                : current.reasoning_effort}
-                          </span>
-                        )}
-                      </span>
-                    }
-                    title={
-                      <span className="flex items-baseline gap-2">
-                        {copy.label}
-                        <Pill>{copy.hint}</Pill>
-                      </span>
-                    }
-                  />
+                        {!isAuto && current.base_url ? ` · ${current.base_url}` : null}
+                        {current?.reasoning_effort
+                          ? ` · ${
+                              current.reasoning_effort === 'none'
+                                ? `${m.reasoning} ${m.reasoningOff}`
+                                : isReasoningEffort(current.reasoning_effort)
+                                  ? t.shell.modelOptions[current.reasoning_effort]
+                                  : current.reasoning_effort
+                            }`
+                          : null}
+                      </p>
+                    </div>
+
+                    {!isEditing ? (
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button
+                          className="h-8 rounded-[10px] border-0 bg-[#f1f5f9] px-3 text-[13px] font-semibold text-[#475569] shadow-none hover:bg-[#e2e8f0] dark:bg-(--ui-bg-quinary) dark:text-(--ui-text-secondary)"
+                          disabled={!mainModel || applying}
+                          onClick={() => void setAuxiliaryToMain(meta.key)}
+                          size="sm"
+                          variant="secondary"
+                        >
+                          {m.setToMain}
+                        </Button>
+                        <Button
+                          className="h-8 rounded-[10px] border-0 bg-[#e3ecfd] px-3.5 text-[13px] font-semibold text-[#2f5bea] shadow-none hover:bg-[#d4e2fb]"
+                          disabled={!providers.length || applying}
+                          onClick={() => beginAuxiliaryEdit(meta.key)}
+                          size="sm"
+                          variant="secondary"
+                        >
+                          {m.change}
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {isEditing ? (
+                    <div className="mt-3 grid gap-2.5 rounded-xl border border-[#e2e8f0] bg-[#f7f9fc] p-3.5 dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-bg-quinary)">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Select
+                          onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
+                          value={findCatalogProvider(providers, auxDraft.provider)?.slug ?? auxDraft.provider}
+                        >
+                          <SelectTrigger
+                            aria-label={`${copy.label} provider`}
+                            className={cn(
+                              'h-10 min-w-32 rounded-xl border-[#e2e8f0] bg-white shadow-none dark:bg-(--ui-chat-bubble-background)',
+                              CONTROL_TEXT
+                            )}
+                          >
+                            <SelectValue placeholder={m.provider} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {providerOptions.map(provider => (
+                              <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                                {provider.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <ModelSelect
+                          aria-label={`${copy.label} model`}
+                          className="min-w-48"
+                          models={auxDraftProviderModels}
+                          onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                          provider={findCatalogProvider(providers, auxDraft.provider)}
+                          providerSlug={auxDraft.provider}
+                          value={auxDraft.model}
+                        />
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-[13px]">
+                        <span className="font-medium text-[#64748b]">{m.reasoning}</span>
+                        <Select
+                          onValueChange={value => setAuxDraft(prev => ({ ...prev, reasoningEffort: value }))}
+                          value={auxDraft.reasoningEffort}
+                        >
+                          <SelectTrigger
+                            aria-label={`${copy.label} reasoning effort`}
+                            className={cn(
+                              'h-10 min-w-32 rounded-xl border-[#e2e8f0] bg-white shadow-none dark:bg-(--ui-chat-bubble-background)',
+                              CONTROL_TEXT
+                            )}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__inherit__">{m.inheritMainEffort}</SelectItem>
+                            {REASONING_EFFORT_VALUES.map(value => (
+                              <SelectItem key={value} value={value}>
+                                {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          className="h-8 rounded-[10px] bg-[#2f5bea] px-3.5 text-[13px] font-semibold text-white hover:bg-[#2548c7]"
+                          disabled={!auxDraft.provider || !auxDraft.model || applying}
+                          onClick={() => void applyAuxiliaryDraft(meta.key)}
+                          size="sm"
+                        >
+                          {applying ? m.applying : t.common.apply}
+                        </Button>
+                        <Button
+                          className="h-8 rounded-[10px] px-3 text-[13px] font-semibold text-[#475569]"
+                          onClick={() => setEditingAuxTask(null)}
+                          size="sm"
+                          variant="ghost"
+                        >
+                          {t.common.cancel}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               )
             })}
@@ -1233,111 +1385,167 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         </section>
       )}
       {showMoa && moa && currentMoaPreset && (
-        <section>
-          {subpage === undefined && <SectionHeading icon={Cpu} title={m.moaTitle} />}
-          <p className="mb-2 text-xs text-muted-foreground">{m.moaDescription}</p>
-          <div className="mb-2 flex flex-wrap items-center gap-2">
+        <section className="grid gap-3.5" data-model-moa>
+          <header className="space-y-1.5">
+            {subpage === undefined ? (
+              <SectionHeading icon={Cpu} title={m.moaTitle} />
+            ) : (
+              <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+                {m.moaTitle}
+              </h1>
+            )}
+            <p className="max-w-4xl text-[14px] leading-snug text-[#475569]">{m.moaDescription}</p>
+          </header>
+
+          <div className="grid gap-4 p-5" data-model-moa-card="preset">
+            <p className="text-[13px] font-semibold text-[#64748b]">{m.moaPreset}</p>
+
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
-              <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
+              <SelectTrigger className={cn('w-full', CONTROL_TEXT)}>
                 <SelectValue placeholder={m.moaPreset} />
               </SelectTrigger>
               <SelectContent>
                 {Object.keys(moa.presets).map(name => (
                   <SelectItem key={name} value={name}>
-                    {name}
+                    {name === moa.default_preset ? `${name} (default)` : name}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            <label className="flex items-center gap-2 rounded-sm border border-border px-2 py-1 text-xs">
-              {m.moaEnabled}
-              <Switch
-                checked={currentMoaPreset.enabled !== false}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-2.5 pr-1 text-[13px] font-semibold text-[#0f172a] dark:text-foreground">
+                <Switch
+                  checked={currentMoaPreset.enabled !== false}
+                  className="h-[22px] w-10 data-[state=checked]:border-transparent data-[state=checked]:bg-[#7c3aed] [&_[data-slot=switch-thumb]]:size-[18px] data-[state=checked]:[&_[data-slot=switch-thumb]]:translate-x-[18px]"
+                  disabled={applying}
+                  onCheckedChange={checked => updateMoaPreset(prev => ({ ...prev, enabled: checked }))}
+                  size="default"
+                />
+                {m.moaEnabled}
+              </label>
+
+              <Button
+                className="h-8 rounded-[10px] border-0 bg-[#f1f5f9] px-3 text-[13px] font-semibold text-[#475569] shadow-none hover:bg-[#e2e8f0] dark:bg-(--ui-bg-quinary) dark:text-(--ui-text-secondary)"
                 disabled={applying}
-                onCheckedChange={checked => updateMoaPreset(prev => ({ ...prev, enabled: checked }))}
-                size="xs"
-              />
-            </label>
-            <Button
-              disabled={applying}
-              onClick={() => {
-                const next: MoaConfigResponse = {
-                  ...moa,
-                  default_preset: selectedMoaPreset || moa.default_preset
-                }
-
-                void saveMoa(next)
-              }}
-              size="sm"
-              variant="text"
-            >
-              {m.moaSetDefault}
-            </Button>
-            <Button
-              disabled={Object.keys(moa.presets).length <= 1 || applying}
-              onClick={() => {
-                if (Object.keys(moa.presets).length <= 1) {
-                  return
-                }
-
-                const presets = { ...moa.presets }
-                delete presets[selectedMoaPreset]
-                const fallback = Object.keys(presets)[0]
-
-                const next: MoaConfigResponse = {
-                  ...moa,
-                  presets,
-                  default_preset: moa.default_preset === selectedMoaPreset ? fallback : moa.default_preset,
-                  active_preset: moa.active_preset === selectedMoaPreset ? '' : moa.active_preset
-                }
-
-                setSelectedMoaPreset(Object.keys(moa.presets).find(name => name !== selectedMoaPreset) || '')
-                void saveMoa(next)
-              }}
-              size="sm"
-              variant="ghost"
-            >
-              {t.common.delete}
-            </Button>
-            <Input
-              className={cn('w-40', CONTROL_TEXT)}
-              onChange={event => setNewMoaPresetName(event.target.value)}
-              placeholder={m.moaNewPresetPlaceholder}
-              value={newMoaPresetName}
-            />
-            <Button
-              disabled={!newMoaPresetName.trim() || !!moa.presets[newMoaPresetName.trim()] || applying}
-              onClick={() => {
-                const name = newMoaPresetName.trim()
-
-                const next: MoaConfigResponse = {
-                  ...moa,
-                  presets: {
-                    ...moa.presets,
-                    [name]: { ...currentMoaPreset, reference_models: [...currentMoaPreset.reference_models] }
+                onClick={() => {
+                  const next: MoaConfigResponse = {
+                    ...moa,
+                    default_preset: selectedMoaPreset || moa.default_preset
                   }
-                }
 
-                setSelectedMoaPreset(name)
-                setNewMoaPresetName('')
-                void saveMoa(next)
-              }}
-              size="sm"
-              variant="textStrong"
-            >
-              {m.moaAddPreset}
-            </Button>
+                  void saveMoa(next)
+                }}
+                size="sm"
+                variant="secondary"
+              >
+                {m.moaSetDefault}
+              </Button>
+
+              <Button
+                className="h-8 rounded-[10px] border-0 bg-[#fef2f2] px-3 text-[13px] font-semibold text-[#dc2626] shadow-none hover:bg-[#fee2e2]"
+                disabled={Object.keys(moa.presets).length <= 1 || applying}
+                onClick={() => {
+                  if (Object.keys(moa.presets).length <= 1) {
+                    return
+                  }
+
+                  const presets = { ...moa.presets }
+                  delete presets[selectedMoaPreset]
+                  const fallback = Object.keys(presets)[0]
+
+                  const next: MoaConfigResponse = {
+                    ...moa,
+                    presets,
+                    default_preset: moa.default_preset === selectedMoaPreset ? fallback : moa.default_preset,
+                    active_preset: moa.active_preset === selectedMoaPreset ? '' : moa.active_preset
+                  }
+
+                  setSelectedMoaPreset(Object.keys(moa.presets).find(name => name !== selectedMoaPreset) || '')
+                  void saveMoa(next)
+                }}
+                size="sm"
+                variant="secondary"
+              >
+                {t.common.delete}
+              </Button>
+
+              <Input
+                className={cn('min-w-[10rem] flex-1', CONTROL_TEXT)}
+                onChange={event => setNewMoaPresetName(event.target.value)}
+                onKeyDown={event => {
+                  if (!isSubmitEnter(event)) {
+                    return
+                  }
+
+                  const name = newMoaPresetName.trim()
+
+                  if (!name || moa.presets[name] || applying) {
+                    return
+                  }
+
+                  const next: MoaConfigResponse = {
+                    ...moa,
+                    presets: {
+                      ...moa.presets,
+                      [name]: { ...currentMoaPreset, reference_models: [...currentMoaPreset.reference_models] }
+                    }
+                  }
+
+                  setSelectedMoaPreset(name)
+                  setNewMoaPresetName('')
+                  void saveMoa(next)
+                }}
+                placeholder={m.moaNewPresetPlaceholder}
+                value={newMoaPresetName}
+              />
+
+              <Button
+                className="h-9 rounded-[10px] border-0 bg-[#7c3aed] px-3.5 text-[13px] font-semibold text-white shadow-none hover:bg-[#6d28d9]"
+                disabled={!newMoaPresetName.trim() || !!moa.presets[newMoaPresetName.trim()] || applying}
+                onClick={() => {
+                  const name = newMoaPresetName.trim()
+
+                  const next: MoaConfigResponse = {
+                    ...moa,
+                    presets: {
+                      ...moa.presets,
+                      [name]: { ...currentMoaPreset, reference_models: [...currentMoaPreset.reference_models] }
+                    }
+                  }
+
+                  setSelectedMoaPreset(name)
+                  setNewMoaPresetName('')
+                  void saveMoa(next)
+                }}
+                size="sm"
+              >
+                <Plus className="size-3.5" />
+                {m.moaAddPreset}
+              </Button>
+            </div>
           </div>
-          <div className="mb-2 text-xs text-muted-foreground">
-            {m.moaDefault} <span className="font-mono">{moa.default_preset}</span>
-          </div>
-          <div className="grid gap-1">
+
+          <div className="grid gap-3 p-5" data-model-moa-card="references">
+            <p className="text-[13px] font-semibold text-[#64748b]">{m.moaReferenceModels}</p>
+
             {currentMoaPreset.reference_models.map((slot, index) => (
-              <ListRow
-                action={
+              <div
+                className={cn('grid gap-3 p-4', slot.enabled === false && 'opacity-60')}
+                data-model-moa-slot=""
+                key={`${selectedMoaPreset}-${index}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-0.5">
+                    <p className="text-[15px] font-semibold text-[#0f172a] dark:text-foreground">
+                      {m.moaReferenceTitle(index + 1)}
+                    </p>
+                    <p className="text-[12px] text-[#64748b]">{m.moaReferenceHint}</p>
+                  </div>
                   <Switch
                     aria-label={m.moaReferenceToggle(slot.enabled !== false, index + 1)}
                     checked={slot.enabled !== false}
+                    className="mt-0.5 h-[22px] w-10 shrink-0 data-[state=checked]:border-transparent data-[state=checked]:bg-[#7c3aed] [&_[data-slot=switch-thumb]]:size-[18px] data-[state=checked]:[&_[data-slot=switch-thumb]]:translate-x-[18px]"
                     disabled={applying}
                     onCheckedChange={checked =>
                       updateMoaPreset(prev => ({
@@ -1347,116 +1555,29 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                         )
                       }))
                     }
+                    size="default"
                   />
-                }
-                below={
-                  <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                    <Select
-                      onValueChange={value =>
-                        updateMoaPreset(prev => ({
-                          ...prev,
-                          reference_models: prev.reference_models.map((s, i) =>
-                            i === index ? updateMoaSlot(s, { provider: value }) : s
-                          )
-                        }))
-                      }
-                      value={slot.provider}
-                    >
-                      <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                        <SelectValue placeholder={m.provider} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {withActive(
-                          moaSlotProviderOptions.map(p => p.slug || 'none'),
-                          slot.provider
-                        ).map(slug => {
-                          const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
+                </div>
 
-                          return (
-                            <SelectItem key={slug} value={slug}>
-                              {provider?.name || slug}
-                            </SelectItem>
-                          )
-                        })}
-                      </SelectContent>
-                    </Select>
-                    <ModelSelect
-                      className="min-w-48"
-                      models={modelsForProvider(slot.provider)}
-                      onValueChange={value =>
-                        updateMoaPreset(prev => ({
-                          ...prev,
-                          reference_models: prev.reference_models.map((s, i) =>
-                            i === index ? updateMoaSlot(s, { model: value }) : s
-                          )
-                        }))
-                      }
-                      provider={findCatalogProvider(providers, slot.provider)}
-                      providerSlug={slot.provider}
-                      value={slot.model}
-                    />
-                    <Button
-                      disabled={currentMoaPreset.reference_models.length <= 1 || applying}
-                      onClick={() =>
-                        updateMoaPreset(prev => ({
-                          ...prev,
-                          reference_models: prev.reference_models.filter((_, i) => i !== index)
-                        }))
-                      }
-                      size="sm"
-                      variant="ghost"
-                    >
-                      {t.common.remove}
-                    </Button>
-                  </div>
-                }
-                className={cn(slot.enabled === false && 'opacity-60')}
-                description={
-                  <span className="font-mono text-[0.68rem]">
-                    {slot.provider} · {slot.model || m.model}
-                  </span>
-                }
-                key={`${selectedMoaPreset}-${index}`}
-                title={
-                  <span className="flex items-baseline gap-2">
-                    {m.moaReferenceTitle(index + 1)}
-                    <Pill>{m.moaReferenceHint}</Pill>
-                  </span>
-                }
-              />
-            ))}
-            <Button
-              disabled={applying}
-              onClick={() =>
-                updateMoaPreset(prev => ({
-                  ...prev,
-                  reference_models: [...prev.reference_models, { ...prev.aggregator, enabled: true }]
-                }))
-              }
-              size="sm"
-              variant="textStrong"
-            >
-              {m.moaAddReference}
-            </Button>
-            <ListRow
-              below={
-                <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
+                <div className="grid gap-2 sm:grid-cols-2">
                   <Select
                     onValueChange={value =>
                       updateMoaPreset(prev => ({
                         ...prev,
-                        aggregator: updateMoaSlot(prev.aggregator, { provider: value })
+                        reference_models: prev.reference_models.map((s, i) =>
+                          i === index ? updateMoaSlot(s, { provider: value }) : s
+                        )
                       }))
                     }
-                    value={currentMoaPreset.aggregator.provider}
+                    value={slot.provider}
                   >
-                    <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
+                    <SelectTrigger className={cn('w-full', CONTROL_TEXT)}>
                       <SelectValue placeholder={m.provider} />
                     </SelectTrigger>
                     <SelectContent>
                       {withActive(
                         moaSlotProviderOptions.map(p => p.slug || 'none'),
-                        currentMoaPreset.aggregator.provider
+                        slot.provider
                       ).map(slug => {
                         const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
 
@@ -1469,32 +1590,106 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                     </SelectContent>
                   </Select>
                   <ModelSelect
-                    className="min-w-48"
-                    models={modelsForProvider(currentMoaPreset.aggregator.provider)}
+                    className="min-w-0 w-full"
+                    models={modelsForProvider(slot.provider)}
                     onValueChange={value =>
                       updateMoaPreset(prev => ({
                         ...prev,
-                        aggregator: updateMoaSlot(prev.aggregator, { model: value })
+                        reference_models: prev.reference_models.map((s, i) =>
+                          i === index ? updateMoaSlot(s, { model: value }) : s
+                        )
                       }))
                     }
-                    provider={findCatalogProvider(providers, currentMoaPreset.aggregator.provider)}
-                    providerSlug={currentMoaPreset.aggregator.provider}
-                    value={currentMoaPreset.aggregator.model}
+                    provider={findCatalogProvider(providers, slot.provider)}
+                    providerSlug={slot.provider}
+                    value={slot.model}
                   />
                 </div>
+
+                <div className="flex justify-end">
+                  <Button
+                    className="h-8 rounded-[10px] border-0 bg-[#fef2f2] px-3 text-[13px] font-semibold text-[#dc2626] shadow-none hover:bg-[#fee2e2]"
+                    disabled={currentMoaPreset.reference_models.length <= 1 || applying}
+                    onClick={() =>
+                      updateMoaPreset(prev => ({
+                        ...prev,
+                        reference_models: prev.reference_models.filter((_, i) => i !== index)
+                      }))
+                    }
+                    size="sm"
+                    variant="secondary"
+                  >
+                    {t.common.remove}
+                  </Button>
+                </div>
+              </div>
+            ))}
+
+            <Button
+              className="h-10 w-full rounded-xl border-0 bg-[#e3ecfd] text-[13px] font-semibold text-[#2f5bea] shadow-none hover:bg-[#d4e2fb]"
+              disabled={applying}
+              onClick={() =>
+                updateMoaPreset(prev => ({
+                  ...prev,
+                  reference_models: [...prev.reference_models, { ...prev.aggregator, enabled: true }]
+                }))
               }
-              description={
-                <span className="font-mono text-[0.68rem]">
-                  {currentMoaPreset.aggregator.provider} · {currentMoaPreset.aggregator.model}
-                </span>
-              }
-              title={
-                <span className="flex items-baseline gap-2">
-                  {m.moaAggregator}
-                  <Pill>{m.moaAggregatorBilled}</Pill>
-                </span>
-              }
-            />
+              size="sm"
+              variant="secondary"
+            >
+              <Plus className="size-3.5" />
+              {m.moaAddReference}
+            </Button>
+          </div>
+
+          <div className="grid gap-3 p-5" data-model-moa-card="aggregator">
+            <div className="space-y-0.5">
+              <p className="text-[13px] font-semibold text-[#64748b]">{m.moaAggregator}</p>
+              <p className="text-[12px] text-[#64748b]">{m.moaAggregatorBilled}</p>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Select
+                onValueChange={value =>
+                  updateMoaPreset(prev => ({
+                    ...prev,
+                    aggregator: updateMoaSlot(prev.aggregator, { provider: value })
+                  }))
+                }
+                value={currentMoaPreset.aggregator.provider}
+              >
+                <SelectTrigger className={cn('w-full', CONTROL_TEXT)}>
+                  <SelectValue placeholder={m.provider} />
+                </SelectTrigger>
+                <SelectContent>
+                  {withActive(
+                    moaSlotProviderOptions.map(p => p.slug || 'none'),
+                    currentMoaPreset.aggregator.provider
+                  ).map(slug => {
+                    const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
+
+                    return (
+                      <SelectItem key={slug} value={slug}>
+                        {provider?.name || slug}
+                      </SelectItem>
+                    )
+                  })}
+                </SelectContent>
+              </Select>
+              <ModelSelect
+                className="min-w-0 w-full"
+                models={modelsForProvider(currentMoaPreset.aggregator.provider)}
+                onValueChange={value =>
+                  updateMoaPreset(prev => ({
+                    ...prev,
+                    aggregator: updateMoaSlot(prev.aggregator, { model: value })
+                  }))
+                }
+                provider={findCatalogProvider(providers, currentMoaPreset.aggregator.provider)}
+                providerSlug={currentMoaPreset.aggregator.provider}
+                value={currentMoaPreset.aggregator.model}
+              />
+            </div>
           </div>
         </section>
       )}

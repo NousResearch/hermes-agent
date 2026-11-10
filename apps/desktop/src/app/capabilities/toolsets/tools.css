@@ -1,0 +1,45 @@
+/* Tools marketplace — Figma node 315:3972 */
+
+[data-tools-page] {
+  background: linear-gradient(180deg, #e6effb 0%, #f7f9fc 45%);
+}
+
+:root.dark [data-tools-page] {
+  background: var(--ui-chat-surface-background);
+}
+
+[data-tools-list],
+[data-tools-detail] {
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(38, 64, 140, 0.06);
+}
+
+:root.dark [data-tools-list],
+:root.dark [data-tools-detail] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-bubble-background);
+  box-shadow: none;
+}
+
+[data-tools-row] {
+  border: 1px solid #e4eaf4;
+  border-radius: 14px;
+  background: #fff;
+}
+
+:root.dark [data-tools-row] {
+  border-color: var(--ui-stroke-tertiary);
+  background: transparent;
+}
+
+[data-tools-row][data-active] {
+  border-color: #9db7f0;
+  background: #e3ecfd;
+}
+
+:root.dark [data-tools-row][data-active] {
+  border-color: color-mix(in srgb, var(--ui-blue) 40%, var(--ui-stroke-tertiary));
+  background: color-mix(in srgb, var(--ui-blue) 14%, transparent);
+}

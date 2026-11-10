@@ -57,7 +57,7 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
         // Narrow: one column, and pin rows to [nav-bar auto | main 1fr] — without
         // an explicit template the grid's default align-content:stretch splits the
         // height evenly across the two rows, shoving the content to mid-screen.
-        'grid h-full min-h-0 flex-1 grid-cols-[13rem_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1 max-[47.5rem]:grid-rows-[auto_minmax(0,1fr)]',
+        'grid h-full min-h-0 flex-1 grid-cols-[16.25rem_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1 max-[47.5rem]:grid-rows-[auto_minmax(0,1fr)]',
         className
       )}
     >
@@ -74,13 +74,14 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
         // they ride up via the shorter shared OVERLAY_TOP_CLEARANCE (same line
         // as a Panel header) instead of main's taller X-clearance. The bg still
         // fills from the card's top edge, so there's no gap above the sidebar.
-        'flex min-h-0 flex-col gap-0.5 overflow-y-auto bg-(--ui-sidebar-surface-background) px-2.5 pb-3',
+        'flex min-h-0 flex-col gap-0.5 overflow-y-auto border-r border-[#e2e8f0] bg-white px-2.5 pb-3 dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-chat-surface-background)',
         OVERLAY_TOP_CLEARANCE,
         className
       )}
       // Every overlay's left nav (settings, cron, profiles, agents) answers to
       // one name, so a tour can point at "the nav" without knowing which
       // overlay is open. See lib/tour.
+      data-overlay-nav=""
       data-tour="overlay-nav"
     >
       {children}
@@ -126,15 +127,18 @@ export const OverlayNavItem = memo(function OverlayNavItem({
       aria-current={current ? 'page' : undefined}
       aria-pressed={pressed}
       className={cn(
-        'row-hover flex h-7 w-full shrink-0 items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
+        'row-hover flex h-8 w-full shrink-0 items-center justify-start gap-2.5 rounded-[10px] border px-2.5 text-left text-[13px] font-medium transition-colors',
         nested
           ? active
-            ? 'border-transparent bg-(--ui-row-active-background) font-medium text-foreground'
-            : 'border-transparent bg-transparent text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+            ? 'border-transparent bg-[#e3ecfd] font-semibold text-[#2f5bea] dark:bg-[color-mix(in_srgb,var(--ui-blue)_16%,transparent)] dark:text-[color-mix(in_srgb,var(--ui-blue)_85%,white)]'
+            : 'border-transparent bg-transparent font-normal text-[#64748b] hover:bg-[#f1f5f9] hover:text-[#0f172a] dark:text-(--ui-text-tertiary) dark:hover:bg-(--chrome-action-hover) dark:hover:text-foreground'
           : active
-            ? 'border-(--ui-stroke-tertiary) bg-(--ui-row-active-background) text-foreground'
-            : 'border-transparent bg-transparent text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+            ? 'border-transparent bg-transparent font-semibold text-[#2f5bea] dark:text-[color-mix(in_srgb,var(--ui-blue)_85%,white)]'
+            : 'border-transparent bg-transparent text-[#334155] hover:bg-[#f1f5f9] hover:text-[#0f172a] dark:text-(--ui-text-secondary) dark:hover:bg-(--chrome-action-hover) dark:hover:text-foreground'
       )}
+      data-active={active ? '' : undefined}
+      data-nested={nested ? '' : undefined}
+      data-overlay-nav-item=""
       // Names the row by its own id, so a tour can address one link
       // (`[data-tour="nav-models"]`) instead of guessing at nth-child.
       data-tour={id ? `nav-${id}` : undefined}
@@ -142,15 +146,12 @@ export const OverlayNavItem = memo(function OverlayNavItem({
       type="button"
     >
       {leading}
-      {Icon && (
+      {Icon && !nested ? (
         <Icon
-          className={cn(
-            'shrink-0',
-            nested ? 'size-3.5' : 'size-4',
-            active ? 'text-foreground/80' : 'text-muted-foreground/80'
-          )}
+          className={cn('size-4 shrink-0', active ? 'text-[#2f5bea]' : 'text-[#94a3b8]')}
+          data-overlay-nav-icon=""
         />
-      )}
+      ) : null}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {trailing}
     </button>
@@ -179,7 +180,16 @@ export interface OverlayNavGroup extends OverlayNavLink {
 // dropdown in PageSearchShell), so every OverlaySplitLayout pane degrades the
 // same way instead of stacking its whole sidebar. Drop it in as the first
 // child of an OverlaySplitLayout, before OverlayMain.
-export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: OverlayNavGroup[] }) {
+export function OverlayNav({
+  footer,
+  groups,
+  title
+}: {
+  footer?: ReactNode
+  groups: OverlayNavGroup[]
+  /** Optional rail heading (e.g. Settings). */
+  title?: string
+}) {
   const { t } = useI18n()
   const navId = useId()
   const [disclosures, setDisclosures] = useState<Record<string, boolean>>({})
@@ -209,6 +219,13 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
   return (
     <>
       <OverlaySidebar className={RAIL_HIDDEN}>
+        {title ? (
+          <div className="mb-2.5 flex items-center justify-between px-2.5 pb-0.5 pt-0.5" data-overlay-nav-title="">
+            <span className="text-[15px] font-bold tracking-[-0.01em] text-[#0f172a] dark:text-foreground">
+              {title}
+            </span>
+          </div>
+        ) : null}
         {groups.map(group => {
           const hasChildren = Boolean(group.children?.length)
           const expanded = disclosures[group.id] ?? group.active
@@ -247,7 +264,10 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
                     aria-controls={childrenId}
                     aria-expanded={expanded}
                     aria-label={`${expanded ? t.common.collapse : t.common.expand}: ${group.label}`}
-                    className="absolute right-0.5 top-1/2 -translate-y-1/2"
+                    className={cn(
+                      'absolute right-0.5 top-1/2 -translate-y-1/2 text-[#94a3b8]',
+                      (expanded || group.active) && 'text-[#2f5bea]'
+                    )}
                     data-tour={`nav-toggle-${group.id}`}
                     onClick={() => setDisclosures(previous => ({ ...previous, [group.id]: !expanded }))}
                     size="icon-xs"
@@ -260,14 +280,13 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
               </div>
               {hasChildren && (
                 <div
-                  className={cn('ml-3.5 flex flex-col gap-0.5 pl-1.5', !expanded && 'hidden')}
+                  className={cn('ml-1 flex flex-col gap-0.5 pl-7', !expanded && 'hidden')}
                   hidden={!expanded}
                   id={childrenId}
                 >
                   {group.children?.map(child => (
                     <OverlayNavItem
                       active={child.active}
-                      icon={child.icon}
                       id={child.id}
                       key={child.id}
                       label={child.label}

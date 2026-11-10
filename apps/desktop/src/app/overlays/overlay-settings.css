@@ -1,0 +1,77 @@
+/* Settings / overlay chrome — Figma settings modal (351:7250) */
+
+[data-overlay-card] {
+  border-radius: 20px;
+  border-color: #e2e8f0;
+  background: #fff;
+  box-shadow:
+    0 24px 64px rgba(15, 23, 42, 0.12),
+    0 4px 16px rgba(38, 64, 140, 0.06);
+}
+
+:root.dark [data-overlay-card] {
+  border-color: var(--ui-stroke-secondary);
+  background: var(--ui-chat-surface-background);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+}
+
+[data-overlay-nav] {
+  width: 16.25rem;
+  border-right: 1px solid #e2e8f0;
+  background: #fff;
+}
+
+:root.dark [data-overlay-nav] {
+  border-right-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-surface-background);
+}
+
+[data-overlay-nav-title] {
+  color: #0f172a;
+}
+
+:root.dark [data-overlay-nav-title] {
+  color: var(--ui-text-primary);
+}
+
+[data-overlay-nav-item][data-active][data-nested] {
+  border-color: transparent;
+  background: #e3ecfd;
+  color: #2f5bea;
+  font-weight: 600;
+}
+
+:root.dark [data-overlay-nav-item][data-active][data-nested] {
+  background: color-mix(in srgb, var(--ui-blue) 16%, transparent);
+  color: color-mix(in srgb, var(--ui-blue) 85%, white);
+}
+
+[data-overlay-nav-item][data-active]:not([data-nested]) {
+  border-color: transparent;
+  background: transparent;
+  color: #2f5bea;
+  font-weight: 600;
+}
+
+:root.dark [data-overlay-nav-item][data-active]:not([data-nested]) {
+  color: color-mix(in srgb, var(--ui-blue) 85%, white);
+}
+
+[data-overlay-nav-item][data-active] [data-overlay-nav-icon] {
+  color: #2f5bea;
+}
+
+:root.dark [data-overlay-nav-item][data-active] [data-overlay-nav-icon] {
+  color: color-mix(in srgb, var(--ui-blue) 85%, white);
+}
+
+[data-overlay-close] {
+  border: 1px solid #e2e8f0;
+  border-radius: 9999px;
+  background: #fff;
+}
+
+:root.dark [data-overlay-close] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-bubble-background);
+}

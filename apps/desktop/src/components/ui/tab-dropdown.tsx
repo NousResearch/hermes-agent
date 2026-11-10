@@ -101,18 +101,27 @@ export function ResponsiveTabs({
   onChange,
   tabs,
   value,
+  variant = 'underline',
   wideClassName
 }: {
   align?: 'center' | 'end' | 'start'
   onChange: (id: string) => void
   tabs: ResponsiveTab[]
   value: string
+  /** `pill` matches the Skills / Tools / Connectors / Plugins marketplace chrome. */
+  variant?: 'underline' | 'pill'
   /** Extra classes for the wide `TextTab` row (e.g. `justify-center`). */
   wideClassName?: string
 }) {
   return (
     <>
-      <div className={cn('hidden min-w-0 flex-wrap items-center gap-x-2 gap-y-1 md:flex', wideClassName)}>
+      <div
+        className={cn(
+          'hidden min-w-0 flex-wrap items-center md:flex',
+          variant === 'pill' ? 'gap-1 rounded-full bg-(--ui-bg-quinary)/80 p-1' : 'gap-x-2 gap-y-1',
+          wideClassName
+        )}
+      >
         {tabs.map(tab => (
           <TextTab
             active={tab.id === value}
@@ -121,6 +130,7 @@ export function ResponsiveTabs({
             data-tour={`tab-${tab.id}`}
             key={tab.id}
             onClick={() => onChange(tab.id)}
+            variant={variant}
           >
             {tab.label}
             {tab.meta !== undefined && <TextTabMeta>{tabMetaContent(tab.meta)}</TextTabMeta>}

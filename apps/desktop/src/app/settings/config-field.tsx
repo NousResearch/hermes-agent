@@ -30,7 +30,8 @@ export function ConfigField({
   enumOptions,
   optionLabels,
   onChange,
-  descriptionExtra
+  descriptionExtra,
+  layout
 }: {
   schemaKey: string
   schema: ConfigFieldSchema
@@ -39,6 +40,8 @@ export function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
   descriptionExtra?: ReactNode
+  /** Fallback models subpage owns the full Figma page chrome. */
+  layout?: 'page' | 'embedded'
 }) {
   const { t } = useI18n()
   const c = t.settings.config
@@ -100,9 +103,14 @@ export function ConfigField({
 
   // `fallback_providers` is a list of {provider, model} objects; the generic
   // `list` branch below would stringify them to "[object Object]". Render the
-  // dedicated structured editor instead.
+  // dedicated structured editor instead. On the Fallback models subpage the
+  // field owns the full Figma page chrome (title + empty/list card).
   if (schemaKey === 'fallback_providers') {
-    return wideRow(<FallbackModelsField onChange={onChange} value={value} />)
+    if (layout === 'page') {
+      return <FallbackModelsField layout="page" onChange={onChange} value={value} />
+    }
+
+    return wideRow(<FallbackModelsField layout="embedded" onChange={onChange} value={value} />)
   }
 
   if (schema.type === 'boolean') {

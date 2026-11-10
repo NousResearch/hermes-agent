@@ -1,0 +1,99 @@
+/* Settings → Chat → Behavior / Attachments — Figma 411:10281, 411:11955 */
+
+[data-chat-behavior-card],
+[data-chat-attachments-card] {
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(38, 64, 140, 0.06);
+}
+
+:root.dark [data-chat-behavior-card],
+:root.dark [data-chat-attachments-card] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-bubble-background);
+  box-shadow: none;
+}
+
+[data-chat-behavior-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-chat-attachments-card] > [data-chat-settings-row] + [data-chat-settings-row] {
+  border-top: 1px solid #e2e8f0;
+}
+
+:root.dark [data-chat-behavior-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-chat-attachments-card] > [data-chat-settings-row] + [data-chat-settings-row] {
+  border-top-color: var(--ui-stroke-tertiary);
+}
+
+[data-chat-behavior-card] [data-chat-settings-row] > * > div,
+[data-chat-attachments-card] [data-chat-settings-row] > * > div {
+  padding-block: 1.125rem;
+  padding-inline: 1.25rem;
+}
+
+[data-chat-behavior-card] [data-chat-settings-row] [class*='font-medium'],
+[data-chat-attachments-card] [data-chat-settings-row] [class*='font-medium'] {
+  font-size: 15px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+:root.dark [data-chat-behavior-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-chat-attachments-card] [data-chat-settings-row] [class*='font-medium'] {
+  color: var(--ui-text-primary);
+}
+
+[data-chat-behavior-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-chat-attachments-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'] {
+  margin-top: 0.25rem;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #64748b;
+}
+
+[data-chat-behavior-card] [data-slot='select-trigger'],
+[data-chat-behavior-card] [data-slot='searchable-select-trigger'],
+[data-chat-attachments-card] [data-slot='select-trigger'],
+[data-chat-attachments-card] [data-slot='searchable-select-trigger'],
+[data-chat-attachments-card] [data-chat-settings-row] input {
+  height: 2.5rem;
+  border-radius: 0.75rem;
+  border-color: #e2e8f0;
+  background: #f7f9fc;
+  padding-inline: 0.875rem;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  box-shadow: none;
+}
+
+[data-chat-behavior-card] [data-slot='select-trigger'],
+[data-chat-behavior-card] [data-slot='searchable-select-trigger'],
+[data-chat-attachments-card] [data-slot='select-trigger'],
+[data-chat-attachments-card] [data-slot='searchable-select-trigger'] {
+  min-width: 8.75rem;
+}
+
+[data-chat-attachments-card] [data-chat-settings-row] input {
+  width: 4.5rem;
+  padding-inline: 0.5rem;
+  text-align: center;
+}
+
+:root.dark [data-chat-behavior-card] [data-slot='select-trigger'],
+:root.dark [data-chat-behavior-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-chat-attachments-card] [data-slot='select-trigger'],
+:root.dark [data-chat-attachments-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-chat-attachments-card] [data-chat-settings-row] input {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-bg-quinary);
+  color: var(--ui-text-primary);
+}
+
+/* Purple checked fill only — never override switch/thumb geometry. */
+[data-chat-behavior-card] [data-slot='switch'][data-state='checked'],
+[data-chat-attachments-card] [data-slot='switch'][data-state='checked'] {
+  border-color: transparent;
+  background: #7c3aed;
+}

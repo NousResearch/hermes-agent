@@ -19,6 +19,8 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   tabs?: PageShellTab[]
   activeTab?: string
   onTabChange?: (id: string) => void
+  /** `pill` for marketplace pages (Skills / Tools / Connectors / Plugins). */
+  tabVariant?: 'underline' | 'pill'
   /** Secondary filters shown full-width on their own row below (expands). */
   filters?: ReactNode
   onSearchChange: (value: string) => void
@@ -38,17 +40,20 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
 function ShellTabs({
   tabs,
   activeTab,
-  onTabChange
+  onTabChange,
+  variant
 }: {
   tabs: PageShellTab[]
   activeTab?: string
   onTabChange?: (id: string) => void
+  variant?: 'underline' | 'pill'
 }) {
   return (
     <ResponsiveTabs
       onChange={id => onTabChange?.(id)}
       tabs={tabs}
       value={activeTab ?? tabs[0]?.id ?? ''}
+      variant={variant}
       wideClassName="justify-center"
     />
   )
@@ -60,6 +65,7 @@ export function PageSearchShell({
   tabs,
   activeTab,
   onTabChange,
+  tabVariant = 'underline',
   filters,
   onSearchChange,
   searchPlaceholder,
@@ -109,7 +115,7 @@ export function PageSearchShell({
             </div>
             {hasTabs ? (
               <div className="flex min-w-0 items-center justify-center" data-tour="page-tabs">
-                <ShellTabs activeTab={activeTab} onTabChange={onTabChange} tabs={tabs!} />
+                <ShellTabs activeTab={activeTab} onTabChange={onTabChange} tabs={tabs!} variant={tabVariant} />
               </div>
             ) : (
               <span />

@@ -1,3 +1,5 @@
+import './overlay-settings.css'
+
 import { type CSSProperties, type ReactNode, useEffect } from 'react'
 
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
@@ -105,13 +107,14 @@ export function OverlayView({
       <div className="relative h-full min-h-0">
         <div
           className={cn(
-            'relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) shadow-md',
+            'relative flex h-full min-h-0 flex-col overflow-hidden rounded-[20px] border border-[#e2e8f0] bg-white shadow-[0_24px_64px_rgba(15,23,42,0.12),0_4px_16px_rgba(38,64,140,0.06)] dark:border-(--ui-stroke-secondary) dark:bg-(--ui-chat-surface-background)',
             rootClassName
           )}
           // Marks the card as a RAISED surface for window glass: while the field
           // behind it thins to show the desktop, this card stays near-opaque
           // (see the [data-glass-raised] rules in styles.css). Inert otherwise.
           data-glass-raised=""
+          data-overlay-card=""
         >
           <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)] [-webkit-app-region:drag]">
             {headerContent && (
@@ -125,7 +128,8 @@ export function OverlayView({
 
               <Button
                 aria-label={closeLabel}
-                className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+                className="size-9 rounded-full border border-[#e2e8f0] bg-white text-(--ui-text-tertiary) shadow-none hover:bg-[#f8fafc] hover:text-foreground dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-chat-bubble-background)"
+                data-overlay-close=""
                 onClick={closeOverlay}
                 size="icon-titlebar"
                 variant="ghost"

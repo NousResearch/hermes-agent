@@ -25,6 +25,7 @@ export function CatalogInstallSwitch({ name, installed, installing, disabled, on
           aria-busy={installing}
           aria-label={label}
           checked={installed}
+          className="data-[state=checked]:bg-[#7c3aed]"
           disabled={disabled || installing}
           onCheckedChange={checked => checked && onInstall()}
           size="xs"

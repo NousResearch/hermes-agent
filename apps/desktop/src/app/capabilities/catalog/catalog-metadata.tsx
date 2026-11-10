@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { fmtDateTime, relativeTime } from '@/lib/time'
+import { cn } from '@/lib/utils'
 
 import { type CatalogEntry, catalogLabel } from './catalog-data'
 
@@ -113,13 +114,19 @@ export function CatalogMetadata({ entry, onCategory, onTag, onSearch, onOpen, li
   const visible = expanded ? secondary : secondary.slice(0, limit ?? 5)
   const remaining = secondary.length - visible.length
 
+  // Figma chips: quiet = slate pill (#f1f5f9 / #e2e8f0); accent = blue pill
+  // (#e3ecfd / #9db7f0 / #2f5bea) — nodes 317:6944 and 317:6934.
   const chip = ({ id, label, hint, quiet, onClick }: CatalogChip) => {
+    const chipClass = quiet
+      ? 'rounded-lg border border-[#e2e8f0] bg-[#f1f5f9] px-2 py-[3px] text-[11px] font-medium text-[#334155]'
+      : 'rounded-lg border border-[#9db7f0] bg-[#e3ecfd] px-2 py-[3px] text-[11px] font-semibold text-[#2f5bea]'
+
     const content = onClick ? (
-      <Button className="max-w-full" onClick={onClick} size="xs" variant={quiet ? 'ghost' : 'chip'}>
+      <Button className={cn('max-w-full shadow-none hover:opacity-90', chipClass)} onClick={onClick} size="xs" variant="ghost">
         <span className="truncate">{label}</span>
       </Button>
     ) : (
-      <Badge className="max-w-full" variant="muted">
+      <Badge className={cn('max-w-full', chipClass)} variant="default">
         <span className="truncate">{label}</span>
       </Badge>
     )

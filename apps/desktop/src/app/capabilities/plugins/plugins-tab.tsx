@@ -14,7 +14,7 @@ import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
-import { FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
+import { FolderOpen, GitBranch, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
 import {
@@ -515,29 +515,45 @@ export function PluginActions({ profile }: { profile: ProfileScope }) {
   const scope = profileParam(profile)
 
   return (
-    <>
-      <Button onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })} size="xs" variant="textStrong">
+    <div className="flex items-center gap-2.5">
+      <Button
+        className="h-auto gap-2 rounded-full border border-[#e2e8f0] bg-white px-4 py-[11px] text-[14px] font-semibold text-[#0f172a] shadow-none hover:bg-[#f8fafc]"
+        onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
+        size="sm"
+        type="button"
+        variant="outline"
+      >
+        <GitBranch aria-hidden className="size-3.5" />
         {d.installModal.installFromGit}
       </Button>
       <Tip label={d.openFolder}>
-        <Button aria-label={d.openFolder} onClick={() => void revealPluginsDir()} size="icon-xs" variant="ghost">
-          <FolderOpen />
+        <Button
+          aria-label={d.openFolder}
+          className="size-auto rounded-full border border-[#e2e8f0] bg-white px-3 py-[11px] text-[#0f172a] shadow-none hover:bg-[#f8fafc]"
+          onClick={() => void revealPluginsDir()}
+          size="icon-xs"
+          type="button"
+          variant="outline"
+        >
+          <FolderOpen aria-hidden className="size-3.5" />
         </Button>
       </Tip>
       <Tip label={d.rescan}>
         <Button
           aria-label={d.rescan}
+          className="size-auto rounded-full border border-[#e2e8f0] bg-white px-3 py-[11px] text-[#0f172a] shadow-none hover:bg-[#f8fafc]"
           onClick={() => {
             triggerHaptic('selection')
             void rescanAll(requestGateway, scope)
           }}
           size="icon-xs"
-          variant="ghost"
+          type="button"
+          variant="outline"
         >
-          <RefreshCw />
+          <RefreshCw aria-hidden className="size-3.5" />
         </Button>
       </Tip>
-    </>
+    </div>
   )
 }
 
@@ -727,9 +743,10 @@ export const PluginsTab = memo(function PluginsTab({
       <Switch
         aria-label={pkg.name}
         checked={agent ? agent.status === 'enabled' : desktop?.status !== 'disabled'}
+        className="h-[22px] w-10 data-[state=checked]:border-transparent data-[state=checked]:bg-[#7c3aed] [&_[data-slot=switch-thumb]]:size-[18px] data-[state=checked]:[&_[data-slot=switch-thumb]]:translate-x-[18px]"
         disabled={agent ? !agent.key || agentBusy(agent) : false}
         onCheckedChange={setEnabled}
-        size="xs"
+        size="default"
       />
     )
   }

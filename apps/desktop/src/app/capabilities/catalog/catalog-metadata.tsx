@@ -69,14 +69,19 @@ export function CatalogRating({ entry }: { entry: CatalogEntry }) {
 
   if ((entry.usage ?? 0) > 0) {
     return (
-      <span className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)" title={t.skills.usageCount(entry.usage!)}>
+      <span
+        className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)"
+        title={t.skills.usageCount(entry.usage!)}
+      >
         <Codicon name="pulse" size="0.65rem" />
         {compactNumber(entry.usage!)}
       </span>
     )
   }
 
-  if (entry.stars === null || entry.stars <= 0) {return null}
+  if (entry.stars === null || entry.stars <= 0) {
+    return null
+  }
 
   return (
     <span className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)">

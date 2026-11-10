@@ -86,8 +86,12 @@ export function CompactTabPicker({ activeId, tabs, onSelect, onClose, newTab, ta
             size="touch"
             variant="ghost"
           >
-            <span className="truncate" id={labelId}>{active?.label ?? active?.title}</span>
-            <span className="shrink-0 text-xs text-muted-foreground" id={countId}>{count}</span>
+            <span className="truncate" id={labelId}>
+              {active?.label ?? active?.title}
+            </span>
+            <span className="shrink-0 text-xs text-muted-foreground" id={countId}>
+              {count}
+            </span>
             <Codicon name="chevron-down" />
           </Button>
         </DropdownMenuTrigger>

@@ -25,13 +25,16 @@ _ENV_READ_NAME_RE = re.compile(r'(?:getenv|environ\s*\.\s*get|environ\s*\[)\s*\(
 
 def model_provider_key_names() -> frozenset:
     """Env names that hold a Hermes model-provider key: every provider's ``api_key_env_vars`` plus the
-    secret provider entries of ``OPTIONAL_ENV_VARS`` (``OPENROUTER_API_KEY`` is declared only there)."""
+    secret provider entries of ``OPTIONAL_ENV_VARS`` (``OPENROUTER_API_KEY`` is declared only there), kept
+    only where the child-env scrub removes them. A name the scrub passes on purpose
+    (``CLAUDE_CODE_OAUTH_TOKEN``, #55878) does reach the skill, so reading it stays medium."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import OPTIONAL_ENV_VARS
+    from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
     names = {var.upper() for pconfig in PROVIDER_REGISTRY.values() for var in pconfig.api_key_env_vars}
     names.update(name.upper() for name, meta in OPTIONAL_ENV_VARS.items()
                  if meta.get("category") == "provider" and meta.get("password"))
-    return frozenset(names)
+    return frozenset(names & {n.upper() for n in _HERMES_PROVIDER_ENV_BLOCKLIST})
 
 
 def raise_provider_key_reads(findings: list, lines: list) -> None:

@@ -1,0 +1,39 @@
+name: gambit
+title: Gambit for Hermes
+repo: "https://github.com/itsflownium/gambit-hackathon"
+sha: "738c0ade5e5c7eaff816b0f30491d275a208c040"
+description: Play chess with Hermes, understand mistakes, and replay or practice alternatives from public Chess.com and Lichess matches.
+maintainer: itsflownium
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.2.4"
+readme: true
+# Conservative proposed scope: verified on this Mac, including two clean default Hermes homes.
+# No separate-machine, Linux or Windows compatibility claim has been established.
+platforms: [macos]
+docs_url: "https://github.com/itsflownium/gambit-hackathon/blob/738c0ade5e5c7eaff816b0f30491d275a208c040/README.md"
+screenshots:
+  - "https://raw.githubusercontent.com/itsflownium/gambit-hackathon/738c0ade5e5c7eaff816b0f30491d275a208c040/docs/replay-context-preview.png"
+  - "https://raw.githubusercontent.com/itsflownium/gambit-hackathon/738c0ade5e5c7eaff816b0f30491d275a208c040/docs/import-preview.png"
+known_issues:
+  - Requires Hermes Desktop and a separately installed local Stockfish executable. Stockfish is not bundled or downloaded automatically.
+  - Imports completed public standard-chess games only; source publication delays and rate limits may apply.
+  - Chess.com Bot and Coach games are unavailable through public username lookup.
+  - Uses the configured Hermes provider for moves and coaching; normal provider usage and charges apply. Legal engine fallback is labelled when used.
+  - The 60-second deadline applies to board replies; conversational coaching has the host provider's response time.
+  - Verified on this Mac and in two clean default Hermes homes; other operating systems have not been verified.
+capabilities:
+  provides_tools:
+    - chess_state
+    - chess_start
+    - chess_move
+    - chess_games
+    - chess_replay
+    - chess_review
+    - chess_hint
+    - chess_action
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

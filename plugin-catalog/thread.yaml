@@ -1,0 +1,20 @@
+name: thread
+repo: https://github.com/visioninspirationperformance-sketch/hermes-thread
+sha: 4d9687efc10b187446fd6a8af1c37e8c5fec6bfa
+description: "Operational session continuity — captures what you were working on and what you owe at session end, then re-orients the next session. Hermes never starts cold."
+maintainer: Danny Purdy
+tier: community
+category: memory
+requires_hermes: ">=0.21"
+version: "1.0.0"
+capabilities:
+  provides_tools:
+    - thread_whats_owed
+    - thread_log
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - post_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

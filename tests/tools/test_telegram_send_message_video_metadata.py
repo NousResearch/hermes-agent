@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tools.send_message_senders import _telegram_send_one_media
+from plugins.platforms.telegram.standalone import _telegram_send_one_media
 
 
 def _fake_bot(**methods) -> SimpleNamespace:

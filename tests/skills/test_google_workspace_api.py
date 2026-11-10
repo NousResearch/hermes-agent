@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 import types
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -70,7 +70,7 @@ def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):
 
 def test_bridge_returns_valid_token(bridge_module, tmp_path):
     """Non-expired token is returned without refresh."""
-    future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
     token_path = bridge_module.get_token_path()
     _write_token(token_path, token="ya29.valid", expiry=future)
 
@@ -88,7 +88,7 @@ def test_bridge_returns_valid_token(bridge_module, tmp_path):
 
 def test_bridge_main_injects_token_env(bridge_module, tmp_path):
     """main() sets GOOGLE_WORKSPACE_CLI_TOKEN in subprocess env."""
-    future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
     token_path = bridge_module.get_token_path()
     _write_token(token_path, token="ya29.injected", expiry=future)
 
@@ -195,6 +195,22 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def test_gmail_search_empty_result_prints_json_array(
+    api_module: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Python-fallback empty search prints [] like the gws path (#131711)."""
+    service = MagicMock()
+    service.users().messages().list().execute.return_value = {"resultSizeEstimate": 0}
+    monkeypatch.setattr(api_module, "_gws_binary", lambda: None)
+    monkeypatch.setattr(api_module, "build_service", lambda *_args: service)
+
+    api_module.gmail_search(api_module.argparse.Namespace(query="is:unread", max=10))
+
+    assert json.loads(capsys.readouterr().out) == []
 
 
 def _tabbed_doc():

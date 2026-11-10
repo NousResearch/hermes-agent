@@ -23,5 +23,5 @@
 # For now this service is a no-op: it sleeps forever, doing nothing.
 # The dashboard runs as a real s6 service alongside it (see
 # ../dashboard/run) and per-profile gateways register dynamically via
-# /run/service/ at runtime (Phase 4).
+# /run/hermes-service/ at runtime (Phase 4; see ../profile-gateways/run).
 exec sleep infinity

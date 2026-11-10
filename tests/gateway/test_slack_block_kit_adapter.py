@@ -117,7 +117,7 @@ class TestEditMessageBlocks:
         adapter, client = _make_adapter({"rich_blocks": True})
         await adapter.edit_message("C1", "111.222", RICH_MD, finalize=True)
         kwargs = client.chat_update.await_args.kwargs
-        assert "blocks" in kwargs and kwargs["blocks"]
+        assert kwargs.get("blocks")
         assert kwargs["text"]
 
 
@@ -144,7 +144,7 @@ class TestEditMessageBlocks:
         assert client.chat_update.await_count == 2
         first = client.chat_update.await_args_list[0].kwargs
         second = client.chat_update.await_args_list[1].kwargs
-        assert "blocks" in first and first["blocks"]
+        assert first.get("blocks")
         assert second["blocks"] == []
         assert second["text"]
 

@@ -1,0 +1,21 @@
+name: cut-sprite-sheet
+repo: https://github.com/TakeshiTGAL/hermes-plugin-sprite-sheet
+sha: 3e5e9b274177a4d561658be82acd9a10cbc6c39c
+version: "0.1.0"
+requires_hermes: '>=0.21.6'
+description: 'pixel art sprite sheet cutter. png to tileset splitter. cut pixel art into game tiles. sprite sheet from pixel png. 2d walk cycle sprite sheet. tileset cutter for pixel art. split png into sprite sheet. shore tiles tileset tool. pixel art walk cycle sheet. png sprite and shore tiles. Cuts a pixel-art png into frames. Tools: inspect_grid, slice_grid, place_kit for a 2D game. Disclosure — The png stays on this computer. Nothing is sent. No API key. No daily cap. A gateway room can call the tools. Stop them with hermes tools. One approval on one line via pre_tool_call. Choosing always covers only the same call. An oversized line writes one list file. A failed check writes nothing. Hermes yolo and approvals off skip that prompt. cron, -q, and unattended sessions default to deny. Empty, unknown, or a restrictive license is not written. Unknown text is copied and next warns. CC-BY-SA is copied and next names share-alike. No license chunk still writes and next says no rights are attached. Import once or play fails: godot --headless --editor --quit --path <project>. No solid-color box and no sound effect. Does not launch Godot or Unity. Play may write app-userdata. Uninstall leaves no cron job. Linux is untested. Unity editor 6000.6.6f1 on macOS kept the walk-sheet fileIDs after a reopen.'
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-sprite-sheet
+platforms:
+  - macos
+capabilities:
+  provides_tools:
+    - inspect_grid
+    - slice_grid
+    - place_kit
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

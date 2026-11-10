@@ -31,13 +31,15 @@ from typing import Callable, Dict, Iterator, Optional
 
 import pytest
 
+from tests.e2e.core._pending_fixes import strict_acceptance
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _PRELUDE = "import json, os, sys\nsys.path.insert(0, os.getcwd())\n"
 
 # PR -> (extra env, script). A script prints ``open`` while the defect reproduces, ``fixed`` once
 # it no longer does; anything else (including a crash) fails the cell that asked.
-PROBES: Dict[int, tuple] = {
+PROBES: dict[int, tuple] = {
     # No timezone configured: the next cron occurrence kept the base time's fixed UTC offset, so a
     # 09:00 job in a DST process zone fired at 10:00 local the day after spring-forward.
     119970: ({"TZ": "America/New_York"}, r'''
@@ -51,7 +53,7 @@ print("fixed" if nxt == "2026-03-08T09:00:00-04:00" else "open")
 }
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def gap_open(pr: int) -> bool:
     """True while the defect PR ``pr`` fixes still reproduces on this tree."""
     extra_env, script = PROBES[pr]
@@ -63,7 +65,7 @@ def gap_open(pr: int) -> bool:
         env.update({"HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
                     "PYTHONPATH": str(REPO_ROOT), **extra_env})
         proc = subprocess.run([sys.executable, "-c", _PRELUDE + script], cwd=str(REPO_ROOT), env=env,
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=False)
     verdict = proc.stdout.strip().splitlines()[-1:] if proc.returncode == 0 else []
     if verdict not in (["open"], ["fixed"]):
         raise AssertionError(f"probe for #{pr} is broken (rc={proc.returncode}): "
@@ -77,11 +79,12 @@ def known_failure(pattern: str, reason: str,
     """Run-time xfail for a live gap without a fix PR: an ``AssertionError`` raised inside the
     block whose message matches ``pattern`` XFAILs the cell; any other failure propagates, and a
     clean pass stays a pass. Wrap only the final assertions, after every wait has settled, so a
-    lost reply, a failed restart or a timeout can never be mistaken for the gap."""
+    lost reply, a failed restart or a timeout can never be mistaken for the gap. Strict
+    acceptance refuses owned gaps before running any xfail-only bookkeeping."""
     try:
         yield
     except AssertionError as exc:
-        if not re.search(pattern, str(exc)):
+        if not re.search(pattern, str(exc)) or strict_acceptance(reason):
             raise
         if on_xfail is not None:
             on_xfail()

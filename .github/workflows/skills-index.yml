@@ -19,7 +19,7 @@ jobs:
   build-index:
     # Only run on the upstream repository, not on forks
     if: github.repository == 'NousResearch/hermes-agent'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Critical path (Sep 2026): clawhub walk ∥ github taps ~8 min, then skills.sh
     # resolve ~6 min, then a bounded 8 min owner enrichment. 15 min cancelled every
     # scheduled run for two months and left the live index frozen; on Sep 17 ClawHub
@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 120
     environment: trusted-automation
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
 
       - name: Get GitHub App token
         id: app-token
@@ -71,7 +71,7 @@ jobs:
         run: python website/scripts/fetch-plugin-stars.py --probe
 
       - name: Upload index artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: skills-index
           path: |
@@ -85,7 +85,7 @@ jobs:
   trigger-deploy:
     needs: build-index
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     environment: trusted-automation
     steps:
@@ -93,7 +93,7 @@ jobs:
       # (./.github/actions/get-app-token) and cannot resolve without the repo
       # checked out. `build-index` above already does this; this job did not,
       # so the scheduled deploy re-trigger never fired.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
 
       - name: Get GitHub App token
         id: app-token

@@ -1,0 +1,25 @@
+name: upstash
+title: Upstash Memory
+repo: https://github.com/upstash/agentkit
+sha: 1a189315684e2458ce5514e74c1a1e1edee79518
+subdir: python/hermes-memory
+version: "0.2.2"
+description: "Long-term memory and searchable chat history for Hermes on Upstash Redis Search (BM25, no vector database or embeddings). Recalls related memories into each turn, saves every session as a searchable transcript, mirrors the built-in memory tool (adds, corrections and removals), and gives the model upstash_memory_save / upstash_memory_search / upstash_memory_forget and upstash_chat_search. Memories use the same keys as @upstash/agentkit-sdk, so they are shared with AgentKit apps on the same database. Works on the Upstash Free plan (one search index). Disclosure — memories and full chat transcripts are written to the Upstash Redis database you configure (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN) and sent to it over HTTPS on every turn; nothing else is contacted. Telemetry is opt-in and off by default: UPSTASH_HERMES_TELEMETRY=1 adds SDK, Python version and platform tags to request headers sent to that same database."
+maintainer: Upstash
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+docs_url: https://github.com/upstash/agentkit/tree/main/python/hermes-memory#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - upstash_memory_save
+    - upstash_memory_search
+    - upstash_memory_forget
+    - upstash_chat_search
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - UPSTASH_REDIS_REST_URL
+    - UPSTASH_REDIS_REST_TOKEN

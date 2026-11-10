@@ -22,6 +22,10 @@ export default defineConfig({
   timeout: 180_000,
   expect: { timeout: 60_000 },
   retries: 0,
+  /* A required lane must also refuse a stray `.only`, not just stop
+   * retrying it: `forbidOnly: true` unconditionally — locally and in CI —
+   * because a focused test here would silently shrink a required job. */
+  forbidOnly: true,
   workers: 1,
   fullyParallel: false,
   reporter: [['list'], ['html', { open: 'never', outputFolder: '../../playwright-report/core' }]],

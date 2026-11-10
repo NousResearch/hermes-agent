@@ -65,7 +65,7 @@ Hermes 存储 session 历史以便恢复对话，但不会在每次对话时重�
 | `weixin` | 微信（个人版） |
 | `bluebubbles` | 通过 BlueBubbles macOS 服务器的 Apple iMessage |
 | `qqbot` | QQ Bot（腾讯 QQ）通过官方 API v2 |
-| `homeassistant` | Home Assistant 对话 |
+| `homeassistant` | Home Assistant 事件（插件） |
 | `webhook` | 传入 webhook |
 | `api-server` | API 服务器请求 |
 | `acp` | ACP 编辑器集成 |
@@ -301,7 +301,7 @@ hermes sessions export session.jsonl --session-id 20250305_091523_a1b2c3d4
 hermes sessions export backup.jsonl --redact
 ```
 
-导出文件每行包含一个 JSON 对象，包含完整的 session 元数据和所有消息。
+导出文件每行包含一个 JSON 对象，包含完整的 session 元数据和每一条已存储的消息，每条都带有 `active`/`compacted` 标记。其中包括原地压缩归档的轮次，以及被 rewind 或编辑移除的消息。导入该文件（dashboard 的 session 导入）时，这些行会恢复为已归档的历史，而不会成为活跃的模型上下文。CLI 和消息平台的 `/save json` 快照同样如此。请把备份视为包含该 session 曾经有过的全部内容；要分享对话，请用 `--redact` 导出显示格式（`--format md` 或 `html`，只包含 session 显示的历史）。每个 session 的备份在内存中构建，因此已存储行数超过 `sessions.max_export_messages` 的 session 会被拒绝。
 
 #### HTML
 

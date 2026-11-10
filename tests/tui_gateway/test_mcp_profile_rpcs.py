@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 @pytest.fixture
@@ -138,13 +138,45 @@ def test_status_is_profile_scoped_and_credential_safe(hermes_root):
             "status": "configured",
             "source": "config",
             "plugin": None,
+            "needs_auth": False,
         }
     ]
     assert "error" not in str(payload)
 
 
+def test_status_reports_parked_servers_and_flags_rejected_oauth(hermes_root):
+    """Desktop's background health toast reads this flag instead of probing (#89576, #142406)."""
+    from tools import mcp_tool
+
+    for name in ("expired", "offline", "dropped"):
+        _result(_call("mcp.servers.add", {"name": name, "config": {"url": f"https://{name}.example/mcp"}}))
+    expired, offline, dropped = (mcp_tool.MCPServerTask(n) for n in ("expired", "offline", "dropped"))
+    expired._auth_park = (object(), "stamp")
+    # Connected once, then parked after reconnects ran out: no connect error is recorded.
+    dropped._park_reason = "from parked state"
+    with mcp_tool._lock:
+        saved_servers, saved_errors = dict(mcp_tool._servers), dict(mcp_tool._server_connect_errors)
+        mcp_tool._servers.update(expired=expired, offline=offline, dropped=dropped)
+        mcp_tool._server_connect_errors.update(expired="401 Unauthorized", offline="All connection attempts failed")
+
+    try:
+        payload = _result(_call("mcp.servers.status", {}))
+    finally:
+        with mcp_tool._lock:
+            mcp_tool._servers.clear()
+            mcp_tool._servers.update(saved_servers)
+            mcp_tool._server_connect_errors.clear()
+            mcp_tool._server_connect_errors.update(saved_errors)
+
+    rows = {row["name"]: row for row in payload["servers"]}
+    assert (rows["expired"]["status"], rows["expired"]["needs_auth"]) == ("failed", True)
+    assert (rows["offline"]["status"], rows["offline"]["needs_auth"]) == ("failed", False)
+    assert (rows["dropped"]["status"], rows["dropped"]["needs_auth"]) == ("failed", False)
+    assert "Unauthorized" not in str(payload) and "attempts" not in str(payload)
+
+
 def test_status_does_not_mix_launch_runtime_into_another_profile(hermes_root):
-    import tools.mcp_tool as mcp_tool
+    from tools import mcp_tool
 
     _result(
         _call(
@@ -184,7 +216,7 @@ def test_status_includes_named_profile_runtime_in_multiplex(hermes_root):
         reset_hermes_home_override,
         set_hermes_home_override,
     )
-    import tools.mcp_tool as mcp_tool
+    from tools import mcp_tool
 
     _result(
         _call(
@@ -459,7 +491,7 @@ def test_unknown_preset_returns_4063_and_writes_nothing(hermes_root):
 
 
 def test_cli_preset_still_fills_transport_when_not_in_catalog(hermes_root):
-    import hermes_cli.mcp_config as mcp_config
+    from hermes_cli import mcp_config
     from hermes_cli.mcp_catalog import get_entry
 
     preset_name = next(
@@ -501,7 +533,7 @@ def test_test_resolves_env_refs_from_requested_profile_secret_scope(hermes_root,
     secret scope, not the launch process's ``os.environ`` (the default profile's value) — the
     Desktop MCP setup "Test connection" otherwise reports green against the wrong credential.
     ``os.environ`` is never mutated by the scope."""
-    import hermes_cli.mcp_config as mcp_config
+    from hermes_cli import mcp_config
 
     work = hermes_root / "profiles" / "work"
     (work / ".env").write_text("ALPHA_ONLY_TOKEN=work-token\n", encoding="utf-8")

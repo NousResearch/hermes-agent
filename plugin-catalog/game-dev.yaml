@@ -1,0 +1,19 @@
+name: game-dev
+repo: https://github.com/123mikeyd/hermes-game-dev
+sha: d9d82477cf67ec14ec51cc88b3dd14e4430edd9f
+version: "0.1.0"
+title: Game Dev
+maintainer: 123mikeyd
+tier: community
+category: tools
+description: "Read-only project inspection and asset audits with playable-slice, asset-production, and verification skills. Disclosure — lists file names and sizes under any absolute project path the agent supplies (skipping hidden, symlinked and credential-named entries), reads that project's project.godot/export_presets.cfg and, on request, hashes asset files; no writes, no shell commands, no network calls."
+docs_url: https://github.com/123mikeyd/hermes-game-dev#readme
+readme: true
+capabilities:
+  provides_tools:
+    - game_dev_inspect
+    - game_dev_asset_audit
+    - game_dev_checklist
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

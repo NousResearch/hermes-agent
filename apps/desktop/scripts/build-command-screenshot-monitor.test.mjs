@@ -20,7 +20,7 @@ describe('buildCommandScreenshotMonitor argv', () => {
   it('uses the paired sysroot or delegates SDK selection to xcrun', () => {
     for (const sysroot of ['/Developer/SDKs/MacOSX.sdk', null]) {
       const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'csm-argv-'))
-      const staging = path.resolve(distDir, `native/command-screenshot-monitor.${process.pid}.tmp`)
+      const staging = path.resolve(distDir, `native/command-screenshot-monitor.${process.pid}.tmp/command-screenshot-monitor`)
       fs.mkdirSync(path.dirname(staging), { recursive: true })
       fs.writeFileSync(staging, 'staged')
 

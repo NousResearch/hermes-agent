@@ -111,7 +111,7 @@ class TestPreflightAcceptsArrayOutput:
             },
         ]
         normalized = _preflight_codex_input_items(raw)
-        out = [it for it in normalized if it.get("type") == "function_call_output"][0]
+        out = next(it for it in normalized if it.get("type") == "function_call_output")
         assert isinstance(out["output"], list)
         assert len(out["output"]) == 2
         assert out["output"][1]["type"] == "input_image"
@@ -134,7 +134,7 @@ class TestPreflightAcceptsArrayOutput:
             },
         ]
         normalized = _preflight_codex_input_items(raw)
-        out = [it for it in normalized if it.get("type") == "function_call_output"][0]
+        out = next(it for it in normalized if it.get("type") == "function_call_output")
         # The "garbage" part is dropped; valid parts remain
         types = [p.get("type") for p in out["output"]]
         assert types == ["input_text", "input_image"]

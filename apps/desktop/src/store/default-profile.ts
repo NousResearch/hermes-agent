@@ -50,6 +50,12 @@ export async function setDefaultProfile(route: DesktopProfileRoute): Promise<Des
   return saved
 }
 
+/** This window rewrote the startup route (profile rename or delete). */
+export function noteDefaultProfileRoute(route: DesktopProfileRoute | null): void {
+  revision += 1
+  publish(route)
+}
+
 export function subscribeDefaultProfile(): (() => void) | undefined {
   return window.hermesDesktop?.profile?.onDefaultChanged?.(route => {
     revision += 1

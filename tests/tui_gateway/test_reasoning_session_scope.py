@@ -77,6 +77,14 @@ class TestSessionInfoReasoningEffort:
         info = _session_info(glm53)
         assert (info["reasoning_effort"], info["reasoning_effort_wire"]) == ("xhigh", "max")
 
+    def test_disabled_non_glm_codex_does_not_claim_a_low_wire_effort(self) -> None:
+        """Only GLM-5.3 custom routes translate Off into a sent low effort."""
+        glm = _agent({"enabled": False}, provider="custom:mc", model="glm-5.3-flash")
+        astra = _agent({"enabled": False}, provider="openai-codex",
+                       model="gpt-6-astra", api_mode="codex_responses")
+        assert _session_info(glm)["reasoning_effort_wire"] == "low"
+        assert _session_info(astra)["reasoning_effort_wire"] == ""
+
 
 class TestConfigSetReasoningSessionScope:
     """Session-targeted reasoning changes must not touch global config."""

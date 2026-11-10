@@ -68,3 +68,19 @@ def test_glm53_xhigh_reports_the_top_wire_effort():
         'https://ark.cn-beijing.volces.com/api/coding/v3', 'chat_completions',
     )
     assert (fields['reasoning_effort'], fields['reasoning_effort_wire']) == ('xhigh', 'max')
+
+
+def test_forced_glm53_is_the_only_disabled_route_reporting_a_wire_floor():
+    """The UI cannot infer a sent low effort from a Codex route that omits it."""
+    from gateway.session_local import effort_fields
+
+    glm = effort_fields(
+        {'enabled': False}, '', 'glm-5.3-flash', 'custom:mc',
+        'https://ark.cn-beijing.volces.com/api/coding/v3', 'chat_completions',
+    )
+    astra = effort_fields(
+        {'enabled': False}, '', 'gpt-6-astra', 'openai-codex',
+        'https://api.openai.com/v1', 'codex_responses',
+    )
+    assert (glm['reasoning_effort'], glm['reasoning_effort_wire']) == ('none', 'low')
+    assert (astra['reasoning_effort'], astra['reasoning_effort_wire']) == ('none', '')

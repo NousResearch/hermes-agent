@@ -1,0 +1,31 @@
+name: hermes-village
+repo: https://github.com/tuancookiez-hub/hermes-incremental-village
+sha: 229f05136df7489e6f2317b01aaf36bba7134b49
+title: Hermes Incremental Village
+description: "A 3D Stone Age village in Hermes Desktop whose villagers are played by Hermes. You are their guide, not their god: you plant ideas, set a focus and give advice, and the villagers decide. Each villager sees only nearby tiles and plans its own day; the game validates every action and owns time, resources and death. The land is endless and starts dark, resources are finite, winter kills, and days you miss are worked out for free when you return. Ships a Desktop page (three.js r187 bundled, inside the plugin SDK surface), backend routes, a /village command and 4 agent tools. Disclosure: model calls happen only when you ask for a council (one batched structured call for all villagers, about 3-5k tokens) and are refused before the call if they would pass the daily token budget you set (default 30,000); councils are refused in cron runs. No network requests of its own, no downloads, no telemetry, no background work, no credentials. The save and token ledger live in Hermes plugin storage. An optional Rust build of the same rules is in the repository; the plugin never downloads or builds it and runs on plain Python without it."
+maintainer: tuancookiez-hub
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.11.0"
+docs_url: https://github.com/tuancookiez-hub/hermes-incremental-village/tree/229f05136df7489e6f2317b01aaf36bba7134b49
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/229f05136df7489e6f2317b01aaf36bba7134b49/docs/images/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/229f05136df7489e6f2317b01aaf36bba7134b49/docs/images/village.jpg
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/229f05136df7489e6f2317b01aaf36bba7134b49/docs/images/first-days.jpg
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/229f05136df7489e6f2317b01aaf36bba7134b49/docs/images/people.jpg
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/229f05136df7489e6f2317b01aaf36bba7134b49/docs/images/ideas.jpg
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/229f05136df7489e6f2317b01aaf36bba7134b49/docs/images/story.jpg
+platforms: []
+capabilities:
+  provides_tools:
+    - village_status
+    - village_guide
+    - village_habit_day
+    - village_plan_day
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "After installing, restart Hermes so the backend routes mount, then turn the plugin on under Capabilities → Plugins in Desktop."
+  - "Without councils the villagers only survive on habits; they need councils (model calls you choose to make) to learn and build beyond a lean-to."

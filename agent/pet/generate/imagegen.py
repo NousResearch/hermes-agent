@@ -114,7 +114,8 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
         if (sprite := _candidate(name)) is not None:
             return sprite
     # The scan above found Nous unable to serve; when it is configured, that means its Krea model
-    # lacks the Krea backend. Raised before the prompt-only fallback, which would hit the Portal.
+    # lacks the Krea backend. Raised before the prompt-only fallback, which would send the Krea id
+    # to another backend (FAL swaps in its default model; the Portal 404s on it).
     if _available(NOUS_MANAGED_PROVIDER) is not None:
         raise GenerationError(
             "The selected Nous image model needs the Krea gateway, but that backend is "

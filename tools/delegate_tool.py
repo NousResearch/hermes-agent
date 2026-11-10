@@ -878,14 +878,20 @@ _LIVE_CONTROL_PARAMS = frozenset({"action", "subagent_id", "message"})
 
 
 def oneshot_delegate_function(function: dict) -> dict:
-    """A built delegate_task definition minus live control, for a one-shot session (agent/oneshot_footprint.py):
-    its children are joined inside the call, so ``action`` list/steer/stop never has a running child to reach and
-    the background-delivery paragraph never applies. The handler still accepts those arguments."""
+    """A built delegate_task definition minus live control and ``group``, for a one-shot or inline-gateway session
+    (agent/oneshot_footprint.py): its children are joined inside the call, so ``action`` list/steer/stop never has a
+    running child to reach, ``group`` never changes delivery, and the background-delivery paragraph never applies.
+    The handler still accepts those arguments."""
     description = function.get("description") or ""
     for delivery in (_DELIVERY_INDEPENDENT, _DELIVERY_JOINED):
         description = description.replace(_DESCRIPTION_DELIVERY.format(delivery=delivery), _ONESHOT_DESCRIPTION_DELIVERY)
     params = function["parameters"]
     properties = {k: v for k, v in params["properties"].items() if k not in _LIVE_CONTROL_PARAMS}
+    items = properties["tasks"]["items"]
+    properties["tasks"] = {**properties["tasks"], "items": {
+        **items, "properties": {k: v for k, v in items["properties"].items() if k != "group"},
+        "required": [k for k in items["required"] if k != "group"],
+    }}
     return {**function, "description": description, "parameters": {**params, "properties": properties}}
 
 

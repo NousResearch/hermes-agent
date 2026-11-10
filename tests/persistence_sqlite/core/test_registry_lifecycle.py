@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import sqlite_safe_read
-from hermes_state_errors import StateDbReplacedError
+from persistence.sqlite._state.errors import StateDbReplacedError
 from persistence.sqlite import _registry as registry
 from persistence.sqlite._holder import StoreHolder
 

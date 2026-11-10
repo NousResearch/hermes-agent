@@ -314,20 +314,23 @@ from the last commit that shipped the layer.
 
 ### `hermes_state` deprecated: use the storage interface
 
-Session storage sits behind a storage interface: typed contracts in `persistence/` and one entry point, `persistence_assembly`. Hermes's own code no longer calls the `SessionDB` class or the `hermes_state_*` modules. They stay for outside plugins under the [deprecation policy](#deprecation-policy) above: until their removal, `SessionDB` and the `hermes_state_*` modules open the same store and run their own SQL against it. The table below gives the storage interface replacement for each `hermes_state` name a plugin may use.
+Session storage sits behind a storage interface: typed contracts in `persistence/` and one entry point, `persistence_assembly`. The `SessionDB` class and the `hermes_state_*` modules are removed. For outside plugins, `hermes_state` and `hermes_state_registry` stay as temporary compatibility modules under the [deprecation policy](#deprecation-policy) above. They forward the names in the table below to the storage interface and hold no SQL or database connection of their own.
 
-- The module is supported through v0.24, v0.25 and v0.26 and removed no earlier than v0.27.0.
-- Names not in the table are internal helpers of the old store; a plugin should not use them.
+- The first use of a name from either module warns once per process, naming the replacement and the removal release.
+- The modules are supported through v0.24, v0.25 and v0.26 and removed no earlier than v0.27.0.
+- Names not in the table are not carried: the old class's mixins and the SQLite backend's own helpers have no public replacement, and `hermes plugins validate` reports an import of one.
 
 | `hermes_state` name | Replacement |
 |---|---|
-| `SessionDB()`, `SessionDB(db_path=path)` | `persistence_assembly.open_persistence(profile_scope())`, `open_persistence(profile_scope(home=path.parent))`; release the handle with `close()` or a `with` block |
+| `SessionDB()`, `SessionDB(db_path=path)` | `persistence_assembly.open_persistence(profile_scope())`, `open_persistence(profile_scope(home=path.parent))`; release the handle with `close()` or a `with` block. An agent given a `SessionDB` as `session_db` borrows the handle it holds when the agent is built, so keep that `SessionDB` open for the agent's life: its `close()` releases the handle, and its reopen after `close()` gives the agent no new one |
 | `SessionDB(read_only=True)` | `with open_persistence_reader(profile_scope().profile_dir) as store:` (never creates, migrates or repairs the store) |
 | `AsyncSessionDB(db)` | `store.aio`: the same repositories, awaitable, each call run off the event loop |
 | `DEFAULT_DB_PATH` | `persistence_assembly.store_location(profile_scope())` |
 | `create_session`, `end_session`, `reopen_session` | `store.sessions.create(NewSession(...))`, `store.sessions.end`, `store.sessions.reopen` |
 | `append_message` | `store.messages.append(session_id, NewMessage(...))` |
+| `hermes_state_registry.acquire(db_path=None)`, `release(db)`, `release_or_close(db)` | `open_persistence(profile_scope())` and the handle's `close()`; the stand-in's `acquire` opens a `SessionDB` of its own for each caller and both releases close it |
 | `get_messages` | `store.messages.read_transcript(session_id)`; `as_wire_row()` gives the old dict |
+| `list_gateway_sessions(platform=None, active_only=True)` | `store.sessions.list_gateway_sessions(platform=..., active_only=...)`; `{**e.session.as_session_row(), "last_active": e.last_active}` gives each old dict |
 | `get_messages_as_conversation` | `store.messages.read_conversation(session_id)`; `as_openai_message()` gives each old dict |
 | `get_session` | `store.sessions.get(session_id)`; `as_session_row()` gives the old dict |
 | `list_sessions_rich`, `session_count` | `store.sessions.list_sessions(SessionQuery(...), SessionWindow(...))`, `store.sessions.count_sessions()` |
@@ -343,6 +346,12 @@ Session storage sits behind a storage interface: typed contracts in `persistence
 | `apply_wal_with_fallback`, `apply_database_pragmas` | the same names in `sqlite_support`, for a plugin's own SQLite file |
 | `storage_state`, `storage_corrupt_reason` | `persistence_assembly.storage_health(profile_scope()).storage_state()` |
 | `get_hermes_home`, `mkdir_under_hermes_home` | the same names in `hermes_constants` |
+| `format_session_db_unavailable`, `get_last_init_error` | the same names in `storage_user_copy` |
+| `resolved_max_resume_messages`, `resolved_max_export_messages` | the same names in `storage_limits` |
+| `preflight_db_writability`, `read_only_db_uri` | the same names in `sqlite_support`, for a plugin's own SQLite file |
+| `holder_pid_checkable`, `make_user_dir` | `process_identity.holder_pid_checkable`, `hermes_dir_acl.make_user_dir` |
+| `divert_session_transcript_jsonl(session_id, messages)` | `session_rescue.divert_session_transcript_jsonl(session_id, messages, sessions_dir=get_hermes_home() / "sessions")` |
+| `session_db`, the `SessionDB` a context engine's `bind_session_state` and `on_session_start` receive | `persistence`, the agent's store handle, passed beside it to a hook that accepts that keyword ([Context engine plugins](../context-engine-plugin.md#session-storage)) |
 
 `NewSession` and `SessionQuery`/`SessionWindow` come from `persistence.conversation.sessions`; `NewMessage` and `ReplaceMode` from `persistence.conversation.messages`. A dashboard route that listed sessions migrates like this:
 
@@ -1644,7 +1653,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_session_end` | `agent/turn_finalizer.py` `finalize_turn`; interrupted exits: `hermes_cli/cli_shutdown.py` `_invoke_interrupted_session_end`, `tui_gateway/session_lifecycle.py` `_finalize_session` |
 | `on_session_finalize` | `hermes_cli/lifecycle.py` `finalize_session`, called from `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`, `hermes_cli/cli_shutdown.py` `_notify_session_finalize`, `tui_gateway/session_lifecycle.py` `_notify_session_boundary` and `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._finalize_session_off_loop` |
 | `on_session_reset` | `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`; `tui_gateway/session_registry.py` `_start_session_services`; `gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`; `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
-| `on_session_delete` | `hermes_state_common.py` `emit_session_deleted` |
+| `on_session_delete` | `session_retention.py` `emit_session_deleted` |
 | `on_session_open` | `gateway/session_open.py` `_Open._deliver` |
 | `on_skill_lifecycle` | `tools/skill_usage.py` `_emit_skill_lifecycle` |
 | `subagent_start` | `tools/delegate_tool.py` `_build_child_agent` |

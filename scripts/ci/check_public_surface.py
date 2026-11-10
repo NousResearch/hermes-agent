@@ -34,6 +34,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from hermes_agent.compat.paths import original_path
+from scripts.code_health import gitio
 
 SRC_DIRS = ("agent", "gateway", "hermes_cli", "tools", "tui_gateway", "cron", "acp_adapter", "plugins", "hermes_agent")
 _TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def test_", re.MULTILINE)
@@ -45,18 +46,11 @@ def _git(*args: str) -> str:
 
 def _changed_py(base: str, head: str) -> list[tuple[str, str]]:
     """``(path at base, path at head)`` for every modified or renamed ``.py`` file; a moved file is
-    compared with its old self (``-l0``: no rename-detection limit, so a large move is still seen)."""
-    fields = _git("diff", "--name-status", "-z", "-M", "-l0", "--diff-filter=MR", base, head).split("\0")
-    pairs: list[tuple[str, str]] = []
-    i = 0
-    while i < len(fields) and fields[i]:
-        if fields[i].startswith("R"):
-            pairs.append((fields[i + 1], fields[i + 2]))
-            i += 3
-        else:
-            pairs.append((fields[i + 1], fields[i + 1]))
-            i += 2
-    return [(old, new) for old, new in pairs if new.endswith(".py")]
+    compared with its old self (``-l0``: no rename-detection limit, so a large move is still seen; a
+    file moved by a chunk is paired with its base file through ``MOVES``). The old-path files the shim
+    generator writes are left out: they are not the module any more."""
+    changes = gitio.changed_files(gitio.repo_root(Path.cwd()), base, head, "-l0")
+    return [(c.old, c.new) for c in changes if c.status in "MR" and c.new.endswith(".py")]
 
 
 def _show(rev: str, path: str) -> str | None:

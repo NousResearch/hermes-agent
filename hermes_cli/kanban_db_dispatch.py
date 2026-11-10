@@ -2797,15 +2797,23 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     for key in _VAR_MAP:
         env.pop(key, None)
 
-    # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml:
-    # without it the child's get_hermes_home() falls back to the DEFAULT
-    # profile root because `hermes -p` applies its override before
-    # hermes_constants is imported.
+    # Pin profile config before hermes_constants imports, matching `hermes -p` startup.
     if profile_home:
         env["HERMES_HOME"] = profile_home
         # A multiplexer dispatching for another profile must not hand it the launch
         # profile's .env settings / TERMINAL_* policy — a standalone dispatcher never would.
         strip_launch_profile_env(env, profile_home)
+    else:
+        # The child will resolve the profile; do not carry the launch policy
+        # across that boundary. Task-owned workspace and runtime pins follow.
+        from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+        from hermes_cli.env_loader import managed_dotenv_keys
+        # Managed dotenv is instance policy, not launch-profile residue.
+        managed_names = {key.upper() for key in managed_dotenv_keys()}
+        terminal_names = set(TERMINAL_CONFIG_ENV_MAP.values()) - managed_names
+        for key in list(env):
+            if key.upper() in terminal_names:
+                env.pop(key, None)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
@@ -2813,17 +2821,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"
-    # TERMINAL_CWD takes precedence over process cwd in file_tools and
-    # build_context_files_prompt; without it relative writes land in the gateway
-    # user's home and workers load the gateway's AGENTS.md. file_tools rejects
-    # relative / sentinel values, so only set a real absolute directory.
-    # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and context-file loader anchor on
-    # the workspace, not whatever cwd the dispatching gateway happened to export. The worker subprocess is
-    # already launched with cwd=workspace, but TERMINAL_CWD takes precedence over the process cwd in both
-    # file_tools._resolve_base_dir (#41312 — relative write_file paths were landing in the gateway user's
-    # home) and build_context_files_prompt (#34619 — workers loaded the dispatching gateway's AGENTS.md
-    # instead of the task's). Setting it to the workspace fixes both: the workspace is where the task's work
-    # actually happens.
+    # TERMINAL_CWD outranks process cwd in file_tools and build_context_files_prompt:
+    # pin a real workspace so writes and AGENTS.md never resolve in the gateway home
+    # (#41312, #34619). The CLI rejects relative and sentinel paths.
     if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
         env["TERMINAL_CWD"] = workspace
     if task.branch_name:

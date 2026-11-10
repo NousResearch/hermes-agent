@@ -392,11 +392,11 @@ def _profile_action_environment(
             _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
         )
         from hermes_cli.web_server_profiles import _resolve_profile_dir
-        from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
+        from hermes_constants import get_default_hermes_root
         from tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
         target_home = _resolve_profile_dir(profile)
-        action_env = build_subprocess_env(base=os.environ, scrub_secrets=True)
+        action_env = build_subprocess_env(scrub_secrets=True)
 
         profile_keys = set(_PROFILE_MANAGED_ENV_KEYS)
         try:
@@ -418,7 +418,11 @@ def _profile_action_environment(
         # Pin the child before import-time startup runs; the explicit -p flag stays authoritative
         # and resolves to the same validated directory.
         action_env["HERMES_HOME"] = str(target_home)
-        apply_subprocess_home_env(action_env)
+        from tools.environments.local import _apply_profile_home
+        from tools.terminal_scope import install_and_reset_profile_terminal_scope
+        # An action may target a different profile from the active dashboard turn.
+        with install_and_reset_profile_terminal_scope(target_home):
+            _apply_profile_home(action_env, explicit_home=str(target_home))
 
     action_env["HERMES_NONINTERACTIVE"] = "1"
     # A config.yaml allow_all_users grant bridged into os.environ must not outlive the config that

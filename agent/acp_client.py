@@ -115,7 +115,7 @@ def _build_subprocess_env() -> dict[str, str]:
     # See #29157.
     env = hermes_subprocess_env(inherit_credentials=True)
     env["HOME"] = _resolve_home_dir()
-    apply_subprocess_home_env(env)
+    apply_subprocess_home_env(env, use_terminal_scope=True)
     return env
 
 

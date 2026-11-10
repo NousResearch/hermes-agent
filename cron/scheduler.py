@@ -3692,14 +3692,20 @@ def _launch_external_cron_worker(job: dict) -> bool:
     profile_home = _get_hermes_home().resolve()
     # Same hydrate -> scope -> (routed) multiplex-context install the in-process fire uses, for exactly
     # the env build; the helper's reset order keeps the context from outliving its scope.
-    with _fire_secret_scope():
-        # No restore_managed_env here: the worker re-runs load_hermes_dotenv -> _apply_managed_env at
-        # import, and strip_launch_profile_env leaves managed keys in place.
-        worker_env = strip_launch_profile_env(build_subprocess_env(
-            scrub_secrets=multiplex_active,
-            inherit_profile_home=True,
-            extra={"HERMES_HOME": str(profile_home)},
-        ))
+    from tools.terminal_scope import install_and_reset_profile_terminal_scope
+    try:
+        with _fire_secret_scope(), install_and_reset_profile_terminal_scope(profile_home):
+            # The external handoff precedes run_one_job's in-process terminal scope.
+            # No restore_managed_env here: the worker re-runs load_hermes_dotenv -> _apply_managed_env at
+            # import, and strip_launch_profile_env leaves managed keys in place.
+            worker_env = strip_launch_profile_env(build_subprocess_env(
+                scrub_secrets=multiplex_active,
+                inherit_profile_home=True,
+                extra={"HERMES_HOME": str(profile_home)},
+            ))
+    except BaseException:
+        payload_path.unlink(missing_ok=True)
+        raise
     worker_env = systemd_user_bus_env(worker_env)
     # Unattended worker: the gateway sets HERMES_EXEC_ASK at startup (interactive launches set
     # the other two), and an inherited presence var makes every env-fallback consumer in the

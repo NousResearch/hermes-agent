@@ -1,6 +1,6 @@
 """Admission-owned production exec; observers never own the worker lifetime."""
 import asyncio
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from collections import deque
 from dataclasses import asdict, replace
 from functools import partial
@@ -396,7 +396,7 @@ def _prompt_frame(authority, ref, row, worker, frame):
     return True
 
 
-def _worker_env(authority):
+def _worker_env(authority, policy=None):
     """Child env for the OWNING profile under multiplex: its HERMES_HOME plus its ``.env``
     secrets over a scrubbed base, never the launch profile's process environment (the same
     rule MCP stdio children and shell hooks follow) — except for the launch profile's own
@@ -419,18 +419,28 @@ def _worker_env(authority):
     # its ``.env`` settings would otherwise reach the secondary's worker (cron/kanban rule).
     # Strip the RAW environ before the constructor injects this turn's own session/bridge context:
     # a launch ``.env`` name (HERMES_SESSION_ID...) must not erase a value derived for this turn.
-    env = build_subprocess_env(base=strip_launch_profile_env(os.environ.copy(), home), scrub_secrets=True)
-    secrets = build_profile_secret_scope(home)
-    if routed:
-        # Same rule as served_profile_child_env: env_passthrough / first-party carve-outs must not
-        # forward launch-process provider credentials that no .env or source snapshot recorded.
-        _scrub_credentials(env, inherit_credentials=False)
-    else:
-        secrets = {**_launch_env_only_credentials(home, env), **secrets}
-    env.update({k: v for k, v in secrets.items() if v is not None})
-    env['HERMES_HOME'] = str(home)
-    from hermes_constants import apply_subprocess_home_env
-    apply_subprocess_home_env(env)
+    from tools.environments.local import _apply_profile_home
+    from tools.terminal_scope import install_and_reset_profile_terminal_scope
+    bypass = policy is not None and policy.ignore_user_config
+    with ExitStack() as scopes:
+        # Recovery sessions must bind their frozen defaults before the first HOME factory too:
+        # an outer profile refusal must not block them, nor may ignored YAML shape bootstrap HOME.
+        if bypass:
+            scopes.enter_context(install_and_reset_profile_terminal_scope(home, prepared=json.loads(policy.terminal_json)))
+        env = build_subprocess_env(base=strip_launch_profile_env(os.environ.copy(), home), scrub_secrets=True, base_is_snapshot=True)
+        secrets = build_profile_secret_scope(home)
+        if routed:
+            # Same rule as served_profile_child_env: env_passthrough / first-party carve-outs must not
+            # forward launch-process provider credentials that no .env or source snapshot recorded.
+            _scrub_credentials(env, inherit_credentials=False)
+        else:
+            secrets = {**_launch_env_only_credentials(home, env), **secrets}
+        env.update({k: v for k, v in secrets.items() if v is not None})
+        env['HERMES_HOME'] = str(home)
+        # Ordinary receiving workers still resolve their profile freshly and fail closed.
+        if not bypass:
+            scopes.enter_context(install_and_reset_profile_terminal_scope(home))
+        _apply_profile_home(env, explicit_home=str(home))
     return env
 
 
@@ -582,13 +592,13 @@ async def _settle_lost(authority, row, scope, recording):
         await tracked_write(authority, partial(lose_admission_worker, authority, row, scope))
 
 
-async def _spawn_registered_worker(authority, ref, row):
+async def _spawn_registered_worker(authority, ref, row, policy=None):
     """Spawn the turn's child and register it for Stops: ``(worker, process)``, or None when the spawn was cancelled (the
     interrupted result is already recorded). The generation stays marked spawning until registration."""
     spawning = _mark_spawning(authority, ref, row)
     generation = row.get('generation')
     try:
-        env = await asyncio.to_thread(_worker_env, authority)
+        env = await asyncio.to_thread(_worker_env, authority, policy)
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
         from gateway.session_worker_spawn import acquire_process
         from gateway.session_managed_worker_log import worker_log_path
@@ -660,7 +670,7 @@ async def execute_managed(authority, ref, row, policy):
         return refusal
     if _stopped_before_spawn(authority, ref, row):
         return ''
-    spawned = await _spawn_registered_worker(authority, ref, row)
+    spawned = await _spawn_registered_worker(authority, ref, row, policy)
     if spawned is None:
         return ''
     worker, process = spawned

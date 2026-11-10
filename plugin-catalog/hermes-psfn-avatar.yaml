@@ -1,8 +1,8 @@
 name: hermes-psfn-avatar
 repo: https://github.com/axAilotl/hermes-psfn-avatar
-sha: 3decbf423586f8d98d3ef766b024564f28b770c9
+sha: 1789d591861f1777e6636e50e3ce5ea9cfd2730e
 title: PSFN 3D VRM Avatar
-description: "3D VRM VTuber and companion avatar overlay for Hermes Desktop and the Web Dashboard (Three.js + @pixiv/three-vrm, built-in articulated 3D Holo-Rig, 42 baked ARDY humanoid motion clips, 28 GoEmotions mood performances, lip-sync, touch reactions, and optional PSFN Lite continuous emotional-state bridge). Disclosure — stores avatar state and user-uploaded .vrm/.glb models under ~/.hermes/plugin-data/hermes-psfn-avatar/; when psfn_lite_bridge is enabled and ~/.hermes/psfn-lite.json configures a loopback garden endpoint, queries GET <garden.url>/api/lite/inner-life on localhost using the profile's secret scope; no external network calls, shell commands, or telemetry."
+description: "3D VRM VTuber and companion avatar overlay for Hermes Desktop and the Web Dashboard (Three.js + @pixiv/three-vrm, default DeepSeek-chan VRM 1.0 + built-in 3D Holo-Rig fallback, 42 baked ARDY humanoid motion clips, 28 GoEmotions mood performances, real-time TTS lip-sync, eye/head gaze, touch reactions, and optional PSFN Lite continuous emotional-state bridge). Disclosure — stores avatar state and user-uploaded .vrm/.glb models under ~/.hermes/plugin-data/hermes-psfn-avatar/ and caches the default VRM in browser IndexedDB; fetches the default DeepSeek-chan VRM 1.0 from raw.githubusercontent.com/tegnike/deepseek-chan-vrm at pinned commit 3aceb037df7a8b8126efea89d3a75664d1af868d (verified by SHA-256 9fa455e48ee2271dc7c2b62f2f2edcd47709406ca89067b6f544979589958f42) and, when the local FastAPI plugin route is absent, fetches baked motion clips from raw.githubusercontent.com/axAilotl/hermes-psfn-avatar at pinned commit 7b9a7f7f677b2fd25ed889b56e5ec83055202463; when psfn_lite_bridge is enabled and ~/.hermes/psfn-lite.json configures a loopback garden endpoint, queries GET <garden.url>/api/lite/overview on localhost using the profile's secret scope; no shell commands, background daemons, or telemetry."
 maintainer: axAilotl
 tier: community
 category: desktop

@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+from agent.compaction_provenance import PROVENANCE_HEADING
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
@@ -190,9 +191,10 @@ def test_resume_handoff_after_default_protected_head_decays_initial_turns():
     assert "original follow-up before first compaction" in prompt
     assert f"[ASSISTANT]: {SUMMARY_PREFIX}" not in prompt
     # Grounding (761a0b124e) may prepend a deterministic task-snapshot
-    # section — pin the contract, not the exact stored string.
+    # section — pin the contract, not the exact stored string. The harness also appends a
+    # provenance block (cwd/branch/HEAD) after the model text, so the model's words end the body.
     stored_summary = compressor._previous_summary or ""
-    assert stored_summary.endswith("fresh summary")
+    assert stored_summary.split(PROVENANCE_HEADING)[0].rstrip().endswith("fresh summary")
     assert old_summary not in stored_summary
     assert all(
         "original task before first compaction" not in str(msg.get("content", ""))
@@ -475,7 +477,9 @@ def test_fallback_handoff_anchors_reach_the_next_summarizer():
     compressor = _compressor()
     with patch("agent.context_compressor.call_llm", return_value=_response("FIRST healthy summary")):
         messages = compressor.compress(_messages_with_handoff("seed summary"))
-    assert (compressor._previous_summary or "").endswith("FIRST healthy summary")
+    assert (compressor._previous_summary or "").split(PROVENANCE_HEADING)[0].rstrip().endswith(
+        "FIRST healthy summary"
+    )
 
     messages = messages + [
         {"role": "user", "content": "FALLBACK-ANCHOR-ASK please fix the parser"},

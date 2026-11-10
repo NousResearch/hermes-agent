@@ -58,6 +58,9 @@ class CompressionTelemetryMixin:
             "tool_results_pruned": None, "reasoning_items_pruned": None, "has_focus_topic": False,
             # True when the summary came from an opt-in prepared (background) pass (compression.prepare_ahead).
             "prepared_summary": False,
+            # Epistemic-stance section: counts only, set on the LLM-summary path (the deterministic
+            # fallback never has a model-authored section, so these stay None there).
+            "stance_section_present": None, "stance_hypothesis_lines": None, "stance_explicit_none": None,
         }
         self._active_compression_telemetry = self._last_compression_telemetry = telemetry
         return telemetry

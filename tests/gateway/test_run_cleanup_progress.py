@@ -420,3 +420,56 @@ async def test_one_slow_delete_does_not_strand_the_other_bubbles(monkeypatch):
     cleanup.register_bubble_cleanup({"final_response": "done"}, turn_ctx)
     await run_post_delivery_callback(adapter.pop_post_delivery_callback("k"), timeout=0.5)
     assert [d["message_id"] for d in adapter.deleted] == ["2"]
+
+
+@pytest.mark.asyncio
+async def test_hung_sender_delays_the_followup_by_at_most_the_cap(monkeypatch):
+    """A sender whose cancel-time flush never returns holds the handoff for the cap, not forever."""
+    from gateway import run_turn_bubble_cleanup as cleanup
+
+    async def _hung_sender():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()  # cancel-time edit that never returns
+
+    monkeypatch.setattr(cleanup, "DELETE_TIMEOUT_SECONDS", 0.1)
+    sender = asyncio.ensure_future(_hung_sender())
+    await asyncio.sleep(0)
+    started = time.monotonic()
+    await asyncio.wait_for(cleanup.settle_turn_senders(sender, None), timeout=2)
+    assert time.monotonic() - started < 1.0
+    await asyncio.sleep(0)
+    assert sender.done()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_turn_during_the_sender_wait_starts_no_followup():
+    """A cancel aimed at the turn (shutdown, /stop) while it waits on its senders must propagate."""
+    from gateway import run_turn_bubble_cleanup as cleanup
+
+    release = asyncio.Event()
+
+    async def _slow_sender():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    events = []
+
+    async def _turn(sender):
+        await cleanup.settle_turn_senders(sender)
+        events.append("follow-up started")
+
+    sender = asyncio.ensure_future(_slow_sender())
+    await asyncio.sleep(0)
+    turn = asyncio.ensure_future(_turn(sender))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    assert events == []
+    release.set()
+    await asyncio.sleep(0)

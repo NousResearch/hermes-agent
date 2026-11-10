@@ -11,7 +11,7 @@
 # The sha is the release: bump it (and `version`) in the same PR.
 name: prompt-firewall
 title: Prompt Firewall
-description: "Community security-preview plugin that detects and quarantines selected prompt-injection patterns in tool results and evaluates risky tool actions; limited to hook/Core enforcement semantics."
+description: "Community security-preview plugin that detects and quarantines selected prompt-injection patterns in tool results and evaluates risky tool actions; limited to hook/Core enforcement semantics. Disclosure — Rewrites tool results the agent sees: spans that match its injection heuristics are replaced with `[QUARANTINED:<category>]` markers, and output past its scan budget (or output it fails to scan) is withheld with a notice; may block or escalate to the Hermes approval prompt writes to protected config/instruction/credential paths, endpoint changes and commands that disable prompt-firewall; adds a fixed trust-boundary notice to every turn; appends metadata-only audit records (tool name, target path, reason) to `<HERMES_HOME>/logs/prompt-firewall.jsonl`. No network."
 repo: https://github.com/Gaijin-01/prompt-firewall
 sha: 9b63a4b81648ace74d2f12db77d5ae90a69164e6
 maintainer: Gaijin-01

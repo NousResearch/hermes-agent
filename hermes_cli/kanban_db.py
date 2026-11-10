@@ -3730,6 +3730,7 @@ def invalidate_descendants_for_parent_reopen(
 
 
 from hermes_cli.kanban_db_triage import (
+    TriageReleaseGuardConnection,
     TriageReleaseGuardResult,
     TriageReleaseReceipt,
     guarded_specify_triage_task,

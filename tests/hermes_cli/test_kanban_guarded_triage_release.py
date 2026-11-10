@@ -220,6 +220,39 @@ def test_guard_cannot_mutate_board(kanban_home):
         assert kb.list_comments(conn, task_id) == []
 
 
+def test_guard_cannot_execute_ddl_and_connection_remains_reusable(kanban_home):
+    with kbc.connect() as conn:
+        task_id = _create_triage(conn)
+
+        def ddl_guard(guard_conn, _task_id):
+            guard_conn.execute("CREATE TABLE escaped_guard_write (value TEXT)")
+            return kb.TriageReleaseGuardResult(True)
+
+        with pytest.raises(RuntimeError, match="read-only"):
+            kb.guarded_specify_triage_task(conn, task_id, guard=ddl_guard)
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'escaped_guard_write'"
+        ).fetchone() is None
+        assert kb.get_task(conn, task_id).status == "triage"
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+
+def test_guard_cannot_commit_or_release_transaction_lock(kanban_home):
+    with kbc.connect() as conn:
+        task_id = _create_triage(conn)
+
+        def commit_guard(guard_conn, _guarded_task_id):
+            guard_conn.execute("SELECT 1")
+            guard_conn.commit()
+            return kb.TriageReleaseGuardResult(True)
+
+        with pytest.raises(RuntimeError, match="read-only"):
+            kb.guarded_specify_triage_task(conn, task_id, guard=commit_guard)
+        assert kb.list_comments(conn, task_id) == []
+        assert kb.get_task(conn, task_id).status == "triage"
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+
 def test_not_in_triage_does_not_invoke_guard(kanban_home):
     with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="normal task")

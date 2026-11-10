@@ -463,6 +463,17 @@ def _require_own_dependencies(project_root: Path) -> None:
         raise NoCommittedEnvironment("no dependency environment is committed for this install")
 
 
+def _hosted_verdict_already_frozen() -> bool:
+    """True when a boot in this process has already frozen a hosted verdict. Read from
+    ``sys.modules`` only: importing ``hermes_cli.hosted_mode`` here would pull Hermes code
+    into the bootstrap, and a verdict can only be frozen once that module is loaded."""
+    import sys
+
+    hosted_mode = sys.modules.get("hermes_cli.hosted_mode")
+    frozen = getattr(hosted_mode, "hosted_verdict_frozen", None)
+    return bool(frozen is not None and frozen() is True)
+
+
 def activate_dependencies(project_root: Path) -> None:
     """Select the committed tree at process boot, before third-party imports.
 
@@ -505,22 +516,21 @@ def activate_dependencies(project_root: Path) -> None:
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
     # Site processing is a code load, not a path step: a .pth in the directory executes
     # import-time code, and this activation runs during the bootstrap — BEFORE the start
-    # command's fence arms, so the fence cannot see it. The guard runs only when the
-    # start command says hosted: the flag read is stdlib-only (this module may not import
-    # Hermes code beyond the fence, which itself imports only the stdlib), and with the
-    # flag present the predicate answers from its stdlib-only image-roots check — so a
-    # local bootstrap imports nothing new here. A hosted deployment's dependency
-    # environment must live inside the image (its interpreter's own site-packages); a
-    # boot that freezes a hosted verdict only later (an in-process host) never re-runs
-    # this activation, and the fence its boot installs prunes and judges every search
-    # entry from then on.
+    # command's fence arms, so the fence cannot see it. The guard runs whenever this process
+    # is hosted by either signal: the start command's hosted flag, or a hosted verdict a boot
+    # already froze (an in-process host that records its config before activating). Both
+    # reads are import-free — the flag is argv, and a frozen verdict can only exist once
+    # ``hermes_cli.hosted_mode`` is loaded, so it is read from ``sys.modules`` rather than
+    # imported (this module may not import Hermes code beyond the stdlib-only fence: a
+    # local bootstrap imports nothing new here). A hosted deployment's dependency
+    # environment must live inside the image (its interpreter's own site-packages).
     try:
         from hermes_cli.hosted_code_fence import (HostedCodeRefused, hosted_code_refusal,
                                                   hosted_start_flag_requested)
     except ModuleNotFoundError:
         pass  # a tree that ships no fence can start nothing hosted: the guard is vacuous
     else:
-        if hosted_start_flag_requested():
+        if hosted_start_flag_requested() or _hosted_verdict_already_frozen():
             refusal = hosted_code_refusal(selected)
             if refusal:
                 raise HostedCodeRefused(

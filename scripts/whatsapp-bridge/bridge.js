@@ -24,7 +24,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -138,6 +138,12 @@ const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); 
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const WHATSAPP_GROUP_POLICY = String(process.env.WHATSAPP_GROUP_POLICY || 'pairing').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+// Passive capture is deliberately ingress-only: every received message is
+// archived locally and is never enqueued for the Python agent.  This keeps a
+// linked personal account available to reporting jobs without typing bubbles,
+// read receipts, automated replies, or self-chat feedback loops.
+const PASSIVE_CAPTURE_FILE = String(process.env.WHATSAPP_PASSIVE_CAPTURE_FILE || '').trim();
+const PASSIVE_CAPTURE_ENABLED = Boolean(PASSIVE_CAPTURE_FILE);
 // Group authorization is by group JID, not by every participant's JID.  The
 // Python adapter still applies group policy and mention rules after intake.
 const GROUP_ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_GROUP_ALLOWED_USERS || '');
@@ -152,6 +158,29 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
+
+function capturePassiveEvent(event) {
+  if (!PASSIVE_CAPTURE_ENABLED) return;
+  try {
+    mkdirSync(path.dirname(PASSIVE_CAPTURE_FILE), { recursive: true, mode: 0o700 });
+    appendFileSync(PASSIVE_CAPTURE_FILE, `${JSON.stringify({
+      capturedAt: new Date().toISOString(),
+      direction: 'inbound',
+      chatId: event.chatId,
+      senderId: event.senderId,
+      senderName: event.senderName || '',
+      isGroup: Boolean(event.isGroup),
+      messageId: event.messageId || '',
+      timestamp: event.timestamp || null,
+      body: event.body || '',
+      hasMedia: Boolean(event.hasMedia),
+      mediaType: event.mediaType || '',
+      mediaUrls: event.mediaUrls || [],
+    })}\n`, { encoding: 'utf8', mode: 0o600 });
+  } catch (err) {
+    console.warn('[bridge] passive capture failed:', err.message);
+  }
+}
 
 // --- Send queue: serialise all sock.sendMessage() calls across concurrent
 //     HTTP handlers so a single Baileys socket never has overlapping sends.
@@ -717,7 +746,7 @@ async function startSocket() {
             })
           : WHATSAPP_DM_POLICY === 'pairing'
             || matchesAllowedSender(senderId, senderAltId, ALLOWED_USERS, SESSION_DIR);
-        if (!intakeAllowed) {
+        if (!intakeAllowed && !PASSIVE_CAPTURE_ENABLED) {
           try {
             writeJsonLine({
               event: 'ignored',
@@ -807,6 +836,38 @@ async function startSocket() {
         lookupQuotedMedia: (quotedChatId, quotedMessageId) => quotedMediaCache.get(quotedChatId, quotedMessageId),
       });
       event.fromOwner = fromOwner;
+
+      // Capture before admission. In passive mode this is the terminal
+      // ingress path: the event must never reach the agent adapter, because
+      // even a rejected event can otherwise trigger a typing indicator.
+      if (PASSIVE_CAPTURE_ENABLED && !msg.key.fromMe) {
+        capturePassiveEvent(event);
+        continue;
+      }
+
+      if (!msg.key.fromMe) {
+        const intakeAllowed = isGroup
+          ? matchesInboundWhatsAppGroup({
+              chatId,
+              groupPolicy: WHATSAPP_GROUP_POLICY,
+              groupAllowedUsers: GROUP_ALLOWED_USERS,
+              sessionDir: SESSION_DIR,
+            })
+          : WHATSAPP_DM_POLICY === 'pairing'
+            || matchesAllowedSender(senderId, senderAltId, ALLOWED_USERS, SESSION_DIR);
+        if (!intakeAllowed) {
+          try {
+            writeJsonLine({
+              event: 'ignored',
+              reason: isGroup ? 'group_policy_rejected' : 'allowlist_mismatch',
+              chatId,
+              senderId,
+              senderAltId,
+            });
+          } catch {}
+          continue;
+        }
+      }
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
       if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {

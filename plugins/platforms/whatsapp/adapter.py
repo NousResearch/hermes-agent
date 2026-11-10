@@ -390,7 +390,7 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_REQUIRE_MENTION",
     "WHATSAPP_MENTION_PATTERNS", "WHATSAPP_FREE_RESPONSE_CHATS", "WHATSAPP_DEBUG",
     "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH",
-    "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
+    "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS", "WHATSAPP_PASSIVE_CAPTURE_FILE",
 )
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
@@ -587,6 +587,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 bridge_env[_key] = _v
             else:
                 bridge_env.pop(_key, None)
+        # A profile-scoped flag enables passive capture, while its destination
+        # remains deterministic and private to that profile's WhatsApp state.
+        if _wenv("WHATSAPP_PASSIVE_CAPTURE_FILE"):
+            bridge_env["WHATSAPP_PASSIVE_CAPTURE_FILE"] = str(
+                self._session_path.parent / "passive-capture.jsonl"
+            )
         # bridge.js gates DMs BEFORE Python sees them: it must run the same dm_policy / allow_from the
         # adapter resolved (scoped env → this profile's YAML → default), or a secondary's YAML
         # ``dm_policy: pairing`` runs under the default profile's allowlist and drops valid pairing DMs.

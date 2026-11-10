@@ -24,6 +24,8 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import build_session_key
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 # ── Fake telegram.error hierarchy ──────────────────────────────────────
@@ -869,14 +871,12 @@ async def test_reply_into_dead_private_topic_reaches_chat_root_and_prunes_bindin
     """Topics turned off client-side: a private-topic reply is tried by thread id, then lands in the
     chat root without the dead topic's anchor, and the stale binding is pruned so inbound recovery
     stops steering into it."""
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.enable_telegram_topic_mode(chat_id="123", user_id="123")
-    db.create_session(session_id="s1", source="telegram", user_id="123")
-    db.bind_telegram_topic(chat_id="123", thread_id="20197", user_id="123", session_key="k", session_id="s1")
+    db = storage_handle(tmp_path)
+    db.routing.enable_topic_mode(chat_id="123", user_id="123")
+    seed_session(db, "s1", "telegram", user_id="123")
+    db.routing.bind_topic(chat_id="123", thread_id="20197", user_id="123", session_key="k", session_id="s1")
     adapter = _make_adapter()
-    adapter._session_store = SimpleNamespace(_db=db)
+    adapter._session_store = SimpleNamespace(persistence=db)
     call_log = []
 
     async def mock_send_message(**kwargs):
@@ -897,8 +897,8 @@ async def test_reply_into_dead_private_topic_reaches_chat_root_and_prunes_bindin
     assert routes[0] == (20197, None, 462)
     assert all(c.get("direct_messages_topic_id") is None for c in call_log)
     assert routes[-1] == (None, None, None)
-    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
-    assert db.is_telegram_topic_mode_enabled(chat_id="123", user_id="123") is False
+    assert db.routing.get_topic_binding(chat_id="123", thread_id="20197") is None
+    assert db.routing.is_topic_mode_enabled(chat_id="123", user_id="123") is False
 
 
 def _anchor_and_topic_gone_bot(call_log, method):
@@ -972,12 +972,10 @@ _GATEWAY_META = {**_GONE_META, "direct_messages_topic_id": "20197"}
 
 
 def _topic_db(tmp_path):
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.enable_telegram_topic_mode(chat_id="123", user_id="123")
-    db.create_session(session_id="s1", source="telegram", user_id="123")
-    db.bind_telegram_topic(chat_id="123", thread_id="20197", user_id="123", session_key="k", session_id="s1")
+    db = storage_handle(tmp_path)
+    db.routing.enable_topic_mode(chat_id="123", user_id="123")
+    seed_session(db, "s1", "telegram", user_id="123")
+    db.routing.bind_topic(chat_id="123", thread_id="20197", user_id="123", session_key="k", session_id="s1")
     return db
 
 
@@ -992,7 +990,7 @@ async def test_private_topic_unconfirmed_failure_keeps_binding_and_skips_root(tm
     monkeypatch.setattr("asyncio.sleep", _no_sleep)
     db = _topic_db(tmp_path)
     adapter = _make_adapter()
-    adapter._session_store = SimpleNamespace(_db=db)
+    adapter._session_store = SimpleNamespace(persistence=db)
     call_log = []
 
     async def mock_send_message(**kwargs):
@@ -1009,7 +1007,7 @@ async def test_private_topic_unconfirmed_failure_keeps_binding_and_skips_root(tm
 
     assert result.success is False
     assert call_log and all(c.get("message_thread_id") == 20197 for c in call_log), call_log
-    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is not None
+    assert db.routing.get_topic_binding(chat_id="123", thread_id="20197") is not None
 
 
 @pytest.mark.asyncio
@@ -1041,7 +1039,7 @@ async def test_dead_private_topic_reaches_root_with_prune_and_fallback_flag_not_
     themselves, prune the dead binding and (text) report ``thread_fallback`` for cron's note."""
     db = _topic_db(tmp_path)
     adapter = _make_adapter()
-    adapter._session_store = SimpleNamespace(_db=db)
+    adapter._session_store = SimpleNamespace(persistence=db)
     call_log = []
 
     async def mock_send_message(**kwargs):
@@ -1058,15 +1056,15 @@ async def test_dead_private_topic_reaches_root_with_prune_and_fallback_flag_not_
     assert result.success is True and result.raw_response["thread_fallback"] is True
     assert [(c.get("message_thread_id"), c.get("direct_messages_topic_id")) for c in call_log] == [
         (20197, None), (20197, None), (None, None)]
-    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
+    assert db.routing.get_topic_binding(chat_id="123", thread_id="20197") is None
 
-    db.bind_telegram_topic(chat_id="123", thread_id="20197", user_id="123", session_key="k", session_id="s1")
+    db.routing.bind_topic(chat_id="123", thread_id="20197", user_id="123", session_key="k", session_id="s1")
     call_log.clear()
     await adapter._send_control_message("123", "control", parse_mode=None, thread_id="20197", metadata=dict(_GATEWAY_META))
 
     assert [(c.get("message_thread_id"), c.get("direct_messages_topic_id"), c.get("reply_to_message_id"))
             for c in call_log] == [(20197, None, 462), (None, None, None)]
-    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is None
+    assert db.routing.get_topic_binding(chat_id="123", thread_id="20197") is None
 
 
 @pytest.mark.asyncio
@@ -1156,7 +1154,7 @@ async def test_private_topic_media_flake_retries_same_thread_first(tmp_path):
     neither moves to the native DM-topic id (#87051) nor loses its binding."""
     db = _topic_db(tmp_path)
     adapter = _make_adapter()
-    adapter._session_store = SimpleNamespace(_db=db)
+    adapter._session_store = SimpleNamespace(persistence=db)
     call_log = []
 
     async def _flake_once(**kwargs):
@@ -1172,7 +1170,7 @@ async def test_private_topic_media_flake_retries_same_thread_first(tmp_path):
 
     assert result.success is True
     assert [(c.get("message_thread_id"), c.get("direct_messages_topic_id")) for c in call_log] == [(20197, None), (20197, None)]
-    assert db.get_telegram_topic_binding(chat_id="123", thread_id="20197") is not None
+    assert db.routing.get_topic_binding(chat_id="123", thread_id="20197") is not None
 
 
 @pytest.mark.asyncio

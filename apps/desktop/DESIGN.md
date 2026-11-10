@@ -85,8 +85,10 @@ the display name. The group uses the finished Desktop 10 Figma hierarchy
 (`147:7470`): 20px agent tiles, names and session titles aligned 38px from the
 group edge, and a guide 20px from that edge. The robot is the exported Figma
 vector, not a replacement codicon; each profile retains its chosen tile color.
-Agent hover and keyboard focus brighten only the name, without a row background;
-embedded actions stay transparent and independently clickable.
+Agent hover and keyboard focus use one edge-to-edge row highlight spanning
+the gateway box; embedded actions stay transparent and independently clickable.
+Nested chat-session rows also highlight and accept clicks across the gateway
+width, while keeping titles aligned with the session guide's original inset.
 
 The agent name/avatar opens that owner's canonical **Bot Chat** (profile plus
 exact title), without a redundant child row. Collapse, new session, and agent

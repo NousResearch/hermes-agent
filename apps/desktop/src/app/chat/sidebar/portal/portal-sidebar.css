@@ -227,7 +227,12 @@
   position: relative;
   display: flex;
   min-height: 2rem;
-  padding: 0;
+  margin-inline: -0.625rem;
+  padding-inline: 0.625rem;
+}
+
+.portal-sidebar [data-slot='agent-heading']:is(:hover, :focus-within) {
+  background: var(--chrome-action-hover);
 }
 
 .portal-sidebar [data-slot='agent-heading'] > .portal-agent-chat {
@@ -239,7 +244,7 @@
   color: var(--ui-text-secondary);
 }
 
-.portal-sidebar [data-slot='agent-heading']:is([data-active-agent], :hover, :focus-within) > .portal-agent-chat {
+.portal-sidebar [data-slot='agent-heading'][data-active-agent] > .portal-agent-chat {
   color: var(--ui-text-primary);
 }
 
@@ -249,9 +254,9 @@
   background: transparent;
 }
 
-.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(1) { right: 0; }
-.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(2) { right: 1.5rem; }
-.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(3) { right: 3rem; }
+.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(1) { right: 0.625rem; }
+.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(2) { right: 2.125rem; }
+.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(3) { right: 3.625rem; }
 
 .portal-sidebar [data-slot='agent-heading']:is(:hover, :focus-within) > button,
 .portal-sidebar [data-slot='agent-heading'] > button[aria-expanded='false'] {
@@ -281,14 +286,27 @@
   display: none;
 }
 
+.portal-agent-sessions [data-session-key] {
+  /* Reach past the guide and group padding without moving the session title. */
+  margin-inline: calc(-2.3125rem - 1px) -0.625rem;
+}
+
 .portal-agent-sessions [data-session-key] > button {
   min-height: 1.9375rem;
   padding-inline: 0;
   background: transparent;
 }
 
-.portal-agent-sessions [data-session-key] > button:hover {
+.portal-agent-sessions [data-session-key]:is(:hover, :focus-within) {
   background: var(--chrome-action-hover);
+}
+
+.portal-agent-sessions [data-session-key] > button:first-child {
+  padding-inline: calc(2.3125rem + 1px) 0.625rem;
+}
+
+.portal-agent-sessions [data-session-key] > button:not(:first-child) {
+  right: 0.625rem;
 }
 
 .portal-agent-sessions [data-slot='session-status'] {

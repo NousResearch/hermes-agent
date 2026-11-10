@@ -99,12 +99,13 @@ class A2ASecurityContext:
             return None
         # Bytes, not str: hmac.compare_digest raises TypeError on non-ASCII str, and http.server
         # decodes header bytes as latin-1, so one stray byte would kill the request thread
-        # with no response instead of a 401 (#150028).
-        presented = parts[1].strip().encode("utf-8")
+        # with no response instead of a 401 (#150028). surrogatepass because a configured
+        # token read from a POSIX environment can hold surrogate-escaped bytes.
+        presented = parts[1].strip().encode("utf-8", "surrogatepass")
         for token, name in self.peer_tokens:
-            if hmac.compare_digest(presented, token.encode("utf-8")):
+            if hmac.compare_digest(presented, token.encode("utf-8", "surrogatepass")):
                 return name
-        if self.bearer_token and hmac.compare_digest(presented, self.bearer_token.encode("utf-8")):
+        if self.bearer_token and hmac.compare_digest(presented, self.bearer_token.encode("utf-8", "surrogatepass")):
             return f"ip:{client_ip or 'unknown'}"
         return None
 

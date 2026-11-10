@@ -5,13 +5,14 @@ call. That is right for a result the parent will read next time, but a failed su
 parent's plan stalled until a human returns: a provider refusal (``content_policy_blocked``) stopped a
 background subagent and the parent sat on the note for 48 minutes. A final delegation result with a
 failed child now runs as the parent's turn, so it can re-dispatch (on another model) or report. A
-successful result, a parent/user stop, and the early per-task notice stay notes.
+successful result, a parent/user stop, and the early per-task notice stay notes. So do a manual cron
+run's result, a failure in a chat its viewer closed, and a failure past the unattended-wake limit.
 """
 import pytest
 
 from tests.gateway.test_completion_admission import pending
 from tests.gateway.test_session_end_delegations import _admissions, _local
-from tests.gateway.test_unviewed_completion_notes import _target, _turns
+from tests.gateway.test_unviewed_completion_notes import _human, _target, _turns
 from tools import async_delegation as delegation
 
 
@@ -196,3 +197,65 @@ def test_cron_run_coalesced_with_a_failed_delegation_still_wakes():
     assert delegation_wakes_parent(dict(cron, _sibling_failed=True))
     assert not delegation_wakes_parent(dict(cron, status="completed", summary="ok"))
 
+
+async def _fail(runner, authority, ref, route, target, name):
+    evt = dict(_batch(route, name, "error"), parent_session_id=target)
+    assert await runner._deliver_async_delegation_group([evt]) is True
+    await authority._drain(ref)
+
+
+@pytest.mark.asyncio
+async def test_unattended_wakes_stop_at_the_limit_until_the_user_returns(tmp_path, monkeypatch):
+    """A woken parent that re-dispatches into the same failure (billing, a usage limit) would wake
+    itself without end. After ``UNATTENDED_WAKE_LIMIT`` wakes in a row nobody watched, the next failure
+    is a note; the user's own message starts the count again."""
+    from gateway.session_completion_notes import UNATTENDED_WAKE_LIMIT
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
+        seen = _turns(runner, authority, target, "deleg_loop")
+        for i in range(UNATTENDED_WAKE_LIMIT + 2):
+            await _fail(runner, authority, ref, route, target, f"deleg_loop{i}")
+        woken = [text for text, _ in seen]
+        assert len(woken) == UNATTENDED_WAKE_LIMIT, "the loop is bounded"
+        assert all(f"deleg_loop{i}" in woken[i] for i in range(UNATTENDED_WAKE_LIMIT))
+        assert len(_notes(authority, target, "deleg_loop")) == 2, "later failures are kept as notes"
+        _human(authority, ref, "back", "what happened?")
+        await authority._drain(ref)
+        await _fail(runner, authority, ref, route, target, "deleg_loop_after")
+        assert len(seen) == UNATTENDED_WAKE_LIMIT + 2 and "deleg_loop_after" in seen[-1][0]
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_failure_in_a_chat_its_viewer_closed_stays_a_note(tmp_path, monkeypatch):
+    """Exit or /new ends the session's background work and refuses new dispatches: a wake there would
+    run its re-dispatched child inside the wake turn of a chat nobody will reopen. A viewer attaching
+    lifts the refusal, and the next failure wakes again."""
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
+        token = (authority.profile_id, ref.session_id)
+        delegation.refuse_for_session(token, session_key=route, parent_session_ids=(ref.session_id, target))
+        seen = _turns(runner, authority, target, "deleg_closed")
+        await _fail(runner, authority, ref, route, target, "deleg_closed0")
+        assert seen == [] and len(_notes(authority, target, "deleg_closed0")) == 1
+        delegation.allow_for_session(token)
+        await _fail(runner, authority, ref, route, target, "deleg_closed1")
+        assert len(seen) == 1 and "deleg_closed1" in seen[0][0]
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.parametrize("reason,told", [("billing", True), ("auth", True), ("model_not_found", True),
+                                         ("rate_limit", False), ("interpreter_shutdown", False), (None, False)])
+def test_deterministic_failure_tells_the_parent_not_to_retry_unchanged(reason, told):
+    """A failure that repeats for the same task on the same model gets the don't-retry line a refusal
+    gets; a transient one (a rate limit, a gateway restart) does not."""
+    from tools.process_registry_notifications import format_process_notification
+    evt = _batch_event("error")
+    evt["results"][0].update(failure_reason=reason, error="Insufficient credits. Add credits, then retry.")
+    text = (format_process_notification(evt) or "").lower()
+    assert ("do not re-dispatch it unchanged" in text) is told
+    assert (f"this failure ({reason})" in text) is told

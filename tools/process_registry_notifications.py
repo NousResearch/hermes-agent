@@ -186,8 +186,14 @@ _CONTENT_POLICY_RECOVERY = (
 
 def _failure_recovery_lines(r: dict) -> list[str]:
     """What the parent should do about a failed child, when its classified reason names a remedy."""
-    if r.get("failure_reason") == "content_policy_blocked":
+    from agent.error_surface import _NON_RETRYABLE_REASONS
+    reason = r.get("failure_reason")
+    if reason == "content_policy_blocked":
         return [_CONTENT_POLICY_RECOVERY]
+    if reason in _NON_RETRYABLE_REASONS and reason != "interpreter_shutdown":
+        return [f"This failure ({reason}) repeats for the same task on the same model and provider, so do not "
+                "re-dispatch it unchanged: re-dispatch it with delegate_task on a different model or provider "
+                "only if that avoids the cause, otherwise tell the user what failed."]
     return []
 
 

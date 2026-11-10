@@ -1436,6 +1436,12 @@ def refuse_for_session(token: Any, *, session_key: str = "", parent_session_ids=
             _refused_by.setdefault(selector, set()).add(token)
 
 
+def refused_for_session(token: Any) -> bool:
+    """Whether *token*'s session is closed to new dispatches (``refuse_for_session``, not yet lifted)."""
+    with _records_lock:
+        return token in _refused
+
+
 def allow_for_session(token: Any) -> None:
     """Lift ONE session's refusal: a viewer attached again, or the owner retired its live state."""
     with _records_lock:

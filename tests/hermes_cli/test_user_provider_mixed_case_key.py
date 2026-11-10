@@ -85,21 +85,91 @@ def test_hermes_model_marks_the_configured_mixed_case_provider_active():
     assert _resolve_active_provider(cfg, cfg["model"], "OpenAI", custom_map) in custom_map
 
 
-@pytest.mark.parametrize("key", ["Anthropic", "OpenRouter"])
-def test_key_spelled_like_a_builtin_stays_on_the_builtin_as_the_runtime_does(key):
-    """The runtime keeps a built-in name on the built-in, so ``Anthropic:`` is not what ``anthropic``
-    means there. The switch used to pick the user entry anyway and save ``model.provider: Anthropic``,
-    and the next turn then ran on api.anthropic.com with the built-in key (#151775)."""
-    from hermes_cli.config import load_config
-    from hermes_cli.providers import resolve_provider_full
-    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+@pytest.mark.parametrize("key", ["Anthropic", "OpenRouter", "anthropic", "openrouter", "deepseek", "DeepSeek"])
+def test_builtin_name_with_an_owning_entry_switches_saves_and_runs_on_the_user_endpoint(key, monkeypatch):
+    """Ruling on #151775 (option A): a bare built-in name, in any case, whose ``providers:`` entry
+    declares its own base_url means THAT entry. ``--provider <name>`` validates the user endpoint,
+    persists ``custom:<key>``, and the next turn runs there with the entry's credential, never the
+    built-in's env key."""
+    for env in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
+        monkeypatch.setenv(env, f"builtin-{env.lower()}-123456")
+    from hermes_cli.config import atomic_config_write, load_config
+    from hermes_cli.model_switch import model_selection_config_updates, switch_model
+    from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    _write_config(key)
+    config_path, base_url = _write_config(key, provider="bedrock")
     cfg = load_config()
     for requested in (key, key.lower()):
-        assert _get_named_custom_provider(requested, config=cfg, resolve_credentials=False) is None
-        pdef = resolve_provider_full(requested, cfg["providers"])
-        assert pdef is not None and pdef.source != "user-config", (requested, pdef)
+        result = switch_model("m1", "bedrock", "x", is_global=True, explicit_provider=requested,
+                              user_providers=cfg["providers"], custom_providers=[])
+        assert result.success, result.error_message
+        assert (result.target_provider, result.base_url, result.api_key) == (
+            f"custom:{key.lower()}", base_url, "mixed-key-123456")
+        new_model = {k: v for k, v in {**cfg["model"], **model_selection_config_updates(result, cfg["model"])}.items()
+                     if v is not None}
+        atomic_config_write(config_path, {"model": new_model, "providers": cfg["providers"]})
+        runtime = resolve_runtime_provider(target_model="m1")
+        assert (runtime["base_url"].rstrip("/"), runtime["api_key"]) == (base_url, "mixed-key-123456")
+
+
+@pytest.mark.parametrize("key", ["openrouter", "OpenRouter", "anthropic", "Anthropic", "deepseek", "DeepSeek"])
+def test_config_saved_as_the_bare_builtin_name_runs_on_the_owning_entry(key, monkeypatch):
+    """A config main already saved (``model.provider: <built-in>`` + the entry's URL) runs on the user
+    endpoint with the entry's key after upgrade; before, it got the built-in env key (OpenRouter /
+    DeepSeek, sent to the user's URL) or ran on the built-in host (Anthropic)."""
+    for env in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
+        monkeypatch.setenv(env, f"builtin-{env.lower()}-123456")
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    config_path, base_url = _write_config(key, provider=key)
+    config_path.write_text(config_path.read_text().replace("  default: x\n", f"  default: m1\n  base_url: {base_url}\n", 1))
+    runtime = resolve_runtime_provider(target_model="m1")
+    assert (runtime["base_url"].rstrip("/"), runtime["api_key"]) == (base_url, "mixed-key-123456")
+
+
+@pytest.mark.parametrize(("provider", "env"), [("openrouter", "OPENROUTER_API_KEY"), ("deepseek", "DEEPSEEK_API_KEY")])
+def test_builtin_env_key_never_goes_to_a_url_another_entry_owns(provider, env, monkeypatch):
+    """``model.provider: <built-in>`` + ``model.base_url`` owned by ``providers.myproxy`` that declares
+    its own key: the request carries that key, never the built-in env key. Without a declared
+    credential the #10622 mirror keeps the built-in key."""
+    monkeypatch.setenv(env, "builtin-env-key-123456")
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    config_path, base_url = _write_config("myproxy")
+    text = f"model:\n  provider: {provider}\n  default: m1\n  base_url: {base_url}\n" + config_path.read_text().split("\n", 3)[3]
+    config_path.write_text(text)
+    runtime = resolve_runtime_provider(target_model="m1")
+    assert (runtime["base_url"].rstrip("/"), runtime["api_key"]) == (base_url, "mixed-key-123456")
+
+    config_path.write_text(text.replace("    api_key_env: MIXED_KEY\n", ""))
+    assert resolve_runtime_provider(target_model="m1")["api_key"] == "builtin-env-key-123456"
+
+
+def test_tuning_only_block_keeps_the_builtin(monkeypatch):
+    """A ``providers.<built-in>`` block with no base_url is tuning for the built-in, not an endpoint."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "builtin-deepseek-123456")
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+    path.write_text("model:\n  provider: DeepSeek\n  default: m1\nproviders:\n  deepseek:\n    request_timeout_seconds: 5\n")
+    runtime = resolve_runtime_provider(target_model="m1")
+    assert (runtime["provider"], runtime["api_key"]) == ("deepseek", "builtin-deepseek-123456")
+
+
+@pytest.mark.parametrize("key", ["OpenRouter", "deepseek"])
+def test_doctor_names_the_endpoint_a_builtin_named_provider_runs_on(key, capsys):
+    from hermes_cli import doctor_config
+
+    config_path, base_url = _write_config(key, provider=key.lower())
+    issues: list = []
+    doctor_config._validate_model_config(config_path, issues)
+    found = [i for i in issues if f"providers.{key}" in i]
+    assert len(found) == 1 and base_url in found[0] and f"custom:{key.lower()}" in found[0], issues
+
+    config_path.write_text(config_path.read_text().replace(f"  provider: {key.lower()}", f"  provider: custom:{key.lower()}"))
+    issues = []
+    doctor_config._validate_model_config(config_path, issues)
+    assert not [i for i in issues if f"providers.{key}" in i], issues
 
 
 @pytest.mark.parametrize("key", ["Anthropic", "OpenRouter"])

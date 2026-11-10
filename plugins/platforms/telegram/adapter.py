@@ -3745,6 +3745,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                             **retry_thread_kwargs, **base),
                             timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
                     except Exception as _retry_err:
+                        if getattr(_retry_err, "retry_after", None) is not None or "retry after" in str(_retry_err).lower():
+                            return _flood_cap_result(float(getattr(_retry_err, "retry_after", None) or 30.0))
                         logger.warning(
                             "[%s] Overflow continuation no-reply retry failed: %s", self.name, _redact_telegram_error_text(_retry_err))
                         return None
@@ -3790,13 +3792,19 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 # Partial delivery: do NOT report success — the consumer would treat it as final delivery.
                 logger.warning("[%s] Overflow split: stopped at %d/%d chunks delivered", self.name, 1 + len(continuation_ids), len(chunks))
                 delivered_prefix = "".join(re.sub(r" \(\d+/\d+\)$", "", delivered) for delivered in delivered_chunks)
+                raw = {
+                    "partial_overflow": True, "delivered_chunks": 1 + len(continuation_ids),
+                    "total_chunks": len(chunks), "last_message_id": prev_id, "delivered_prefix": delivered_prefix,
+                    "continuation_message_ids": tuple(continuation_ids)}
+                if flood and finalize:
+                    # A flood refusal posted nothing, so the rest is certain-undelivered: hand it over in the
+                    # shape _resume_partial_send sends (the MarkdownV2 continuation text), as send() does.
+                    raw["undelivered_chunks"] = tuple(
+                        _separate_chunk_indicator_from_fence(self.format_message(rest)) for rest in chunks[len(delivered_chunks):])
+                    raw["delivered_message_ids"] = (str(message_id), *continuation_ids)
                 return SendResult(
                     success=False, message_id=prev_id, retryable=True, retry_after=flood and flood.retry_after,
-                    error=flood.error if flood else "overflow_continuation_failed",
-                    raw_response={
-                        "partial_overflow": True, "delivered_chunks": 1 + len(continuation_ids),
-                        "total_chunks": len(chunks), "last_message_id": prev_id, "delivered_prefix": delivered_prefix,
-                        "continuation_message_ids": tuple(continuation_ids)},
+                    error=flood.error if flood else "overflow_continuation_failed", raw_response=raw,
                     continuation_message_ids=tuple(continuation_ids))
             new_id = str(getattr(sent_msg, "message_id", "")) or prev_id
             continuation_ids.append(new_id)

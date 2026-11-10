@@ -266,7 +266,7 @@ _SIMPLE_RPCS = {
     # Re-read ``~/.hermes/.env`` (CLI ``/reload`` parity); built agents keep their pool, ``/new`` resolves fresh.
     "reload.env": (5015, lambda params: {"updated": int(_tools_mod("hermes_cli.config").reload_env())}),
     "plugins.list": (5032, lambda params: {"plugins": [
-        {"name": n, "version": getattr(i, "version", "?"), "enabled": getattr(i, "enabled", True)}
+        {"name": n, "version": i.manifest.version or "?", "enabled": i.enabled}
         for n, i in _tools_mod("hermes_cli.plugins").get_plugin_manager()._plugins.items()]}),
     "tools.list": (5031, lambda params: {"toolsets": _toolset_rows(params, with_tools=True)}),
     "toolsets.list": (5032, lambda params: {"toolsets": _toolset_rows(params, with_tools=False)}),
@@ -1453,17 +1453,13 @@ def _(rid, params: dict) -> dict:
     mcp_catalog = _tools_mod("hermes_cli.mcp_catalog")
     out = []
     for entry in mcp_catalog.list_catalog():
-        try:
-            requires = [str(k) for k in (getattr(entry, "env_keys", None) or [])]
-        except Exception:
-            requires = []
-        transport = getattr(entry, "transport", None)  # TransportSpec → its kind string
+        requires = [spec.name for spec in entry.auth.env if spec.required]
         out.append({
-            "name": entry.name, "description": getattr(entry, "description", "") or "",
-            "connector_slug": getattr(entry, "connector_slug", None),
+            "name": entry.name, "description": entry.description,
+            "connector_slug": entry.connector_slug,
             "installed": bool(mcp_catalog.is_installed(entry.name)),
             "enabled": bool(mcp_catalog.is_enabled(entry.name)), "requires": requires,
-            "transport": str(getattr(transport, "kind", "") or transport or "stdio")})
+            "transport": entry.transport.type})
     return _ok(rid, {"servers": out})
 
 

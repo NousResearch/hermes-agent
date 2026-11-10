@@ -13,6 +13,7 @@ import pytest
 
 from agent import shell_hooks
 from hermes_cli import hooks as hooks_cli
+from hermes_constants import display_hermes_home
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +71,16 @@ class TestHooksList:
         assert "✓ allowed" in out
         assert "✗ not allowlisted" in out
         assert str(script) in out
+
+    def test_empty_list_names_the_active_profile_config(self, tmp_path, monkeypatch):
+        home = tmp_path / "profiles" / "coder"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        with patch("hermes_cli.config.load_config", return_value={}):
+            out = _run(SimpleNamespace(hooks_action="list"))
+
+        assert f"configured in {display_hermes_home()}/config.yaml." in out
+        assert "~/.hermes/config.yaml" not in out
 
 
 # ── test ──────────────────────────────────────────────────────────────────

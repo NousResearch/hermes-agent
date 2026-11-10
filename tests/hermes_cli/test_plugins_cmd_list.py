@@ -183,3 +183,14 @@ def test_unreadable_plugin_dir_is_skipped_by_every_manifest_scan(monkeypatch, tm
     assert loader_names == ["good"]
     assert listed_names == ["good"]
     assert caplog.text.count("Skipping unreadable plugin directory") == 2
+
+
+def test_discover_all_plugins_omits_cron_providers(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERMES_BUNDLED_PLUGINS", raising=False)
+    monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: tmp_path)
+    monkeypatch.setattr(importlib.metadata, "entry_points", list)
+
+    keys = [entry[5] for entry in plugins_cmd._discover_all_plugins()]
+
+    assert keys
+    assert not [key for key in keys if key.startswith("cron_providers/")]

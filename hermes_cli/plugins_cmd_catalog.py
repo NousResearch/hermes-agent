@@ -80,14 +80,6 @@ def write_catalog_sidecar_record(target: Path, catalog: dict, sha: str) -> None:
         logger.warning("Failed to write catalog sidecar in %s: %s", target, exc)
 
 
-def write_catalog_sidecar(target: Path, entry: PluginCatalogEntry, sha: Optional[str] = None) -> None:
-    write_catalog_sidecar_record(
-        target,
-        {"name": entry.name, "repo": entry.repo, "tier": entry.tier},
-        sha or entry.sha,
-    )
-
-
 def _install_record(plugin_dir: Path) -> Optional[dict]:
     """The installer-owned ``.install-metadata.json`` record for a dir under the plugins dir, else ``None``."""
     from hermes_cli.plugins_cmd import PluginOperationError, _plugins_dir, _read_install_metadata

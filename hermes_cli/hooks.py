@@ -28,20 +28,21 @@ def hooks_command(args) -> None:
 def _cmd_list(_args) -> None:
     from hermes_cli.config import load_config
     from agent import outbound_webhooks, shell_hooks
+    from hermes_constants import display_hermes_home
 
     cfg = load_config()
     specs = shell_hooks.iter_configured_hooks(cfg)
     outbound = outbound_webhooks.iter_configured_targets(cfg)
 
     if not specs and not outbound:
-        print("No shell hooks or outbound webhooks configured in ~/.hermes/config.yaml.")
+        print(f"No shell hooks or outbound webhooks configured in {display_hermes_home()}/config.yaml.")
         print("See `hermes hooks --help` or")
         print("    website/docs/user-guide/features/hooks.md")
         print("for the config schema and worked examples.")
         return
 
     if not specs:
-        print("No shell hooks configured in ~/.hermes/config.yaml.")
+        print(f"No shell hooks configured in {display_hermes_home()}/config.yaml.")
     else:
         by_event: dict[str, list] = {}
         for spec in specs:

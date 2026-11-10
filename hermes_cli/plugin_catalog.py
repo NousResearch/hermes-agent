@@ -237,10 +237,6 @@ def filter_entries(entries: list[PluginCatalogEntry], query: str) -> list[Plugin
             if any(q in h.lower() for h in (e.name, e.description, *e.capabilities.provides_tools))]
 
 
-def search_catalog(query: str) -> list[PluginCatalogEntry]:
-    return filter_entries(load_catalog(), query)
-
-
 # ── Removed / blocklist ──────────────────────────────────────────────────────
 
 _SCP_URL_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+):(?!//)(.+)$")  # git@host:owner/repo

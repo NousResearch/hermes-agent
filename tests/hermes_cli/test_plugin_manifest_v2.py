@@ -119,6 +119,16 @@ class TestV2Parsing:
         assert mgr._plugins["modern"].enabled
         assert "hovercraft" in caplog.text
 
+    def test_update_url_in_v2_is_a_known_field(self, hermes_home, caplog):
+        _write_plugin(
+            hermes_home / "plugins", "fed",
+            manifest_extra={"manifest_version": 2, "update_url": "https://e.example/fed.yml"},
+        )
+        _enable(hermes_home, ["fed"])
+        with caplog.at_level(logging.WARNING):
+            PluginManager().discover_and_load()
+        assert "unknown manifest field" not in caplog.text
+
     def test_future_manifest_version_warns_but_loads(self, hermes_home, caplog):
         _write_plugin(
             hermes_home / "plugins", "fromfuture",

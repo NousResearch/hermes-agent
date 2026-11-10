@@ -132,7 +132,6 @@ HERMES_EVENT_NAMESPACE = "hermes"
 _EVENT_EMIT_DEPTH_CAP = 8
 # Max queued + running events per manager generation; emit never waits — a full budget drops.
 _EVENT_PENDING_CAP = 64
-_EVENT_WORKER_STOP = object()
 
 
 @dataclass(frozen=True)
@@ -477,12 +476,9 @@ class PluginDispatchMixin:
         while True:
             item = dispatch_queue.get()
             try:
-                if item is _EVENT_WORKER_STOP:
-                    return
                 self._deliver_event(item)
             finally:
-                if item is not _EVENT_WORKER_STOP:
-                    self._mark_event_done(item.generation)
+                self._mark_event_done(item.generation)
                 dispatch_queue.task_done()
 
     def _mark_event_done(self, generation: int) -> None:

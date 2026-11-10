@@ -43,3 +43,16 @@ export function createOutboundIdTracker(maxSize = 512) {
 
   return { remember, has, size };
 }
+
+/**
+ * Whether a fromMe upsert is the echo of one of our own sends, so intake
+ * drops it instead of forwarding it as a new turn: its id was recorded when
+ * the send returned, or its text carries the self-chat reply prefix.
+ * Reactions have no prefix, so for them only the recorded id catches the
+ * echo.
+ */
+export function isOwnSendEcho({ fromMe, messageId, body, replyPrefix, recentlySent }) {
+  if (!fromMe) return false;
+  if (replyPrefix && String(body || '').startsWith(replyPrefix)) return true;
+  return Boolean(recentlySent && recentlySent.has(messageId));
+}

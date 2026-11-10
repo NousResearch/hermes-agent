@@ -125,7 +125,8 @@ hermes-agent/
 ├── model_tools.py            # Orquestación de herramientas (capa delgada sobre tools/registry.py)
 ├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-telegram, etc.)
 ├── hermes_state.py           # Base de datos de sesiones SQLite con búsqueda de texto completo FTS5, títulos de sesión
-├── batch_runner.py           # Procesamiento en lote paralelo para generación de trayectorias
+├── hermes_agent/             # el paquete de Python
+│   └── batch_runner.py           # Procesamiento en lote paralelo para generación de trayectorias
 │
 ├── agent/                    # Internos del agente (módulos extraídos)
 │   ├── prompt_builder.py         # Ensamblaje del prompt del sistema (identidad, habilidades, archivos de contexto, memoria)

@@ -16,7 +16,7 @@ The batch runner (`hermes_agent/batch_runner.py`) processes a JSONL dataset of p
 
 ```bash
 # Basic batch run
-python hermes_agent/batch_runner.py \
+python -m hermes_agent.batch_runner \
     --dataset_file=data/prompts.jsonl \
     --batch_size=10 \
     --run_name=my_first_run \
@@ -24,14 +24,14 @@ python hermes_agent/batch_runner.py \
     --num_workers=4
 
 # Resume an interrupted run
-python hermes_agent/batch_runner.py \
+python -m hermes_agent.batch_runner \
     --dataset_file=data/prompts.jsonl \
     --batch_size=10 \
     --run_name=my_first_run \
     --resume
 
 # List available toolset distributions
-python hermes_agent/batch_runner.py --list_distributions
+python -m hermes_agent.batch_runner --list_distributions
 ```
 
 :::tip Predictable cost at scale
@@ -193,7 +193,7 @@ Statistics are also saved to `statistics.json` for programmatic analysis.
 Generate diverse tool-use trajectories for fine-tuning:
 
 ```bash
-python hermes_agent/batch_runner.py \
+python -m hermes_agent.batch_runner \
     --dataset_file=data/coding_prompts.jsonl \
     --batch_size=20 \
     --run_name=coding_v1 \
@@ -208,7 +208,7 @@ python hermes_agent/batch_runner.py \
 Evaluate how well a model uses tools across standardized prompts:
 
 ```bash
-python hermes_agent/batch_runner.py \
+python -m hermes_agent.batch_runner \
     --dataset_file=data/eval_suite.jsonl \
     --batch_size=10 \
     --run_name=eval_gpt4 \

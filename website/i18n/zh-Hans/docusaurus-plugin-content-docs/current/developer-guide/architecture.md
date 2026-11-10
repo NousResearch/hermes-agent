@@ -58,7 +58,8 @@ hermes-agent/
 ├── toolsets.py               # 工具分组与平台预设
 ├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
 ├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
-├── batch_runner.py           # 批量轨迹生成
+├── hermes_agent/             # Python 包
+│   └── batch_runner.py           # 批量轨迹生成
 │
 ├── agent/                    # Agent 内部模块
 │   ├── prompt_builder.py     # 系统 prompt 组装

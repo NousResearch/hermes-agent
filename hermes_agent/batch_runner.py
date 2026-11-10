@@ -923,24 +923,24 @@ def main(
         
     Examples:
         # Basic usage
-        python hermes_agent/batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run
+        python -m hermes_agent.batch_runner --dataset_file=data.jsonl --batch_size=10 --run_name=my_run
         
         # Resume interrupted run
-        python hermes_agent/batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run --resume
+        python -m hermes_agent.batch_runner --dataset_file=data.jsonl --batch_size=10 --run_name=my_run --resume
         
         # Use specific distribution
-        python hermes_agent/batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=image_test --distribution=image_gen
+        python -m hermes_agent.batch_runner --dataset_file=data.jsonl --batch_size=10 --run_name=image_test --distribution=image_gen
         
         # With disabled reasoning
-        python hermes_agent/batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
+        python -m hermes_agent.batch_runner --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
                                --reasoning_disabled
         
         # With prefill messages from file
-        python hermes_agent/batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
+        python -m hermes_agent.batch_runner --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
                                --prefill_messages_file=configs/prefill_opus.json
         
         # List available distributions
-        python hermes_agent/batch_runner.py --list_distributions
+        python -m hermes_agent.batch_runner --list_distributions
     """
     if list_distributions:
         from hermes_agent.toolset_distributions import print_distribution_info
@@ -951,7 +951,7 @@ def main(
             print_distribution_info(dist_name)
 
         print("\n💡 Usage:")
-        print("  python batch_runner.py --dataset_file=data.jsonl --batch_size=10 \\")
+        print("  python -m hermes_agent.batch_runner --dataset_file=data.jsonl --batch_size=10 \\")
         print("                         --run_name=my_run --distribution=<name>")
         return
 

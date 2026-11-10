@@ -1,0 +1,32 @@
+name: psychopomp
+repo: https://github.com/ponzgpt/psychopomp
+sha: 2a897718101d44f62f3707b0a750b5d819821155
+description: >-
+  Every week, Hermes helps you write a page of your life (your Book) from what it already knows of your week:
+  proposed as a card in the chat, added only when you approve; once a year, a year in review. Seal letters for
+  the people you love. If you ever go silent for good, Hermes checks in, then asks your witness for a one-time
+  code they can send on any channel, and only then carries your Book (one designed HTML file) and letters.
+  Rehearse the whole passage in 20 seconds on a virtual clock, on the Desktop page or in any chat.
+  Disclosure: sends weekly nudges, check-ins, a code request and (after the code) your Book and letters to the
+  chats you set; reads inbound gateway messages at ingress to catch PSY- codes (those are consumed); stores the
+  Book and letters in plain text under $HERMES_HOME/plugin-data/psychopomp; imports Hermes'
+  tools.send_message_tool to send (no public send API yet).
+maintainer: ponzgpt
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ponzgpt/psychopomp
+version: "0.3.1"
+image: https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/page.png
+  - https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/rehearsal.png
+  - https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/chat-card.png
+  - https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/book.png
+  - https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/first-run.png
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [psychopomp_status, psychopomp_draft_page, psychopomp_write_page, psychopomp_read_book, psychopomp_seal_letter]
+  provides_hooks: [pre_llm_call, pre_gateway_dispatch]
+  provides_middleware: []
+  requires_env: []

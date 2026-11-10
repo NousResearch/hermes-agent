@@ -134,6 +134,7 @@ def _make_consumer(adapter, chat_id, loop, streamer):
     consumer._task = None
     consumer._lock = threading.Lock()
     consumer._strip_markdown = None
+    consumer._session_id, consumer._spoken_count = "", 0
     return consumer
 
 

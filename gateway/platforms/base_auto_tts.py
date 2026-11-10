@@ -3,7 +3,8 @@
 Runs after the message handler returned, so the routed profile's secret scope that wrapped the
 turn is gone. Under a multiplexed gateway an unscoped provider read (``GEMINI_BASE_URL``, a plugin
 provider's key in ``is_available``) raises ``UnscopedSecretError`` and the voice reply is lost, so
-synthesis re-enters the scope of the profile that serves ``source`` (#145151).
+synthesis re-enters the scope of the profile that serves ``source`` (#145151). The
+``transform_spoken_text`` hook runs in that scope too, so it sees the routed profile's plugins.
 """
 
 import asyncio
@@ -34,16 +35,30 @@ def _synthesize(text: str, output_path: str) -> list[str]:
     return [str(path) for path in raw_tts_paths if path and Path(path).exists()]
 
 
-async def synthesize_auto_tts(adapter, text_content: str, source, output_path_for) -> tuple[list[str], Optional[str]]:
+def _hook_identity(adapter, session_key: str) -> dict[str, str]:
+    """``platform`` / ``session_id`` kwargs for the spoken-text hooks."""
+    peek = getattr(getattr(adapter, "_session_store", None), "peek_session_id", None)
+    session_id = None
+    with contextlib.suppress(Exception):  # a store hiccup must not cost the voice reply
+        session_id = peek(session_key) if callable(peek) and session_key else None
+    return {"platform": str(getattr(adapter.platform, "value", adapter.platform)),
+            "session_id": session_id if isinstance(session_id, str) else ""}
+
+
+async def synthesize_auto_tts(adapter, text_content: str, source, output_path_for,
+                              session_key: str = "") -> tuple[list[str], Optional[str]]:
     """``(existing_paths, requested_path)``; empty/None on failure (logged, never raised).
     ``output_path_for(platform)`` builds the platform-aware temp path (``.ogg`` for Opus platforms)."""
+    from tools.tts_spoken_text_hook import apply_spoken_text_hook
     paths: list[str] = []
     requested_path = None
     try:
         from tools.tts_tool import check_tts_requirements
         async with _profile_scope(adapter, source):
             if check_tts_requirements():
-                speech_text = adapter.prepare_tts_text(text_content)
+                speech_text = await asyncio.to_thread(
+                    apply_spoken_text_hook, adapter.prepare_tts_text(text_content), surface="auto_tts",
+                    **_hook_identity(adapter, session_key))
                 if not speech_text:
                     raise ValueError("Empty text after markdown cleanup")
                 requested_path = output_path_for(adapter.platform)

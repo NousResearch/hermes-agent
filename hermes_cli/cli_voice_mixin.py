@@ -319,6 +319,9 @@ class CLIVoiceMixin:
                 tts_text = re.sub(r'---+', '', tts_text)              # horizontal rules
                 tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)        # excessive newlines
                 tts_text = tts_text.strip()
+            from tools.tts_spoken_text_hook import apply_spoken_text_hook
+            tts_text = apply_spoken_text_hook(
+                tts_text, surface="cli_voice", platform="cli", session_id=getattr(self, "session_id", None) or "")
             if not tts_text:
                 return
             self._voice_last_tts_text = tts_text

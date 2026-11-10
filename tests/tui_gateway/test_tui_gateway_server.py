@@ -20415,7 +20415,7 @@ def test_speak_text_with_barge_arms_monitor_and_cuts_playback(monkeypatch, tmp_p
     speak_started = threading.Event()
     release_speak = threading.Event()
 
-    def fake_speak_text(text, stop_event=None):
+    def fake_speak_text(text, stop_event=None, **_kwargs):
         speak_calls["text"] = text
         speak_calls["stop_event"] = stop_event
         speak_started.set()

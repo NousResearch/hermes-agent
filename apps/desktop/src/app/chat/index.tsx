@@ -33,6 +33,7 @@ import { $introView } from '@/store/onboarding-intro'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
+import { $profileSwitchFailure, $profileSwitchPending } from '@/store/profile-switch-state'
 import {
   $connection,
   $contextSuggestions,
@@ -59,7 +60,7 @@ import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitle
 
 import { ChatDropOverlay } from './chat-drop-overlay'
 import { dropOverlayKind, useShowChatBar } from './chat-surface-state'
-import { ChatSwapOverlay, ChatSyncBadge } from './chat-swap-overlay'
+import { ChatSwitchIndicator } from './chat-switch-indicator'
 import { ChatBar, ChatBarFallback } from './composer'
 import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
@@ -564,6 +565,11 @@ const ChatViewContent = memo(function ChatViewContent({
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const hydrationSyncProfile = useStore($hydrationSyncProfile)
+  const profileSwitchFailure = useStore($profileSwitchFailure)
+  const profileSwitchPending = useStore($profileSwitchPending)
+  // A rail pick on a registry source dials before $gatewaySwapTarget is set;
+  // the pending pick starts the indicator's clock from the click instead.
+  const switchTarget = gatewaySwapTarget ?? profileSwitchPending
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
@@ -773,6 +779,13 @@ const ChatViewContent = memo(function ChatViewContent({
         />
       )}
 
+      {/* Profile switch status (rail picks, bot wakes, paint-first sync). In
+          flow above the thread — never over it — and primary-only: a switch
+          re-homes the primary surface; a tile keeps showing its own session. */}
+      {isPrimary && (
+        <ChatSwitchIndicator failure={profileSwitchFailure} syncing={hydrationSyncProfile} target={switchTarget} />
+      )}
+
       {/* Mounted for the primary AND every tile, each scoped to its own session
           so a tiled/background session's blocking prompt surfaces instead of
           stalling to timeout. */}
@@ -826,10 +839,6 @@ const ChatViewContent = memo(function ChatViewContent({
           {/* A session drag hovering an EDGE hands the visual to the zone
               target; the link overlay shows only for the center region. */}
           <ChatDropOverlay kind={overlayKind} />
-          <ChatSwapOverlay profile={gatewaySwapTarget} />
-          {/* Paint-first wake (#89843): transcript is live, profile gate still
-              settling in the background — subtle badge, not an overlay. */}
-          {isPrimary && !gatewaySwapTarget && <ChatSyncBadge profile={hydrationSyncProfile} />}
         </div>
         {/* Docked composers overlay their pane; the shared float escapes pane
             clipping through a stable portal host without remounting its editor. */}

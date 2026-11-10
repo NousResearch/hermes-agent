@@ -30,6 +30,7 @@ import {
 } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
+import { dismissProfileSwitchFailure, trackProfileSwitch } from '@/store/profile-switch-state'
 import { exitProjectScope } from '@/store/project-scope'
 import { $connection, clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
@@ -484,9 +485,18 @@ $activeGatewayProfile.subscribe(value => {
 })
 
 // Target profile while a gateway swap is mid-flight (spawning/reconnecting that
-// profile's backend), else null. Drives the chat's "waking up <profile>" loader
-// so a lazy spawn doesn't read as a hang. Single-profile users never swap.
+// profile's backend), else null. Behavioural (transcript suppression, the
+// gone-session verdict, tile retire calm) and the chat's switch indicator.
+// Single-profile users never swap.
 export const $gatewaySwapTarget = atom<string | null>(null)
+
+// A new swap supersedes an earlier rail failure: its strip names a switch the
+// user has since moved on from.
+$gatewaySwapTarget.listen(target => {
+  if (target) {
+    dismissProfileSwitchFailure()
+  }
+})
 
 // Profile whose wake resolved PAINT-FIRST while the active-profile gate was
 // still unsatisfied (#89843): on a shared-remote connection every profile is
@@ -1006,19 +1016,29 @@ export function selectProfile(name: string): void {
   // call instead (#79886). Decided now: the source is the one picked from.
   const shouldRememberStartupProfile = remembersProfilePick(target)
 
-  void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
-    .then(([, shouldRemember]) => {
-      if (shouldRemember) {
-        return window.hermesDesktop?.profile?.remember(target)
-      }
+  runRailSwitch(target, `Failed to switch to profile "${target}"`, async () => {
+    if (await shouldRememberStartupProfile) {
+      await window.hermesDesktop?.profile?.remember(target)
+    }
+  })
+}
 
-      return undefined
-    })
-    .catch((error: unknown) => {
-      if (!notifyRemoteOverrideAuthFailure(target, error)) {
-        notifyError(error, `Failed to switch to profile "${target}"`)
-      }
-    })
+// Activate a rail pick and surface the outcome: the pending pick drives the
+// rail square's spinner, a rejection leaves a retryable failure in the chat's
+// switch indicator beside the toast. Retry re-runs only the activation — the
+// fresh draft and pins from the original pick still stand.
+function runRailSwitch(target: string, failedTitle: string, onActivated?: () => Promise<void>): void {
+  const attempt = (): void => {
+    void trackProfileSwitch(target, activateOnCurrentSource(target), attempt)
+      .then(onActivated)
+      .catch((error: unknown) => {
+        if (!notifyRemoteOverrideAuthFailure(target, error)) {
+          notifyError(error, failedTitle)
+        }
+      })
+  }
+
+  attempt()
 }
 
 // Whether a pick becomes the profile this window starts in next time.
@@ -1112,11 +1132,7 @@ export function newSessionInProfile(name: string): void {
   leaveForeignProjectScope(target)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
-  void activateOnCurrentSource(target).catch((error: unknown) => {
-    if (!notifyRemoteOverrideAuthFailure(target, error)) {
-      notifyError(error, `Failed to open profile "${target}"`)
-    }
-  })
+  runRailSwitch(target, `Failed to open profile "${target}"`)
 }
 
 /** Pin the next new chat to an exact registry agent; session.create reads this route. */

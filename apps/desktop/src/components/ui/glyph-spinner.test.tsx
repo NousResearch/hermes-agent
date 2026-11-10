@@ -126,8 +126,8 @@ describe('GlyphSpinner', () => {
   })
 
   it('pauses on request while staying mounted', () => {
-    // For a caller that keeps the spinner in the tree through a fade-out
-    // (ChatSwapOverlay) and does not want it animating once the wait is over.
+    // For a caller that keeps the spinner in the tree through a fade-out and
+    // does not want it animating once the wait is over.
     const { rerender } = render(<GlyphSpinner paused spinner="braille" />)
     const viewport = () => screen.getByRole('status', { name: 'Loading' }).querySelector('.glyph-spinner')
 

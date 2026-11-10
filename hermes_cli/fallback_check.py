@@ -178,8 +178,7 @@ def check_entry_static(entry: dict[str, Any]) -> EntryCheck:
 
 def check_entry_live(entry: dict[str, Any], result: EntryCheck) -> EntryCheck:
     """Send one minimal completion for ``entry`` (already statically ready) and record the verdict."""
-    from agent.auxiliary_client import (
-        _build_call_kwargs, _create_with_progress_once, _elapsed_ms, _provider_requires_stream, _unwrap_data_envelope)
+    from agent.auxiliary_client import _build_call_kwargs, _create_with_progress_once, _elapsed_ms, _provider_requires_stream
     from hermes_cli.fallback_config import resolve_entry_api_key
     from hermes_cli.timeouts import get_provider_request_timeout
     from agent.error_classifier import classify_api_error
@@ -206,7 +205,7 @@ def check_entry_live(entry: dict[str, Any], result: EntryCheck) -> EntryCheck:
         result.latency_ms = _elapsed_ms(started)
         # Inside the boundary: a {"success": false} envelope raises and is classified like a request
         # error, and a malformed body fails this entry instead of the whole command.
-        _judge_answer(result, _unwrap_data_envelope(raw), model, client, secrets)
+        _judge_answer(result, raw, model, client, secrets)
     except Exception as exc:  # health: allow BLE001 -- the probe reports every provider failure as its verdict
         if started is not None and result.latency_ms is None:  # none for an entry that sent no request
             result.latency_ms = _elapsed_ms(started)
@@ -218,17 +217,35 @@ def check_entry_live(entry: dict[str, Any], result: EntryCheck) -> EntryCheck:
     return result
 
 
-def _judge_answer(result: EntryCheck, response: Any, model: str, client: Any, secrets: tuple[str, ...]) -> None:
+def _body_failure(raw: Any) -> tuple[Optional[dict[str, Any]], bool]:
+    """``(provider error, failed status)`` from the body AND a gateway ``{"data": ...}`` envelope,
+    read before any normalization: unwrapping rebuilds the answer without ``status`` / ``error``."""
+    from agent import auxiliary_call_outcome as outcome
+    from agent.auxiliary_client import _field
+    data = _field(raw, "data")
+    layers = [raw, data] if isinstance(data, dict) else [raw]
+    embedded = next((e for e in map(outcome.embedded_provider_error, layers) if e), None)
+    failed = any(str(_field(layer, "status") or "").lower() in _FAILED_STATUSES for layer in layers)
+    return embedded, failed
+
+
+def _judge_answer(result: EntryCheck, raw: Any, model: str, client: Any, secrets: tuple[str, ...]) -> None:
     """Verdict for an answered request: a provider error in the body, no usable completion, another
     model, or ready."""
     from agent import auxiliary_call_outcome as outcome
-    from agent.auxiliary_client import extract_content_or_reasoning
+    from agent.auxiliary_client import _recover_aux_response_message, _unwrap_data_envelope, extract_content_or_reasoning
     from agent.errors import InvalidProviderResponseError
     from agent.transports.chat_completions import is_router_timeout_shim
     provider = result.provider
+    embedded, failed = _body_failure(raw)
+    response = None  # with a failure in the body there is no answer to judge
+    if embedded is None and not failed:
+        response = _unwrap_data_envelope(raw)
+        # Responses-style text (``output_text`` / ``output[]``) outside ``choices``, as the aux path accepts.
+        if not getattr(response, "choices", None):
+            response = _recover_aux_response_message(response) or response
     returned = str(getattr(response, "model", "") or "") if _reported_model_is_evidence(provider, model, client) else ""
     result.model_returned = _redacted(returned, secrets)
-    embedded = outcome.embedded_provider_error(response)
     choices = getattr(response, "choices", None)
     if embedded is not None:  # an HTTP-200 relay of an upstream failure: classify it like the aux path
         error = InvalidProviderResponseError(str(embedded.get("message") or embedded))
@@ -239,7 +256,6 @@ def _judge_answer(result: EntryCheck, response: Any, model: str, client: Any, se
     # An empty stream is re-aggregated into a choice with an empty message: content (or reasoning)
     # is the evidence a model ran, not the shape. Partial text under a failed status is not an answer.
     elif (not choices or getattr(choices[0], "message", None) is None or is_router_timeout_shim(response)
-            or str(getattr(response, "status", "") or "").lower() in _FAILED_STATUSES
             or not extract_content_or_reasoning(response)):
         result.inference_ready, result.error_class = False, "live_response"
         result.error = "the provider answered without a usable completion"

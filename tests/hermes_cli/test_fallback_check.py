@@ -213,8 +213,18 @@ _ANSWER = {"index": 0, "message": {"role": "assistant", "content": "OK"}, "finis
     ({"success": False, "error": {"message": "Unauthorized: invalid api key"}}, "live_auth"),
     ({"success": True, "data": {"id": "c", "object": "chat.completion", "created": 0, "model": "m",
                                 "choices": [_ANSWER]}}, "ready"),
+    # Envelope normalization drops status/error, so both are read from the envelope first.
+    ({"success": True, "data": {"choices": [_ANSWER], "status": "failed"}}, "live_response"),
+    ({"success": True, "data": {"choices": [_ANSWER], "error": {"code": "invalid_api_key", "message": "x",
+                                                               "status": 401}}}, "live_auth"),
+    ({"success": False, "data": {"error": {"code": "invalid_api_key", "status": 401, "message": "denied"}}},
+     "live_auth"),
+    ({"success": False, "data": {"detail": "nope"}}, "live_unknown"),  # no error object: still a failure
+    # Responses-style text outside ``choices`` is an answer, as on the aux path.
+    ({"choices": [], "object": "response", "status": "completed", "output_text": "OK"}, "ready"),
+    ({"choices": [], "object": "response", "status": "failed", "output_text": "OK"}, "live_response"),
     # A malformed Responses-style body fails this entry, not the whole command.
-    ({"choices": [], "object": "response", "output": [{"type": "message", "content": 42}]}, "live_response"),
+    ({"choices": [], "object": "response", "output": [{"type": "message", "content": 42}]}, "live_unknown"),
 ])
 def test_live_judges_the_answer_body(monkeypatch, body, status):
     _route_to(monkeypatch, _openai_client(lambda request: httpx.Response(

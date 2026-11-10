@@ -77,6 +77,10 @@ class ProcessCheckpointMixin:
             _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
         )
         from tools.process_registry_output_log import adoptable_log
+        from tools.process_registry_consumed import _sweep_consumed_markers
+
+        # Consumption outlives the finished-session cache, including across restarts.
+        _sweep_consumed_markers()
 
         # This host adopts what a crashed predecessor left running, so the jobs it starts must
         # survive its own crash for the next one: they stay out of the owner-death supervisor.

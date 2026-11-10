@@ -26,23 +26,27 @@ from pathlib import Path
 import pytest
 
 import hermes_state_registry as registry
+import persistence_assembly
+from hermes_state import SessionDB
+from persistence.sqlite import _registry as holders
+from tests.fixtures.storage_holder import raw_holder
 
 
 @pytest.fixture(autouse=True)
 def _clean_registry():
     """Isolate the process-global registry between tests."""
     registry.close_all()
-    registry._generations.clear()
-    registry._retired.clear()
-    registry._opening.clear()
-    registry._tearing_down.clear()
-    registry._path_lifecycle_locks.clear()
+    holders._generations.clear()
+    holders._retired.clear()
+    holders._opening.clear()
+    holders._tearing_down.clear()
+    holders._path_lifecycle_locks.clear()
     yield
     registry.close_all()
-    registry._generations.clear()
-    registry._retired.clear()
-    registry._opening.clear()
-    registry._tearing_down.clear()
+    holders._generations.clear()
+    holders._retired.clear()
+    holders._opening.clear()
+    holders._tearing_down.clear()
 
 
 def _replace_file_preserving_schema(src: Path, dst: Path) -> None:
@@ -148,18 +152,18 @@ class TestInodeReplacement:
             calls["n"] += 1
             raise OSError("disk temporarily gone")
 
-        monkeypatch.setattr(registry, "_open_session_db", _fail_open)
+        monkeypatch.setattr(holders, "_open_holder", _fail_open)
 
         with pytest.raises(OSError):
             registry.acquire(db_path)
 
         # No live entry for the path — the next acquire retries fresh.
-        assert db_path not in registry._generations
+        assert db_path not in holders._generations
         assert stats_live_for(db_path) is None
 
         monkeypatch.setattr(
-            registry,
-            "_open_session_db",
+            holders,
+            "_open_holder",
             lambda path: _make_session_db(path),
         )
         fresh = registry.acquire(db_path)
@@ -172,13 +176,13 @@ class TestInodeReplacement:
 
 
 def _make_session_db(path):
-    from hermes_state import SessionDB
+    from persistence.sqlite._holder import StoreHolder
 
-    return SessionDB(db_path=Path(path))
+    return StoreHolder(db_path=Path(path))
 
 
 def stats_live_for(path: Path):
-    generation = registry._generations.get(Path(path))
+    generation = holders._generations.get(Path(path))
     return generation
 
 
@@ -216,7 +220,7 @@ class TestTeardownOutsideLock:
             assert release_open.wait(5.0)
             return _FakeDB(path)
 
-        monkeypatch.setattr(registry, "_open_session_db", _blocked_open)
+        monkeypatch.setattr(holders, "_open_holder", _blocked_open)
 
         def _acquire():
             try:
@@ -267,7 +271,7 @@ class TestTeardownOutsideLock:
                 raise OSError("transient open failure")
             return _FakeDB(path)
 
-        monkeypatch.setattr(registry, "_open_session_db", _fail_then_open)
+        monkeypatch.setattr(holders, "_open_holder", _fail_then_open)
 
         def _acquire():
             try:
@@ -314,7 +318,7 @@ class TestTeardownOutsideLock:
         teardown_entered = threading.Event()
         lock_released_during_teardown = threading.Event()
 
-        original_teardown = registry._teardown
+        original_teardown = holders._teardown
 
         def _slow_teardown(target):
             teardown_entered.set()
@@ -322,15 +326,15 @@ class TestTeardownOutsideLock:
             # acquire from another thread will deadlock or block until
             # teardown finishes.  Give it a moment to observe.
             try:
-                acquired = registry._lock.acquire(timeout=2.0)
+                acquired = holders._lock.acquire(timeout=2.0)
                 if acquired:
                     lock_released_during_teardown.set()
-                    registry._lock.release()
+                    holders._lock.release()
             except Exception:
                 pass
             original_teardown(target)
 
-        monkeypatch.setattr(registry, "_teardown", _slow_teardown)
+        monkeypatch.setattr(holders, "_teardown", _slow_teardown)
 
         result = threading.Event()
 
@@ -441,12 +445,34 @@ class TestLegacyCloseSemantics:
         assert stats["retired_generations"] == 0
 
 
+class TestHolderlessSessionDB:
+    def test_holderless_session_dbs_and_an_interface_store_share_one_writer(self, tmp_path):
+        """A ``SessionDB(path)`` built without a holder takes its reference from the registry, so two of them and
+        an interface store on the same file serve through one holder; each close returns one reference, once."""
+        db_path = tmp_path / "state.db"
+        first, second = SessionDB(db_path), SessionDB(db_path)
+        store = persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=tmp_path))
+        try:
+            holder = raw_holder(store)
+            assert first._holder is second._holder is holder
+            assert holders.stats()["live_generations"] == 1
+
+            first.close()
+            first.close()
+            second.close()
+            assert holder._conn is not None, "the store's reference must survive the SessionDB closes"
+        finally:
+            store.close()
+        assert holder._conn is None
+        assert holders.stats()["live_generations"] == 0
+
+
 class TestAcquireSingleFlight:
     def test_concurrent_first_acquires_share_one_generation(self, tmp_path, monkeypatch):
         """Two threads acquiring a cold path concurrently must end up
         sharing ONE generation, with the loser's instance torn down."""
         db_path = tmp_path / "state.db"
-        real_open = registry._open_session_db
+        real_open = holders._open_holder
         gate = threading.Event()
         opened = []
 
@@ -458,7 +484,7 @@ class TestAcquireSingleFlight:
                 gate.wait(5.0)
             return db
 
-        monkeypatch.setattr(registry, "_open_session_db", _gated_open)
+        monkeypatch.setattr(holders, "_open_holder", _gated_open)
 
         results = []
         errors = []
@@ -510,16 +536,16 @@ class TestMultiGenerationTeardownBarrier:
         """
         entered = threading.Event()
         resume = threading.Event()
-        original = registry._teardown_generation
+        original = holders._teardown_generation
 
         def _paused(path, db, *, barrier=None):
-            if db is target:
+            if db is target._holder:
                 entered.set()
                 if not resume.wait(10.0):  # pragma: no cover - failure path
                     raise AssertionError("timed out holding a teardown")
             original(path, db, barrier=barrier)
 
-        monkeypatch.setattr(registry, "_teardown_generation", _paused)
+        monkeypatch.setattr(holders, "_teardown_generation", _paused)
         return entered, resume
 
     @staticmethod
@@ -557,7 +583,7 @@ class TestMultiGenerationTeardownBarrier:
             # current generation's close is still admitted.
             assert registry.release(old) is True
             assert old._conn is None
-            barrier = registry._tearing_down.get(resolved)
+            barrier = holders._tearing_down.get(resolved)
             assert barrier is not None, "retired drain lifted the shared path barrier"
             assert barrier.pending == 1
             assert not barrier.event.is_set()
@@ -583,7 +609,7 @@ class TestMultiGenerationTeardownBarrier:
 
         assert errors == []
         assert current._conn is None
-        assert registry._tearing_down.get(resolved) is None
+        assert holders._tearing_down.get(resolved) is None
 
     def test_replacement_is_not_published_before_the_last_close_settles(self, tmp_path, monkeypatch):
         """acquire() must not open a writer on top of an unfinished close."""
@@ -630,18 +656,18 @@ class TestMultiGenerationTeardownBarrier:
         db_path = tmp_path / "state.db"
         db = registry.acquire(db_path)
         resolved = Path(db_path).resolve()
-        real_teardown = registry._teardown
+        real_teardown = holders._teardown
 
         def _raising_teardown(target):
             real_teardown(target)
             raise RuntimeError("checkpoint exploded")
 
-        monkeypatch.setattr(registry, "_teardown", _raising_teardown)
+        monkeypatch.setattr(holders, "_teardown", _raising_teardown)
         with pytest.raises(RuntimeError):
             registry.release(db)
 
-        assert registry._tearing_down.get(resolved) is None
-        monkeypatch.setattr(registry, "_teardown", real_teardown)
+        assert holders._tearing_down.get(resolved) is None
+        monkeypatch.setattr(holders, "_teardown", real_teardown)
         fresh = registry.acquire(db_path)
         assert fresh is not db
         assert registry.release(fresh) is True
@@ -686,8 +712,8 @@ class TestCloseAllUnder:
         try:
             assert entered.wait(5.0)
             resolved = (profile_dir / "state.db").resolve()
-            assert registry._generations.get(resolved) is None
-            barrier = registry._tearing_down.get(resolved)
+            assert holders._generations.get(resolved) is None
+            barrier = holders._tearing_down.get(resolved)
             assert barrier is not None and not barrier.event.is_set()
 
             swept: list[int] = []

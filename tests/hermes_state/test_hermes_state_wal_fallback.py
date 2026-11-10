@@ -18,8 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
-import hermes_state
 import hermes_state_wal
+import storage_user_copy
 from hermes_state import SessionDB, get_last_init_error
 from hermes_state_wal import WalUnsupportedError, apply_wal_with_fallback
 
@@ -76,9 +76,9 @@ def _make_silent_noop_factory(returned_mode: str = "delete"):
 @pytest.fixture(autouse=True)
 def _reset_last_init_error():
     """Reset the module-global last-error before and after each test."""
-    hermes_state._set_last_init_error(None)
+    storage_user_copy.set_last_init_error(None)
     yield
-    hermes_state._set_last_init_error(None)
+    storage_user_copy.set_last_init_error(None)
 
 
 @pytest.fixture(autouse=True)

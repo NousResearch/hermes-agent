@@ -101,6 +101,28 @@ def test_partial_override_falls_back_to_defaults(settings_env):
     }
 
 
+def test_persisted_override_is_shown_before_the_first_turn_after_restart(settings_env, monkeypatch):
+    import hermes_state
+    from gateway.session import SessionStore
+
+    def _no_sqlite():
+        raise RuntimeError("SQLite disabled in test")
+
+    monkeypatch.setattr(hermes_state, "SessionDB", _no_sqlite)
+    adapter, runner, source, home = settings_env
+    (home / "config.yaml").write_text("model:\n  default: default-model\n  provider: default-provider\n")
+    before_restart = SessionStore(sessions_dir=home / "sessions", config=GatewayConfig())
+    key = before_restart.get_or_create_session(source).session_key
+    before_restart.set_model_override(key, {
+        "model": "picked-model", "provider": "picked-provider", "base_url": "https://picked.example/v1"})
+    runner.session_store = SessionStore(sessions_dir=home / "sessions", config=GatewayConfig())
+    assert adapter.get_session_model_settings(source) == {
+        "session_key": key, "model": "picked-model", "provider": "picked-provider",
+        "base_url": "https://picked.example/v1",
+    }
+    assert runner._peek_session_state(key) is None
+
+
 def test_unattached_adapter_returns_none(settings_env):
     adapter, _, source, _ = settings_env
     adapter.gateway_runner = None
@@ -124,6 +146,7 @@ def test_existing_session_without_override_and_absent_config(settings_env):
     ("https://user:password@[invalid", ""),
     ("https://models.example:not-a-port/v1", ""),
     ("opaque-secret", ""),
+    ("https:opaque-secret", ""),
 ])
 def test_endpoint_excludes_url_credentials(settings_env, base_url, expected):
     adapter, runner, source, _ = settings_env

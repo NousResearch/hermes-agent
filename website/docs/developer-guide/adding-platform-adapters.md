@@ -361,8 +361,8 @@ copy of the source, selects the profile; the caller's source is not modified.
 
 This is a **settings display snapshot**, not a credential or live-inference introspection API.
 It does not allocate a session or agent, load a persisted override into memory, resolve
-provider credentials, contact a provider, or change any settings. A persisted choice not
-yet rehydrated and a transient runtime fallback are not reported as in-memory overrides.
+provider credentials, contact a provider, or change any settings. A persisted `/model` choice
+not yet loaded after a restart is read from the session store; a transient runtime fallback is not reported.
 Only the four named fields are returned: keys, tokens, credential pools and headers are
 never copied. Endpoint userinfo, query and fragment are omitted (unparseable URLs become
 `""`); the endpoint path is retained, so do not put credentials in endpoint paths. Do not

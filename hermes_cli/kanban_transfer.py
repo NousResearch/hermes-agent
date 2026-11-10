@@ -61,10 +61,20 @@ def _placeholders(items) -> str:
 
 def _snapshot_db(source: Path, target: Path) -> None:
     """Consistent copy of ``source`` via the online-backup API (a file copy
-    would miss pages still in the ``-wal`` sidecar and could tear)."""
-    with contextlib.closing(sqlite3.connect(str(source))) as src, \
-            contextlib.closing(sqlite3.connect(str(target))) as dst:
+    would miss pages still in the ``-wal`` sidecar and could tear). The live
+    source board opens read-only through the one guarded board connect, so the
+    hosted refusal covers exports too; ``target`` is the export's private
+    staged copy, not a live board (:func:`_open_staged_export_copy`)."""
+    with kbc.connect_closing(source, readonly=True) as src, \
+            contextlib.closing(_open_staged_export_copy(target)) as dst:
         src.backup(dst)
+
+
+def _open_staged_export_copy(path: Path) -> sqlite3.Connection:
+    """Open the export's staged snapshot copy — a private file this export just
+    created under a temp dir, never a live board database (the live source
+    board opens through the guarded board connect in :func:`_snapshot_db`)."""
+    return sqlite3.connect(str(path))
 
 
 def _scrub_local_state(conn: sqlite3.Connection) -> None:
@@ -139,7 +149,7 @@ def export_board(
         _snapshot_db(db_path, staged / "kanban.db")
         # The snapshot is a private file with no other writers, so plain
         # commit/close is enough — no need for the board DB's WAL dance.
-        with contextlib.closing(sqlite3.connect(str(staged / "kanban.db"))) as snapshot:
+        with contextlib.closing(_open_staged_export_copy(staged / "kanban.db")) as snapshot:
             _scrub_local_state(snapshot)
             snapshot.commit()
             counts = _count_rows(snapshot)

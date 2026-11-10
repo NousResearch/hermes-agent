@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import sqlite3
 import time
 from pathlib import Path
 
@@ -110,12 +109,13 @@ def _cron_busy(homes) -> str | None:
 
 def _kanban_busy() -> str | None:
     from hermes_cli import kanban_db
+    from hermes_cli.kanban_db_connect import connect_closing
     marks = ",".join("?" * len(_KANBAN_DUE_STATUSES))
     for meta in kanban_db.list_boards(include_archived=False):
         path = kanban_db.kanban_db_path(board=meta.get("slug"))
         if not path.exists():
             continue
-        with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)) as conn:
+        with connect_closing(path, readonly=True) as conn:
             if conn.execute(f"SELECT 1 FROM tasks WHERE status IN ({marks}) LIMIT 1",
                             _KANBAN_DUE_STATUSES).fetchone():
                 return f"kanban work on board {meta.get('slug')}"

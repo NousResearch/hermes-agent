@@ -210,8 +210,10 @@ def count_notify_subs(
     thread_id: Optional[str] = None,
 ) -> int:
     """Count ``kanban_notify_subs`` rows via a read-only connection — the
-    notifier's cheap zero-subscription early exit. Unlike :func:`connect` it
-    never creates the file, runs init/migration or opens writable; WAL rows are
+    notifier's cheap zero-subscription early exit. The open goes through the
+    one guarded board connect (:func:`hermes_cli.kanban_db_connect.connect`
+    with ``readonly=True``), so it never creates the file, runs
+    init/migration, opens writable, or skips the hosted refusal; WAL rows are
     still visible so a fresh sub is never missed. Missing DB / missing table
     counts as zero; platform matches case-insensitively (as notifier routing),
     chat/thread exactly. Raises :class:`sqlite3.Error` if the DB exists but is
@@ -239,8 +241,8 @@ def count_notify_subs(
     query = "SELECT COUNT(*) FROM kanban_notify_subs"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-    try:
+    from hermes_cli.kanban_db_connect import connect_closing  # late: import cycle
+    with connect_closing(path, readonly=True) as conn:
         try:
             row = conn.execute(query, params).fetchone()
         except sqlite3.OperationalError as exc:
@@ -248,8 +250,6 @@ def count_notify_subs(
                 return 0
             raise
         return int(row[0]) if row else 0
-    finally:
-        conn.close()
 
 
 def remove_notify_sub(

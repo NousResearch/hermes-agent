@@ -82,6 +82,18 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _open_readonly(path: Path) -> sqlite3.Connection:
+    """Read-only open of a board database (``file:...?mode=ro``): no init, no
+    migration, no directory or sidecar creation. ``connect`` uses it for
+    callers that only read (``readonly=True``) and for descendants (a fenced
+    path), so the one hosted refusal covers reads too; a missing or unreadable
+    file raises ``sqlite3.OperationalError`` exactly as a plain read-only open."""
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.text_factory = _kb._lossy_text
+    return conn
+
+
 def _try_lock_nb(handle) -> bool:
     """One non-blocking exclusive lock attempt on ``handle``; False when held elsewhere.
     Windows: 1-byte ``msvcrt.locking`` range at offset 0; POSIX: ``flock``."""
@@ -572,7 +584,14 @@ def repair_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) ->
     corrupt), but returns a :class:`RepairResult` instead of raising so
     ``hermes kanban repair`` can pick its exit code. ``OperationalError``
     (locked/busy) still propagates raw: a locked healthy DB must not be
-    quarantined."""
+    quarantined.
+
+    Refuses wherever the process serves hosted tenants, exactly like
+    :func:`connect` — the integrity read is a board open, and repairing a
+    live shared board from inside a hosted process could race its writers.
+    An operator repairs offline instead: stop the hosted process, then run
+    ``hermes kanban repair`` from a terminal profile."""
+    _kb._refuse_shared_board_if_hosted()
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     try:
         resolved = path.resolve()
@@ -712,26 +731,31 @@ def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
         raise ValueError(f"kanban board {slug!r} does not exist; create it with `hermes kanban boards create {slug}`")
 
 
-def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
-    """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
+def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None,
+            readonly: bool = False) -> sqlite3.Connection:
+    """Open (and initialize if needed) the kanban DB — the one function that
+    opens a kanban board database, whoever asks and whatever path form the
+    caller arrives with. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection
     per path auto-runs :func:`init_db`, later ones skip via
     ``_INITIALIZED_PATHS``. Path: explicit ``db_path``, else ``board``, else
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
-    ``<root>/kanban/current`` -> ``default``). Refuses wherever the process
+    ``<root>/kanban/current`` -> ``default``). ``readonly=True`` opens
+    read-only (``file:...?mode=ro``) for callers that only read — watchers,
+    claim checks, result reads, exports: no init, no migration, no directory
+    or sidecar creation. Refuses wherever the process
     serves hosted tenants, before any path is resolved or opened — including
     opens that arrive with an explicit or a pinned ``db_path`` and never
     resolve the shared root (see ``kanban_db._refuse_shared_board_if_hosted``)."""
     _kb._refuse_shared_board_if_hosted()
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     from agent.delegation_context import kanban_path_is_fenced
-    if kanban_path_is_fenced(path):
+    fenced = kanban_path_is_fenced(path)
+    if readonly or fenced:
         # Reads must not enter schema/backfill write transactions. Never create a
         # missing board or migrate on a descendant's behalf; the owner initializes it.
-        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        conn.text_factory = _kb._lossy_text
-        if not _schema_is_present(conn):
+        conn = _open_readonly(path)
+        if fenced and not readonly and not _schema_is_present(conn):
             conn.close()
             raise PermissionError("Kanban descendants require an initialized board; ask its owner to initialize it")
         return conn
@@ -788,15 +812,17 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
 
 
 @contextlib.contextmanager
-def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None):
+def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None,
+                    readonly: bool = False):
     """Open a kanban DB connection and guarantee it is closed on exit. Use
     instead of ``with kb.connect() as conn:`` — sqlite3's context manager only
     commits/rolls back, it does NOT close the fd, so long-lived processes
     (gateway, dashboard) leak FDs until ``[Errno 24] Too many open files``.
+    ``readonly=True`` passes through to :func:`connect`'s read-only open.
 
     See #33159 for the production incident.
     """
-    conn = connect(db_path=db_path, board=board)
+    conn = connect(db_path=db_path, board=board, readonly=readonly)
     try:
         yield conn
     finally:
@@ -809,6 +835,7 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
     :func:`connect`'s cached first-time auto-init, this always re-runs the
     migration pass — callers that know the on-disk schema may have drifted
     (tests writing legacy event kinds, external upgrades) use it to force it."""
+    _kb._refuse_shared_board_if_hosted()
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     _refuse_dead_board_resurrection(path, board)
     path.parent.mkdir(parents=True, exist_ok=True)

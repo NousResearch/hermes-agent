@@ -2,34 +2,8 @@ name: model-router
 title: "Model Router"
 repo: https://github.com/metamindedu/hermes-model-router
 sha: d05c2ba9c7fbd3ed4ac447d7041fad534e04f0ed
-description: >-
-  Native introductions automatically supply bounded role hints for allowed profiles;
-  existing delegation overrides remain unchanged. Optional AI role drafts first preview the exact
-  bounded introduction, explicit SOUL Role section and enabled local skill identifiers, then require
-  explicit Generate under the connected owner's saved main model and existing native recovery/fallback
-  policy. Review and local draft acceptance are separate from normal settings Save. No target profile
-  conversation/account use, global-introduction rewrite, history/private-memory source, skill-body or
-  external-directory traversal. No automatic generation or plugin retry. Credential values remain
-  host-owned; final account/billing identity and single network attempt are not guaranteed.
-  Profile model settings and native purpose-bound Heavy/Light or allowlisted profile delegation.
-  Explicit first-use preparation defaults only raw-unset backends to model-or-profile choice;
-  installation, enablement, refresh and registration do not select a backend or grant profile/cost access.
-  Existing modes, OFF/null selections, models, budgets and permissions are preserved.
-  Each delegate_task task selects either origin-profile Heavy/Light models or an explicitly permitted
-  profile using that target's own model/reasoning; these routes are not combined.
-  The Desktop UI provides per-profile readiness, explicit missing-profile preparation and a target-profile
-  allowlist with account/tool-use consent. Explicit settings saves change only the previewed profiles
-  through the native config API/CLI; native package preparation is separate and bounded to 32 selected
-  local profiles, requires dependency/activation consent, and never installs on refresh or into future profiles.
-  Native subagents use the user's configured providers, tools and approval policy and may consume API or
-  subscription quota. Ordinary and spare model continuation have separate backend-bound cost approval;
-  other-profile access is never automatic. Background processes, wake/stop, ownership, tool ceilings and
-  session records are managed by Hermes, not a private worker supervisor or credential store.
-  The coding_route tool is read/config/join only for new work; old private worker starts are retired.
-  Routing guidance defaults ON after trust/activation when its own saved choice is absent, but that is
-  separate from backend selection and never launches work at installation. Existing routing OFF and skill
-  opt-outs remain OFF. Configured zero timeouts can remove wall-clock caps. Fast inheritance on covered
-  first-party routes can raise cost. No telemetry, self-updater, core monkeypatch or approval bypass.
+description: "Native introductions automatically supply bounded role hints for allowed profiles; existing delegation overrides remain unchanged. Optional AI role drafts first preview the exact bounded introduction, explicit SOUL Role section and enabled local skill identifiers, then require explicit Generate under the connected owner's saved main model and existing native recovery/fallback policy. Review and local draft acceptance are separate from normal settings Save. No target profile conversation/account use, global-introduction rewrite, history/private-memory source, skill-body or external-directory traversal. No automatic generation or plugin retry. Credential values remain host-owned; final account/billing identity and single network attempt are not guaranteed. Profile model settings and native purpose-bound Heavy/Light or allowlisted profile delegation. Explicit first-use preparation defaults only raw-unset backends to model-or-profile choice; installation, enablement, refresh and registration do not select a backend or grant profile/cost access. Existing modes, OFF/null selections, models, budgets and permissions are preserved. Each delegate_task task selects either origin-profile Heavy/Light models or an explicitly permitted profile using that target's own model/reasoning; these routes are not combined. The Desktop UI provides per-profile readiness, explicit missing-profile preparation and a target-profile allowlist with account/tool-use consent. Explicit settings saves change only the previewed profiles through the native config API/CLI; native package preparation is separate and bounded to 32 selected local profiles, requires dependency/activation consent, and never installs on refresh or into future profiles. Native subagents use the user's configured providers, tools and approval policy and may consume API or subscription quota. Ordinary and spare model continuation have separate backend-bound cost approval; other-profile access is never automatic. Background processes, wake/stop, ownership, tool ceilings and session records are managed by Hermes, not a private worker supervisor or credential store. The coding_route tool is read/config/join only for new work; old private worker starts are retired. Routing guidance defaults ON after trust/activation when its own saved choice is absent, but that is separate from backend selection and never launches work at installation. Existing routing OFF and skill opt-outs remain OFF. Configured zero timeouts can remove wall-clock caps. Fast inheritance on covered first-party routes can raise cost. No telemetry, self-updater, core monkeypatch or approval bypass. Disclosure — after you trust and enable the plugin, routing defaults ON for every installed profile without a saved choice, including profiles that installed an earlier version and never saved one (the update turns it on); existing saved OFF and explicit skill opt-outs remain OFF. Once a profile's `delegation.backend` is set to `model-router`, `model-router-profiles` or `model-router-auto`, native `delegate_task` subagents are routed to that profile's Heavy/Light models or, for profiles you allowlist with explicit consent, run as another local profile with that profile's own model, credentials and tools. The model chooses the route and can set a task's total time limit to none, and continuation fallback chains you approve can add cost. The `coding_route` tool now only reads settings and inspects or joins earlier jobs, whose prompts and results stay in `plugin-data/model-router/jobs/`. Saving settings writes model, delegation (including `delegation.backend` and `delegation.backends.*`), auxiliary, fallback and `skills.disabled` keys into the config.yaml of the profiles listed in the preview (backups are taken first). The Desktop \"prepare profiles\" and first-use preparation actions, after you select profiles and confirm, install and enable this same catalog pin in up to 32 other local profiles through Hermes's plugin manager and set an unset `delegation.backend` to `model-router-auto` there, where routing then defaults
+  ON. The optional AI role draft, only after you press Generate, sends the target profile's `profile.yaml` description, up to 1536 characters of its SOUL.md \"Role\" section and up to 32 enabled skill names to the current profile's main model provider. From install, native subagents inherit the parent session's Fast (priority/ultrafast) tier on first-party OpenAI/Codex routes, which can raise costs."
 maintainer: metamindedu
 tier: community
 category: models
@@ -68,4 +42,4 @@ capabilities:
     - tool_execution
     - llm_request
   requires_env: []
-requires_hermes: ">=0.22.5"
+requires_hermes: ">=0.23.0"

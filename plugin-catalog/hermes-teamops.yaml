@@ -3,7 +3,7 @@ repo: "https://github.com/agentworker33-droid/hermes-teamops"
 sha: "e1b49bf8ca34b5196fb0c7187f8edd00c8e37869"
 subdir: teamops
 title: "TeamOps — build and run your agent team"
-description: "One plugin for the full lifecycle of a multi-agent Hermes team. Deploy a whole team from a blueprint (profiles, SOULs, skills, crons, shared kanban, mesh edges) with `hermes teams deploy`, verify it with Deploy Guard (preflight/smoke/rollback), watch fleet status and the mesh map, catch silent cron gaps (Cron911) and dead models (Model Guard), get a daily standup digest, and broadcast decisions across teams (mesh sync). Includes the Agent Factory lane (Spec-Architect to Script-Builder to Validator) so you can generate custom blueprints from a one-line spec and deploy them with the same verified pipeline. 14 tools plus the hermes teams CLI. Local-first: everything runs against your own HERMES_HOME; nothing leaves the machine."
+description: "One plugin for the full lifecycle of a multi-agent Hermes team. Deploy a whole team from a blueprint (profiles, SOULs, skills, crons, shared kanban, mesh edges) with `hermes teams deploy`, verify it with Deploy Guard (preflight/smoke/rollback), watch fleet status and the mesh map, catch silent cron gaps (Cron911) and dead models (Model Guard), get a daily standup digest, and broadcast decisions across teams (mesh sync). Includes the Agent Factory lane (Spec-Architect to Script-Builder to Validator) so you can generate custom blueprints from a one-line spec and deploy them with the same verified pipeline. 16 tools plus the hermes teams CLI. Local-first: everything runs against your own HERMES_HOME; nothing leaves the machine."
 maintainer: "Dalton Wyant / AutomatedAgents"
 tier: community
 category: automation
@@ -29,5 +29,7 @@ capabilities:
     - team_dashboard
     - team_dashboard_status
     - team_dashboard_stop
+    - phone_intake
+    - twilio_status
   provides_hooks: []
   provides_middleware: []

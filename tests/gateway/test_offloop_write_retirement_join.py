@@ -102,10 +102,10 @@ async def _create_title(authority, owner, tmp_path, db):
 
 
 CASES = [
-    ('acp-detach', 'gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_detach),
-    ('acp-idle-exit', 'gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_idle_exit),
-    ('claim-reopen', 'gateway.session_local_recovery', 'reopen_local_session', _claim_reopen),
-    ('create-title', 'gateway.session_local_title', 'title_new_session', _create_title),
+    ('acp-detach', 'hermes_agent.gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_detach),
+    ('acp-idle-exit', 'hermes_agent.gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_idle_exit),
+    ('claim-reopen', 'hermes_agent.gateway.session_local_recovery', 'reopen_local_session', _claim_reopen),
+    ('create-title', 'hermes_agent.gateway.session_local_title', 'title_new_session', _create_title),
 ]
 
 
@@ -142,7 +142,7 @@ async def test_close_gate_counts_a_detach_write_its_cancelled_ws_handler_left(tm
     store, authority, owner = _owner(tmp_path, monkeypatch)
     db = store._db
     writer = _HeldWriter(str(db.db_path))
-    writer.wrap(monkeypatch, 'gateway.session_acp_lifecycle', 'end_idle_local_session')
+    writer.wrap(monkeypatch, 'hermes_agent.gateway.session_acp_lifecycle', 'end_idle_local_session')
     task = await _acp_detach(authority, owner, tmp_path, db)
     try:
         assert await asyncio.to_thread(writer.started.wait, 10)

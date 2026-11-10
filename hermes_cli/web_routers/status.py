@@ -475,8 +475,8 @@ async def _advisory_pressure(status: dict[str, Any], home: Path) -> None:
     advisory, not a liveness verdict, and flipping ``overall`` on it would page NAS's
     availability sweep for a condition the valve is already handling. Read-only, never raise.
     """
-    for key, mod_name, fn_name in (("memory", "gateway.memory_status", "collect_memory_status"),
-                                   ("disk", "gateway.disk_status", "collect_disk_status")):
+    for key, mod_name, fn_name in (("memory", "hermes_agent.gateway.memory_status", "collect_memory_status"),
+                                   ("disk", "hermes_agent.gateway.disk_status", "collect_disk_status")):
         try:
             collect = getattr(importlib.import_module(mod_name), fn_name)
             status[key] = await run_in_threadpool(collect, home)

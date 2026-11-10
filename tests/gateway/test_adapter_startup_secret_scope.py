@@ -41,7 +41,7 @@ MIGRATED_ADAPTER_MODULES = [
     ("plugins.platforms.photon.auth", "PHOTON_PROJECT_SECRET"),
     ("plugins.platforms.buzz.adapter", "BUZZ_PRIVATE_KEY"),
     ("plugins.platforms.bluebubbles.adapter", "BLUEBUBBLES_PASSWORD"),
-    ("gateway.platforms.api_server", "API_SERVER_KEY"),
+    ("hermes_agent.gateway.platforms.api_server", "API_SERVER_KEY"),
 ]
 
 MODULE_IDS = [m for m, _ in MIGRATED_ADAPTER_MODULES]

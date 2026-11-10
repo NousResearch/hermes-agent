@@ -337,7 +337,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     # dependency generation at child start, no venv is captured in its env.
     from hermes_cli._launchers import runtime_command
     from pathlib import Path
-    assert cmd[:3] == runtime_command(Path(gateway_run.__file__).resolve().parent.parent)[:3]
+    assert cmd[:3] == runtime_command(Path(gateway_run.__file__).resolve().parents[2])[:3]
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
 

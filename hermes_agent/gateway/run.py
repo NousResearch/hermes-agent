@@ -3280,7 +3280,7 @@ def _command_origin_for_source(source: Any) -> Optional[dict]:
 
 
 def _builtin_adapter_import(module: str, adapter_name: str, requirement: str):
-    """Lazy-import ``(adapter_cls, requirements_ok)`` from ``gateway.platforms.<module>``."""
+    """Lazy-import ``(adapter_cls, requirements_ok)`` from ``hermes_agent.gateway.platforms.<module>``."""
     import importlib
     mod = importlib.import_module(f"hermes_agent.gateway.platforms.{module}")
     return getattr(mod, adapter_name), getattr(mod, requirement)

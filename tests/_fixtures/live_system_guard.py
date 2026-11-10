@@ -322,7 +322,8 @@ def _live_system_guard(request, monkeypatch):
             tokens = _shlex.split(cmd_str)
         except ValueError:
             tokens = cmd_str.split()
-        if "-m" not in tokens or tokens[tokens.index("-m") + 1:][:1] != ["gateway.run"]:
+        if "-m" not in tokens or tokens[tokens.index("-m") + 1:][:1] not in (
+                ["gateway.run"], ["hermes_agent.gateway.run"]):
             return False
         hermes_home, home = env.get("HERMES_HOME"), env.get("HOME")
         if not hermes_home or not home:

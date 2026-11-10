@@ -71,16 +71,16 @@ def test_documented_public_stdlib_and_own_package_imports_are_not_flagged(tmp_pa
 
 
 _PLATFORM_PLUGIN_SEAMS = (
-    ("gateway.platforms.access_policy_mixin", "OwnAccessPolicyMixin"),
+    ("hermes_agent.gateway.platforms.access_policy_mixin", "OwnAccessPolicyMixin"),
     ("tools.approval", "resolve_gateway_approval"),
     ("tools.clarify_gateway", "get_pending"),
     ("tools.clarify_gateway", "resolve_gateway_clarify"),
     ("tools.clarify_gateway", "mark_awaiting_text"),
-    ("gateway.platforms.helpers", "platform_http_client"),
-    ("gateway.platforms.base", "ssrf_redirect_guard"),
+    ("hermes_agent.gateway.platforms.helpers", "platform_http_client"),
+    ("hermes_agent.gateway.platforms.base", "ssrf_redirect_guard"),
     ("tools.url_safety", "create_ssrf_safe_async_client"),
     ("tools.url_safety", "is_safe_url"),
-    ("gateway.platforms._http_client_limits", "platform_httpx_limits"),
+    ("hermes_agent.gateway.platforms._http_client_limits", "platform_httpx_limits"),
     ("hermes_cli.gateway_setup_wizard", "print_setup_header"),
     ("hermes_cli.gateway_setup_wizard", "confirm_reconfigure"),
     ("hermes_cli.gateway_setup_wizard", "offer_home_channel"),
@@ -164,7 +164,7 @@ def test_plugin_guide_session_identity_example_validates_clean(tmp_path):
               if "get_session_env" in b]
     assert blocks, "plugins/index.md shows no code example importing get_session_env"
     for block in blocks:  # validate sees only imports, and skips code that does not parse
-        assert any(isinstance(node, ast.ImportFrom) and node.module == "gateway.session_context"
+        assert any(isinstance(node, ast.ImportFrom) and node.module == "hermes_agent.gateway.session_context"
                    and "get_session_env" in {alias.name for alias in node.names}
                    for node in ast.walk(ast.parse(block))), block
     plugin = _plugin(tmp_path / "sessid", {f"example_{i}.py": b for i, b in enumerate(blocks)})

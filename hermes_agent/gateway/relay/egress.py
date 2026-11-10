@@ -160,7 +160,7 @@ def _is_missing_gateway_relay(exc: ImportError) -> bool:
     # Absence is ModuleNotFoundError WITH a name; anything else is a fault.
     if not isinstance(exc, ModuleNotFoundError):
         return False
-    return exc.name == "gateway.relay.egress" or "gateway.relay.egress".startswith(f"{exc.name}.")
+    return exc.name == "hermes_agent.gateway.relay.egress" or "hermes_agent.gateway.relay.egress".startswith(f"{exc.name}.")
 
 
 def _live_relay_fronted() -> Optional[set[str]]:

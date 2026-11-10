@@ -67,10 +67,10 @@ _STORE_OPENERS = (
     ("hermes_agent.cron.incidents", "_connect"),
     ("hermes_agent.cron.notepad", "_connect"),
     ("hermes_agent.cron.delivery_queue", "_connect"),
-    ("gateway.delivery_ledger", "_connect"),
+    ("hermes_agent.gateway.delivery_ledger", "_connect"),
     ("tools.async_delegation", "_connect"),
     ("hermes_cli.projects_db", "connect"),
-    ("gateway.hosted_rooms_common", "open_sqlite"),
+    ("hermes_agent.gateway.hosted_rooms_common", "open_sqlite"),
 )
 
 
@@ -87,7 +87,7 @@ def test_every_store_opens_through_the_canonical_open_db(monkeypatch, tmp_path, 
         monkeypatch.setattr(module._executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
     if module_name == "agent.verification_evidence":
         monkeypatch.setattr(module, "_db_path", lambda: tmp_path / "ve.db")
-    if module_name in ("gateway.delivery_ledger", "tools.async_delegation"):
+    if module_name in ("hermes_agent.gateway.delivery_ledger", "tools.async_delegation"):
         monkeypatch.setattr(module, "_db_path", lambda: tmp_path / "state.db")
 
     calls = []
@@ -102,7 +102,7 @@ def test_every_store_opens_through_the_canonical_open_db(monkeypatch, tmp_path, 
     if getattr(module, "open_db", None) is real_open_db:
         monkeypatch.setattr(module, "open_db", spy)
     opener = getattr(module, attr)
-    args = (tmp_path / "opened.db",) if module_name == "gateway.hosted_rooms_common" else ()
+    args = (tmp_path / "opened.db",) if module_name == "hermes_agent.gateway.hosted_rooms_common" else ()
     if module_name == "hermes_cli.projects_db":
         args = (tmp_path / "projects.db",)
     conn = opener(*args)

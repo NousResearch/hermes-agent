@@ -364,11 +364,11 @@ def test_missing_gateway_package_still_allows(relay_env, monkeypatch):
     real_import = builtins.__import__
 
     def _no_gateway(name, *a, **k):
-        if name.startswith("gateway.relay.egress"):
+        if name.startswith("hermes_agent.gateway.relay.egress"):
             # The shape real absence takes: ModuleNotFoundError WITH a name.
             # A bare ImportError is not something a missing module produces,
             # and treating it as absence was a fail-open (round 4, blocker 1).
-            raise ModuleNotFoundError("no gateway package", name="gateway")
+            raise ModuleNotFoundError("no gateway package", name="hermes_agent.gateway")
         return real_import(name, *a, **k)
 
     monkeypatch.setattr(builtins, "__import__", _no_gateway)
@@ -421,7 +421,7 @@ def test_relay_module_import_fault_refuses(monkeypatch):
     real_import = builtins.__import__
 
     def fake_import(name, *a, **kw):
-        if name == "gateway.relay.egress":
+        if name == "hermes_agent.gateway.relay.egress":
             raise RuntimeError("broken dependency inside an installed gateway")
         return real_import(name, *a, **kw)
 
@@ -542,10 +542,10 @@ def test_nested_dependency_importerror_refuses(monkeypatch):
     real_import = builtins.__import__
 
     def fake_import(name, *a, **kw):
-        if name == "gateway.relay.egress":
+        if name == "hermes_agent.gateway.relay.egress":
             raise ModuleNotFoundError(
-                "No module named 'gateway.relay.dependency'",
-                name="gateway.relay.dependency",
+                "No module named 'hermes_agent.gateway.relay.dependency'",
+                name="hermes_agent.gateway.relay.dependency",
             )
         return real_import(name, *a, **kw)
 
@@ -563,8 +563,8 @@ def test_absent_gateway_module_importerror_still_authorizes(monkeypatch):
     real_import = builtins.__import__
 
     def fake_import(name, *a, **kw):
-        if name == "gateway.relay.egress":
-            raise ModuleNotFoundError("No module named 'gateway'", name="gateway")
+        if name == "hermes_agent.gateway.relay.egress":
+            raise ModuleNotFoundError("No module named 'hermes_agent.gateway'", name="hermes_agent.gateway")
         return real_import(name, *a, **kw)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
@@ -586,7 +586,7 @@ def test_nameless_importerror_refuses(monkeypatch):
     real_import = builtins.__import__
 
     def fake_import(name, *a, **kw):
-        if name == "gateway.relay.egress":
+        if name == "hermes_agent.gateway.relay.egress":
             raise ImportError("something went wrong during init")
         return real_import(name, *a, **kw)
 
@@ -655,8 +655,8 @@ def test_egress_module_own_import_boundary_fails_closed(monkeypatch):
     real_import = builtins.__import__
 
     def fake_import(name, *a, **kw):
-        if name == "gateway.relay" and "relay_fronted_platforms" in (kw.get("fromlist") or a[2] if len(a) > 2 else []):
-            raise ModuleNotFoundError("broken dep", name="gateway.relay.broken_dep")
+        if name == "hermes_agent.gateway.relay" and "relay_fronted_platforms" in (kw.get("fromlist") or a[2] if len(a) > 2 else []):
+            raise ModuleNotFoundError("broken dep", name="hermes_agent.gateway.relay.broken_dep")
         return real_import(name, *a, **kw)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
@@ -1222,7 +1222,7 @@ def test_a_broken_gateway_import_inside_the_live_probe_is_a_fault(monkeypatch):
     real_import = builtins.__import__
 
     def broken(name, *args, **kwargs):
-        if name == "gateway.config":
+        if name == "hermes_agent.gateway.config":
             raise ImportError("cannot import name Platform from gateway.config")
         return real_import(name, *args, **kwargs)
 
@@ -1246,8 +1246,8 @@ def test_a_genuinely_absent_gateway_package_is_still_an_absence(monkeypatch):
     real_import = builtins.__import__
 
     def absent(name, *args, **kwargs):
-        if name == "gateway.run":
-            raise ModuleNotFoundError("No module named 'gateway'", name="gateway")
+        if name == "hermes_agent.gateway.run":
+            raise ModuleNotFoundError("No module named 'hermes_agent.gateway'", name="hermes_agent.gateway")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", absent)

@@ -59,7 +59,7 @@ def test_is_pausable_gateway_import_failure_fails_closed(monkeypatch):
     real_import = builtins.__import__
 
     def unavailable(name, *args, **kwargs):
-        if name == "gateway.status":
+        if name == "hermes_agent.gateway.status":
             raise ImportError("gateway unavailable during checkout swap")
         return real_import(name, *args, **kwargs)
 

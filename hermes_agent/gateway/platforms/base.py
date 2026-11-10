@@ -430,7 +430,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
-if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
+if (_checkout_root := str(Path(__file__).resolve().parents[3])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn

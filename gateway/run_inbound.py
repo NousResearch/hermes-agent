@@ -324,6 +324,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         _up_state = self._peek_session_state(_quick_key)
         if _up_state is None or not _up_state.persistent.update_prompt_pending:
             return None
+        from gateway.approval_actor import update_prompt_refusal
+        from gateway.slash_access import policy_for_runner_source
+        if update_prompt_refusal(event.user_id or event.source.user_id,
+                                 admin_ids=policy_for_runner_source(self, event.source).admin_user_ids):
+            return None  # another member's message in a shared chat: an ordinary message, not the answer
         # Accept /approve and /deny as shorthand for yes/no
         cmd = event.get_command()
         _recognized_cmd = None

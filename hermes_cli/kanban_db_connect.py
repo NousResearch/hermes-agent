@@ -718,7 +718,11 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     per path auto-runs :func:`init_db`, later ones skip via
     ``_INITIALIZED_PATHS``. Path: explicit ``db_path``, else ``board``, else
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
-    ``<root>/kanban/current`` -> ``default``)."""
+    ``<root>/kanban/current`` -> ``default``). Refuses wherever the process
+    serves hosted tenants, before any path is resolved or opened — including
+    opens that arrive with an explicit or a pinned ``db_path`` and never
+    resolve the shared root (see ``kanban_db._refuse_shared_board_if_hosted``)."""
+    _kb._refuse_shared_board_if_hosted()
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     from agent.delegation_context import kanban_path_is_fenced
     if kanban_path_is_fenced(path):

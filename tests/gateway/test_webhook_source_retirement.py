@@ -4,7 +4,9 @@ Signed ingress and real terminal admissions/deletes/prunes own lifecycle proof.
 Transport observations are controlled, not recipient E2E or manufactured source work.
 Ordinary private prose is intentionally not a recognized secret-redactor canary.
 """
+import asyncio
 import json
+import threading
 import time
 
 import pytest
@@ -83,3 +85,110 @@ async def test_unrelated_terminal_admission_without_intent_remains_inapplicable(
         delete_source(authority, row['target_session_id'])
         assert await reconcile_final(authority, None, row['admission_id']) is None
         assert intent(authority, row['admission_id']) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind,barrier', [
+    ('original', 'discovery'), ('completion', 'discovery'),
+    ('original', 'publication'), ('completion', 'publication'),
+    ('completion', 'root_missing'),
+])
+async def test_deletion_wins_before_fresh_handoff(monkeypatch, kind, barrier):
+    from gateway import webhook_final_intent as final
+    from gateway.platforms.event import MessageEvent
+    from gateway.platforms.webhook_ingress import recover_bot_chat_finals
+    from gateway.session_envelope import restore_native
+    from hermes_state_runtime import get_session_admission, claim_session_input, settle_session_input
+    from tools import bot_live_delivery
+    entered, release = threading.Event(), threading.Event()
+    async with settled_before_finalizer(deliver='bot-chat', final_response=PRIVATE) as (_, _, _, runner, authority, root):
+        target = root['admission_id']
+        if kind == 'completion':
+            payload = get_session_admission(authority.db, admission_id=target)['payload']
+            event = MessageEvent(text='completion', source=restore_native(payload, runner).source, internal=True,
+                metadata={'gateway_session_key': payload['native_text_v1']['route'],
+                          'gateway_session_id': root['target_session_id']})
+            receipt = await authority.admit_automation(runner._adapter_for_source(event.source), event,
+                                                       '["completion","retirement-race",123.0]')
+            claimed = claim_session_input(authority.db, epoch=authority.epoch, session_id=root['target_session_id'])
+            settle_session_input(authority.db, epoch=authority.epoch, admission_id=receipt.admission_id,
+                generation=claimed['generation'], outcome='completed',
+                result={'result': {'final_response': PRIVATE, 'messages': []}, 'usage': {}})
+            target = receipt.admission_id
+        _, calls = transport(monkeypatch)
+        if barrier in {'discovery', 'root_missing'}:
+            # Only this specific final enters discovery; no physical RPC has begun.
+            original = bot_live_delivery.find_canonical_live_owner
+            def held(*args, **kwargs):
+                entered.set()
+                assert release.wait(10)
+                return original(*args, **kwargs)
+            monkeypatch.setattr(bot_live_delivery, 'find_canonical_live_owner', held)
+        else:
+            original = final._materialize
+            def held(*args, **kwargs):
+                entered.set()
+                assert release.wait(10)
+                return original(*args, **kwargs)
+            monkeypatch.setattr(final, '_materialize', held)
+        adapter = next(iter(runner.adapters.values()))
+        task = asyncio.create_task(final.reconcile_final(authority, adapter, target))
+        try:
+            assert await asyncio.to_thread(entered.wait, 10)
+            before = intent(authority, target)
+            assert (before is None) == (barrier == 'publication')
+            assert not calls
+            if barrier == 'root_missing':
+                # Isolate root loss from the completion admission; ordinary deletion above
+                # retires both together, so it cannot distinguish these two fences.
+                authority.db._write_sql('DELETE FROM session_admissions WHERE admission_id=?', (root['admission_id'],))
+                assert get_session_admission(authority.db, admission_id=target)['payload']
+            else:
+                delete_source(authority, root['target_session_id'])
+        finally:
+            release.set()
+        result = await task
+        after = intent(authority, target)
+        assert result['state'] == after['state'] == 'refused'
+        assert after['reason'] == 'source_unauthorized'
+        assert after.get('source_retired_at') is not None
+        assert after['origin_id'] == target and after['delivery_id'] and after['message_digest']
+        if before:
+            assert frozen(after) == frozen(before)
+        assert not calls
+        await recover_bot_chat_finals(authority)
+        assert not calls and intent(authority, target)['state'] == 'refused'
+        if barrier == 'publication':
+            from hermes_state_mutation_retirement import RETRY_HORIZON_S
+            expire(authority, monkeypatch, after['source_retired_at'] + RETRY_HORIZON_S + 1)
+            compacted = intent(authority, target)
+            assert compacted['message'] == '' and compacted['payload_compacted_at']
+            assert frozen(compacted) == frozen(after)
+
+
+@pytest.mark.asyncio
+async def test_deletion_after_physical_handoff_preserves_receipt_custody(monkeypatch):
+    from gateway.webhook_final_intent import reconcile_final
+    from tools import bot_live_delivery
+    entered, release = threading.Event(), threading.Event()
+    async with settled_before_finalizer(deliver='bot-chat', final_response=PRIVATE) as (_, _, _, runner, authority, row):
+        _, calls = transport(monkeypatch)
+        original = bot_live_delivery.deliver_to_live_owner
+        def held(*args, **kwargs):
+            entered.set()
+            assert release.wait(10)
+            return original(*args, **kwargs)
+        monkeypatch.setattr(bot_live_delivery, 'deliver_to_live_owner', held)
+        task = asyncio.create_task(reconcile_final(authority, next(iter(runner.adapters.values())), row['admission_id']))
+        try:
+            assert await asyncio.to_thread(entered.wait, 10)
+            before = intent(authority, row['admission_id'])
+            assert before['uncertain'] and not calls
+            delete_source(authority, row['target_session_id'])
+        finally:
+            release.set()
+        after = await task
+        assert len(calls) == 1 and after['state'] == 'queued' and after['ever_admitted']
+        assert after['source_retired_at'] is not None
+        assert after['delivery_id'] == before['delivery_id']
+        assert intent(authority, row['admission_id']) == after

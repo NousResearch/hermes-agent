@@ -21,7 +21,29 @@ def read_intent(authority, admission_id):
     return json.loads(row['value']) if row else None
 
 
-def _save(authority, value):
+def _source_fence(conn, value, native):
+    """Check admission-backed lifetimes inside the same write as publication."""
+    from hermes_state_terminal import ADMISSION_PREFIX
+    ids = []
+    if value.get('ledger_prefix', PREFIX) == PREFIX:
+        ids.append(value['origin_id'])
+    if value.get('source_admission_id'):
+        ids.append(value['source_admission_id'])
+    if native.get('webhook_root'):
+        ids.append(native['webhook_root'])
+    for admission_id in dict.fromkeys(ids):
+        live = conn.execute('SELECT a.target_session_id FROM session_admissions a '
+                            'JOIN sessions s ON s.id=a.target_session_id WHERE a.admission_id=?',
+                            (admission_id,)).fetchone()
+        if live is None:
+            tombstone = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                                     (ADMISSION_PREFIX + admission_id,)).fetchone()
+            retired = json.loads(tombstone[0]).get('retired_at') if tombstone else None
+            return retired or 0
+    return None
+
+
+def _save(authority, value, *, claim=False, native=None):
     def write(conn):
         _epoch(conn, authority.epoch)
         # Retirement can start before the next owner advances the epoch.
@@ -36,6 +58,20 @@ def _save(authority, value):
             for field in ('source_retired_at', 'created_at'):
                 if field in retained:
                     value[field] = retained[field]
+        if claim or not prior:
+            retired = value.get('source_retired_at')
+            if retired is None:
+                retired = _source_fence(conn, value, native or value.get('native') or {})
+            if retired is not None:
+                from hermes_state_mutation_retirement import RETRY_HORIZON_S
+                value.update(source_retired_at=retired, state='refused', reason='source_unauthorized',
+                             uncertain=False, observed_at=time.time())
+                if not prior and (not retired or retired < time.time() - RETRY_HORIZON_S):
+                    from hermes_state_webhook_retirement import native_digest
+                    captured = value.pop('native', None)
+                    if captured is not None:
+                        value['native_digest'] = native_digest(captured)
+                    value.update(message='', payload_compacted_at=time.time())
         conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES (?,?)',
                      (key,
                       json.dumps(value, ensure_ascii=False, separators=(',', ':'))))
@@ -115,7 +151,7 @@ def _materialize(authority, row, native, delivery):
         message_digest=hashlib.sha256(message.encode()).hexdigest(), category=policy['category'], author=None,
         delivery_id=delivery_id, state=state,
         reason='redaction_failed' if state == 'refused' else policy.get('reason'),
-        ever_admitted=False, uncertain=False, pre_admission=False, native_admission_id=None))
+        ever_admitted=False, uncertain=False, pre_admission=False, native_admission_id=None), native=native)
 
 
 def _validate_receipt(value, receipt):
@@ -202,7 +238,9 @@ def _handoff(authority, value, native, adapter):
             return _state(authority, value, 'pending', 'owner_unavailable')
         _authorize(authority, native, adapter)
         value['uncertain'] = True
-        _save(authority, value)  # death during the physical dial is NOT proof of nonadmission
+        _save(authority, value, claim=True, native=native)  # claim before, never during, physical I/O
+        if value['state'] == 'refused':
+            return value
         try:
             receipt = deliver_to_live_owner(value['target_home'], owner, value['message'],
                 delivery_id=value['delivery_id'], notification_category=value['category'],

@@ -88,3 +88,25 @@ async def test_model_switch_keeps_config_backed_custom_endpoint(home, monkeypatc
     await runner._handle_model_command(_event("/model other-model --provider custom", "777"))
     assert seen["model"] == "pinned/lane-model"
     assert seen["base_url"].rstrip("/") == "http://127.0.0.1:8999/v1"
+
+
+@pytest.mark.asyncio
+async def test_model_switch_keeps_named_custom_identity_of_channel_pin(home):
+    """Two named endpoints declare ``shared-model``; the channel pins one. /model reports that named
+    provider and a bare-name switch resolves to it, not an ambiguous bare ``custom`` transport."""
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"default": "shared-model", "provider": "custom:global-local"},
+        "custom_providers": [
+            {"name": "global-local", "base_url": "http://127.0.0.1:9/v1", "api_key": "k-global",
+             "models": ["shared-model"]},
+            {"name": "channel-local", "base_url": "http://127.0.0.1:7/v1", "api_key": "k-channel",
+             "models": ["shared-model"]}]}), encoding="utf-8")
+    runner = _runner()
+    runner.config.platforms[Platform.TELEGRAM].channel_overrides = {
+        "777": ChannelOverride(model="shared-model", provider="custom:channel-local")}
+    event = _event("/model shared-model --session", "777")
+    assert "custom:channel-local" in runner._format_session_info(event.source)
+    reply = await runner._handle_model_command(event)
+    assert "multiple configured providers" not in reply
+    override = runner._session_model_overrides[runner._session_key_for_source(event.source)]
+    assert (override["provider"], override["base_url"].rstrip("/")) == ("custom:channel-local", "http://127.0.0.1:7/v1")

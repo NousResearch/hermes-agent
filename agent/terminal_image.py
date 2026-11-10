@@ -43,6 +43,16 @@ def detect_terminal_graphics() -> str:
     # half-blocks; users who enabled them can pin the render mode in config.
     if term_program == "vscode":
         return "unicode"
+    # A terminal multiplexer overwrites TERM_PROGRAM with its own name, destroying the
+    # emulator identity underneath — and none that does so preserves the outer value
+    # anywhere (herdr and zellij rename unconditionally; tmux and screen can pass the
+    # outer terminal through, which is why they are NOT in the set below). Detection
+    # therefore cannot succeed here by being cleverer; it can only refuse to guess.
+    # Returning "unicode" silently is what made a kitty-capable Ghostty render as a
+    # coarse mosaic with no explanation, so say so once instead, and name the fix.
+    if term_program in _MULTIPLEXER_TERM_PROGRAMS or os.environ.get("HERDR_ENV"):
+        _warn_multiplexer_hides_terminal(term_program or "herdr")
+        return "unicode"
     if os.environ.get("KITTY_WINDOW_ID") or "kitty" in term or "ghostty" in term or term_program == "ghostty" or _is_wezterm():
         return "kitty"  # WezTerm speaks kitty and iterm; kitty has richer placement
     if term_program == "iterm.app" or os.environ.get("ITERM_SESSION_ID"):
@@ -50,6 +60,33 @@ def detect_terminal_graphics() -> str:
     if term_program == "mintty" or "foot" in term or "mlterm" in term or "sixel" in term:
         return "sixel"
     return "unicode"
+
+
+# Multiplexers that own TERM_PROGRAM inside their panes. tmux/screen are absent on
+# purpose: they set TERM/TERM_PROGRAM only when configured to, and many users rely on
+# their pass-through — this list is for the ones that always rename.
+_MULTIPLEXER_TERM_PROGRAMS = frozenset({"herdr", "zellij"})
+
+_multiplexer_warned = False
+
+
+def _warn_multiplexer_hides_terminal(name: str) -> None:
+    """Say, once per process, that graphics detection is blind behind a multiplexer.
+
+    Silence was the actual bug: the caller cannot tell "this terminal has no graphics"
+    from "I cannot see this terminal", and the fallback looks identical either way.
+    """
+    global _multiplexer_warned
+    if _multiplexer_warned:
+        return
+    _multiplexer_warned = True
+    logger.info(
+        "terminal graphics detection is blind inside %s: it rewrites TERM_PROGRAM and does not "
+        "preserve the emulator underneath. Falling back to unicode/block rendering. If the outer "
+        "terminal supports images (Ghostty, kitty, WezTerm), pin it: "
+        "`hermes config set display.inline_images kitty` (or pet.render_mode).",
+        name,
+    )
 
 
 def supports_iterm_images() -> bool:

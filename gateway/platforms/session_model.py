@@ -60,7 +60,9 @@ class _SessionModelSettingsMixin:
         if not isinstance(model_cfg, dict):
             model_cfg = {"default": model_cfg}
         key = runner._session_key_for_source(source)
-        override = runner._session_model_override(key) or {}
+        # A restart leaves the persisted /model pick unloaded until the next turn; read it, never rehydrate.
+        store = getattr(runner, "session_store", None)
+        override = runner._session_model_override(key) or (store and store.get_model_override(key)) or {}
         channel = runner._channel_override_for(source)
         defaults = {
             "model": model_cfg.get("default") or model_cfg.get("model") or "",

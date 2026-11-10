@@ -266,6 +266,75 @@ class TestAddCommand:
         assert persisted["theme"] == "midnight"
 
 # ---------------------------------------------------------------------------
+# cmd_fallback_swap
+# ---------------------------------------------------------------------------
+
+class TestSwapCommand:
+    def test_swap_primary_with_first_fallback(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6", "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages"},
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6", "base_url": "https://openrouter.ai/api/v1", "api_mode": "chat_completions"},
+                {"provider": "nous", "model": "Hermes-4"},
+            ],
+        })
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        cmd_fallback_swap(types.SimpleNamespace(fallback_index=None))
+        cfg = _read_config(isolated_home)
+        assert cfg["model"] == {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6", "base_url": "https://openrouter.ai/api/v1", "api_mode": "chat_completions"}
+        assert cfg["fallback_providers"][0] == {"provider": "anthropic", "model": "claude-sonnet-4-6", "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages"}
+        assert "fallback_model" not in cfg
+        assert "Swapped primary with fallback #1" in capsys.readouterr().out
+
+    def test_swap_primary_with_selected_fallback_index(self, isolated_home):
+        _write_config(isolated_home, {"model": {"provider": "anthropic", "default": "claude-sonnet-4-6"}, "fallback_providers": [{"provider": "openrouter", "model": "gpt-5.4"}, {"provider": "nous", "model": "Hermes-4"}]})
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        cmd_fallback_swap(types.SimpleNamespace(fallback_index=2))
+        cfg = _read_config(isolated_home)
+        assert cfg["model"] == {"provider": "nous", "default": "Hermes-4"}
+        assert cfg["fallback_providers"] == [{"provider": "openrouter", "model": "gpt-5.4"}, {"provider": "anthropic", "model": "claude-sonnet-4-6"}]
+
+    def test_swap_migrates_legacy_fallback_model(self, isolated_home):
+        _write_config(isolated_home, {"model": {"provider": "anthropic", "default": "claude-sonnet-4-6"}, "fallback_model": {"provider": "openrouter", "model": "gpt-5.4"}})
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        cmd_fallback_swap(types.SimpleNamespace(fallback_index=None))
+        cfg = _read_config(isolated_home)
+        assert cfg["model"] == {"provider": "openrouter", "default": "gpt-5.4"}
+        assert cfg["fallback_providers"] == [{"provider": "anthropic", "model": "claude-sonnet-4-6"}]
+        assert "fallback_model" not in cfg
+
+    def test_swap_requires_primary_model_dict(self, isolated_home, capsys):
+        _write_config(isolated_home, {"model": "plain-string-model", "fallback_providers": [{"provider": "openrouter", "model": "gpt-5.4"}]})
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        with pytest.raises(SystemExit):
+            cmd_fallback_swap(types.SimpleNamespace(fallback_index=None))
+        assert _read_config(isolated_home)["model"] == "plain-string-model"
+        assert "config.model is not a dict" in capsys.readouterr().out
+
+    def test_swap_requires_fallback_chain(self, isolated_home, capsys):
+        _write_config(isolated_home, {"model": {"provider": "anthropic", "default": "claude-sonnet-4-6"}})
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        with pytest.raises(SystemExit):
+            cmd_fallback_swap(types.SimpleNamespace(fallback_index=None))
+        assert "No fallback providers configured" in capsys.readouterr().out
+
+    def test_swap_rejects_out_of_range_index(self, isolated_home, capsys):
+        _write_config(isolated_home, {"model": {"provider": "anthropic", "default": "claude-sonnet-4-6"}, "fallback_providers": [{"provider": "openrouter", "model": "gpt-5.4"}]})
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        with pytest.raises(SystemExit):
+            cmd_fallback_swap(types.SimpleNamespace(fallback_index=2))
+        assert "Fallback index out of range" in capsys.readouterr().out
+
+    def test_swap_removes_stale_primary_routing_fields_when_fallback_lacks_them(self, isolated_home):
+        _write_config(isolated_home, {"model": {"provider": "custom", "default": "primary-model", "base_url": "https://primary.example/v1", "api_mode": "chat_completions"}, "fallback_providers": [{"provider": "nous", "model": "Hermes-4"}]})
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        cmd_fallback_swap(types.SimpleNamespace(fallback_index=None))
+        cfg = _read_config(isolated_home)
+        assert cfg["model"] == {"provider": "nous", "default": "Hermes-4"}
+        assert cfg["fallback_providers"] == [{"provider": "custom", "model": "primary-model", "base_url": "https://primary.example/v1", "api_mode": "chat_completions"}]
+
+
+# ---------------------------------------------------------------------------
 # cmd_fallback_remove
 # ---------------------------------------------------------------------------
 
@@ -322,6 +391,17 @@ class TestDispatcher:
         from hermes_cli.fallback_cmd import cmd_fallback
         with pytest.raises(SystemExit):
             cmd_fallback(types.SimpleNamespace(fallback_command="nope"))
+
+
+class TestArgparseWiring:
+    def test_fallback_help_lists_subcommands(self):
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, "-m", "hermes_cli.main", "fallback", "--help"], capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        out = result.stdout + result.stderr
+        for command in ("list", "add", "swap", "remove", "clear"):
+            assert command in out
 
 # ---------------------------------------------------------------------------
 # argparse wiring — verify the subparser is registered

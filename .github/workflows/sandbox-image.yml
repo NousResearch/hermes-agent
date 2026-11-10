@@ -3,12 +3,12 @@ name: Sandbox desktop image
 # nousresearch/hermes-sandbox:desktop is the terminal-backend sandbox base
 # (nikolaik/python-nodejs) plus a display stack; Bot Screen, computer_use and
 # the bot's browser run inside it when terminal.backend is docker/ssh/etc.
-# It contains NO Hermes code, so it does not need to track main: it changes
-# when its Dockerfile changes, not when the agent changes.
+# It contains NO Hermes code, so it does not need to track main.
 #
 # Triggers: a PR that edits the Dockerfile/smoke (build + smoke, no push),
 # a successful Stable Release (publish :<tag>-desktop and roll :desktop), a
-# weekly rebuild (roll :desktop), and manual dispatch.
+# weekly rebuild (roll :desktop from main's Dockerfile, so a Dockerfile change on
+# main reaches users within a week, not at the next release), and manual dispatch.
 # Deliberately NOT on every main push: two 4 GB multi-arch builds per commit.
 # Its CVEs come from the floating base tag and the apt packages, so freshness
 # is a rebuild on a clock, not a Dockerfile change: every publishing run
@@ -38,9 +38,10 @@ permissions:
   contents: read
 
 concurrency:
-  # A failed or cancelled Stable Release still starts a (skipped) run; its own group keeps it
-  # from replacing a green release's run that is pending behind a weekly or dispatch run.
-  group: sandbox-image-${{ github.event.pull_request.number || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' && github.run_id) || github.ref }}
+  # Every Stable Release completion gets its own group: a skipped one can't replace a green
+  # release's pending run, and a weekly or dispatch run can't replace a pending release run.
+  # A release run may race a weekly one to move :desktop; both build main's Dockerfile.
+  group: sandbox-image-${{ github.event.pull_request.number || (github.event_name == 'workflow_run' && github.run_id) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -80,8 +81,10 @@ jobs:
           platforms: ${{ matrix.platform }}
           tags: ${{ env.IMAGE_NAME }}:test
           load: true
-          # A publishing run starts fresh so it picks up base and apt fixes; publish then
-          # reuses these layers through the cache written below, so it pushes what was smoked.
+          # A publishing run starts fresh so it picks up base and apt fixes; publish normally
+          # reuses these layers through the cache written below (a cache miss or a moved base
+          # tag between the jobs means publish builds cold). `pull` matters once the builder
+          # keeps state between runs.
           no-cache: ${{ github.event_name != 'pull_request' }}
           pull: ${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=sandbox-${{ matrix.arch }}
@@ -93,7 +96,8 @@ jobs:
 
   # Trusted source only; the sole Docker Hub credential boundary.
   publish:
-    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'workflow_run' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    # Every non-PR event publishes, except a dispatch without publish=true.
+    if: github.repository == 'NousResearch/hermes-agent' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish)
     needs: [build]
     environment: container-publish
     strategy:
@@ -147,7 +151,7 @@ jobs:
 
   # Registry-side stitch of the two digests into one tagged manifest list.
   merge:
-    if: ${{ !cancelled() && needs.publish.result == 'success' && github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'workflow_run' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
+    # Implicit success(): runs only when both publish legs pushed.
     needs: [publish]
     # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
     # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
@@ -174,7 +178,10 @@ jobs:
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
         env:
-          # Stable Release's run-name is "Stable release rc.<N>-v<version>"; the release is v<version>.
+          # Stable Release's run-name is "Stable release rc.<N>-v<version>" (claim_run_title in
+          # scripts/releases/stable.py; the tag grammar is _ATTEMPT_REF_RE in
+          # scripts/releases/versioning.py + STABLE_TAG_RE in hermes_cli/update_channel.py);
+          # the release is v<version>.
           RUN_TITLE: ${{ github.event.workflow_run.display_title }}
         run: |
           set -euo pipefail
@@ -192,7 +199,7 @@ jobs:
           # before the sequencer publishes the GitHub release.
           tags=(-t "${IMAGE_NAME}:desktop")
           if [ "${GITHUB_EVENT_NAME}" = workflow_run ]; then
-            if [[ ! "${RUN_TITLE}" =~ rc\.[0-9]+-(v[^[:space:]]+)$ ]]; then
+            if [[ ! "${RUN_TITLE}" =~ ^Stable\ release\ rc\.[1-9][0-9]*-(v(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]]; then
               echo "::error::no release tag in Stable Release run title: ${RUN_TITLE}"
               exit 1
             fi

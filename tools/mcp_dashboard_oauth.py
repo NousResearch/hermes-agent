@@ -173,6 +173,9 @@ class DashboardOAuthFlow:
     def mark_worker_done(self) -> None:
         self._worker_done.set()
 
+    def wait_worker_done(self, timeout: float | None = None) -> bool:
+        return self._worker_done.wait(timeout)
+
     @property
     def worker_done(self) -> bool:
         return self._worker_done.is_set()

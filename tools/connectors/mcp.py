@@ -4,6 +4,7 @@ import contextlib
 import contextvars
 import json
 import logging
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -34,7 +35,7 @@ NOTE = (
 
 NO_CARD_NOTE = (
     "No connection card is drawn for this turn. Show any connect_url to the user so they "
-    "open it in a browser, then ask them to say when they are done. Connected targets' tools are "
+    "open it in a browser. Connected targets' tools are "
     "available now through tool_describe/tool_call and are named under tools_listing. A target with "
     "discovery_error is authorized but its tools are unavailable; retry discovery with "
     "manage_connections using that target's authorize or install action without asking for consent "
@@ -103,6 +104,9 @@ def _catalog_entry(name: str):
 class _CatalogBackend:
     """The real work behind an MCP target. One object so a caller can pass another one in."""
 
+    def __init__(self, public_base: Optional[str] = None):
+        self.public_base = public_base
+
     def required_env(self, name: str) -> list[dict[str, Any]]:
         """The credentials the catalog entry declares that have no value yet."""
         from hermes_cli.config import get_env_value
@@ -114,8 +118,7 @@ class _CatalogBackend:
     def start_oauth(self, name: str) -> Any:
         from tools.connectors import mcp_oauth
 
-        # The TUI/Desktop card path supplies its advertised client redirect in a later part.
-        return mcp_oauth.start(name, client_redirect_uri=None)
+        return mcp_oauth.start(name, client_redirect_uri=None, public_base=self.public_base)
 
     def installs_with_oauth(self, name: str) -> bool:
         """A catalog entry whose own OAuth the card must run. Provider-mediated OAuth is not one:
@@ -139,7 +142,8 @@ class _CatalogBackend:
         try:
             entry = _catalog_entry(name)
             _check_declared(name, entry, env)
-            return mcp_oauth.start(name, cfg=card_install_config(entry), env=env, on_commit=commit)
+            return mcp_oauth.start(name, cfg=card_install_config(entry), env=env, on_commit=commit,
+                                   public_base=self.public_base)
         except Exception as exc:
             # An abandoned browser authorization is a cancel, not a failed install: only a flow
             # that cannot start is counted here.
@@ -805,13 +809,52 @@ def retry(operation: ConnectionOperation, names: list[str]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+def _chat_public_base() -> Optional[str]:
+    runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    runner = runner_ref() if callable(runner_ref) else None
+    if runner is None or getattr(runner, "webapp_status", {}).get("state") != "serving":
+        return None
+    # The dashboard mounts lazily; the listener knows its public address before the first request.
+    return getattr(getattr(getattr(runner, "session_api", None), "app", None), "public_url", None) or None
+
+
+def _chat_oauth_note(runner: _Runner, *, resumes: bool = False) -> str:
+    public_base = getattr(runner.backend, "public_base", None)
+    redirects = [getattr(getattr(work.attempt, "flow", None), "redirect_uri", "")
+                 for work in runner.work.values() if work.attempt is not None and work.attempt.auth_url]
+    public = [bool(public_base and uri.startswith(f"{public_base}/api/mcp/oauth/callback/"))
+              for uri in redirects]
+    note = NO_CARD_NOTE
+    if any(public):
+        note += (" After they finish signing in, Hermes continues this conversation on its own; "
+                 "do not ask them to confirm." if resumes else
+                 " After they finish signing in through the Webapp, the tools become available on "
+                 "their next message; do not ask them to confirm.")
+    if public and not all(public):
+        note += (" A loopback sign-in link only completes in a browser on the gateway machine. "
+                 "For public callbacks the operator must enable the Webapp and set webapp.public_url; "
+                 "a provider's pinned loopback redirect still requires the gateway browser.")
+    return note
+
+
 def _no_card_result(runner: _Runner, names: list[str], action: str, session_key: str) -> str:
+    from tools.connectors.mcp_sign_in_wake import arm_sign_in_wakes
+
+    if isinstance(runner.backend, _CatalogBackend):
+        runner.backend.public_base = _chat_public_base()
     operation = DetachedOperation([Target(n, "mcp", action) for n in names], session_key=session_key)
     for target in operation.targets:
         runner.run(_NO_CARD, operation, target)
+    key = _late_key(operation)
+    for name, work in runner.work.items():
+        if work.attempt is not None:
+            _LATE_ATTEMPTS.setdefault(key, {})[name] = work.attempt
+    resumes = arm_sign_in_wakes(
+        {name: work.attempt for name, work in runner.work.items() if work.attempt is not None},
+        lambda name, attempt: _LATE_ATTEMPTS.get(key, {}).get(name) is attempt)
     payload = operation.result(with_urls=True)
     payload["status"] = "initiated" if any(t.state == TargetState.initiated for t in operation.targets) else "settled"
-    payload["note"] = NO_CARD_NOTE
+    payload["note"] = _chat_oauth_note(runner, resumes=resumes)
     return json.dumps(payload, ensure_ascii=False)
 
 

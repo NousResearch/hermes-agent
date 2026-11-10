@@ -324,12 +324,13 @@ def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
         return json.dumps({"error": "missing `action`"})
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
     # Bot Desktop lease: while a human drives the screen every action, capture included, is refused.
-    from tools.bot_desktop import lease as _bd_lease
+    from tools.bot_desktop import handback, lease as _bd_lease
     from tools.bot_desktop.runtime import ensure_started_for_tool as _bd_ensure_started
     def _refused(e: Exception) -> str:
         return json.dumps({"ok": False, "action": action, "code": "human_has_control", "error": str(e)})
     try:
         admitted = _bd_lease.assert_agent_may_act()
+        handback.note_driver()
     except _bd_lease.HumanHasControl as e:
         return _refused(e)
     _bd_ensure_started()  # headless gateway: bring the profile's screen up before the backend probes DISPLAY

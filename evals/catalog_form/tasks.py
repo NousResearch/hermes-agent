@@ -105,85 +105,103 @@ def _touch(path):
         fh.write(b"ID3\x04\x00\x00\x00\x00\x00\x23" + random.Random(len(path)).randbytes(48_000))
 
 
+def _stems(args, ws, blend):
+    stem = os.path.splitext(os.path.basename(str(args.get("file_path") or "song")))[0]
+    paths = {"vocals": os.path.join(ws, "audio", f"{stem}.vocals.mp3"),
+             "accompaniment": os.path.join(ws, "audio", f"{stem}.accompaniment.mp3")}
+    for path in paths.values():
+        _touch(path)
+    return {"success": True, "stems": paths}
+
+
+def _sound_effect(args, ws, blend):
+    _touch(os.path.join(ws, "sfx", "door_creak_01.mp3"))
+    return {"success": True, "path": os.path.join(ws, "sfx", "door_creak_01.mp3"),
+            "duration_seconds": args.get("duration_seconds") or 3}
+
+
+def _object_detail(args, ws, blend):
+    if str(args.get("name")) != "Gear_Large":
+        return {"error": f"no object named {args.get('name')!r}"}
+    return {"name": "Gear_Large", "type": "MESH", "vertices": 2304, "location": [0.0, 0.0, 0.42],
+            "modifiers": [{"name": "Bevel", "type": "BEVEL"}, {"name": "Solidify", "type": "SOLIDIFY"},
+                          {"name": "Array", "type": "ARRAY", "count": 6}], "materials": ["Brass_Worn"]}
+
+
+def _path_info(live):
+    return lambda args, ws, blend: {"filepath": blend or _OPEN_FILE, "is_saved": True, "is_dirty": live,
+                                    "blender_version": "5.1.0"}
+
+
+_CODE_RAN = {"status": "ok", "stdout": "", "note": "code ran; nothing was printed"}
+_COMPOSE = {"success": True, "job_id": "job_music_2290", "status": "running", "credits_charged": 300}
+# short tool name -> (args, workspace, blend_file) -> result
+_RESULTS = {
+    "get_blendfile_summary_datablocks_for_cli": lambda a, ws, blend: (
+        {"blend_file": blend, "datablocks": {"meshes": 47, "materials": 13, "images": 21, "objects": 62,
+                                             "collections": 6, "cameras": 2, "lights": 5}}
+        if blend.endswith("castle_keep.blend") else {"error": f"cannot open {blend!r}"}),
+    "get_blendfile_summary_datablocks": lambda a, ws, blend: {
+        "filepath": _OPEN_FILE, "datablocks": {"meshes": 9, "materials": 4, "images": 3, "objects": 14},
+        "active_workspace": "Layout"},
+    "get_blendfile_summary_missing_files": lambda a, ws, blend: {"filepath": _OPEN_FILE, **_MISSING},
+    "get_blendfile_summary_missing_files_for_cli": lambda a, ws, blend: (
+        {"blend_file": blend, **_MISSING} if blend == _OPEN_FILE
+        else {"blend_file": blend, "missing": [], "total_missing": 0}),
+    "get_blendfile_summary_of_linked_libraries_for_cli": lambda a, ws, blend: (
+        {"blend_file": blend, **_LINKED} if blend.endswith("shot_042.blend") else {"error": f"cannot open {blend!r}"}),
+    "get_blendfile_summary_of_linked_libraries": lambda a, ws, blend: {
+        "filepath": _OPEN_FILE, "direct": ["//lib/servo_parts.blend"], "indirect": []},
+    "get_blendfile_summary_path_info": _path_info(True),
+    "get_blendfile_summary_path_info_for_cli": _path_info(False),
+    "get_object_detail_summary": _object_detail,
+    "get_objects_summary": lambda a, ws, blend: {"collections": {"Collection": [
+        "Base", "Gear_Large", "Gear_Small", "Arm_Upper", "Arm_Lower", "Camera", "Sun"]}},
+    "execute_blender_code": lambda a, ws, blend: dict(_CODE_RAN),
+    "execute_blender_code_for_cli": lambda a, ws, blend: dict(_CODE_RAN),
+    "meshy_analyze_printability": lambda a, ws, blend: {
+        "task_id": a.get("task_id"), "printable": False, "watertight": False, "non_manifold_edges": 14,
+        "holes": 3, "min_wall_thickness_mm": 0.4, "recommendation": "run a printability repair before slicing"},
+    "meshy_repair_printability": lambda a, ws, blend: {"task_id": "019b-repair-8802", "status": "PENDING", "credits_charged": 10},
+    "meshy_check_balance": lambda a, ws, blend: {"balance": 3460, "unit": "credits"},
+    "meshy_list_usage": lambda a, ws, blend: {"usage": [
+        {"task_id": "019a-77fe-knight", "type": "text-to-3d", "credits": 20, "finished_at": "2026-11-07"},
+        {"task_id": "019a-6c11-fox", "type": "remesh", "credits": 5, "finished_at": "2026-11-05"}]},
+    "meshy_remesh": lambda a, ws, blend: {"task_id": "019b-remesh-5521", "status": "PENDING",
+                                          "target_polycount": a.get("target_polycount")},
+    "meshy_get_task_status": lambda a, ws, blend: {"task_id": a.get("task_id"), "status": "SUCCEEDED", "progress": 100},
+    "meshy_text_to_3d": lambda a, ws, blend: {"task_id": "019b-preview-3307", "status": "PENDING", "mode": "preview",
+                                              "prompt": a.get("prompt")},
+    "meshy_text_to_image": lambda a, ws, blend: {"task_id": "019b-image-1140", "status": "PENDING"},
+    "elevenlabs_music_stems": _stems,
+    "elevenlabs_music_draft_plan": lambda a, ws, blend: {
+        "success": True, "credits_charged": 0, "plan_id": "plan_lofi_7741",
+        "plan": {"positive_global_styles": ["lo-fi", "mellow", "vinyl crackle"],
+                 "sections": [{"section_name": "Intro", "duration_ms": 8000}, {"section_name": "Groove", "duration_ms": 16000},
+                              {"section_name": "Outro", "duration_ms": 6000}]}},
+    "elevenlabs_music_compose": lambda a, ws, blend: dict(_COMPOSE),
+    "elevenlabs_music_compose_plan": lambda a, ws, blend: dict(_COMPOSE),
+    "elevenlabs_sound_effect": _sound_effect,
+    "threads": lambda a, ws, blend: {"threads": [
+        {"id": "t-9913", "title": "Telegram gateway drops voice notes after update", "replies": 7},
+        {"id": "t-9908", "title": "Skills hub install fails behind corporate proxy", "replies": 3},
+        {"id": "t-9897", "title": "Cron job runs twice after laptop wakes", "replies": 12}]},
+    "report": lambda a, ws, blend: {"bundles": [{"id": "dbg-5a1f", "uploaded": "2026-11-08", "hermes_version": "0.31.2"}]},
+}
+_DOCS_TOOLS = ("get_python_api_docs", "search_api_docs", "search_manual_docs", "list_prompts", "list_resources")
+
+
 def canned_result(name, args, task_id, ws):
     """Realistic result for one stub call. Live blender tools answer for the open file (or fail when
     the task says Blender is not running); ``_for_cli`` tools answer for the file they were given."""
-    blender_running = task_id not in ("bl_cli_datablocks",)
-    if name.startswith(B) and not name.endswith("_for_cli") and not blender_running and name.split("__")[-1] not in (
-            "get_python_api_docs", "search_api_docs", "search_manual_docs", "list_prompts", "list_resources"):
-        return _NOT_CONNECTED
     short = name.split("__")[-1]
-    blend = str(args.get("blend_file") or "")
-    if short == "get_blendfile_summary_datablocks_for_cli":
-        if blend.endswith("castle_keep.blend"):
-            return {"blend_file": blend, "datablocks": {"meshes": 47, "materials": 13, "images": 21, "objects": 62,
-                                                        "collections": 6, "cameras": 2, "lights": 5}}
-        return {"error": f"cannot open {blend!r}"}
-    if short == "get_blendfile_summary_datablocks":
-        return {"filepath": _OPEN_FILE, "datablocks": {"meshes": 9, "materials": 4, "images": 3, "objects": 14},
-                "active_workspace": "Layout"}
-    if short == "get_blendfile_summary_missing_files":
-        return {"filepath": _OPEN_FILE, **_MISSING}
-    if short == "get_blendfile_summary_missing_files_for_cli":
-        return {"blend_file": blend, **_MISSING} if blend == _OPEN_FILE else {"blend_file": blend, "missing": [], "total_missing": 0}
-    if short == "get_blendfile_summary_of_linked_libraries_for_cli":
-        return {"blend_file": blend, **_LINKED} if blend.endswith("shot_042.blend") else {"error": f"cannot open {blend!r}"}
-    if short == "get_blendfile_summary_of_linked_libraries":
-        return {"filepath": _OPEN_FILE, "direct": ["//lib/servo_parts.blend"], "indirect": []}
-    if short in ("get_blendfile_summary_path_info", "get_blendfile_summary_path_info_for_cli"):
-        return {"filepath": blend or _OPEN_FILE, "is_saved": True, "is_dirty": short.endswith("path_info"),
-                "blender_version": "5.1.0"}
-    if short == "get_object_detail_summary":
-        if str(args.get("name")) == "Gear_Large":
-            return {"name": "Gear_Large", "type": "MESH", "vertices": 2304, "location": [0.0, 0.0, 0.42],
-                    "modifiers": [{"name": "Bevel", "type": "BEVEL"}, {"name": "Solidify", "type": "SOLIDIFY"},
-                                  {"name": "Array", "type": "ARRAY", "count": 6}], "materials": ["Brass_Worn"]}
-        return {"error": f"no object named {args.get('name')!r}"}
-    if short == "get_objects_summary":
-        return {"collections": {"Collection": ["Base", "Gear_Large", "Gear_Small", "Arm_Upper", "Arm_Lower", "Camera", "Sun"]}}
-    if short in ("execute_blender_code", "execute_blender_code_for_cli"):
-        return {"status": "ok", "stdout": "", "note": "code ran; nothing was printed"}
-    if short == "meshy_analyze_printability":
-        return {"task_id": args.get("task_id"), "printable": False, "watertight": False, "non_manifold_edges": 14,
-                "holes": 3, "min_wall_thickness_mm": 0.4, "recommendation": "run a printability repair before slicing"}
-    if short == "meshy_repair_printability":
-        return {"task_id": "019b-repair-8802", "status": "PENDING", "credits_charged": 10}
-    if short == "meshy_check_balance":
-        return {"balance": 3460, "unit": "credits"}
-    if short == "meshy_list_usage":
-        return {"usage": [{"task_id": "019a-77fe-knight", "type": "text-to-3d", "credits": 20, "finished_at": "2026-11-07"},
-                          {"task_id": "019a-6c11-fox", "type": "remesh", "credits": 5, "finished_at": "2026-11-05"}]}
-    if short == "meshy_remesh":
-        return {"task_id": "019b-remesh-5521", "status": "PENDING", "target_polycount": args.get("target_polycount")}
-    if short == "meshy_get_task_status":
-        return {"task_id": args.get("task_id"), "status": "SUCCEEDED", "progress": 100}
-    if short == "meshy_text_to_3d":
-        return {"task_id": "019b-preview-3307", "status": "PENDING", "mode": "preview", "prompt": args.get("prompt")}
-    if short == "meshy_text_to_image":
-        return {"task_id": "019b-image-1140", "status": "PENDING"}
-    if short == "elevenlabs_music_stems":
-        stem = os.path.splitext(os.path.basename(str(args.get("file_path") or "song")))[0]
-        paths = {"vocals": os.path.join(ws, "audio", f"{stem}.vocals.mp3"),
-                 "accompaniment": os.path.join(ws, "audio", f"{stem}.accompaniment.mp3")}
-        for path in paths.values():
-            _touch(path)
-        return {"success": True, "stems": paths}
-    if short == "elevenlabs_music_draft_plan":
-        return {"success": True, "credits_charged": 0, "plan": {"positive_global_styles": ["lo-fi", "mellow", "vinyl crackle"],
-                "sections": [{"section_name": "Intro", "duration_ms": 8000}, {"section_name": "Groove", "duration_ms": 16000},
-                             {"section_name": "Outro", "duration_ms": 6000}]}, "plan_id": "plan_lofi_7741"}
-    if short in ("elevenlabs_music_compose", "elevenlabs_music_compose_plan"):
-        return {"success": True, "job_id": "job_music_2290", "status": "running", "credits_charged": 300}
-    if short == "elevenlabs_sound_effect":
-        _touch(os.path.join(ws, "sfx", "door_creak_01.mp3"))
-        return {"success": True, "path": os.path.join(ws, "sfx", "door_creak_01.mp3"), "duration_seconds": args.get("duration_seconds") or 3}
-    if short == "threads":
-        return {"threads": [{"id": "t-9913", "title": "Telegram gateway drops voice notes after update", "replies": 7},
-                            {"id": "t-9908", "title": "Skills hub install fails behind corporate proxy", "replies": 3},
-                            {"id": "t-9897", "title": "Cron job runs twice after laptop wakes", "replies": 12}]}
-    if short == "report":
-        return {"bundles": [{"id": "dbg-5a1f", "uploaded": "2026-11-08", "hermes_version": "0.31.2"}]}
-    return {"success": True, "result": "ok", "items": []}
+    blender_running = task_id != "bl_cli_datablocks"
+    if name.startswith(B) and not name.endswith("_for_cli") and not blender_running and short not in _DOCS_TOOLS:
+        return _NOT_CONNECTED
+    handler = _RESULTS.get(short)
+    if handler is None:
+        return {"success": True, "result": "ok", "items": []}
+    return handler(args, ws, str(args.get("blend_file") or ""))
 
 
 def _poly(a):

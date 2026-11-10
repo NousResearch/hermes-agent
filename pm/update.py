@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import urllib.request
 from contextlib import contextmanager
@@ -110,6 +111,8 @@ class Resolved:
 
     @property
     def changed(self) -> bool:
+        if self.artifact_updates:
+            return True
         if self.version is None:
             return False
         if self.locked is None:
@@ -170,14 +173,21 @@ def resolve_package(package, targets: list[str], locked: Optional[str], *, artif
         for t in targets
     }
     decision = resolve_best(package.name, latest, locked, package.version_style)
-    if decision.style == "minor" and decision.version is not None and artifacts is not None:
+    preferred_version = getattr(package, "preferred_version", None)
+    if decision.version is not None and preferred_version is not None:
+        for target, candidates in latest.items():
+            if candidates:
+                preferred = preferred_version(target, candidates, locked=locked)
+                if preferred is not None:
+                    decision.per_target[target] = preferred
+    if decision.version is not None and artifacts is not None:
         for target, version in decision.per_target.items():
             current = artifacts.get(target, artifacts.get("any", []))
             current = current if isinstance(current, list) else [current]
             urls = package.fetch_urls(version, target)
             if urls != [row["url"] for row in current]:
                 decision.artifact_updates[target] = urls
-        if locked is not None and minor_of(decision.version) == minor_of(locked):
+        if decision.style == "minor" and locked is not None and minor_of(decision.version) == minor_of(locked):
             decision.version = locked
     return decision
 
@@ -358,8 +368,13 @@ def npm_dist_tags(name: str) -> dict:
     return _get_json(f"{npm_registry(os.environ)}-/package/{name}/dist-tags")
 
 
-def node_latest_versions() -> list[str]:
-    """Newest-first node versions from nodejs.org's index (strip the 'v')."""
+def node_latest_versions(target: str | None = None, *, host_target: str | None = None) -> list[str]:
+    """Newest-first Node versions from nodejs.org's index (strip the 'v').
+
+    Node 24 raised the official macOS deployment target to 13.5.  The normal
+    catalogue stays intact here; the Node package applies a native-host
+    fallback separately so the shared lock does not demote other targets.
+    """
     out = []
     for entry in _get_json("https://nodejs.org/dist/index.json"):
         v = entry.get("version", "")
@@ -367,6 +382,29 @@ def node_latest_versions() -> list[str]:
         if re.fullmatch(r"\d+\.\d+\.\d+", v):
             out.append(v)
     return out
+
+
+def legacy_macos_node_version(
+    versions: list[str], target: str, *, host_target: str | None = None
+) -> str | None:
+    """Return the newest Node 22 candidate for an unsupported native macOS."""
+    if target != host_target or not target.startswith("darwin-"):
+        return None
+    # mac_ver() returns its documented default tuple on non-macOS hosts;
+    # malformed or incomplete values conservatively use the legacy path.
+    mac_version = platform.mac_ver()[0]
+    try:
+        parts = mac_version.split(".", 2)
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, TypeError, IndexError):
+        legacy = True
+    else:
+        legacy = (major, minor) < (13, 5)
+    if not legacy:
+        return None
+    compatible = [v for v in versions if int(v.split(".", 1)[0]) <= 22]
+    return max(compatible, key=version_key) if compatible else None
 
 
 def martin_riedl_index() -> dict[str, dict[str, str]]:

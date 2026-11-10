@@ -68,6 +68,48 @@ def _make_event(chat_id: str, thread_id: str, message_id: str = "1") -> MessageE
 
 
 class TestBasePlatformTopicSessions:
+    @pytest.mark.parametrize("thread_id", [None, "1"])
+    def test_topic_recovery_keeps_plain_telegram_dm_in_root_chat(self, thread_id):
+        adapter = DummyTelegramAdapter()
+        recovery_calls = []
+        adapter.set_topic_recovery_fn(
+            lambda source: recovery_calls.append(source) or "222"
+        )
+        event = MessageEvent(
+            text="hello from the root chat",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+                user_id="user-1",
+                thread_id=thread_id,
+            ),
+        )
+
+        adapter._apply_topic_recovery(event)
+
+        assert event.source.thread_id == thread_id
+        assert recovery_calls == []
+
+    def test_topic_recovery_routes_stripped_telegram_dm_reply(self):
+        adapter = DummyTelegramAdapter()
+        adapter.set_topic_recovery_fn(lambda _source: "222")
+        event = MessageEvent(
+            text="reply whose topic metadata was stripped",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+                user_id="user-1",
+                thread_id="1",
+            ),
+            reply_to_message_id="10",
+        )
+
+        adapter._apply_topic_recovery(event)
+
+        assert event.source.thread_id == "222"
+
 
     @pytest.mark.asyncio
     async def test_handle_message_interrupts_same_topic(self, monkeypatch):

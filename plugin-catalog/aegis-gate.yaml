@@ -1,9 +1,9 @@
 name: aegis-gate
 title: aegis-gate
 repo: https://github.com/Rainyy99/aegis-hermes
-sha: 8165627f98f9b7ef825b9cee2f64301dca20e040
+sha: 54b260213a1800c85af1194243c82c7262d534aa
 subdir: ""
-version: "0.1.0"
+version: "0.1.1"
 description: >-
   AEGIS gate — a pre-execution verification gate for AI agents.
   Registers a fail-closed pre_tool_call hook that checks a tool call

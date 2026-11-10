@@ -1,6 +1,6 @@
 name: warden
 repo: https://gitlab.com/Zaygalx1/warden
-sha: 76957833c53208cebb70243be45c98a05c99030b
+sha: 1290f5a74d7dcf53e7a4da55d056bcd72b858aa0
 subdir: src/hermes_warden
 description: >-
   Defensive security operations plugin for Hermes Agent, built on one

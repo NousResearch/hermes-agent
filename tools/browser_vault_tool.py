@@ -736,7 +736,7 @@ _check_vault_available = no_cache_check_fn(_check_vault_available)
 
 registry.register(
     name="browser_vault",
-    toolset="browser",
+    toolset="browser-vault",
     schema=BROWSER_VAULT_SCHEMA,
     handler=_handle_vault,
     check_fn=_check_vault_available,

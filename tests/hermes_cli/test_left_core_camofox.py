@@ -153,6 +153,74 @@ def test_browser_becomes_camofox_where_core_carried_it(tmp_path, monkeypatch):
         assert "camofox" not in enabled and "browser" not in enabled, platform
 
 
+@pytest.mark.parametrize(("saved", "want_vault"), [
+    (None, True),                              # no saved list: default composite carries browser_vault
+    (["hermes-cli"], True),                    # composite: _HERMES_CORE_TOOLS carries browser_vault
+    ([], False),                               # explicit empty selection: nothing is enabled
+    (["terminal", "file"], False),             # explicit browser-free selection stays browser-free
+], ids=["default", "composite", "explicit-empty", "explicit-browser-free"])
+def test_camofox_migration_resolves_vault_separately(tmp_path, monkeypatch, saved, want_vault):
+    """Regression for #152409: after the Camofox left-core migration disables `browser`, a profile
+    keeps `browser_vault` (its own `browser-vault` toolset, carried by the default composite and
+    platform bundles through _HERMES_CORE_TOOLS) while browser_exec/browser_cdp/browser_dialog stay
+    off. Explicit saved selections never gain tools they did not name."""
+    home = _home(tmp_path, env=_SPLIT_ENV, config={"_config_version": 51, "browser": {"cloud_provider": "camofox"}})
+    if saved is not None:
+        (home / "config.yaml").write_text(yaml.safe_dump({
+            "_config_version": 51,
+            "browser": {"cloud_provider": "camofox"},
+            "platform_toolsets": {"cli": saved},
+        }), encoding="utf-8")
+    assert _boot(home, monkeypatch) == ["camofox"]
+
+    from model_tools import _select_tool_names
+
+    disabled = _config(home)["agent"]["disabled_toolsets"]
+    assert "browser" in disabled
+    names = _select_tool_names(
+        sorted(_resolved(home, "cli", monkeypatch)),
+        disabled,
+        quiet_mode=True,
+    )
+
+    assert ("browser_vault" in names) is want_vault
+    assert names.isdisjoint({"browser_exec", "browser_cdp", "browser_dialog"})
+
+
+@pytest.mark.parametrize("saved", [None, ["hermes-cli"]], ids=["no-saved-list", "composite"])
+def test_already_migrated_camofox_home_keeps_vault_without_replaying_conversion(tmp_path, monkeypatch, saved):
+    """A home that already ran the v52 conversion (config stamped, markers recorded, plugin present,
+    `browser` disabled) selects browser_vault after the toolset split without any further conversion:
+    toolset membership is resolved at runtime, so the fix reaches already-migrated composite homes."""
+    config = {
+        "_config_version": DEFAULT_CONFIG["_config_version"],
+        "browser": {"cloud_provider": "camofox"},
+        "agent": {"disabled_toolsets": ["browser"]},
+        "_left_core_used": ["camofox"],
+        "_left_core_scoped": ["camofox"],
+        "_left_core_installed": ["camofox"],
+    }
+    if saved is not None:
+        config["platform_toolsets"] = {"cli": saved}
+    home = _home(tmp_path, env=_SPLIT_ENV, config=config)
+    (home / "plugins" / "camofox").mkdir(parents=True)
+    before = _config(home)
+
+    assert _boot(home, monkeypatch) == []  # already converted and installed: nothing to do
+    assert _config(home) == before
+
+    from model_tools import _select_tool_names
+
+    disabled = _config(home)["agent"]["disabled_toolsets"]
+    names = _select_tool_names(
+        sorted(_resolved(home, "cli", monkeypatch)),
+        disabled,
+        quiet_mode=True,
+    )
+    assert "browser_vault" in names
+    assert names.isdisjoint({"browser_exec", "browser_cdp", "browser_dialog"})
+
+
 def _boot(home: Path, monkeypatch, said: list | None = None) -> list[str]:
     """Agent start for *home* (``recover_at_startup``), the plugin install a stand-in."""
     monkeypatch.setenv("HERMES_HOME", str(home))

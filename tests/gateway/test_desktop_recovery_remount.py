@@ -103,3 +103,52 @@ async def test_the_api_turn_gate_keys_on_the_family_marker(authority, monkeypatc
     with pytest.raises(RuntimeStoreError, match='not_found'):
         api_turn.check_api_turn(authority, ref, payload)
     assert restores == [SID]
+
+@pytest.mark.asyncio
+async def test_cold_desktop_row_resumes_in_its_named_profile_only(authority, tmp_path):
+    """A multiplexed Desktop's cold row lives in the named profile DB, not the
+    default gateway profile; reattaching must preserve that row's profile stamp.
+    This is the named-profile variant of the original #139796 report.
+    """
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import SessionRef
+    from hermes_state import SessionDB
+    from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
+
+    profile = 'qa-assistant'
+    home = tmp_path / 'profiles' / profile
+    home.mkdir(parents=True)
+    db = SessionDB(home / 'state.db')
+    try:
+        # The same session id may exist in multiple profile stores. A request
+        # addressed to the named profile must never mount the default row.
+        db.create_session(SID, source='desktop', user_id='basic:admin',
+                          profile_name=profile)
+        runner = SimpleNamespace(
+            _draining=False,
+            session_store=type(authority.runner.session_store)(),
+        )
+        named = SessionAuthority(
+            runner, profile_id=profile, instance_id='named-owner', db=db,
+            epoch=begin_runtime_epoch(db, instance_id='named-owner'),
+        )
+        actor = SimpleNamespace(
+            profile_id=profile, subject='local:user',
+            capabilities=frozenset({'session:read'}),
+        )
+        ref = SessionRef(profile, SID)
+        with pytest.raises(RuntimeStoreError, match='profile_mismatch'):
+            authority.authorize(actor, ref, 'session:read')
+
+        named.authorize(actor, ref, 'session:read')
+
+        live = named.sessions[SID]
+        assert live.source.chat_id == SID
+        assert live.source.profile == profile
+        assert live.source.user_id == 'basic:admin'
+        assert runner.session_store._entries[live.route].session_id == SID
+        assert SID not in authority.sessions
+        assert authority.db.get_session(SID)['profile_name'] == 'default'
+        assert db.get_session(SID)['profile_name'] == profile
+    finally:
+        db.close()

@@ -338,10 +338,12 @@ class AuthorityConnection:
         original_params = dict(params)
         contract = contract or METHODS.get(method)
         authority = self.authority
-        if (isinstance(ref.session_id, str) and ref.session_id and not getattr(authority, 'retiring', False)
+        if (method != 'worker.receipt' and isinstance(ref.session_id, str) and ref.session_id
+                and not getattr(authority, 'retiring', False)
                 and ref.profile_id == getattr(authority, 'profile_id', None)
                 and ref.session_id not in getattr(authority, 'sessions', {ref.session_id: None})):
-            # A first read of a session recovery never restored: its compression catch-up (#140060)
+            # Receipt recovery is read-only, even before worker authentication. Other first reads
+            # of a session recovery never restored: its compression catch-up (#140060)
             # commits in a worker here, so the handler's synchronous restore only reads.
             from gateway.session_local_adoption import adopt_before_restore
             await adopt_before_restore(authority, ref.session_id)

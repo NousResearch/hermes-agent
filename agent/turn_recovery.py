@@ -1125,7 +1125,7 @@ def nonretryable_client_error_result(
             final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
             error_detail=_nonretryable_summary,
             boundary_row_id=refused_turn_boundary_row_id(messages, current_turn_user_idx),
-        )
+        ) | {"failure_status_code": classified.status_code}
     # Skip persistence on likely context-overflow (400 + large session): persisting the
     # failed message grows the session and repeats the failure.
     # Persisting the failed user message would make the session even larger, causing the same failure on the

@@ -485,7 +485,8 @@ class TestScanSkill:
             'load_dotenv(hermes_home_env_path)\n', encoding="utf-8")
         result = scan_skill(skill_dir, source="community")
         hits = {(fi.file, fi.line, fi.severity) for fi in result.findings if fi.pattern_id == "hermes_env_dotenv"}
-        assert hits == {("SKILL.md", 3, "high"), ("run.py", 3, "high")}
+        # Prose that quotes the call is flagged too: a caution the user confirms, not a hard block.
+        assert hits == {("SKILL.md", 3, "high"), ("SKILL.md", 4, "high"), ("run.py", 3, "high")}
         assert result.verdict == "caution"
         assert should_allow_install(result)[0] is False
 

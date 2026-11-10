@@ -108,6 +108,8 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
 
 _install_plugin_debug_handler()
 
+# The function that fires each name is listed in website/docs/developer-guide/plugins/index.md
+# ("Where each hook fires"); add a row there when you add a hook.
 VALID_HOOKS: set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.

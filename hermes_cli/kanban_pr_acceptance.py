@@ -194,18 +194,14 @@ def _newest_per_app(runs: list) -> list:
     """Keep each app's newest same-name run (#122688).
 
     ``filter=latest`` dedupes only within a check suite, so a re-triggered workflow
-    leaves the superseded suite's cancelled run on the same head. Order by
-    ``started_at`` (else ``completed_at``), then id; a run not yet started is newest.
+    leaves the superseded suite's cancelled run on the same head. Newest is the
+    highest id (creation order, the order concurrency cancels by): a run cancelled
+    while queued gets timestamps later than the replacement that cancelled it.
     """
     newest: dict = {}
-    for run in sorted(runs, key=_run_order):
+    for run in sorted(runs, key=lambda r: r["id"]):
         newest[(run.get("app") or {}).get("id")] = run
     return list(newest.values())
-
-
-def _run_order(run: dict) -> tuple:
-    stamp = run.get("started_at") or run.get("completed_at")
-    return stamp is None, stamp or "", run["id"]
 
 
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:

@@ -185,7 +185,7 @@ def _stdin_encoding() -> str:
         return enc
     try:
         return locale.getpreferredencoding(False)
-    except Exception:
+    except (LookupError, ValueError):
         return "unknown"
 
 
@@ -195,7 +195,7 @@ def _stdout_encoding() -> str:
         return enc
     try:
         return locale.getpreferredencoding(False)
-    except Exception:
+    except (LookupError, ValueError):
         return "unknown"
 
 
@@ -204,7 +204,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
     fs_enc = sys.getfilesystemencoding()
     try:
         pref_enc = locale.getpreferredencoding(False)
-    except Exception:
+    except (LookupError, ValueError):
         pref_enc = "unknown"
     stdin_enc = _stdin_encoding()
     stdout_enc = _stdout_encoding()
@@ -221,10 +221,12 @@ def cmd_probe(args: argparse.Namespace) -> int:
     probe_path = Path(tmpdir) / "probe.txt"
     probe_path.write_text(PROBE_TEXT, encoding="utf-8")   # 写入一律显式 UTF-8
     try:
-        read_back = probe_path.read_text()                 # ← 故意不传 encoding
+        # 故意不传 encoding: 这里要测的正是"环境默认解码"的行为本身,
+        # 所以不能用显式 encoding (那会把被测对象换掉)。
+        read_back = probe_path.read_text()  # windows-footgun: ok
         file_roundtrip_ok = read_back == PROBE_TEXT
         read_err = None
-    except Exception as exc:                              # pragma: no cover
+    except (OSError, UnicodeDecodeError, LookupError) as exc:  # pragma: no cover
         read_back = ""
         file_roundtrip_ok = False
         read_err = f"{type(exc).__name__}: {exc}"
@@ -475,7 +477,7 @@ def load_baseline(path: str | None) -> set[str]:
     if not p.exists():
         return set()
     out: set[str] = set()
-    for line in p.read_text(encoding="utf-8").splitlines():
+    for line in p.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -515,17 +517,22 @@ def parse_fail_on(spec: str | None) -> set[str]:
     return wanted
 
 
-def cmd_static(args: argparse.Namespace) -> int:
-    root = Path(args.root).resolve()
-    excludes = tuple(DEFAULT_EXCLUDES) + tuple(args.exclude or ())
-    include_tests = bool(args.include_tests)
-    fail_on = parse_fail_on(args.fail_on)
-    baseline = load_baseline(args.baseline)
+def _severity_of(finding: dict, fpath: Path, root: Path) -> tuple[str, str]:
+    """一个命中的分级与判定依据。"""
+    kind = finding["kind"]
+    if kind == "shape3-in":
+        return SEV_PAYLOAD, "文本模式 stdin 读 ⇒ 解码口径 = locale ⇒ 静默乱码风险"
+    if kind == "shape3-out":
+        return SEV_LOUD, "文本模式 stdout/stderr 写 ⇒ 非 UTF-8 环境抛 UnicodeEncodeError (响亮失败)"
+    return _classify_target(finding["literal_path"], fpath, root)
 
+
+def _collect_static_findings(root: Path, excludes: tuple[str, ...],
+                             include_tests: bool) -> tuple[list[dict], int, int]:
+    """走目录树 + AST 扫描 ⇒ (命中列表, 扫描文件数, 解析失败数)。"""
     findings: list[dict] = []
     scanned = 0
     parse_errors = 0
-
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if not _is_excluded(d, excludes)]
         if not include_tests:
@@ -535,7 +542,7 @@ def cmd_static(args: argparse.Namespace) -> int:
                 continue
             fpath = Path(dirpath) / fn
             try:
-                tree = ast.parse(fpath.read_text(encoding="utf-8", errors="replace"))
+                tree = ast.parse(fpath.read_text(encoding="utf-8-sig", errors="replace"))
             except (SyntaxError, ValueError):
                 parse_errors += 1
                 continue
@@ -543,12 +550,7 @@ def cmd_static(args: argparse.Namespace) -> int:
             scanner = _ShapeScanner(fpath)
             scanner.visit(tree)
             for f in scanner.findings:
-                if f["kind"] == "shape3-in":
-                    sev, why = SEV_PAYLOAD, "文本模式 stdin 读 ⇒ 解码口径 = locale ⇒ 静默乱码风险"
-                elif f["kind"] == "shape3-out":
-                    sev, why = SEV_LOUD, "文本模式 stdout/stderr 写 ⇒ 非 UTF-8 环境抛 UnicodeEncodeError (响亮失败)"
-                else:
-                    sev, why = _classify_target(f["literal_path"], fpath, root)
+                sev, why = _severity_of(f, fpath, root)
                 findings.append({
                     "kind": f["kind"],
                     "severity": sev,
@@ -560,11 +562,14 @@ def cmd_static(args: argparse.Namespace) -> int:
                     "scope": f.get("scope", "<module>"),
                     "literal_path": f["literal_path"],
                 })
-
     order = {sev: i for i, sev in enumerate(SEV_ORDER)}
     findings.sort(key=lambda f: (order[f["severity"]], f["kind"], f["rel"], f["line"]))
+    return findings, scanned, parse_errors
 
-    counts = {
+
+def _static_counts(findings: list[dict]) -> dict:
+    """分级计数。"""
+    return {
         "high": sum(1 for f in findings if f["severity"] == SEV_HIGH),
         "latent": sum(1 for f in findings if f["severity"] == SEV_LATENT),
         "unknown": sum(1 for f in findings if f["severity"] == SEV_UNKNOWN),
@@ -575,6 +580,55 @@ def cmd_static(args: argparse.Namespace) -> int:
         "shape3_out": sum(1 for f in findings if f["kind"] == "shape3-out"),
     }
 
+
+def _print_static_report(root: Path, scanned: int, parse_errors: int,
+                         findings: list[dict], counts: dict, limit: int) -> None:
+    """终端报告。"""
+    print(f"编码契约自检 · static (扫描根: {root})")
+    print(f"  扫描 .py 文件      : {scanned}  (解析失败 {parse_errors})")
+    print(f"  命中总数           : {len(findings)}"
+          f"  (shape1={counts['shape1']} shape3-in={counts['shape3_in']} shape3-out={counts['shape3_out']})")
+    print(f"  shape1 分级        : 高危={counts['high']} 潜伏={counts['latent']} 未知={counts['unknown']}")
+    print(f"  载荷入口(shape3-in): {counts['payload']} 处  ← 静默乱码风险")
+    print(f"  输出面(shape3-out) : {counts['loud']} 处  ← UnicodeEncodeError 响亮失败")
+    print("  ── 高危明细 (优先治这些) ──")
+    shown = 0
+    for f in findings:
+        if f["severity"] != SEV_HIGH:
+            continue
+        shown += 1
+        print(f"   [{f['kind']}] {f['rel']}:{f['line']}  {f['call']}  — {f['reason']}")
+        if shown >= limit:
+            print("   … 其余高危项见 --json 输出")
+            break
+    if not shown:
+        print("   (无)")
+    if counts["shape3_in"]:
+        print("  ── shape-3-in 载荷入口 (文本模式 stdin 读 ⇒ 静默乱码风险, 全部列出) ──")
+        for f in findings:
+            if f["kind"] == "shape3-in":
+                print(f"   {f['rel']}:{f['line']}  {f['call']}  (in {f['scope']})")
+    if counts["shape3_out"]:
+        print(f"  ── shape-3-out 输出面 {counts['shape3_out']} 处 (文本模式 stdout/stderr 写 ⇒ "
+              f"UnicodeEncodeError 响亮失败, 非静默损坏; 详见 --json) ──")
+
+
+def _static_gate(findings: list[dict], baseline: set[str], fail_on: set[str]) -> list[dict]:
+    """门禁判定: 参与失败判定的分级里, 指纹不在基线内 ⇒ 新增。"""
+    gated = [f for f in findings if f["severity"] in fail_on]
+    return [f for f in gated
+            if fingerprint(f["rel"], f["kind"], f["call"]) not in baseline]
+
+
+def cmd_static(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    excludes = tuple(DEFAULT_EXCLUDES) + tuple(args.exclude or ())
+    fail_on = parse_fail_on(args.fail_on)
+    baseline = load_baseline(args.baseline)
+
+    findings, scanned, parse_errors = _collect_static_findings(
+        root, excludes, bool(args.include_tests))
+    counts = _static_counts(findings)
     result = {
         "version": __version__,
         "mode": "static",
@@ -588,33 +642,7 @@ def cmd_static(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        print(f"编码契约自检 · static (扫描根: {root})")
-        print(f"  扫描 .py 文件      : {scanned}  (解析失败 {parse_errors})")
-        print(f"  命中总数           : {len(findings)}"
-              f"  (shape1={counts['shape1']} shape3-in={counts['shape3_in']} shape3-out={counts['shape3_out']})")
-        print(f"  shape1 分级        : 高危={counts['high']} 潜伏={counts['latent']} 未知={counts['unknown']}")
-        print(f"  载荷入口(shape3-in): {counts['payload']} 处  ← 静默乱码风险")
-        print(f"  输出面(shape3-out) : {counts['loud']} 处  ← UnicodeEncodeError 响亮失败")
-        print("  ── 高危明细 (优先治这些) ──")
-        shown = 0
-        for f in findings:
-            if f["severity"] != SEV_HIGH:
-                continue
-            shown += 1
-            print(f"   [{f['kind']}] {f['rel']}:{f['line']}  {f['call']}  — {f['reason']}")
-            if shown >= args.limit:
-                print("   … 其余高危项见 --json 输出")
-                break
-        if not shown:
-            print("   (无)")
-        if counts["shape3_in"]:
-            print("  ── shape-3-in 载荷入口 (文本模式 stdin 读 ⇒ 静默乱码风险, 全部列出) ──")
-            for f in findings:
-                if f["kind"] == "shape3-in":
-                    print(f"   {f['rel']}:{f['line']}  {f['call']}  (in {f['scope']})")
-        if counts["shape3_out"]:
-            print(f"  ── shape-3-out 输出面 {counts['shape3_out']} 处 (文本模式 stdout/stderr 写 ⇒ "
-                  f"UnicodeEncodeError 响亮失败, 非静默损坏; 详见 --json) ──")
+        _print_static_report(root, scanned, parse_errors, findings, counts, args.limit)
 
     # ---- baseline 门禁判定 (只减不增) ----------------------------------------
     fingerprints = {fingerprint(f["rel"], f["kind"], f["call"]) for f in findings}
@@ -622,7 +650,7 @@ def cmd_static(args: argparse.Namespace) -> int:
         write_baseline(
             args.write_baseline,
             fingerprints,
-            header=("编码自检 baseline (只减不增) —— 每行一个命中指纹 rel:line:kind\n"
+            header=("编码自检 baseline (只减不增) —— 每行一个命中指纹 rel:kind:call\n"
                     f"生成于: {args.root}\n"
                     "语义: 指纹在此 ⇒ 存量, 不红; 指纹不在此 ⇒ 新增 ⇒ 门禁红"),
         )
@@ -630,11 +658,9 @@ def cmd_static(args: argparse.Namespace) -> int:
             print(f"  baseline 已写入 : {args.write_baseline} ({len(fingerprints)} 条)")
         return 0
 
-    gated = [f for f in findings if f["severity"] in fail_on]
-    new_ones = [f for f in gated
-                if fingerprint(f["rel"], f["kind"], f["call"]) not in baseline]
+    new_ones = _static_gate(findings, baseline, fail_on)
     result["baseline_size"] = len(baseline)
-    result["gated_findings"] = len(gated)
+    result["gated_findings"] = len(findings) - len(new_ones)
     result["new_findings"] = [
         {"rel": f["rel"], "line": f["line"], "kind": f["kind"], "severity": f["severity"],
          "call": f["call"], "scope": f["scope"]} for f in new_ones
@@ -658,14 +684,13 @@ def cmd_static(args: argparse.Namespace) -> int:
 # 模式 3: mojibake —— 存量审计
 # ---------------------------------------------------------------------------
 
-def cmd_mojibake(args: argparse.Namespace) -> int:
-    excludes = tuple(DEFAULT_EXCLUDES) + tuple(args.exclude or ())
-    scanned = 0
+def _collect_mojibake_hits(paths: list[str], excludes: tuple[str, ...]) -> tuple[list[dict], int, int, int]:
+    """扫数据文件里的乱码 ⇒ (命中列表, 扫描数, 预筛跳过数, 非 UTF-8 数)。"""
     hits: list[dict] = []
-    unreadable = 0
+    scanned = 0
     prefiltered = 0
-
-    for target in args.paths:
+    unreadable = 0
+    for target in paths:
         root = Path(target).resolve()
         if root.is_file():
             files = [root]
@@ -696,20 +721,45 @@ def cmd_mojibake(args: argparse.Namespace) -> int:
                 unreadable += 1
                 continue
             if is_mojibake_text(text):
-                spans = mojibake_spans(text)
-                c1 = _c1_count(text)
-                try:
-                    rel = str(fpath.relative_to(root)) if root.is_dir() else fpath.name
-                except ValueError:  # pragma: no cover
-                    rel = fpath.name
-                hits.append({
-                    "file": str(fpath),
-                    "rel": rel,
-                    "length": len(text),
-                    "c1_count": c1,
-                    "span_count": len(spans),
-                    "sample": text[spans[0][0]:spans[0][1]][:80] if spans else "",
-                })
+                hits.append(_mojibake_hit(fpath, root, text))
+    return hits, scanned, prefiltered, unreadable
+
+
+def _mojibake_hit(fpath: Path, root: Path, text: str) -> dict:
+    """一个乱码命中的摘要。"""
+    spans = mojibake_spans(text)
+    try:
+        rel = str(fpath.relative_to(root)) if root.is_dir() else fpath.name
+    except ValueError:  # pragma: no cover
+        rel = fpath.name
+    return {
+        "file": str(fpath),
+        "rel": rel,
+        "length": len(text),
+        "c1_count": _c1_count(text),
+        "span_count": len(spans),
+        "sample": text[spans[0][0]:spans[0][1]][:80] if spans else "",
+    }
+
+
+def _print_mojibake_report(scanned: int, prefiltered: int, unreadable: int,
+                           hits: list[dict], limit: int) -> None:
+    """终端报告。"""
+    print("编码契约自检 · mojibake 存量审计")
+    print(f"  扫描文件数 : {scanned}   (字节预筛跳过 {prefiltered} / 非 UTF-8 跳过 {unreadable})")
+    print(f"  实跑判据   : {scanned - prefiltered - unreadable} 个文件")
+    print(f"  mojibake   : {len(hits)} 命中")
+    for h in hits[:limit]:
+        print(f"   ❌ C1={h['c1_count']:6d} len={h['length']:8d} {h['file']}")
+        if h["sample"]:
+            print(f"        片段: {h['sample']!r}")
+    if len(hits) > limit:
+        print(f"   … 其余 {len(hits) - limit} 项见 --json 输出")
+
+
+def cmd_mojibake(args: argparse.Namespace) -> int:
+    excludes = tuple(DEFAULT_EXCLUDES) + tuple(args.exclude or ())
+    hits, scanned, prefiltered, unreadable = _collect_mojibake_hits(args.paths, excludes)
 
     result = {
         "version": __version__,
@@ -725,16 +775,7 @@ def cmd_mojibake(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        print("编码契约自检 · mojibake 存量审计")
-        print(f"  扫描文件数 : {scanned}   (字节预筛跳过 {prefiltered} / 非 UTF-8 跳过 {unreadable})")
-        print(f"  实跑判据   : {scanned - prefiltered - unreadable} 个文件")
-        print(f"  mojibake   : {len(hits)} 命中")
-        for h in hits[:args.limit]:
-            print(f"   ❌ C1={h['c1_count']:6d} len={h['length']:8d} {h['file']}")
-            if h["sample"]:
-                print(f"        片段: {h['sample']!r}")
-        if len(hits) > args.limit:
-            print(f"   … 其余 {len(hits) - args.limit} 项见 --json 输出")
+        _print_mojibake_report(scanned, prefiltered, unreadable, hits, args.limit)
 
     # ---- baseline 门禁判定 (只减不增) ----------------------------------------
     fingerprints = {h["rel"] for h in hits}

@@ -1,0 +1,43 @@
+name: backstop
+repo: https://github.com/themahis/hermes-backstop
+sha: 99fd96995d363de92050fdf61a902979b5926f1e
+description: >-
+  A build or test that fails in your own PowerShell, bash or zsh gets a read-only
+  Hermes diagnosis (cause, quoted evidence, file:line, fix) that opens in Hermes Desktop;
+  Fix it drafts the change into a normal chat you send yourself, and the next passing run
+  closes the incident.
+  Disclosure — each failure automatically starts one diagnosis session on your configured
+  model (output tail redacted, command, cwd, project excerpts); reads project files and
+  their size/mtime; shell hook functions plus an opt-in profile/rc line; one gateway thread
+  polls its spool every second. No own network calls, credentials or telemetry. Two
+  internal imports (session policy guard, egress redaction) are version-coupled; no
+  runtime overrides or self-updater.
+maintainer: themahis
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/themahis/hermes-backstop
+version: "0.1.0"
+image: https://raw.githubusercontent.com/themahis/hermes-backstop/99fd96995d363de92050fdf61a902979b5926f1e/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/themahis/hermes-backstop/99fd96995d363de92050fdf61a902979b5926f1e/assets/screenshots/1-terminal-failure.png
+  - https://raw.githubusercontent.com/themahis/hermes-backstop/99fd96995d363de92050fdf61a902979b5926f1e/assets/screenshots/2-status-menu.png
+  - https://raw.githubusercontent.com/themahis/hermes-backstop/99fd96995d363de92050fdf61a902979b5926f1e/assets/screenshots/3-diagnosis-and-menu.png
+  - https://raw.githubusercontent.com/themahis/hermes-backstop/99fd96995d363de92050fdf61a902979b5926f1e/assets/screenshots/4-fix-it-draft.png
+  - https://raw.githubusercontent.com/themahis/hermes-backstop/99fd96995d363de92050fdf61a902979b5926f1e/assets/screenshots/5-terminal-passes.png
+  - https://raw.githubusercontent.com/themahis/hermes-backstop/99fd96995d363de92050fdf61a902979b5926f1e/assets/screenshots/6-status-fixed.png
+readme: true
+platforms: []
+known_issues:
+  - "Needs the Hermes Desktop app open: a failure waits up to 30 minutes for a Desktop window, then expires."
+  - "End-to-end tested on Windows (PowerShell); bash and zsh hooks are tested in CI up to the spool record."
+  - "Some gateways reject the max_turns request; Backstop then runs the diagnosis without a turn limit and shows a warning."
+  - "Two private core imports (session-policy guard, egress redaction) may break on a Hermes release; the tools then refuse to run."
+capabilities:
+  provides_tools:
+    - backstop_read_file
+    - backstop_search
+    - backstop_list
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

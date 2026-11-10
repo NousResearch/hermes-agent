@@ -73,7 +73,14 @@ def looks_like_terminal_nonretryable_diagnostic(text: str) -> bool:
     if not body or len(body) > 2000 or body.count("\n") > 6:
         return False
     if _RAW_DIAGNOSTIC_RE.search(body):
-        return True
+        # Error phrases quoted in an ordinary reply or human question are not
+        # diagnostic envelopes. The emitted terminal copies start with an error
+        # glyph or one of the bare terminal labels.
+        return body.startswith("❌") or body.lower().startswith((
+            "billing or credits exhausted",
+            "provider reported usage/credit exhaustion",
+            "credits exhausted",
+        ))
     return bool(_HTTP_CLIENT_ERROR_LINE_RE.match(body))
 
 

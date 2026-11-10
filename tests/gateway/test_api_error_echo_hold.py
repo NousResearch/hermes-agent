@@ -140,3 +140,18 @@ def test_hold_allows_slash_commands_without_clearing():
     assert api_error_hold_active(entry)
     clear_api_error_hold(entry)
     assert not api_error_hold_active(entry)
+
+
+def test_ordinary_final_response_quoting_billing_copy_is_not_replaced():
+    reply = "The message 'Billing or credits exhausted' means the account has no credit."
+    assert not looks_like_terminal_nonretryable_diagnostic(reply)
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, reply) == reply
+
+
+def test_human_question_quoting_retry_diagnostic_releases_hold():
+    entry = SimpleNamespace(metadata={})
+    arm_api_error_hold(entry, reason="billing")
+    question = "What does 'retrying won't help' mean for my API key?"
+    assert not looks_like_api_error_echo(question)
+    assert should_drop_text_under_api_error_hold(entry, question) == (False, True)
+    assert not api_error_hold_active(entry)

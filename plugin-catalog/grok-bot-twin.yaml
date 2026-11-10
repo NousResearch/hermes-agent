@@ -1,7 +1,7 @@
 name: grok-bot-twin
 title: Grok Bot Twin
 repo: https://github.com/hudsonwa/grok-bot-twin
-sha: e927fc800c7fcc74654d8373fc8c2b1d8c190ed6
+sha: 3ab3b9185fdeb9dfc9408c790fba2b90b9f99094
 subdir: ""
 version: "0.1.0"
 description: "Try Hermes without leaving Grok. Gives each Grok desktop-app bot a Hermes twin profile and a Desktop Twins page (conflicts, restore points); `hermes twin demo` needs no Grok account. Name and description changes reach the twin in seconds; instructions stay on the by-hand list; skills travel through your own optional Mirror bot; routines and connectors stay by hand. Unofficial; not affiliated with xAI. Disclosure: runs the external botport CLI (never bundled or downloaded; setup verifies its attestation and pins its digest; `hermes twin setup --allow-unattested` is a loud, recorded opt-out for local builds), `gh attestation verify` and `hermes cron resume`. Via botport, reads the Grok app's bot list (id, name, description) and the selected bots' local transcript files (capped, parsed only for routine-change events); never login or credential files. Writes only plugin-data/grok-bot-twin/ plus botport's twin profiles. No account credentials; botport stores one owner-only pair key per twin (rotated by `hermes twin mirror --rotate-key`, deleted by `hermes twin remove`); with the Mirror bot link on, a copy lives in that bot's chat. One background thread checks file metadata. The plugin makes no network calls. No telemetry. The optional activity digest (off by default, per twin) goes to your own Grok bot, which runs on xAI's service."
@@ -9,16 +9,16 @@ maintainer: hudsonwa
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-docs_url: https://github.com/hudsonwa/grok-bot-twin/blob/e927fc800c7fcc74654d8373fc8c2b1d8c190ed6/README.md
+docs_url: https://github.com/hudsonwa/grok-bot-twin/blob/3ab3b9185fdeb9dfc9408c790fba2b90b9f99094/README.md
 screenshots:
-  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/e927fc800c7fcc74654d8373fc8c2b1d8c190ed6/docs/screenshots/conflict-card.png
-  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/e927fc800c7fcc74654d8373fc8c2b1d8c190ed6/docs/screenshots/ready-to-switch.png
-  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/e927fc800c7fcc74654d8373fc8c2b1d8c190ed6/docs/screenshots/twins-page.png
-  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/e927fc800c7fcc74654d8373fc8c2b1d8c190ed6/docs/screenshots/add-twins-preview.png
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/3ab3b9185fdeb9dfc9408c790fba2b90b9f99094/docs/screenshots/conflict-card.png
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/3ab3b9185fdeb9dfc9408c790fba2b90b9f99094/docs/screenshots/ready-to-switch.png
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/3ab3b9185fdeb9dfc9408c790fba2b90b9f99094/docs/screenshots/twins-page.png
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/3ab3b9185fdeb9dfc9408c790fba2b90b9f99094/docs/screenshots/add-twins-preview.png
 readme: true
 platforms: [macos, linux]
 known_issues:
-  - "Real twins need botport v0.2.0 (the release `hermes twin setup` verifies; other releases via botport_release_tag) on PATH (or botport_path), installed by you from its GitHub release; setup verifies the GitHub build attestation. Without it only the demo works (`hermes twin demo`)."
+  - "Real twins need botport v0.2.1 (the release `hermes twin setup` verifies; other releases via botport_release_tag) on PATH (or botport_path), installed by you from its GitHub release; setup verifies the GitHub build attestation. Without it only the demo works (`hermes twin demo`)."
   - "From the Grok desktop app's local files, botport opens only the bot list (id, name, description) and the selected bots' transcript files (capped, parsed only for routine-change events); those files hold no instructions, skills, schedules or connectors. Instructions, routines and connectors stay on the by-hand list; skills can travel through your own Mirror bot routine."
   - "Under plugins.isolation: host, Hermes skips plugin CLI commands, so `hermes twin` is unavailable; use `/twin` or the Twins page in Hermes Desktop."
 capabilities:

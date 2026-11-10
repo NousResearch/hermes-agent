@@ -19,12 +19,13 @@ nulls the caller's live value binding (a caller retrying from an error handler f
 variable gone), ``local_failure_keeps_the_escaped_secret`` clears the raw value but keeps the
 serialized, escaped form a writer quoted it into, and
 ``local_failure_keeps_the_original_failure_as_context`` raises a fresh error but chains the
-original failure to it, frames and all. Against the fresh error's own text:
-``local_keeps_strerror_in_the_fresh_error`` copies the failing writer's own message, strerror
-and filename into the error the caller reads, and
-``local_keeps_the_writers_class_name_in_the_fresh_error`` copies the failing code's own
-exception class name instead of a fixed category label — a writer that names its class after
-the value it saw puts the value in the error the caller reads — and
+original failure to it, frames and all. Against the fixed error the write raises in the
+writer's place: ``local_names_the_writers_exception_kind`` inspects the writer's exception and
+names its kind — class name, errno — in the error the caller reads, text the failing code
+chose and a channel a hostile writer carries the value through (an errno property that raises
+with the value it saw, an errno too large for Python to format), and
+``local_chains_the_writers_failure_to_the_fresh_error`` raises the port's own fixed error but
+chains the writer's original failure to it as its cause, frames and all. And
 ``local_logs_exc_info_while_holding_the_value`` logs the failure with the live exception —
 exc_info and all — from a frame that still binds the value, so a log handler that keeps the
 record renders the plaintext from it later; ``local_loads_the_auth_store_after_binding_the_record``
@@ -319,42 +320,75 @@ def local_failure_keeps_the_original_failure_as_context(monkeypatch):
     monkeypatch.setattr(LocalSecretStore, "set", set)
 
 
-def local_keeps_strerror_in_the_fresh_error(monkeypatch):
-    """The fresh error copies the failing writer's own text — an OSError's strerror and
-    filename, and any other failure's own message — so a writer that names the value it saw
-    puts it in the error the caller reads."""
+def local_names_the_writers_exception_kind(monkeypatch):
+    """The failed write inspects the writer's exception and names its kind — its class name,
+    its errno — in the error the caller reads: text the failing code chose (a writer that
+    names its exception class after the value it saw puts the value in the error as surely
+    as one that names it in a message), and channels whose reading is itself hostile — an
+    errno property that raises with the value it saw, an errno too large for Python to
+    format — so the inspection can fail before the write clears its own value binding, and
+    the writer's failure escapes in place of the port's fixed one."""
     from hermes_secret_port import SecretWriteFailed
     from hermes_secret_port_local import LocalSecretStore
 
-    def fresh_write_error(exc):
-        if isinstance(exc, OSError):
-            detail = type(exc).__name__
-            if exc.errno is not None:
-                detail += f", errno {exc.errno}"
-            if exc.strerror:
-                detail += f" ({exc.strerror})"
-            if exc.filename:
-                detail += f", file {exc.filename}"
-            return SecretWriteFailed(f"the credential write failed: {detail}")
+    def set(self, name, value, *, level):
+        refusal = None
         try:
-            return type(exc)(str(exc))
-        except Exception:  # health: allow BLE001 -- a signature this mutant cannot call falls back
-            return SecretWriteFailed(f"the credential write failed: {type(exc).__name__}")
+            self._pin(administering=True)
+            self._require_agent_level(level)
+            from hermes_cli.config import require_env_writable
+            require_env_writable(name, "set")
+        except BaseException as exc:  # health: allow BLE001 -- re-raised below
+            refusal = exc
+        failed = None
+        if refusal is None:
+            try:
+                self._write_secret(name, value)
+            except BaseException as exc:  # health: allow BLE001 -- the suite kills this inspection
+                failed = SecretWriteFailed(
+                    f"the credential write failed: set {name!r}, {type(exc).__name__}, errno {exc.errno}")
+        del value
+        del level
+        if refusal is not None:
+            raise refusal
+        if failed is not None:
+            failed.__context__ = None
+            failed.__cause__ = None
+            raise failed
 
-    monkeypatch.setattr("hermes_secret_port_local.fresh_write_error", fresh_write_error)
+    monkeypatch.setattr(LocalSecretStore, "set", set)
 
 
-def local_keeps_the_writers_class_name_in_the_fresh_error(monkeypatch):
-    """The fresh error names the failing code's own exception class — text the failing code
-    chose — so a writer that raises an exception class named after the value it saw puts the
-    value in the error the caller reads: the class name is writer text exactly like a message
-    is, and only a fixed category label keeps it out."""
+def local_chains_the_writers_failure_to_the_fresh_error(monkeypatch):
+    """The failed write raises the port's own fixed error but chains the writer's original
+    failure to it as its cause — the original's traceback still holds the value in the
+    writer's frames, so only a check that walks the whole exception chain, not just the
+    error's own traceback, catches it."""
     from hermes_secret_port import SecretWriteFailed
+    from hermes_secret_port_local import LocalSecretStore
 
-    def fresh_write_error(exc: BaseException) -> BaseException:
-        return SecretWriteFailed(f"the credential write failed: {type(exc).__name__}")
+    def set(self, name, value, *, level):
+        refusal = None
+        try:
+            self._pin(administering=True)
+            self._require_agent_level(level)
+            from hermes_cli.config import require_env_writable
+            require_env_writable(name, "set")
+        except BaseException as exc:  # health: allow BLE001 -- re-raised below
+            refusal = exc
+        if refusal is None:
+            try:
+                self._write_secret(name, value)
+            except BaseException as exc:  # health: allow BLE001 -- the suite kills this chain
+                del value
+                del level
+                raise SecretWriteFailed(f"the credential write failed: set {name!r}") from exc
+        del value
+        del level
+        if refusal is not None:
+            raise refusal
 
-    monkeypatch.setattr("hermes_secret_port_local.fresh_write_error", fresh_write_error)
+    monkeypatch.setattr(LocalSecretStore, "set", set)
 
 
 def local_logs_exc_info_while_holding_the_value(monkeypatch):
@@ -378,7 +412,7 @@ def local_loads_the_auth_store_after_binding_the_record(monkeypatch):
     """The record is bound in a helper frame that then loads and parses the store: a load
     failure is logged by today's loader with the live exception, whose traceback unwinds that
     record-holding frame — a log handler that keeps the record renders the plaintext from it."""
-    from hermes_secret_port import fresh_write_error
+    from hermes_secret_port import write_failure
     from hermes_secret_port_local import LocalSecretStore
 
     def _write(self, provider, record):
@@ -389,16 +423,22 @@ def local_loads_the_auth_store_after_binding_the_record(monkeypatch):
             auth._save_auth_store(store)
 
     def set_auth(self, provider, record):
-        failure = None
+        refusal = None
         try:
-            _write(self, provider, record)
-        except BaseException as exc:  # health: allow BLE001 -- the fresh error below is all that survives
-            failure = fresh_write_error(exc)
+            self._pin(administering=True)
+        except BaseException as exc:  # health: allow BLE001 -- re-raised below
+            refusal = exc
+        failed = False
+        if refusal is None:
+            try:
+                _write(self, provider, record)
+            except Exception:  # health: allow BLE001 -- the writer's failure is never inspected
+                failed = True
         del record
-        if failure is not None:
-            failure.__context__ = None
-            failure.__cause__ = None
-            raise failure
+        if refusal is not None:
+            raise refusal
+        if failed:
+            raise write_failure("set_auth", provider) from None
 
     monkeypatch.setattr(LocalSecretStore, "set_auth", set_auth)
 
@@ -585,12 +625,14 @@ MUTANTS = {
     "local_failure_keeps_the_original_failure_as_context": (
         local_failure_keeps_the_original_failure_as_context,
         _local("test_no_failure_traceback_frame_holds_the_value_or_record[prepare]")),
-    "local_keeps_strerror_in_the_fresh_error": (
-        local_keeps_strerror_in_the_fresh_error,
-        "tests/conformance/secrets/test_local.py::test_a_failed_writes_fresh_error_names_none_of_the_writers_text[strerror]"),
-    "local_keeps_the_writers_class_name_in_the_fresh_error": (
-        local_keeps_the_writers_class_name_in_the_fresh_error,
-        "tests/conformance/secrets/test_local.py::test_a_failed_writes_fresh_error_names_none_of_the_writers_text[class name]"),
+    "local_names_the_writers_exception_kind": (
+        local_names_the_writers_exception_kind,
+        "tests/conformance/secrets/test_local.py::"
+        "test_whatever_the_writer_raises_the_failed_writes_error_is_the_ports_own[set-raising errno]"),
+    "local_chains_the_writers_failure_to_the_fresh_error": (
+        local_chains_the_writers_failure_to_the_fresh_error,
+        "tests/conformance/secrets/test_local.py::"
+        "test_whatever_the_writer_raises_the_failed_writes_error_is_the_ports_own[set-message]"),
     "local_logs_exc_info_while_holding_the_value": (
         local_logs_exc_info_while_holding_the_value,
         "tests/conformance/secrets/test_local.py::"

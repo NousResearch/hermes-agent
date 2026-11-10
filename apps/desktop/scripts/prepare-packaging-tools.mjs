@@ -9,6 +9,7 @@ import { isMain } from './utils.mjs'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
 import { ensureWindowsBundleTools } from './windows-bundle-tools.mjs'
 import { prepareDmgbuild } from './prepare-dmgbuild.mjs'
+import { verifyElectronArtifact } from './electron-artifact-verify.mjs'
 import { prepareElectronRuntime } from '../../../scripts/build/electron-runtime.mjs'
 
 /** @param {string} source @param {string} name @returns {string} */
@@ -52,6 +53,21 @@ function copyTool(from, to) {
   fs.rmSync(to, { recursive: true, force: true })
   fs.cpSync(from, to, { recursive: true, verbatimSymlinks: true })
   return to
+}
+
+/**
+ * Verify a downloaded Electron zip against the OFFICIAL release manifest before it enters the
+ * prepared inputs. electron-builder only verifies against the manifest of the source it
+ * downloaded from (ELECTRON_MIRROR when set), so a mirror could otherwise substitute both bytes
+ * and manifest. See electron-artifact-verify.mjs.
+ * @param {string} archive
+ * @param {import('app-builder-lib').Configuration} config
+ * @param {string} cache
+ * @returns {Promise<string>}
+ */
+async function verifiedElectronArchive(archive, config, cache) {
+  await verifyElectronArtifact(archive, { version: config.electronVersion, cacheDir: path.join(cache, 'electron') })
+  return archive
 }
 
 /**
@@ -109,7 +125,7 @@ async function acquirePackagingTools({ source, out, cache, target, formats, buil
     unpackedOnly ? null : icons.getIconsToolsetPath(config.toolsets?.icons, resourcesDir),
   ])
   const electron = hostRuntime ? copyTool(installedElectronDist(source), path.join(out, 'electron'))
-    : copyTool(/** @type {string} */ (archive), path.join(out, 'electron.zip'))
+    : copyTool(await verifiedElectronArchive(/** @type {string} */ (archive), config, cache), path.join(out, 'electron.zip'))
   /** @type {import('./prepared-packaging.mjs').PackagingToolsets} */
   const toolsets = {}
   if (archiveTool) toolsets.sevenZip = copyTool(path.dirname(path.dirname(archiveTool)), path.join(out, 'sevenZip'))

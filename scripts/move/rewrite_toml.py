@@ -33,7 +33,7 @@ def rewrite_pyproject(root: Path, plan, write: bool) -> tuple[int, list[str]]:
     package-list row (``"pkg"``, ``"pkg.*"``) of a moved package stays while a generated old-path file lives under
     it (``required_names.py``) and goes otherwise: ``hermes_agent.*`` already covers the new place. Each
     ``update-startup-files`` entry this move relocated becomes its new path, and the old path stays beside it while a
-    generated old-path file lives there. Any other string naming a moved module or path is flagged.
+    file stays there (generated, or hand-written). Any other string naming a moved module or path is flagged.
     """
     file = root / "pyproject.toml"
     if not file.is_file():
@@ -107,7 +107,7 @@ def _startup_span(lines: list[str]) -> tuple[int, int] | None:
 def _rewrite_startup(block: list[str], moved: dict[str, str], generated: set[str]) -> tuple[list[str], int]:
     """The startup-list lines with each entry this move relocated respelled, and how many entries changed.
 
-    The old path is kept, followed by the new one, while a generated old-path file lives there; an entry whose new
+    The old path is kept, followed by the new one, while a file stays at the old path; an entry whose new
     path the list already names is not added twice, so a second run changes nothing.
     """
     present = set(_STARTUP_ENTRY.findall("".join(block)))
@@ -153,14 +153,15 @@ def _wrapped(line: str) -> list[str]:
 
 
 def _generated_paths(root: Path) -> set[str]:
-    """Repository paths of the old-path files ``generate_shims.py`` writes for this tree."""
+    """Repository paths that keep a file once their module has moved: the ones ``generate_shims.py`` writes for
+    this tree, and the hand-written ones it requires."""
     script = root / _SHIM_WRITER
     if not script.is_file():
         return set()
     spec = importlib.util.spec_from_file_location("_move_generate_shims", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return set(module.generated())
+    return set(module.generated()) | set(module.hand_written())
 
 
 def _shimmed_packages(root: Path, plan) -> set[str]:

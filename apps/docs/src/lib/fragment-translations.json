@@ -1,6 +1,7 @@
 {
   "/developer-guide/contributing": {
-    "before-submitting": "提交前检查"
+    "before-submitting": "提交前检查",
+    "developer-commands": null
   },
   "/developer-guide/creating-skills": {
     "config-settings-configyaml": "config-配置项configyaml"
@@ -20,6 +21,9 @@
     "by-experience-level": "按经验水平",
     "by-use-case": "按使用场景",
     "key-features-at-a-glance": "主要功能一览"
+  },
+  "/getting-started/nix-setup": {
+    "updating-the-pnpm-lockfile": "更新-pnpm-锁文件"
   },
   "/getting-started/updating": {
     "what-happens-during-an-update": "更新过程"
@@ -195,6 +199,7 @@
     "chat": "chat聊天",
     "connecting-hermes-desktop-to-a-remote-backend": null,
     "default-provider-nous-research": null,
+    "deployment-session-token-provider-token-only-deployments": null,
     "usernamepassword-provider-no-oauth-idp": null
   },
   "/user-guide/features/web-search": {

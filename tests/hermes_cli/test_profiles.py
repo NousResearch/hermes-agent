@@ -514,9 +514,9 @@ class TestNoSkillsOptOut:
 class TestBackfillProfileEnvs:
     """Tests for backfill_profile_envs() — the `hermes update` pass that
     gives pre-#44792 profiles (created before .env seeding) their own
-    .env, copied from the default install so credentials don't break."""
+    .env: the placeholder header, never a copy of the default's secrets."""
 
-    def test_copies_default_env_into_envless_profiles(self, profile_env):
+    def test_seeds_placeholder_never_the_default_env(self, profile_env):
         import stat
         tmp_path = profile_env
         (tmp_path / ".hermes" / ".env").write_text("OPENROUTER_API_KEY=root-key\n", encoding="utf-8")
@@ -530,7 +530,7 @@ class TestBackfillProfileEnvs:
 
         assert sorted(backfilled) == ["old1", "old2"]
         for p in (p1, p2):
-            assert (p / ".env").read_text(encoding="utf-8-sig") == "OPENROUTER_API_KEY=root-key\n"
+            assert "root-key" not in (p / ".env").read_text(encoding="utf-8-sig")
             assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
 
 
@@ -1171,33 +1171,6 @@ class TestRenameProfile:
         assert not old_dir.is_dir()
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
-
-    def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
-        tmp_path = profile_env
-        create_profile("ssi_health", no_alias=True)
-        honcho_path = tmp_path / ".hermes" / "honcho.json"
-        honcho_path.write_text(json.dumps({
-            "hosts": {
-                "hermes.ssi_health": {
-                    "recallMode": "hybrid",
-                    "writeFrequency": "async",
-                    "sessionStrategy": "per-session",
-                    "saveMessages": True,
-                    "peerName": "user-peer",
-                    "aiPeer": "ssi_health",
-                    "workspace": "hermes",
-                    "enabled": True,
-                }
-            }
-        }), encoding="utf-8")
-
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
-            rename_profile("ssi_health", "heimdall")
-
-        cfg = json.loads(honcho_path.read_text(encoding="utf-8-sig"))
-        assert "hermes.ssi_health" not in cfg["hosts"]
-        assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "ssi_health"
-        assert cfg["hosts"]["hermes_heimdall"]["peerName"] == "user-peer"
 
     def test_multiplexed_rename_unroutes_old_then_hot_serves_new(self, profile_env):
         """Under a live multiplexer the old name is tombstoned + unrouted BEFORE the directory

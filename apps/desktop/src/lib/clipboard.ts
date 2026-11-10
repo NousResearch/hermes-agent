@@ -1,4 +1,4 @@
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
 
 // Primitives and CopyButton enter one policy, never nested fallback retries.
 const nativeWrites = new WeakMap<Clipboard, Clipboard['writeText'] | undefined>()
@@ -58,7 +58,7 @@ export async function writeClipboardText(text: string) {
   const native =
     clipboard && (nativeWrites.has(clipboard) ? nativeWrites.get(clipboard) : clipboard.writeText?.bind(clipboard))
 
-  const ipc = isBrowserHostedDesktop() ? undefined : window.hermesDesktop?.writeClipboard
+  const ipc = hostHas('clipboardIpc') ? window.hermesDesktop?.writeClipboard : undefined
 
   if (ipc) {
     try {

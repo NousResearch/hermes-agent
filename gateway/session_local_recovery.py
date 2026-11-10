@@ -96,7 +96,7 @@ def _checked_entry(authority, receipt, source, route):
         raise ValueError('route mismatch')
     entry = SessionEntry.from_dict(receipt['entry'])
     # Older local receipts omitted the served profile from the origin. The receipt's
-    # home and route already matched this authority; fill only that absent field,
+    # route already matched this authority; fill only that absent field,
     # never accept an explicitly different profile or change the durable route.
     if 'profile' not in receipt['entry']['origin']:
         entry.origin.profile = source.profile
@@ -110,10 +110,13 @@ def _checked_entry(authority, receipt, source, route):
 
 
 def owned_receipt(authority, sid):
-    """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's."""
+    """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's.
+
+    The receipt's ``profile_id`` is the home path that minted it, kept as stored: the session id
+    hashes it (``local_identity``; a legacy-adopted receipt is bound by its route alone), so a
+    store that moved with its profile (another machine, a moved home) still owns its rows. Its
+    owner is this store; the route namespace binds the profile."""
     receipt = local_receipt(authority.db, sid)
-    if receipt['profile_id'] != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
     chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
                local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
     if receipt['session_id'] != sid or sid != chat_id:
@@ -121,6 +124,23 @@ def owned_receipt(authority, sid):
     source = local_source(authority, chat_id, receipt['principal_id'])
     route = authority.runner.session_store._generate_session_key(source)
     return receipt, source, route, _checked_entry(authority, receipt, source, route)
+
+
+def restorable_receipt(authority, sid):
+    """*sid*'s receipt and entry once ``restore_local_session``'s checks on the stored receipt pass,
+    judged read-only: ``owned_receipt`` plus the stored policy and lineage. A compression catch-up
+    still to adopt is judged as the restore would commit it (``with_adopted_compression``)."""
+    from gateway.session_policy import restore_policy
+    from hermes_state_local_lineage import adoptable_compression, validate_local_lineage, with_adopted_compression
+    receipt, source, route, entry = owned_receipt(authority, sid)
+    restore_policy(receipt['policy'])
+    with authority.db._read_ctx() as conn:
+        adoptable = adoptable_compression(conn, receipt)
+        if adoptable is not None:
+            receipt = with_adopted_compression(receipt, adoptable[0])
+        validate_local_lineage(conn, receipt)
+    # Outside the read: _checked_entry reads the stored row itself (a writer-fallback read holds the lock).
+    return receipt, (entry if adoptable is None else _checked_entry(authority, receipt, source, route))
 
 
 def unused_session(conn, session_id):
@@ -178,7 +198,9 @@ def restore_local_session(authority, sid):
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise RuntimeStoreError('runtime_draining')
     live = authority.sessions.get(sid)
-    if live is None:
+    from gateway.session_history_mount import is_history_mount
+    if live is None or is_history_mount(live):
+        source = adapter.kept_source(source)
         with store._lock:
             store._ensure_loaded_locked()
             current = store._entries.get(route)
@@ -194,7 +216,13 @@ def restore_local_session(authority, sid):
             entry.origin = source
             store._entries[route] = entry
         adapter.policies[chat_id] = policy
-        authority.sessions[sid] = LiveSession(source, route)
+        if live is None:
+            authority.sessions[sid] = LiveSession(source, route)
+            authority.retired_local.discard(sid)  # back in memory (session_retirement)
+        else:
+            # A read-only view opened before the adoption (a metadata read, another viewer) becomes the
+            # adopted conversation in place, so its viewers keep their subscriptions (as restore_api_session).
+            live.source, live.route = source, route
         adapter.register_source(source)
     elif (not adapter.authorize_source(live.source)
           or live.source.to_dict() != source.to_dict()

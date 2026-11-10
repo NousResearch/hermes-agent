@@ -11,6 +11,7 @@ import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextMeterDetail, ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useChangeWorkspaceItem } from '@/app/shell/hooks/use-change-workspace'
+import { useCompactConversation } from '@/app/shell/hooks/use-compact-conversation'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { useFocusedSessionRow } from '@/app/shell/hooks/use-focused-session-row'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
@@ -42,11 +43,13 @@ import { formatPercentUsed, formatResetsIn } from '@/lib/usage-percent'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
+import { requestGatewayForActiveRoute } from '@/store/active-route-request'
 import type { ApprovalModeRequester } from '@/store/approval-mode'
+import { $cloudOwnsUpdates } from '@/store/cloud-updates'
 import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { $freeTierSignInOpen, $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
-import { requestGatewayForProfile } from '@/store/gateway'
+import { $gateway } from '@/store/gateway'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
@@ -106,11 +109,12 @@ function versionItem(
   target: 'backend' | 'client',
   status: ReturnType<typeof resolveVersionStatus>,
   applying: boolean,
-  toggleLabel: string
+  toggleLabel: string,
+  hidden = false
 ): StatusbarItem {
   return {
     className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
-    hidden: status.unknown,
+    hidden: status.unknown || hidden,
     icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
     id: `version-${target}`,
     label: status.label,
@@ -204,6 +208,7 @@ export function useStatusbarItems({
   const backendUpdateApply = useStore($backendUpdateApply)
   const desktopVersion = useStore($desktopVersion)
   const connection = useStore($connection)
+  const cloudOwnsUpdates = useStore($cloudOwnsUpdates)
 
   // The FOCUSED session (interacted tile, else the primary — the same
   // derivation the titlebar title follows): every session-scoped readout
@@ -324,6 +329,8 @@ export function useStatusbarItems({
     sessionId: activeSessionId
   })
 
+  const compactConversation = useCompactConversation({ busy, sessionId: activeSessionId })
+
   // The breakdown wins whenever we have one, for two reasons: it reports the
   // MEASURED occupancy once the backend has it (falling back to the estimate
   // only before that), and it is keyed to the session it describes. The global
@@ -362,15 +369,25 @@ export function useStatusbarItems({
   const planUsed = planGauge ? Math.min(1, Math.max(0, planGauge.used_bp / 10_000)) : 0
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
 
-  // Dial the viewed profile directly: the ambient `requestGateway` is the
+  // Dial the viewed route directly: the ambient `requestGateway` is the
   // session-routed dispatcher, which re-scopes `params.profile` to the FOCUSED
   // session's owner — a profile other than the one this menu shows.
   const requestApprovalModeGateway = useCallback<ApprovalModeRequester>(
-    (method, params) => requestGatewayForProfile(activeGatewayProfile, method, params),
+    (method, params) => requestGatewayForActiveRoute(activeGatewayProfile, method, params),
     [activeGatewayProfile]
   )
 
-  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestApprovalModeGateway, gatewayState)
+  // The active socket is part of the route: `default` on Box and `default` on
+  // This device share a name, so the profile alone would not re-read the mode.
+  const activeSocket = useStore($gateway)
+
+  const approvalModeItem = useApprovalModeStatusbarItem(
+    activeGatewayProfile,
+    requestApprovalModeGateway,
+    gatewayState,
+    activeSocket
+  )
+
   const systemResourcesItem = useSystemResourcesStatusbarItem()
 
   const gatewayMenuContent = useMemo(
@@ -441,8 +458,10 @@ export function useStatusbarItems({
       version: desktopVersion?.appVersion
     })
 
-    return versionItem('client', status, applying, copy.toggleVersion)
+    // A Webapp served by Hermes Cloud: Cloud updates it, so there is no version/update pill to open.
+    return versionItem('client', status, applying, copy.toggleVersion, cloudOwnsUpdates.client)
   }, [
+    cloudOwnsUpdates.client,
     desktopVersion?.appVersion,
     connection?.mode,
     copy,
@@ -454,7 +473,8 @@ export function useStatusbarItems({
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
-    if (connection?.mode !== 'remote') {
+    // Hermes Cloud updates its agents itself: no backend pill, as outside remote mode.
+    if (connection?.mode !== 'remote' || cloudOwnsUpdates.backend) {
       return null
     }
 
@@ -475,6 +495,7 @@ export function useStatusbarItems({
 
     return versionItem('backend', status, applying, copy.toggleBackendVersion)
   }, [
+    cloudOwnsUpdates.backend,
     connection?.mode,
     statusSnapshot?.version,
     backendUpdateStatus,
@@ -699,7 +720,12 @@ export function useStatusbarItems({
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
-          <ContextUsagePanel breakdown={contextBreakdown} loading={contextBreakdownLoading} usage={gaugeUsage} />
+          <ContextUsagePanel
+            breakdown={contextBreakdown}
+            compact={compactConversation}
+            loading={contextBreakdownLoading}
+            usage={gaugeUsage}
+          />
         ),
         toggleLabel: copy.toggleContextUsage,
         variant: 'menu'
@@ -780,6 +806,7 @@ export function useStatusbarItems({
       cacheHit,
       chatOpen,
       clientVersionItem,
+      compactConversation,
       contextBar,
       contextBreakdown,
       contextBreakdownLoading,

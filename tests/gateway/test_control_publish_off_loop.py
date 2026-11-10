@@ -46,3 +46,33 @@ async def test_a_slow_snapshot_read_never_paints_over_a_newer_publish(monkeypatc
     assert published == ['new']
     assert live.control_revision == 'new'
     assert loop_thread not in read_threads, 'the snapshot was read on the event loop'
+
+
+@pytest.mark.asyncio
+async def test_the_per_tool_republish_reads_its_snapshot_off_the_loop(monkeypatch):
+    """Every tool of every running session republishes the control card. Its snapshot read takes
+    state.db's connection lock, which the agents' own writes hold, so on the loop it was a large
+    share of loop time with many sessions running (gateway disconnects under load)."""
+    from gateway.local_viewer_events import publish_control_if_changed
+
+    published = []
+    authority, live = _session(published)
+    loop_thread = threading.get_ident()
+    read_threads = []
+
+    def read(_authority, _sid, *, scoped=False):
+        read_threads.append(threading.get_ident())
+        return {'revision': 'r1'}
+
+    monkeypatch.setattr(actions, '_read_control_snapshot', read)
+    scheduled = []
+    turn = SimpleNamespace(_approval_owner=(authority, 's1', 1),
+                           _schedule=lambda coro, _message: scheduled.append(asyncio.ensure_future(coro)))
+    publish_control_if_changed(turn)
+    await asyncio.gather(*scheduled)
+    assert published == ['r1'] and live.control_revision == 'r1'
+    assert read_threads and loop_thread not in read_threads, 'the snapshot was read on the event loop'
+
+    publish_control_if_changed(turn)  # nothing changed: revision-gated, nothing published
+    await asyncio.gather(*scheduled)
+    assert published == ['r1']

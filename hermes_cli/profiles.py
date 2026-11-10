@@ -20,8 +20,11 @@ from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
+from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
+from hermes_cli.profiles_export_scrub import (
+    GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
+    scrub_export_secrets as _scrub_export_secrets)
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
@@ -145,6 +148,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
         ignored = _non_exportable_entries(directory, names)
         if at_root:
             ignored.update(root_exclude & set(names))
+            ignored.update(n for n in names if _GATEWAY_CONNECTION_STORE_RE.fullmatch(n.casefold()))
         return ignored
 
     return _ignore
@@ -175,15 +179,15 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
     "pairing", "platforms/pairing", "feishu_comment_pairing.json",
     "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
-    "cache/bws_cache.json", "cache/bws_cache.enc.json",
+    *SECRET_CACHE_STORES,           # Bitwarden / 1Password value caches, Photon sidecar token
     "workspace/meetings/node_token.json",  # google_meet node RPC secret
     "weixin/accounts",              # WeChat bot tokens + per-peer context tokens
     ".copilot_jwt.json",            # exchanged Copilot API token
-    "runtime/photon-sidecar.json",  # Photon sidecar auth token
     "proxy",                        # iron-proxy CA key + proxy tokens
     "chrome-debug",                 # /browser connect Chrome profile (cookies, logins)
     "home",                         # subprocess HOME: gh, git, ssh, npm and skill-CLI credentials
     "backups", "state-snapshots",   # pre-update zips, config copies, update snapshots of the stores
+    *_GATEWAY_CONNECTION_STORES,    # saved gateways' session tokens + OAuth sign-ins (sidecars: _STORE_COPY_RE)
     *_OS_CREDENTIAL_STORES,
 })
 _CREDENTIAL_PATH_PARTS = tuple(tuple(p.casefold().split("/")) for p in PROFILE_CREDENTIAL_PATHS)
@@ -193,7 +197,7 @@ _CREDENTIAL_PATH_PARTS = tuple(tuple(p.casefold().split("/")) for p in PROFILE_C
 # writers' formats match (post_update ``.bak-<stamp>[.N]``, config_backups' legacy siblings), because a
 # hand-named ``config.yaml.bak-my-note`` is the user's and ships through the export scrub instead.
 _STORE_COPY_RE = re.compile(
-    r"auth\.json\..+|\.env\.bak.*"
+    r"auth\.json\..+|\.env\.bak.*|gateway-connections?(?:-tokens)?\.json\..+"
     r"|config\.yaml\.(?:bak-\d{8}t\d{6}z(?:\.\d+)?|bak\.\d+|corrupt\..*|bak-pre-migrate-.*)"
 )
 
@@ -279,7 +283,7 @@ _RESERVED_NAMES = frozenset({"hermes", "default", "test", "tmp", "root", "sudo"}
 _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
     "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
-    "mcp", "connectors", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "honcho", "acp",
+    "mcp", "connectors", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "acp",
 })
 
 
@@ -522,6 +526,9 @@ def check_alias_collision(name: str) -> Optional[str]:
         return f"'{canon}' is a reserved name"
     if canon in _HERMES_SUBCOMMANDS:
         return f"'{canon}' conflicts with a hermes subcommand"
+    from plugins.memory import list_memory_provider_names
+    if canon in list_memory_provider_names():  # a memory provider registers `hermes <name>`
+        return f"'{canon}' conflicts with the `hermes {canon}` memory provider command"
     try:
         result = subprocess.run(
             ["where" if sys.platform == "win32" else "which", canon],
@@ -1412,6 +1419,8 @@ def create_profile(
         discard_unpublished_vault_key(clone_key)
         shutil.rmtree(staging, ignore_errors=True)
         raise
+    from hermes_cli.profile_memory_config import notify_memory_provider
+    notify_memory_provider(profile_dir, lambda p: p.on_profile_created(canon, str(profile_dir)))
 
     # Inside a container under s6, register the gateway as a runtime s6 service so
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
@@ -1480,27 +1489,17 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
 
 
 def backfill_profile_envs(quiet: bool = False) -> list[str]:
-    """Give every named profile predating per-profile ``.env`` one (copy of the default's, or
-    the placeholder header). Never overwrites an existing profile ``.env``.
-
-    Profiles created before the dashboard/CLI started seeding a ``.env`` (PR #44792) have none, so once the
-    Channels/Keys endpoints became profile-scoped those profiles stopped inheriting the root install's
-    credentials and showed everything as unconfigured. To avoid breaking anyone on update, copy the DEFAULT
-    install's ``.env`` into each named profile that lacks one — that preserves the effective credentials
-    those profiles were already running with (they previously read the root ``.env`` via the process
-    environment). Users can then diverge per profile from there.
+    """Seed the placeholder ``.env`` header into every named profile lacking one; never
+    overwrites an existing file. It never copies the default's ``.env``: secrets are
+    profile-scoped, and a copied bot token makes two adapters fight over one bot.
     """
     backfilled: list[str] = []
-    default_env = _get_default_hermes_home() / ".env"
     for entry in _iter_named_profile_dirs():
         env_path = entry / ".env"
         if env_path.exists():
             continue
         try:
-            if default_env.is_file():
-                shutil.copy2(default_env, env_path)
-            else:
-                env_path.write_text(_PLACEHOLDER_ENV, encoding="utf-8")
+            env_path.write_text(_PLACEHOLDER_ENV, encoding="utf-8")
             os.chmod(str(env_path), 0o600)
             backfilled.append(entry.name)
         except OSError as e:
@@ -2118,52 +2117,6 @@ def _export_credential_entries(directory: str, contents: list) -> set:
     return {entry for entry in contents for store in _EXPORT_CREDENTIAL_PARTS
             if entry == store[-1] and parts[len(parts) + 1 - len(store):] == store[:-1]}
 
-# Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
-_EXPORT_REDACT_SUFFIXES = frozenset({
-    ".md", ".txt", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".ini", ".cfg", ".conf", ".py", ".sh",
-    ".bash", ".zsh", ".js", ".ts", ".tsx", ".jsx", ".css", ".html", ".xml", ".csv",
-})
-# ``Path(".cursorrules").suffix`` is "" — name-match; ``*.env.example`` uses endswith; a hand-named
-# config copy (``config.yaml.bak-my-note``) holds config.yaml's secrets under a suffix of its own.
-_EXPORT_REDACT_NAMES = frozenset({".cursorrules"})
-
-
-def _should_redact_export_file(path: Path) -> bool:
-    name = path.name
-    return (
-        name in _EXPORT_REDACT_NAMES
-        or name.lower().endswith(".env.example")
-        or name.lower().startswith("config.yaml.")
-        or path.suffix.lower() in _EXPORT_REDACT_SUFFIXES
-    )
-
-
-def _scrub_export_secrets(staged: Path) -> None:
-    """Force-redact secret-shaped strings in a staged export tree (same pass as ``hermes
-    sessions export --redact``). Runs on the staged copy only; symlinks to text files are
-    materialized when content changes so redaction never follows a link back into the source."""
-    from agent.redact import redact_sensitive_text
-    for path in staged.rglob("*"):
-        try:
-            is_link = path.is_symlink()
-            if not path.is_file():  # broken links, symlinked dirs, non-files
-                continue
-        except OSError:
-            continue
-        if not _should_redact_export_file(path):
-            continue
-        try:
-            text = path.read_text(encoding="utf-8-sig")
-        except (UnicodeDecodeError, OSError):
-            continue
-        redacted = redact_sensitive_text(text, force=True)
-        if redacted == text:
-            continue
-        if is_link:
-            path.unlink()
-        path.write_text(redacted, encoding="utf-8")
-
-
 def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, str]] = None) -> Path:
     """Export a profile to a tar.gz archive; credential files are excluded and staged text is
     force-redacted first. Returns the output file path."""
@@ -2213,8 +2166,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     if archive_root is None:
         raise ValueError("Profile archive must contain exactly one top-level directory.")
 
-    # Default-profile archives have "default/" at top level; importing as "default" would
-    # target ~/.hermes itself.
+    # A "default/" archive imported as "default" would target ~/.hermes itself.
     canon = _canon_valid(inferred_name)
     if canon == "default":
         raise ValueError(
@@ -2244,25 +2196,11 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
                 else:
                     child.unlink()
         shutil.move(str(final_source), str(profile_dir))
+    clear_named_profile_deleted(profile_dir)
     return profile_dir
 
 
 # Rename
-
-def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
-    """Append ``old_canon`` to the renamed profile's ``previous_names`` history.
-    Best-effort: never raises, so a metadata write failure cannot fail the rename.
-
-    Only reached for a real slug change — ``rename_profile`` returns early for the
-    default profile (display-name only) and refuses ``old == new`` (target exists)."""
-    try:
-        history = read_profile_meta(new_dir).get("previous_names") or []
-        if old_canon not in history:
-            history = [*history, old_canon]
-        write_profile_meta(new_dir, previous_names=history)
-    except Exception as exc:  # unwritable / corrupt profile.yaml — history is advisory
-        logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)
-
 
 def _refuse_rename_without_file_tooling(old_canon: str) -> None:
     """A remote config backend keys each profile's settings by its canonical name, and the plane
@@ -2341,19 +2279,18 @@ def rename_profile(old_name: str, new_name: str) -> Path:
             print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
         raise
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
-    # The tombstone lives at profiles/.deleted/<old_name>; old_dir is gone so nothing can
-    # resurrect it, and a future profile reusing the old name must not read as deleted.
-    if live_mux:
-        clear_named_profile_deleted(old_dir)
+    clear_named_profile_deleted(old_dir)
+    clear_named_profile_deleted(new_dir)
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata
     # write failure must never fail the rename itself.
+    from hermes_cli.profile_identity import _record_profile_rename
     _record_profile_rename(new_dir, old_canon)
 
-    # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
-    from hermes_cli.profiles_honcho import migrate_honcho_profile_host
-    migrate_honcho_profile_host(old_canon, new_canon, new_dir)
+    # 3. Let the profile's memory provider re-key what it stores under the old name.
+    from hermes_cli.profile_memory_config import notify_memory_provider
+    notify_memory_provider(new_dir, lambda p: p.on_profile_renamed(old_canon, new_canon, str(new_dir)))
 
     # 4. Update wrapper script
     remove_wrapper_script(old_canon)

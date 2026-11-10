@@ -1,4 +1,5 @@
 import { arPluginPreviewAccess } from './ar_plugin_preview_access'
+import { arPluginUpdateAll } from './ar_plugin_update_all'
 import type { TranslationOverrides } from './define-locale'
 
 export const arCapabilities = {
@@ -16,6 +17,7 @@ export const arCapabilities = {
   skills: {
     plugins: {
       ...arPluginPreviewAccess,
+      ...arPluginUpdateAll,
       pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.',
       folderAccess: {
         title: 'الوصول إلى المجلدات',
@@ -37,6 +39,10 @@ export const arCapabilities = {
     searchSkills: 'البحث في المهارات',
     searchToolsets: 'البحث في مجموعات الأدوات',
     refresh: 'تحديث',
+    lock: 'قفل',
+    locked: 'مقفلة',
+    lockHint: 'لا يمكن للوكيل تغيير هذه المهارة ما دامت مقفلة. لا يزال بإمكانك تعديلها بنفسك.',
+    unlockedHint: 'اقفلها لمنع الوكيل من تغيير هذه المهارة. لا يزال بإمكانك تعديلها بنفسك.',
     refreshing: 'جار التحديث...',
     loading: 'جار التحميل...',
     noSkillsTitle: 'لا توجد مهارات',

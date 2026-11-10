@@ -1,0 +1,34 @@
+name: innernet
+title: innernet
+repo: https://github.com/your-innernet/innernet-mcp
+sha: 9da4f24e04dffc526129c11546eb4bb2ef60ef81
+subdir: hermes
+version: "1.4.0"
+description: >-
+  One memory for every AI tool: load a project's context, answer from what was decided before,
+  save new decisions back, and pick up where the last session left off, in the same memory Claude,
+  ChatGPT, Cursor and Grok read and write. Portable Agent Plugins v1 package (plugin.json + mcp.json
+  + skills/) pointing at innernet's hosted MCP server (Streamable HTTP, OAuth 2.1 with CIMD and DCR);
+  the two bundled skills load as innernet:innernet and innernet:innernet-handoff. Disclosure: hosted-only
+  connector with no local code, hooks, background process, telemetry or self-update. Every tool call
+  goes to innernet.live, signed in as the user through innernet's own browser sign-in (a first sign-in
+  creates a free innernet account); what a call carries (a project name, a question, text the user asks
+  to save) is sent there, and what the memory holds comes back into the session context, so it reaches
+  the user's model provider. Some tools write to the user's innernet account (save context, capture a
+  note, write a handoff, update a task, forget on request); every write is versioned and can be read,
+  edited or deleted on the user's dashboard. The tool list is served by the remote server at run time
+  and is not covered by the pinned sha. Hermes stores and refreshes the OAuth tokens. OAuth must be
+  enabled with an `mcp_servers.innernet` entry in config.yaml (url https://innernet.live/api/mcp,
+  `auth: oauth`) and `hermes mcp login innernet`; the bundled mcp.json alone yields 401.
+maintainer: your-innernet
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://innernet.live/docs/everywhere#hermes-agent
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

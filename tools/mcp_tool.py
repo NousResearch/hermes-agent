@@ -16,7 +16,6 @@ import importlib.util
 import inspect
 import logging
 import os
-import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -24,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 from tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, mcp_field
-from tools.mcp_tool_config import _get_mcp_stderr_log, _npx_cached_bin, _packaged_npx_entry
+from tools.mcp_tool_config import _npx_cached_bin, _packaged_npx_entry
 from tools.mcp_tool_sampling import ElicitationHandler, SamplingHandler
 from tools.mcp_tool_transport import MCPServerTransportMixin
 from tools.mcp_tool_server_run import MCPServerRunMixin
@@ -566,130 +565,6 @@ _mcp_tool_server_names: dict[str, str] = {}
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 _lock = threading.Lock()
-
-
-# ---- Shared parent-death supervisor (state lives HERE: tests rebind ``_death_supervisor``) ----
-# If this process dies without running its cleanup path (kill -9, OOM, crash, force-quit), stdio
-# MCP children reparent to init and run forever; macOS has no PR_SET_PDEATHSIG, so something has
-# to outlive us and reap them. ONE supervisor process serves all stdio servers and is told which
-# process groups to reap over a pipe; it detects our death as EOF on that pipe (exact, instant)
-# rather than polling getppid(). Replaced the per-server watchdog wrapper (~10 MB resident per
-# server, plus a signal-forwarding layer because wrapping put the server in a different session
-# from the pgid tracked for killpg). See tools/mcp_death_supervisor.py. POSIX-only, matching the
-# killpg-based orphan cleanup below.
-_death_supervisor = None  # Optional[subprocess.Popen]
-_death_supervisor_lock = threading.Lock()
-# Groups the supervisor is reaping on our behalf; replayed verbatim on respawn so a respawn never
-# silently drops coverage for servers that are still running.
-_supervised_pgids: set = set()
-
-
-def _spawn_death_supervisor():
-    """Start the shared supervisor, or None if it cannot be started."""
-    import subprocess
-    supervisor = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_death_supervisor.py")
-    try:
-        # start_new_session=True is load-bearing: shutdown paths killpg this process's own group,
-        # which would kill the supervisor before it could reap anything.
-        return subprocess.Popen(
-            [sys.executable, supervisor, "--parent-pgid", str(os.getpgid(0))],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=_get_mcp_stderr_log(),
-            start_new_session=True, close_fds=True, text=True)
-    except Exception:
-        # Never let supervisor bookkeeping block a real MCP connection: graceful shutdown paths
-        # still reap normally; only the ungraceful-exit safety net is lost.
-        logger.debug("Could not start the MCP parent-death supervisor", exc_info=True)
-        return None
-
-
-def _prune_dead_supervised_pgids() -> set:
-    """Forget supervised groups with no members left; return what went. Caller holds
-    ``_death_supervisor_lock``. Signal 0 is a pure existence probe (cannot terminate anything).
-    It narrows, but cannot close, the window where a dead group's pgid is recycled before we
-    notice (residual-risk note in ``tools/mcp_death_supervisor.py``)."""
-    killpg = getattr(os, "killpg", None)
-    if killpg is None:  # windows-footgun: ok - POSIX-only, guarded
-        return set()
-    stale = set()
-    for pgid in list(_supervised_pgids):
-        try:
-            killpg(pgid, 0)
-        except ProcessLookupError:
-            stale.add(pgid)
-        except (PermissionError, OSError):
-            # Exists but not ours to signal, or the probe failed: keep it — dropping coverage on
-            # an ambiguous answer is the more expensive mistake.
-            pass
-    _supervised_pgids.difference_update(stale)
-    return stale
-
-
-def _update_death_supervisor(verb: str, pgids) -> None:
-    """Register or unregister process groups (``verb`` is ``"register"``/``"unregister"``) with
-    the shared supervisor. Failures are swallowed: losing the safety net must never fail a live
-    MCP session."""
-    if os.name != "posix":
-        return
-    wanted = {int(pgid) for pgid in pgids}
-    if not wanted:
-        return
-
-    global _death_supervisor
-    with _death_supervisor_lock:
-        if verb == "register":
-            _supervised_pgids.update(wanted)
-        else:
-            _supervised_pgids.difference_update(wanted)
-
-        # A registration outlives the server only while some member survives (e.g. an orphaned
-        # grandchild teardown failed to kill, deliberately kept registered). Once that group is
-        # empty its pgid can be recycled by a stranger, so prune here too — the orphan sweep
-        # unregisters what it reaps but is not guaranteed to run in a given process.
-        stale = _prune_dead_supervised_pgids()
-
-        proc = _death_supervisor
-        if proc is None or proc.poll() is not None:
-            if not _supervised_pgids:
-                # Nothing left to cover: nothing to tell and nothing to respawn for. Keyed on
-                # the SET, not the verb: after a broken-pipe write dropped the supervisor with
-                # groups still registered, an unregister must still rebuild coverage for the
-                # survivors.
-                return
-            # See #93517.
-            proc = _spawn_death_supervisor()
-            _death_supervisor = proc
-            if proc is None:
-                return
-            # A fresh supervisor knows nothing: replay live coverage (already reflects this
-            # call's mutation and the prune, so pruned groups never reach the replacement).
-            payload = "".join(f"register {pgid}\n" for pgid in _supervised_pgids)
-        else:
-            payload = "".join(f"{verb} {pgid}\n" for pgid in wanted)
-            payload += "".join(f"unregister {pgid}\n" for pgid in stale)
-
-        try:
-            proc.stdin.write(payload)
-            proc.stdin.flush()
-        except (BrokenPipeError, ValueError, OSError):
-            # It exited between poll() and write(). Drop it so the next call respawns and replays
-            # from ``_supervised_pgids`` (the set, not the pipe, is the record of what needs reaping).
-            _death_supervisor = None
-            return
-
-        if not _supervised_pgids:
-            # Nothing left to reap: release the supervisor rather than keep a ~15 MB process and a
-            # pipe resident for the life of a gateway. Closing our write end is the same EOF parent
-            # death sends; with an empty set it exits. The next register respawns and replays.
-            try:
-                proc.stdin.close()
-            except (BrokenPipeError, ValueError, OSError):
-                pass
-            # Reap it, or the exited supervisor stays a zombie until the next Popen in this process.
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                pass
-            _death_supervisor = None
 
 
 def _mcp_registry_scope() -> Optional[str]:

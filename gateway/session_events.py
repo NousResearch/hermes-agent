@@ -2,7 +2,9 @@
 from copy import deepcopy
 import logging
 import threading
+import time
 import uuid
+import weakref
 
 from tui_gateway import event_replay
 from tui_gateway.transport import FanoutTransport
@@ -15,6 +17,9 @@ class SessionEvents:
         # A private lifetime key prevents two profiles (or legacy TUI owners)
         # with the same persisted ID from reading each other's replay.
         self._key = uuid.uuid4().hex
+        # Nothing but this object can name the key, so its ring and counters go when it does (a
+        # retired or replaced LiveSession), instead of waiting for the shared cache's FIFO cap.
+        weakref.finalize(self, event_replay.release_key, self._key, blocking=False).atexit = False
         self.epoch = uuid.uuid4().hex
         self.sequence = 0
         self._public_id = None
@@ -25,6 +30,38 @@ class SessionEvents:
         # Set by the authority that attaches transports: retires the subscription of a
         # peer whose bounded backlog overflowed, so it cannot linger looking subscribed.
         self.on_overflow = None
+        # The running execution's open tool calls and its last frame time; a hosted room's info
+        # poll reports them so the room shows which tool a member is in (``progress_for``).
+        self._progress = None
+
+    def note_progress(self, generation, event_type, payload):
+        """Record one execution frame (the caller holds ``lock`` and passed the generation fence)."""
+        progress = self._progress
+        if progress is None or progress['generation'] != generation:
+            progress = self._progress = {'generation': generation, 'tools': {}}
+        payload = payload if isinstance(payload, dict) else {}
+        tool_id = str(payload.get('tool_id') or '')
+        if event_type == 'tool.start':
+            progress['tools'][tool_id] = str(payload.get('name') or '') or 'tool'
+        elif event_type == 'tool.complete':
+            progress['tools'].pop(tool_id, None)
+        progress['at'] = time.time()
+
+    def progress_for(self, generation):
+        """``{"tool", "progress_at"}`` for *generation*'s execution: the newest open tool call
+        (absent between tools) and its last frame time; ``{}`` before its first frame."""
+        with self.lock:
+            progress = self._progress
+            if progress is None or progress['generation'] != generation:
+                return {}
+            tools = list(progress['tools'].values())
+            return {'progress_at': progress['at'], **({'tool': tools[-1]} if tools else {})}
+
+    def release(self):
+        """The session ended with no viewer left (it may stay resumable): free its replay frames
+        now. A later publish or attach finds them gone and starts a new epoch, as after eviction."""
+        with self.lock:
+            event_replay.release_key(self._key)
 
     def watermark(self):
         with self.lock:

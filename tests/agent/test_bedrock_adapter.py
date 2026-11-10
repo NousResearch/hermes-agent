@@ -1391,14 +1391,16 @@ class TestInvalidateRuntimeClient:
             reset_client_cache,
         )
         reset_client_cache()
-        _bedrock_runtime_client_cache["us-east-1"] = "dead-client"
-        _bedrock_runtime_client_cache["us-west-2"] = "live-client"
+        # Keyed by (region, read_timeout): every timeout variant of the region shares the dead pool.
+        _bedrock_runtime_client_cache[("us-east-1", None)] = "dead-client"
+        _bedrock_runtime_client_cache[("us-east-1", 300.0)] = "dead-client-300"
+        _bedrock_runtime_client_cache[("us-west-2", None)] = "live-client"
 
         evicted = invalidate_runtime_client("us-east-1")
 
         assert evicted is True
-        assert "us-east-1" not in _bedrock_runtime_client_cache
-        assert _bedrock_runtime_client_cache["us-west-2"] == "live-client"
+        assert not [key for key in _bedrock_runtime_client_cache if key[0] == "us-east-1"]
+        assert _bedrock_runtime_client_cache[("us-west-2", None)] == "live-client"
 
     def test_returns_false_when_region_not_cached(self):
         from agent.bedrock_adapter import invalidate_runtime_client, reset_client_cache
@@ -1463,7 +1465,7 @@ class TestCallConverseInvalidatesOnStaleError:
             error_response={"Error": {"Code": "ValidationException", "Message": "bad"}},
             operation_name="Converse",
         )
-        _bedrock_runtime_client_cache["us-east-1"] = live_client
+        _bedrock_runtime_client_cache[("us-east-1", None)] = live_client
 
         with pytest.raises(ClientError):
             call_converse(
@@ -1472,7 +1474,7 @@ class TestCallConverseInvalidatesOnStaleError:
                 messages=[{"role": "user", "content": "hi"}],
             )
 
-        assert _bedrock_runtime_client_cache.get("us-east-1") is live_client, (
+        assert _bedrock_runtime_client_cache.get(("us-east-1", None)) is live_client, (
             "validation errors do not indicate a dead connection — keep the client"
         )
 
@@ -1542,7 +1544,7 @@ class TestAgentBedrockStreamRecovery:
             "stopReason": "end_turn",
             "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
         }
-        _bedrock_runtime_client_cache["us-east-1"] = client
+        _bedrock_runtime_client_cache[("us-east-1", None)] = client
         agent = SimpleNamespace(_disable_streaming=False, _safe_print=MagicMock(), model="m", provider="bedrock")
         stream = _BedrockStream(agent, dict(self._KW), on_first_delta=None)
 
@@ -1554,7 +1556,7 @@ class TestAgentBedrockStreamRecovery:
         assert agent._disable_streaming is True
         assert "InvokeModelWithResponseStream" in agent._safe_print.call_args.args[0]
         # Not a stale connection — client stays cached.
-        assert _bedrock_runtime_client_cache.get("us-east-1") is client
+        assert _bedrock_runtime_client_cache.get(("us-east-1", None)) is client
 
     @pytest.mark.parametrize("stream", [True, False])
     @pytest.mark.parametrize("retry_fails", [False, True])
@@ -1625,14 +1627,14 @@ class TestAgentBedrockStreamRecovery:
         reset_client_cache()
         dead_client = MagicMock()
         dead_client.converse_stream.side_effect = ConnectionClosedError(endpoint_url="https://bedrock.example")
-        _bedrock_runtime_client_cache["us-east-1"] = dead_client
+        _bedrock_runtime_client_cache[("us-east-1", None)] = dead_client
         denied = MagicMock()
 
         with pytest.raises(ConnectionClosedError):
             _bedrock_converse_call(dict(self._KW), stream=True, on_stream_denied=denied)
 
         denied.assert_not_called()
-        assert "us-east-1" not in _bedrock_runtime_client_cache
+        assert ("us-east-1", None) not in _bedrock_runtime_client_cache
 
 
 # ---------------------------------------------------------------------------

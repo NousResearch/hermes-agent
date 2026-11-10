@@ -402,6 +402,17 @@ def _endpoint_identity(base_url: str) -> Optional[str]:
     return None
 
 
+def empty_provider_identity(base_url: Optional[str], model: Optional[str]) -> Optional[str]:
+    """The entry a row with a model but no provider ran on (#132648). Its saved URL/api_mode may be
+    stamps from turns that already went to the wrong provider, so an entry that declares the model wins;
+    the URL's owner is the fallback for entries that list no models."""
+    target = str(model or "").strip().lower()
+    if target and (identity := find_custom_provider_identity_by_model(target)):
+        return identity
+    url = _route_key(base_url)
+    return _find_custom_identity(lambda entry: _route_key(_entry_url(entry)) == url) if url else None
+
+
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
                               model: Optional[str] = None, requested: Optional[str] = None) -> Optional[str]:
     """Recover the durable menu identity for a bare custom provider. Match a configured
@@ -582,6 +593,20 @@ def _apply_custom_provider_extras(custom_provider: dict[str, Any], target_model:
         result["request_overrides"] = {**(result.get("request_overrides") or {}), **request_overrides}
 
 
+class LocalRuntimeUnavailableError(ValueError):
+    """The selected model is the managed local runtime and its server is not serving.
+
+    Typed so readiness probes can say "configured, but the local server is down" instead of
+    "nothing configured": provider onboarding cannot start a local server.
+    """
+
+    error_code = "local_runtime_unavailable"
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
 def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optional[str]) -> dict[str, Any]:
     """Managed llama.cpp runtime: the supervised (or detected external) server, or a typed error.
     No server => say so and stop; falling through to the generic custom path would surface "local
@@ -602,12 +627,14 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
     except Exception:
         enabled = False
     if enabled:
-        raise ValueError("The local model server isn't running. It may still be "
-                         "starting — try again in a moment, or check Settings → "
-                         "Providers → Local models.")
-    raise ValueError("The local model server is turned off. Turn it back on in "
-                     "Settings → Providers → Local models, or switch to another "
-                     "model.")
+        raise LocalRuntimeUnavailableError("The local model server isn't running. It may still be "
+                                           "starting — try again in a moment, or switch to another "
+                                           "model with /model.", retryable=True)
+    # Every chat surface (messaging, TUI, Webapp) shows this sentence, so it names both places a
+    # user can start the server and no Desktop-only pane; the Desktop client links its pane itself.
+    raise LocalRuntimeUnavailableError("The local model server is turned off. Start it from the Hermes "
+                                       "desktop app or `hermes model` → Local models, or switch to "
+                                       "another model with /model.")
 
 
 def _custom_runtime(rp, base_url: str, api_key: Any, api_mode: Optional[str], **extra: Any) -> dict[str, Any]:

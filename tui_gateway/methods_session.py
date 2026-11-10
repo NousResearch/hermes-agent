@@ -222,11 +222,6 @@ def _billing_invalid(rid, message: str, error: str = "invalid_request") -> dict:
     return _ok(rid, {"ok": False, "error": error, "message": message})
 
 
-def _billing_pick(result: dict, **fields) -> dict:
-    """``{"ok": True, <snake>: result[<camel>], ...}`` in ``fields`` order."""
-    return {"ok": True, **{key: result.get(src) for key, src in fields.items()}}
-
-
 def _billing_pending_change(result: dict) -> dict:
     return {"ok": True, "message": result.get("message"), "payload": result}
 
@@ -1520,19 +1515,19 @@ def _(rid, params: dict) -> dict:
                      "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)})
 
 
-def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | None:
-    """kitty payload for a TTY that speaks it (dashboard PTY falls through); only kitty is grid-safe in Ink."""
+def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float, terminal: str) -> dict | None:
+    """kitty payload for a TTY that speaks it; only kitty is grid-safe in Ink. ``auto`` trusts the client's *terminal*."""
     from agent.pet import constants, render
-    from agent.pet.render import PetRenderer
+    from agent.terminal_image import kitty_color_hex
     configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
-    if (render.detect_terminal_graphics() if configured in ("", "auto") else configured) != "kitty":
+    if (terminal if configured in ("", "auto") else configured) != "kitty":
         return None
     image_id = render.kitty_image_id(pet.slug)
     # kitty sizes from scaled pixels, so unicode_cols is moot here.
-    payload = PetRenderer(str(pet.spritesheet), mode="kitty", scale=scale).kitty_payload(state, image_id=image_id)
+    payload = render.PetRenderer(str(pet.spritesheet), mode="kitty", scale=scale).kitty_payload(state, image_id=image_id)
     if not payload:
         return None
-    return {"graphics": "kitty", "imageId": image_id, "color": render.kitty_color_hex(image_id),
+    return {"graphics": "kitty", "imageId": image_id, "color": kitty_color_hex(image_id),
             "cols": payload["cols"], "rows": payload["rows"], "placeholder": payload["placeholder"],
             "frames": payload["frames"], "frameMs": constants.LOOP_MS / max(1, len(payload["frames"]) or 1),
             "scale": scale}
@@ -1553,7 +1548,7 @@ def _(rid, params: dict) -> dict:
     scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
     cols = int(params.get("cols") or 0) or constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
     base = {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "state": state}
-    if params.get("graphics") and (kitty := _pet_kitty_cells(pet, pet_cfg, state, scale)):
+    if params.get("graphics") and (kitty := _pet_kitty_cells(pet, pet_cfg, state, scale, str(params.get("terminal")))):
         return _ok(rid, {**base, **kitty})
     renderer = PetRenderer(str(pet.spritesheet), mode="unicode", scale=scale, unicode_cols=cols)
     count = renderer.frame_count(state) or 1
@@ -1815,9 +1810,10 @@ def _(rid, params: dict) -> dict:
 # ``error`` (not a JSON-RPC error) so the TUI maps it to copy. ``billing:manage`` routes
 # return error=insufficient_scope on 403, which drives the ``billing.step_up`` device flow.
 def _billing_view(name: str, module: str, builder: str, serializer: str, fallback: dict) -> None:
-    """Read-only view RPC (no scope required): ``serializer(module.builder())``, ``fallback`` on any error.
+    """Profile-bound read-only view: ``serializer(module.builder())``, ``fallback`` on any error.
     The view module stays a lazy import (startup budget); the serializer is a server global."""
     @method(name)
+    @_profile_scoped
     def _(rid, params: dict) -> dict:
         try:
             from importlib import import_module
@@ -1827,8 +1823,9 @@ def _billing_view(name: str, module: str, builder: str, serializer: str, fallbac
 
 
 @method("billing.state")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
-    """Read-only billing view (no scope required); fail-open. The Nous free tier has no account to
+    """Profile-bound read-only billing view; fail-open. The Nous free tier has no account to
     bill, so its state is answered locally (``free_tier_account`` set, ``logged_in`` false) without a portal
     round-trip that could only fail."""
     try:
@@ -1849,6 +1846,7 @@ _billing_view("subscription.state", "agent.subscription_view", "build_subscripti
 
 
 @method("subscription.preview")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """POST /api/billing/subscription/preview → chargeless effect quote. billing:manage."""
     from agent.subscription_view import subscription_change_preview_from_payload
@@ -1865,6 +1863,7 @@ def _billing_route(name: str, call, *, invalid=None, message: str = "", error: s
     → ``_billing_invalid(message, error)``; ``call(nb, params, key)`` performs the request. ``idempotent``
     mints ``idempotency_key`` if absent and echoes it (also on error) so the TUI retries the SAME operation."""
     @method(name)
+    @_profile_scoped
     def _(rid, params: dict) -> dict:
         import hermes_cli.nous_billing as nb
         if invalid is not None and invalid(params):
@@ -1916,6 +1915,7 @@ _billing_route("billing.keep_going_on_credits", lambda nb, p, _k: _billing_pick(
 
 
 @method("billing.step_up")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """billing:manage step-up device flow → {ok, granted} (false when the server downscopes). Pooled (blocks
     for minutes); URL/code reach the TUI via ``billing.step_up.verification`` (stdout is the RPC pipe) and the
@@ -2003,7 +2003,7 @@ def _(rid, params: dict, session: dict) -> dict:
     busy = _err(rid, 4009, busy_message("undo", bool(session.get("_manual_compress_active"))))
     if session.get("running"):
         return busy
-    removed = 0
+    removed, rewound = 0, None
     with session["history_lock"]:
         if session.get("running"):
             return busy
@@ -2012,12 +2012,12 @@ def _(rid, params: dict, session: dict) -> dict:
         from agent.context_compressor import user_originated_turn_view
         if user_turns := sum(1 for message in history if user_originated_turn_view(message) is not None):
             try:
-                removed = _rewind_active_session_history(session, user_turns - 1)[2]
+                removed = (rewound := _rewind_active_session_history(session, user_turns - 1))[2]
             except Exception as exc:
                 return _err(rid, 5008, f"undo: {exc}")
     if removed:  # Ink /retry is undo + resend and says so via ``intent`` (helper: methods_tools).
         _tui_model_friction("retry" if params.get("intent") == "retry" else "undo", session)
-    return _ok(rid, {"removed": removed})
+    return _ok(rid, {"removed": removed, **_tools_mod("tui_gateway.checkpoints").undo_hint_fields(session, rewound, params)})
 
 
 def _save_via_compute_host(rid, params: dict) -> dict:

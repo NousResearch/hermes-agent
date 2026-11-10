@@ -3,16 +3,24 @@ import { useEffect, useState } from 'react'
 import { getStatus } from '@/hermes'
 import { type I18nContextValue, useI18n } from '@/i18n'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { isSignedOutStatus } from '@/lib/signed-out-status'
 import { $freeTierStatus, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
 import { dismissNotification, notify } from '@/store/notifications'
-import { $desktopOnboarding } from '@/store/onboarding'
+import { $desktopOnboarding, isLocalRuntimeUnavailable, settleLocalRuntimeNotice } from '@/store/onboarding'
+import { $currentModel } from '@/store/session'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
 // within seconds. 60s + an actively-viewed check keeps traffic low; focus and
 // visibility listeners refresh immediately on return.
 const REFRESH_MS = 60_000
+
+// Re-check delays while the local model server stays down. Each check of an enabled server asks the
+// backend to boot it and waits up to ~8 s; a server that cannot boot (no staged model, crashing
+// engine) would pay that every tick, so the gap grows to a 5-minute cap. A model switch or a ready
+// answer resets it; focus returns and `setup.ready` still check at once.
+const LOCAL_DOWN_RECHECK_MS = [60_000, 120_000, 300_000]
 
 // The scope the cached free-tier verdict was read under. Module-level because
 // $freeTierStatus is one app-wide atom, not per hook instance.
@@ -40,11 +48,32 @@ export function useStatusSnapshot(
     // lifetime is exactly this run's — the same run that clears the status on
     // entry — so the two can never disagree.
     let readinessAnswered = false
+    // Consecutive "local model server down" verdicts, and when the next re-check is due.
+    let localDownStreak = 0
+    let localRecheckAt = 0
+
+    const resetLocalBackoff = () => {
+      localDownStreak = 0
+      localRecheckAt = 0
+    }
 
     const publishInferenceStatus = (next: RuntimeReadinessResult | null): void => {
-      readinessAnswered = next !== null
+      // A down local model server is not settled: it may be starting, so the tick keeps checking,
+      // on a growing gap.
+      const localDown = next !== null && isLocalRuntimeUnavailable(next)
+      readinessAnswered = next !== null && !localDown
+
+      if (localDown) {
+        localRecheckAt = Date.now() + LOCAL_DOWN_RECHECK_MS[Math.min(localDownStreak, LOCAL_DOWN_RECHECK_MS.length - 1)]
+        localDownStreak += 1
+      } else {
+        resetLocalBackoff()
+      }
+
       setInferenceStatus(next)
     }
+
+    const readinessDue = () => !readinessAnswered && Date.now() >= localRecheckAt
 
     // Status and inference readiness belong to one backend. A source switch
     // can keep gatewayState="open" throughout, so clear the previous source's
@@ -75,7 +104,7 @@ export function useStatusSnapshot(
         // are seams this window may never cross again, so a gateway flap
         // outliving one seam would pin the chip for good. Once a verdict
         // exists the tick stays status-only, keeping the ambient poll cheap.
-        timer = window.setTimeout(() => void refresh({ readiness: !readinessAnswered }), REFRESH_MS)
+        timer = window.setTimeout(() => void refresh({ readiness: readinessDue() }), REFRESH_MS)
       }
     }
 
@@ -118,6 +147,7 @@ export function useStatusSnapshot(
         // became unconfigured. Keep the last authoritative result instead
         // of flashing "Inference not ready" during a gateway flap.
         publishInferenceStatus(inference)
+        settleLocalRuntimeNotice(inference)
         setFreeTierRoute(inference.freeTier)
       }
     }
@@ -143,7 +173,9 @@ export function useStatusSnapshot(
           return
         }
 
-        if (statusResult.status === 'fulfilled') {
+        // A Webapp tab whose access token expired since its last gated request reads the
+        // signed-out body, which omits most of the snapshot and the warning: keep the last one.
+        if (statusResult.status === 'fulfilled' && !isSignedOutStatus(statusResult.value)) {
           const next = statusResult.value
           // Preserve reference identity on a no-op: the 60s tick re-reads a
           // usually-unchanged snapshot, and a fresh object for the same content
@@ -181,6 +213,8 @@ export function useStatusSnapshot(
     // readiness round now, so the chip/strip/onboarding move at once. Rides
     // outside the status tick so it neither resets nor waits on the timer.
     const unsubscribeSetupReady = $setupReadyTick.listen(() => void refreshReadiness())
+    // Another model may not be local at all: the next tick asks again instead of waiting out the gap.
+    const unsubscribeModel = $currentModel.listen(resetLocalBackoff)
 
     // An OAuth sign-in updates backend readiness, but ambient polling is
     // skipped while the window is unfocused — so a stale credential failure can
@@ -213,6 +247,7 @@ export function useStatusSnapshot(
       cancelled = true
       unsubscribeOnboarding()
       unsubscribeSetupReady()
+      unsubscribeModel()
       document.removeEventListener('visibilitychange', onReturn)
       window.removeEventListener('focus', onReturn)
 

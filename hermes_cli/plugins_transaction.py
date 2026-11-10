@@ -96,6 +96,7 @@ def update_plugin(
     force: bool = False,
     scan_decision_cb: Callable[[Any], bool] | None = None,
     carry_user_files: Callable[[Path], list[str]] | None = None,
+    surface_gate: Callable[[dict, Path], None] = lambda _manifest, _staged: None,
 ) -> str:
     """Prepare a catalog re-pin or custom Git pull without changing the live tree.
 
@@ -105,11 +106,13 @@ def update_plugin(
     *scan_decision_cb(result)* may accept one by asking; a dangerous verdict always blocks.
     *carry_user_files(staged)* may merge user-owned state into the staged tree before
     manifest validation, example-file generation, dependency preparation and publication; it
-    returns the carried paths so a scan block can attribute findings to them."""
+    returns the carried paths so a scan block can attribute findings to them.
+    *surface_gate(manifest, staged)* may raise (``RepinConsentRequired`` for a widened plugin) to
+    refuse the candidate before it is scanned or published."""
     import tempfile
 
     from hermes_cli import plugins_cmd as pc
-    from hermes_cli.plugins_cmd_catalog import refuse_if_installed_removed
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired, refuse_if_installed_removed
     from pm.store import tree_digest
 
     target = target.resolve()
@@ -180,6 +183,7 @@ def update_plugin(
                 revision = pc._git_head_revision(staged, pc._resolve_git_executable())
             merged = carry_user_files(staged) if carry_user_files is not None else None
             manifest = pc._read_manifest_for_install(staged)
+            surface_gate(manifest, staged)
             installed_name = str(manifest.get("name") or target.name)
             if catalog_entry is None and installed_name != target.name:
                 raise pc.PluginOperationError("The updated plugin changed its installed name; reinstall it explicitly.")
@@ -208,7 +212,7 @@ def update_plugin(
                 target_digest=before if new_target == target else None,
             )
             return output
-        except pc.PluginOperationError:
+        except (pc.PluginOperationError, RepinConsentRequired):
             raise
         except Exception as exc:
             raise pc.PluginOperationError(f"Plugin '{target.name}' update was not published: {exc}") from exc

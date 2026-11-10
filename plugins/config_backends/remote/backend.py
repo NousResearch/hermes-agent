@@ -51,6 +51,16 @@ def _latest_config_version() -> int:
     return version if isinstance(version, int) else 1
 
 
+def _log_notes(notes: list[str]) -> None:
+    """Log messages collected while a backend lock was held (never log under one: a log handler
+    can read config, and a thread holding the handler's lock may be waiting for that lock)."""
+    for note in notes:
+        if note.startswith("debug:"):
+            logger.debug("%s", note[len("debug:"):])
+        else:
+            logger.warning("%s", note)
+
+
 class _FetchFailed(Exception):
     def __init__(self, detail: str, *, retryable: bool, retry_after: Optional[float] = None,
                  status: Optional[int] = None) -> None:
@@ -162,6 +172,7 @@ class RemoteBackend:
         self._states: dict[str, _ProfileState] = {}
         self._fetch_locks: dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
+        self._local = threading.local()  # .booting: the home keys this thread is loading
         self._poller: Optional[threading.Thread] = None
         self._poller_pid: Optional[int] = None
         self._stop = threading.Event()
@@ -195,35 +206,62 @@ class RemoteBackend:
             if poller is None or self._poller_pid != os.getpid() or not poller.is_alive():
                 self._ensure_poller()
             return st
+        if key in self._booting():
+            # This thread is loading this profile (resolving its credential or fetching): the read
+            # can only be served by the load it is part of. Waiting would wait on itself forever.
+            raise ConfigBackendUnavailable(
+                f"Remote Config: a config read for {home} re-entered the load of that profile's config "
+                "on the same thread (code on the boot path read config before it was loaded). This is "
+                "a Hermes bug; refusing the read instead of deadlocking.")
         with self._lock:
             fetch_lock = self._fetch_locks.setdefault(key, threading.Lock())
-        with fetch_lock:
-            st = self._states.get(key)
-            if st is None:
-                st = self._initial_fetch(Path(home))
-                with self._lock:  # the poller snapshots the roster under the same lock
-                    self._states[key] = st
+        booting = self._booting()
+        booting.add(key)
+        try:
+            st = self._boot_fetch(Path(home), key, fetch_lock)
+        finally:
+            booting.discard(key)
         self._ensure_poller()
         return st
+
+    def _booting(self) -> set[str]:
+        """Home keys this thread is loading now (a thread-local set)."""
+        keys = getattr(self._local, "booting", None)
+        if keys is None:
+            keys = self._local.booting = set()
+        return keys
 
     def _roster(self) -> list[_ProfileState]:
         with self._lock:
             return list(self._states.values())
 
-    def _initial_fetch(self, home: Path) -> _ProfileState:
-        """Boot fetch with bounded retry (contract §11.4); fails closed (D2)."""
+    def _boot_fetch(self, home: Path, key: str, fetch_lock: threading.Lock) -> _ProfileState:
+        """Boot fetch with bounded retry (contract §11.4); fails closed (D2).
+
+        Each attempt resolves the credential first, holding no backend lock, then takes the fetch
+        lock only for the GET: other threads wait there for the fetch in flight and share its
+        result. Nothing is logged and nobody is waited for while that lock is held."""
         profile = self._profile_for(home)
         if not client.instance_id():
             raise ConfigBackendUnavailable(
                 f"Remote Config: {client.INSTANCE_ENV} is not set, so Hermes cannot identify this agent "
                 "to the config plane. Hermes does not start without its remote config.")
-        st = _ProfileState(home=home, profile=profile)
         delays = list(BOOT_RETRY_DELAYS)
         while True:
+            notes: list[str] = []
             try:
-                self._fetch_into(st, conditional=False)
+                token = self._bearer(home)
+                with fetch_lock:
+                    st = self._states.get(key)
+                    if st is None:
+                        st = _ProfileState(home=home, profile=profile)
+                        self._fetch_into(st, conditional=False, token=token, notes=notes)
+                        with self._lock:  # the poller snapshots the roster under the same lock
+                            self._states[key] = st
+                _log_notes(notes)
                 return st
             except _FetchFailed as exc:
+                _log_notes(notes)
                 if exc.retryable and delays:
                     wait = min(max(exc.retry_after or 0.0, delays.pop(0)), MAX_RETRY_WAIT)
                     logger.warning("Remote Config: fetch for profile %r failed (%s); retrying in %.0fs",
@@ -235,16 +273,31 @@ class RemoteBackend:
                     f"{client.shown_url()}: {exc}. Hermes does not start without its remote config "
                     "(HERMES_CONFIG_BACKEND=remote has no local fallback).") from exc
 
-    def _fetch_into(self, st: _ProfileState, *, conditional: bool) -> bool:
+    @staticmethod
+    def _bearer(home: Path) -> str:
+        try:
+            return client.bearer(home)
+        except PlaneCredentialError as exc:
+            raise _FetchFailed(str(exc), retryable=exc.retryable) from exc
+
+    def _fetch_into(self, st: _ProfileState, *, conditional: bool, token: Optional[str] = None,
+                    notes: Optional[list[str]] = None) -> bool:
         """GET ``/self`` into ``st``; True when the document changed. Raises :class:`_FetchFailed`.
 
         The GET runs outside ``st.lock`` (a slow plane must not stall writers), so a write can
         install a newer document while it is in flight. Its response is then stale, even when its
         ``profileVersion`` matches (an upper level may have changed in between): it is dropped, and
-        the next poll fetches again."""
+        the next poll fetches again. Messages go to ``notes`` (logged by the caller once it holds no
+        backend lock), or are logged here when there is no list."""
+        if notes is None:
+            notes = []
+            try:
+                return self._fetch_into(st, conditional=conditional, token=token, notes=notes)
+            finally:
+                _log_notes(notes)
         started = st.installed
         try:
-            resp = client.request("GET", st.home, st.profile, etag=st.etag if conditional else None)
+            resp = client.request("GET", st.home, st.profile, etag=st.etag if conditional else None, token=token)
         except PlaneCredentialError as exc:
             raise _FetchFailed(str(exc), retryable=exc.retryable) from exc
         except client.TransportError as exc:
@@ -255,9 +308,9 @@ class RemoteBackend:
         if resp.status == 200 and _effective_ok(resp.body):
             with st.lock:
                 if st.installed != started:
-                    logger.debug("Remote Config: dropped a fetch for profile %r that a write overtook", st.profile)
+                    notes.append(f"debug:Remote Config: dropped a fetch for profile {st.profile!r} that a write overtook")
                     return False
-                self._install(st, resp.body, resp.etag)
+                notes.extend(self._install(st, resp.body, resp.etag))
             return True
         if resp.status == 200:
             raise _FetchFailed("the plane returned a malformed response", retryable=True)
@@ -265,7 +318,9 @@ class RemoteBackend:
         raise _FetchFailed(f"HTTP {resp.status} {resp.error}: {resp.message}", retryable=retryable,
                            retry_after=resp.retry_after, status=resp.status)
 
-    def _install(self, st: _ProfileState, body: dict[str, Any], etag: Optional[str]) -> None:
+    def _install(self, st: _ProfileState, body: dict[str, Any], etag: Optional[str]) -> list[str]:
+        """Install a fetched document (the caller holds st.lock); returns warnings to log later."""
+        notes: list[str] = []
         config = body["config"]
         doc = copy.deepcopy(config)
         doc.pop("_config_version", None)  # reserved on the wire (§3.6); never expected here
@@ -279,7 +334,7 @@ class RemoteBackend:
             try:
                 locks.append((decode(entry["path"]), str(entry["level"])))
             except (KeyError, TypeError, PathError):
-                logger.warning("Remote Config: ignoring malformed lock entry %r", entry)
+                notes.append(f"Remote Config: ignoring malformed lock entry {entry!r}")
         st.server_config = config
         st.doc = doc
         st.etag = etag or str(body.get("etag") or "")
@@ -297,6 +352,7 @@ class RemoteBackend:
         st.postprocessed = False
         st.fetched_at, st.last_error = time.time(), None
         st.next_poll = time.monotonic() + poll_interval() * random.uniform(0.9, 1.1)
+        return notes
 
     _MAX_POSTPROCESS = 8  # passes when polls keep installing newer docs mid-migration
 
@@ -501,6 +557,17 @@ class RemoteBackend:
         re-read doc, with the re-read locks; it never replays the caller's whole document, which
         would turn every key another writer changed meanwhile into an edit of ours."""
         st = self._state(home)
+        try:  # before st.lock: resolving the credential may read files and the network
+            token = client.bearer(st.home)
+        except PlaneCredentialError as exc:
+            raise ConfigWriteError(f"Remote Config write failed: {exc}", code="config_plane_unreachable") from exc
+        notes: list[str] = []
+        try:
+            self._send_changes(st, changes, token, notes)
+        finally:
+            _log_notes(notes)  # never under st.lock
+
+    def _send_changes(self, st: _ProfileState, changes: Changes, token: str, notes: list[str]) -> None:
         intent: Optional[tuple[dict[KeyPath, Any], list[KeyPath], frozenset]] = None
         for attempt in (1, 2):
             for _ in range(self._MAX_PREPARE):
@@ -525,17 +592,17 @@ class RemoteBackend:
                     if st.installed != seen:
                         continue  # a poll landed meanwhile: prepare again against it
                     try:
-                        resp = client.request("PATCH", st.home, st.profile, body=body)
+                        resp = client.request("PATCH", st.home, st.profile, body=body, token=token)
                     except (PlaneCredentialError, client.TransportError) as exc:
                         raise ConfigWriteError(f"Remote Config write failed: {exc}", code="config_plane_unreachable") from exc
                     if resp.status == 200 and _effective_ok(resp.body):
-                        self._install(st, resp.body, resp.etag)
+                        notes.extend(self._install(st, resp.body, resp.etag))
                         _remember_read(st)  # the caller now holds what it wrote
-                        self._warn_inherited(st, unsets)
+                        notes.extend(self._inherited_notes(st, unsets))
                         return
                     if resp.status == 409 and attempt == 1:
                         try:  # contract §15.3: re-read, re-diff, retry once
-                            self._fetch_into(st, conditional=False)
+                            self._fetch_into(st, conditional=False, token=token, notes=notes)
                         except _FetchFailed as exc:
                             raise ConfigWriteError(f"Remote Config write conflict and re-read failed: {exc}",
                                                    code="config_version_conflict") from exc
@@ -722,8 +789,9 @@ class RemoteBackend:
                                 code=resp.error)
 
     @staticmethod
-    def _warn_inherited(st: _ProfileState, unsets: list[KeyPath]) -> None:
+    def _inherited_notes(st: _ProfileState, unsets: list[KeyPath]) -> list[str]:
         """R5: removing a key at the profile level cannot remove a value an upper level supplies."""
+        notes: list[str] = []
         for p in unsets:
             node: Any = st.server_config
             for seg in p:
@@ -731,9 +799,9 @@ class RemoteBackend:
                     break
                 node = node[seg]
             else:
-                logger.warning("Remote Config: %s is still set by an upper level; removing it from this "
-                               "profile cannot remove an inherited value (set it to null for 'no value')",
-                               encode(p))
+                notes.append(f"Remote Config: {encode(p)} is still set by an upper level; removing it from this "
+                             "profile cannot remove an inherited value (set it to null for 'no value')")
+        return notes
 
     def apply_in_memory(self, home: Path, doc: dict) -> None:
         st = self._state(home)

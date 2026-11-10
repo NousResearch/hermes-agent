@@ -4,8 +4,8 @@ import { capabilityScoped, hermesApi, type OwnerScope, sessionFileOwnerScope } f
 import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { hostHas } from '@/lib/host-capabilities'
 import { LruCache } from '@/lib/lru-cache'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { capitalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
@@ -38,8 +38,38 @@ const MEDIA_BY_EXT: Record<string, MediaInfo> = {
   webp: { kind: 'image', mime: 'image/webp' }
 }
 
+// A native path may contain a literal `#` or `?` (`C:\Music\track #07.mp3`).
+// Cutting the path there drops the extension, so a playable file is typed as
+// a plain file. A real URL still loses its query and fragment first.
+function pathExtension(path: string, known: (ext: string) => boolean): string | undefined {
+  const extOf = (value: string): string | undefined => {
+    const base = value.split(/[\\/]/).pop() ?? ''
+    const dot = base.lastIndexOf('.')
+
+    if (dot <= 0 || dot === base.length - 1) {
+      return undefined
+    }
+
+    return base.slice(dot + 1).toLowerCase()
+  }
+
+  const isUrl = /^[a-z][a-z0-9+.-]*:/i.test(path) && !/^[a-z]:[\\/]/i.test(path)
+
+  if (isUrl) {
+    return extOf(path.split(/[?#]/, 1)[0] ?? '')
+  }
+
+  const literal = extOf(path)
+
+  if (literal && known(literal)) {
+    return literal
+  }
+
+  return extOf(path.split(/[?#]/, 1)[0] ?? '')
+}
+
 function mediaInfo(path: string): MediaInfo | undefined {
-  const ext = path.split(/[?#]/, 1)[0]?.split('.').pop()?.toLowerCase()
+  const ext = pathExtension(path, value => Object.prototype.hasOwnProperty.call(MEDIA_BY_EXT, value))
 
   return ext ? MEDIA_BY_EXT[ext] : undefined
 }
@@ -54,7 +84,7 @@ export function mediaKind(path: string): MediaKind {
 const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown', 'mdown', 'mkd'])
 
 export function isMarkdownDocumentPath(path: string): boolean {
-  const ext = path.split(/[?#]/, 1)[0]?.split('.').pop()?.toLowerCase()
+  const ext = pathExtension(path, value => MARKDOWN_EXTENSIONS.has(value))
 
   return ext ? MARKDOWN_EXTENSIONS.has(ext) : false
 }
@@ -122,7 +152,7 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
   // profile; it takes the owner-pinned read below.
   if (
     owner?.connectionId === LOCAL_CONNECTION_ID &&
-    !isBrowserHostedDesktop() &&
+    hostHas('nativeHostFiles') &&
     window.hermesDesktop?.readFileDataUrl
   ) {
     const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
@@ -283,7 +313,7 @@ export function mediaExternalUrl(path: string): string {
   if (isRemoteGateway()) {
     const conn = $connection.get()
 
-    if (conn?.baseUrl && conn.token && !isBrowserHostedDesktop()) {
+    if (conn?.baseUrl && conn.token && hostHas('urlTokenAuth')) {
       const file = encodeURIComponent(filePathFromMediaPath(path))
 
       return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}`

@@ -43,8 +43,7 @@ def submit_queued(cli, store, text: str) -> str:
     admission it already holds (``admit_session_input`` keys it by principal, session and request id),
     so the prompt is queued exactly once. Still no answer: :class:`QueueOutcomeUnknown`.
     """
-    from hermes_cli.gateway_client import GatewayRPCError
-    from hermes_cli.gateway_connection import NOT_SENT
+    from hermes_cli.gateway_client import NOT_SENT, GatewayRPCError
     submission = uuid.uuid4().hex
     for attempt in (1, 2):
         try:

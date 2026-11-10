@@ -11,7 +11,7 @@ from hermes_cli import doctor_tools
 
 @pytest.mark.parametrize("workspace, runtime_package", [("web", "react-router"), ("ui-tui", "undici")])
 def test_workspace_runtime_findings_are_not_dismissed_as_build_tooling(workspace, runtime_package, tmp_path, capsys):
-    audit_args = ["npm", "audit", "--json", "--workspace", workspace]
+    audit_args = ["pnpm", "audit", "--json", "--filter", f"./{workspace}"]
     audit_output = json.dumps({
         "vulnerabilities": {
             runtime_package: {"severity": "high", "isDirect": True},
@@ -23,7 +23,7 @@ def test_workspace_runtime_findings_are_not_dismissed_as_build_tooling(workspace
     issues = []
 
     with patch.object(doctor_tools.subprocess, "run", return_value=result) as run:
-        doctor_tools._audit_one("npm", tmp_path, f"{workspace} workspace", audit_args[3:], issues)
+        doctor_tools._audit_one("pnpm", tmp_path, f"{workspace} workspace", audit_args[3:], issues)
 
     assert run.call_args.args[0] == audit_args
     output = capsys.readouterr().out

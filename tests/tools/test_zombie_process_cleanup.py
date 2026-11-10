@@ -223,11 +223,9 @@ class TestGatewayCleanupWiring:
         runner._restart_drain_timeout = 0.1
         runner._voice_mode = {}
         runner._session_model_overrides = {}
-        runner._update_prompt_pending = {}
         runner._busy_input_mode = "interrupt"
         runner._agent_cache = {}
         runner._agent_cache_lock = threading.Lock()
-        runner._shutdown_all_gateway_honcho = lambda: None
         runner._update_runtime_status = MagicMock()
 
         mock_agent_1 = MagicMock()

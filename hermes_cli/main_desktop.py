@@ -107,6 +107,10 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
             return True
+        # The source launch runs the linked Electron. A ZIP swap drops workspace links, and
+        # a failed reinstall can leave the renderer current with no runtime beside it.
+        if not (_electron_dir(project_root) / "package.json").exists():
+            return True
     elif _desktop_packaged_executable(desktop_dir) is None:
         return True
 
@@ -472,12 +476,9 @@ def _desktop_exe_integrity_error(path: Path) -> Optional[str]:
 
 
 def _electron_dir(project_root: Path) -> Path:
-    """The installed Electron package dir: workspace-local ``apps/desktop/node_modules/electron`` (where
-    ``electronDist`` points) when present, else the root hoist npm sometimes uses instead."""
-    desktop_local = project_root / "apps" / "desktop" / "node_modules" / "electron"
-    if desktop_local.exists():
-        return desktop_local
-    return project_root / "node_modules" / "electron"
+    """The installed Electron package dir: pnpm links it into the desktop workspace (where
+    ``electronDist`` points), never into the root."""
+    return project_root / "apps" / "desktop" / "node_modules" / "electron"
 
 
 def _runs_from(proc, release_dir: Path) -> bool:
@@ -1453,24 +1454,23 @@ def _promote_staged_desktop_app(
 
 def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
     """Print an actionable hint when a desktop build failed because esbuild's platform
-    binary was never staged (`ignore-scripts=true` skips esbuild's postinstall, so the
-    ``@esbuild/<platform>`` optional dependency is absent) — #53082. Best-effort: only
-    adds context, never masks the original error."""
+    binary was never staged (the ``@esbuild/<platform>`` optional dependency is absent, or
+    `ignoreScripts` skipped esbuild's postinstall) — #53082. Best-effort: only adds
+    context, never masks the original error."""
     text = output or ""
     if not ("@esbuild/" in text and "could not be found" in text) and "ignore-scripts" not in text:
         return
-    print("  ⚠ This looks like esbuild's native binary is missing — commonly caused by")
-    print("    `ignore-scripts=true` in your npm config, which skips esbuild's postinstall")
-    print("    that stages the @esbuild/<platform> package.")
-    print("    Fix: run `npm config get ignore-scripts` — if true, either set it to false")
-    print("    (`npm config set ignore-scripts false`), then reinstall: `npm ci` in the repo root,")
-    print("    or stage the binary directly: `node node_modules/esbuild/install.js` in apps/desktop.")
+    print("  ⚠ This looks like esbuild's native binary is missing — its @esbuild/<platform> package")
+    print("    was not installed, or `ignoreScripts: true` in your pnpm config skipped its postinstall.")
+    print("    Fix: run `pnpm config get ignore-scripts` — if true, remove it")
+    print("    (`pnpm config delete --global ignore-scripts`), then delete node_modules in the repo")
+    print("    root so the next build reinstalls every workspace.")
 
 
-def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
+def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, pnpm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
-    from hermes_cli.source_build import run_in_custody  # npm writes the checkout: update custody
+    from hermes_cli.source_build import run_in_custody  # pnpm writes the checkout: update custody
 
     if not source_mode and sys.platform == "win32" and (ancestor := _desktop_ancestor_in(desktop_dir)):
         # The Desktop running this build holds the exe lock the promotion rename needs,
@@ -1494,7 +1494,7 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         print("  → No Developer ID configured; ad-hoc signing this local rebuild "
               "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
     build_args = ["--icons", str(icons)] if icons else []
-    build_cmd = [npm, "run", "build", "--", *build_args]
+    build_cmd = [pnpm, "run", "build", *build_args]
     staging_dir = None if source_mode else _desktop_staging_dir(desktop_dir)
     if staging_dir is not None:
         # electron-builder packs in place; only the verified staging tree may
@@ -1509,7 +1509,7 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
             from hermes_cli.update_stage import publish_stage
 
             publish_stage("Packaging the desktop app")
-            run_in_custody(desktop_dir.parents[1], [npm, "run", "builder", "--", "--dir", "--publish", "never",
+            run_in_custody(desktop_dir.parents[1], [pnpm, "run", "builder", "--dir", "--publish", "never",
                            f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
                            cwd=desktop_dir, env=build_env)
         packaged_executable = (
@@ -1605,18 +1605,18 @@ def _check_desktop_skip_build(
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
             print(f"✗ --skip-build --source was passed but no desktop dist found at: {desktop_dir / 'dist'}")
-            print("  Pre-build first:  cd apps/desktop && npm run build")
+            print("  Pre-build first:  cd apps/desktop && pnpm run build")
             print("  Or drop --skip-build to install dependencies and build automatically.")
             sys.exit(1)
         if not (_electron_dir(project_root) / "package.json").exists():
             print("✗ --skip-build --source requires existing desktop workspace dependencies.")
-            print(f"  Install first:  cd {project_root} && npm ci")
+            print(f"  Install first:  cd {project_root} && pnpm install --frozen-lockfile")
             print("  Or drop --skip-build to install dependencies and build automatically.")
             sys.exit(1)
         print(f"→ Skipping desktop source build (--skip-build --source); using dist at {desktop_dir / 'dist'}")
     elif packaged_executable is None:
         print(f"✗ --skip-build was passed but no packaged desktop app was found at: {desktop_dir / 'release'}")
-        print("  Pre-build first:  cd apps/desktop && npm run pack")
+        print("  Pre-build first:  cd apps/desktop && pnpm run pack")
         print("  Or drop --skip-build to package automatically.")
         sys.exit(1)
     else:
@@ -1741,7 +1741,7 @@ def cmd_gui(args: argparse.Namespace):
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
-    # The mutable preflight (freshness check → npm install → pack) mutates
+    # The mutable preflight (freshness check → pnpm install → pack) mutates
     # checkout-scoped node_modules and apps/desktop/release. Serialize it
     # across processes so a manual `hermes desktop` racing `hermes update`'s
     # rebuild cannot corrupt either (#93940). The lock lives outside the
@@ -1755,7 +1755,7 @@ def cmd_gui(args: argparse.Namespace):
             acquired = build_lock.acquire()
         except OSError as exc:
             print(f"✗ Could not create the desktop build lock: {exc}")
-            print("  Refusing to run npm without serialization; check the checkout permissions and retry.")
+            print("  Refusing to run pnpm without serialization; check the checkout permissions and retry.")
             sys.exit(1)
         if not acquired:
             print("✗ A Hermes update or another desktop dependency install or build is already running.")
@@ -1765,11 +1765,11 @@ def cmd_gui(args: argparse.Namespace):
     needs_build = not skip_build and (
         force_build or _desktop_build_needed(desktop_dir, PROJECT_ROOT, source_mode=source_mode)
     )
-    npm = None
+    pnpm = None
     try:
         if needs_build:
             build_env = source_build_env(env, explicit=force_build or getattr(args, "build_only", False))
-            npm = shutil.which("npm", path=build_env["PATH"])
+            pnpm = shutil.which("pnpm", path=build_env["PATH"])
             env["PATH"] = build_env["PATH"]
         if skip_build:
             _check_desktop_skip_build(
@@ -1778,7 +1778,7 @@ def cmd_gui(args: argparse.Namespace):
         elif needs_build:
             prepare_source_dependencies(PROJECT_ROOT, ("ui-tui", "web", "apps/desktop"), env=build_env,
                                         explicit=force_build or getattr(args, "build_only", False))
-            built = build_prepared_desktop(desktop_dir, source_mode=source_mode, npm=npm, env=build_env)
+            built = build_prepared_desktop(desktop_dir, source_mode=source_mode, pnpm=pnpm, env=build_env)
             if not source_mode:
                 # None only when the build was skipped under its own Desktop: reopen the app it kept.
                 packaged_executable = built or packaged_executable
@@ -1822,8 +1822,8 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        # Launch only the prepared runtime. npm exec can provision a missing
-        # Electron package, including when --skip-build was requested.
+        # Launch only the prepared runtime, never through a package manager,
+        # including when --skip-build was requested.
         electron = _electron_dir(PROJECT_ROOT)
         try:
             executable = electron / "dist" / (electron / "path.txt").read_text(encoding="utf-8-sig").strip()
@@ -1969,7 +1969,7 @@ def _launch_bundled_desktop(
     except NotBundledApp as exc:
         # The stamp says bundled, so a tree that is not one is a damaged or
         # mispackaged install. Report it — degrading to the build ladder
-        # would run npm inside the app's own resources.
+        # would run pnpm inside the app's own resources.
         print(f"✗ This Hermes is stamped as a bundled desktop install, but {exc}.")
         print("  The install is damaged — reinstall Hermes from the website.")
         sys.exit(1)

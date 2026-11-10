@@ -827,7 +827,10 @@ async def create_profile_endpoint(body: ProfileCreate):
         clone_config = clone
     with _profile_errors("POST /api/profiles failed", not_found=(),
                          bad_request=(ValueError, FileExistsError, FileNotFoundError)):
-        path = profiles_mod.create_profile(
+        # Off the loop: creation asks a live multiplexer to serve the profile now over its control
+        # socket, and on the gateway's own listener (the Webapp) that socket answers on this loop.
+        path = await asyncio.to_thread(
+            profiles_mod.create_profile,
             name=body.name, clone_from=clone_from, clone_all=body.clone_all,
             clone_config=clone_config, no_skills=body.no_skills, description=body.description,
             clone_channels=body.clone_channels, **({"soul": body.soul} if body.soul is not None else {}))
@@ -964,8 +967,8 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod
     with _profile_errors("PATCH /api/profiles/%s failed", name,
                          bad_request=(ValueError, FileExistsError)):
-        # Stops a running gateway (10 s poll), renames the directory, rewrites the Honcho
-        # host blocks and regenerates the wrapper script.
+        # Stops a running gateway (10 s poll), renames the directory, lets the profile's memory
+        # provider re-key its state and regenerates the wrapper script.
         path = await run_in_threadpool(profiles_mod.rename_profile, name, body.new_name)
     # For the default profile the rename lands as a presentation-only display_name; the
     # canonical id ("default") is always returned so callers keying on `name` stay correct.

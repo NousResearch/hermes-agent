@@ -70,9 +70,6 @@ def _make_runner():
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._honcho_managers = {}
-    runner._honcho_configs = {}
-    runner._shutdown_all_gateway_honcho = lambda: None
     runner.session_store = MagicMock()
     # A bare MagicMock attribute is os.fspath()-able as the RELATIVE path "MagicMock/<name>/<id>":
     # startup's heartbeat restore treats ``_routing_home`` as the launch home and would build a

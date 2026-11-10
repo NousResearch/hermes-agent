@@ -1,5 +1,5 @@
 import React from "react";
-import Link from "@docusaurus/Link";
+import RouteLink from "../RouteLink";
 
 import styles from "./styles.module.css";
 
@@ -23,7 +23,7 @@ export default function CatalogFeatured({
   description: string;
   /** Falsy entries are dropped, so callers can pass optional fields inline. */
   tags: Array<string | false | null | undefined>;
-  /** Internal docs route (Link) or an absolute URL (new tab). */
+  /** Internal docs route (RouteLink) or an absolute URL (new tab). */
   href: string;
   cta: string;
 }) {
@@ -53,9 +53,9 @@ export default function CatalogFeatured({
             {cta} ↗
           </a>
         ) : (
-          <Link className={styles.cta} to={href}>
+          <RouteLink className={styles.cta} to={href}>
             {cta} →
-          </Link>
+          </RouteLink>
         )}
       </div>
     </section>

@@ -96,10 +96,10 @@ def test_editor_scopes_are_per_session_and_per_profile():
     ('foreign-profile', {'session:read', 'session:submit', 'session:control'}, 'profile_mismatch'),
 ])
 def test_editor_mcp_change_requires_control_in_the_owning_profile(server_spec, actor_profile, capabilities, reason):
-    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_mutations import _mutate_session
     authority = owner()
-    actor = Principal('viewer', actor_profile, frozenset(capabilities), 'viewer-transport')
+    actor = SessionActor('viewer', actor_profile, frozenset(capabilities), 'viewer-transport')
     params = {'session_id': 'held', 'request_id': 'r', 'expected_revision': 0, 'expected_generation': 0,
               'operation': 'editor_mcp', 'payload': {'mcp_servers': [server_spec]}}
     with pytest.raises(RuntimeStoreError, match=reason):

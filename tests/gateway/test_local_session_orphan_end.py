@@ -256,6 +256,42 @@ async def test_a_session_active_before_the_restart_is_kept_for_its_idle_classic_
     assert STARTUP_IDLE_S - 60 < delay <= STARTUP_IDLE_S
 
 
+def test_the_startup_idle_probe_does_not_nest_its_read_context(tmp_path, monkeypatch):
+    """``_idle_s`` runs on the boot thread, and a SessionDB read must not open inside another.
+
+    A read that lands on the degraded path (no WAL: DELETE journal / NFS fallback) waits on the
+    writer's non-reentrant lock. Resolving the session id inside ``_idle_s``'s own read context
+    re-entered ``_read_ctx`` and waited on the lock this thread already held, so boot never
+    reached the control socket and the liveness watchdog killed the gateway on every restart.
+    Re-entry fails here instead of wedging the runner on that deadlock.
+    """
+    from contextlib import contextmanager
+    from gateway.session_viewer_close import _idle_s
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session(session_id='s1', source='cli', model='m')
+    original = db._read_ctx
+    depth = 0
+
+    @contextmanager
+    def guarded_read_ctx():
+        nonlocal depth
+        assert depth == 0, '_idle_s opened a read context inside another read context'
+        depth += 1
+        try:
+            with original() as conn:
+                yield conn
+        finally:
+            depth -= 1
+
+    monkeypatch.setattr(db, '_read_ctx', guarded_read_ctx)
+    try:
+        assert _idle_s(SimpleNamespace(db=db), 's1') >= 0
+    finally:
+        db.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('config, startup, detach', [
     ('dashboard:\n  ws_orphan_reap_grace_s: 0\n', [], []),

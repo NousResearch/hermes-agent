@@ -52,7 +52,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | Photon (iMessage) | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
-| Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| Yuanbao (Labs plugin) | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
@@ -91,7 +91,7 @@ flowchart TB
     wx[Weixin]
     bb[BlueBubbles]
     qq[QQ]
-    yb[Yuanbao]
+    yb["Yuanbao (plugin)"]
     ms[Microsoft Teams]
     api["API Server<br/>(OpenAI-compatible)"]
     wh[Webhooks]
@@ -154,7 +154,7 @@ user: next message
 
 Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
 
-On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel; other platforms always get the notice.
+On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel. Telegram reports it for [group messages not addressed to the bot](telegram.md#letting-the-bot-stay-silent-in-a-group). Other platforms always get the notice.
 
 ## Quick Setup
 
@@ -232,6 +232,12 @@ process when they stop. The default `0` keeps the existing `Type=simple`
 behavior. This setting is Linux/systemd-only and does not treat an ordinary
 platform network disconnect as an event-loop failure.
 
+Under `Type=notify` the gateway reports ready only after every served profile's
+adapters connect, one profile at a time. Before each secondary profile's
+connect it sends systemd `EXTEND_TIMEOUT_USEC` for that connect's budget plus
+a margin. A large multi-profile boot can therefore run past systemd's default
+90 s start timeout, while a boot that stops making progress is still killed.
+
 ## Chat Commands (Inside Messaging)
 
 | Command | Description |
@@ -275,7 +281,7 @@ Sessions persist across messages until they reset. The agent remembers your conv
 
 ### Persistent `/model` Overrides
 
-A `/model` switch in a gateway chat applies to that session and now **survives gateway restarts**: the model/provider choice is persisted to the session store and rehydrated on first use after a restart (credentials are re-resolved at load time and never written to disk). `/new` (or `/reset`) clears the override, and `/model <name> --global` writes it through to `config.yaml` instead. `/model <name> --once` applies for a single turn only.
+A `/model` switch in a gateway chat applies to that session and now **survives gateway restarts**: the model/provider choice is persisted to the session store and rehydrated on first use after a restart (credentials are re-resolved at load time and never written to disk). `/model reset` clears the override and keeps the conversation, `/new` (or `/reset`) clears it with a fresh conversation, and `/model <name> --global` writes it through to `config.yaml` instead. `/model <name> --once` applies for a single turn only.
 
 ### Delivery Reliability
 
@@ -342,10 +348,44 @@ platforms:
 
 Details:
 
-- All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- `model`, `provider`, and `system_prompt` are optional. Unset fields fall back to the global defaults. A room can also opt into intentional silence with `allow_silence` (below).
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
+
+## Per-Room Intentional Silence
+
+In multi-agent rooms, a model may choose to end its turn with an explicit silence marker such as
+`NO_REPLY` or `[SILENT]`. To let a successful marker-only turn stay silent even when Hermes was
+mentioned or directly addressed, enable `allow_silence` for that room in the serving profile's
+`config.yaml`:
+
+```yaml
+platforms:
+  matrix:
+    channel_overrides:
+      "!exampleTeamRoom:example.org":
+        allow_silence: true
+```
+
+The default is the existing reply policy: omitted, `null`, or `false` keeps the visible warning
+when a human message needs a reply (or the adapter cannot tell). Internal notifications,
+scheduled heartbeats, and messages known to be unaddressed keep their existing silence exemptions,
+even with `allow_silence: false`. This is a room override, not a profile-wide setting.
+It uses the same chat ID → thread ID → parent ID lookup as other channel overrides; the first
+matching entry wins, including an explicit `false`. An entry that sets only other keys (say a
+thread with just `model:`) also matches first, so repeat `allow_silence` there to keep the
+parent's opt-in.
+
+Restart the gateway after editing configuration so all serving profiles use the updated settings.
+The override affects final delivery only: it does not undo tool actions, retract progress already
+sent, or instruct the model to choose silence. Empty, failed, partial, and interrupted results do
+not gain permission to disappear. Ordinary replies and conversation history stay unchanged. When
+the model wrote a reply beside a housekeeping-only tool call (memory, todo list, skill management
+or session search) and then ended a complete turn on a bare marker, that reply is delivered as the
+final answer, in opted-in rooms too.
+Crash recovery honors a suppression decision only after it was saved for that exact final reply;
+a crash before that point keeps the human-turn safeguard.
 
 ## Security
 
@@ -388,6 +428,17 @@ hermes pairing revoke telegram 123456789  # Remove access
 ```
 
 Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
+
+### Other bots in a chat
+
+Hermes treats a sender as a bot when the platform says so (Discord, Slack, Telegram, Feishu, QQ guild, Mattermost bot accounts). On a platform whose events carry no bot flag (Matrix, Signal, IRC, Mattermost personal-access-token bots, …), list the peer's user ids under that platform's `bot_users` in `config.yaml`:
+
+```yaml
+mattermost:
+  bot_users: ["peer_bot_user_id"]
+```
+
+A bot sender is admitted only through that platform's `*_ALLOW_BOTS` setting. Hermes never sends it runtime notices (busy and interrupt acknowledgements, progress, the "not processed" and retry hints, model-fallback and inactivity warnings, failed-delegation notices), only the model's reply, and a bot it is addressed by may still be answered with silence. `gateway.bot_loop_guard` ends the exchange: `max_hops` (default 4) bot messages after your last message, a repeated message counted once, and no answer to a bot answering a reply Hermes delivered to it unless `bot_replies_expect_reply: true`; `enabled: false` turns the rules off.
 
 ### Admins vs Regular Users
 
@@ -747,7 +798,7 @@ Each platform has its own toolset:
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
 | QQBot | `hermes-qqbot` | Full tools including terminal |
-| Yuanbao | `hermes-yuanbao` | Full tools including terminal |
+| Yuanbao (Labs plugin) | `hermes-yuanbao` | Full tools + the `yb_*` group/DM/sticker tools from the `yuanbao` Hermes Labs plugin |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `text_to_speech` — programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
@@ -990,7 +1041,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [Photon Setup (iMessage)](photon.md)
 - [QQBot Setup](qqbot.md)
-- [Yuanbao Setup](yuanbao.md)
+- [Yuanbao](yuanbao.md) (Hermes Labs plugin)
 - [Microsoft Teams Setup](teams.md)
 - [Teams Meetings Pipeline](teams-meetings.md)
 - [Microsoft Graph Webhook Listener](msgraph-webhook.md)

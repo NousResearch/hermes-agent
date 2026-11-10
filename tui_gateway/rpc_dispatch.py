@@ -20,8 +20,7 @@ def _handle_admitted_request(req: dict) -> dict | None:
         return normalized
     rid, method, params = normalized
     if not (fn := _methods.get(method)):
-        return _err(rid, -32601, f"unknown method: {method} — the client and the Hermes backend are out of sync "
-                    "(different versions); run `hermes update` and restart both")
+        return _err(rid, -32601, _contracts.unknown_method_message(method))
     # Test doubles register straight into ``_methods`` without a contract; every production
     # handler comes through ``register_method`` and therefore has one.
     contract = _contracts.METHODS.get(method)
@@ -82,6 +81,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
                 try:
                     resp = _handle_admitted_request(req)
                 except Exception as exc:
+                    logger.exception("pool RPC handler failed for method=%r id=%r", normalized[1], req.get("id"))
                     resp = _err(req.get("id"), -32000, f"handler error: {exc}")
                 if resp is not None:
                     t.write(resp)

@@ -25,7 +25,7 @@ from typing import Optional
 from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE, get_sandbox_dir
 from tools.terminal_tool_config import (
-    _host_path_key, _is_windows_drive_path, cwd_follows_host_mount,
+    _host_path_key, _is_windows_drive_path, cwd_follows_host_mount, home_profile_name,
 )
 from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
@@ -115,13 +115,10 @@ _sandbox_dir_name = sanitize_task_id_for_path
 
 
 def _get_active_profile_name() -> str:
-    """Active Hermes profile name, or ``"default"`` on any error. Resolved at container-create
-    time so a container stays tagged with its creator even if the process switches profiles."""
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        return get_active_profile_name() or "default"
-    except Exception:
-        return "default"
+    """Active Hermes profile name (the container key's own lookup), or ``"default"`` on error. Resolved
+    at container-create time so a container stays tagged with its creator even if the process switches
+    profiles."""
+    return home_profile_name()
 
 
 def _container_identity(shared_key: str = "") -> str:

@@ -22,9 +22,9 @@ import type { Contribution } from '@/contrib/types'
 import { type Translations, useI18n } from '@/i18n'
 import { writeClipboardText } from '@/lib/clipboard'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
+import { hostHas } from '@/lib/host-capabilities'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { isBrowserOwnedTouch } from '@/lib/touch-interaction'
 import { openPreview } from '@/store/preview'
@@ -68,7 +68,7 @@ function isNativeMediaContextMenu(event: MouseEvent): boolean {
 /** Take a gesture the app menu answers away from other renderer handlers,
  * cancelling the browser's native menu only where it would open alongside. */
 function claimContextMenuGesture(event: MouseEvent) {
-  if (isBrowserHostedDesktop()) {
+  if (hostHas('browserContextMenu')) {
     event.preventDefault()
   }
 
@@ -99,7 +99,7 @@ function composerSectionsFor(contributions: readonly Contribution[], target: Com
 /** Our Cut, Copy and Paste run through Electron main (`contextMenuEdit`) and our spelling rows
  * come from its spellcheck feed; a browser host has neither. */
 function lacksEditVerbs(): boolean {
-  return isBrowserHostedDesktop() && !window.hermesDesktop?.contextMenuEdit
+  return !hostHas('mainProcessEditVerbs') && !window.hermesDesktop?.contextMenuEdit
 }
 
 /** Without them an editable keeps the browser's own menu, where both work: pane and row menus
@@ -700,7 +700,7 @@ export function AppContextMenu() {
       // save and picture-in-picture actions. Chromium can retarget a control
       // hit through the media element's UA shadow tree, so inspect the whole
       // composed path instead of relying only on event.target.
-      if (isBrowserHostedDesktop() && isNativeMediaContextMenu(event)) {
+      if (hostHas('browserContextMenu') && isNativeMediaContextMenu(event)) {
         return
       }
 

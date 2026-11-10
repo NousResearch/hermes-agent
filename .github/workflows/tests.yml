@@ -37,18 +37,18 @@ concurrency:
 
 jobs:
   test:
-    # Two 32-core slices instead of one box: on one runner the suite is ~10 min of
+    # Three 32-core slices instead of one box: on one runner the suite is ~10 min of
     # nearly fully packed work, and a single bigger runner (96-core) scaled ~1.8x for
     # 3x the price because files contend for the shared machine. Separate machines
     # scale linearly. run_tests_parallel.py partitions from the checkout alone, so
-    # both slices agree on the split without a planning job.
-    name: Run tests (${{ matrix.slice }}/2)
+    # every slice agrees on the split without a planning job.
+    name: Run tests (${{ matrix.slice }}/3)
     runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        slice: [1, 2]
+        slice: [1, 2, 3]
     steps:
       - name: Checkout code
         uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
@@ -72,6 +72,9 @@ jobs:
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
         with:
+          # Tests that drive the real scripts/build/node-deps.mjs need pnpm (and
+          # with it PM's Node) on PATH.
+          packages: pnpm
           extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
           test-environment: 'true'
           prune-python-cache: true
@@ -109,10 +112,10 @@ jobs:
         #
         # No --files: the runner discovers the suite itself. The discovered
         # set is identical to the list the removed matrix job used to pass in.
-        run: |
-          scripts/run_tests.sh
+        run: just test-all
         env:
-          HERMES_TEST_SLICE: ${{ matrix.slice }}/2
+          HERMES_TEST_SLICE: ${{ matrix.slice }}/3
+          HERMES_TEST_FORKSERVER: "1"
           HERMES_TEST_WORKERS: 32
           HERMES_TEST_FILE_TIMEOUT: 600
           # Ensure tests don't accidentally call real APIs
@@ -128,7 +131,7 @@ jobs:
         with:
           path: test_durations.json
           # Per-slice key: each slice's file keeps the restored entries for the other
-          # slice's files and refreshes its own, so the cache stays complete.
+          # slices' files and refreshes its own, so the cache stays complete.
           key: test-durations-${{ github.run_id }}-${{ matrix.slice }}
 
       - name: Check the checkout is clean
@@ -172,7 +175,7 @@ jobs:
         # HERMES_E2E_REQUIRE_TUI=1 below turns a missing build into a failure.
         uses: ./.github/actions/retry
         with:
-          command: npm ci --workspace ui-tui --ignore-scripts --no-audit --no-fund && npm run build --workspace ui-tui
+          command: pnpm install --frozen-lockfile --filter "{./ui-tui}..." --ignore-scripts && pnpm --dir ui-tui run build
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -325,7 +328,7 @@ jobs:
         uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
-          # N-1 = `git describe --tags --abbrev=0 HEAD~1`.
+          # The upgrade start version is the newest release behind HEAD (tests/e2e/core/upgrade/_install_helpers.upgrade_base).
           fetch-depth: 0
           fetch-tags: true
 

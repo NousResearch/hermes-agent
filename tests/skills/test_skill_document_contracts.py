@@ -15,7 +15,6 @@ GITHUB = "skills/software-development/github"
 QUESTIONNAIRE = "optional-skills/productivity/decision-questionnaire"
 ACTUAL = "optional-skills/devops/actual-setup"
 DARWINIAN = "optional-skills/research/darwinian-evolver"
-PINECONE = "optional-skills/research/pinecone-research"
 EMAIL = "skills/email/email-inbox-triage"
 MEETING = "skills/productivity/meeting-action-items"
 PRICE = "skills/productivity/product-price-monitor"
@@ -32,14 +31,13 @@ def _document(skill):
     (GITHUB, "benbarclay"), (MEETING, "benbarclay"), (PRICE, "benbarclay"),
     (WEEKLY, "benbarclay"), (EMAIL, "benbarclay"), (SOCIAL, "benbarclay"),
     (ACTUAL, "shl0ms"), (DARWINIAN, "Bihruze"),
-    (QUESTIONNAIRE, "mattpocock"), (PINECONE, None), (MCP, None),
+    (QUESTIONNAIRE, "mattpocock"), (MCP, None),
 ])
 def test_required_document_and_credit(skill, contributor):
     metadata, _ = _document(skill)  # A corpus glob alone cannot catch a deleted skill.
     if contributor:
         assert contributor in metadata["author"]
-    if skill != PINECONE:
-        assert not metadata["author"].startswith("Hermes Agent")
+    assert not metadata["author"].startswith("Hermes Agent")
 
 
 @pytest.mark.parametrize("skill,references", [

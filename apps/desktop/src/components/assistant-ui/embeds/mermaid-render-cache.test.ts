@@ -37,7 +37,7 @@ describe('createMermaidRenderCache', () => {
     let maxActive = 0
 
     const render = vi.fn(
-      (_code: string, theme: 'dark' | 'default') =>
+      (_code: string, theme: string) =>
         new Promise<string>(resolve => {
           active += 1
           maxActive = Math.max(maxActive, active)
@@ -75,7 +75,7 @@ describe('createMermaidRenderCache', () => {
 
   it('removes failed work so a later mount can retry', async () => {
     const render = vi
-      .fn<(code: string, theme: 'dark' | 'default') => Promise<string>>()
+      .fn<(code: string, theme: string) => Promise<string>>()
       .mockRejectedValueOnce(new Error('temporary failure'))
       .mockResolvedValueOnce('<svg>retry</svg>')
 
@@ -87,7 +87,7 @@ describe('createMermaidRenderCache', () => {
   })
 
   it('evicts the least recently used result at the configured bound', async () => {
-    const render = vi.fn(async (code: string, theme: 'dark' | 'default') => `<svg>${theme}:${code}</svg>`)
+    const render = vi.fn(async (code: string, theme: string) => `<svg>${theme}:${code}</svg>`)
     const cache = createMermaidRenderCache({ defer: async () => undefined, maxEntries: 2, render })
 
     await cache.render('A', 'dark')

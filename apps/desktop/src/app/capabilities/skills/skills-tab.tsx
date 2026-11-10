@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { editLearningNode, getLearningNode, type ProfileScope, profileScopeKey, setSkillEnabled } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { Lock } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { notify, notifyError } from '@/store/notifications'
@@ -258,13 +259,26 @@ function ScopedSkillsTab({
         profile={profile}
         query={query}
         renderInstalledAction={skill => (
-          <CatalogSwitch
-            aria-label={skill.name}
-            checked={skill.enabled}
-            disabled={controlsDisabled}
-            onCheckedChange={enabled => void applyEnabled([skill], enabled)}
-            size="xs"
-          />
+          <span className="inline-flex items-center gap-2">
+            {skill.locked && (
+              <span
+                aria-label={t.skills.locked}
+                className="inline-flex text-(--ui-text-tertiary)"
+                data-slot="skill-locked-indicator"
+                role="img"
+                title={t.skills.lockHint}
+              >
+                <Lock className="size-3.5" />
+              </span>
+            )}
+            <CatalogSwitch
+              aria-label={skill.name}
+              checked={skill.enabled}
+              disabled={controlsDisabled}
+              onCheckedChange={enabled => void applyEnabled([skill], enabled)}
+              size="xs"
+            />
+          </span>
         )}
         renderInstalledDetail={skill => (
           <>

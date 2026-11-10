@@ -1,6 +1,6 @@
 """Contract cases for the leases, admission, start, settlement and reads of ``persistence.gateway.hosted_rooms.HostedRoomDriverRepository``.
 
-Every case runs on each registered backend through the ``backend`` fixture and seeds through public verbs. The cases pin monotonic fenced leases, idempotent admission bound to one turn and one payload, start in room event order under the lease's run fence, settlement replays before the lease check. The caller-side validators stay with the caller; the cases pass what the callers pass.
+Every case runs on each registered backend through the ``backend`` fixture and seeds through public verbs. The cases pin monotonic fenced leases, idempotent admission bound to one turn and one payload, start in room event order under the lease's run fence, settlement replays before the lease check, whose expiry term alone the live settle may drop. The caller-side validators stay with the caller; the cases pass what the callers pass.
 """
 
 from __future__ import annotations
@@ -54,8 +54,8 @@ def _start(store, lease: DriverLease, n: int = 1, *, placement: str = "profile",
     return store.hosted_room_driver.start_task(_identity(n), lease, placement=placement, expected_cancel_generation=0, now=now)
 
 
-def _settle(store, attempt: TaskAttempt, *, settlement_id: str = "settle-1", status: str = "settled", result=None, now: float = 120.0):
-    return store.hosted_room_driver.settle_task(attempt, placement="profile", settlement_id=settlement_id, status=status, result={"text": "done"} if result is None else result, now=now)
+def _settle(store, attempt: TaskAttempt, *, settlement_id: str = "settle-1", status: str = "settled", result=None, now: float = 120.0, **flags):
+    return store.hosted_room_driver.settle_task(attempt, placement="profile", settlement_id=settlement_id, status=status, result={"text": "done"} if result is None else result, now=now, **flags)
 
 
 # ── leases ────────────────────────────────────────────────────────────────────
@@ -258,6 +258,58 @@ def test_settle_task_refuses_a_stale_attempt_after_its_lease_check(backend, scop
     for stale in (TaskAttempt(attempt.identity, lease, 2, 0), TaskAttempt(attempt.identity, lease, 1, 1)):
         with pytest.raises(StaleTaskError, match="^task attempt is stale or cancelled$"):
             _settle(store, stale)
+    assert store.hosted_room_driver.get_task(_identity(), placement="profile")["status"] == "running"
+
+
+def test_settle_task_with_allow_expired_lease_commits_past_plain_expiry_of_its_own_lease(backend, scope_a):
+    store = backend.open(scope_a)
+    _room(store)
+    lease = _lease(store)
+    _admit(store)
+    attempt = _start(store, lease)
+    with pytest.raises(StaleLeaseError, match="^driver lease is stale or expired$"):
+        _settle(store, attempt, settlement_id="settle-strict", now=160.0)
+    # CONTRACT: the flag drops only the expiry term of the post-replay lease check; the lease is still this generation's, unreleased.
+    settled = _settle(store, attempt, settlement_id="settle-live", now=160.0, allow_expired_lease=True)
+    assert (settled["status"], settled["settlement_id"], settled["terminal_at"]) == ("settled", "settle-live", 160.0)
+    assert store.hosted_room_driver.get_task(_identity(), placement="profile")["status"] == "settled"
+
+
+def test_settle_task_with_allow_expired_lease_still_refuses_a_reclaimed_lease(backend, scope_a):
+    store = backend.open(scope_a)
+    _room(store)
+    lease = _lease(store)
+    _admit(store)
+    attempt = _start(store, lease)
+    successor = _lease(store, process="proc-b", now=200.0)
+    store.hosted_room_driver.recover_room(successor, placement="profile", now=201.0)
+    with pytest.raises(StaleLeaseError, match="^driver lease is stale or expired$"):
+        _settle(store, attempt, now=202.0, allow_expired_lease=True)
+    assert store.hosted_room_driver.get_task(_identity(), placement="profile")["status"] == "indeterminate"
+
+
+def test_settle_task_with_allow_expired_lease_still_refuses_a_released_lease(backend, scope_a):
+    store = backend.open(scope_a)
+    _room(store)
+    lease = _lease(store)
+    _admit(store)
+    attempt = _start(store, lease)
+    store.hosted_room_driver.begin_task_cancel(_identity(), placement="profile", cancel_id="stop-1", expected_cancel_generation=0, now=115.0)
+    store.hosted_room_driver.release_lease(lease, placement="profile", now=120.0)
+    with pytest.raises(StaleLeaseError, match="^driver lease is stale or expired$"):
+        _settle(store, attempt, now=170.0, allow_expired_lease=True)
+    assert store.hosted_room_driver.get_task(_identity(), placement="profile")["status"] == "stopping"
+
+
+def test_settle_task_with_allow_expired_lease_still_refuses_after_an_authority_change(backend, scope_a):
+    store = backend.open(scope_a)
+    store.hosted_rooms.create_room(placement="profile", room_id=ROOM, name="Room", members=MEMBERS, authority_gateway_id="legacy", now=100.0)
+    lease = store.hosted_room_driver.acquire_lease(placement="profile", room_id=ROOM, gateway_id="legacy", authority_epoch=1, process_generation="proc-a", ttl_seconds=60.0, now=100.0)
+    _admit(store)
+    attempt = _start(store, lease)
+    assert _room(store, now=170.0)["authority_epoch"] == 2
+    with pytest.raises(StaleLeaseError, match="^hosted room authority changed$"):
+        _settle(store, attempt, now=171.0, allow_expired_lease=True)
     assert store.hosted_room_driver.get_task(_identity(), placement="profile")["status"] == "running"
 
 

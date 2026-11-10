@@ -722,8 +722,8 @@ class HostedRoomDriverRepository(Protocol):
         """Start the room's next queued task under an active lease."""
         ...
 
-    def settle_task(self, attempt: TaskAttempt, *, placement: HostedPlacement, settlement_id: str, status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
-        """Settle a running attempt; the settlement replays before the lease check."""
+    def settle_task(self, attempt: TaskAttempt, *, placement: HostedPlacement, settlement_id: str, status: TerminalStatus, result: JsonValue, now: float | None = None, allow_expired_lease: bool = False) -> Mapping[str, JsonValue]:
+        """Settle a running attempt; the settlement replays before the lease check. ``allow_expired_lease`` drops only that check's expiry term, for the live in-process terminal settle: the room authority, the lease generation and an unreleased lease are still required."""
         ...
 
     def settle_stopping_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, settlement_id: str, status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:

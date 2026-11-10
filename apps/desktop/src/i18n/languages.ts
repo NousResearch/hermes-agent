@@ -209,6 +209,12 @@ const LOCALE_ALIASES: Record<string, BundledLocale> = {
   espanol: 'es'
 }
 
+/** Alias table lookup that does NOT collapse unknown tags to English.
+ *  `zh-TW` → `zh-hant`; `id` stays unset so catalog copy can resolve `id` / `id-ID`. */
+export function localeAlias(value: unknown): BundledLocale | undefined {
+  return typeof value === 'string' ? LOCALE_ALIASES[normalize(value)] : undefined
+}
+
 /** A language the app can render right now: bundled or registered. Aliases
  *  (`zh-CN`) are not ids — see `isSupportedLocaleValue`. */
 export function isLocale(value: unknown): value is Locale {

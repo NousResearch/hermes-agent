@@ -109,6 +109,33 @@ def _str_list(value) -> list[str]:
     return []
 
 
+def _normalize_locale_id(value: str) -> str:
+    """Trim, lowercase, ``_`` → ``-`` — same identity as loader ``_normalize_locale_id`` / desktop ``normalizeLocaleId``."""
+    return value.strip().lower().replace("_", "-")
+
+
+def _i18n_map(raw) -> dict[str, dict[str, str]] | None:
+    """Pass catalog ``i18n`` through to plugins.json; invalid / empty values dropped.
+
+    Locale keys are normalized the same way as ``parse_catalog_i18n`` / ``parseCatalogI18n``
+    (``ID`` → ``id``, ``id_ID`` / ``id-ID`` → ``id-id``). Region/script tags are not collapsed.
+    """
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, dict[str, str]] = {}
+    for loc, fields in raw.items():
+        if not isinstance(loc, str):
+            continue
+        key = _normalize_locale_id(loc)
+        if not key or not isinstance(fields, dict):
+            continue
+        entry = {k: v.strip() for k, v in (("title", fields.get("title")), ("description", fields.get("description")))
+                 if isinstance(v, str) and v.strip()}
+        if entry:
+            out[key] = entry
+    return out or None
+
+
 def _normalize_capabilities(raw) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     return {
@@ -244,9 +271,10 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
             category = "general"
 
         subdir = str(raw.get("subdir") or "").strip()
-        entries.append({
+        row = {
             "name": name,
             "description": str(raw.get("description") or "").strip(),
+            "title": str(raw.get("title") or "").strip(),
             "repo": repo,
             "sha": sha,
             "shaShort": sha[:7],
@@ -269,7 +297,11 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
             "stars": _repo_stars(repo, stars),
             "addedAt": dates.get(path.name, {}).get("addedAt"),
             "updatedAt": dates.get(path.name, {}).get("updatedAt"),
-        })
+        }
+        i18n = _i18n_map(raw.get("i18n"))
+        if i18n:
+            row["i18n"] = i18n
+        entries.append(row)
 
     # Most-starred first (unknown = 0), then name so the order is stable; tier does not rank.
     entries.sort(key=lambda e: (-(e["stars"] or 0), e["name"]))

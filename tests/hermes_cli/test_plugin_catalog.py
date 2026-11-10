@@ -231,15 +231,23 @@ def test_curated_fields_the_published_doc_lacks_come_from_the_checkout(tmp_path,
     """The docs build stamps generated_at at build time, so a doc rebuilt from an older catalog is "newer"
     than a checkout that just added `onboarding`. At the same pin, a curated field the doc does not carry
     comes from the checkout; a doc that carries it (even false) decides, and a different pin never merges."""
-    live = [_entry("same"), {**_entry("says-no"), "onboarding": False}, _entry("repinned", sha="b" * 40)]
+    id_copy = {"id": {"title": "Stage", "description": "ID"}}
+    live = [_entry("same"), {**_entry("says-no"), "onboarding": False},
+            {**_entry("has-i18n"), "i18n": {}}, _entry("repinned", sha="b" * 40)]
     _fresh_cache(tmp_path, monkeypatch, {"generated_at": "2026-09-22T10:00:00Z", "entries": live, "removed": []})
-    tree = [pc.entry_from_mapping({**_entry(n), "onboarding": True, "title": "T"}, n) for n in ("same", "says-no", "repinned")]
+    tree = [pc.entry_from_mapping(
+        {**_entry(n), "onboarding": True, "title": "T", "i18n": id_copy}, n)
+        for n in ("same", "says-no", "has-i18n", "repinned")]
     monkeypatch.setattr(pc, "load_catalog", lambda catalog_dir=None: tree)
     monkeypatch.setattr(pc, "in_tree_catalog_time", lambda: 0.0)  # checkout older than the doc
     by_name = {e.name: e for e in pc.load_catalog_live()}
     assert (by_name["same"].onboarding, by_name["same"].title) == (True, "T")
+    assert by_name["same"].i18n == id_copy
     assert by_name["says-no"].onboarding is False and by_name["says-no"].title == "T"
+    assert by_name["says-no"].i18n == id_copy
+    assert by_name["has-i18n"].i18n == {} and by_name["has-i18n"].title == "T"
     assert by_name["repinned"].onboarding is False and by_name["repinned"].sha == "b" * 40
+    assert by_name["repinned"].i18n == {}
 
 
 def test_in_tree_catalog_time_does_not_lazy_fetch_on_treeless_clones(tmp_path, monkeypatch):
@@ -340,3 +348,79 @@ def test_treeless_checkout_still_outranks_a_doc_fetched_before_the_bump(tmp_path
         os.utime(p, (0, 0))
     monkeypatch.setattr(pc, "_in_tree_catalog_time", -1.0)
     assert {e.name: e.sha for e in pc.load_catalog_live()}["shared"] == old
+
+
+ID_TITLE = "Stage"
+ID_DESC = "Menahan pemanggilan write_file dan patch Hermes di salinan sementara."
+EN_DESC = "Stage Hermes write_file and patch calls in a scratch copy."
+
+
+def test_i18n_id_resolves_for_id_and_id_ID(tmp_path):
+    """Catalog card copy for Indonesian: exact ``id`` and region tag ``id-ID`` hit the same strings."""
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry(
+        "stage", description=EN_DESC, i18n={"id": {"title": ID_TITLE, "description": ID_DESC}})))
+    entry = pc.load_catalog(tmp_path)[0]
+    assert pc.resolve_catalog_copy(entry, "id") == (ID_TITLE, ID_DESC)
+    assert pc.resolve_catalog_copy(entry, "id-ID") == (ID_TITLE, ID_DESC)
+    assert pc.resolve_catalog_copy(entry, "id_ID") == (ID_TITLE, ID_DESC)
+    assert entry.name == "stage" and entry.to_dict()["name"] == "stage"
+
+
+def test_i18n_missing_locale_falls_back_to_english(tmp_path):
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry(
+        "stage", description=EN_DESC, i18n={"id": {"title": ID_TITLE, "description": ID_DESC}})))
+    entry = pc.load_catalog(tmp_path)[0]
+    title, desc = pc.resolve_catalog_copy(entry, "ru")
+    assert desc == EN_DESC
+    assert title == "stage"  # no English title → name
+
+
+def test_i18n_absent_map_still_loads(tmp_path):
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("plain", description=EN_DESC)))
+    entry = pc.load_catalog(tmp_path)[0]
+    assert entry.i18n == {}
+    assert pc.resolve_catalog_copy(entry, "id") == ("plain", EN_DESC)
+
+
+def test_i18n_invalid_and_empty_values_are_ignored(tmp_path):
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("stage", description=EN_DESC, i18n={
+        "id": {"title": "", "description": "   "},
+        "ru": "not a mapping",
+        "zh-hant": {"title": None, "description": 1},
+    })))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("other", description=EN_DESC, i18n="nope")))
+    entries = {e.name: e for e in pc.load_catalog(tmp_path)}
+    assert entries["stage"].i18n == {} and entries["other"].i18n == {}
+    assert pc.resolve_catalog_copy(entries["stage"], "id")[1] == EN_DESC
+
+
+def test_catalog_locale_candidates_region_vs_script():
+    """2-letter / 3-digit region may fall back; 4-letter script and overlong digits must not."""
+    assert pc.catalog_locale_candidates("id-ID") == ["id-id", "id"]
+    assert pc.catalog_locale_candidates("id_ID") == ["id-id", "id"]
+    assert pc.catalog_locale_candidates("zh-hant") == ["zh-hant"]
+    assert pc.catalog_locale_candidates("es-419") == ["es"]  # desktop alias, not a leftover region tag
+    assert pc.catalog_locale_candidates("xx-419") == ["xx-419", "xx"]
+    assert pc.catalog_locale_candidates("xx-12345") == ["xx-12345"]
+    assert pc.catalog_locale_candidates("en-gb") == ["en-gb", "en"]  # not in desktop alias table
+    assert pc.catalog_locale_candidates("zh-sg") == ["zh-sg", "zh"]
+
+
+def test_i18n_zh_hant_does_not_fall_back_to_zh(tmp_path):
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry(
+        "x", description="en", i18n={"zh": {"description": "simplified"}})))
+    entry = pc.load_catalog(tmp_path)[0]
+    assert pc.resolve_catalog_copy(entry, "zh-hant")[1] == "en"
+    assert pc.resolve_catalog_copy(entry, "zh")[1] == "simplified"
+
+
+def test_shipped_stage_yaml_keeps_english_and_resolves_indonesian():
+    entry = next(e for e in pc.load_catalog() if e.name == "stage")
+    assert "write_file" in entry.description
+    assert entry.name == "stage" and entry.to_dict()["name"] == "stage"
+    assert entry.title == "Stage"
+    assert pc.resolve_catalog_copy(entry, "en") == ("Stage", entry.description)
+    assert pc.resolve_catalog_copy(entry, "ru")[0] == "Stage"
+    title, desc = pc.resolve_catalog_copy(entry, "id")
+    assert title == "Stage"
+    assert desc.startswith("Menahan pemanggilan write_file")

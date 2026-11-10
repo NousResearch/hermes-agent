@@ -74,6 +74,7 @@ KNOWN_KEYS = {
     "platforms",
     "capabilities",
     "title",
+    "i18n",
     "onboarding",
     "known_issues",
     "attested_binaries",
@@ -241,8 +242,30 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
     # build-provenance attestation (README rule 17). The CI gate verifies the
     # attestation; here we only shape-check the paths.
     _check_attested_binaries(data.get("attested_binaries"), errors)
+    _check_i18n(data.get("i18n"), warnings)
 
     return errors, warnings
+
+
+def _check_i18n(raw: object, warnings: list[str]) -> None:
+    """Optional locale → {title, description} map. Unknown locale keys are allowed; bad shape warns."""
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        warnings.append("i18n must be a mapping of locale id to {title, description} (ignored)")
+        return
+    for loc, fields in raw.items():
+        if not isinstance(loc, str) or not loc.strip():
+            warnings.append(f"i18n locale key {loc!r} ignored")
+            continue
+        if fields is None:
+            continue
+        if not isinstance(fields, dict):
+            warnings.append(f"i18n.{loc} must be a mapping with optional title/description (ignored)")
+            continue
+        for field in ("title", "description"):
+            if field in fields and fields[field] is not None and not isinstance(fields[field], str):
+                warnings.append(f"i18n.{loc}.{field} must be a string (ignored)")
 
 
 def _check_attested_binaries(attested: object, errors: list[str]) -> None:

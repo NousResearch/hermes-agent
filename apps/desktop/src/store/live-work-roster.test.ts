@@ -52,7 +52,9 @@ describe('backend roster feeds rows no mounted tile speaks for', () => {
   it('a newer read from the source covering a row ends a running entry its hidden pane stopped updating', () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000)
-    reconcileBackgroundProcesses('pane', [{ command: 'sleep', session_id: 'p1', status: 'running' }])
+    reconcileBackgroundProcesses('pane', [
+      { command: 'sleep', notify_on_complete: true, session_id: 'p1', status: 'running' }
+    ])
     $subagentsBySession.set({ pane: [child('running', 1_000)] })
     expect($backgroundRunningSessionIds.get()).toContain('pane')
     expect($delegatingSessionIds.get()).toContain('pane')
@@ -66,7 +68,9 @@ describe('backend roster feeds rows no mounted tile speaks for', () => {
   it('a read from a source that does not cover the row never ends its running entry', () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000)
-    reconcileBackgroundProcesses('pane', [{ command: 'sleep', session_id: 'p1', status: 'running' }])
+    reconcileBackgroundProcesses('pane', [
+      { command: 'sleep', notify_on_complete: true, session_id: 'p1', status: 'running' }
+    ])
 
     setLiveWorkRosterSource('other-profile', [], 2_000, ['someone-else'])
 

@@ -7,14 +7,13 @@ from acp_adapter.session import (
 )
 
 
-def _store_scope(target):
-    """The profile scope of *target*, a Hermes home or a file in it."""
-    target = Path(target)
-    return profile_scope(home=target if target.is_dir() else target.parent)
+def _store_scope(home):
+    """The profile scope of *home*, a profile's folder."""
+    return profile_scope(home=Path(home))
 
 
-def read_catalog_rows(path):
-    scope = _store_scope(path)
+def read_catalog_rows(home):
+    scope = _store_scope(home)
     if not store_exists(scope):
         return {}
     from hermes_cli.gateway_session_store import SurfaceLabelReader
@@ -41,19 +40,19 @@ def _local_owners(persistence):
     return owners
 
 
-def read_local_owners(path):
-    scope = _store_scope(path)
+def read_local_owners(home):
+    scope = _store_scope(home)
     if not store_exists(scope):
         return {}
     with open_persistence_reader(scope.profile_dir) as persistence:
         return _local_owners(persistence)
 
 
-def logical_session_id(path, session_id):
+def logical_session_id(home, session_id):
     """The authority's logical id for an id an editor already holds: compression and a canonical
     reset advance the physical transcript, never the session identity (the local receipt's owner,
     else ``SessionAuthority.logical_owner``'s compression root)."""
-    scope = _store_scope(path)
+    scope = _store_scope(home)
     if not store_exists(scope):
         return session_id
     with open_persistence_reader(scope.profile_dir) as persistence:
@@ -62,11 +61,11 @@ def logical_session_id(path, session_id):
         return _local_owners(persistence).get(root, root)
 
 
-def catalog_sessions(path, cwd=None):
+def catalog_sessions(home, cwd=None):
     normalized = _normalize_cwd_for_compare(cwd) if cwd else None
-    owners = read_local_owners(path)
+    owners = read_local_owners(home)
     results = {}
-    for sid, row in read_catalog_rows(path).items():
+    for sid, row in read_catalog_rows(home).items():
         # The listing projects a compressed chat's tip; the editor must hold the logical id.
         sid = row.get("_lineage_root_id") or sid
         sid = owners.get(sid, sid)

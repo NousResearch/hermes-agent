@@ -36,18 +36,20 @@ def _release_db(db) -> None:
         db.close()
 
 
-def _bootstrap_served_profile_store(db_path: Path) -> None:
+def _bootstrap_served_profile_store(profile_home: Path) -> None:
     """A served profile whose first RPC is a read (Bot Chat registry lookup on a fresh bot) has no
-    ``state.db`` yet. Browsing never creates a store, but THIS process is the profile's session
+    store yet. Browsing never creates a store, but THIS process is the profile's session
     owner (``_open_profile_session_db`` acquires the writer for every agent build), so it seeds the
     store it is about to own instead of answering ``storage_unavailable`` until a turn happens."""
+    from persistence_assembly import open_persistence, profile_scope, store_exists, store_location
+    scope = profile_scope(home=Path(profile_home))
+    location = store_location(scope)
     try:
-        if db_path.stat().st_size > 0:
+        if store_exists(scope) if location is None else location.stat().st_size > 0:
             return
     except FileNotFoundError:
         pass
-    from persistence_assembly import open_persistence, profile_scope
-    open_persistence(profile_scope(home=db_path.parent), eager=True).close()
+    open_persistence(scope, eager=True).close()
 
 
 def _launch_persistence():

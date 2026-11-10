@@ -253,6 +253,36 @@ def test_engine_refuses_a_store_without_a_session_row():
     assert n == 0 and out is msgs
 
 
+def test_unflushed_tool_results_are_not_pruned_before_archive(tmp_path):
+    """Default-on pruning must not erase tool output that has not reached state.db.
+
+    A long ongoing turn can exceed protect_last_n before its transcript is flushed.
+    The in-place writer archives only durable rows; its full-rewrite fallback cannot
+    recover a tool result that was never in the database either.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli", model="test")
+    db.append_message("s1", role="user", content="Previous turn")
+    saved = db.get_messages_as_conversation("s1", include_row_ids=True)
+    for message in saved:
+        message[_DB_PERSISTED_MARKER] = True
+
+    # A running tool loop: prior user text is durable, but these large new
+    # tool outputs have not yet been flushed, so no archived originals exist.
+    pending = _history(20, big=set(range(18)), chars=24_000, start=1)
+    messages = [{"role": "system", "content": "sys"}, *saved,
+                {"role": "user", "content": "run checks"}, *pending]
+    compressor = _bound(db)
+    result, count = compressor.prune_tool_results_only(messages, current_tokens=300_000)
+
+    assert count == 0
+    assert result is messages
+    assert any(len(m.get("content", "")) == 24_000 for m in result if m["role"] == "tool")
+
+
 def test_cold_credit_survives_a_rebuilt_compressor(tmp_path):
     """api_server builds an agent per request and resumes rebuild the compressor: the credit is persisted with
     the runway in the same commit, and restored on bind."""

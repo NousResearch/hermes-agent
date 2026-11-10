@@ -44,3 +44,21 @@ async def test_preview_rejected_by_markdown_parser_retries_raw_text_once():
     first, retry = adapter._bot.edit_message_text.await_args_list
     assert first.kwargs["parse_mode"] == tg.ParseMode.MARKDOWN_V2
     assert "parse_mode" not in retry.kwargs and retry.kwargs["text"] == partial  # nothing lost
+
+
+@pytest.mark.asyncio
+async def test_final_edit_after_short_flood_wait_retries_in_markdown(monkeypatch):
+    adapter = _adapter()
+    flood = Exception("Flood control exceeded. Retry after 2 seconds")
+    flood.retry_after = 2.0
+    adapter._bot.edit_message_text.side_effect = [flood, None]
+    sleep = AsyncMock()
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", sleep)
+
+    result = await adapter.edit_message("123", "456", "Done: **bold**", finalize=True)
+
+    assert result.success is True
+    sleep.assert_awaited_once_with(2.0)
+    retry = adapter._bot.edit_message_text.await_args_list[-1]
+    assert retry.kwargs["parse_mode"] == tg.ParseMode.MARKDOWN_V2
+    assert retry.kwargs["text"] == adapter.format_message("Done: **bold**")

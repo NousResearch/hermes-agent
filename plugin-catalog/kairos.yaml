@@ -1,6 +1,6 @@
 name: kairos
 repo: https://github.com/Gens-ai/Kairos
-sha: ea600ecfcbbe58f18f9bbfc65155e94fcb2d5126
+sha: 368ae2d9a111bca750bd3a06787f11208b207aed
 description: >-
   Your coding agent, paying attention to when you stop. Hermes was already in
   the room at 3am, so it knows whether the build is green and whether you are
@@ -13,6 +13,10 @@ category: tools
 requires_hermes: ">=0.21"
 docs_url: https://github.com/Gens-ai/Kairos#readme
 version: "0.6.0"
+screenshots:
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/368ae2d9a111bca750bd3a06787f11208b207aed/docs/screenshots/pane.png
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/368ae2d9a111bca750bd3a06787f11208b207aed/docs/screenshots/settings-1.png
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/368ae2d9a111bca750bd3a06787f11208b207aed/docs/screenshots/settings-2.png
 readme: true
 platforms: [linux, macos]
 title: Kairos

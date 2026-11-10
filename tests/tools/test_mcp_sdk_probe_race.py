@@ -65,6 +65,19 @@ def test_concurrent_caller_sees_http_flag_set_by_lock_holder(cold_probe):
     """A thread that calls the probe while another is mid-import must not be told
     "ready" before the HTTP flag is published."""
     in_http_import, release = threading.Event(), threading.Event()
+    # Set once the second caller either reaches the probe lock or returns without it. Releasing
+    # the holder only after that makes the race deterministic on a busy runner.
+    waiter_progressed = threading.Event()
+    real_lock = mcp_tool._MCP_SDK_IMPORT_LOCK
+
+    class _ObservedLock:
+        def __enter__(self):
+            if threading.current_thread().name == "waiter":
+                waiter_progressed.set()
+            return real_lock.__enter__()
+
+        def __exit__(self, *exc_info):
+            return real_lock.__exit__(*exc_info)
 
     def hook(name, real):
         if name == "mcp.client.streamable_http" and threading.current_thread().name == "holder":
@@ -73,23 +86,26 @@ def test_concurrent_caller_sees_http_flag_set_by_lock_holder(cold_probe):
         return real()
 
     _patch_import(cold_probe, hook)
+    cold_probe.setattr(mcp_tool, "_MCP_SDK_IMPORT_LOCK", _ObservedLock())
     holder = threading.Thread(target=mcp_tool._ensure_mcp_sdk, name="holder")
     holder.start()
     assert in_http_import.wait(5)
 
     seen = {}
     def waiter():
-        seen["ready"] = mcp_tool._ensure_mcp_sdk()
-        seen["http"] = mcp_tool._MCP_HTTP_AVAILABLE
-    waiter_thread = threading.Thread(target=waiter)
+        try:
+            seen["ready"] = mcp_tool._ensure_mcp_sdk()
+            seen["http"] = mcp_tool._MCP_HTTP_AVAILABLE
+        finally:
+            waiter_progressed.set()
+    waiter_thread = threading.Thread(target=waiter, name="waiter")
     waiter_thread.start()
-    waiter_thread.join(0.3)
-    blocked_until_release = waiter_thread.is_alive()
+    assert waiter_progressed.wait(5), "second caller never reached the probe"
     release.set()
     holder.join(5)
     waiter_thread.join(5)
 
-    assert blocked_until_release, "second caller returned before the lock holder finished"
+    assert not holder.is_alive() and not waiter_thread.is_alive()
     assert seen == {"ready": True, "http": True}
 
 

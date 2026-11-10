@@ -5340,8 +5340,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # Frontends use this to detect a summary-prefixed message.
         msg[COMPRESSED_SUMMARY_METADATA_KEY], msg[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] = True, bool(self._summary_has_user_turn)
-        # Rewritten content: drop the stale api_content sidecar so replay can't resend pre-merge bytes.
-        drop_stale_api_content(msg)
+        # Rewritten content: stale api_content + an assistant row's signed reasoning can't replay (#152513).
+        drop_stale_api_content(msg, drop_reasoning=True)
 
     def _finalize_compressed(
         self, compressed: list[dict[str, Any]], messages: list[dict[str, Any]], n_messages: int,

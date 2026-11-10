@@ -1,41 +1,75 @@
-"""The hosted code fence: one process-wide enforcement point for in-process code loading.
+"""The hosted code-provenance guarantee, in three parts.
 
-The contract, in one sentence: in hosted mode no Hermes loader, and no import the
-interpreter performs, executes code whose file lies outside the image roots. Code the
-image itself runs (calls to marshal, ctypes, exec of in-memory strings) is trusted and
-out of scope — it is already running in the process, and it could rewrite this fence's
-own policy anyway, so the fence cannot and does not defend against it.
+(A) PRIMARY, the loader census: in hosted mode no Hermes code path loads Python from a
+path without first asking the ONE predicate, :func:`hosted_code_refusal`, and refusing
+when it says no — a plugin directory, a model or memory provider, a hook handler, a
+dashboard api file, a config schema, an update checkout: every loader consults the same
+answer before it loads. The census is structural and enforced by a test
+(:mod:`tests.hermes_cli.test_hosted_loader_census`): an AST scan of the repository
+finds every dynamic code-loading primitive (``runpy``, ``spec_from_file_location``,
+the ``importlib.machinery`` file loaders, ``zipimport``, non-literal
+``importlib.import_module``, ``exec``/``compile`` of file contents, ``sys.path``
+insertions) and each hit must either sit in a function that calls the predicate first
+or carry a named exemption explaining why its input is image-only — a NEW unguarded
+loader fails the census, so the guarantee does not depend on anyone noticing a new
+import site. The predicate itself (:func:`hosted_code_refusal`) is the single
+authority: a path is judged by its realpath against the allowed roots
+(:func:`allowed_inprocess_roots`), an entry point by the file its module resolves to.
 
-A shared process serves many tenants, and review rounds of per-loader provenance checks
-kept finding loaders that skipped them (a dotted entry point's parent package importing from
-the deployment home, a checked directory whose files inside it were not, discovery and warm-up
-paths, the model-provider entry-point scan, schema and declaration loaders). So enforcement
-moved here: an installed Python audit hook (``sys.addaudithook``; it cannot be removed
-afterwards) refuses to load ANY code whose file realpath is outside the deployment image's
-allowed roots. One choke point answers every loader alike, including loaders this repository
-does not know about.
+(B) INTERPRETER, isolated startup: the hosted start refuses to ARM — and the process
+exits non-zero — unless the interpreter itself started isolated from user and data
+site paths (:func:`startup_isolation_refusal`, consulted by
+:func:`arm_from_start_argv` before anything installs): user-site loading disabled
+(``sys.flags.no_user_site``, or ``site.ENABLE_USER_SITE`` false), no
+``sitecustomize``/``usercustomize`` whose file lies outside the image roots, and no
+``sys.meta_path``/``sys.path_hooks`` entry whose defining module's file lies outside
+the roots at arm time — refused rather than trusted, because a site hook that ran
+before the fence cannot be judged after the fact. This is a deployment prerequisite
+the fence can only verify, never retrofit: the image entrypoint must run python with
+``-I`` or ``-s`` plus ``PYTHONNOUSERSITE`` (an isolated venv with user site disabled
+satisfies it), from site directories the image owns.
+
+(C) DEFENCE IN DEPTH, the audit hook: the installed ``sys.addaudithook`` fence below
+is the third layer, not the guarantee. It refuses — at ``compile``, at the bytecode
+``open``, at ``import`` (extension paths and the import system's own inputs) — code
+whose file resolves outside the allowed roots, whatever a loader forgot, and it
+cannot be removed once installed. Its KNOWN LIMITS, deliberate and documented: zip
+bytecode raises no ``compile`` or ``open`` event for the member it executes; bytecode
+under a non-``.pyc``/``.pyo`` name slips the read-side suffix check; and in-process
+calls to the standard-library loaders (``importlib.import_module`` of a module in a
+zip added to ``sys.path``, ``zipimport.zipimporter(...).load_module``,
+``runpy.run_path`` of bytecode or a zip, a direct ``SourcelessFileLoader``) raise no
+event naming the real file at all. Those are exactly why (A) is primary: they are
+raw standard-library calls, and the census answers the question that matters about
+each of them — whether any HERMES loader can be driven to one with a
+data-directory path. If it can, the loader is guarded by the predicate and the case
+is a refusal test; if it cannot, in-process trusted code making the call is the
+documented boundary below (code already running in the process could rewrite this
+fence's own policy, so no in-process hook can defend against it).
 
 When the fence exists is itself enforced: the hosted start command carries the ``--hosted``
 flag, and :func:`arm_from_start_argv` — called as the FIRST statement of the gateway's entry
 modules, before their application imports — arms the fence from the flag alone (this module
-imports only the stdlib, so arming needs no config read and no Hermes import). The boot's
-preflight then confirms the flag against config and refuses a mismatch in either direction:
-a hosted boot that did not arm before its application imports refuses, and so does a flagged
-start on a deployment that is not hosted. :func:`install_hosted_code_fence` remains as the
-verdict-gated install for hosts that boot hosted in-process.
+imports only the stdlib, so arming needs no config read and no Hermes import), after the
+isolated-startup check (B). The boot's preflight then confirms the flag against config and
+refuses a mismatch in either direction: a hosted boot that did not arm before its
+application imports refuses, and so does a flagged start on a deployment that is not hosted.
+:func:`install_hosted_code_fence` remains as the verdict-gated install for hosts that boot
+hosted in-process.
 
-The allowed roots are the interpreter's own stdlib and ``sysconfig`` purelib/platlib (where the
-image's packages are installed) and the Hermes package's own tree (resolved from Hermes's code,
+The allowed roots are the interpreter's own stdlib and ``sysconfig`` purelib/platlib (where
+the image's packages are installed) and the Hermes package's own tree (resolved from Hermes's code,
 never from the deployment home, config or environment; the bundled plugins tree resolved the
 same way is inside it). ``sys.path`` entries outside those roots are pruned when the fence arms
 (:func:`prune_sys_path_outside_image` is the same pruning behind the frozen-verdict gate), so a
 ``.pth``-added home directory cannot even be searched afterwards — and the import event
 re-answers every entry the pruning judgment might miss later in the process.
 
-Once installed the fence cannot be disarmed: the hook consults nothing mutable — no verdict
-re-read, no flag to flip — and an audit hook cannot be removed. A later change to the boot's
-recorded verdict (a config edit, a second ``record_boot_config``) leaves an armed fence armed;
-``record_boot_config`` itself refuses a config that contradicts the frozen verdict.
+Once installed the fence is not disarmed by an edit to the boot's recorded state: the hook
+consults no verdict re-read and no flag to flip, and an audit hook cannot be removed. A later
+change to the boot's recorded verdict (a config edit, a second ``record_boot_config``) leaves
+an armed fence armed; ``record_boot_config`` itself refuses a config that contradicts the
+frozen verdict.
 
 Which audit events carry a code file's path was established empirically on this interpreter
 (CPython 3.14) and is asserted by the tests:
@@ -48,7 +82,9 @@ Which audit events carry a code file's path was established empirically on this 
   only this generic event on this build, so every open of a ``.pyc``/``.pyo`` whose realpath
   is outside the allowed roots is refused — a forged-bytecode file outside the image cannot
   even be read, whatever its header claims (verified: a forged-``co_filename`` ``.pyc``
-  imported sourceless runs without this check). Data files are untouched.
+  imported sourceless runs without this check). Data files are untouched. A bytecode file
+  renamed to a non-``.pyc`` suffix is NOT covered — that is one of the documented limits in
+  (C), answered by (A).
 * ``import`` (module, path, sys.path, sys.meta_path, sys.path_hooks) — two checks. For
   dynamically loaded extension modules (``_imp.create_dynamic``) the event carries the ``.so``
   file's path (``None`` for ordinary imports), so an extension module outside the image is
@@ -59,14 +95,9 @@ Which audit events carry a code file's path was established empirically on this 
   allowed roots, naming the entry, and likewise when ``sys.meta_path`` or ``sys.path_hooks``
   hold a finder or hook whose defining module's file is outside the roots — but only what
   the fence did not install over: the search entries and finders already present when the
-  fence installed are the operator's interpreter site initialization (a ``.pth``-installed
-  editable finder, a venv stack), the trusted bootstrap the fence cannot judge, and the
-  boot's pruning removes the entries among them that lie outside the image. No zip member
-  needs inspecting: the archive's own position on the search path answers it, whatever
-  loader (zipimport or a custom one) would read it. ``importlib.import_module`` and
-  ``find_spec`` do not raise this event; loads they drive are answered by the ``compile``
-  and ``open`` checks above (source and bytecode files), and the boot's preflight consults
-  :func:`hosted_code_refusal` before a config-named module ever loads.
+  fence installed are the operator's interpreter site initialization. The isolated-startup
+  check (B) is what refuses to arm at all when such an outside-defined finder is there at
+  arm time.
 * ``io.open_code`` (path) — handled for forward compatibility: on a build where the distinct
   event fires it becomes an authoritative read-side check for every code file, not only
   bytecode.
@@ -98,6 +129,7 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "HOSTED_BOOT_REFUSED_EXIT",
     "HostedCodeRefused",
     "allowed_inprocess_roots",
     "arm_from_start_argv",
@@ -106,7 +138,13 @@ __all__ = [
     "hosted_fence_installed",
     "install_hosted_code_fence",
     "prune_sys_path_outside_image",
+    "startup_isolation_refusal",
 ]
+
+
+# The exit a refused hosted start takes: the same fatal-config exit the boot's preflight
+# refusals use, named here (not imported) because the arm path must import no Hermes code.
+HOSTED_BOOT_REFUSED_EXIT = 78
 
 
 class HostedCodeRefused(ImportError):
@@ -267,6 +305,60 @@ def hosted_code_refusal(code_path=None, *, module: str | None = None) -> str:
                 + "resolves outside that image, so its distribution's metadata is not "
                   "provenance and the entry point is refused")
     return _refusal_for(code_path)
+
+
+def _finder_defining_file(finder) -> str:
+    """The file of the module that defines *finder* (its class, or its type), or ``""``
+    when it names no file (builtins, frozen finders — nothing to judge)."""
+    module_name = (getattr(finder, "__module__", None)
+                   or getattr(type(finder), "__module__", None))
+    module = sys.modules.get(module_name) if module_name else None
+    file = getattr(module, "__file__", None)
+    try:
+        return os.fspath(file) if file else ""
+    except TypeError:
+        return ""
+
+
+def startup_isolation_refusal() -> str:
+    """``""`` when the interpreter started isolated from user and data site paths, else
+    the reason a hosted start must refuse to arm. Three checks, all deployment
+    prerequisites the fence can verify but never retrofit:
+
+    * user-site loading must be disabled — ``sys.flags.no_user_site`` (a ``-I``/``-s``
+      start) or ``site.ENABLE_USER_SITE`` false (an isolated venv): with user site on,
+      a ``PYTHONUSERBASE`` in tenant-writable storage executes its ``.pth`` files and
+      ``usercustomize`` before any code of ours runs.
+    * no ``sitecustomize``/``usercustomize`` module whose file lies outside the image
+      roots may be loaded in this process — site initialization code that already ran
+      cannot be trusted after the fact, so the start refuses instead.
+    * no ``sys.meta_path``/``sys.path_hooks`` entry whose defining module's file lies
+      outside the roots may be present at arm time — refused rather than trusted, for
+      the same reason: pruning removes search entries, but a finder or hook such a
+      module installed keeps consulting whatever it wants.
+
+    This module imports only the stdlib, so the check runs at the arm — before any
+    application import — with ``site`` imported lazily (it is stdlib, but the fewer
+    imports before the arm the better)."""
+    import site
+
+    if not sys.flags.no_user_site and site.ENABLE_USER_SITE:
+        return ("this interpreter started with user-site loading enabled, so a "
+                "PYTHONUSERBASE .pth or usercustomize outside the deployment image would "
+                "run before the fence arms")
+    roots = allowed_inprocess_roots()
+    for name in ("sitecustomize", "usercustomize"):
+        module = sys.modules.get(name)
+        file = getattr(module, "__file__", None) if module is not None else None
+        if file and not _realpath_inside(file, roots):
+            return (f"the {name} module this interpreter loaded is defined by {file}, "
+                    "which resolves outside the deployment image")
+    for finder in (*sys.meta_path, *sys.path_hooks):
+        file = _finder_defining_file(finder)
+        if file and not _realpath_inside(file, roots):
+            return (f"the import system holds a finder or path hook defined by {file}, "
+                    "which resolves outside the deployment image")
+    return ""
 
 
 def _refuse_outside_image(path) -> None:
@@ -437,6 +529,14 @@ def arm_from_start_argv() -> bool:
     module imports only the stdlib; nothing in the arm consults Hermes). The boot's preflight
     later confirms the flag against config and refuses a mismatch in either direction.
 
+    The arm first refuses — exiting the process non-zero (:data:`HOSTED_BOOT_REFUSED_EXIT`)
+    — unless the interpreter itself started isolated from user and data site paths
+    (:func:`startup_isolation_refusal`): a user-site ``.pth`` or ``usercustomize`` in
+    tenant-writable storage, or a finder or path hook defined outside the image, cannot be
+    trusted once it has already run, so a hosted start on such an interpreter refuses to
+    serve at all. The deployment's image entrypoint must start python with ``-I`` or
+    ``-s`` plus ``PYTHONNOUSERSITE``.
+
     Arming also prunes every ``sys.path`` entry outside the image — so nothing outside it
     stays searchable once the application imports begin — and records what it removed in
     the boot log. The prune runs BEFORE the fence installs, so the bootstrap snapshot the
@@ -449,6 +549,13 @@ def arm_from_start_argv() -> bool:
     if _installed:  # an earlier arm (or an in-process install) already added the hook
         _armed_by_start_flag = True  # the start command carried the flag either way
         return False
+    refusal = startup_isolation_refusal()
+    if refusal:
+        print(
+            f"Hosted start refused: {refusal}. Start python with -I or -s plus "
+            "PYTHONNOUSERSITE from the deployment image's own site directories.",
+            file=sys.stderr, flush=True)
+        raise SystemExit(HOSTED_BOOT_REFUSED_EXIT)
     pruned = _prune_sys_path_outside_image()
     _install_hook()
     _armed_by_start_flag = True

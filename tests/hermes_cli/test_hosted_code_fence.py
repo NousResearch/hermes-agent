@@ -441,14 +441,19 @@ def test_a_path_hook_defined_outside_the_image_is_refused(tmp_path, hosted):
 
 
 def test_the_fence_documents_its_contract_about_code_already_running_in_the_process():
-    """The contract is written in the fence module's docstring, and stays there: the fence
-    judges loaders and imports, and trusts the image's own running code — which is what the
-    out-of-scope boundary tests below assert behaviourally."""
+    """The contract is written in the fence module's docstring, and stays there: the
+    guarantee is three parts — the loader census is primary, the hosted start must be
+    isolated, and the audit hook is defence in depth — and the hook trusts the image's
+    own running code, which is what the out-of-scope boundary tests below assert
+    behaviourally."""
     doc = " ".join((hosted_code_fence.__doc__ or "").split())  # line-wrapping is not the contract
-    assert ("in hosted mode no Hermes loader, and no import the interpreter performs, "
-            "executes code whose file lies outside the image roots") in doc
-    assert ("Code the image itself runs (calls to marshal, ctypes, exec of in-memory "
-            "strings) is trusted and out of scope") in doc
+    assert "(A) PRIMARY, the loader census" in doc
+    assert "(B) INTERPRETER, isolated startup" in doc
+    assert "(C) DEFENCE IN DEPTH, the audit hook" in doc
+    assert ("code already running in the process could rewrite this fence's own "
+            "policy, so no in-process hook can defend against it") in doc
+    assert ("``ctypes`` loading, ``marshal`` deserialization and ``exec`` of "
+            "in-memory strings by such code are likewise out of scope") in doc
 
 
 def test_the_images_own_bytecode_caches_still_load(hosted):

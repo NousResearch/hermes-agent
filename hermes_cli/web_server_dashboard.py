@@ -1248,6 +1248,15 @@ def _mount_one_plugin_api(app, plugin: dict[str, Any], enabled_set: set, disable
     if not api_path.exists():
         _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
         return False
+    # A backend api file under the deployment home is tenant-writable code: the one
+    # shared predicate refuses it in hosted mode before it is read, so the dashboard of a
+    # hosted deployment mounts only the plugins its image bundles.
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    refusal = hosted_code_refusal(api_path)
+    if refusal:
+        _log.error("Plugin %s api mount refused in hosted mode: %s", plugin.get("name", ""), refusal)
+        return False
     try:
         from hermes_cli.plugin_isolation import import_user_code
         # Registered in sys.modules while the body runs so pydantic/FastAPI can resolve

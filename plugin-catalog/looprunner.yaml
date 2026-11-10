@@ -1,26 +1,33 @@
 name: looprunner
 repo: https://github.com/itxLikhith/looprunner
-sha: 2e96b6689b713ea966d8563a00224dd92ed60f49
+sha: 08ab80c942f54813cf8a1e99ecc76aab5f1fb607
 description: >-
   Set-and-forget autonomous QA loop runner for any repository. Runs your verify
-  command each round, analyzes failures, applies minimal fixes on a working
-  branch, opens PRs, and repeats — no manual intervention.
+  command each round, diagnoses failures with the host LLM, applies a minimal fix
+  on a branch, opens a PR, and stops itself when it stalls or runs out of budget.
 maintainer: itxLikhith
 tier: community
 category: automation
 requires_hermes: ">=0.22.0"
-version: "0.7.2"
-docs_url: https://github.com/itxLikhith/looprunner
+version: "0.8.0"
+tags: [automation, qa, testing, ci, autonomous]
 capabilities:
   provides_tools:
     - loop_start
     - loop_tick
+    - loop_verify
+    - loop_status
+    - loop_history
+    - loop_analyze
     - loop_recommend
     - loop_commit
-    - loop_status
+    - loop_revert
     - loop_pause
     - loop_resume
     - loop_stop
   provides_hooks:
     - pre_llm_call
     - post_tool_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

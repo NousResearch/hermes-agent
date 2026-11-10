@@ -32,7 +32,11 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin
-from agent.context_compressor_prune import ProactivePruneMixin
+from agent.context_compressor_prune import (
+    SKILL_PRUNED_MARKER_PREFIX, ProactivePruneMixin, _MAX_PRUNED_SKILL_MARKERS,
+    _PRUNED_SKILLS_SECTION_HEADING, _collect_ghosted_skill_names, _extract_pruned_skill_names,
+    _reinject_pruned_skill_markers, _skill_pruned_marker, _skill_view_failed,
+)
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
 from agent.context_compressor_retry import retryable_user_text, typed_prompt_content
@@ -549,7 +553,7 @@ def _looks_like_compaction_summary(msg: dict[str, Any], content: str) -> bool:
 
 def _salvage_reduce_todo_snapshot(out: list[dict[str, Any]]) -> None:
     """Last-resort shrink: drop the synthetic todo snapshot, keeping only a pruned-skill reload notice if present."""
-    from agent.conversation_compression import _PRUNED_SKILL_RELOAD_NOTICE_HEADER
+    from agent.conversation_compression_skill_prune import _PRUNED_SKILL_RELOAD_NOTICE_HEADER
     for i in range(len(out) - 1, -1, -1):
         msg = out[i]
         if not isinstance(msg, dict) or not (msg.get("_todo_snapshot_synthetic") and msg.get("role") == "user"):
@@ -845,77 +849,6 @@ def _is_summary_stub(content: str) -> bool:
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
 # user answer is never re-summarized away on a later prune pass.
 _PRUNE_MIN_CHARS = 200
-
-# Ghost-skill defense: the ONE canonical prune marker; emit sites and presence
-# checks must use the same string so they cannot drift.
-# Ghost-skill defense (#32106): when compaction reduces an old ``skill_view`` result to a 1-line metadata
-# summary, the model still believes the skill is loaded even though its instructions are gone. The marker
-# below is the ONE canonical prune signal — ``_skill_pruned_marker()`` builds it and every presence check
-# matches against the same string, so the emit side and the check side can never drift apart (the original
-# PR #44166 emitted ``[SKILL_PRUNED:`` but presence-checked ``[SKILL_PRUNED]``, making re-injection fire
-# even when the marker had survived).
-SKILL_PRUNED_MARKER_PREFIX = "[SKILL_PRUNED:"
-# Bounds the re-injected "## Pruned Skills" block; newest-referenced win.
-_MAX_PRUNED_SKILL_MARKERS = 20
-
-
-def _skill_pruned_marker(skill_name: str) -> str:
-    """Return the canonical prune marker for *skill_name* (shared by emit and check sites)."""
-    return (
-        f"{SKILL_PRUNED_MARKER_PREFIX} content lost in compression; "
-        f"reload with skill_view(name='{skill_name}')]"
-    )
-
-
-# Anchored on the shared prefix so marker wording changes stay in sync.
-_SKILL_PRUNED_MARKER_RE = re.compile(
-    re.escape(SKILL_PRUNED_MARKER_PREFIX) + r"[^\]]*?reload with skill_view\(name='([^']+)'\)",
-)
-
-
-def _extract_pruned_skill_names(text: str) -> list[str]:
-    """Return skill names referenced by prune markers in *text*, in order."""
-    return list(dict.fromkeys(m.group(1) for m in _SKILL_PRUNED_MARKER_RE.finditer(text or "")))
-
-
-def _skill_view_failed(content: Any) -> bool:
-    """True for a ``skill_view`` that loaded nothing: the raw failure payload or its ``[skill_view] … FAILED`` stub."""
-    if not isinstance(content, str):
-        return False
-    return bool(_result_failure_suffix(content)) or (
-        content.startswith("[skill_view] ") and " FAILED" in content.split(" (", 1)[0])
-
-
-def _collect_ghosted_skill_names(turns: list[dict[str, Any]]) -> list[str]:
-    """Skills about to be lost in compaction, whatever their size: marked or plain ``skill_view`` stubs, raw
-    ``skill_view`` bodies, and skills a ``/skill``, bundle or auto-load turn carried inline."""
-    from agent.skill_commands import skills_loaded_by_scaffold
-    call_id_to_skill = skill_view_names_by_call_id(turns)
-    names: list[str] = []
-    for msg in turns:
-        content = msg.get("content")
-        text = _content_text_for_contains(content)
-        names += _extract_pruned_skill_names(text)
-        if msg.get("role") == "user":
-            names += skills_loaded_by_scaffold(text)
-        elif msg.get("role") == "tool" and not _skill_view_failed(content) and not is_demoted_stub(text):
-            names.append(call_id_to_skill.get(str(msg.get("tool_call_id") or ""), ""))
-    return [name for name in dict.fromkeys(names) if name]
-
-
-_PRUNED_SKILLS_SECTION_HEADING = "## Pruned Skills"
-
-
-def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
-    """Deterministically restore prune markers the summarizer dropped.
-    Presence is checked against the canonical marker string; the appended block is plain body text (no
-    handoff prefix/scaffolding) and is redacted like all others."""
-    missing = [_skill_pruned_marker(name) for name in skill_names if _skill_pruned_marker(name) not in summary]
-    if not missing:
-        return summary
-    # How to react to the markers is the handoff's Skill Safety Rule (``with_skill_safety_rule``), not repeated here.
-    return summary + _redact_compaction_text("\n\n" + _PRUNED_SKILLS_SECTION_HEADING + "\n" + "\n".join(missing))
-
 
 # Lean tail mode: small recency window; continuity via verbatim user messages in
 # the summary, tool-result stubs with recovery pointers, and a session_search footer.
@@ -4247,7 +4180,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB, _LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         )
-        from agent.conversation_compression import _PRUNED_SKILL_RELOAD_NOTICE_HEADER as _reload_notice_prefix
+        from agent.conversation_compression_skill_prune import _PRUNED_SKILL_RELOAD_NOTICE_HEADER as _reload_notice_prefix
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT, _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
             MAX_ITERATIONS_SUMMARY_REQUEST, _CODEX_INCOMPLETE_NUDGE, _CODEX_ACK_CONTINUATION_NUDGE,

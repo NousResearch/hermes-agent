@@ -31,10 +31,12 @@ from agent.context_compressor import (
     _skill_pruned_marker,
 )
 from agent.conversation_compression import (
-    _PRUNED_SKILL_RELOAD_NOTICE_HEADER,
     _is_real_user_message as _conversation_is_real_user,
-    _pruned_skill_reload_notice,
     _strip_stale_todo_snapshot,
+)
+from agent.conversation_compression_skill_prune import (
+    _PRUNED_SKILL_RELOAD_NOTICE_HEADER,
+    _pruned_skill_reload_notice,
 )
 from hermes_state import SessionDB
 from tools.todo_tool import TODO_INJECTION_HEADER

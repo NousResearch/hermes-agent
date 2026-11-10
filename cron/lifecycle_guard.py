@@ -1209,8 +1209,7 @@ def _contains_unsafe_gateway_action(
         # mention (#113944 mode) instead: the body is still scanned for a literal lifecycle command
         # and the paths it names are still read and scanned — only the fail-closed verdicts (budget,
         # size, unreadable) become "nothing to scan" for that subtree.
-        if candidate_executed and _shebang_names_non_shell(script_text):
-            candidate_executed = False
+        candidate_executed = candidate_executed and not _shebang_names_non_shell(script_text)
         # Relative references inside a script resolve against that script's directory, not the cwd.
         if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd,
                    str(resolved), candidate_executed):

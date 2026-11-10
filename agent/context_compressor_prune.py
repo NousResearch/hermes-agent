@@ -10,6 +10,7 @@ module, and every origin-module symbol is read through ``_cc()`` at call time so
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger("agent.context_compressor")
@@ -187,3 +188,74 @@ class ProactivePruneMixin:
         except PruneRowUnresolvedError as exc:
             logger.info("Proactive prune: in-place rewrite refused (%s); using the full rewrite", exc)
             return None
+
+
+# Ghost-skill defense: the ONE canonical prune marker; emit sites and presence
+# checks must use the same string so they cannot drift.
+# Ghost-skill defense (#32106): when compaction reduces an old ``skill_view`` result to a 1-line metadata
+# summary, the model still believes the skill is loaded even though its instructions are gone. The marker
+# below is the ONE canonical prune signal — ``_skill_pruned_marker()`` builds it and every presence check
+# matches against the same string, so the emit side and the check side can never drift apart (the original
+# PR #44166 emitted ``[SKILL_PRUNED:`` but presence-checked ``[SKILL_PRUNED]``, making re-injection fire
+# even when the marker had survived).
+SKILL_PRUNED_MARKER_PREFIX = "[SKILL_PRUNED:"
+# Bounds the re-injected "## Pruned Skills" block; newest-referenced win.
+_MAX_PRUNED_SKILL_MARKERS = 20
+
+
+def _skill_pruned_marker(skill_name: str) -> str:
+    """Return the canonical prune marker for *skill_name* (shared by emit and check sites)."""
+    return (
+        f"{SKILL_PRUNED_MARKER_PREFIX} content lost in compression; "
+        f"reload with skill_view(name='{skill_name}')]"
+    )
+
+
+# Anchored on the shared prefix so marker wording changes stay in sync.
+_SKILL_PRUNED_MARKER_RE = re.compile(
+    re.escape(SKILL_PRUNED_MARKER_PREFIX) + r"[^\]]*?reload with skill_view\(name='([^']+)'\)",
+)
+
+
+def _extract_pruned_skill_names(text: str) -> list[str]:
+    """Return skill names referenced by prune markers in *text*, in order."""
+    return list(dict.fromkeys(m.group(1) for m in _SKILL_PRUNED_MARKER_RE.finditer(text or "")))
+
+
+def _skill_view_failed(content: Any) -> bool:
+    """True for a ``skill_view`` that loaded nothing: the raw failure payload or its ``[skill_view] … FAILED`` stub."""
+    if not isinstance(content, str):
+        return False
+    return bool(_cc()._result_failure_suffix(content)) or (
+        content.startswith("[skill_view] ") and " FAILED" in content.split(" (", 1)[0])
+
+
+def _collect_ghosted_skill_names(turns: list[dict[str, Any]]) -> list[str]:
+    """Skills about to be lost in compaction, whatever their size: marked or plain ``skill_view`` stubs, raw
+    ``skill_view`` bodies, and skills a ``/skill``, bundle or auto-load turn carried inline."""
+    from agent.skill_commands import skills_loaded_by_scaffold
+    call_id_to_skill = _cc().skill_view_names_by_call_id(turns)
+    names: list[str] = []
+    for msg in turns:
+        content = msg.get("content")
+        text = _cc()._content_text_for_contains(content)
+        names += _extract_pruned_skill_names(text)
+        if msg.get("role") == "user":
+            names += skills_loaded_by_scaffold(text)
+        elif msg.get("role") == "tool" and not _skill_view_failed(content) and not _cc().is_demoted_stub(text):
+            names.append(call_id_to_skill.get(str(msg.get("tool_call_id") or ""), ""))
+    return [name for name in dict.fromkeys(names) if name]
+
+
+_PRUNED_SKILLS_SECTION_HEADING = "## Pruned Skills"
+
+
+def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
+    """Deterministically restore prune markers the summarizer dropped.
+    Presence is checked against the canonical marker string; the appended block is plain body text (no
+    handoff prefix/scaffolding) and is redacted like all others."""
+    missing = [_skill_pruned_marker(name) for name in skill_names if _skill_pruned_marker(name) not in summary]
+    if not missing:
+        return summary
+    # How to react to the markers is the handoff's Skill Safety Rule (``with_skill_safety_rule``), not repeated here.
+    return summary + _cc()._redact_compaction_text("\n\n" + _PRUNED_SKILLS_SECTION_HEADING + "\n" + "\n".join(missing))

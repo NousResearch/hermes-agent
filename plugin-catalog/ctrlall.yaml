@@ -1,0 +1,47 @@
+name: ctrlall
+title: ctrl+all
+repo: https://github.com/namangoyal3/hermes-ctrlall
+sha: 9b4908974cdafc71a8b46e7e7e95c6ae7beebe25
+description: >-
+  Drive ctrl+all on your Mac from any Hermes conversation: launch and steer
+  multiplayer coding-agent chats on the engines you already pay for (Claude
+  Code, Gemini, opencode), read transcripts and the team inbox, and review
+  git status and diffs. The plugin calls the ctrl+all daemon's authenticated
+  loopback RPC; the daemon owns every permission gate (plan / ask / auto-edit
+  / full-auto modes, engine boundaries, project fencing). Disclosure: network
+  calls go only to the configured daemon URL (default loopback
+  127.0.0.1:9931) - no third-party endpoints, telemetry or analytics; the
+  daemon token is read through Hermes's secret scope (CTRLALL_DAEMON_TOKEN),
+  never from ~/.ctrlall, .env files or any other credential store;
+  ctrlall_chat_create, ctrlall_chat_send and ctrlall_chat_mode start or steer
+  real coding-agent turns on your Mac under the daemon's permission mode; the
+  plugin reads no files, runs no shell commands and starts no background
+  processes; Python standard library only; no self-updater.
+maintainer: namangoyal3
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "0.1.0"
+docs_url: https://github.com/namangoyal3/hermes-ctrlall#readme
+readme: true
+platforms: [macos]
+capabilities:
+  provides_tools:
+    - ctrlall_ping
+    - ctrlall_capabilities
+    - ctrlall_providers
+    - ctrlall_chats
+    - ctrlall_chat_create
+    - ctrlall_chat_send
+    - ctrlall_chat_wait
+    - ctrlall_chat_tail
+    - ctrlall_chat_search
+    - ctrlall_chat_cancel
+    - ctrlall_chat_mode
+    - ctrlall_inbox
+    - ctrlall_git_status
+    - ctrlall_git_diff
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CTRLALL_DAEMON_TOKEN

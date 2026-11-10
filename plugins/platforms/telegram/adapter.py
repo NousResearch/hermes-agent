@@ -6142,11 +6142,13 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Album items debounce on media_group_id; singles go through the photo burst batcher."""
         if self._drop_unresolved(event):  # identity FIRST: the batch lane is derived from it
             return
-        absorb_claimed_text(self, msg, event)  # the question typed just before this image joins its turn
-        if media_group_id := getattr(msg, "media_group_id", None):
+        media_group_id = getattr(msg, "media_group_id", None)
+        burst_key = "" if media_group_id else self._photo_batch_key(event, msg)  # pre-absorb: one lane per burst
+        absorb_claimed_text(self, msg, event)  # the question typed just before this image joins its turn (and topic)
+        if media_group_id:
             await self._queue_media_group_event(str(media_group_id), event)
         else:
-            self._enqueue_photo_event(self._photo_batch_key(event, msg), event)
+            self._enqueue_photo_event(burst_key, event)
 
     @staticmethod
     def _ext_from_path(file_path: Optional[str], candidates, default: str) -> str:

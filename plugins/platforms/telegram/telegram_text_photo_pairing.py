@@ -20,6 +20,7 @@ import os
 from typing import Any, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
+from plugins.platforms.telegram.telegram_batching import adopt_routing
 from plugins.platforms.telegram.telegram_media_group import tracking_album_items
 
 # Upper bound on how long a due text flush waits for a claiming image's download.
@@ -69,14 +70,18 @@ def absorb_claimed_text(adapter: Any, msg: Any, event: MessageEvent) -> None:
     """Move the claimed text into the image ``event`` (text first, then the caption) and cancel its flush.
 
     Only when the image lands in the same session/topic lane as the text: the key is recomputed on a
-    copy because ``_text_batch_key`` applies topic recovery in place.
+    copy because ``_text_batch_key`` applies topic recovery in place. The image then takes that
+    lane's routing (the topic the question was already recovered into), so the merged turn cannot
+    move to a topic bound later while the photo debounces.
     """
     claim = _claims(adapter).get(id(msg))
     if claim is None:
         return
     key, pending, _done = claim
-    if adapter._pending_text_batches.get(key) is not pending or adapter._text_batch_key(copy.copy(event)) != key:
+    routed = copy.copy(event)
+    if adapter._pending_text_batches.get(key) is not pending or adapter._text_batch_key(routed) != key:
         return  # flushed already (claim wait expired), or another lane
+    adopt_routing(event, routed)
     adapter._pending_text_batches.pop(key, None)
     task = adapter._pending_text_batch_tasks.pop(key, None)
     if task is not None and not task.done():

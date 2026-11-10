@@ -16,12 +16,24 @@ def pad_inline_flags(event: MessageEvent) -> list[Optional[bool]]:
     return flags + [None] * (len(event.media_urls) - len(flags))
 
 
+def adopt_routing(event: MessageEvent, routed: MessageEvent) -> None:
+    """Give ``event`` the session routing already resolved on ``routed``: its source (identity kept)
+    and the topic's prompt inputs, marked so a later merge keeps it. Every site that folds a
+    question's turn into another event goes through here, so the merged turn never re-derives its
+    topic from the newest binding at dispatch (a question recovered into topic 10 must not move)."""
+    event.source = routed.source
+    event.auto_skill, event.channel_prompt = routed.auto_skill, routed.channel_prompt
+    event._routing_pinned = True  # type: ignore[attr-defined]
+
+
 def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_caption) -> None:
     """Retain each attachment's inlining semantics when combining album items."""
     existing = pending.get(key)
     if existing is None:
         pending[key] = event
         return
+    if getattr(event, "_routing_pinned", False) and not getattr(existing, "_routing_pinned", False):
+        adopt_routing(existing, event)  # a later album item absorbed the question: the album joins its topic
     existing.absorb_reply_expected(event)
     existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
     existing.extend_media(event)

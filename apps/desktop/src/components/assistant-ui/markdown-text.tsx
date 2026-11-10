@@ -15,6 +15,7 @@ import {
   isValidElement,
   memo,
   type ReactNode,
+  useDeferredValue,
   useEffect,
   useMemo,
   useState
@@ -514,7 +515,6 @@ function MarkdownImageContent({
 interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
-  defer?: boolean
   /** This text is the model's private scratchpad (reasoning), so nothing in it
    *  may be promoted into app chrome: no artifact cards from fenced blocks (a
    *  draft must not register artifact versions), and no transcript directives
@@ -667,13 +667,18 @@ function MarkdownTextSurface({
   containerClassName,
   containerProps,
   decorateText,
-  defer,
   disableArtifacts,
   previewOnly,
   scratchpad,
   textDirection
 }: MarkdownTextSurfaceProps) {
-  const { status, text } = useMessagePartText()
+  // The whole surface renders the DEFERRED part. StreamdownTextPrimitive runs
+  // `preprocess` (full-text regex passes + the remend boundary scan, O(N)) on
+  // its context part before its own `defer`, i.e. at urgent priority on every
+  // flush. Deferring the part here and republishing it below means the urgent
+  // render sees an unchanged part and bails out; all text work (preprocess,
+  // split, parse) runs only in the interruptible deferred render.
+  const { status, text } = useDeferredValue(useMessagePartText())
   // List/quote boxes resolve from content under Auto (see the ul/ol/blockquote
   // notes below); an explicit choice replaces that vote rather than nesting it.
   const boxDir = textDirection ?? 'auto'
@@ -842,24 +847,25 @@ function MarkdownTextSurface({
       fallback={() => <HugeTextFallback containerClassName={containerClassName} text={text} />}
       label="markdown-render"
     >
-      <StreamdownTextPrimitive
-        components={components}
-        containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
-        containerProps={surfaceContainerProps}
-        defer={defer}
-        lineNumbers={false}
-        mode="streaming"
-        // Incomplete-markdown repair runs in preprocessWithTailRepair on the
-        // full accumulated text; the built-in tail-bounded remend is disabled
-        // because a custom parseMarkdownIntoBlocksFn is supplied, and
-        // parseIncompleteMarkdown stays false to avoid a second full-text
-        // remend pass.
-        parseIncompleteMarkdown={false}
-        parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
-        plugins={plugins}
-        preprocess={preprocessWithTailRepair}
-        remarkPlugins={REMARK_PLUGINS}
-      />
+      <TextMessagePartProvider isRunning={isStreaming} text={text}>
+        <StreamdownTextPrimitive
+          components={components}
+          containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
+          containerProps={surfaceContainerProps}
+          lineNumbers={false}
+          mode="streaming"
+          // Incomplete-markdown repair runs in preprocessWithTailRepair on the
+          // full accumulated text; the built-in tail-bounded remend is disabled
+          // because a custom parseMarkdownIntoBlocksFn is supplied, and
+          // parseIncompleteMarkdown stays false to avoid a second full-text
+          // remend pass.
+          parseIncompleteMarkdown={false}
+          parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
+          plugins={plugins}
+          preprocess={preprocessWithTailRepair}
+          remarkPlugins={REMARK_PLUGINS}
+        />
+      </TextMessagePartProvider>
     </ErrorBoundary>
   )
 }
@@ -908,7 +914,7 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
   // coarse summary updates too rarely to notice. Plain append matches the answer.
   return (
     <TextMessagePartProvider isRunning={isRunning} text={text}>
-      <MarkdownTextSurface defer {...surfaceProps} />
+      <MarkdownTextSurface {...surfaceProps} />
     </TextMessagePartProvider>
   )
 }
@@ -916,7 +922,7 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
 const MarkdownTextImpl = () => {
   const textDirection = useForcedTextDirection()
 
-  return <MarkdownTextSurface defer textDirection={textDirection} />
+  return <MarkdownTextSurface textDirection={textDirection} />
 }
 
 export const MarkdownText = memo(MarkdownTextImpl)

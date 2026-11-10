@@ -33,9 +33,70 @@ def _readers():
     }
 
 
-@pytest.mark.parametrize("case", CASES, ids=lambda c: repr(c.get("enabled", "<absent>")))
+@pytest.mark.parametrize("case", CASES, ids=lambda c: repr({k: v for k, v in c.items() if k != "on"}))
 def test_every_reader_agrees_with_the_shared_table(case):
     entry = {k: v for k, v in case.items() if k != "on"}
     answers = {name: bool(read({"command": "x", **entry})) for name, read in _readers().items()}
 
     assert answers == dict.fromkeys(answers, case["on"])
+
+
+def _spawned(monkeypatch) -> list:
+    import tools.mcp_tool as core
+    from tools import mcp_tool_discovery as discovery
+
+    spawned: list = []
+    monkeypatch.setattr(core, "_ensure_mcp_sdk", lambda: True)
+    monkeypatch.setattr(discovery._loop, "_ensure_mcp_loop", lambda: None)
+    monkeypatch.setattr(discovery, "_run_discovery_pass", lambda servers: spawned.extend(sorted(servers)))
+    monkeypatch.setattr(discovery, "_acquire_discovery_lock_with_retry", lambda: None)
+    monkeypatch.setattr(discovery, "_register_lazy_from_cache", lambda s: (s, 0, 0))
+    for state in ("_servers", "_server_connecting", "_lazy_server_configs", "_server_scope_keys"):
+        monkeypatch.setattr(core, state, type(getattr(core, state))())
+    discovery.discover_mcp_tools()
+    return spawned
+
+
+def _picker(name):
+    from hermes_cli.mcp_picker import _enable_disable
+
+    _enable_disable(name, enable=True)
+
+
+def _route(name):
+    import asyncio
+
+    from hermes_cli.web_models import MCPEnabledToggle
+    from hermes_cli.web_routers.mcp import set_mcp_server_enabled
+
+    asyncio.run(set_mcp_server_enabled(name, MCPEnabledToggle(enabled=True)))
+
+
+def _connector(name):
+    from tools.connectors.mcp import _CatalogBackend
+
+    _CatalogBackend().enable(name)
+
+
+@pytest.mark.parametrize("enable", [_picker, _route, _connector], ids=["picker", "PUT route", "connector"])
+def test_enable_clears_a_legacy_disabled_so_the_server_spawns(enable, tmp_path, monkeypatch):
+    """The reader lets a legacy `disabled: true` win over `enabled`, so an enable that only set
+    `enabled` reported success and left the server off. Every enable writer drops the key."""
+    import hermes_yaml as yaml
+    from hermes_cli.config import DEFAULT_CONFIG, load_config
+    from tools.mcp_tool_common import mcp_server_enabled
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "_config_version": DEFAULT_CONFIG["_config_version"],
+        "mcp_servers": {"s": {"command": "true", "disabled": True}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert _spawned(monkeypatch) == []
+
+    enable("s")
+
+    entry = yaml.safe_load(config_path.read_text(encoding="utf-8"))["mcp_servers"]["s"]
+    assert "disabled" not in entry and entry["enabled"] is True
+    assert mcp_server_enabled(load_config()["mcp_servers"]["s"]) is True
+    assert _spawned(monkeypatch) == ["s"]

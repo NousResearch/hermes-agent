@@ -1,0 +1,38 @@
+name: coursewright
+repo: https://github.com/NehuenD/hermes_coursewright
+sha: 8f756d4ecb300f20888469ae919bb62e737ca2ef
+title: Coursewright
+description: >-
+  `/course <topic>` turns a subject into one self-contained HTML course at three depths, novice,
+  intermediate and advanced, switched in place without a reload. It researches before it writes: it searches
+  through whatever web backend the host has configured, reads the pages it finds, collects
+  videos that carry captions, and lists every source, dead end and filtered result in a footer.
+  The model never writes HTML; it fills a validated spec and a renderer draws the page. Figures
+  are drawn from the course's own outline — layered diagrams, sequence diagrams, small charts —
+  and every section ends with an exercise that answers back.
+  Disclosure — needs network access: the course is written by the host model through ctx.llm,
+  pages are read over the web with the host's own extractor or a configured scraper, and video
+  lookups run yt-dlp and youtube-transcript-api. It writes only its own plugin data directory
+  plus an optional copy under ~/Courses, and owns no credentials of its own.
+maintainer: NehuenD
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/NehuenD/hermes_coursewright#readme
+version: "0.5.1"
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/8f756d4ecb300f20888469ae919bb62e737ca2ef/docs/screenshots/cover-graphite.png
+  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/8f756d4ecb300f20888469ae919bb62e737ca2ef/docs/screenshots/cover-seaglass.png
+  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/8f756d4ecb300f20888469ae919bb62e737ca2ef/docs/screenshots/cover-carbon-gold.png
+  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/8f756d4ecb300f20888469ae919bb62e737ca2ef/docs/screenshots/cover-risograph.png
+  - https://raw.githubusercontent.com/NehuenD/hermes_coursewright/8f756d4ecb300f20888469ae919bb62e737ca2ef/docs/screenshots/figure-sequence.png
+capabilities:
+  provides_tools:
+    - coursewright_plan
+    - coursewright_build
+    - coursewright_list
+    - coursewright_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

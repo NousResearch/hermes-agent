@@ -118,12 +118,6 @@ class _TrackingMixin:
         super().set_authorizer(authorizer_callback)  # type: ignore[misc]
         self._hermes_authorizer_callback = authorizer_callback
 
-    def _hermes_set_scoped_authorizer(self, authorizer_callback, *, locked: bool) -> None:
-        """Internal policy swap that cannot be undone through the public setter."""
-        super().set_authorizer(authorizer_callback)  # type: ignore[misc]
-        self._hermes_authorizer_callback = authorizer_callback
-        self._hermes_authorizer_locked = locked
-
     def close(self) -> None:  # type: ignore[misc]
         with _live_lock:
             path = getattr(self, "_hermes_tracked_path", None)

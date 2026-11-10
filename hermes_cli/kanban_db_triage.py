@@ -178,7 +178,7 @@ _GUARD_DENIED_ACTIONS = frozenset(
 def _guard_authorizer(conn: sqlite3.Connection) -> Iterator[None]:
     """Deny recursive writes/txn control during a guard, then restore policy."""
     previous = getattr(conn, "_hermes_authorizer_callback", None)
-    scoped_setter = getattr(conn, "_hermes_set_scoped_authorizer", None)
+    tracked_policy = hasattr(conn, "_hermes_authorizer_locked")
 
     def authorize(action, arg1, arg2, database, source):
         if previous is not None:
@@ -189,15 +189,19 @@ def _guard_authorizer(conn: sqlite3.Connection) -> Iterator[None]:
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK
 
-    if scoped_setter is not None:
-        scoped_setter(authorize, locked=True)
+    if tracked_policy:
+        sqlite3.Connection.set_authorizer(conn, authorize)
+        conn._hermes_authorizer_callback = authorize  # type: ignore[attr-defined]
+        conn._hermes_authorizer_locked = True  # type: ignore[attr-defined]
     else:
         conn.set_authorizer(authorize)
     try:
         yield
     finally:
-        if scoped_setter is not None:
-            scoped_setter(previous, locked=False)
+        if tracked_policy:
+            sqlite3.Connection.set_authorizer(conn, previous)
+            conn._hermes_authorizer_callback = previous  # type: ignore[attr-defined]
+            conn._hermes_authorizer_locked = False  # type: ignore[attr-defined]
         else:
             conn.set_authorizer(previous)
 

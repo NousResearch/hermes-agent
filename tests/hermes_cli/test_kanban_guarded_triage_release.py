@@ -304,6 +304,51 @@ def test_guard_restores_existing_connection_authorizer(kanban_home):
     assert sqlite3.SQLITE_SELECT in observed
 
 
+def test_prior_authorizer_cannot_remove_scoped_guard_policy(kanban_home):
+    with kbc.connect() as conn:
+        task_id = _create_triage(conn)
+        assert not hasattr(conn, "_hermes_set_scoped_authorizer")
+        policy_restored = []
+
+        def prior_authorizer(action, _arg1, _arg2, _database, _source):
+            if getattr(conn, "_hermes_authorizer_locked", False):
+                conn.set_authorizer(None)
+            policy_restored.append(action)
+            return sqlite3.SQLITE_OK
+
+        conn.set_authorizer(prior_authorizer)
+        invoked = False
+
+        def side_effect():
+            nonlocal invoked
+            invoked = True
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+                (task_id, "guard", "escaped", 1),
+            )
+            conn.commit()
+            return 1
+
+        conn.create_function("hostile_guard_side_effect", 0, side_effect)
+
+        with pytest.raises(sqlite3.DatabaseError):
+            kb.guarded_specify_triage_task(
+                conn,
+                task_id,
+                guard=lambda guard_conn, _task_id: (
+                    guard_conn.execute("SELECT hostile_guard_side_effect()").fetchone()
+                    and kb.TriageReleaseGuardResult(True)
+                ),
+            )
+        assert invoked is False
+        assert kb.list_comments(conn, task_id) == []
+        assert kb.get_task(conn, task_id).status == "triage"
+        policy_restored.clear()
+        conn.execute("SELECT 3").fetchone()
+
+    assert sqlite3.SQLITE_SELECT in policy_restored
+
+
 def test_not_in_triage_does_not_invoke_guard(kanban_home):
     with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="normal task")

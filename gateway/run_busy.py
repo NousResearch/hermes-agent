@@ -376,6 +376,9 @@ class GatewayBusySessionMixin:
                     "platform": platform,
                     "chat_id": getattr(source, "chat_id", "") or "",
                     "user_id": getattr(source, "user_id", "") or "",
+                    # Chat sessions are not attached to a checkout; without this the lease would
+                    # inherit whichever repo the gateway process happened to be started from.
+                    "repo_root": "",
                     # Writer identity: a leaked lease from this process is re-acquired by the next
                     # turn rather than fencing it out forever (pruning only reclaims dead PROCESSES).
                     # Writer identity for re-entrancy (#94595): if this process leaks a lease for this

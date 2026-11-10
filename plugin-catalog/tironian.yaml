@@ -4,7 +4,7 @@
 # Exact-SHA pin, no self-updating code. The trainer runs only when the user starts it.
 name: tironian
 repo: https://github.com/angelraph/tironian
-sha: "872f7ce642e18afa961ffcb4f2ea596d7c66cd42"
+sha: "9b590cc094f4b65cd70e979f632e1783424526a8"
 subdir: plugin
 title: Tironian
 description: >-
@@ -26,7 +26,7 @@ category: models
 requires_hermes: ">=0.22.3"
 version: "0.1.0"
 docs_url: https://tironian.vercel.app/docs
-image: https://raw.githubusercontent.com/angelraph/tironian/872f7ce642e18afa961ffcb4f2ea596d7c66cd42/web/assets/og.png
+image: https://raw.githubusercontent.com/angelraph/tironian/9b590cc094f4b65cd70e979f632e1783424526a8/web/assets/og.png
 platforms: []
 capabilities:
   provides_tools: []

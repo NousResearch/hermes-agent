@@ -73,6 +73,9 @@ def test_split_preserves_cells_when_backticks_pair_across_boundaries():
     assert split_table_row("| x `a | b` | c |") == ["x `a | b`", "c"]
     assert split_table_row("| `--out | path | `x` |") == ["`--out", "path", "`x`"]
     assert split_table_row("| `` | x | `` |") == ["``", "x", "``"]
+    # Code glued to the text around it (CJK has no spaces around inline code) is still code.
+    assert split_table_row("| 2 | 运行`ps aux | grep py`即可 |") == ["2", "运行`ps aux | grep py`即可"]
+    assert split_table_row("| 2 | run`ls | grep`now |") == ["2", "run`ls | grep`now"]
 
 
 def test_split_keeps_code_cell_whose_content_starts_or_ends_with_a_pipe():

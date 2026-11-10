@@ -42,11 +42,30 @@ def _fills_cell(row: str, start: int, end: int) -> bool:
             and (right == len(row) or (row[right] == "|" and right > end)))
 
 
+# The letters an English contraction leaves after its apostrophe (don`t, it`s, we`ll, you`re).
+_CONTRACTION_TAIL_RE = re.compile(r"(?:[stdm]|ll|re|ve)(?![A-Za-z])", re.IGNORECASE)
+
+
+def _is_apostrophe(row: str, start: int, end: int) -> bool:
+    """``row[start:end]`` is one backtick typed for an apostrophe inside an ASCII word (``don`t``)."""
+    return (end - start == 1 and start > 0 and row[start - 1].isascii() and row[start - 1].isalpha()
+            and _CONTRACTION_TAIL_RE.match(row, end) is not None)
+
+
+def _is_space(row: str, pos: int) -> bool:
+    return pos < 0 or pos >= len(row) or row[pos].isspace()
+
+
 def _not_a_code_span(row: str, opener: int, opener_end: int, closing_end: int) -> bool:
-    """A backtick pair that crosses a spaced pipe without being code: glued to a word on its outside
-    (``don`t | it`s``: apostrophes), or both runs alone in their cells (`` `` | x | `` ``)."""
+    """A backtick pair that crosses a spaced pipe without being code: an opener typed as an
+    apostrophe (``don`t | it`s``: code never opens mid-contraction), an opener ending the word
+    before it (``foo` | ``), a closer starting the word after it (`` | `x``), or both runs alone in
+    their cells (`` `` | x | `` ``). Code glued to the text outside it (``运行`ls | grep`即可``,
+    ``run`ls | grep x`now``) is still code: only ASCII contraction tails count as apostrophes."""
     closer = closing_end - (opener_end - opener)
-    return ((opener > 0 and row[opener - 1].isalnum()) or (closing_end < len(row) and row[closing_end].isalnum())
+    return (_is_apostrophe(row, opener, opener_end)
+            or (_is_space(row, opener_end) and not _is_space(row, opener - 1) and row[opener - 1] != "|")
+            or (_is_space(row, closer - 1) and not _is_space(row, closing_end))
             or (_fills_cell(row, opener, opener_end) and _fills_cell(row, closer, closing_end)))
 
 

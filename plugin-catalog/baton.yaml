@@ -1,0 +1,32 @@
+name: baton
+title: "Baton"
+repo: https://github.com/4n0nn43x/hermes-baton
+sha: d0aa52cff1a91f0a7358e48bf0263258daeb4246
+description: "Hand your session and repository to your remote Hermes agent (Hermes Cloud, a VPS or a Docker container) with /baton \"fix the parser, done when pytest passes\": the remote works in a throwaway worktree, cannot return verified until the agreed check is green on the exact tree it returns, and `hermes baton land <id>` fetches the tested branch baton/<id> without touching your HEAD, index, working tree or stash. Code travels by git, the order by the Hermes Runs API, state by git refs; every step resumes after a network cut. Disclosure: pushes a snapshot commit of the repository (tracked changes and untracked files not ignored by .gitignore; a blocking secret scan refuses .env files, keys and tokens first, and symlinks that point outside the repository are refused) to the git remote you configure in remote_git, and fetches baton refs from it; sends the task and a redacted transcript of the session (`hermes sessions export --redact` plus an extra redaction pass, capped at 64 KB) to the peer's Hermes API server over the URL you register, with the peer key read through Hermes's secret scope; runs `git` and `hermes sessions export` as subprocesses; on the remote side, runs the agreed check without a shell only when its argv is exactly an entry of the remote's allowed_checks (python -m pytest, pytest, npm test, make test, cargo test, go test by default) followed only by safe flags such as -q, -v, -x or -p no:<plugin> and relative paths that stay inside the worktree, and refuses anything else with check_not_allowed; the check gets an empty throwaway HOME, no HERMES_* variable, no provider key and a timeout (900 s by default); with sandbox: auto and a working bubblewrap it also runs with the Hermes home hidden and every process of the check killed at the end, otherwise (sandbox: off, or no usable bubblewrap) the project's code runs with the remote user's rights and can read the Hermes home by absolute path, so only accept batons from your own machines; stores baton records and worktrees in the plugin's data folder; no telemetry."
+maintainer: 4n0nn43x
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/4n0nn43x/hermes-baton#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/4n0nn43x/hermes-baton/d0aa52cff1a91f0a7358e48bf0263258daeb4246/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/4n0nn43x/hermes-baton/d0aa52cff1a91f0a7358e48bf0263258daeb4246/docs/screens/01-pass.png
+  - https://raw.githubusercontent.com/4n0nn43x/hermes-baton/d0aa52cff1a91f0a7358e48bf0263258daeb4246/docs/screens/02-remote-check.png
+  - https://raw.githubusercontent.com/4n0nn43x/hermes-baton/d0aa52cff1a91f0a7358e48bf0263258daeb4246/docs/screens/03-land.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - Tested on Linux; macOS is not tested yet. Windows is not supported.
+  - Both sides need the plugin installed and a git remote they can both push to and fetch from.
+  - Reaching a Hermes Cloud instance depends on that instance exposing the API server (not verified on Hermes Cloud).
+  - Without a usable bubblewrap on the remote (the case inside the official Docker image, tested with demo/run-docker.sh), the check runs unsandboxed and the project's code can read the Hermes home by absolute path.
+capabilities:
+  provides_tools:
+    - baton_receive
+    - baton_check
+    - baton_return
+  provides_hooks:
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

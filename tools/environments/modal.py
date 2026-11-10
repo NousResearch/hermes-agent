@@ -183,7 +183,8 @@ class ModalEnvironment(BaseEnvironment):
         self._sync_manager = FileSyncManager(
             get_files_fn=lambda: iter_sync_files("/root/.hermes"),
             upload_fn=self._modal_upload, delete_fn=self._modal_delete,
-            bulk_upload_fn=self._modal_bulk_upload, bulk_download_fn=self._modal_bulk_download)
+            bulk_upload_fn=self._modal_bulk_upload, bulk_download_fn=self._modal_bulk_download,
+            get_remote_time_fn=self._modal_remote_time)
         self._sync_manager.sync(force=True)
         self.init_session()
 
@@ -220,6 +221,10 @@ class ModalEnvironment(BaseEnvironment):
         payload = base64.b64encode(buf.getvalue()).decode("ascii")
         cmd = f"{quoted_mkdir_command(unique_parent_dirs(files))} && base64 -d | tar xzf - -C /"
         self._exec(cmd, stdin=payload, timeout=120, fail_label="bulk upload")
+
+    def _modal_remote_time(self) -> float:
+        """Read the sandbox clock before the initial file push."""
+        return float(self._exec("date +%s", timeout=10, fail_label="remote clock", capture=True).strip())
 
     def _modal_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive (sandboxes run as root, so /root/.hermes)."""

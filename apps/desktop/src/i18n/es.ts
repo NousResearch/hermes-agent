@@ -499,7 +499,9 @@ export const esOverrides = {
       extensionUnavailable: (engine, reason) =>
         `${engine} no está disponible: ${reason}. Se usará voz a texto en su lugar.`,
       extensionMissing: engine =>
-        `El motor de voz ${engine} no está instalado o está desactivado. Se usará voz a texto en su lugar.`
+        `El motor de voz ${engine} no está instalado o está desactivado. Se usará voz a texto en su lugar.`,
+      extensionNotEnabled: (engine, plugin, profile) =>
+        `${engine} necesita el plugin ${plugin}, que no está activado en el perfil activo (${profile}). La voz siempre usa el perfil activo, también en los chats de Bot: activa el plugin para este perfil o cambia a un perfil que lo tenga. Se usará voz a texto en su lugar.`
     },
     native: {
       approvalTitle: 'Se necesita aprobación',
@@ -3812,6 +3814,7 @@ export const esOverrides = {
     voiceEngineUnavailable: 'No disponible ahora mismo',
     voiceEngineSignIn: provider => `Iniciar sesión con ${provider}`,
     voiceEngineMissing: engine => `${engine} (no instalado o desactivado)`,
+    voiceEngineNotEnabled: (plugin, profile) => `El plugin ${plugin} no está activado en el perfil ${profile}`,
     voiceEngineAccount: provider => `Inicio de sesión de ${provider}`,
     voiceEngineSignedIn: provider => `Sesión iniciada con ${provider} para este perfil.`,
     voiceEngineNotSignedIn: provider => `No has iniciado sesión con ${provider}. Este motor de voz lo necesita.`,

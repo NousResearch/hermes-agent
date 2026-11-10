@@ -496,7 +496,9 @@ export const frOverrides = {
       extensionUnavailable: (engine, reason) =>
         `${engine} n'est pas disponible : ${reason}. Utilisation de la reconnaissance vocale à la place.`,
       extensionMissing: engine =>
-        `Le moteur vocal ${engine} n'est pas installé ou est désactivé. Utilisation de la reconnaissance vocale à la place.`
+        `Le moteur vocal ${engine} n'est pas installé ou est désactivé. Utilisation de la reconnaissance vocale à la place.`,
+      extensionNotEnabled: (engine, plugin, profile) =>
+        `${engine} a besoin du plugin ${plugin}, qui n'est pas activé dans le profil actif (${profile}). La voix utilise toujours le profil actif, y compris dans un chat de Bot : activez le plugin pour ce profil, ou passez à un profil qui l'a. Utilisation de la reconnaissance vocale à la place.`
     },
     native: {
       approvalTitle: 'Approbation requise',
@@ -3831,6 +3833,7 @@ export const frOverrides = {
     voiceEngineUnavailable: 'Indisponible pour le moment',
     voiceEngineSignIn: provider => `Se connecter avec ${provider}`,
     voiceEngineMissing: engine => `${engine} (non installé ou désactivé)`,
+    voiceEngineNotEnabled: (plugin, profile) => `Le plugin ${plugin} n'est pas activé dans le profil ${profile}`,
     voiceEngineAccount: provider => `Connexion ${provider}`,
     voiceEngineSignedIn: provider => `Connecté avec ${provider} pour ce profil.`,
     voiceEngineNotSignedIn: provider => `Non connecté avec ${provider}. Ce moteur vocal en a besoin.`,

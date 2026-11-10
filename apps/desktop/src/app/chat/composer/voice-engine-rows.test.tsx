@@ -2,6 +2,7 @@ import { VOICE_ENGINE_AREA } from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestProfile } from '@/api/client'
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { createPluginContext } from '@/contrib/plugin'
 import type { LiveVoiceEngine } from '@/contrib/voice-engines'
@@ -114,6 +115,25 @@ describe('VoiceEngineRows with an extension engine', () => {
     expect(await screen.findByText('Set XAI_API_KEY or sign in with xAI')).toBeTruthy()
     const item = baseElement.querySelector('[data-voice-engine="hermes-xai:grok"]')
     expect(item?.getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it("names the plugin and the active profile when the plugin gate refuses the engine's backend", async () => {
+    setApiRequestProfile('work')
+    loadEngine('hermes-xai', 'grok', {
+      label: 'Grok Voice',
+      status: async () => Promise.reject(new Error('404: {"detail":"Plugin not found"}'))
+    })
+
+    try {
+      const { baseElement } = renderRows()
+
+      expect(await screen.findByText(c.voiceEngineNotEnabled('hermes-xai', 'work'))).toBeTruthy()
+      expect(screen.queryByText(/Plugin not found/)).toBeNull()
+      const item = baseElement.querySelector('[data-voice-engine="hermes-xai:grok"]')
+      expect(item?.getAttribute('aria-disabled')).toBe('true')
+    } finally {
+      setApiRequestProfile(null)
+    }
   })
 
   it('offers "Sign in with …" for a logged-out provider and opens Settings ▸ Voice', async () => {

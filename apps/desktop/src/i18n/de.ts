@@ -496,7 +496,9 @@ export const deOverrides = {
       extensionUnavailable: (engine, reason) =>
         `${engine} ist nicht verfügbar: ${reason}. Stattdessen wird Sprache-zu-Text verwendet.`,
       extensionMissing: engine =>
-        `Die Sprach-Engine ${engine} ist nicht installiert oder ausgeschaltet. Stattdessen wird Sprache-zu-Text verwendet.`
+        `Die Sprach-Engine ${engine} ist nicht installiert oder ausgeschaltet. Stattdessen wird Sprache-zu-Text verwendet.`,
+      extensionNotEnabled: (engine, plugin, profile) =>
+        `${engine} benötigt das Plugin ${plugin}, das im aktiven Profil (${profile}) nicht aktiviert ist. Die Stimme läuft immer im aktiven Profil, auch in Bot-Chats: Aktiviere das Plugin für dieses Profil oder wechsle zu einem Profil, das es hat. Stattdessen wird Sprache-zu-Text verwendet.`
     },
     native: {
       approvalTitle: 'Genehmigung erforderlich',
@@ -3825,6 +3827,7 @@ export const deOverrides = {
     voiceEngineUnavailable: 'Derzeit nicht verfügbar',
     voiceEngineSignIn: provider => `Mit ${provider} anmelden`,
     voiceEngineMissing: engine => `${engine} (nicht installiert oder ausgeschaltet)`,
+    voiceEngineNotEnabled: (plugin, profile) => `Das Plugin ${plugin} ist im Profil ${profile} nicht aktiviert`,
     voiceEngineAccount: provider => `${provider}-Anmeldung`,
     voiceEngineSignedIn: provider => `Für dieses Profil mit ${provider} angemeldet.`,
     voiceEngineNotSignedIn: provider => `Nicht mit ${provider} angemeldet. Diese Sprach-Engine benötigt die Anmeldung.`,

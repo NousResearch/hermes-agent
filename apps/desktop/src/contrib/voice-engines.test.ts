@@ -8,10 +8,14 @@ import { type LiveVoiceEngine, VOICE_ENGINE_AREA } from '@hermes/plugin-sdk'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestProfile } from '@/api/client'
+
 import { createPluginContext } from './plugin'
 import { registry } from './registry'
 import {
   findLiveVoiceEngine,
+  isPluginNotEnabledError,
+  liveVoiceEngineProfile,
   liveVoiceEngineStatus,
   resolveLiveVoiceEngines,
   useLiveVoiceEngines
@@ -124,6 +128,7 @@ describe('liveVoiceEngineStatus', () => {
 
     await expect(liveVoiceEngineStatus(findLiveVoiceEngine('p:e')!)).resolves.toEqual({
       available: false,
+      notEnabled: false,
       reason: 'Needs an xAI sign-in'
     })
   })
@@ -136,11 +141,51 @@ describe('liveVoiceEngineStatus', () => {
 
     await expect(liveVoiceEngineStatus(findLiveVoiceEngine('p:throws')!)).resolves.toEqual({
       available: false,
+      notEnabled: false,
       reason: 'backend unreachable'
     })
     await expect(liveVoiceEngineStatus(findLiveVoiceEngine('p:hangs')!, 10)).resolves.toEqual({
       available: false,
+      notEnabled: false,
       reason: 'status check timed out'
     })
+  })
+
+  it("reads the plugin gate's 404, thrown or echoed as the reason, as not enabled in this profile", async () => {
+    loadPlugin('p', {
+      echoes: fakeEngine({
+        status: async () => ({ available: false, reason: "404: plugin 'p' is not enabled in this profile" })
+      }),
+      throws: fakeEngine({ status: async () => Promise.reject(new Error('404: {"detail":"Plugin not found"}')) })
+    })
+
+    for (const id of ['p:throws', 'p:echoes']) {
+      await expect(liveVoiceEngineStatus(findLiveVoiceEngine(id)!)).resolves.toEqual({
+        available: false,
+        notEnabled: true,
+        reason: null
+      })
+    }
+  })
+})
+
+describe('isPluginNotEnabledError', () => {
+  it('matches only the two refusals of the plugin gate', () => {
+    expect(isPluginNotEnabledError(new Error('404: {"detail":"Plugin not found"}'))).toBe(true)
+    expect(isPluginNotEnabledError('404: {"detail":"plugin \'x\' is not enabled in this profile"}')).toBe(true)
+    // A route the plugin does not have, or another failure, keeps its own text.
+    expect(isPluginNotEnabledError(new Error('404: {"detail":"Not Found"}'))).toBe(false)
+    expect(isPluginNotEnabledError(new Error('500: Plugin not found'))).toBe(false)
+    expect(isPluginNotEnabledError(null)).toBe(false)
+  })
+})
+
+describe('liveVoiceEngineProfile', () => {
+  afterEach(() => setApiRequestProfile(null))
+
+  it('is the active request profile, the launch profile when none is set', () => {
+    expect(liveVoiceEngineProfile()).toBe('default')
+    setApiRequestProfile('work')
+    expect(liveVoiceEngineProfile()).toBe('work')
   })
 })

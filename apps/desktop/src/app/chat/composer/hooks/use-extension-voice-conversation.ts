@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   findLiveVoiceEngine,
+  isPluginNotEnabledError,
   type LiveVoiceEngineHistoryMessage,
+  liveVoiceEngineProfile,
   type LiveVoiceEngineSession,
   liveVoiceEngineStatus
 } from '@/contrib/voice-engines'
@@ -323,6 +325,10 @@ export function useExtensionVoiceConversation({
       return
     }
 
+    // The voice runs on the active profile, never the chat's owner (a Bot chat
+    // keeps the active profile; the Bot only runs the delegated turns).
+    const notEnabledCopy = () => voiceCopy.extensionNotEnabled(engine.label, engine.pluginId, liveVoiceEngineProfile())
+
     startingRef.current = true
     const epoch = ++startEpochRef.current
     const call = Symbol(engine.id)
@@ -358,7 +364,9 @@ export function useExtensionVoiceConversation({
       notify({
         id: 'voice-live-unavailable',
         kind: 'warning',
-        message: voiceCopy.extensionUnavailable(engine.label, verdict.reason ?? t.composer.voiceEngineUnavailable)
+        message: verdict.notEnabled
+          ? notEnabledCopy()
+          : voiceCopy.extensionUnavailable(engine.label, verdict.reason ?? t.composer.voiceEngineUnavailable)
       })
       latest.current.onUnavailable?.()
 
@@ -449,11 +457,23 @@ export function useExtensionVoiceConversation({
     } catch (error) {
       release()
 
-      if (startEpochRef.current === epoch) {
-        notifyError(error instanceof DOMException ? micError(error, voiceCopy) : error, voiceCopy.couldNotStartSession)
-        setStatus('idle')
-        latest.current.onFatalError?.()
+      if (startEpochRef.current !== epoch) {
+        return
       }
+
+      setStatus('idle')
+
+      // A status() that never reached the plugin's backend can pass while the
+      // session request is refused: same notice and fallback as above.
+      if (isPluginNotEnabledError(error)) {
+        notify({ id: 'voice-live-unavailable', kind: 'warning', message: notEnabledCopy() })
+        latest.current.onUnavailable?.()
+
+        return
+      }
+
+      notifyError(error instanceof DOMException ? micError(error, voiceCopy) : error, voiceCopy.couldNotStartSession)
+      latest.current.onFatalError?.()
 
       return
     }

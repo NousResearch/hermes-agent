@@ -479,7 +479,9 @@ export const en: Translations = {
       liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`,
       extensionUnavailable: (engine, reason) => `${engine} is not available: ${reason}. Using speech-to-text instead.`,
       extensionMissing: engine =>
-        `The voice engine ${engine} is not installed or is turned off. Using speech-to-text instead.`
+        `The voice engine ${engine} is not installed or is turned off. Using speech-to-text instead.`,
+      extensionNotEnabled: (engine, plugin, profile) =>
+        `${engine} needs the ${plugin} plugin, which is not enabled in the active profile (${profile}). The voice always runs on the active profile, Bot chats included: turn the plugin on for this profile, or switch to a profile that has it. Using speech-to-text instead.`
     },
     native: {
       approvalTitle: 'Approval needed',
@@ -3377,6 +3379,7 @@ export const en: Translations = {
     voiceEngineUnavailable: 'Not available right now',
     voiceEngineSignIn: provider => `Sign in with ${provider}`,
     voiceEngineMissing: engine => `${engine} (not installed or turned off)`,
+    voiceEngineNotEnabled: (plugin, profile) => `The ${plugin} plugin is not enabled in the profile ${profile}`,
     voiceEngineAccount: provider => `${provider} sign-in`,
     voiceEngineSignedIn: provider => `Signed in with ${provider} for this profile.`,
     voiceEngineNotSignedIn: provider => `Not signed in with ${provider}. This voice engine needs it.`,

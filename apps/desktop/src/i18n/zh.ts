@@ -272,7 +272,9 @@ export const zhOverrides = {
       liveDelegationFailed: '无法将请求交给 Hermes',
       liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`,
       extensionUnavailable: (engine, reason) => `${engine} 不可用：${reason}。已改用语音转文字。`,
-      extensionMissing: engine => `语音引擎 ${engine} 未安装或已关闭。已改用语音转文字。`
+      extensionMissing: engine => `语音引擎 ${engine} 未安装或已关闭。已改用语音转文字。`,
+      extensionNotEnabled: (engine, plugin, profile) =>
+        `${engine} 需要 ${plugin} 插件，但当前配置文件（${profile}）未启用它。语音始终使用当前配置文件（包括 Bot 聊天）：请为此配置文件启用该插件，或切换到已启用它的配置文件。已改用语音转文字。`
     },
     native: {
       approvalTitle: '需要批准',
@@ -3277,6 +3279,7 @@ export const zhOverrides = {
     voiceEngineUnavailable: '暂不可用',
     voiceEngineSignIn: provider => `使用 ${provider} 登录`,
     voiceEngineMissing: engine => `${engine}（未安装或已关闭）`,
+    voiceEngineNotEnabled: (plugin, profile) => `配置文件 ${profile} 未启用 ${plugin} 插件`,
     voiceEngineAccount: provider => `${provider} 登录`,
     voiceEngineSignedIn: provider => `此配置文件已使用 ${provider} 登录。`,
     voiceEngineNotSignedIn: provider => `尚未使用 ${provider} 登录。此语音引擎需要登录。`,

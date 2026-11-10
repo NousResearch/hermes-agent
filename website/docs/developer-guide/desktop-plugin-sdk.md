@@ -1039,6 +1039,17 @@ ctx.register({
   Settings presents conversation mode as **Duplex** and the selected engine separately,
   while persisting the existing single engine id in `voice.voice_chat_mode`.
 
+**Which profile serves the engine.** The voice runs on the **active profile**, Bot chats
+included. That profile's `voice.voice_chat_mode` selects the engine, and `ctx.rest` (status and
+session secret), the `settingsKeys` values and the `signIn` state all belong to it, so the account
+the menu shows is the account the call uses. The chat's owner (a Bot's profile, possibly on
+another connection) runs only the delegated Hermes turns. Don't pass the chat owner's profile to
+your backend yourself: the engine's desktop half loads in every profile, but its backend answers
+only in a profile that enabled the plugin, and every other profile gets the plugin gate's 404.
+Core recognizes that refusal (from `status()` or `start()`) and tells the user which plugin to
+turn on in which profile, then falls back to speech-to-text. With the plugin enabled in several
+profiles, each one uses its own sign-in.
+
 **Older hosts and fallback.** A host without this area does not export `VOICE_ENGINE_AREA`.
 Feature-detect it and keep your own composer button only as a fallback:
 

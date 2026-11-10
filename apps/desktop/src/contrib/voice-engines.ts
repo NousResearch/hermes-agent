@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 
+import { getApiRequestProfile } from '@/api/client'
 import { type ExtensionVoiceChatMode, isExtensionVoiceChatMode } from '@/lib/voice-live'
 
 import { useContributions } from './react/use-contributions'
@@ -21,6 +22,14 @@ import type { Contribution } from './types'
  *
  * The namespaced contribution id (`<plugin>:<engine>`) is the value persisted
  * in `voice.voice_chat_mode`.
+ *
+ * Which profile serves the voice: the ACTIVE profile, also in a Bot chat. Its
+ * `voice.voice_chat_mode` picks the engine, and the plugin's `ctx.rest` (status,
+ * session secret), its settings and its provider sign-in all belong to it. The
+ * chat's owner, a Bot included, only runs the delegated Hermes turns. The
+ * engine's desktop half loads in every profile, but its backend answers only
+ * where the plugin is enabled (PLG-3): elsewhere `liveVoiceEngineStatus`
+ * reports `notEnabled`, and the user is told which plugin and which profile.
  */
 export const VOICE_ENGINE_AREA = 'voice.liveEngines'
 
@@ -169,12 +178,37 @@ export function findLiveVoiceEngine(mode: unknown): null | ResolvedLiveVoiceEngi
   return resolveLiveVoiceEngines(registry.getArea(VOICE_ENGINE_AREA)).find(engine => engine.id === mode) ?? null
 }
 
+/** The profile whose plugin backend, settings and sign-in serve an extension
+ *  engine: the active one, never the chat's owner (see VOICE_ENGINE_AREA). */
+export function liveVoiceEngineProfile(): string {
+  return getApiRequestProfile() || 'default'
+}
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error ?? ''))
+
+/** The backend refusing a plugin route in a profile that did not enable that
+ *  plugin (PLG-3): `404: … Plugin not found` from the in-process router, or
+ *  `404: … is not enabled in this profile` from a hosted one. */
+export function isPluginNotEnabledError(error: unknown): boolean {
+  const message = errorText(error)
+
+  return /^404\b/.test(message) && /Plugin not found|is not enabled in this profile/.test(message)
+}
+
+export interface LiveVoiceEngineVerdict {
+  available: boolean
+  reason: null | string
+  /** The plugin's backend is not enabled in `liveVoiceEngineProfile()`. */
+  notEnabled: boolean
+}
+
 /** An engine's `status()`, never throwing: a failing or hanging engine reads as
- *  unavailable with its error text. */
+ *  unavailable with its error text. The plugin gate's 404, thrown or echoed as
+ *  the reason, reads as `notEnabled` instead of a raw HTTP error. */
 export async function liveVoiceEngineStatus(
   engine: ResolvedLiveVoiceEngine,
   timeoutMs = 5_000
-): Promise<{ available: boolean; reason: null | string }> {
+): Promise<LiveVoiceEngineVerdict> {
   let timer: ReturnType<typeof setTimeout> | undefined
 
   try {
@@ -185,9 +219,14 @@ export async function liveVoiceEngineStatus(
       })
     ])
 
-    return { available: Boolean(answer?.available), reason: text(answer?.reason) }
+    const reason = text(answer?.reason)
+    const notEnabled = !answer?.available && isPluginNotEnabledError(reason)
+
+    return { available: Boolean(answer?.available), notEnabled, reason: notEnabled ? null : reason }
   } catch (error) {
-    return { available: false, reason: text(error instanceof Error ? error.message : String(error)) }
+    const notEnabled = isPluginNotEnabledError(error)
+
+    return { available: false, notEnabled, reason: notEnabled ? null : text(errorText(error)) }
   } finally {
     clearTimeout(timer)
   }

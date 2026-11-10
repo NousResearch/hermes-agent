@@ -9,7 +9,13 @@ import {
   DropdownMenuRadioItem,
   dropdownMenuRow
 } from '@/components/ui/dropdown-menu'
-import { liveVoiceEngineStatus, type ResolvedLiveVoiceEngine, useLiveVoiceEngines } from '@/contrib/voice-engines'
+import {
+  liveVoiceEngineProfile,
+  liveVoiceEngineStatus,
+  type LiveVoiceEngineVerdict,
+  type ResolvedLiveVoiceEngine,
+  useLiveVoiceEngines
+} from '@/contrib/voice-engines'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isExtensionVoiceChatMode, type VoiceChatMode } from '@/lib/voice-live'
@@ -21,7 +27,7 @@ import { $voiceLiveStatus, selectedVoiceChatMode, setVoiceChatMode } from '@/sto
 /** Where an engine's sign-in and settings live (Settings ▸ Voice ▸ Conversation). */
 export const VOICE_ENGINE_SETTINGS_HREF = `${SETTINGS_ROUTE}?tab=config:voice&page=conversation`
 
-type EngineStatuses = Record<string, { available: boolean; reason: null | string }>
+type EngineStatuses = Record<string, LiveVoiceEngineVerdict>
 
 /** Each engine's `status()` and its provider's sign-in state, re-read every
  *  time the rows mount (a menu opening), never polled. */
@@ -126,7 +132,9 @@ export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
                 <span>{engine.description ? `${engine.label} (${engine.description})` : engine.label}</span>
                 {unavailable ? (
                   <span className="text-muted-foreground truncate text-xs">
-                    {engineStatus.reason ?? c.voiceEngineUnavailable}
+                    {engineStatus.notEnabled
+                      ? c.voiceEngineNotEnabled(engine.pluginId, liveVoiceEngineProfile())
+                      : (engineStatus.reason ?? c.voiceEngineUnavailable)}
                   </span>
                 ) : null}
               </span>

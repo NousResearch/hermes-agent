@@ -269,8 +269,12 @@ approvals.
 - The engine's own options (voice, persona, and language when its plugin declares that setting)
   appear under it in the same page. Language options belong to the selected engine, not the app's
   display language. OpenAI-only settings are hidden while an extension engine is selected.
+- The engine runs on the **active profile**, also when you talk in a Bot's chat: the profile you
+  are in chooses the engine and provides the plugin, its settings and the sign-in. The Bot only
+  answers the requests the voice hands over. Each profile that should use the engine needs its
+  plugin enabled (and, with several profiles, each one can sign in with its own account).
 - If the plugin is turned off or uninstalled, the voice button falls back to speech-to-text with a
-  notice.
+  notice. If it is not enabled in the active profile, the notice names the plugin and the profile.
 
 ### Voice chat model
 

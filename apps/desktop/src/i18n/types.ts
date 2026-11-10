@@ -507,6 +507,7 @@ export interface Translations extends NoticeTranslations {
       liveUnavailable: (reason: string) => string
       extensionUnavailable: (engine: string, reason: string) => string
       extensionMissing: (engine: string) => string
+      extensionNotEnabled: (engine: string, plugin: string, profile: string) => string
     }
     // Native OS notification copy (titles + generic fallback bodies). Dynamic
     // bodies (the agent's reply, a command, an error) are passed through raw.
@@ -2963,6 +2964,7 @@ export interface Translations extends NoticeTranslations {
     voiceEngineUnavailable: string
     voiceEngineSignIn: (provider: string) => string
     voiceEngineMissing: (engine: string) => string
+    voiceEngineNotEnabled: (plugin: string, profile: string) => string
     voiceEngineAccount: (provider: string) => string
     voiceEngineSignedIn: (provider: string) => string
     voiceEngineNotSignedIn: (provider: string) => string

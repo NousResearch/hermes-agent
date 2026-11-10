@@ -86,7 +86,7 @@ def test_a_completion_batch_that_cannot_be_prepared_hands_the_turn_back(monkeypa
 
 def test_a_loop_wakeup_whose_send_cannot_start_hands_the_turn_back(monkeypatch):
     """The /loop slash wakeup re-claims the turn for a command that resolves to a prompt, then runs
-    the send under ``except Exception: pass`` — which swallowed the only signal that no turn started."""
+    the send; a rejected submission must release the turn and abandon the tick."""
     monkeypatch.setitem(server._methods, "command.dispatch",
                         lambda rid, params: {"result": {"type": "send", "message": "run the skill"}})
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
@@ -100,7 +100,40 @@ def test_a_loop_wakeup_whose_send_cannot_start_hands_the_turn_back(monkeypatch):
     server._notif_slash_loop_tick("rid", "sid", session, mgr, "/skill go")
 
     assert session["running"] is False
-    assert ticks == ["completed"]
+    assert ticks == ["abandoned"]
+
+
+def test_a_loop_wakeup_submits_a_skill_dispatch_as_a_turn(monkeypatch):
+    """Regression for #137519: skill dispatches must not complete a /loop tick empty."""
+    monkeypatch.setitem(server._methods, "command.dispatch",
+                        lambda rid, params: {"result": {"type": "skill", "message": "run the skill"}})
+    started = _no_turn(monkeypatch)
+    ticks: list = []
+    mgr = SimpleNamespace(abandon_tick=lambda: ticks.append("abandoned"),
+                          complete_tick=lambda text: ticks.append("completed") or {})
+    session = _claimed_session()
+
+    server._notif_slash_loop_tick("rid", "sid", session, mgr, "/skill go")
+
+    assert [call[3] for call in started] == ["run the skill"]
+    assert ticks == []
+
+
+def test_a_loop_wakeup_with_no_runnable_dispatch_abandons_its_tick(monkeypatch):
+    """A rejected slash command must not feed an empty response into self-paced backoff."""
+    monkeypatch.setitem(server._methods, "command.dispatch",
+                        lambda rid, params: {"error": {"message": "unknown command"}})
+    updates: list = []
+    monkeypatch.setattr(server, "_emit", lambda *args: updates.append(args))
+    ticks: list = []
+    mgr = SimpleNamespace(abandon_tick=lambda: ticks.append("abandoned"),
+                          complete_tick=lambda text: ticks.append("completed") or {})
+    session = _claimed_session()
+
+    server._notif_slash_loop_tick("rid", "sid", session, mgr, "/missing go")
+
+    assert ticks == ["abandoned"]
+    assert updates[-1][2]["text"].startswith("Loop wakeup could not start")
 
 
 def test_the_poller_thread_survives_a_dispatch_that_raises(monkeypatch):

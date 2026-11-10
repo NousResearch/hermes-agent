@@ -47,6 +47,7 @@ export const itCatalog: CatalogTranslations = {
   moreToExplore: 'Altro da esplorare',
   moreToExploreBlurb: 'Gli angoli più piccoli del catalogo, tutti in un solo posto.',
   mostStarred: 'Più stellati',
+  mostUsed: 'Più usati',
   newest: 'Più recenti',
   nextSlide: 'Successivo in evidenza',
   noResults: 'Nessuna corrispondenza',
@@ -118,6 +119,8 @@ export const itCatalog: CatalogTranslations = {
     toolCount: count => `${count} ${count === 1 ? 'strumento' : 'strumenti'}`
   },
   tryAnother: 'Prova un’altra ricerca o cancella i filtri.',
+  updateAvailable: 'Aggiornabile',
   updatedDate: 'Aggiornato',
+  updatesAvailable: count => `Aggiornamenti · ${count}`,
   version: 'Versione'
 }

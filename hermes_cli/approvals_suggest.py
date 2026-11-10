@@ -85,9 +85,15 @@ class Proposal:
 # Scan: session DB -> (command, class description) records
 # ---------------------------------------------------------------------------
 
-def default_db_path() -> Path:
+def _store_target(db_path: Optional[Path] = None) -> Optional[Path]:
+    """What a scan reads: the ``db_path`` file when one is given, else the current profile's folder, which names
+    its store; None when that store does not exist."""
+    if db_path:
+        return Path(db_path) if Path(db_path).exists() else None
     from hermes_constants import get_hermes_home
-    return get_hermes_home() / "state.db"
+    from persistence_assembly import profile_scope, store_exists
+    scope = profile_scope(home=get_hermes_home())
+    return scope.profile_dir if store_exists(scope) else None
 
 
 def _json_or_none(raw):
@@ -128,8 +134,8 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
     """
     from persistence_assembly import open_persistence_reader
     from tools.approval_detection import detect_dangerous_command, detect_hardline_command
-    path = Path(db_path) if db_path else default_db_path()
-    if not path.exists():
+    path = _store_target(db_path)
+    if path is None:
         return []
 
     since_ts = 0.0 if days <= 0 else time.time() - days * 86400
@@ -291,10 +297,11 @@ def _render_text(proposals: list[Proposal], days: int) -> None:
 
 def suggest_command(args) -> int:
     """Entry point for ``hermes approvals suggest``."""
-    db_path = Path(args.db) if getattr(args, "db", None) else default_db_path()
+    db_path = _store_target(getattr(args, "db", None))
     days = getattr(args, "days", 90)
-    if not db_path.exists():
-        print(f"Session database not found: {db_path}")
+    if db_path is None:
+        from hermes_constants import get_hermes_home
+        print(f"Session database not found: {getattr(args, 'db', None) or get_hermes_home()}")
         return 1
 
     import tools.approval as approval_module

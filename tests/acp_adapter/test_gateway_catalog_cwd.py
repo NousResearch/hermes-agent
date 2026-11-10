@@ -11,8 +11,8 @@ def test_catalog_prefers_canonical_cwd_without_rewriting_storage(tmp_path):
                      model_config={'cwd': '/stale-legacy-workspace'})
         seed_messages(db, 'canonical-acp', {'role': 'user', 'content': 'saved editor turn'})
     before = db_path.read_bytes()
-    rows = catalog_sessions(db_path, str(tmp_path))
+    rows = catalog_sessions(tmp_path, str(tmp_path))
     assert [row['session_id'] for row in rows] == ['canonical-acp']
     assert rows[0]['cwd'] == str(tmp_path)
-    assert not catalog_sessions(db_path, '/stale-legacy-workspace')
+    assert not catalog_sessions(tmp_path, '/stale-legacy-workspace')
     assert db_path.read_bytes() == before

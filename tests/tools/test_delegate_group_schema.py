@@ -30,6 +30,18 @@ def test_group_schema_tracks_delivery_policy_without_mutating_previous_definitio
     assert json.dumps(DELEGATE_TASK_SCHEMA) == original
 
 
+def test_joined_variant_asks_for_no_delivery_group(monkeypatch):
+    # One-shot and inline-gateway sessions join every task in the call, so a group would change nothing there.
+    from tools import delegate_tool_config
+    from tools.delegate_tool import oneshot_delegate_function
+
+    monkeypatch.setattr(delegate_tool_config, "_cfg", lambda: {"independent_completions": True})
+    joined = oneshot_delegate_function(registry.get_definitions({"delegate_task"})[0]["function"])
+    task = joined["parameters"]["properties"]["tasks"]["items"]
+    assert "group" not in task["properties"] and task["required"] == ["goal"]
+    assert "group" not in joined["description"]
+
+
 def test_legacy_group_replay_remains_accepted_and_delivery_policy_controls_units(monkeypatch):
     from tools import delegate_tool_config
 

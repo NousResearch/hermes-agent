@@ -63,7 +63,7 @@ def cell(model, task, arm, rep):
     except subprocess.TimeoutExpired:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps({"arm": arm, "model": model, "task": task, "rep": rep, "score": 0.0, "success": False,
-                                   "delivery_ok": False, "error": "wall timeout"}))
+                                   "kind": task.split("_", 1)[0], "delivery_ok": False, "error": "wall timeout"}))
         print(f"[{task} {arm} {rep}] wall timeout", flush=True)
 
 

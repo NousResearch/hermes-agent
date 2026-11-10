@@ -6,7 +6,7 @@ prints each reason once with its site count.
 
 ``path`` is the file's path before any move; it also matches the file's new path after this move and the moves
 already in the compat MOVES table. ``anchor`` is exact source text: every place it occurs is a site, widened to
-the whole statement when it starts a ``def``, ``class`` or assignment. An empty anchor is the whole file. No line
+the whole statement when it starts a ``def``, ``class``, assignment or ``return``. An empty anchor is the whole file. No line
 numbers, so a row holds while the lines around the site shift, and a row whose anchor is gone is flagged.
 """
 from __future__ import annotations
@@ -18,13 +18,17 @@ PERSISTED = "text persisted into units, launchers and desktop entries that outli
 IDENTITY = "matches processes started before the move by their old command line"
 FROZEN = "frozen code for historical updaters"
 TORN_UPDATE = "torn-update fallback that reads the directory a killed update moved aside"
+OLD_NAMES = "a test of how old top-level names resolve, so it names them on purpose"
+KEPT_NAMES = (SHIPPED, PERSISTED, IDENTITY)
+"""Reasons whose sites keep module names that tests may mirror: those names are flagged in test argv, not rewritten."""
 
 EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("hermes_cli/_old_updater.py", "", FROZEN),
     ("tests/compat/old_updater_dependencies.py", "", FROZEN),
     ("hermes_cli/_launchers.py", "def runtime_command(", PERSISTED),
     ("hermes_cli/_launchers.py", '_CLOSURE_REPAIR = """\\', PERSISTED),
-    ("hermes_cli/_launchers.py", "def _launcher_script(", PERSISTED),
+    ("hermes_cli/_launchers.py", "return (\n        # The repair's own stdlib", PERSISTED),
+    ("hermes_cli/_launchers.py", "def print_runtime_command(", PERSISTED),
     ("hermes_bootstrap.py", "def _settle_interrupted_update(", TORN_UPDATE),
     (".github/actions/plugin-validate/action.yml", '"$_VALIDATOR_PYTHON" -I -m hermes_cli.main plugins validate "$_PLUGIN_PATH"', SHIPPED),
     ("apps/bootstrap-installer/src-tauri/src/update.rs", 'if install_root.join("hermes_cli/_launchers.py").is_file() {', SHIPPED),
@@ -86,7 +90,9 @@ EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("scripts/install.ps1", 'Invoke-Logged "Publishing the hermes command" { & $bootPy -I -X utf8 hermes_cli/_launchers.py $binDir }', SHIPPED),
     ("scripts/install.sh", '"$boot_py" -I -B -X utf8 hermes_cli/source_completion.py "${args[@]}") \\', SHIPPED),
     ("setup-hermes.sh", 'if ! "$boot_py" -I -X utf8 hermes_cli/_launchers.py "$bin_dir"; then', SHIPPED),
-    ("tools/bot_desktop/runtime.py", 'Path(__file__).resolve().parents[2], module="tools.bot_desktop.idle_watch")),', SHIPPED),
+    ("tests/hermes_cli/test_stale_root_module_bridge.py", "def pre_handoff_purge(", OLD_NAMES),
+    ("tests/test_hermes_bootstrap.py", 'program = r"""\nimport importlib.util, os, sys\nfrom importlib.abc import MetaPathFinder', OLD_NAMES),
+    ("tools/bot_desktop/runtime.py", 'Path(project_root_str()), module="tools.bot_desktop.idle_watch")),', SHIPPED),
     ("tools/mcp_tool_lifecycle.py", '"tui_gateway.slash_worker", "tui_gateway.entry",', IDENTITY),
     ("tui_gateway/host_supervisor.py", 'return "tui_gateway.compute_host" in _pid_command(pid)', IDENTITY),
 )
@@ -117,7 +123,8 @@ def anchor_spans(source: str, anchor: str) -> list[tuple[int, int]]:
         tree = None
     statements: dict[tuple[int, int], int] = {}
     for node in ast.walk(tree) if tree is not None else ():
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Assign, ast.AnnAssign)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Assign, ast.AnnAssign,
+                             ast.Return)):
             key = (node.lineno, node.col_offset)
             statements[key] = max(statements.get(key, 0), node.end_lineno or node.lineno)
     spans, at = [], source.find(anchor)

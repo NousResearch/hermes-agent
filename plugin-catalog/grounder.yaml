@@ -1,13 +1,13 @@
 name: grounder
 repo: https://github.com/grounder-labs/grounder-hermes-plugin
-sha: 1d15ed8b3fd7619b9a319ef018555ed2b72070db
-description: 'Grounder as the web_search and web_extract backend: one call reaches the search providers a query needs and live data for scores, prices, odds and flights, and returns one deduplicated list of licensed results. A web_extract returns what in each page answers the search that found it. Adds grounder_search, for Grounder''s own search options, and grounder_list_providers. Connect with a Grounder search key or `hermes auth add grounder:grounder`. Disclosure: each query and page address is sent to api.grounder.net with the name of the model that asked, passed on to the search providers Grounder picks and to the service providers that help run a search, and kept under your Grounder account indefinitely. Installing makes Grounder this profile''s web_search and web_extract backend the first time the plugin loads.'
+sha: 1ddcbb6a7ac0ecae43af6794afc0a16e8e9d3b49
+description: 'Grounder as the web_search and web_extract backend: one call reaches the search providers a query needs and live data for scores, prices, odds and flights, and returns one deduplicated list of licensed results. A web_extract returns what in each page answers the search that found it, or the user''s latest message when no search did. Adds grounder_search, for Grounder''s own search options, and grounder_list_providers. Connect with a Grounder search key or `hermes auth add grounder:grounder`. Disclosure: each query and page address is sent to api.grounder.net with the name of the model that asked (and, for a page no search found, the user''s latest message), passed on to the search providers Grounder picks and to the service providers that help run a search, and kept under your Grounder account indefinitely. Installing makes Grounder this profile''s web_search and web_extract backend the first time the plugin loads.'
 maintainer: grounder-labs
 tier: community
 category: web
 requires_hermes: ">=0.22.3"
 docs_url: https://github.com/grounder-labs/grounder-hermes-plugin#readme
-version: "0.5.10"
+version: "0.5.11"
 title: Grounder
 known_issues:
   - "The first load in a profile sets web.search_backend and web.extract_backend to grounder, replacing any backend chosen for them, once. Pick another in hermes tools and that choice stands"
@@ -16,6 +16,6 @@ known_issues:
   - "An account gets 50 free searches a day. Past that, searches use credit bought on the account"
 capabilities:
   provides_tools: [grounder_search, grounder_list_providers]
-  provides_hooks: [transform_tool_result, transform_llm_output, pre_tool_call, post_api_request]
+  provides_hooks: [transform_tool_result, transform_llm_output, pre_tool_call, post_api_request, pre_llm_call]
   provides_middleware: []
   requires_env: []

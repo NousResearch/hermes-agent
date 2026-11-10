@@ -3,7 +3,7 @@ title: Birta
 repo: https://github.com/birtadev/plugins
 sha: 476a6f0465d4490579b079f37819048f4e15bc0c
 subdir: hermes
-description: "Publish and share websites, HTML pages, landing pages, portfolios, reports, docs and slide decks at a link, collect feedback on the page, and have the agent apply it. Disclosure — hosted-only: every tool call goes to birta.dev and acts on your Birta projects; publishing makes a version visible at the project address."
+description: "Publish and share websites, HTML pages, landing pages, portfolios, reports, docs and slide decks at a link, collect feedback on the page, and have the agent apply it. Disclosure — hosted-only: every tool call goes to birta.dev and acts on your Birta projects; publishing makes a version visible at the project address; optional mention events (off unless you set `events: true` and run the webhook gateway, and approved per subscription) let anyone who @mentions Hermes in your Birta review threads start an unattended agent run."
 maintainer: birtadev
 tier: community
 category: tools

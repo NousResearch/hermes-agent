@@ -55,6 +55,33 @@ def test_setting_the_journal_mode_refuses_a_store_without_a_file(no_store_file, 
     assert "needs a file-backed session store" in capsys.readouterr().out
 
 
+def test_the_runner_keeps_one_handle_per_profile_without_a_store_file(tmp_path, monkeypatch, no_store_file):
+    import threading
+    from gateway.run import GatewayRunner, _SESSION_DB_UNPINNED
+    from gateway.session_db_recovery import RecoverableHandleCache
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "root"))
+    runner = object.__new__(GatewayRunner)
+    runner._session_db_pinned = _SESSION_DB_UNPINNED
+    runner._session_db_handles = {}
+    runner._session_db_handles_lock = threading.Lock()
+    runner._session_db_handle_cache = RecoverableHandleCache(handles=runner._session_db_handles,
+                                                             lock=runner._session_db_handles_lock)
+    runner._session_db_init_error = None
+    handles = {}
+    try:
+        for name in ("alpha", "beta"):
+            token = set_hermes_home_override(tmp_path / name)
+            try:
+                handles[name] = runner._open_session_db_for_active_scope()
+            finally:
+                reset_hermes_home_override(token)
+        assert handles["alpha"] is not handles["beta"]
+        assert handles["alpha"].scope.profile_dir != handles["beta"].scope.profile_dir
+    finally:
+        runner.close_all_session_db_handles()
+
+
 @pytest.mark.asyncio
 async def test_each_profile_authority_comes_up_on_its_own_store_without_a_store_file(served, no_store_file):
     from gateway.run_runtime import initialize_gateway_runtime

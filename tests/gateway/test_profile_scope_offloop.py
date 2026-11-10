@@ -141,3 +141,53 @@ def test_prepared_policy_is_not_rebuilt(gateway_run, profile_home, monkeypatch):
         assert get_terminal_scope() == {"TERMINAL_ENV": "ssh"}
 
     assert calls == []
+
+
+def test_websocket_close_prepares_profile_policy_off_loop(profile_home, monkeypatch):
+    """Regression for #144883: WebSocket teardown must not stall gateway liveness."""
+    from types import SimpleNamespace
+
+    from gateway.session_controls import AuthorityConnection
+
+    real_build = terminal_scope.build_profile_terminal_scope
+    read_started = threading.Event()
+    release = threading.Event()
+
+    def stalled_build(*args, **kwargs):
+        read_started.set()
+        assert release.wait(2.0), "WebSocket close blocked the event loop during profile policy read"
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(terminal_scope, "build_profile_terminal_scope", stalled_build)
+
+    # A connection with no live subscriptions still enters its owner's scope on close.
+    # Keep transport teardown real while avoiding an unrelated SessionDB fixture.
+    authority = SimpleNamespace(
+        profile_id=str(profile_home),
+        runner=SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True)),
+        sessions={},
+        events={},
+    )
+    connection = object.__new__(AuthorityConnection)
+    connection.authority = authority
+    connection.actor = SimpleNamespace(transport_id="teardown-test")
+    connection._siblings = {}
+    connection.subscriptions = {}
+    connection.handed_back = set()
+
+    async def drive_close():
+        async def keep_loop_alive():
+            while not read_started.is_set():
+                await asyncio.sleep(0)
+            release.set()
+
+        ticker = asyncio.create_task(keep_loop_alive())
+        try:
+            await connection.close()
+        finally:
+            release.set()
+            ticker.cancel()
+            await asyncio.gather(ticker, return_exceptions=True)
+
+    asyncio.run(drive_close())
+    assert read_started.is_set(), "test did not enter the profile policy reader"

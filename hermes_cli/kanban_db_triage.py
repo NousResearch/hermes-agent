@@ -163,6 +163,7 @@ _GUARD_DENIED_ACTIONS = frozenset(
         "SQLITE_DROP_TRIGGER",
         "SQLITE_DROP_VIEW",
         "SQLITE_DROP_VTABLE",
+        "SQLITE_FUNCTION",
         "SQLITE_INSERT",
         "SQLITE_PRAGMA",
         "SQLITE_REINDEX",
@@ -177,6 +178,7 @@ _GUARD_DENIED_ACTIONS = frozenset(
 def _guard_authorizer(conn: sqlite3.Connection) -> Iterator[None]:
     """Deny recursive writes/txn control during a guard, then restore policy."""
     previous = getattr(conn, "_hermes_authorizer_callback", None)
+    scoped_setter = getattr(conn, "_hermes_set_scoped_authorizer", None)
 
     def authorize(action, arg1, arg2, database, source):
         if previous is not None:
@@ -187,11 +189,17 @@ def _guard_authorizer(conn: sqlite3.Connection) -> Iterator[None]:
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK
 
-    conn.set_authorizer(authorize)
+    if scoped_setter is not None:
+        scoped_setter(authorize, locked=True)
+    else:
+        conn.set_authorizer(authorize)
     try:
         yield
     finally:
-        conn.set_authorizer(previous)
+        if scoped_setter is not None:
+            scoped_setter(previous, locked=False)
+        else:
+            conn.set_authorizer(previous)
 
 
 def guarded_specify_triage_task(

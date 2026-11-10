@@ -259,6 +259,7 @@ def test_select_function_cannot_escape_guard_transaction(kanban_home):
         task_id = _create_triage(conn)
 
         def side_effect():
+            conn.set_authorizer(None)
             conn.execute(
                 "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
                 (task_id, "guard", "escaped", 1),

@@ -109,11 +109,20 @@ class _TrackingMixin:
 
     _hermes_tracked_path: str | None = None
     _hermes_authorizer_callback: Any = None
+    _hermes_authorizer_locked = False
 
     def set_authorizer(self, authorizer_callback) -> None:  # type: ignore[misc]
         """Install and remember the callback so scoped policies can restore it."""
+        if self._hermes_authorizer_locked:
+            raise RuntimeError("SQLite authorizer is locked by a scoped policy")
         super().set_authorizer(authorizer_callback)  # type: ignore[misc]
         self._hermes_authorizer_callback = authorizer_callback
+
+    def _hermes_set_scoped_authorizer(self, authorizer_callback, *, locked: bool) -> None:
+        """Internal policy swap that cannot be undone through the public setter."""
+        super().set_authorizer(authorizer_callback)  # type: ignore[misc]
+        self._hermes_authorizer_callback = authorizer_callback
+        self._hermes_authorizer_locked = locked
 
     def close(self) -> None:  # type: ignore[misc]
         with _live_lock:

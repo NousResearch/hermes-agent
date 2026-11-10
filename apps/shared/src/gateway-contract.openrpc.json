@@ -30371,7 +30371,7 @@
       },
       "ProfileMirrored": {
         "additionalProperties": false,
-        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` under ``share_auth``.",
+        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` when the new profile has no\nauth.json of its own and reads the default root's.",
         "properties": {
           "env": {
             "default": false,

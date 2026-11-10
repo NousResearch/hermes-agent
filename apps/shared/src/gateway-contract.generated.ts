@@ -2163,7 +2163,7 @@ export interface ProfilesCreateResult {
   model_set?: boolean
   mirrored: ProfileMirrored
 }
-/** What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``. */
+/** What was copied from the launch profile; ``auth`` is ``"shared"`` when the new profile has no auth.json of its own and reads the default root's. */
 export interface ProfileMirrored {
   env?: boolean
   auth?: boolean | 'shared'

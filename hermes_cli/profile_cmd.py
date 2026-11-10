@@ -185,16 +185,16 @@ def _print_channel_clone_notice(name: str, source_label: str, clone_channels: bo
         print(shared_credential_warning(name, shared, source_label))
 
 
-def _print_mirrored(mirrored: dict) -> None:
-    """What the new profile took from the main one (the bot page's "Share keys & accounts")."""
+def _print_mirrored(mirrored: dict, launch: str) -> None:
+    """What the new profile took from the launch profile (the bot page's "Share keys & accounts")."""
     if mirrored.get("env"):
-        print("Copied API keys from the main profile (bot tokens and allowlists left out).")
+        print(f"Copied API keys from '{launch}' (bot tokens and allowlists left out).")
     if mirrored.get("auth") == "shared":
-        print("Logins and subscriptions are shared with the main profile (--isolated-auth to copy them).")
+        print("Logins and subscriptions are shared with the default profile (--isolated-auth copies them).")
     elif mirrored.get("auth"):
-        print("Copied logins from the main profile (single-use OAuth logins left out).")
+        print(f"Copied logins from '{launch}' (single-use OAuth logins are still read from the default profile).")
     if mirrored.get("model_inherited"):
-        print("Model inherited from the main profile.")
+        print(f"Model inherited from '{launch}'.")
 
 
 def _profile_create(args):
@@ -260,7 +260,7 @@ def _profile_create(args):
                 print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
                 print("  Add to your shell config (~/.bashrc or ~/.zshrc):")
                 print('    export PATH="$HOME/.local/bin:$PATH"')
-    _print_mirrored(result.mirrored)
+    _print_mirrored(result.mirrored, get_active_profile_name() or "default")
     for warning in result.warnings:
         print(f"⚠ {warning}")
     try:
@@ -280,7 +280,7 @@ def _profile_create(args):
         print("  hermes gateway restart    Serve this profile from the running multiplexed gateway")
     else:
         print(f"  {name} gateway start      Start the messaging gateway")
-    if clone or clone_all or result.mirrored.get("env"):
+    if cloned or result.mirrored.get("env"):
         print(f"\n  Edit {profile_dir_display}/.env for different API keys")
         print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
     else:

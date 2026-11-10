@@ -868,9 +868,23 @@ event("skills.changed", ChangeSignalPayload,
 event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox envelope is queued; drain it.")
 
 
+# ── groups.changed (names the rooms that moved) ──────────────────────────────────────────────
+
+
+class GroupsChangedPayload(OpenPayload):
+    """``change_watcher._groups_changed_payload``: the rooms whose log, tasks or live status moved; absent
+    when something process-wide moved (every open room re-reads)."""
+
+    room_ids: list[str] | None = None
+
+
+event("groups.changed", GroupsChangedPayload,
+      doc="A Group Chat log, task or live status moved; an open room re-reads its log delta and groups.state.")
+
+
 __all__ = [
     "BillingBlock", "BillingStepUpVerificationPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
-    "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload",
+    "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload", "GroupsChangedPayload",
     "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
     "NotificationClearPayload", "NotificationShowPayload", "OpenPayload", "PaneRevealPayload",

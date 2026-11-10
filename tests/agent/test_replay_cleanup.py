@@ -8,7 +8,6 @@ because the dangling tool-call tail was replayed on every resume).
 
 from agent.replay_cleanup import (
     strip_dangling_tool_call_tail,
-    sanitize_replay_history,
 )
 
 
@@ -63,30 +62,6 @@ def test_mixed_dangling_batch_uses_truthful_per_call_wording():
 
 
 
-
-
-
-
-def test_sanitize_replay_history_combines_both():
-    # interrupted block is removed; a dangling read-only call is safe to erase
-    history = [
-        _user("first"),
-        _assistant_tc("terminal"), _tool("[Command interrupted]"),
-        _user("second"),
-        _assistant_tc("read_file"),  # dangling
-    ]
-    out = sanitize_replay_history(history)
-    assert out[:2] == [
-        _user("first"),
-        _assistant_tc("terminal"),
-    ]
-    assert out[2]["effect_disposition"] == "unknown"
-    assert out[-1] == _user("second")
-
-
-def test_sanitize_replay_history_noop_on_clean_history():
-    history = [_user("hi"), {"role": "assistant", "content": "hello"}]
-    assert sanitize_replay_history(history) == history
 
 
 

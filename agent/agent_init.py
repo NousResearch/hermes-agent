@@ -460,7 +460,6 @@ _TURN_STATE: dict[str, Any] = {
     # Intermediate pressure warnings made models give up early; ordinary conversations
     # remain opt-in. Dispatcher workers receive a bounded completion checkpoint.
     "_iteration_budget_warning_injected": False,
-    "_budget_exhausted_injected": False,
     "_budget_grace_call": False,
     "_run_budget_started_at": None,  # set by turn_context.prepare_turn when a budget is active
     "_run_budget_wrapup_injected": False,  # one-shot latch for the 80% wrap-up notice
@@ -2108,7 +2107,7 @@ def init_agent(
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
     agent.session_cwd = cwd or None
-    # Shared iteration budget: parent creates, children inherit.
+    # Per agent; build_turn_context replaces it with a fresh budget at every turn start.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
     # CLI replaces this with _cprint so raw ANSI status lines go through prompt_toolkit's
     # renderer (StdoutProxy would mangle them). None = builtins.print.

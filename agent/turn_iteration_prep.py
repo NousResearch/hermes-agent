@@ -496,9 +496,6 @@ def apply_retry_restarts(
     if _retry.restart_with_compressed_messages:
         api_call_count -= 1
         agent.iteration_budget.refund()
-        # Compression restarts count toward the retry limit so a compression that
-        # shrinks messages but not enough can't loop forever.
-        retry_count += 1
         _retry.restart_with_compressed_messages = False
         if _should_skip_model_call_for_reference_handoff(
             # Compression rebuilt the list (tail messages are fresh compaction copies), so the

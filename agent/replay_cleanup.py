@@ -145,13 +145,6 @@ def strip_dangling_tool_call_tail(agent_history: list[dict[str, Any]]) -> list[d
     return agent_history[:-1]
 
 
-def sanitize_replay_history(agent_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Both strippers in canonical order (interrupted blocks, then dangling tail); same list object when nothing strips."""
-    if not agent_history:
-        return agent_history
-    return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
-
-
 def canonicalize_replay_history(
     agent_history: list[dict[str, Any]], *, now: Optional[float] = None
 ) -> list[dict[str, Any]]:

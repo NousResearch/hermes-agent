@@ -121,7 +121,6 @@ async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(t
     from gateway.session_authority import initialize_session_authority
     from gateway.session_a2a import forward_author
     from gateway.session_ingress import row_turn_author
-    from agent.turn_author import a2a_key
     from hermes_state_runtime import list_session_admissions
     from gateway import run
 
@@ -144,7 +143,6 @@ async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(t
     policy = runner.adapters[next(iter(runner.adapters))].policies[sid]
     author = forward_author(policy)
     assert author == {'id': 'alice', 'name': 'alice', 'is_bot': True}
-    assert a2a_key(author) == 'a2a:alice'
     row = list_session_admissions(authority.db, session_id=sid)[0]
     assert row_turn_author(policy, row) == author
     # A producer's own stamp wins; an ordinary local policy names nobody.

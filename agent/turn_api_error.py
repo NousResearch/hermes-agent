@@ -33,7 +33,7 @@ logger = logging.getLogger("agent.conversation_loop")
 class ApiErrorVerdict:
     """``action``: ``"continue"`` (retry the API call), ``"break"`` (leave the retry loop:
     fallback armed / redirect pending) or ``"return"`` (``result`` is the turn's result dict);
-    ``"fallthrough"`` never happens — the handler always ends in an exit. The other fields
+    ``"fallthrough"`` (the error backoff finished: retry the API call, same as ``"continue"``). The other fields
     are the retry-loop locals the handler rebinds; ``_provider_overflow_recovery_pending`` is
     merge-only (caller sets True when set)."""
 
@@ -253,7 +253,7 @@ def _is_local_validation_error(api_error: Any) -> bool:
 
 @dataclass
 class UnrecoveredErrorVerdict:
-    """``action``: ``"continue"`` (retry), ``"break"`` (fallback armed / redirect pending) or
+    """``action``: ``"continue"`` or ``"fallthrough"`` (retry), ``"break"`` (fallback armed / redirect pending) or
     ``"return"`` (``result`` is the terminal result dict). Rebinds ``active_system_prompt``,
     ``retry_count`` and ``compression_attempts``."""
 

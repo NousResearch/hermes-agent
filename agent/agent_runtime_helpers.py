@@ -3470,12 +3470,6 @@ def _iter_httpx_pools_with_owner(http_client: Any):
         return
 
 
-def _iter_httpx_pool_objects(http_client: Any):
-    """Yield httpcore pool objects reachable from an httpx client."""
-    for pool, _owner in _iter_httpx_pools_with_owner(http_client):
-        yield pool
-
-
 def _connection_candidates(conn: Any):
     """Walk nested wrappers: proxy tunnels (``_connection``) plus httpx/httpcore
     stream envelopes (``_stream``/``_httpcore_stream``: BoundSyncStream →

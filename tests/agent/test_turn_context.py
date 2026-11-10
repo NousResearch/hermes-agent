@@ -595,6 +595,15 @@ def test_applies_agent_side_effects():
     assert agent._current_turn_id
 
 
+def test_turn_start_clears_stall_counter_and_grace_call_left_by_previous_turn():
+    agent = _FakeAgent()
+    agent._dropped_toolcall_retries = 2
+    agent._budget_grace_call = True
+    _build(agent)
+    assert agent._dropped_toolcall_retries == 0
+    assert agent._budget_grace_call is False
+
+
 def test_pending_cli_message_uses_clean_override_for_api_local_note():
     """A noted API message reuses the clean staged dict and its DB marker."""
     agent = _FakeAgent()

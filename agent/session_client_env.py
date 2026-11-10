@@ -86,11 +86,6 @@ def normalise_client_env(value, rules) -> dict[str, str]:
     return {name: value[name] for name in sorted(value) if rules is None or _kept(name, rules)}
 
 
-def accept_client_env(value, config, *, local=True) -> dict[str, str]:
-    """Gateway side: the map filtered by the session profile's own current rules."""
-    return normalise_client_env(value, client_env_rules(config, local=local))
-
-
 def retry_matches(committed: dict, request: dict) -> bool:
     """Whether a retried ``session.create`` (``request``: its params) carries the client environment the
     committed session (``committed``: its stored policy) froze. The complete retried map, normalised by

@@ -92,11 +92,11 @@ REFUSED = {'NODE_BEARER': 'b', 'NODE_CREDS': 'c', 'CONDA_DSN': 'postgres://u:p@h
 
 
 def test_credential_and_control_names_are_refused_by_execute_codes_secret_policy():
-    from agent.session_client_env import accept_client_env, collect_client_env
+    from agent.session_client_env import client_env_rules, collect_client_env, normalise_client_env
     config = {'terminal': {'client_env_passthrough': ['DEPLOY_WEBHOOK', 'HERMES_KANBAN_DB', 'MY_TOOLCHAIN_HOME']}}
     sent = {**REFUSED, 'NVM_DIR': '/client/.nvm', 'MY_TOOLCHAIN_HOME': '/opt/tc', 'PATH': '/client/bin'}
     kept = {'NVM_DIR': '/client/.nvm', 'MY_TOOLCHAIN_HOME': '/opt/tc', 'PATH': '/client/bin'}
-    assert accept_client_env(sent, config) == kept  # the gateway, before anything is stored
+    assert normalise_client_env(sent, client_env_rules(config)) == kept  # the gateway, before anything is stored
     assert collect_client_env(sent, config) == kept  # the client, before anything is sent
 
 

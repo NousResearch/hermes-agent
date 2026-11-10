@@ -1,6 +1,6 @@
 name: task-navigator
 repo: https://github.com/Guinevere1991/token-housekeeper-hackathon
-sha: 87d2da5fa831af730754a80fba78e404ae12ca5f
+sha: 728f418970cfbfea67fa5fdfd2335e46091af993
 subdir: plugin
 title: token家政婦
 description: Source-grounded 5W1H task cards and advisory prompt-preparation workflow for Hermes.
@@ -8,8 +8,8 @@ maintainer: Guinevere1991
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
-version: "0.2.1"
-docs_url: https://github.com/Guinevere1991/token-housekeeper-hackathon/tree/87d2da5fa831af730754a80fba78e404ae12ca5f
+version: "0.2.2"
+docs_url: https://github.com/Guinevere1991/token-housekeeper-hackathon/tree/728f418970cfbfea67fa5fdfd2335e46091af993
 readme: false
 capabilities:
   provides_tools:

@@ -4386,6 +4386,17 @@ from cron.scheduler_preflight import (
 )
 
 
+_SCHEDULER_ENTRY_USAGE = """usage: python -m cron.scheduler --tick
+       python -m cron.scheduler --external-worker-file PATH --ack-file PATH
+
+  --tick                  run one scheduler tick now (the gateway's ticker code path)
+  --external-worker-file  run the gateway's fire worker for one job (gateway-internal)
+  -h, --help              show this message
+
+A bare or unknown invocation prints this message and exits non-zero instead of running a tick:
+`--help` used to fire every due job (#152710)."""
+
+
 # `python -m cron.scheduler` entry: MUST stay below the split-module imports so the worker /
 # tick paths see every name they need.
 if __name__ == "__main__":
@@ -4410,4 +4421,15 @@ if __name__ == "__main__":
         raise SystemExit(
             0 if _run_external_worker_payload(args.external_worker_file, args.ack_file) else 1
         )
+    # Manual invocation (#152710). Never fall through to a tick by accident: `--help` used to run
+    # every due job on whatever home it found, and an unknown argument did the same. The gateway
+    # still launches the worker path above with `--external-worker-file`; a hand-run tick is now
+    # explicit.
+    _entry_args = sys.argv[1:]
+    if "-h" in _entry_args or "--help" in _entry_args:
+        print(_SCHEDULER_ENTRY_USAGE)
+        raise SystemExit(0)
+    if _entry_args != ["--tick"]:
+        print(_SCHEDULER_ENTRY_USAGE, file=sys.stderr)
+        raise SystemExit(2)
     tick(verbose=True, headless=True)

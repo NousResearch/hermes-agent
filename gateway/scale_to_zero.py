@@ -91,6 +91,7 @@ def is_idle(*, active_work_count: int, seconds_since_last_inbound: float,
 
 def gateway_is_idle(runner) -> bool:
     from gateway.run_runtime import managed_turn_count
+    from gateway.scale_to_zero_work import has_durable_work
 
     # Drain counters can swallow errors to zero. An unreadable source must keep the gateway awake.
     def read_or_awake(label: str, read: Callable[[], Any], busy: Any) -> Any:
@@ -112,6 +113,7 @@ def gateway_is_idle(runner) -> bool:
     # interval after the agent slot is released and before the relay send starts.
     runtime_count = read_or_awake("session runtime work count", lambda: managed_turn_count(runner), 1)
     relay_busy = read_or_awake("relay work", relay_reply_in_flight, True)
+    durable_busy = read_or_awake("cross-process work", has_durable_work, True)
 
     # A connected dashboard/desktop/TUI client is inbound activity. Its marker ages out normally.
     last_inbound = runner._last_inbound_at
@@ -122,7 +124,9 @@ def gateway_is_idle(runner) -> bool:
         active_work_count=runner._running_agent_count() + runtime_count + cron_count + api_count,
         seconds_since_last_inbound=time.time() - last_inbound,
         idle_timeout_seconds=runner._scale_to_zero_idle_timeout_seconds(),
-        has_live_background_work=relay_busy or runner._scale_to_zero_has_live_background_work(),
+        has_live_background_work=(
+            relay_busy or durable_busy or runner._scale_to_zero_has_live_background_work()
+        ),
     )
 
 

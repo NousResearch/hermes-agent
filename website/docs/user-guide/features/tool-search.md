@@ -117,6 +117,7 @@ tools:
       - todo_list
       - process_manage
       - cronjob_manage
+      - text_to_speech
       - manage_catalog
 ```
 

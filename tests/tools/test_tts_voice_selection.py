@@ -117,7 +117,8 @@ def test_provider_switch_reshapes_the_schema_at_once(monkeypatch):
     def tts_props(provider: str, stamp: int) -> set:
         config_path.write_text(f"tts:\n  provider: {provider}\n")
         os.utime(config_path, (stamp, stamp))
-        defs = model_tools.get_tool_definitions(enabled_toolsets=["tts"], quiet_mode=True)
+        # The un-collapsed listing is what tool_describe serves for a deferred tool.
+        defs = model_tools.get_tool_definitions(enabled_toolsets=["tts"], quiet_mode=True, skip_tool_search_assembly=True)
         (tts,) = [d for d in defs if d["function"]["name"] == "text_to_speech"]
         return set(tts["function"]["parameters"]["properties"])
 

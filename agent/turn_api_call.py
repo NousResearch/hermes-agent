@@ -62,7 +62,9 @@ def _should_stream(agent: Any) -> bool:
         return False
     if not agent._has_stream_consumers():
         if agent.provider == "moa":
-            return False
+            from agent.plugin_stream_hooks import has_stream_observer_hooks
+
+            return has_stream_observer_hooks(include_unknown=True)
         from unittest.mock import Mock
         if isinstance(getattr(agent, "client", None), Mock):
             return False

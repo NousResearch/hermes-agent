@@ -700,9 +700,11 @@ def enqueue_plugin_stream_hook(hook_name: str, **payload: Any) -> bool:
     return enqueue_plugin_observer_hook(hook_name, **payload)
 
 
-def has_stream_observer_hooks() -> bool:
+def has_stream_observer_hooks(*, include_unknown: bool = False) -> bool:
+    """Count unknown availability only when selecting a conservative stream."""
     return any(
-        (callbacks := _registered_callbacks(name, allow_discovery=False)) is None or bool(callbacks)
+        ((callbacks := _registered_callbacks(name, allow_discovery=False)) is None and include_unknown)
+        or bool(callbacks)
         for name in ("on_stream_start", "on_stream_delta", "on_stream_end")
     )
 

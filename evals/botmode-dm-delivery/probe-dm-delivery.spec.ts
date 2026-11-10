@@ -49,7 +49,7 @@ test('cron output waits for a CLI-only owner and arrives after owner release', a
   const cronEnv = { ...env, HERMES_HOME: fixture.sandbox.hermesHome }
   try {
     await fixture.mock.waitForHeldCompletion()
-    const script = 'import json; from cron.scheduler_delivery import _deliver_to_bot_chat; j={"id":"cli-residual","name":"CLI residual","execution_id":"fixed-execution"}; result=_deliver_to_bot_chat(j,"CLI_OWNER_CRON_SENTINEL","beta"); print(json.dumps({"result":result,"job":j}))'
+    const script = 'import json; from hermes_agent.cron.scheduler_delivery import _deliver_to_bot_chat; j={"id":"cli-residual","name":"CLI residual","execution_id":"fixed-execution"}; result=_deliver_to_bot_chat(j,"CLI_OWNER_CRON_SENTINEL","beta"); print(json.dumps({"result":result,"job":j}))'
     const setup = ''
     const result = JSON.parse(execFileSync(python, ['-c', setup + script], { env: cronEnv, cwd: repo, encoding: 'utf8', timeout: 30_000 }))
     console.log('CLI_OWNER_CRON_ADMISSION', JSON.stringify(result))
@@ -58,7 +58,7 @@ test('cron output waits for a CLI-only owner and arrives after owner release', a
     await expect.poll(() => child.exitCode, { timeout: 60_000 }).toBe(0)
     fs.mkdirSync(path.join(fixture.sandbox.root, 'changed-launch-home'), { recursive: true })
     // Delivery is admitted through the profile authority inside tick(); nothing to drain afterwards.
-    const tickArgs = ['-c', 'from cron.scheduler import tick; tick(verbose=False)']
+    const tickArgs = ['-c', 'from hermes_agent.cron.scheduler import tick; tick(verbose=False)']
     const ticker = spawn(python, tickArgs, { env: { ...cronEnv, HOME: path.join(fixture.sandbox.root, 'changed-launch-home') }, cwd: repo, stdio: ['ignore', output, output] })
     await expect.poll(() => ticker.exitCode, { timeout: 90_000 }).not.toBeNull()
     expect(ticker.exitCode).toBe(0)

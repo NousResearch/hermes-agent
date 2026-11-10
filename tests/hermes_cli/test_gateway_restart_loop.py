@@ -40,6 +40,7 @@ class TestGatewayLifecyclePattern:
         "pkill -f python",
         'pkill -f "python -m hermes_cli.main"',
         "pkill -f hermes_cli",
+        "pkill -f hermes_agent",
         "killall -9 python3.12",
         "sudo pkill -9 python3",
         "pgrep python | xargs kill -9",

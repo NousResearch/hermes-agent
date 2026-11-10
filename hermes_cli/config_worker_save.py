@@ -19,6 +19,9 @@ def rebase_for_save(config: dict[str, Any], live_raw: dict[str, Any], merge_exis
     snapshot = _config._worker_config_snapshot()
     if snapshot is not None:
         return _three_way(live_raw or {}, config, _config.load_config(), _frozen_for_deletion(snapshot))
+    if _config.user_config_ignored():
+        # load_config() served defaults, not the file: land only the caller's edits on the live file.
+        return _three_way(live_raw or {}, config, _config.load_config(), {})
     if merge_existing and live_raw:
         return _config._merge_partial_save(live_raw, config)
     return config

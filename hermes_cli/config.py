@@ -435,13 +435,19 @@ def get_config_path() -> Path:
     return get_hermes_home() / "config.yaml"
 
 
+def user_config_ignored() -> bool:
+    """``--ignore-user-config`` / ``--safe-mode`` (HERMES_IGNORE_USER_CONFIG=1): every layered read
+    treats config.yaml as absent (defaults + managed only). Raw readers still return the file."""
+    return os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
+
+
 def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
     """Reject an existing invalid config before a non-interactive agent run.
     Interactive surfaces keep ``load_config()``'s recovery behavior so the operator can repair
     the file; a one-shot run has no such chance, and defaults there could silently pick a hosted
     provider and spend against ``.env`` credentials. Missing/empty files stay valid first-run
     states; ``--ignore-user-config`` / HERMES_IGNORE_USER_CONFIG=1 remain authoritative."""
-    if ignore_user_config or os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+    if ignore_user_config or user_config_ignored():
         return
 
     config_path = get_config_path()
@@ -2044,7 +2050,7 @@ def apply_terminal_config_to_env(
     matching env values; merged defaults only backfill missing env vars."""
     target = os.environ if env is None else env
 
-    raw_terminal_cfg = read_raw_config().get("terminal")
+    raw_terminal_cfg = {} if user_config_ignored() else read_raw_config().get("terminal")
     file_has_terminal_config = isinstance(raw_terminal_cfg, dict)
     raw_terminal_cfg = raw_terminal_cfg if file_has_terminal_config else {}
     should_override = file_has_terminal_config if override is None else override
@@ -2088,9 +2094,10 @@ def apply_terminal_config_to_env(
 def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[Any, ...]], Optional[tuple[Any, ...]]]:
     """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE`` (racy-clean guarded, see ``config_cache_version``).
     The managed config file's signature is folded in (zeros = none) so editing it invalidates
-    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
+    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on).
+    Under :func:`user_config_ignored` the user file counts as absent, so no layered reader parses it."""
     try:
-        user_sig: Optional[tuple[Any, ...]] = config_cache_version(config_path)
+        user_sig: Optional[tuple[Any, ...]] = None if user_config_ignored() else config_cache_version(config_path)
     except FileNotFoundError:
         user_sig = None
     managed_dir = managed_scope.get_managed_dir()

@@ -1042,9 +1042,10 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         from hermes_cli.config_backend import config_exists
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
+        terminal_timeout = os.getenv("TERMINAL_TIMEOUT") or DEFAULT_CONFIG["terminal"]["timeout"]
 
         config_path = _hermes_home / 'config.yaml'
         config_status = _t("cli.config.loaded") if config_exists(config_path) else _t("cli.config.not_found")

@@ -182,11 +182,12 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
 
 def _cli_config_defaults():
     """Built-in defaults for every config key the CLI reads (the file overlays these)."""
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as img
+    from hermes_cli.config_defaults import DEFAULT_CONFIG as shared, DEFAULT_SANDBOX_IMAGE as img
     return {
         "model": {"default": "", "base_url": "", "provider": "auto"},
         "terminal": {
             "env_type": "local", "cwd": ".", "home_mode": "auto", "lifetime_seconds": 300,  # cwd "." -> os.getcwd()
+            "timeout": shared["terminal"]["timeout"],
             "docker_image": img, "docker_forward_env": [], "modal_image": img, "daytona_image": img, "docker_volumes": [],
             "docker_mount_cwd_to_workspace": False,  # opt-in only: sandbox isolation
             "docker_shared_container_key": "",
@@ -195,7 +196,7 @@ def _cli_config_defaults():
         # threshold: fraction of the model's context limit; min_tail: real user messages kept in the tail
         "compression": {"enabled": True, "threshold": 0.50, "min_tail_user_messages": 1},
         "agent": {
-            "max_turns": 500, "verbose": False, "system_prompt": "", "prefill_messages_file": "",  # max_turns shared with subagents
+            "max_turns": shared["agent"]["max_turns"], "verbose": False, "system_prompt": "", "prefill_messages_file": "",  # max_turns shared with subagents
             "reasoning_effort": "", "service_tier": "",
             "personalities": {},  # user overrides merged by name over hermes_cli.personality builtins
         },
@@ -215,7 +216,7 @@ def _cli_config_defaults():
         "code_execution": {"timeout": 300, "max_tool_calls": 50},
         "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": "", "api_key": ""}},
         # delegation: empty model/provider = inherit parent; api_key falls back to OPENAI_API_KEY
-        "delegation": {"max_iterations": 250, "model": "", "provider": "", "base_url": "", "api_key": ""},
+        "delegation": {"max_iterations": shared["delegation"]["max_iterations"], "model": "", "provider": "", "base_url": "", "api_key": ""},
         "onboarding": {"seen": {}},  # first-touch hint flags (agent/onboarding.py), latched once shown
     }
 
@@ -267,7 +268,8 @@ def load_cli_config() -> dict[str, Any]:
     # Only a file's terminal section may overwrite terminal env vars already set by .env.
     _file_has_terminal_config = False
 
-    if os.environ.get("HERMES_IGNORE_USER_CONFIG") != "1" and config_exists(config_path):
+    from hermes_cli.config import user_config_ignored
+    if not user_config_ignored() and config_exists(config_path):
         try:
             from hermes_cli.config import _normalize_root_model_keys
 

@@ -173,3 +173,80 @@ class TestIgnoreUserConfigDelegationDefault:
             encoding="utf-8")
         assert "max_iterations: 250" in body
         assert "(default: 250)" in body
+
+
+class TestOneDefaultTableAndOneBypass:
+    """The classic CLI reads the shared ``DEFAULT_CONFIG`` for the keys both tables carry, and
+    ``--ignore-user-config`` means the same thing to every layered reader: config.yaml is absent."""
+
+    def _home(self, tmp_path, monkeypatch, text=""):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(text)
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", tmp_path)
+        return tmp_path
+
+    def test_classic_cli_defaults_are_the_shared_defaults(self, tmp_path, monkeypatch):
+        """An empty config.yaml gives ``hermes chat`` the turn cap, subagent cap and terminal timeout
+        that load_config (gateway, TUI, dashboard) gives: unlimited, 250, 180."""
+        from hermes_cli.config import load_config
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        self._home(tmp_path, monkeypatch)
+        import cli
+        cfg, shared = cli.load_cli_config(), load_config()
+
+        assert cfg["agent"]["max_turns"] == shared["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
+        assert cfg["delegation"]["max_iterations"] == shared["delegation"]["max_iterations"] == 250
+        assert cfg["terminal"]["timeout"] == shared["terminal"]["timeout"] == DEFAULT_CONFIG["terminal"]["timeout"]
+
+    def test_every_layered_reader_drops_the_user_file(self, tmp_path, monkeypatch):
+        """With the flag set no layered read returns a value only config.yaml sets; the raw readers
+        (the write-back primitive) still see the file."""
+        import gateway.run as gateway_run
+        from hermes_cli import config as C
+        from hermes_cli.config_effective import load_user_config_effective
+        from tools import delegate_tool_config
+
+        home = self._home(tmp_path, monkeypatch, (
+            "model:\n  default: test-vendor/user-only\n  base_url: https://user-only.example\n"
+            "delegation:\n  max_iterations: 7\nterminal:\n  timeout: 9\n"))
+        assert C.load_config()["model"]["base_url"] == "https://user-only.example"  # read before the flag
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+
+        layered = {
+            "load_config": C.load_config(), "load_config_readonly": C.load_config_readonly(),
+            "load_user_config_effective": load_user_config_effective(),
+            "_load_gateway_config": gateway_run._load_gateway_config(home / "config.yaml"),
+        }
+        for name, cfg in layered.items():
+            model = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+            assert model.get("base_url") != "https://user-only.example", name
+            assert (cfg.get("terminal") or {}).get("timeout") != 9, name
+        assert delegate_tool_config._load_config().get("max_iterations") == 250
+        # No file terminal section exists, so defaults only backfill: a .env/shell value is kept.
+        env = {"TERMINAL_TIMEOUT": "55"}
+        C.apply_terminal_config_to_env(env=env)
+        assert env["TERMINAL_TIMEOUT"] == "55"
+        assert C.read_raw_config()["model"]["base_url"] == "https://user-only.example"
+
+    def test_a_save_under_the_flag_keeps_the_user_file(self, tmp_path, monkeypatch):
+        """load_config() served defaults, so a read-modify-write must land only its own edit: the
+        user's sections stay on disk instead of being replaced by the defaults."""
+        from hermes_cli import config as C
+        from hermes_cli.config_backend import read_config_doc
+
+        home = self._home(tmp_path, monkeypatch, (
+            "model:\n  default: test-vendor/user-only\napprovals:\n  deny:\n  - rm -rf /\n"
+            "custom_providers:\n- name: mine\n  base_url: https://mine.example\n"))
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+
+        cfg = C.load_config()
+        cfg.setdefault("display", {})["skin"] = "mono"
+        C.save_config(cfg)
+
+        on_disk = read_config_doc(home / "config.yaml")
+        assert on_disk["display"]["skin"] == "mono"
+        assert on_disk["model"]["default"] == "test-vendor/user-only"
+        assert on_disk["approvals"]["deny"] == ["rm -rf /"]
+        assert on_disk["custom_providers"][0]["name"] == "mine"

@@ -15,7 +15,7 @@ import threading
 import time
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
-from agent.pet import render as pet_render
+from agent import terminal_image
 from contextlib import suppress
 from hermes_constants import get_hermes_home
 from prompt_toolkit.application import Application
@@ -153,6 +153,8 @@ class CLITuiRuntimeMixin:
             n = len(submit_images)
             _attached = t("cli.tui.images_attached_one" if n == 1 else "cli.tui.images_attached_other", count=n)
             _cprint(f"  {_DIM}{_attached}{_RST}")
+            from hermes_cli.cli_inline_images import print_inline_images
+            print_inline_images(self, submit_images)
 
         self._agent_running = self._interactive_turn = True
         self._pet_turn_error = self._pet_reasoning = False
@@ -272,6 +274,10 @@ class CLITuiRuntimeMixin:
         from cli import _accent_hex, _detect_light_mode
         with suppress(Exception):  # light-mode probe before pt grabs the tty (cached)
             _detect_light_mode()
+        from hermes_cli.cli_inline_images import vscode_images_hint
+        _show_vscode_images_hint = False
+        with suppress(Exception):  # VS Code image probe: same pre-pt window, cached, ~10 ms
+            _show_vscode_images_hint = vscode_images_hint(self._inline_images_mode)
         # Scroll the cursor to the last row so banner, responses and prompt pin to the bottom.
         with suppress(Exception):
             _term_lines = shutil.get_terminal_size().lines
@@ -328,7 +334,12 @@ class CLITuiRuntimeMixin:
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
 
         self._tui_startup_prewarm_and_warnings(_welcome_skin)
-        self._print_random_tip()
+        if _show_vscode_images_hint:
+            from hermes_cli.skin_engine import get_active_skin
+            _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
+            self._console_print(f"[dim {_tip_color}]{t('cli.tip_line', tip=t('cli.tui.vscode_images_hint'))}[/]")
+        else:
+            self._print_random_tip()
 
         self._tui_startup_background_maintenance()
         # Before the background preload is folded in (at agent init), show the REQUESTED names.
@@ -414,7 +425,7 @@ class CLITuiRuntimeMixin:
         # Kitty placeholders encode the image id in exact foreground RGB, so the whole app
         # runs 24-bit there. ColorDepth is imported lazily for tests that stub prompt_toolkit.
         extra_kw = {}
-        if pet_render.supports_kitty_placeholders():
+        if terminal_image.supports_kitty_placeholders():
             from prompt_toolkit.output import ColorDepth
 
             extra_kw["color_depth"] = ColorDepth.DEPTH_24_BIT

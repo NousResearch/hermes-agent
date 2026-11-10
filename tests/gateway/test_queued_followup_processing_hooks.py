@@ -107,7 +107,6 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -360,7 +359,6 @@ async def test_fifo_depth_limit_preserves_every_accepted_message(monkeypatch, tm
     _install_fake_agent(monkeypatch, tmp_path, BlockingFirstAgent)
     adapter = HookRecordingAdapter()
     runner = _make_runner(adapter)
-    runner._queued_events = {}
     turns = []
     outer_ids = []
     real_run_agent = runner._run_agent
@@ -424,7 +422,6 @@ async def test_depth_limit_restores_events_without_media_merging(
     """Put-back preserves event identity/payload, including when promotion emptied overflow."""
     adapter = HookRecordingAdapter()
     runner = _make_runner(adapter)
-    runner._queued_events = {}
     source = _source()
     head = MessageEvent(
         text="unrun head", source=source, message_id="head", message_type=message_type,
@@ -470,7 +467,6 @@ async def test_depth_limit_keeps_eventless_followup_and_staged_completion():
     already-staged async completion, which stays queued: its ledger row is already delivered."""
     adapter = HookRecordingAdapter()
     runner = _make_runner(adapter)
-    runner._queued_events = {}
     source = _source()
     completion = MessageEvent(text="[delegation finished]", source=source, internal=True)
     adapter._pending_messages[SESSION_KEY] = completion

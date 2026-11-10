@@ -42,6 +42,39 @@ def _append_progress_repeat_count(message: str, occurrences: int) -> str:
     return f"{message} {suffix}"
 
 
+def _note_flood(st, result) -> bool:
+    """True when a failed progress edit was refused by flood control; arms ``st.flood_until`` from
+    the result's ``retry_after``, else the wait stated in its error text (default 30s), so no
+    progress call fires into the open window. The edit is owed: ``st.flood_pending`` is set."""
+    from gateway.delivery_ledger import flood_wait_seconds, is_flood_error
+    error = getattr(result, "error", "") or ""
+    if not (is_flood_error(error) or "flood" in error.lower() or "retry after" in error.lower()):
+        return False
+    try:
+        wait = float(getattr(result, "retry_after", None) or 0.0)
+    except (TypeError, ValueError):
+        wait = 0.0
+    if wait <= 0:
+        # Raw platform wording (the Telegram overflow-split path forwards the exception text with
+        # no retry_after): honour the stated wait, or a 185 s penalty becomes a 30 s window.
+        wait = flood_wait_seconds(error, default=30.0)
+    st.flood_until = time.monotonic() + wait
+    st.flood_pending = True
+    return True
+
+
+def _in_flood_window(st) -> bool:
+    return time.monotonic() < st.flood_until
+
+
+def _settle_progress_send(st, result) -> None:
+    """A fresh progress send retires the owed update unless flood control refused it: a 429 is a
+    confirmed non-delivery (the window reopens, the update stays owed), while any other failure
+    may have landed (timeout) or never will (permission), so re-sending would duplicate or spin."""
+    if result.success or not _note_flood(st, result):
+        st.flood_pending = False
+
+
 def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
     """The ``ToolStartPayload`` contract every client reads (``tool_id``/``name``/``context``),
     plus the ``tool_call_id``/``tool_name`` the gateway's own consumers were built on."""
@@ -572,6 +605,14 @@ class GatewayTurnProgressMixin:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        # monotonic() until which a flood-refused edit's retry_after runs: no progress call fires
+        # into that window, the buffer just keeps absorbing lines (#76494).
+        flood_until: float = 0.0
+        # A progress update held back by that window: delivered once it closes, even when no
+        # further tool event arrives (a long-running last tool must not leave the bubble stale).
+        flood_pending: bool = False
+        # (message_id, text) of bubbles a content reset closed while their update was flood-held.
+        owed_bubbles: list = dataclasses.field(default_factory=list)
 
     def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
@@ -636,7 +677,7 @@ class GatewayTurnProgressMixin:
         Returns True when it delivered/split the buffer or a transient edit failure left it
         intact for retry — either way the caller skips the normal send/edit path this tick.
         """
-        if not st.progress_lines or not st.can_edit:
+        if not st.progress_lines or not st.can_edit or _in_flood_window(st):
             return False
         groups = self._split_progress_groups(st, st.progress_lines)
         if len(groups) <= 1:
@@ -644,17 +685,23 @@ class GatewayTurnProgressMixin:
         if st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(groups[0]))
             if not result.success:
-                if getattr(result, "retryable", False):
+                if getattr(result, "retryable", False) or _note_flood(st, result):
                     logger.debug("[%s] Transient overflow edit failure — keeping can_edit=True", st.adapter.name)
                     return True
                 st.can_edit = False
                 # Fall back to the existing non-edit behavior.
                 return False
             groups = groups[1:]
-        for group in groups:
+        for i, group in enumerate(groups):
             result = await self._send_progress_text(st, self._progress_text(group))
+            if not result.success and _note_flood(st, result):
+                # Confirmed non-delivery: stop sending into the window; the unsent continuations stay
+                # owed and go out as a fresh bubble rather than overwriting the last one.
+                st.progress_msg_id, st.progress_lines = None, [line for g in groups[i:] for line in g]
+                return True
             if result.success and result.message_id:
                 st.progress_msg_id = result.message_id
+        st.flood_pending = False
         # The newest continuation is the only mutable bubble: keep just its lines so later
         # edits update it instead of replaying the full transcript into new messages.
         st.progress_lines = groups[-1]
@@ -667,6 +714,8 @@ class GatewayTurnProgressMixin:
     def _reset_progress_bubble(self, st) -> None:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
+        if st.flood_pending and st.can_edit and st.progress_msg_id is not None:
+            st.owed_bubbles.append((st.progress_msg_id, self._progress_text(st.progress_lines)))
         st.progress_msg_id, st.progress_lines = None, []
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
@@ -682,7 +731,7 @@ class GatewayTurnProgressMixin:
         return raw
 
     async def _flush_progress_edit(self, st) -> None:
-        if st.can_edit and st.progress_lines and st.progress_msg_id:
+        if st.can_edit and st.progress_lines and st.progress_msg_id and not _in_flood_window(st):
             with suppress(Exception):
                 await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
 
@@ -719,23 +768,51 @@ class GatewayTurnProgressMixin:
         Transient network errors (ConnectError, timeouts) must not disable editing; only permanent
         failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
         """
+        if _in_flood_window(st):
+            st.flood_pending = True
+            return False
         if st.can_edit and st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
             if result.success:
+                st.flood_pending = False
                 return True
             if getattr(result, "retryable", False):
                 logger.debug("[%s] Transient edit failure — keeping can_edit=True", st.adapter.name)
                 return False
-            if any(w in (getattr(result, "error", "") or "").lower() for w in ("flood", "retry after")):
+            if _note_flood(st, result):
+                # Never answer a flood-refused edit with a fresh send into the same chat: Telegram
+                # bills every call against the open penalty and escalates it (#76494). The buffer
+                # stays intact; a later tick (or the final flush) edits the same bubble.
                 logger.info("[%s] Progress edit flood control, backing off", st.adapter.name)
-            else:
-                st.can_edit = False
-            await self._send_progress_text(st, msg)
+                return False
+            st.can_edit = False
+            _settle_progress_send(st, await self._send_progress_text(st, msg))
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
         result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        _settle_progress_send(st, result)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
+        return True
+
+    async def _deliver_flood_pending_progress(self, st) -> bool:
+        """Idle tick: push the update a flood window held back once the window has closed.
+
+        Returns True when it attempted delivery, so the caller spaces retries by the edit interval.
+        The update stays owed until a send/edit lands (the delivery paths retire it), so a transient
+        failure is retried on a later tick instead of being dropped.
+        """
+        if _in_flood_window(st) or not ((st.flood_pending and st.progress_lines) or st.owed_bubbles):
+            return False
+        if not self._ctx._run_still_current() or self._agent_interrupted():
+            return False
+        if st.owed_bubbles:
+            result = await self._edit_progress_message(st, *st.owed_bubbles[0])
+            if result.success or not (getattr(result, "retryable", False) or _note_flood(st, result)):
+                st.owed_bubbles.pop(0)
+            return True
+        if not await self._roll_progress_overflow_if_needed(st):
+            await self._progress_send_or_edit(st, st.progress_lines[-1])
         return True
 
     async def send_progress_messages(self):
@@ -786,6 +863,8 @@ class GatewayTurnProgressMixin:
                 last_edit_ts = time.monotonic()
                 await self._progress_restore_typing(st)
             except queue.Empty:
+                if time.monotonic() - last_edit_ts >= EDIT_INTERVAL and await self._deliver_flood_pending_progress(st):
+                    last_edit_ts = time.monotonic()
                 await asyncio.sleep(0.3)
             except asyncio.CancelledError:
                 await self._drain_progress_on_cancel(st)
@@ -869,7 +948,7 @@ class GatewayTurnProgressMixin:
         payload = _tool_complete_payload(call_id, tool_name, args, result, is_error=is_error, verbose=verbose)
         if local_viewer_turn(self):
             from gateway import local_viewer_events
-            payload.update(local_viewer_events.complete_fields(self, call_id, tool_name, args, result))
+            payload.update(local_viewer_events.complete_fields(self, call_id, tool_name, args, result, is_error=is_error))
         self._publish_execution("tool.complete", payload)
         if local_viewer_turn(self) and isinstance(payload.get("todos"), list):
             # Task state is application data, not tool chrome: the full snapshot, as the TUI gateway emits it.
@@ -935,7 +1014,10 @@ class GatewayTurnProgressMixin:
         return bool(self._ctx._status_adapter) and self._ctx._run_still_current()
 
     def _send_status_text(self, text: str, metadata, log_message: str) -> None:
+        from gateway.bot_peer_notices import automatic_notices_allowed
         ctx = self._ctx
+        if not automatic_notices_allowed(ctx.source):
+            return
         self._schedule(ctx._status_adapter.send(ctx._status_chat_id, text, metadata=metadata), log_message)
 
     def _attach_session_title_callback(self, agent, ctx) -> None:
@@ -983,11 +1065,18 @@ class GatewayTurnProgressMixin:
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.run_status_filter import status_chat_type
         from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live():
             return
-        prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
+        # Lifecycle diagnostics (including provider fallback notices) are UI affordances for a
+        # human caller. Sending them to a known bot peer can create a new inbound turn and a loop.
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        if not automatic_notices_allowed(ctx.source):
+            logger.debug("status_callback suppressed for bot-authored message: %s", event_type)
+            return
+        prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message, status_chat_type(ctx.source))
         if prepared is None:
             logger.debug(
                 "status_callback suppressed for %s/%s: %s",
@@ -995,13 +1084,18 @@ class GatewayTurnProgressMixin:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        # Session keys identify lanes; generations distinguish turns in each lane.
+        status_key = event_type
+        if ctx.session_key and ctx.run_generation is not None:
+            status_key = f"{ctx.session_key}:run:{ctx.run_generation}:{event_type}"
+
         def present():
             if local_viewer_turn(self):
                 self._publish_execution("status.update", {"kind": _viewer_status_kind(event_type, prepared),
                                                           "text": prepared})
                 return
             fut = self._schedule(
-                _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
+                _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, status_key, prepared, ctx._status_thread_metadata),
                 f"status_callback ({event_type}) scheduling error",
             )
             if fut is not None and ctx._cleanup_progress:

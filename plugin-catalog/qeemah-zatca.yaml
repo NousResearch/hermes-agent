@@ -1,0 +1,18 @@
+name: qeemah-zatca
+title: "Qeemah ZATCA & KSA VAT"
+repo: https://github.com/qeemah-cloud/hermes-plugin-zatca
+sha: fc8696db3579360ed226e52db6fd8b6d7e9f0515
+description: "Saudi Arabia ZATCA Phase 2 (FATOORA) e-invoicing compliance validation, KSA 15% VAT calculation, and Saudi business tax utilities for Hermes Agent. Maintained by Qeemah Cloud."
+maintainer: qeemah-cloud
+tier: community
+category: tools
+docs_url: https://github.com/qeemah-cloud/hermes-plugin-zatca#readme
+version: "1.0.0"
+readme: true
+capabilities:
+  provides_tools:
+    - ksa_vat_calculate
+    - zatca_validate_invoice
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

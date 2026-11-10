@@ -1,0 +1,34 @@
+name: rex
+title: Rex
+repo: https://github.com/kshitijk4poor/hermes-rex-plugin
+sha: ee19fe921d8dd0c2f1cec14d8cb080a4126b0754
+version: "1.3.0"
+description: >-
+  Rex terminal integration: Hermes sessions started in a Rex pane learn which
+  session and pane they run in and get Rex's own agent skill (rex:rex), the same
+  context `rex skill setup` gives Claude Code and Codex. Adds status marks on the
+  window title, a macOS alert when Hermes waits for you, /title and /resume label
+  sync, and follower panes for subagents and kanban workers. Needs
+  terminal.client_env_passthrough set to the REX_* variables (see README).
+maintainer: kshitijk4poor
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/kshitijk4poor/hermes-rex-plugin#readme
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - on_session_end
+    - on_human_input_request
+    - on_human_input_resolved
+    - post_tool_call
+    - pre_command
+    - on_session_finalize
+    - subagent_start
+    - subagent_stop
+    - on_kanban_worker_spawned
+  provides_middleware: []
+  requires_env: []

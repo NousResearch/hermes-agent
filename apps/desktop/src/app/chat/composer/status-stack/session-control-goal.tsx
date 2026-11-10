@@ -493,7 +493,7 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
               <textarea
                 aria-label={ctrl.criterionLabel}
                 autoFocus
-                className="w-full rounded-md border border-(--ui-stroke-secondary) bg-transparent p-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-primary"
+                className="w-full rounded-md border border-(--ui-stroke-secondary) bg-transparent p-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-hidden focus:ring-1 focus:ring-primary"
                 disabled={isBusy}
                 onChange={e => setNewCriterionText(e.target.value)}
                 placeholder={ctrl.addCriterionPlaceholder}

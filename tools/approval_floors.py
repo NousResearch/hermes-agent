@@ -181,20 +181,25 @@ def _has_allowlist_shell_operator(command: str) -> bool:
     return has_reinterpretable and bool(_REINTERPRETED_ARGUMENT_RE.search(command))
 
 
-def _command_matches_permanent_allowlist(command: str) -> bool:
-    """True when command_allowlist holds this exact command text or a matching
-    glob. Permanent approvals historically store dangerous-pattern keys such as
+def _matching_permanent_allowlist_entry(command: str) -> str | None:
+    """The command_allowlist entry matching this exact command text or as a glob, or None.
+    Permanent approvals historically store dangerous-pattern keys such as
     ``recursive delete``; manual entries are command text, possibly with
     shell-style wildcards like ``podman *``."""
     from tools import approval as _a
     command = (command or "").strip()
     if not command or _has_allowlist_shell_operator(command):
-        return False
+        return None
     with _a._lock:
         patterns = tuple(_a._permanent_set())
     for pattern in patterns:
         pattern = pattern.strip() if isinstance(pattern, str) else ""
         if pattern and (command == pattern or (any(ch in pattern for ch in "*?[")
                                                and fnmatch.fnmatchcase(command, pattern))):
-            return True
-    return False
+            return pattern
+    return None
+
+
+def _command_matches_permanent_allowlist(command: str) -> bool:
+    """True when command_allowlist holds this exact command text or a matching glob."""
+    return _matching_permanent_allowlist_entry(command) is not None

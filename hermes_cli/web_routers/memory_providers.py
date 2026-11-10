@@ -24,7 +24,7 @@ from hermes_cli.web_server_memory import (
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
 from plugins.memory.config_schema import (
-    STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField, get_provider_config_schema,
+    STORAGE_FLAT_JSON, STORAGE_PROVIDER, ProviderConfigSchema, ProviderField, get_provider_config_schema,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -37,7 +37,7 @@ load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 save_env_value = late("save_env_value", "hermes_cli.config")
 load_env = late("load_env", "hermes_cli.config")
-# Sentinel: remove this key so it falls back to the host or built-in default.
+# Sentinel: remove this key so it falls back to the built-in default.
 _UNSET: Any = object()
 
 _MEMORY_PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -122,41 +122,37 @@ def _read_flat_json(provider: ProviderConfigSchema) -> dict[str, Any]:
     return _read_json_dict(_flat_json_path(provider), "memory provider config")
 
 
-def _honcho_resolvers(name: str):
-    """Host-block resolvers of provider *name*'s own ``client`` module, wherever the provider is
-    installed (bundled or ``$HERMES_HOME/plugins/``)."""
-    from plugins.memory import import_provider_module
+def _provider_instance(provider: ProviderConfigSchema):
+    """The loaded provider behind a ``STORAGE_PROVIDER`` schema (it owns its config layout)."""
+    instance = _load_memory_provider(provider.name, register_skills=False)  # the panel never registers skills
+    if instance is None:  # it declares a panel, so it is known: it failed to load
+        raise HTTPException(status_code=503, detail=f"Memory provider {provider.name} could not be loaded; see the logs")
+    return instance
 
-    client = import_provider_module(name, "client")
-    return client.resolve_active_host, client.resolve_config_path, client._host_block
+
+def _submitted_secrets(provider: ProviderConfigSchema, values: dict[str, str]) -> list:
+    """The ``(field, submitted)`` pairs of each non-blank secret submission."""
+    pairs = ((field, (values.get(field.key) or "").strip()) for field in provider.fields if field.is_secret)
+    return [(field, submitted) for field, submitted in pairs if submitted]
 
 
 def _save_submitted_secrets(provider: ProviderConfigSchema, values: dict[str, str]) -> list:
     """Persist each non-blank secret submission to the env store (when the field has an
     ``env_key``); return the ``(field, submitted)`` pairs for backend-specific handling."""
-    saved = []
-    for field in provider.fields:
-        submitted = (values.get(field.key) or "").strip() if field.is_secret else ""
-        if not submitted:
-            continue
+    saved = _submitted_secrets(provider, values)
+    for field, submitted in saved:
         if field.env_key:
             save_env_value(field.env_key, submitted)
-        saved.append((field, submitted))
     return saved
 
 
-def _apply_field_values(provider: ProviderConfigSchema, values: dict[str, str], target_for) -> None:
-    """Apply submitted non-secret fields to their backend dict, in place.
-
-    Only keys present in ``values`` are touched, so a partial save never
-    clobbers fields owned by another surface. ``_UNSET`` clears the key (and
-    its aliases) so it falls back to the host/default mapping.
-    """
+def _apply_field_values(provider: ProviderConfigSchema, values: dict[str, str], target: dict[str, Any]) -> None:
+    """Apply :func:`_submitted_natives` to ``target`` in place; ``_UNSET`` clears the key and its aliases."""
+    natives = _submitted_natives(provider, values)
     for field in provider.fields:
-        if field.is_secret or field.key not in values:
+        if field.key not in natives:
             continue
-        target = target_for(field)
-        coerced = _coerce_field_value(field, values[field.key])
+        coerced = natives[field.key]
         if coerced is _UNSET:
             for key in (field.key, *field.aliases):
                 target.pop(key, None)
@@ -174,40 +170,27 @@ def _write_json_0600(path: Path, data: dict[str, Any]) -> None:
 def _write_provider_flat(provider: ProviderConfigSchema, values: dict[str, str]) -> None:
     existing = _read_flat_json(provider)
     _save_submitted_secrets(provider, values)
-    _apply_field_values(provider, values, lambda field: existing)
+    _apply_field_values(provider, values, existing)
     _write_json_0600(_flat_json_path(provider), existing)
 
 
-def _write_provider_honcho(provider: ProviderConfigSchema, values: dict[str, str]) -> None:
-    """Persist submitted fields to Honcho's real config for the active host (partial
-    saves touch only submitted keys; blank text clears a key — see ``_apply_field_values``)."""
-    from plugins.memory import import_provider_module
+def _submitted_natives(provider: ProviderConfigSchema, values: dict[str, str]) -> dict[str, Any]:
+    """The submitted non-secret fields as natives, ``_UNSET`` for a cleared one (only keys present in
+    ``values``, so a partial save never clobbers fields owned by another surface)."""
+    return {field.key: _coerce_field_value(field, values[field.key])
+            for field in provider.fields if not field.is_secret and field.key in values}
 
-    oauth = import_provider_module(provider.name, "oauth")
-    resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers(provider.name)
-    host = resolve_active_host()
-    # Write the file reads resolve, or a save shadows it with a sparse copy.
-    path = resolve_config_path()
 
-    # OAuth rotation is single-use; an unlocked RMW here can revoke the grant.
-    with oauth._refresh_lock, oauth._config_refresh_lock(path):
-        # Strict: a file that exists but does not parse must not be replaced by this host's block alone.
-        cfg = oauth._read_config_strict(path)
-        hosts = cfg.get("hosts")
-        cfg["hosts"] = hosts = hosts if isinstance(hosts, dict) else {}
-        # Update the block reads resolve (legacy dot-form included), never shadow it.
-        existing = host_block_of(cfg, host)
-        host_key = next((k for k, v in hosts.items() if v is existing), host) if existing else host
-        host_block = hosts.setdefault(host_key, existing)
-
-        for field, submitted in _save_submitted_secrets(provider, values):
-            # Persist where the client reads first; an OAuth token owns that slot.
-            stored = host_block.get(field.key)
-            if not (isinstance(stored, str) and stored.startswith(oauth.ACCESS_TOKEN_PREFIX)):
-                host_block[field.key] = submitted
-
-        _apply_field_values(provider, values, lambda field: host_block if field.scope == "host" else cfg)
-        _write_json_0600(path, cfg)
+def _write_provider_own(provider: ProviderConfigSchema, values: dict[str, str]) -> None:
+    """Hand the submitted fields to the provider's ``write_config_fields`` (natives, ``None`` = clear,
+    non-blank secrets included); secrets reach ``.env`` only once the provider accepted the write."""
+    fields: dict[str, Any] = {field.key: submitted for field, submitted in _submitted_secrets(provider, values)}
+    fields.update({k: None if v is _UNSET else v for k, v in _submitted_natives(provider, values).items()})
+    try:
+        _provider_instance(provider).write_config_fields(fields, str(get_hermes_home()))
+    except NotImplementedError as exc:  # declares storage=provider without the writer: a plugin bug
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    _save_submitted_secrets(provider, values)
 
 
 def _serialize_field_value(field: ProviderField, value: Any) -> str:
@@ -245,43 +228,43 @@ def _declared_field_is_set(field: ProviderField, sources: tuple, env: dict[str, 
     return any(source.get(k) for source in sources for k in (field.key, *field.aliases))
 
 
+_WARNED_STORAGE: set[tuple[str, str]] = set()
+
+
 def _declared_provider_payload(provider: ProviderConfigSchema) -> dict[str, Any]:
+    if provider.storage not in _STORAGE_WRITERS:
+        if (provider.name, provider.storage) not in _WARNED_STORAGE:
+            _WARNED_STORAGE.add((provider.name, provider.storage))
+            _log.warning("memory provider %s declares unsupported config storage %r; no panel", provider.name, provider.storage)
+        return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": []}
     env = load_env()
-    is_honcho = provider.storage == STORAGE_HONCHO_HOST_BLOCK
-    if is_honcho:
-        resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers(provider.name)
-        host = resolve_active_host()
-        raw = _read_json_dict(resolve_config_path(), "Honcho config")
-        host_block = host_block_of(raw, host)
-
-        def sources_for(field: ProviderField) -> tuple:
-            return (host_block, raw) if field.scope == "host" else (raw,)
+    # A provider-owned layout reports presence (a stored False/0 is set); a flat file, truthiness.
+    own = provider.storage == STORAGE_PROVIDER
+    if own:
+        stored = _provider_instance(provider).read_config_fields(str(get_hermes_home())) or {}
+        data, placeholders = dict(stored.get("values") or {}), dict(stored.get("placeholders") or {})
     else:
-        host, data = "", _read_flat_json(provider)
-
-        def sources_for(field: ProviderField) -> tuple:
-            return (data,)
+        data, placeholders = _read_flat_json(provider), {}
+    sources = (data,)
 
     fields: list[dict[str, Any]] = []
     for field in provider.fields:
         entry = {k: getattr(field, k) for k in ("key", "label", "kind", "description", "info", "placeholder", "inline", "group")}
         entry["options"] = [{"value": o.value, "label": o.label, "description": o.description} for o in field.options]
-        sources = sources_for(field)
+        if not field.placeholder and placeholders.get(field.key):
+            entry["placeholder"] = str(placeholders[field.key])
         if field.is_secret:
             entry["value"] = ""  # secrets are write-only over the API
             entry["is_set"] = _declared_field_is_set(field, sources, env)
             fields.append(entry)
             continue
         native = _read_field(field, sources, env)
-        if is_honcho and not field.placeholder and field.key in {"workspace", "aiPeer"}:
-            # Blank fields surface the resolved host Honcho will actually use.
-            entry["placeholder"] = host
         value = _serialize_field_value(field, native)
         if field.kind == "select" and value not in field.allowed_values():
             value = field.default
         entry["value"] = value
         # Presence, not truthiness — a stored False/0 is still "set".
-        entry["is_set"] = native is not None if is_honcho else bool(value)
+        entry["is_set"] = native is not None if own else bool(value)
         fields.append(entry)
     return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": fields}
 
@@ -305,8 +288,13 @@ def _memory_section(config: dict[str, Any]) -> dict[str, Any]:
     return memory_config
 
 
+_STORAGE_WRITERS = {STORAGE_FLAT_JSON: _write_provider_flat, STORAGE_PROVIDER: _write_provider_own}
+
+
 def _update_memory_provider_config(provider: ProviderConfigSchema, values: dict[str, str]) -> None:
-    writer = _write_provider_honcho if provider.storage == STORAGE_HONCHO_HOST_BLOCK else _write_provider_flat
+    writer = _STORAGE_WRITERS.get(provider.storage)
+    if writer is None:  # an unknown kind must not fall back to writing a stray flat file
+        raise ValueError(f"Memory provider {provider.name} declares unsupported config storage {provider.storage!r}")
     writer(provider, values)
     with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
         config = load_config()
@@ -522,7 +510,8 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
             return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
         return _memory_provider_payload(name, provider)
 
-    return await scoped_to_thread(profile, _run)
+    with _value_errors_as_http("GET /api/memory/providers/%s/config failed", name):
+        return await scoped_to_thread(profile, _run)
 
 
 @router.post("/api/memory/providers/{name}/setup")

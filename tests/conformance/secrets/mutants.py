@@ -556,30 +556,30 @@ MUTANTS = {
         _local("test_no_refusal_traceback_frame_holds_the_value_or_record")),
     "local_managed_key_refusal_keeps_the_value": (
         local_managed_key_refusal_keeps_the_value,
-        _local("test_no_failure_traceback_frame_holds_the_value_or_record[write]")),
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record[prepare]")),
     "local_write_failure_keeps_the_value_in_the_writer_frames": (
         local_write_failure_keeps_the_value_in_the_writer_frames,
-        _local("test_no_failure_traceback_frame_holds_the_value_or_record[write]")),
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record[prepare]")),
     "local_failure_clears_the_callers_own_binding": (
         local_failure_clears_the_callers_own_binding,
         _local("test_a_failed_write_from_an_error_handler_leaves_the_callers_bindings_untouched")),
     "local_failure_keeps_the_escaped_secret": (
         local_failure_keeps_the_escaped_secret,
-        _local("test_no_failure_traceback_frame_holds_the_value_or_record[write]")),
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record[prepare]")),
     "local_failure_keeps_the_original_failure_as_context": (
         local_failure_keeps_the_original_failure_as_context,
-        _local("test_no_failure_traceback_frame_holds_the_value_or_record[write]")),
+        _local("test_no_failure_traceback_frame_holds_the_value_or_record[prepare]")),
     "local_keeps_strerror_in_the_fresh_error": (
         local_keeps_strerror_in_the_fresh_error,
         "tests/conformance/secrets/test_local.py::test_a_failed_writes_fresh_error_names_none_of_the_writers_text[strerror]"),
     "local_logs_exc_info_while_holding_the_value": (
         local_logs_exc_info_while_holding_the_value,
         "tests/conformance/secrets/test_local.py::"
-        "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set-write]"),
+        "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set-prepare]"),
     "local_loads_the_auth_store_after_binding_the_record": (
         local_loads_the_auth_store_after_binding_the_record,
         "tests/conformance/secrets/test_local.py::"
-        "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set_auth-write]"),
+        "test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception[set_auth-prepare]"),
     "local_logs_exc_info_only_on_an_encode_failure": (
         local_logs_exc_info_only_on_an_encode_failure,
         "tests/conformance/secrets/test_local.py::"

@@ -75,13 +75,15 @@ def local_backend(tmp_path, monkeypatch):
         """While active, the seeded agent's writes fail part-way through at the failure point
         *kind* names (``hermes_conformance.secrets.suite.WRITE_FAILURES``) — after the caller's
         value (or record) is bound on their frames — with a plain error, never the store's
-        refusal. ``"write"`` breaks the files themselves (today's unreadable directories: an
-        ``OSError`` at the write, and today's auth loader logs the failed load with its live
-        exception); ``"encode"`` breaks the serialization of the value or record into what
-        gets written (today's env-line quoter with a ``ValueError``, today's JSON dumper with
-        a ``TypeError``); ``"replace"`` breaks the atomic rename of the written file (an
-        ``OSError`` in today's replace, both writers')."""
-        if kind == "write":
+        refusal. ``"prepare"`` breaks the store the write prepares against, before anything
+        is serialized: today's unreadable directories, so the write's own load of the
+        ``.env`` or ``auth.json`` it is about to change fails with an ``OSError`` (and today's
+        auth loader logs the failed load with its live exception); ``"encode"`` breaks the
+        serialization of the value or record into what gets written (today's env-line quoter
+        with a ``ValueError``, today's JSON dumper with a ``TypeError``); ``"replace"`` breaks
+        the atomic rename of the written file (an ``OSError`` in today's replace, both
+        writers')."""
+        if kind == "prepare":
             broken = []
             for filename in (".env", "auth.json"):
                 path = homes["a"] / filename
@@ -218,7 +220,8 @@ def test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception(tmp
     the failure unwound — rendered later with frame locals, it must hold no trace of the value
     (or record) the caller asked to store: every load and validation that can fail runs before
     any frame binds it, and the write that does bind it calls nothing that logs, at whichever
-    of its failure points the fixture breaks (the write, the serialization, the replace)."""
+    of its failure points the fixture breaks (the preparation, the serialization, the
+    replace)."""
     from tests.conformance.secrets.mutants import apply_mutant
     apply_mutant(monkeypatch)  # only under test_mutants.py, which names a broken backend
     backend, _homes, _provider = local_backend(tmp_path, monkeypatch)
@@ -237,7 +240,7 @@ def test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception(tmp
                     store.set_auth(SEED_PROVIDER, record)
     finally:
         logging.getLogger().removeHandler(kept)
-    if operation == "set_auth" and kind == "write":
+    if operation == "set_auth" and kind == "prepare":
         # Today's auth loader logs the unreadable store with its live exception: the kept record
         # this test renders is the real artifact the fix answers, not a hypothesis. The other
         # failure points keep no record on the unbroken backend — nothing there logs — so a
@@ -341,3 +344,90 @@ def test_the_newline_stripped_form_of_a_short_marker_is_not_hunted():
     with pytest.raises(ValueError) as failed:
         unrelated()
     assert_no_frame_holds(failed.value, "a\n")  # a short marker's stripped form flags nothing
+
+
+# --- each failure point breaks the write where it claims to -------------------------------------
+
+
+@pytest.mark.parametrize("kind", WRITE_FAILURES)
+@pytest.mark.parametrize("operation", ["set", "set_auth"])
+def test_each_failure_point_breaks_a_real_writer_seam(tmp_path, monkeypatch, kind, operation):
+    """Each failure point the fixture can break must reach the real writer seam it names —
+    the preparation in today's env writer or auth store loader, the serialization in today's
+    env-line quoter or JSON dumper, the atomic replace in today's rename — so the
+    no-plaintext tests exercise the write path where it actually works, never a stand-in a
+    broken backend could satisfy."""
+    import utils
+    from hermes_cli import auth, config
+    backend, _homes, _provider = local_backend(tmp_path, monkeypatch)
+    store = backend.open("a")
+    seam = {
+        ("set", "prepare"): (config, "save_env_value"),
+        ("set_auth", "prepare"): (auth, "_load_auth_store"),
+        ("set", "encode"): (config, "_quote_env_value"),
+        ("set_auth", "encode"): (utils, "_dump_json"),
+        ("set", "replace"): (config, "atomic_replace"),
+        ("set_auth", "replace"): (utils, "atomic_replace"),
+    }[operation, kind]
+    reached = []
+    with backend.bind("a"), backend.fail_writes(kind):
+        original = getattr(*seam)
+
+        def spy(*args, **kwargs):
+            reached.append(True)
+            return original(*args, **kwargs)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(*seam, spy)
+            with pytest.raises(SecretWriteFailed):
+                if operation == "set":
+                    store.set(NEW_NAME, "private-hook-marker", level="agent")
+                else:
+                    store.set_auth(SEED_PROVIDER, {"token": "private-hook-marker"})
+    assert reached, f"the {kind!r} failure point never reached the writer seam it names"
+
+
+@pytest.mark.parametrize("operation", ["set", "set_auth"])
+def test_the_prepare_failure_point_fails_the_write_before_the_serialization(tmp_path, monkeypatch, operation):
+    """The prepare failure point is a failure of the write's preparation — the store the
+    write is about to change is unreadable — not a second serialization point: a healthy
+    write reaches the serialization exactly once, and with the store broken the
+    serialization is never reached at all, so the preparation and serialization failure
+    paths cannot silently collapse into one (a hook that broke the write only at the
+    serialization would pass a suite that believed it had tested the preparation). The
+    serialization is watched through whatever the fixture installed on the seam, so a
+    fixture that breaks the write there instead of the store is caught in the act."""
+    import utils
+    from hermes_cli import config
+    backend, _homes, _provider = local_backend(tmp_path, monkeypatch)
+    store = backend.open("a")
+    seam = (config, "_quote_env_value") if operation == "set" else (utils, "_dump_json")
+    calls = []
+
+    def reached(call):
+        def counting(*args, **kwargs):
+            calls.append(True)
+            return call(*args, **kwargs)
+        return counting
+
+    with backend.bind("a"):
+        with monkeypatch.context() as scoped:
+            scoped.setattr(*seam, reached(getattr(*seam)))
+            if operation == "set":
+                store.set("CONTROL", "works", level="agent")
+            else:
+                store.set_auth("probe", {"token": "works"})
+            assert calls, "a healthy write never reached its serialization"
+        calls.clear()
+        with backend.fail_writes(WRITE_FAILURES[0]):
+            # Whatever the fixture installed on the serialization seam (nothing, when it
+            # truly broke the write's preparation) is wrapped, so a write that reaches the
+            # serialization before failing is seen however the fixture broke it.
+            with monkeypatch.context() as scoped:
+                scoped.setattr(*seam, reached(getattr(*seam)))
+                with pytest.raises(SecretWriteFailed):
+                    if operation == "set":
+                        store.set(NEW_NAME, "secret", level="agent")
+                    else:
+                        store.set_auth("probe", {"token": "secret"})
+        assert calls == [], "the prepare failure point broke the write after the serialization"

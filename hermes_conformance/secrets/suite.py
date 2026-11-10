@@ -64,12 +64,13 @@ from hermes_secret_port import (
 )
 
 #: The failure points a backend's ``fail_writes`` hook must be able to break mid-write, so the
-#: no-plaintext tests reach each: the write itself (a plain ``OSError``), the serialization of
-#: the value or record into what gets written (a ``TypeError`` or ``ValueError``), and the
-#: atomic replace of the written file (an ``OSError``). A hook that can break the write at one
-#: point alone leaves every other point's write path untested — a backend that publishes the
-#: value on one of them passes the suite.
-WRITE_FAILURES = ("write", "encode", "replace")
+#: no-plaintext tests reach each: the write's preparation (the load of the store or file the
+#: write is about to change, before anything is serialized — a plain ``OSError``), the
+#: serialization of the value or record into what gets written (a ``TypeError`` or
+#: ``ValueError``), and the atomic replace of the written file (an ``OSError``). A hook that
+#: can break the write at one point alone leaves every other point's write path untested — a
+#: backend that publishes the value on one of them passes the suite.
+WRITE_FAILURES = ("prepare", "encode", "replace")
 
 
 @dataclass
@@ -92,10 +93,12 @@ class Backend:
       other writer failure). A backend with a managed-key write lock pins one.
     - ``fail_writes(kind)``: REQUIRED. While the context is active, the seeded agent ``"a"``'s
       writes fail part-way through at the failure point *kind* names (:data:`WRITE_FAILURES`)
-      — ``"write"``: a plain ``OSError`` at the write itself; ``"encode"``: a ``TypeError`` or
-      ``ValueError`` where the value (or record) is serialized into what gets written;
-      ``"replace"``: an ``OSError`` at the atomic replace of the written file — with the
-      caller's value (or record) already bound in the writer's frames, as a plain failure,
+      — ``"prepare"``: the write's preparation fails before anything is serialized (a
+      directory or unreadable store where the write is about to land, a plain ``OSError``);
+      ``"encode"``: a ``TypeError`` or ``ValueError`` where the value (or record) is
+      serialized into what gets written; ``"replace"``: an ``OSError`` at the atomic replace
+      of the written file — with the caller's value (or record) already bound in the
+      writer's frames, as a plain failure,
       not the store's refusal. A backend whose write path has no distinct step for a kind
       fails the write some other plain way, mid-path, at the nearest point it has, or that
       failure path goes untested.
@@ -441,7 +444,8 @@ class SecretPinningConformance:
         locals of the whole chain, under str and repr and as JSON and bytes, so the
         serialized, escaped form is as much a leak as the raw text. The managed-key and
         mid-write failure hooks are required fields of the fixture, so both paths are
-        exercised on every backend, at every failure point."""
+        exercised on every backend, at every failure point (the write's preparation, the
+        serialization, the atomic replace)."""
         marker = 'zFailed\nWrite "Locals" 9a4e'
         store = _seed(backend)
         record = {"token": marker, "refresh": marker}

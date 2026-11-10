@@ -1,0 +1,80 @@
+# GMI NEXUS — catalog entry for the Hermes plugin catalog.
+#
+# This is the file the pull request adds. It is added to
+# NousResearch/hermes-agent under plugin-catalog/gmi-nexus.yaml.
+#
+# It pins commit 829fec1a816a7a7d36bdef8e73987688f5a3397c of
+# https://github.com/Joystonm/hermes-gmi-nexus
+# and installs the plugin from the plugins/gmi-nexus subdirectory of that
+# commit. That commit carries the tested plugin payload and the images.
+# The pin is deliberately not the branch head: it freezes one tested version,
+# and the commit that records it comes after, because a file cannot contain
+# the SHA of the commit that contains it. The images are pinned to the same
+# commit, so the card can never show a picture of a different version than
+# the code it describes.
+#
+# The pin appears in four places — `sha:`, `docs_url`, `image:` and every
+# `screenshots:` URL — and all of them must be the same commit. Admission
+# rule 2 requires an exact 40-character lowercase SHA: a branch, a tag or a
+# short SHA is rejected by the loader.
+#
+# If the repository is pushed again after this commit, this file has to be
+# re-pinned to the new SHA and submitted as a new pull request. Admission
+# rule 4 requires a new PR for every SHA bump; editing an existing entry's
+# SHA in place is not how an update is made.
+#
+# The `docs_url` must point at the README *at the pinned commit*, and the
+# `subdir` must match the directory the plugin lives in.
+
+name: gmi-nexus
+repo: https://github.com/Joystonm/hermes-gmi-nexus
+sha: 829fec1a816a7a7d36bdef8e73987688f5a3397c
+subdir: plugins/gmi-nexus
+title: GMI NEXUS
+description: >-
+  Adaptive intelligence layer for Hermes Agent over the live GMI Cloud model
+  catalogue. A goal is understood, planned into steps, and each step is routed
+  to the model that suits it from the catalogue read live at runtime, so a
+  retired model stops being routable and a new one becomes routable without a
+  code change. Results are evaluated against each step's own criteria, a
+  failure is recovered on a different model with bounded retries, the verified
+  outcome feeds the routing statistics, and the report says what ran, what it
+  cost and what failed. Ships a vision module for screenshots and before/after
+  comparison, a benchmarking arena whose results feed the router, a Dev Agent
+  that writes and tests code through Hermes' own tools, and a creative engine
+  for image, video and audio generation and editing. Also ships a web
+  dashboard tab. No third-party dependencies; the key is read through Hermes'
+  secret scope; a per-run ceiling, a rolling daily ceiling and an approval
+  threshold are enforced before any request is submitted.
+maintainer: Joystonm
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Joystonm/hermes-gmi-nexus/blob/829fec1a816a7a7d36bdef8e73987688f5a3397c/plugins/gmi-nexus/README.md
+version: "1.0.0"
+image: https://raw.githubusercontent.com/Joystonm/hermes-gmi-nexus/829fec1a816a7a7d36bdef8e73987688f5a3397c/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Joystonm/hermes-gmi-nexus/829fec1a816a7a7d36bdef8e73987688f5a3397c/docs/screenshots/nexus-01-overview.png
+  - https://raw.githubusercontent.com/Joystonm/hermes-gmi-nexus/829fec1a816a7a7d36bdef8e73987688f5a3397c/docs/screenshots/nexus-02-model-intelligence.png
+  - https://raw.githubusercontent.com/Joystonm/hermes-gmi-nexus/829fec1a816a7a7d36bdef8e73987688f5a3397c/docs/screenshots/nexus-03-arena.png
+  - https://raw.githubusercontent.com/Joystonm/hermes-gmi-nexus/829fec1a816a7a7d36bdef8e73987688f5a3397c/docs/screenshots/nexus-04-execution.png
+  - https://raw.githubusercontent.com/Joystonm/hermes-gmi-nexus/829fec1a816a7a7d36bdef8e73987688f5a3397c/docs/screenshots/nexus-05-multimodal.png
+  - https://raw.githubusercontent.com/Joystonm/hermes-gmi-nexus/829fec1a816a7a7d36bdef8e73987688f5a3397c/docs/screenshots/nexus-06-settings.png
+readme: true
+known_issues:
+  - The dashboard tab needs Hermes' web extra: pip install "hermes-agent[web]".
+  - Needs a GMI Cloud account and API key. Catalogue reads are free, but inference and generation are billed by GMI Cloud at the model's published rate.
+capabilities:
+  provides_tools:
+    - nexus_models
+    - nexus_analyze
+    - nexus_run
+    - nexus_benchmark
+    - nexus_vision
+    - nexus_media
+    - nexus_dev
+    - nexus_report
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GMI_API_KEY

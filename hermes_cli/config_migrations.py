@@ -725,6 +725,36 @@ def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
 
 
+def disable_suspicious_mcp_servers(results: dict[str, Any], quiet: bool) -> None:
+    """Post-migration: disable exfiltration-shaped MCP stdio entries (hand-edited or from older
+    installs). The stanza is preserved for auditability but marked disabled."""
+    config = read_raw_config()
+    # Preserve the stanza for auditability but mark it disabled so the next startup will not spawn it.
+    # (#45620)
+    raw_mcp_servers = config.get("mcp_servers")
+    if not isinstance(raw_mcp_servers, dict):
+        return
+    try:
+        from hermes_cli.mcp_security import validate_mcp_server_entry
+    except Exception:
+        return
+    mcp_touched = False
+    for server_name, entry in raw_mcp_servers.items():
+        issues = validate_mcp_server_entry(server_name, entry) if isinstance(entry, dict) else None
+        if not issues:
+            continue
+        entry["enabled"] = False
+        mcp_touched = True
+        results["warnings"].append(f"Disabled suspicious MCP server '{server_name}'")
+        if not quiet:
+            for issue in issues:
+                print(f"  ⚠ {issue}")
+            print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
+    if mcp_touched:
+        config["mcp_servers"] = raw_mcp_servers
+        _persist_migration(config)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -905,7 +935,7 @@ STAMP_INDEPENDENT_STEPS = frozenset({46, 50})
 
 def run_migrations(
     current_ver: int, results: dict[str, Any], quiet: bool, *, unversioned: bool = False,
-    config_only: bool = False) -> None:
+    config_only: bool = False, stop_at_failure: bool = True) -> Optional[int]:
     """Apply every registered migration whose target version exceeds *current_ver* (plus
     :data:`STAMP_INDEPENDENT_STEPS`); a config with no ``_config_version`` (*unversioned*) gets
     only :data:`LEGACY_KEY_STEPS`.
@@ -913,8 +943,16 @@ def run_migrations(
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
     advance between steps — each step is gated on the same initial value.
 
+    Returns the target version of the first step that raised (also ``results["failed_step"]``),
+    else None. The ladder stops there: the caller stamps no further than the step before it, so
+    the next pass retries it, and the later steps wait for it. Running them now would make that
+    pass run them a second time, and a one-time step would then overwrite a value the user set in
+    between. *stop_at_failure* False (an in-memory migration that is never written back) runs
+    the rest anyway.
+
     *config_only* transforms the config document alone (see :data:`_CONFIG_ONLY`).
     """
+    failed: Optional[int] = None
     token = _CONFIG_ONLY.set(config_only)
     try:
         for target_ver, migration_fn in MIGRATIONS:
@@ -923,15 +961,20 @@ def run_migrations(
                 try:
                     migration_fn(results, quiet)
                 except Exception as exc:
-                    # A malformed nested value in one step must not abort the rest of the
-                    # ladder (config loading itself fails otherwise). Loud, not silent.
-                    warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
+                    # A malformed nested value must not abort the pass (config loading itself
+                    # fails otherwise), nor be stamped over. Quiet callers (boot, profile
+                    # creation, unattended update) discard ``results``: this log line is the
+                    # pass's one warning.
+                    warning = (f"config migration to v{target_ver} failed: {exc}. It and the steps after "
+                               "it run again on the next start (`hermes doctor` shows it)")
                     results.setdefault("warnings", []).append(warning)
-                    # Quiet callers (profile creation, unattended update) discard ``results`` and
-                    # migrate_config still stamps the latest version, so without a log line the
-                    # skipped step vanishes for good.
                     logger.warning("%s", warning)
                     if not quiet:
                         print(f"  ⚠ {warning}")
+                    if failed is None:
+                        failed = results["failed_step"] = target_ver
+                    if stop_at_failure:
+                        break
+        return failed
     finally:
         _CONFIG_ONLY.reset(token)

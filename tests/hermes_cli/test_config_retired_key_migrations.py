@@ -100,3 +100,82 @@ class TestRetiredKeysWhateverTheStamp:
         assert config_path.read_bytes() == settled
         from hermes_cli.config_migrations import LEGACY_KEY_STEPS, STAMP_INDEPENDENT_STEPS
         assert STAMP_INDEPENDENT_STEPS <= LEGACY_KEY_STEPS
+
+
+#: One input per stamp-independent step that its trigger key makes it change.
+_STAMP_INDEPENDENT_TRIGGERS = {
+    46: {"mcp_servers": {"s": {"command": "x", "disabled": True}}},
+    50: {"security": {"redact_secrets": True, "tirith_enabled": True}},
+}
+
+
+class TestStampIndependentStepsAreIdempotent:
+    """These steps run on EVERY pass, and a step that stopped the ladder is retried on every start,
+    so a second run over a step's own output must change nothing."""
+
+    def test_every_stamp_independent_step_has_a_trigger_here(self):
+        from hermes_cli.config_migrations import STAMP_INDEPENDENT_STEPS
+        assert set(_STAMP_INDEPENDENT_TRIGGERS) == STAMP_INDEPENDENT_STEPS
+
+    def test_second_run_changes_nothing(self, tmp_path, monkeypatch):
+        from hermes_cli.config_migrations import MIGRATIONS, STAMP_INDEPENDENT_STEPS
+
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for version, step in ((v, fn) for v, fn in MIGRATIONS if v in STAMP_INDEPENDENT_STEPS):
+            config_path.write_text(yaml.safe_dump(
+                {"_config_version": version - 1, **_STAMP_INDEPENDENT_TRIGGERS[version]}), encoding="utf-8")
+            before = config_path.read_bytes()
+            first = {"env_added": [], "config_added": [], "warnings": []}
+            step(first, True)
+            settled = config_path.read_bytes()
+            assert settled != before and first["config_added"], f"v{version}'s trigger did not trigger it"
+            second = {"env_added": [], "config_added": [], "warnings": []}
+            step(second, True)
+            assert config_path.read_bytes() == settled, f"v{version} changed its own output"
+            assert second["config_added"] == [] and second["warnings"] == []
+
+
+class TestNewerStamp:
+    """A config stamped by a newer build (rollback, mixed desktop/CLI builds) is read as it is: no
+    step runs on it, unknown keys stay, whole-file saves are refused, key-level writes still save."""
+
+    def _newer(self, tmp_path, monkeypatch):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "_config_version": DEFAULT_CONFIG["_config_version"] + 7,
+            "mcp_servers": {"s": {"command": "x", "disabled": True}},
+            "security": {"tirith_enabled": True},
+            "zz_newer_section": {"k": 1},
+        }), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        return config_path
+
+    def test_migrate_runs_no_step_on_it(self, tmp_path, monkeypatch):
+        from hermes_cli.config import migrate_config
+
+        config_path = self._newer(tmp_path, monkeypatch)
+        before = config_path.read_bytes()
+        results = migrate_config(interactive=False, quiet=True)
+        assert config_path.read_bytes() == before
+        assert "failed_step" not in results, "no step may even start on a newer file"
+        assert any("newer Hermes" in w for w in results["warnings"])
+
+    def test_whole_file_save_is_refused_and_key_level_write_is_kept(self, tmp_path, monkeypatch):
+        import pytest
+        from hermes_cli.config import load_config, save_config, set_config_value
+
+        config_path = self._newer(tmp_path, monkeypatch)
+        before = config_path.read_bytes()
+        with pytest.raises(RuntimeError, match="newer Hermes"):
+            save_config(load_config())
+        assert config_path.read_bytes() == before
+
+        set_config_value("display.personality", "pirate")
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert raw["display"]["personality"] == "pirate"
+        assert raw["_config_version"] == yaml.safe_load(before)["_config_version"]
+        assert raw["zz_newer_section"] == {"k": 1}
+        assert raw["mcp_servers"]["s"]["disabled"] is True

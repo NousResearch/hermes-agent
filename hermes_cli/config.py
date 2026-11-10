@@ -611,7 +611,8 @@ from hermes_cli.personality import (
 # because callers and tests import these from hermes_cli.config)
 
 from hermes_cli.config_version_stamp import (
-    check_config_version, note_first_stamp, read_config_version_stamp, stamp_missing_config)
+    check_config_version, newer_stamp, newer_stamp_message, note_first_stamp, read_config_version_stamp,
+    stamp_missing_config)
 
 
 # ---- Config Migration System ----
@@ -1195,26 +1196,33 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, A
     # Missing/unparseable files never trip the floor gate.
     # Imported lazily because the steps call back into this module.
     from hermes_cli.config_migrations import (
-        SUPPORT_FLOOR_VERSION, run_migrations, support_floor_message)
+        SUPPORT_FLOOR_VERSION, disable_suspicious_mcp_servers, run_migrations, support_floor_message)
 
     has_explicit_version = stamp is not None
     floor_refused = (
         has_explicit_version and current_ver < SUPPORT_FLOOR_VERSION and current_ver < latest_ver)
-    if floor_refused:
-        msg = support_floor_message()
+    # A newer build's stamp: its steps' trigger keys may mean something this build does not know.
+    newer = has_explicit_version and current_ver > latest_ver
+    failed = None
+    if floor_refused or newer:
+        msg = newer_stamp_message(current_ver) if newer else support_floor_message()
         results["warnings"].append(msg)
         # stderr so it is visible even on quiet startup paths.
         sys.stderr.write(f"⚠ hermes config: {msg}\n")
         if not quiet:
             print(f"  ⚠ {msg}")
     else:
-        run_migrations(current_ver, results, quiet, unversioned=not has_explicit_version)
+        failed = run_migrations(current_ver, results, quiet, unversioned=not has_explicit_version)
+    # Stamp the last step that succeeded. An unversioned file that failed stays unversioned: it
+    # gets only the legacy-key steps, and a number would hand it the whole ladder next time.
+    stamp_to = latest_ver if failed is None else (max(current_ver, failed - 1) if has_explicit_version else None)
 
-    _disable_suspicious_mcp_servers(results, quiet)
+    if not newer:
+        disable_suspicious_mcp_servers(results, quiet)
     _warn_invalid_platform_toolsets(results, quiet)
 
-    if current_ver < latest_ver and not quiet and not floor_refused:
-        print(f"Config version: {current_ver} → {latest_ver}")
+    if stamp_to is not None and current_ver < stamp_to and not quiet and not floor_refused:
+        print(f"Config version: {current_ver} → {stamp_to}")
 
     missing_env = get_missing_env_vars(required_only=True)
     if missing_env and not quiet:
@@ -1237,46 +1245,16 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, A
     # read time); this list only feeds the "N new config option(s)" display.
     results["config_added"].extend(field["key"] for field in get_missing_config_fields())
 
-    if current_ver < latest_ver and not floor_refused:
+    if stamp_to is not None and current_ver < stamp_to and not floor_refused:
         config = read_raw_config()
-        config["_config_version"] = latest_ver
+        config["_config_version"] = stamp_to
         _persist_migration(config)
 
     missing_skill_config = get_missing_skill_config_vars()
-    if missing_skill_config and interactive and not quiet:
+    if missing_skill_config and interactive and not quiet and not newer:
         _offer_skill_config_vars(missing_skill_config, results)
 
     return results
-
-
-def _disable_suspicious_mcp_servers(results: dict[str, Any], quiet: bool) -> None:
-    """Post-migration: disable exfiltration-shaped MCP stdio entries (hand-edited or from older
-    installs). The stanza is preserved for auditability but marked disabled."""
-    config = read_raw_config()
-    # Preserve the stanza for auditability but mark it disabled so the next startup will not spawn it.
-    # (#45620)
-    raw_mcp_servers = config.get("mcp_servers")
-    if not isinstance(raw_mcp_servers, dict):
-        return
-    try:
-        from hermes_cli.mcp_security import validate_mcp_server_entry
-    except Exception:
-        return
-    mcp_touched = False
-    for server_name, entry in raw_mcp_servers.items():
-        issues = validate_mcp_server_entry(server_name, entry) if isinstance(entry, dict) else None
-        if not issues:
-            continue
-        entry["enabled"] = False
-        mcp_touched = True
-        results["warnings"].append(f"Disabled suspicious MCP server '{server_name}'")
-        if not quiet:
-            for issue in issues:
-                print(f"  ⚠ {issue}")
-            print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
-    if mcp_touched:
-        config["mcp_servers"] = raw_mcp_servers
-        _persist_migration(config)
 
 
 def _warn_invalid_platform_toolsets(results: dict[str, Any], quiet: bool) -> None:
@@ -2388,6 +2366,8 @@ def save_config(
         # strip pass drop every user section whose value matches a default (#113301).
         from hermes_cli.config_backend import keeping_read_base
         _raw_for_paths = keeping_read_base(lambda: require_readable_config_before_write(config_path))
+        if (newer := newer_stamp(_raw_for_paths)) is not None and supports_file_tooling():
+            raise RuntimeError(f"This change was not saved. {newer_stamp_message(newer)}")
         from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
         config = rebase_for_save(config, _raw_for_paths, merge_existing)
 

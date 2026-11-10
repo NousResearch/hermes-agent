@@ -5,7 +5,7 @@ description: "A language learning trainer for Hermes Agent: plenty of plugins gi
 maintainer: tobadaniel
 tier: community
 category: tools
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/tobadaniel/lingua
 version: "1.0.0"
 readme: true

@@ -1294,7 +1294,19 @@ _MACOS_SEARCH_NOTE = (" On macOS, broad searches above the user home automatical
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents." + _MACOS_SEARCH_NOTE + "\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls. Discovery order is the fast bounded default; exact global newest-first order is an explicit opt-in and may scan the full tree.",
+    "description": (
+        "Search file contents or locate files/directories by name when the path is unknown. "
+        "Prefer read_file for a known file path, terminal ls for a known directory listing, "
+        "and skills_list/skill_view for skill inventory or skill bodies — not this tool."
+        + _MACOS_SEARCH_NOTE
+        + "\n\nContent search (target='content'): Regex search inside files. Output modes: "
+        "full matches with line numbers, file paths only, or match counts.\n\n"
+        "File search (target='files'): Find files (and matching directories for directory-ish "
+        "or glob patterns) by name/glob (e.g. '*.py', 'vault'). Use for unknown locations, "
+        "not as a substitute for shallow ls of a known directory. Concrete filenames "
+        "(e.g. config.yaml) skip directory supplementation. Discovery order is the fast "
+        "bounded default; order='modified' is an explicit opt-in."
+    ),
     "parameters": {
         "type": "object",
         "properties": {

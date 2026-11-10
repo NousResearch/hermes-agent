@@ -109,6 +109,11 @@ class TestTheFrozenFileIsSane:
             "hermes_cli.managed_uv::ensure_uv",
             "hermes_cli.managed_uv::rebuild_venv",
             "hermes_cli._subprocess_compat::run",
+            # Loaded by v0.21.6+ updaters after the swap: the parent restarting paused gateways.
+            "tools.environments.local::served_profile_child_env",
+            "gateway.status::live_gateway_pid_for_home",
+            "hermes_cli.gateway_windows::_spawn_detached",
+            "hermes_cli.update_fleet_scope::gateway_pid_home",
         ):
             assert anchor in bare, (
                 f"{anchor} missing from the frozen surface — the freeze "

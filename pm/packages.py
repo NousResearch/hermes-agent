@@ -330,6 +330,19 @@ def _uv_lock_digest(path: Path) -> bytes:
 _uv_lock_digest_cache: dict[Path, tuple] = {}
 
 
+def _layout_digest(root: Path) -> bytes:
+    """sha256 of the packaging files, which decide how the core project installs beyond its lock
+    (uv's default ``cache-keys``). A change that moves packages (a new ``packages.find`` ``where``)
+    and leaves uv.lock alone still gets a new environment."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for name in ("pyproject.toml", "setup.py", "setup.cfg"):
+        path = root / name
+        h.update(name.encode() + b"\0" + (path.read_bytes() if path.is_file() else b"") + b"\0")
+    return h.digest()
+
+
 def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.PathLike:
     """Copy one payload cache file unless an earlier seed already copied it whole.
 
@@ -468,7 +481,7 @@ def uv_cache_dir() -> Path:
 
 @register
 class Venv(StatePackage):
-    """The project venv: pyproject.toml + uv.lock + enabled extras.
+    """The project venv: pyproject.toml + setup.py + uv.lock + enabled extras.
     Made true by `uv sync --frozen`; uv is its internal dependency."""
 
     name = "venv"
@@ -500,6 +513,7 @@ class Venv(StatePackage):
                   [artifact["sha256"] for artifact in lock.artifacts("python", target)])
         h = hashlib.sha256()
         h.update(_uv_lock_digest(self.project_root() / "uv.lock"))
+        h.update(_layout_digest(self.project_root()))
         h.update(",".join(sorted(extras)).encode())
         h.update(json.dumps(python).encode())
         # Plugin members union into the venv — a changed member set must
@@ -667,6 +681,23 @@ def npm_env(cache_dir: Path, base_env: Optional[dict] = None) -> dict[str, str]:
     return env
 
 
+def pnpm_env(base_env: Optional[dict] = None) -> dict[str, str]:
+    """pnpm's store, metadata cache and state default to the user's XDG dirs. Keep them
+    Hermes-owned beside the uv cache: shared by every profile, gone with the Hermes root."""
+    from hermes_constants import get_default_hermes_root
+
+    env = dict(os.environ if base_env is None else base_env)
+    root = get_default_hermes_root() / "cache" / "pnpm"
+    for name in ("store", "cache", "state"):
+        key = f"pnpm_config_{name}_dir"
+        # Windows env names are case-insensitive and Python upper-cases inherited ones:
+        # a surviving PNPM_CONFIG_* twin would leave the child's pick between the two undefined.
+        for twin in [k for k in env if k.upper() == key.upper() and k != key]:
+            del env[twin]
+        env[key] = str(root / name)
+    return env
+
+
 @register
 class Npm(BinaryPackage):
     name = "npm"
@@ -753,6 +784,48 @@ class Npm(BinaryPackage):
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         latest = npm_dist_tags("npm").get("latest")
+        return [latest] if latest else []
+
+
+@register
+class Pnpm(BinaryPackage):
+    """pnpm installs the repo's JS workspaces. pnpm 12 is a native executable
+    (@pnpm/exe.<target>); the `pnpm` package of the same version is only the
+    launcher that downloads it, so pm pins both and keeps the launcher's dist/:
+    the bundled node-gyp the executable looks for beside itself to build
+    dependencies that ship a binding.gyp. Without it a host node-gyp on PATH
+    (or none) would build them."""
+
+    name = "pnpm"
+    # Lifecycle scripts and node-gyp run on the node pm installs.
+    deps = ("node",)
+    binary_rel = {"win32": "pnpm.exe", "posix": "pnpm"}
+    flatten = False
+    # pnpm names its Termux build after the OS, not the libc: a bionic-linked executable.
+    exe_platforms = {"linux-arm64-bionic": "android-arm64"}
+
+    def fetch_urls(self, version: str, target: str) -> list[str]:
+        exe = self.exe_platforms.get(target, target)
+        return [
+            f"https://registry.npmjs.org/@pnpm/exe.{exe}/-/exe.{exe}-{version}.tgz",
+            f"https://registry.npmjs.org/pnpm/-/pnpm-{version}.tgz",
+        ]
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        from pm.store import extract
+
+        extract(archive, staged)
+        package = staged / "package"
+        dist = package / "dist"
+        if dist.is_dir():
+            dist.rename(staged / "dist")
+        else:
+            for item in package.iterdir():
+                item.rename(staged / item.name)
+        shutil.rmtree(package)
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        latest = npm_dist_tags("pnpm").get("latest")
         return [latest] if latest else []
 
 
@@ -985,6 +1058,33 @@ class Ripgrep(BinaryPackage):
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         return github_release_tags("BurntSushi/ripgrep")
+
+
+@register
+class Just(BinaryPackage):
+    """The developer command runner. Activation installs it; user installs and desktop bundles never do."""
+
+    name = "just"
+    optional = True
+    binary_rel = {"win32": "just.exe", "posix": "just"}
+
+    def verify(self, entry: Path, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            return Package.verify(self, entry, target)
+        return super().verify(entry, target)
+
+    def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            target = "linux-arm64"  # This upstream artifact is a static musl executable.
+        triple = _RUST_TRIPLE[target].replace("-unknown-linux-gnu", "-unknown-linux-musl")
+        ext = "zip" if target.startswith("win32") else "tar.gz"
+        return f"https://github.com/casey/just/releases/download/{version}/just-{version}-{triple}.{ext}"
+
+    def known_sha256(self, version: str, url: str) -> Optional[str]:
+        return _github_release_digests("casey/just", version).get(url.rsplit("/", 1)[-1])
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("casey/just")
 
 
 @register

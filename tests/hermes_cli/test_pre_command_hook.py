@@ -244,14 +244,10 @@ def _make_runner():
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_a, **_k: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *a, **k: None
     runner._emit_gateway_run_progress = AsyncMock()
-    runner._update_prompt_pending = {}
     runner._busy_input_mode = "interrupt"
     runner._draining = False
-    runner._session_run_generation = {}
     runner._session_sources = {}
-    runner._pending_native_image_paths_by_session = {}
     runner._background_tasks = {}
     runner._background_task_counter = 0
     runner._session_model_overrides = {}

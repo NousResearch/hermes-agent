@@ -256,7 +256,7 @@ class HostedRoomService:
             _live_services.add(self)
 
     def _make_rpc(self, server):
-        return HostedRoomServerRPC(server, db_path=self.db_path)
+        return HostedRoomServerRPC(server, db_path=self.db_path, root=self._root, placement=self.placement)
 
     def _load_stored_links(self) -> None:
         """Rehydrate persisted peer routes; collect per-link errors into one string."""

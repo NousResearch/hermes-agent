@@ -28,13 +28,18 @@ class HostedRoomSessionError(RuntimeError):
 class HostedRoomServerRPC:
     """Normalize the installed server handlers for :class:`HostedRoomRuntime`."""
 
-    def __init__(self, server: ModuleType, *, db_path: Path | str | None = None) -> None:
+    def __init__(self, server: ModuleType, *, db_path: Path | str | None = None, root: Path | None = None,
+                 placement: str | None = None) -> None:
         self.server = server
         self._ids = itertools.count(1)
         # Event-bound files resolve from the room store, as on the gateway route; without the
         # store there is nothing to resolve them from, so the driver refuses the turn by name.
         self.db_path = Path(db_path) if db_path is not None else None
         self.accepts_attachments = self.db_path is not None
+        # The room store the attachment reads open: its profile folder and which of its two placements it is.
+        self.root = root if root is not None else (self.db_path.parent if self.db_path is not None else None)
+        self.placement = placement or ("profile" if self.db_path is not None and self.db_path.name == "state.db"
+                                       else "shared")
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         envelope = self.server._methods[method](f"hosted-room-{next(self._ids)}", params)

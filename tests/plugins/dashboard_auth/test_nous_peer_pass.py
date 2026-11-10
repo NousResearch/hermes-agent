@@ -7,6 +7,7 @@ permissions (``agents:message`` / ``agents:control``) and must open ``/api/peer`
 from __future__ import annotations
 
 import httpx
+import jwt
 import pytest
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
@@ -47,6 +48,17 @@ def test_a_dashboard_sign_in_still_works_and_carries_no_peer_permission(provider
     assert provider.verify_session(access_token=token).user_id == "usr_abc"
     principal = provider.verify_peer_pass(token=token)
     assert principal is not None and not {"agents:message", "agents:control"} & set(principal.scopes)
+
+
+def test_a_token_without_a_scope_claim_opens_nothing(provider, rsa_keypair):
+    """Every dashboard grant and every pass writes ``scope``. A Portal token for this agent without
+    one was minted for some other purpose, so it is neither a dashboard session nor a peer pass."""
+    claims = jwt.decode(_mint_token(rsa_keypair), options={"verify_signature": False})
+    del claims["scope"]
+    token = jwt.encode(claims, rsa_keypair["private_pem"], algorithm="RS256", headers={"kid": rsa_keypair["kid"]})
+    assert provider.verify_session(access_token=token) is None
+    principal = provider.verify_peer_pass(token=token)
+    assert principal is not None and principal.scopes == ()
 
 
 def test_a_pass_for_another_agent_is_not_recognised(provider, rsa_keypair):

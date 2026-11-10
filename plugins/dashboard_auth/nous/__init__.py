@@ -100,13 +100,10 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
 
 
     def _claims_for(self, access_token: str) -> dict[str, Any]:
-        # Every dashboard grant mints ``agent_dashboard:access``; a pass for this agent without it
-        # (a peer pass) opens ``/api/peer`` only, never a dashboard session. A token with no
-        # ``scope`` claim at all is tolerated, as before: contract V1 always writes one.
+        # Every dashboard grant mints ``agent_dashboard:access``. A token for this agent without it,
+        # a peer pass or one minted for another purpose with no ``scope`` claim, is no dashboard session.
         claims = self._agent_claims(access_token)
-        if "scope" not in claims:
-            logger.warning("Nous Portal token missing scope claim (contract says %s); proceeding anyway.", _SCOPE)
-        elif _SCOPE not in _scopes(claims):
+        if _SCOPE not in _scopes(claims):
             raise InvalidCodeError(f"token does not grant {_SCOPE}")
         return claims
 

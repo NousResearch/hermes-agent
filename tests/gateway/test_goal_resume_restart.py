@@ -102,7 +102,7 @@ class TestCliResumeRestartsWork:
             "— otherwise the goal sits idle until the user types something"
         )
         queued = cli._pending_input.get_nowait()
-        assert queued.startswith("[Continuing toward your standing goal]")
+        assert queued.startswith(goals.CONTINUATION_MARKER)
 
         state = goals.GoalManager(sid).state
         assert state.status == "active"
@@ -186,7 +186,7 @@ class TestGatewayResumeRestartsWork:
             "/goal resume must enqueue the continuation on the adapter FIFO "
             "— otherwise the goal sits idle until the next real user message"
         )
-        assert pending.text.startswith("[Continuing toward your standing goal]")
+        assert pending.text.startswith(goals.CONTINUATION_MARKER)
         # The pause/clear stale-work guard must recognize the queued turn as
         # a synthetic goal continuation so it can be cleaned up on /goal pause.
         assert GatewayRunner._is_goal_continuation_event(pending)

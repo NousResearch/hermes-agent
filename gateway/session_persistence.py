@@ -113,10 +113,10 @@ class SessionPersistenceMixin:
             if len(kept) < len(data):
                 atomic_json_write(sessions_file, kept, mode=0o600)
 
-    def _open_persistence_for_active_scope(self, db_path: Optional[Path] = None):
-        """Storage interface handle for the active profile scope's ``state.db``. ``db_path`` pins the
-        store; otherwise the path follows the context-local HERMES_HOME (resolved per call so
-        multiplexed profiles reach their own store). Handles are cached per path; failed opens enter
+    def _open_persistence_for_active_scope(self, home: Optional[Path] = None):
+        """Storage interface handle for the active profile scope's store. ``home`` pins the profile;
+        otherwise the scope follows the context-local HERMES_HOME (resolved per call so multiplexed
+        profiles reach their own store). Handles are cached per profile folder; failed opens enter
         a bounded backoff during which callers get None and keep using the JSONL fallback.
 
         Resolving here rather than once in ``__init__`` is the whole fix for #88532: it lets the scoping
@@ -125,17 +125,17 @@ class SessionPersistenceMixin:
         from hermes_constants import get_hermes_home
         from persistence_assembly import open_persistence, profile_scope
 
-        path = Path(db_path) if db_path is not None else Path(get_hermes_home()) / "state.db"
+        scope = profile_scope(home=Path(home) if home is not None else Path(get_hermes_home()))
 
         def _open():
             try:
-                return open_persistence(profile_scope(home=path.parent), eager=True)
+                return open_persistence(scope, eager=True)
             except Exception as e:
                 if not _is_live_system_guard(e):
                     print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
                 raise
 
-        return self._db_handle_cache.get(path, _open, non_cacheable=_is_live_system_guard)
+        return self._db_handle_cache.get(scope.profile_dir, _open, non_cacheable=_is_live_system_guard)
 
     def _pinned_db(self):
         """Return the explicitly pinned DB (``store._db = x``), else ``_DB_UNPINNED``."""
@@ -182,7 +182,7 @@ class SessionPersistenceMixin:
         try:
             if home is None:
                 return self._open_persistence_for_active_scope()
-            return self._open_persistence_for_active_scope(db_path=home / "state.db")
+            return self._open_persistence_for_active_scope(home=home)
         except (AttributeError, RuntimeError):  # a bare instance without the cache, or the live-system guard
             return None
 
@@ -243,7 +243,7 @@ class SessionPersistenceMixin:
             if routing_home is None or not getattr(self.config, "multiplex_profiles", False):
                 return self._open_persistence_for_active_scope()
             try:
-                return self._open_persistence_for_active_scope(db_path=routing_home / "state.db")
+                return self._open_persistence_for_active_scope(home=routing_home)
             except (AttributeError, RuntimeError):
                 return None
         home = self._profile_home_for_key(session_key)
@@ -255,7 +255,7 @@ class SessionPersistenceMixin:
                 "back to the ambient store", profile, session_key)
             return None
         try:
-            return self._open_persistence_for_active_scope(db_path=home / "state.db")
+            return self._open_persistence_for_active_scope(home=home)
         except (AttributeError, RuntimeError):
             return None  # degrades to the JSONL fallback, as a failed open does
 
@@ -282,7 +282,7 @@ class SessionPersistenceMixin:
 
     @property
     def persistence(self):
-        """The storage interface handle for the active profile scope, one per ``state.db`` path, opened on first
+        """The storage interface handle for the active profile scope, one per profile, opened on first
         use and closed by ``close_all_db_handles``; None while ``_db`` is pinned or while the handle cannot open
         (the cache's backoff decides when the next read tries again)."""
         if self._pinned_db() is not _DB_UNPINNED:
@@ -309,7 +309,7 @@ class SessionPersistenceMixin:
         return handle
 
     def close_all_db_handles(self) -> None:
-        """Close every storage interface handle this store opened (one per path) and the handles beside a pinned
+        """Close every storage interface handle this store opened (one per profile) and the handles beside a pinned
         SessionDB. Closing only the active scope's would strand secondary profiles' stores with
         their WAL lock held ('database is locked' on restart). Drained under the lock, closed outside it; a pinned
         SessionDB is the pinner's."""

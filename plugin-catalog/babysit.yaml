@@ -1,6 +1,6 @@
 name: "babysit"
 repo: "https://github.com/aarav1656/babysit"
-sha: "2857cab71ce7b589f1f23457eb3b7e02c5af4dd2"
+sha: "3ec095b93c1f9b8dca2b6af98c8d780b80110a7b"
 subdir: "babysit"
 description: "Watches a long job's log (training run, build, migration) with zero model calls, keeps one chat message updated in place, and wakes the agent only when the job hits a non-finite value, out-of-memory error, traceback, stall, process exit or a line containing your alert text. Disclosure: Babysit reads the selected log file through one read-only handle, opened without following symlinks and checked again from the handle itself, so replacing the path afterwards changes nothing it reads. It accepts absolute paths only and refuses files inside the active profile's Hermes home, the Hermes root that holds every profile, `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.config`, `/etc`, `/proc`, `/sys` and `/dev`, files with credential-looking names such as `.env`, `id_*`, `*.pem`, `*.key` and `auth.json`, hard-linked files, and anything that is not a regular file. It never writes to the log, makes no network requests, and spawns no child processes. It creates one daemon thread per watch. Hermes reads the plugin setting of the profile Babysit runs in to check injection permission. The watch loop makes no model calls; detected events are sent to the current session, which may start an agent turn."
 maintainer: "aarav1656"

@@ -1,0 +1,28 @@
+name: heats
+repo: https://github.com/EconLearn/hermes-heats
+sha: 019e13cffb8acf3004a19d18a085bb4e891509f4
+description: >-
+  Your tests, not the model, decide when a fix is done. A pre_verify referee runs the repo's check when
+  the agent edited code and is about to finish, and sends it back with the real test output if the check
+  fails. When one attempt is not enough, heats_run races N attempts in separate git worktrees (subagents
+  launched through the public lifecycle API, kept inside their worktree by a tool_request middleware);
+  failing attempts are restarted with the measured output, attempts that edit tests cannot win, and the
+  winner is applied with one call. Desktop pane with live lanes and an Apply winner button.
+  Disclosure: the referee runs your check command in your checkout after code edits (setting
+  `referee`, on by default; it will not run a check whose defining files the agent edited in that turn);
+  races create and remove git worktrees and branches under <repo>/.heats/, run
+  the check in each worktree and launch N subagents on your delegation model (cost scales with N); saves
+  reports and patches under plugin-data/heats; Desktop routes under /api/plugins/heats/; no network calls
+  of its own, no telemetry, no credentials.
+maintainer: EconLearn
+tier: community
+category: tools
+docs_url: https://github.com/EconLearn/hermes-heats#readme
+requires_hermes: ">=0.23.0"
+version: "0.3.3"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [heats_run, heats_wait, heats_apply]
+  provides_hooks: [pre_tool_call, post_tool_call, pre_verify]
+  provides_middleware: [tool_request]
+  requires_env: []

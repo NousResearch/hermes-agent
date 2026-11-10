@@ -33,9 +33,9 @@ def _reset_computer_use_state():
 class _FakeSession:
     def __init__(
         self,
-        out: Optional[Dict[str, Any]] = None,
+        out: Optional[dict[str, Any]] = None,
         *,
-        input_properties: Optional[Dict[str, set[str]]] = None,
+        input_properties: Optional[dict[str, set[str]]] = None,
         tools: Optional[set[str]] = None,
     ) -> None:
         self.out = out or {
@@ -45,9 +45,9 @@ class _FakeSession:
         }
         self.input_properties = input_properties or {}
         self.tools = tools or {"bring_to_front", *self.input_properties}
-        self.calls: list[tuple[str, Dict[str, Any]]] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0):
+    def call_tool(self, name: str, args: dict[str, Any], timeout: float = 30.0):
         self.calls.append((name, dict(args)))
         return self.out
 

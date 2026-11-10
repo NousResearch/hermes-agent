@@ -38,7 +38,7 @@ def config_fingerprint(config: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def _load_all() -> Dict[str, Any]:
+def _load_all() -> dict[str, Any]:
     path = _cache_path()
     if not path.exists():
         return {}
@@ -50,7 +50,7 @@ def _load_all() -> Dict[str, Any]:
         return {}
 
 
-def _save_all(data: Dict[str, Any]) -> None:
+def _save_all(data: dict[str, Any]) -> None:
     from utils import atomic_json_write
     # 0o600: the cache file is trusted input on the lazy registration path, keep it user-only.
     atomic_json_write(_cache_path(), data, mode=0o600)
@@ -72,8 +72,8 @@ def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
     return None if expired else entry
 
 
-def write_cache_entry(server_name: str, fingerprint: str, *, tools: List[dict],
-                      utility_tools: Optional[List[dict]] = None, ttl_ms: Optional[float] = None,
+def write_cache_entry(server_name: str, fingerprint: str, *, tools: list[dict],
+                      utility_tools: Optional[list[dict]] = None, ttl_ms: Optional[float] = None,
                       cache_scope: Optional[str] = None) -> None:
     """Persist tool schemas after a successful live connect. ``ttl_ms`` / ``cache_scope`` are
     the server's ``tools/list`` SEP-2549 hints; ``written_at`` anchors TTL expiry."""
@@ -94,16 +94,16 @@ def write_cache_entry(server_name: str, fingerprint: str, *, tools: List[dict],
         _save_all(data)
 
 
-def _list_field(entry: dict, key: str) -> List[dict]:
+def _list_field(entry: dict, key: str) -> list[dict]:
     value = entry.get(key)
     return list(value) if isinstance(value, list) else []
 
 
-def tools_from_cache_entry(entry: dict) -> List[dict]:
+def tools_from_cache_entry(entry: dict) -> list[dict]:
     """Return cached MCP tool dicts (name, description, inputSchema)."""
     return _list_field(entry, "tools")
 
 
-def utility_tools_from_cache_entry(entry: dict) -> List[dict]:
+def utility_tools_from_cache_entry(entry: dict) -> list[dict]:
     """Return cached ``{schema, handler_key}`` utility rows."""
     return _list_field(entry, "utility_tools")

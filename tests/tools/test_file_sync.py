@@ -55,6 +55,73 @@ class TestMtimeSkip:
         mgr.sync(force=True)
         assert upload.call_count == 0, "unchanged files should not be re-uploaded"
 
+    def test_same_size_in_place_rewrite_on_a_coarse_clock_is_re_uploaded(self, tmp_path, monkeypatch):
+        """A filesystem whose timestamps did not tick between the sync and a rewrite (coarse mtime
+        AND ctime): a same-size in-place rewrite keeps every stat field, so a key recorded while its
+        mtime was that fresh must be confirmed by content before it is trusted."""
+        import pathlib
+        import time
+        from types import SimpleNamespace
+
+        token = tmp_path / "token.json"
+        token.write_text('{"access":"AAAA"}', encoding="utf-8")
+        frozen_ns = time.time_ns()
+        real_stat = pathlib.Path.stat
+
+        def frozen_clock_stat(path, *args, **kwargs):
+            st = real_stat(path, *args, **kwargs)
+            return SimpleNamespace(st_mtime_ns=frozen_ns, st_ctime_ns=frozen_ns, st_size=st.st_size,
+                                   st_ino=st.st_ino, st_mode=st.st_mode, st_mtime=frozen_ns / 1e9)
+
+        monkeypatch.setattr(pathlib.Path, "stat", frozen_clock_stat)
+        uploaded = []
+
+        def bulk_upload(files):
+            uploaded.extend(Path(staged).read_text(encoding="utf-8") for staged, _remote in files)
+
+        mgr = FileSyncManager(
+            get_files_fn=lambda: [(str(token), "/root/.hermes/token.json")],
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            bulk_upload_fn=bulk_upload,
+        )
+        mgr.sync(force=True)
+        mgr.sync(force=True)  # unchanged bytes: confirmed by content, not uploaded again
+
+        token.write_text('{"access":"BBBB"}', encoding="utf-8")
+        mgr.sync(force=True)
+
+        assert uploaded == ['{"access":"AAAA"}', '{"access":"BBBB"}']
+
+    @pytest.mark.platforms("linux", "macos")
+    def test_same_size_same_mtime_replace_is_re_uploaded(self, tmp_path):
+        """An OAuth refresh atomically replaces a token with same-size bytes inside the mtime
+        tick of the last sync; the remote must still receive the new credential."""
+        token = tmp_path / "token.json"
+        pinned_ns = 1_800_000_000_000_000_000
+        token.write_text('{"access":"AAAA"}', encoding="utf-8")
+        os.utime(token, ns=(pinned_ns, pinned_ns))
+        uploaded = []
+
+        def bulk_upload(files):
+            uploaded.extend(Path(staged).read_text(encoding="utf-8") for staged, _remote in files)
+
+        mgr = FileSyncManager(
+            get_files_fn=lambda: [(str(token), "/root/.hermes/token.json")],
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            bulk_upload_fn=bulk_upload,
+        )
+        mgr.sync(force=True)
+
+        replacement = tmp_path / "token.json.tmp"
+        replacement.write_text('{"access":"BBBB"}', encoding="utf-8")
+        os.utime(replacement, ns=(pinned_ns, pinned_ns))
+        os.replace(replacement, token)
+        mgr.sync(force=True)
+
+        assert uploaded == ['{"access":"AAAA"}', '{"access":"BBBB"}']
+
 
     def test_new_file_detected(self, tmp_files, tmp_path):
         upload = MagicMock()
@@ -143,6 +210,29 @@ class TestTransactionalRollback:
         upload.reset_mock()
         mgr.sync(force=True)
         good_delete.assert_called_once()
+
+    def test_a_file_vanishing_mid_plan_is_retried_not_raised(self, tmp_files, monkeypatch):
+        """sync() runs before every terminal command: a file removed between its stat and the
+        content check (a credential being rotated) must fail the cycle quietly, not the command."""
+        import tools.environments.file_sync as file_sync_mod
+
+        upload = MagicMock()
+        mgr = _make_manager(tmp_files, upload=upload)
+        mgr.sync(force=True)
+        # Re-stat as changed so the planner content-checks the already-pushed file.
+        mgr._synced_files = {remote: (-2, -2, -2, -2) for remote in mgr._synced_files}
+        real_sha = file_sync_mod._sha256_file
+
+        def vanished(path):
+            raise FileNotFoundError(path)
+
+        monkeypatch.setattr(file_sync_mod, "_sha256_file", vanished)
+        mgr.sync(force=True)  # must not raise
+
+        monkeypatch.setattr(file_sync_mod, "_sha256_file", real_sha)
+        upload.reset_mock()
+        mgr.sync(force=True)
+        assert upload.call_count == 0, "the retry confirms the unchanged bytes instead of re-uploading"
 
 
 class TestRateLimiting:

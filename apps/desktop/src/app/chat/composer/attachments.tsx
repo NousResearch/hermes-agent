@@ -23,7 +23,10 @@ export function AttachmentList({
   onRemove?: (id: string) => void
 }) {
   return (
-    <div className="flex max-w-full flex-shrink-0 flex-wrap gap-1.5 px-1 pt-1 overflow-hidden" data-slot="composer-attachments">
+    <div
+      className="flex max-w-full flex-shrink-0 flex-wrap gap-1.5 px-1 pt-1 overflow-hidden"
+      data-slot="composer-attachments"
+    >
       {attachments.filter(Boolean).map(attachment => (
         <AttachmentPill
           attachment={attachment}

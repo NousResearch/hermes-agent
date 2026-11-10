@@ -84,7 +84,8 @@ function mount(snapshot: SessionResumeResult) {
       getRouteToken: () => 'A',
       getRoutedStoredSessionId: () => null,
       navigate: vi.fn(),
-      requestGateway
+      requestGateway,
+      routedSessionId: null
     })
 
     const stream = useMessageStream({

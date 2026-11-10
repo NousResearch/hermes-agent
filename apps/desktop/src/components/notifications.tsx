@@ -277,7 +277,7 @@ function NotificationItem({ notification, stack }: { notification: AppNotificati
   return (
     <Alert
       aria-live={!stack.active ? 'off' : notification.kind === 'error' ? 'assertive' : 'polite'}
-      className="grid-cols-[auto_minmax(0,1fr)_auto] border-0 bg-transparent pr-2.5 shadow-none"
+      className="grid-cols-[auto_minmax(0,1fr)_auto] border-0 bg-transparent pr-2.5 text-xs shadow-none"
       role={notification.kind === 'error' ? 'alert' : 'status'}
       variant={styles.variant}
     >
@@ -360,7 +360,7 @@ function NotificationDetail({ detail }: { detail: string }) {
       <summary className="select-none font-medium text-muted-foreground hover:text-foreground">{copy.details}</summary>
       <div className="mt-1 rounded-md bg-background/65 p-2">
         <pre
-          className="max-h-32 whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem] leading-relaxed"
+          className="max-h-32 overflow-y-auto overscroll-contain whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem] leading-relaxed"
           data-selectable-text="true"
         >
           {detail}

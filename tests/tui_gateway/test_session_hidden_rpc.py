@@ -14,7 +14,7 @@ Covers the two seams Bot Mode's "sessions are always hidden" policy leans on:
 import pytest
 
 import tui_gateway.server as srv
-import tui_gateway.methods_session  # noqa: F401  (registers the RPC methods)
+import tui_gateway.methods_session
 from hermes_state import SessionDB
 
 

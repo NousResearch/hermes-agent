@@ -6,7 +6,7 @@ from the command line / environment, never hard-coded. Usage: see the argument p
 """
 import os, tempfile, sys, json, time, base64, threading, importlib.util
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 ROOT = Path(sys.argv[1]); MODE = sys.argv[2]
 sys.path.insert(0, str(ROOT))
@@ -28,12 +28,11 @@ def claims(token):
 records=[]
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        raw_body=self.rfile.read(int(self.headers.get('Content-Length',0)))
+        self.rfile.read(int(self.headers.get('Content-Length',0)))
         if self.path == '/api/oauth/token':
             records.append({'path':self.path,'refresh':True})
             raw=json.dumps({'access_token':refresh_reply,'refresh_token':'fixture-rotated','expires_in':3600,'token_type':'Bearer','scope':'inference:invoke'}).encode()
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
-        body=json.loads(raw_body or '{}')
         bearer=self.headers.get('Authorization','').removeprefix('Bearer ')
         records.append({'path':self.path,'sub':claims(bearer).get('sub') if bearer else None})
         if bearer and claims(bearer)['exp'] < time.time():
@@ -49,13 +48,13 @@ os.environ['HERMES_SHARED_AUTH_DIR']=str(home/'shared')
 from run_agent import AIAgent
 from agent.turn_iteration_prep import prepare_iteration
 import agent.client_lifecycle as lifecycle
-import hermes_cli.auth as auth
+from hermes_cli import auth
 print(json.dumps({'mode':MODE,'module':lifecycle.__file__,'has_new':hasattr(AIAgent,'_adopt_nous_key_before_expiry'),'home':str(home)}),flush=True)
 if MODE=='main':
     spec=importlib.util.spec_from_file_location('main_prep',Path(__file__).with_name('main-turn_iteration_prep.py')); mod=importlib.util.module_from_spec(spec);sys.modules[spec.name]=mod;spec.loader.exec_module(mod);prepare_iteration=mod.prepare_iteration
 
 def store(token):
-    exp=claims(token)['exp']; state={'portal_base_url':'https://portal.nousresearch.com','inference_base_url':'https://inference-api.nousresearch.com/v1','client_id':'hermes-cli','token_type':'Bearer','scope':'inference:invoke','access_token':token,'refresh_token':'fixture-refresh-never-send','expires_at':datetime.fromtimestamp(exp,timezone.utc).isoformat(),'expires_in':3600,'agent_key':token,'agent_key_expires_at':datetime.fromtimestamp(exp,timezone.utc).isoformat()}
+    exp=claims(token)['exp']; state={'portal_base_url':'https://portal.nousresearch.com','inference_base_url':'https://inference-api.nousresearch.com/v1','client_id':'hermes-cli','token_type':'Bearer','scope':'inference:invoke','access_token':token,'refresh_token':'fixture-refresh-never-send','expires_at':datetime.fromtimestamp(exp,UTC).isoformat(),'expires_in':3600,'agent_key':token,'agent_key_expires_at':datetime.fromtimestamp(exp,UTC).isoformat()}
     (home/'hermes'/'auth.json').write_text(json.dumps({'version':1,'active_provider':'nous','providers':{'nous':state}}), encoding='utf-8')
 results=[]
 for case, own_sub, store_sub, ttl in [('same-account','account-A','account-A',30),('explicit-account','account-A','account-B',30),('far-from-expiry','account-A','account-B',3000)]:

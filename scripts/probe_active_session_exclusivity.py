@@ -9,13 +9,15 @@ Run against the fork's own HERMES_HOME so nothing here touches a real profile:
 
     python scripts/probe_active_session_exclusivity.py
 
-It drives two real ``python -m tui_gateway.entry`` processes over stdio JSON-RPC
-and asserts the sequence the reviewer specified:
+It drives real ``python -m tui_gateway.entry`` processes over stdio JSON-RPC.
+The standalone entry now reserves the home's ``gateway.lock`` (the gateway's own
+owner reservation) before it opens ``state.db``, so the second writer is refused
+before it exists rather than per turn:
 
-    A  resume S, submit          -> claims the session
-    B  resume S, submit          -> typed SESSION_NOT_OWNED, no row, no turn
-    A  exits                     -> its lease is pruned as a dead owner
-    B  submit again              -> succeeds
+    A  create S, submit          -> claims the session
+    B  start on the same home    -> refused at startup (exit 1), never ready
+    A  exits                     -> its reservation dies with it
+    B  start, resume S, submit   -> succeeds
 
 No provider is required. The fence is checked BEFORE the agent is built, so a
 submit that later fails for want of a model still proves who owns the session --
@@ -108,10 +110,6 @@ class Gateway:
                 pass
 
 
-def reason_of(response: dict):
-    return (response.get("error") or {}).get("data", {}).get("reason")
-
-
 def registry(home: Path):
     path = home / "runtime" / "active_sessions.json"
     try:
@@ -159,31 +157,25 @@ def main() -> int:
         check("the lease is keyed on the STORED session, not the runtime handle",
               bool(key) and key != sid_a, f"key={key} runtime={sid_a}")
 
-        b = Gateway("B", home)
-        resumed = b.call("session.resume", {"session_id": key})
-        check("B may still RESUME (reading is never fenced)", "result" in resumed,
-              json.dumps(resumed.get("error", ""))[:160])
-        sid_b = resumed.get("result", {}).get("session_id")
-
-        before = len(registry(home))
-        refused = b.call("prompt.submit", {"session_id": sid_b, "text": "probe: B must not write"})
-        check("B's submit is refused", refused.get("error") is not None,
-              json.dumps(refused.get("result", ""))[:120])
-        check("refusal is typed SESSION_NOT_OWNED", reason_of(refused) == "SESSION_NOT_OWNED",
-              str(reason_of(refused)))
-        check("refusal left the registry untouched", len(registry(home)) == before)
+        refused_b = subprocess.run(
+            [str(PYTHON), "-u", "-m", "tui_gateway.entry"], cwd=str(REPO),
+            env={**os.environ, "HERMES_HOME": str(home)}, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, check=False)
+        check("B cannot start a second writer on A's home", refused_b.returncode == 1
+              and "gateway.ready" not in refused_b.stdout, (refused_b.stderr or "")[-200:])
 
         # A dies without releasing -- the crash case, not a clean handoff.
         a.proc.kill()
         a.proc.wait(timeout=30)
-        time.sleep(1.0)
 
+        b = Gateway("B", home)
+        resumed = b.call("session.resume", {"session_id": key})
+        check("after A dies, B may resume", "result" in resumed,
+              json.dumps(resumed.get("error", ""))[:160])
+        sid_b = resumed.get("result", {}).get("session_id")
         retried = b.call("prompt.submit", {"session_id": sid_b, "text": "probe: B may write now"})
-        check("after A dies, B's retry is accepted", retried.get("error") is None,
+        check("and B's submit is accepted", retried.get("error") is None,
               json.dumps(retried.get("error", ""))[:200])
-        held = registry(home)
-        check("and B now owns the session", len(held) == 1 and held[0].get("session_id") == key,
-              json.dumps(held)[:160])
     finally:
         if b is not None:
             b.close()

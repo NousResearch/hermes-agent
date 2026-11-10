@@ -227,7 +227,7 @@ No configuration is needed — decryption happens transparently when encrypted m
 
 | Method | What it sends | Size limit |
 |--------|--------------|------------|
-| `send` | Markdown text messages | 4000 chars |
+| `send` | Markdown text messages | 4000 chars per message; longer text is split across messages |
 | `send_image` / `send_image_file` | Native image messages | 10 MB |
 | `send_document` | File attachments | 20 MB |
 | `send_voice` | Voice messages (AMR format only for native voice) | 2 MB |

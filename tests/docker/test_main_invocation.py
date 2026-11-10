@@ -22,6 +22,7 @@ def test_chat_subcommand_passthrough(built_image: str) -> None:
     r = subprocess.run(
         ["docker", "run", "--rm", built_image, "chat", "--help"],
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert r.returncode == 0
     combined = (r.stdout + r.stderr).lower()
@@ -35,6 +36,7 @@ def test_bash_pattern(built_image: str) -> None:
     r = subprocess.run(
         ["docker", "run", "--rm", built_image, "bash", "-c", "echo ok"],
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert r.returncode == 0
     assert "ok" in r.stdout
@@ -49,5 +51,6 @@ def test_container_exit_code_matches_inner_exit(built_image: str) -> None:
     r = subprocess.run(
         ["docker", "run", "--rm", built_image, "sh", "-c", "exit 42"],
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert r.returncode == 42

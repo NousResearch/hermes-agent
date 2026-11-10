@@ -20,11 +20,11 @@ from __future__ import annotations
 import pytest
 
 aiohttp = pytest.importorskip("aiohttp")
-from aiohttp import web  # noqa: E402
-from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import GatewayConfig, PlatformConfig  # noqa: E402
-from gateway.platforms.api_server import (  # noqa: E402
+from gateway.config import GatewayConfig, PlatformConfig
+from gateway.platforms.api_server import (
     APIServerAdapter,
 )
 

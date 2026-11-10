@@ -238,15 +238,14 @@ const EXEMPT_PATTERNS = [
   /agent-payload[/\\]tools[/\\]git(-[^/\\]+)?[/\\](mingw64|clangarm64|usr|cmd)[/\\]/i,
   // discord.py ships x64 and x86 opus; opus.py loads by bitness.
   /agent-payload[/\\]venv[/\\](Lib|lib[/\\]python[\d.]+)[/\\]site-packages[/\\]discord[/\\]bin[/\\]libopus-0\.(x64|x86)\.dll$/i,
+  // sounddevice 0.5.6's per-arch Windows wheels carry all three PortAudio
+  // builds; _sounddevice.py loads the one matching the interpreter's machine.
+  /agent-payload[/\\]venv[/\\](Lib|lib[/\\]python[\d.]+)[/\\]site-packages[/\\]_sounddevice_data[/\\]portaudio-binaries[/\\]libportaudio(32bit|64bit|arm64)(-asio)?\.dll$/i,
   // pvporcupine ships one native lib per OS/arch in the same wheel.
   // Only the matching sibling is loaded.
   /agent-payload[/\\]venv[/\\](Lib|lib[/\\]python[\d.]+)[/\\]site-packages[/\\]pvporcupine[/\\]lib[/\\]/i,
   // debugpy ships attach helpers for every OS/arch in one wheel.
   /agent-payload[/\\]venv[/\\](Lib|lib[/\\]python[\d.]+)[/\\]site-packages[/\\]debugpy[/\\]_vendored[/\\]pydevd[/\\]/i,
-  // agent-browser ships no native win-arm64 build; on win32-arm64 the
-  // payload stages the x64 exe, which Windows runs under built-in
-  // emulation (its own postinstall falls back to x64 on arm64).
-  /agent-payload[/\\]tools[/\\]agent-browser-[^/\\]+[/\\]bin[/\\]agent-browser-win32-x64\.exe$/i,
   // CfT publishes no native win-arm64 Chromium, so PM stages the win64
   // (x64) build and Windows runs it under emulation. The zip extracts
   // into chrome-win64 inside the chromium-<rev> store entry. Scoping to

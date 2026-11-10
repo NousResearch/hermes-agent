@@ -3,6 +3,7 @@
 import pytest
 
 from agent.conversation_compression import (
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
     ROUTINE_COMPRESSION_STATUS_SAMPLES,
 )
@@ -57,6 +58,8 @@ NOISY_STATUS_MESSAGES = [
         "⚠ Skipping concurrent compression — another path is already "
         "compressing this session. Will retry after it finishes."
     ),
+    # Automatic anti-growth refusal: a no-op diagnostic (nothing dropped), pinned from the emit-site constant.
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
 ]
 
 # Messages that must NEVER be swallowed by the compression-noise filter:
@@ -68,6 +71,8 @@ VISIBLE_COMPRESSION_MESSAGES = [
     "Compression aborted: 30 messages preserved",
     "Compressed with fallback: 30 → 12 messages",
     "No changes from compression: 30 messages",
+    # Manual /compress refused-would-grow feedback stays visible (manual_compression_feedback.py).
+    "Compression refused (summary would grow the conversation): 30 messages preserved",
     (
         "⚠ Compression aborted: auth failure. No messages were dropped — "
         "conversation continues unchanged. Run /compress to retry, or /new "
@@ -91,10 +96,10 @@ VISIBLE_COMPRESSION_MESSAGES = [
     ),
     # Blocked-overflow warning (#62625/#62708): the context is over the
     # compression threshold but compression is blocked (summary-LLM cooldown
-    # or the anti-thrash breaker). FAILURE-CLASS — must reach chat users so
-    # they can /new or /compress before the session dies at the hard token
-    # limit. Formatted from the SAME template the emit site uses, so a
-    # rewording that drifts into the noise regex fails here.
+    # or the anti-thrash breaker). FAILURE-CLASS — must reach a DM so the
+    # owner can /new or /compress before the session dies at the hard token
+    # limit; shared chats drop it (#101003, tests/gateway/test_run_status_filter.py).
+    # Formatted from the SAME template the emit site uses.
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
         tokens=85_000, threshold=72_000, reason="cooldown:30"
     ),
@@ -131,6 +136,10 @@ def test_programmatic_surfaces_keep_raw_status():
     for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
         assert (
             _prepare_gateway_status_message(platform, "lifecycle", message) == message
+        )
+        assert (
+            _prepare_gateway_status_message(platform, "warn", COMPRESSION_REFUSED_WOULD_GROW_WARNING)
+            == COMPRESSION_REFUSED_WOULD_GROW_WARNING
         )
 
 
@@ -172,9 +181,10 @@ def test_manual_compress_feedback_and_failure_notices_stay_visible(platform, mes
 
     These are the deliberate carve-outs from routine-compression silence
     (#16775 failures, manual_compression_feedback.py) — widening the noise
-    regex must not start eating them.
+    regex must not start eating them. Pinned in a DM: the blocked-overflow
+    warning is DM-only since #101003.
     """
-    assert _prepare_gateway_status_message(platform, "warn", message) == message
+    assert _prepare_gateway_status_message(platform, "warn", message, "dm") == message
 
 
 @pytest.mark.parametrize("platform", ["slack", "matrix"])

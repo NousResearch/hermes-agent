@@ -5,7 +5,7 @@
 * A watchdog hard-exited the process (``degraded`` + watchdog ``exit_reason``, PID gone) -> the
   retained verdict stays ``degraded`` with its ``gateway_exit_reason`` instead of a bare ``stopped``.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -13,7 +13,7 @@ import gateway.status as _gw_status
 
 
 def _iso_age(seconds_ago: float) -> str:
-    return (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()
+    return (datetime.now(UTC) - timedelta(seconds=seconds_ago)).isoformat()
 
 
 @pytest.fixture

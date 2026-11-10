@@ -14,6 +14,7 @@ vi.mock('@/hermes', () => ({
   setSessionPinnedRemote: (id: string, pinned: boolean, profile?: null | string) => patch(id, pinned, profile)
 }))
 
+import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $sessions, setConnection } from '@/store/session'
 
@@ -43,6 +44,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   window.localStorage.clear()
+  $primaryGatewayRoute.set({ connectionId: null, mode: null })
   setConnection(remote('default'))
   $sessions.set([])
   $pinnedSessionIds.set([])
@@ -84,6 +86,60 @@ describe('desktop pin list is connection-scoped, not profile-scoped', () => {
 
     setConnection(remote('default', 'https://gw-b.example'))
     expect($pinnedSessionIds.get()).toEqual(['b-1'])
+  })
+
+  it("never adopts the previous gateway's pinned rows still on screen after a pick", async () => {
+    const gateway = (connectionId: string) =>
+      ({ ...remote('default', `https://gw-${connectionId}.example`), connectionId }) as HermesConnection
+
+    setConnection(gateway('a'))
+    $sessions.set([row('only-on-a', { connection_id: 'a', pinned: true, profile: 'default' })])
+    await flush()
+    expect($pinnedSessionIds.get()).toEqual(['only-on-a'])
+
+    // A pick publishes B while A's rows are still loaded.
+    setConnection(gateway('b'))
+    await flush()
+    expect($pinnedSessionIds.get()).toEqual([])
+
+    $sessions.set([...$sessions.get(), row('b-own', { connection_id: 'b', pinned: true, profile: 'default' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['b-own'])
+  })
+
+  it("repaints only the active gateway's row when another gateway lists the same id", async () => {
+    setConnection({ ...remote('default', 'https://gw-b.example'), connectionId: 'b' } as HermesConnection)
+    $sessions.set([
+      row('shared', { connection_id: 'a', pinned: false, profile: 'default' }),
+      row('shared', { connection_id: 'b', pinned: false, profile: 'default' })
+    ])
+    await flush()
+
+    pinSession('shared')
+    await flush()
+
+    const pinnedById = Object.fromEntries($sessions.get().map(r => [r.connection_id, r.pinned]))
+
+    expect(pinnedById).toEqual({ a: false, b: true })
+  })
+
+  it("never adopts This device's untagged pinned rows into a remote gateway's set", async () => {
+    // This device is the primary: its rows are listed untagged.
+    $primaryGatewayRoute.set({ connectionId: 'local', mode: 'local' })
+    setConnection({ connectionId: 'local', mode: 'local', profile: 'default' } as unknown as HermesConnection)
+    $sessions.set([row('only-local', { pinned: true, profile: 'default' })])
+    await flush()
+    expect($pinnedSessionIds.get()).toEqual(['only-local'])
+
+    // Picking registry gateway B leaves the primary (and its rows) in place.
+    setConnection({ ...remote('default', 'https://gw-b.example'), connectionId: 'b' } as HermesConnection)
+    await flush()
+    expect($pinnedSessionIds.get()).toEqual([])
+
+    $sessions.set([...$sessions.get(), row('b-own', { connection_id: 'b', pinned: true, profile: 'default' })])
+    await flush()
+    expect($pinnedSessionIds.get()).toEqual(['b-own'])
   })
 
   it('lets an unpin survive a profile rescope instead of flushing pin=true', async () => {

@@ -1,0 +1,44 @@
+name: cash-desk
+title: "Cash Desk"
+repo: https://github.com/FutureInvoked/cash-desk
+sha: 26d5fabe5f50f250e5dc72c0751adbdb3625f732
+description: "Chase overdue invoices from your CSV exports (generic, Xero, QuickBooks, Stripe, bank statements): apply payments only on an exact reference and amount, draft reminders at 7, 14, 21 and 28 days, and send one only after a person approves its exact text and Hermes asks once more. Figure Lock holds every amount, invoice number, date, IBAN and reference to the ledger; a rewording that changes one is rejected with a diff. Disclosure — imports only CSV files inside its own data folder, its bundled demo folder and the folders you list in import_dirs, and keeps its ledger in SQLite under its plugin data folder; a reminder leaves only after a person approves its exact text (/cashdesk approve or the Desktop page) and Hermes's approval prompt passes, never from cron, a subagent, yolo mode or approvals set to auto-approve; in the default eml mode it writes .eml files to its outbox folder, and in smtp mode it sends through the SMTP server you configure, with the password stored as a Hermes secret (CASHDESK_SMTP_PASSWORD) and TLS always verified; with guard_outgoing_messages on (off by default) it replaces any agent reply that states an amount, IBAN or invoice number the ledger does not hold for that customer with a withheld notice, and replies stop streaming; no other network calls, no telemetry."
+maintainer: FutureInvoked
+tier: community
+category: automation
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/FutureInvoked/cash-desk#readme
+version: "1.2.0"
+image: https://raw.githubusercontent.com/FutureInvoked/cash-desk/26d5fabe5f50f250e5dc72c0751adbdb3625f732/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/FutureInvoked/cash-desk/26d5fabe5f50f250e5dc72c0751adbdb3625f732/docs/screenshots/desktop-queue.png
+  - https://raw.githubusercontent.com/FutureInvoked/cash-desk/26d5fabe5f50f250e5dc72c0751adbdb3625f732/docs/screenshots/figure-lock-diff.png
+  - https://raw.githubusercontent.com/FutureInvoked/cash-desk/26d5fabe5f50f250e5dc72c0751adbdb3625f732/docs/screenshots/send-gate.png
+  - https://raw.githubusercontent.com/FutureInvoked/cash-desk/26d5fabe5f50f250e5dc72c0751adbdb3625f732/docs/screenshots/match-review.png
+  - https://raw.githubusercontent.com/FutureInvoked/cash-desk/26d5fabe5f50f250e5dc72c0751adbdb3625f732/docs/screenshots/morning-brief.png
+  - https://raw.githubusercontent.com/FutureInvoked/cash-desk/26d5fabe5f50f250e5dc72c0751adbdb3625f732/docs/screenshots/send-result.png
+readme: true
+platforms: []
+known_issues:
+  - "Imports CSV exports; there is no live connection to a bank or an accounting system."
+  - "Reminders are in English; you can choose another language per customer or with default_language (Czech is the only other one so far)."
+  - "With guard_outgoing_messages on, replies in that profile arrive whole instead of streaming."
+capabilities:
+  provides_tools:
+    - cashdesk_status
+    - cashdesk_brief
+    - cashdesk_queue
+    - cashdesk_import
+    - cashdesk_match
+    - cashdesk_draft
+    - cashdesk_revise
+    - cashdesk_reply
+    - cashdesk_hold
+    - cashdesk_send
+  provides_hooks:
+    - pre_tool_call
+    - subagent_start
+    - subagent_stop
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

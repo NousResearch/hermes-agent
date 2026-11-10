@@ -7,7 +7,7 @@ import re
 import shlex
 import subprocess
 import tomllib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 WORKFLOW = "desktop-bundled-release.yml"
@@ -87,7 +87,7 @@ def receipt_tag(kind: str, version: str, created_at: str, run_id: str) -> str:
     if not re.fullmatch(r"[1-9][0-9]{0,19}", run_id):
         raise ValueError("Build receipt run ID is invalid")
     try:
-        instant = datetime.fromisoformat(created_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+        instant = datetime.fromisoformat(created_at).astimezone(UTC)
     except (AttributeError, ValueError) as error:
         raise ValueError("Build receipt creation time is invalid") from error
     if instant.microsecond or created_at != instant.strftime("%Y-%m-%dT%H:%M:%SZ"):

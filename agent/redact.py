@@ -560,10 +560,16 @@ _URL_BARE_TOKEN_RE = re.compile(
 # secret passed as a flag leaks verbatim into tool output — EasyTier's
 # ``--network-secret <hex>`` is the motivating case. The keyword must be a whole
 # ``-``/``_``-delimited segment so ``--tokenizer`` does not match ``token``.
+#
+# The separator stays on one line: a ``\s+`` separator would cross a newline and mask the
+# next line's first word — a workflow file's ``docker login --password-stdin`` followed by
+# ``env:`` came back as ``***``. The space form also refuses a redirect or the next flag
+# as its value, so ``gh auth login --with-token < token.txt`` keeps its ``<``. The ``=``
+# form stays permissive (``--api-key=<redacted>`` must still mask).
 _CLI_SECRET_FLAG_RE = re.compile(
     r"(--(?:[A-Za-z0-9]+[-_])*(?:secret|token|passwd|password|api[-_]?key|credential)"
     r"(?:[-_][A-Za-z0-9]+)*)"       # flag name
-    r"(\s*=\s*|\s+)"                 # separator: ``=`` form or space form
+    r"((?:[ \t]*=[ \t]*)|(?:[ \t]+(?![-<>|&;])))"  # separator, same line only
     r"([^\s'\"]+)",                  # value
     re.IGNORECASE,
 )
@@ -1122,6 +1128,10 @@ def _command_segments(command: str) -> list[str]:
     Without this, a script that reads a secret file was classified as a single segment
     whose first token (``echo``) is not a reader, so the ENV/assignment passes stayed
     disabled and the file's contents printed verbatim.
+
+    A trailing backslash keeps the newline inside the segment: ``cat \\`` followed by
+    ``/opt/app/.env`` is one command reading that file, and splitting there would turn the
+    reader into a bare ``cat \\`` plus a path-only segment that no reader test can see.
     """
     segments: list[str] = []
     buf: list[str] = []
@@ -1135,6 +1145,9 @@ def _command_segments(command: str) -> list[str]:
         if ch in "'\"":
             quote = ch
             buf.append(ch)
+            continue
+        if ch == "\n" and buf and buf[-1] == "\\":
+            buf[-1] = " "  # backslash-newline continues the same command
             continue
         if ch in "|;&\n":
             seg = "".join(buf).strip()

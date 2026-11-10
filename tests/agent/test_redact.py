@@ -1521,6 +1521,26 @@ class TestRecursiveSearchCountsAsSecretFile:
         assert "Zx9Qm2Lp7Rt4Wv8N" not in red
 
 
+class TestLineContinuationKeepsOneCommand:
+    """A ``\\``-newline continues the same command. Splitting there left ``cat \\`` as a
+    non-reader segment plus a path-only segment, so ``cat \\`` ⏎ ``/opt/app/.env`` stopped
+    being classified as a secret-file read (main, which never split on newlines, saw it)."""
+
+    def test_continued_reader_still_detected(self):
+        from agent.redact import _command_reads_secret_file
+        assert _command_reads_secret_file("cat \\\n  /opt/app/.env")
+        assert _command_reads_secret_file("grep -r \\\n  TOKEN /opt/app/.env")
+
+    def test_continuation_is_one_segment(self):
+        from agent.redact import _command_segments
+        assert _command_segments("cat \\\n  /opt/app/.env") == ["cat    /opt/app/.env"]
+
+    def test_continued_cat_output_is_masked(self):
+        from agent.redact import redact_terminal_output
+        out = "DB_PASSWORD=Zx9Qm2Lp7Rt4Wv8N\n"
+        assert "Zx9Qm2Lp7Rt4Wv8N" not in redact_terminal_output(out, "cat \\\n  /opt/app/.env")
+
+
 class TestArgvDumpStrictPass:
     """``ps``/``top``/``env`` print argv or environment verbatim: the relay-URL path token
     needs the strict pass even though no file is read."""
@@ -1549,6 +1569,25 @@ class TestArgvDumpStrictPass:
         assert redact_terminal_output(ps, "ps aux") == ps
         env = "PATH=/usr/local/bin:/usr/bin:/bin\nHOME=/home/ubuntu\n"
         assert redact_terminal_output(env, "env") == env
+
+
+class TestCliFlagSeparatorStaysOnOneLine:
+    """``_CLI_SECRET_FLAG_RE`` runs in ``code_file`` mode too, where its old ``\\s+``
+    separator crossed a newline: a workflow's ``docker login --password-stdin`` followed by
+    ``env:`` masked ``env:``, and ``gh auth login --with-token < token.txt`` lost its ``<``."""
+
+    def test_workflow_next_line_not_masked(self):
+        text = "steps:\n  - run: docker login --password-stdin\nenv:\n  FOO: bar\n"
+        assert redact_sensitive_text(text, force=True, code_file=True) == text
+
+    def test_redirect_after_with_token_kept(self):
+        text = "gh auth login --with-token < token.txt\n"
+        assert redact_sensitive_text(text, force=True, code_file=True) == text
+
+    def test_same_line_values_still_masked(self):
+        ps = "easytier-core --network-secret 0123456789abcdef0123456789abcdef --ipv4 10.0.0.2"
+        assert "0123456789abcdef0123456789abcdef" not in redact_sensitive_text(ps, force=True)
+        assert "--api-key=***" in redact_sensitive_text("curl --api-key=<redacted> https://x", force=True)
 
 
 class TestHermesHomePathClassification:

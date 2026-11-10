@@ -2,16 +2,7 @@ name: habit
 repo: https://github.com/scottleimroth/habit
 sha: a37b3e7349c1947cba899cad1f7356267faed62b
 title: Habit
-description: >-
-  Learns which commands you already approve, proposes an allowlist entry after a few matching approvals (the exact command, or any-container docker stop|restart), and only
-  writes it to Hermes's command_allowlist after you run /habit accept. Wipes, download-and-execute pipes, git push and
-  secret paths are never proposed, and /habit undo or /habit uninstall take every entry back.
-  Disclosure: uses Hermes's public config load/save functions to store accepted rules and remove them.
-  Reads session context read-only; no writes to Hermes private state and no core overrides.
-  Allowlist edits take effect on the next approval check in Hermes 0.23 and survive restart.
-  Unidentified chat approvals and built-in smart/AI approver decisions are not learned.
-  It keeps its own decisions in a local SQLite database through plugin_db.
-  No network calls, no telemetry, no credentials, no background process, no extra model.
+description: "Learns which commands you already approve, proposes an allowlist entry after a few matching approvals (the exact command, or any-container docker stop|restart), and only writes it to Hermes's command_allowlist after you run /habit accept. Wipes, download-and-execute pipes, git push and secret paths are never proposed, and /habit undo or /habit uninstall take every entry back. Disclosure — learns from your approval answers in a local plugin database; in enforce mode (off by default) it proposes command_allowlist entries (the exact approved command, or `docker stop|restart *` / `docker compose stop|restart *` for any container or service) and writes them to this profile's config.yaml through Hermes's config load/save only when you run /habit accept (owner_ids-locked on messaging gateways); an accepted entry waves through every command it matches, including ones Hermes flags as dangerous; /habit undo and /habit uninstall remove only the entries Habit added; no network calls, no credentials, no background process."
 maintainer: scottleimroth
 tier: community
 category: automation

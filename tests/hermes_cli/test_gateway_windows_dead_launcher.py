@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import hermes_constants
 from hermes_cli import gateway, gateway_windows
 from hermes_cli import gateway_runtime_service as service
 from hermes_cli.gateway_runtime_service_identity import _vbs_identity, launcher_text
@@ -27,14 +28,18 @@ def _payload(root, version):
     return python
 
 
-@pytest.fixture
-def store_update(tmp_path, monkeypatch):
-    """A launcher installed from the old payload, then the Store update: old folder gone, new one current."""
-    home = tmp_path / "hermes"
+@pytest.fixture(params=["default", "custom"])
+def store_update(request, tmp_path, monkeypatch):
+    """A launcher installed from the old payload, then the Store update: old folder gone, new one current.
+
+    Both naming branches: the platform-default home owns the bare task name (a Store user's usual
+    home), any other root a hashed suffix."""
+    home = hermes_constants._get_platform_default_hermes_home() if request.param == "default" else tmp_path / "custom-home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     old, new = _payload(tmp_path / "WindowsApps", "2026.7363.3271.0"), _payload(tmp_path / "WindowsApps", "2026.7411.3516.0")
-    name = "Hermes_Gateway_" + service.service_suffix(home)
+    suffix = service.service_suffix(home)
+    name = f"Hermes_Gateway{'_' + suffix if suffix else ''}"  # what install names the task for this home
     cmd = home / "gateway-service" / f"{name}.cmd"
     cmd.parent.mkdir()
     monkeypatch.setattr(gateway, "get_python_path", lambda: str(old))

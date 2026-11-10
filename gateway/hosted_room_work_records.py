@@ -11,15 +11,12 @@ from gateway import hosted_rooms as rooms
 from gateway import hosted_room_work_storage as storage
 from gateway.hosted_rooms_common import identifier, table_exists
 
-VERSION = 1
-PERMISSION = "work_records"
 MAX_TASKS = 128
 MAX_RECEIPTS = 256
 MAX_BYTES = 128 * 1024
 MAX_STORE_BYTES = 4 * 1024 * 1024
 MAX_STORE_ROWS = 512
 SOURCE_TABLE = "hosted_room_work_records_source"
-TARGET_TABLE = "hosted_room_work_records_target"
 PENDING_TABLE = "hosted_room_work_records_pending"
 BLOCKED_DELIVERY_STATUSES = {"rejected", "needs_reauthorization", "invalid_ack", "unsupported_lineage", "invalid_work_evidence"}
 LIMITATIONS = ["process_local_approvals_not_captured", "field_journals_not_captured",
@@ -283,7 +280,6 @@ def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
     if through_seq is not None and seq > through_seq:
         raise WorkRecordPrefixError("history delivery must precede work records")
     tasks, receipts, reason = _capture_tasks(conn, room_id)
-    fence = None  # This runtime has no durable peer revocation completion proof.
     stop = conn.execute("""SELECT seq,payload_json FROM hosted_room_events
         WHERE room_id=? AND kind='room.stop_requested' ORDER BY seq DESC LIMIT 1""", (room_id,)).fetchone()
     content = {
@@ -293,7 +289,7 @@ def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
         "history": {"seq": seq, "event_sha256": history_anchor(conn, "hosted_room_events", room_id, seq)},
         "availability": "unavailable" if reason else "available", "reason": reason,
         "tasks": tasks, "receipts": receipts, "limitations": LIMITATIONS,
-        "stop": {"closing": fence is not None, "revocation_complete": fence is not None and fence[0] is not None,
+        "stop": {"closing": False, "revocation_complete": False,
                  "seq": stop["seq"] if stop else 0, "cancel_id": json.loads(stop["payload_json"]).get("cancel_id") if stop else None},
     }
     spans = None

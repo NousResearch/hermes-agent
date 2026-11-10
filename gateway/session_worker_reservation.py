@@ -7,8 +7,8 @@ import os
 import secrets
 import subprocess
 
-from gateway.session_admission import admission_fingerprint
 from gateway.owner_identity import same_owner
+from hermes_state_keys import admission_fingerprint
 from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, _secret_digest, _session
 
 # A venv launcher (uv's Windows python.exe, pip's exe shim) sits between the owner's

@@ -78,12 +78,9 @@ _VAR_MAP = {var.name: var for var in (
 
 
 def _runtime_cwd(func: str, *args: Any) -> None:
-    """Best-effort call of ``agent.runtime_cwd.<func>``; import/runtime failures are ignored."""
-    try:
-        from agent import runtime_cwd
-        getattr(runtime_cwd, func)(*args)
-    except Exception:
-        pass
+    """Call ``agent.runtime_cwd.<func>`` (a ContextVar write)."""
+    from agent import runtime_cwd
+    getattr(runtime_cwd, func)(*args)
 
 
 def set_current_session_id(session_id: str) -> None:
@@ -91,12 +88,9 @@ def set_current_session_id(session_id: str) -> None:
     with an os.environ fallback).  Delegated subagent children (built in the parent process)
     get ONLY the task-local write, or they would clobber the parent's id."""
     _SESSION_ID.set(session_id)
-    try:
-        from agent.delegation_context import is_delegated_child_context
-        if is_delegated_child_context():
-            return
-    except Exception:
-        pass
+    from agent.delegation_context import is_delegated_child_context
+    if is_delegated_child_context():
+        return
     os.environ["HERMES_SESSION_ID"] = session_id
 
 

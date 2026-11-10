@@ -97,7 +97,7 @@ behavior on the next access.
 | `reset_had_activity` | `bool` | `False` | Whether the replaced session had prior activity. |
 | `is_fresh_reset` | `bool` | `False` | Set by explicit `/new` or `/reset`. Triggers topic/channel skill re-injection on first message. Distinguished from `was_auto_reset` to avoid misleading "session expired" notices. |
 | `expiry_finalized` | `bool` | `False` | Historical finalization fence retained for recovery; no timer writes it. |
-| `suspended` | `bool` | `False` | Hard force-wipe signal. Set by `/stop` or stuck-loop escalation (3+ consecutive restart failures). On next `get_or_create_session()`, forces a new `session_id` regardless of `resume_pending`. |
+| `suspended` | `bool` | `False` | Hard force-wipe signal. Set by stuck-loop escalation (3+ consecutive restart failures). On next `get_or_create_session()`, forces a new `session_id` regardless of `resume_pending`. |
 | `resume_pending` | `bool` | `False` | Soft recovery marker. Set by `recover_interrupted_turns()` (crash recovery of a marked, unreplied turn) or drain timeout. On next access, preserves the existing `session_id` — the user continues on the same transcript. Cleared after the next successful turn completes. |
 | `resume_reason` | `Optional[str]` | `None` | Why resume was marked: `"restart_timeout"`, `"shutdown_timeout"`, `"restart_interrupted"`. |
 | `last_resume_marked_at` | `Optional[datetime]` | `None` | Timestamp of the last resume-pending marking. |
@@ -171,7 +171,7 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
 | `update_session(session_key, last_prompt_tokens=None)` | Lightweight metadata update after an interaction. Bumps `updated_at`, optionally records `last_prompt_tokens`. |
 | `reset_session(session_key, display_name=None)` | Explicit reset (from `/new` or `/reset`). Creates new `session_id`, sets `is_fresh_reset=True`. Ends old SQLite session, creates new one. |
 | `switch_session(session_key, target_session_id, *, expected_session_id=None)` | Switch to a different existing session ID (from `/resume`). Ends current SQLite session, reopens target. With `expected_session_id=` the repoint is a compare-and-swap: returns `None` without switching when the key no longer points at that session, so a caller that resolved against a snapshot across an `await` (async-delegation re-pin, Telegram topic-binding heal) cannot overwrite a concurrent `/new` or `/resume`. |
-| `suspend_session(session_key)` | Mark session as `suspended=True` (from `/stop`). Forces auto-reset on next access. |
+| `suspend_session(session_key)` | Mark session as `suspended=True` (no gateway command calls it; stuck-loop escalation sets the flag directly). Forces auto-reset on next access. |
 | `mark_resume_pending(session_key, reason)` | Mark session as `resume_pending=True` (from drain timeout). Preserves session_id on next access. Will NOT override `suspended=True`. |
 | `clear_resume_pending(session_key)` | Clear `resume_pending` after a successful resumed turn. Called from gateway after `run_conversation()` returns. |
 | `recover_interrupted_turns(max_age_seconds)` | Crash recovery: promote durable active-turn markers the dead process left behind to `resume_pending=True` (`restart_interrupted`). Sessions without a marker finished their turn and are left alone. Called on startup after unclean shutdown. |

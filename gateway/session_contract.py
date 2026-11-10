@@ -1,7 +1,7 @@
 """Public session authority contract; live execution state never crosses this boundary."""
 
 from dataclasses import dataclass, field
-from typing import Literal, Mapping, Protocol
+from typing import Literal, Mapping
 
 JsonObject = Mapping[str, object]
 
@@ -31,14 +31,6 @@ class SessionHandle:
     revision: int
     execution_generation: int
     execution_state: Literal["idle", "running", "waiting", "unknown", "terminal"]
-
-
-@dataclass(frozen=True)
-class SessionCreate:
-    request_id: str
-    cwd: str
-    source: str
-    policy: JsonObject
 
 
 @dataclass(frozen=True)
@@ -82,19 +74,3 @@ class SubscriptionSnapshot:
     prompts: tuple[JsonObject, ...]
     # The physical transcript a history-less attach resolved under the stream lock (``history=False``).
     transcript_target: str | None = None
-
-
-class SessionAuthority(Protocol):
-    async def create(self, actor: SessionActor, request: SessionCreate) -> SessionHandle: ...
-    async def resolve(self, actor: SessionActor, ref: SessionRef) -> SessionHandle: ...
-    async def attach(self, actor: SessionActor, ref: SessionRef, *, history: bool = True,
-                     replay_from: tuple[str, int] | None = None) -> SubscriptionSnapshot: ...
-    async def detach(self, actor: SessionActor, subscription_id: str, *, end_reason: str | None = None) -> None: ...
-    async def submit(self, actor: SessionActor, request: Submission) -> AdmissionReceipt: ...
-    async def receipt(self, actor: SessionActor, ref: SessionRef, admission_id: str) -> AdmissionReceipt: ...
-    async def cancel_queued(self, actor: SessionActor, ref: SessionRef, admission_id: str) -> AdmissionReceipt: ...
-    async def interrupt(self, actor: SessionActor, ref: SessionRef, generation: int) -> SessionHandle: ...
-    async def respond(self, actor: SessionActor, ref: SessionRef, generation: int,
-                      prompt_id: str, response: JsonObject) -> JsonObject: ...
-    async def mutate(self, actor: SessionActor, ref: SessionRef, revision: int,
-                     request_id: str, action: str, arguments: JsonObject) -> SessionHandle: ...

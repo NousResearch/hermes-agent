@@ -711,12 +711,6 @@ def update_room_link_status(
             (status, _now(now), room_id, member_id)).rowcount == 1
 
 
-def delete_room_link_records(db_path: DbPath, *, room_id: str) -> int:
-    """Delete persisted peer routes after their target grants are revoked."""
-    with _transaction(db_path, immediate=True) as conn:
-        return conn.execute("DELETE FROM hosted_room_links WHERE room_id=?", (room_id,)).rowcount
-
-
 def grant_digest(grant: str) -> str:
     """The non-secret key an owed revoke is stored and logged under."""
     return hashlib.sha256(grant.encode("utf-8")).hexdigest()

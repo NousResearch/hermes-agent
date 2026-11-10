@@ -302,12 +302,7 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
             # The stamp names a claimed, unsettled execution. Left in place, idle
             # mutations (session.updated) would carry a terminal generation and
             # a versioned viewer fence would discard them as late frames.
-            with live.event_stream.lock:
-                live.event_stream.execution = {}
-            authority.pending_stops.pop(ref.session_id, None)
-            authority.pending_stop_causes.pop(ref.session_id, None)
-            authority.pending_steers.pop(ref.session_id, None)
-            authority.adopted.pop(ref.session_id, None)
+            authority.clear_execution(live, ref.session_id)
             from gateway.session_queued_controls import publish_transfers
             publish_transfers(authority, ref, row['generation'])
             if settled is None or discarded:

@@ -523,9 +523,7 @@ class SessionEntry:
     is_fresh_reset: bool = False
     # Historical finalization fence; timers no longer write it.
     expiry_finalized: bool = False
-    # Next get_or_create_session() auto-resets; set by /stop to break stuck-resume loops.
-    # When True the next call to get_or_create_session() will auto-reset this session (create a new
-    # session_id) so the user starts fresh. See #7536.
+    # Next get_or_create_session() auto-resets; set by stuck-loop escalation (#7536).
     suspended: bool = False
     # Interrupted by a restart/drain timeout, recovery expected: unlike ``suspended`` the
     # session_id is kept so the agent auto-continues. Cleared after the next successful turn;

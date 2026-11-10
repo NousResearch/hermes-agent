@@ -3,7 +3,7 @@ import asyncio
 import logging
 import re
 from dataclasses import asdict
-from functools import partial
+from functools import cached_property, partial
 from pathlib import Path
 import sqlite3
 import uuid
@@ -287,6 +287,10 @@ class AuthorityConnection:
         handlers.update(stored_read_handlers(self))
         return handlers
 
+    @cached_property
+    def _handler_table(self):
+        return self.handlers()
+
     async def dispatch(self, request):
         from gateway.session_server_requests import is_response_frame
         if is_response_frame(request):
@@ -345,7 +349,7 @@ class AuthorityConnection:
             # commits in a worker here, so the handler's synchronous restore only reads.
             from gateway.session_local_adoption import adopt_before_restore
             await adopt_before_restore(authority, ref.session_id)
-        handlers = self.handlers()
+        handlers = self._handler_table
         try:
             from gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
             # Every handler reads config/jobs/policy for the OWNING profile: enter its home so

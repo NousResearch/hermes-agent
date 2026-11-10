@@ -7,7 +7,7 @@ import asyncio
 import hmac
 import os
 
-from gateway.session_admission import admission_fingerprint
+from hermes_state_keys import admission_fingerprint
 from hermes_state_runtime import (
     RuntimeStoreError, _secret_digest, adopt_worker_execution,
     mutate_worker_execution, register_worker_execution,

@@ -170,10 +170,7 @@ class SessionLifecycleMixin:
         return changed
 
     def suspend_session(self, session_key: str) -> bool:
-        """Mark a session suspended so it auto-resets on next access (/stop). True if it existed.
-
-        Used by ``/stop`` to prevent stuck sessions from being resumed after a gateway restart (#7536).
-        """
+        """Mark a session suspended so it auto-resets on next access. True if it existed."""
         return self._update_entry(session_key, lambda e: setattr(e, "suspended", True))
 
     def _set_turn_marker_locked(self, session_key: str, entry: SessionEntry, token, started_at) -> None:

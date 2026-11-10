@@ -33,8 +33,3 @@ def validate_provenance(record, spans):
         if not any(s.gateway_id == receipt["home_install_id"] == receipt["authority_gateway_id"]
                    and s.epoch == receipt["authority_epoch"] for s in spans):
             raise WorkRecordError("work record receipt has no original authority span")
-
-
-def task_origins(record, spans):
-    return {task["task_id"]: {"gateway_id": origin.gateway_id, "epoch": origin.epoch}
-            for task in record["tasks"] for origin in [at_sequence(spans, task["source_event_seq"])]}

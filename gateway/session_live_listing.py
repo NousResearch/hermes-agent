@@ -60,7 +60,7 @@ def _store_facts(db, session_ids):
     return {row['id']: dict(row) for row in rows}, by_session
 
 
-def _masked_pending(live, rows):
+def masked_pending(live, rows):
     """``SessionAuthority._pending_rows``: a settlement not yet published still reads as its started claim."""
     if not live.settling:
         return rows
@@ -69,7 +69,7 @@ def _masked_pending(live, rows):
     return sorted(merged.values(), key=lambda row: row['seq'])
 
 
-def _execution_state(pending) -> str:
+def execution_state(pending) -> str:
     statuses = {row['status'] for row in pending}
     return 'unknown' if 'unknown' in statuses else ('running' if 'started' in statuses else 'idle')
 
@@ -106,8 +106,8 @@ async def live_entries(authority, actor) -> list[LiveEntry]:
             live, row = authority.sessions.get(sid), rows.get(sid)
             if live is None or row is None:
                 continue  # retired during the read, or its row was deleted (``_handle``'s not_found)
-            masked = _masked_pending(live, pending.get(sid, []))
-            state = _execution_state(masked)
+            masked = masked_pending(live, pending.get(sid, []))
+            state = execution_state(masked)
             handle = SessionHandle(SessionRef(authority.profile_id, sid), authority.instance_id, authority.epoch,
                                    row['runtime_revision'], row['runtime_generation'], state)
             entries.append(LiveEntry(sid, live, handle, row, masked,

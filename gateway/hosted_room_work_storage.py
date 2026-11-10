@@ -39,7 +39,7 @@ def _initialize_locked(conn):
         disposition TEXT NOT NULL CHECK(disposition='invalid'))""")
     for table in tables:
         pending = table == work.PENDING_TABLE
-        parent = "hosted_room_replicas" if table == work.TARGET_TABLE else "hosted_rooms"
+        parent = "hosted_rooms"
         columns = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         legacy = bool(columns) and "producer_gateway_id" not in columns
         # Preserve surrounding cleanup triggers by recreating the same table name

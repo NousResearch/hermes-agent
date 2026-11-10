@@ -19,6 +19,7 @@ from gateway.session_contract import (
     SubscriptionSnapshot,
 )
 from gateway.session_events import SessionEvents
+from gateway.session_live_listing import execution_state, masked_pending
 from gateway.session_pending_controls import PendingControls
 from gateway.session_producer_lifecycle import drop_producer_turn, mark_producer_admission
 from hermes_cli.observability.shared_metrics_busy import busy_row_settled
@@ -321,20 +322,14 @@ class SessionAuthority:
         result with stream state hold ``event_stream.lock``, under which ``settling`` changes."""
         rows = list_session_admissions(self.db, session_id=ref.session_id)
         live = self.sessions.get(ref.session_id)
-        masked = dict(live.settling) if live is not None else {}
-        if not masked:
-            return rows
-        rows = {row['admission_id']: row for row in rows}
-        rows.update(masked)
-        return sorted(rows.values(), key=lambda row: row['seq'])
+        return rows if live is None else masked_pending(live, rows)
 
     def _handle(self, ref):
         row = self.db.get_session(ref.session_id)
         if row is None:  # deleted after ``authorize``: the commit lands before the retirement runs
             raise RuntimeStoreError('not_found')
         pending = self._pending_rows(ref)
-        state = 'unknown' if any(r['status'] == 'unknown' for r in pending) else (
-            'running' if any(r['status'] == 'started' for r in pending) else 'idle')
+        state = execution_state(pending)
         return SessionHandle(ref, self.instance_id, self.epoch, row['runtime_revision'],
                              row['runtime_generation'], state)
 
@@ -1030,6 +1025,13 @@ class SessionAuthority:
         if handle.execution_generation != generation or handle.execution_state != "running":
             raise RuntimeStoreError("stale_generation")
 
+    def clear_execution(self, live, session_id):
+        """End a claim's in-memory execution: its stream stamp and every per-generation latch."""
+        with live.event_stream.lock:
+            live.event_stream.execution = {}
+        for latches in (self.pending_stops, self.pending_stop_causes, self.pending_steers, self.adopted):
+            latches.pop(session_id, None)
+
     def publish_execution(self, session_id, generation, event_type, payload):
         """Worker callbacks never outlive their exact running claim."""
         live = self.sessions[session_id]
@@ -1291,12 +1293,7 @@ class SessionAuthority:
                 with live.event_stream.lock:
                     self.executing.pop(ref.session_id, None)
         except ManagedExecutionUnknown:
-            with live.event_stream.lock:
-                live.event_stream.execution = {}
-            self.pending_stops.pop(ref.session_id, None)
-            self.pending_stop_causes.pop(ref.session_id, None)
-            self.pending_steers.pop(ref.session_id, None)
-            self.adopted.pop(ref.session_id, None)
+            self.clear_execution(live, ref.session_id)
             # An automation turn nobody waits on settles here, at the exit that fenced it (GW-10),
             # so the followers already queued run in this drain; a person's turn still pauses.
             from gateway.session_unattended_unknown import settle_unattended_unknown

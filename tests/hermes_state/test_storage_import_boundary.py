@@ -14,9 +14,7 @@ def test_runtime_storage_modules_import_without_loading_gateway():
 def test_gateway_names_are_the_storage_definitions():
     import hermes_state_keys as keys
     from gateway.session import SessionStore, profile_from_session_key_namespace
-    from gateway.session_admission import admission_fingerprint
     from gateway.session_local_recovery import local_identity
-    assert admission_fingerprint is keys.admission_fingerprint
     assert local_identity is keys.local_identity
     assert profile_from_session_key_namespace is keys.profile_from_session_key_namespace
     for key, profile in (('agent:main:local:dm:x', 'default'), ('agent:main~:local:dm:x', 'main'),

@@ -36,7 +36,7 @@ HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
 # ``cancelled``: an operator stopped the run (``hermes cron cancel``, removing the job mid-run).
 # ``missed``: never started — one row books every occurrence the scheduler skipped past.
-_TERMINAL_STATES = ("completed", "failed", "unknown", "cancelled", "missed")
+TERMINAL_STATES = ("completed", "failed", "unknown", "cancelled", "missed")
 _STATUS_CHECK = "('claimed','running','completed','failed','unknown','cancelled','missed')"
 # Outcomes the attempt's own firer booked: receipt recovery, the external-worker waiter and the
 # dead-owner sweep must treat these as final, never replay or re-book them.

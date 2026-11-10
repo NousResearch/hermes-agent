@@ -40,7 +40,7 @@ def _path_key(path: Path | str | None) -> str:
 
 # Statuses after which a task no longer needs a workspace: a child stops
 # needing its parent's handoff artifacts, and a sharer stops holding a dir.
-_TERMINAL_STATUSES_SQL = "('done', 'archived', 'failed', 'cancelled')"
+_TERMINAL_STATUSES_SQL = "('done', 'archived')"
 
 _ACTIVE_CHILDREN_SQL = (
     "SELECT 1 FROM task_links l "

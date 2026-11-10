@@ -311,3 +311,14 @@ def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch)
         assert persisted["last_dispatch"]["kind"] == "on_time"
         assert cron_doctor() == 0
         assert "This warning clears" not in capsys.readouterr().out
+
+
+def test_doctor_and_list_treat_an_operator_cancel_as_no_failure(served_root, capsys):
+    from cron import jobs
+    from hermes_cli.cron import _last_run_display, cron_doctor
+
+    job = jobs.create_job(prompt="probe", schedule="every 1h")
+    jobs.mark_job_run(job["id"], False, "Cancelled: operator", status="cancelled")
+    assert cron_doctor() == 0
+    assert "last run failed" not in capsys.readouterr().out
+    assert "cancelled by the operator" in _last_run_display(jobs.get_job(job["id"]))

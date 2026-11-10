@@ -63,12 +63,6 @@ def register_ticked_homes(homes) -> None:
         forget_stores(departed_stores)
 
 
-def ticked_homes() -> dict:
-    """Snapshot of ``home key -> home`` for the profiles this process ticks."""
-    with _ticked_lock:
-        return dict(_ticked_homes)
-
-
 def serves_profile(home: Optional[Path | str] = None) -> bool:
     """True when THIS process's cron ticker owns ``home`` (default: the active cron scope)."""
     key = hermes_home_key(home if home is not None else get_hermes_home())

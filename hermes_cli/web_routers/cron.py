@@ -298,14 +298,14 @@ def _owner_profile_executions(canonical_job_id: str) -> list[dict[str, Any]]:
     the owner-home scope so it opens the OWNER's cron/executions.db.
     """
     try:
-        from cron.executions import _TERMINAL_STATES, list_executions
+        from cron.executions import TERMINAL_STATES, list_executions
 
         rows = list_executions(job_id=canonical_job_id, limit=100)
     except Exception:
         return []
     terminal: list[dict[str, Any]] = []
     for row in rows:
-        if str(row.get("status") or "") not in _TERMINAL_STATES:
+        if str(row.get("status") or "") not in TERMINAL_STATES:
             continue
         terminal.append({
             "id": str(row.get("id") or ""),

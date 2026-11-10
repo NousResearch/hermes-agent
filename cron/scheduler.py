@@ -529,7 +529,7 @@ from cron.jobs import (
 from cron import store_health
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
-    FIRER_FINISHED_STATES, _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
+    FIRER_FINISHED_STATES, TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions, settle_unstarted_execution, terminalize_dead_owner)
 from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
@@ -1049,7 +1049,7 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     floor_seconds = _inflight_min_allowance_minutes() * 60.0
     now = time.time()
     stale: list = []
-    from cron.executions import _TERMINAL_STATES as _terminal_states
+    from cron.executions import TERMINAL_STATES as _terminal_states
 
     _latest = _latest_executions_for_releasable_claims()
     _local_home = hermes_home_key(_get_hermes_home())
@@ -3512,7 +3512,7 @@ def _wait_for_external_cron_worker_body(
     """
     def _is_terminal() -> bool:
         current = get_execution(execution_id)
-        return bool(current and current.get("status") in _TERMINAL_STATES)
+        return bool(current and current.get("status") in TERMINAL_STATES)
 
     # The worker commits its terminal row before its process exits, so exit is
     # the correct wakeup.  Each ledger read opens a connection and re-runs

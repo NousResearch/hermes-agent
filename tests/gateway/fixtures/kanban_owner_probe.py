@@ -86,8 +86,6 @@ def main():
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
     from hermes_cli import kanban_db_dispatch as dispatch
-    # Pin the installed launcher to this checkout for base/fixed argv comparisons.
-    dispatch._resolve_hermes_argv = lambda: [sys.executable, '-m', 'hermes_cli.main']
     os.environ['HERMES_KANBAN_CRASH_GRACE_SECONDS'] = '0'
     kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board='owned')) as conn:

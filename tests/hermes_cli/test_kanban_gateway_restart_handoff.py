@@ -229,7 +229,7 @@ def test_real_user_systemd_scope_preserves_worker_context(
     # Replace only the worker payload; keep real scope creation and env handoff.
     monkeypatch.setattr(
         kbd, "_worker_argv",
-        lambda task, profile_arg, hermes_home: [sys.executable, "-c", script, str(receipt)],
+        lambda: [sys.executable, "-c", script, str(receipt)],
     )
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)

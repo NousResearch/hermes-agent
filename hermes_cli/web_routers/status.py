@@ -509,6 +509,50 @@ _WEBAPP_SIGNED_OUT_STATUS_KEYS = frozenset({
     "auth_required", "auth_providers", "auth_flows"})
 
 
+#: Recon-grade fields stripped for an unauthenticated caller on ANY gated surface (the
+#: standalone dashboard included, which keeps its public body for the Hermes Cloud profile
+#: list — #60585). A per-platform ``listener_base``/``metrics`` block hands out an internal
+#: host:port (and therefore the next service to attack), ``install_id`` is a stable machine
+#: identity, ``nous_session_valid`` is account state and ``gateway_shared_with`` names the
+#: co-tenants of the multiplexer. None of it is liveness; all of it is deployment recon.
+_PUBLIC_STATUS_DROP_KEYS = frozenset({
+    "gateway_shared_with", "install_id", "nous_session_valid", "gateway_heartbeat_stale_s"})
+_PUBLIC_PLATFORM_DROP_KEYS = frozenset({"listener_base", "metrics"})
+
+
+def _redact_public_status(status: dict) -> dict:
+    """Remove deployment recon from a status body served to an unauthenticated caller."""
+    for key in _PUBLIC_STATUS_DROP_KEYS:
+        status.pop(key, None)
+    platforms = status.get("gateway_platforms")
+    if isinstance(platforms, dict):
+        for entry in platforms.values():
+            if isinstance(entry, dict):
+                for key in _PUBLIC_PLATFORM_DROP_KEYS:
+                    entry.pop(key, None)
+    return status
+
+
+async def _caller_signed_out(request: Request) -> bool:
+    """True when this bind requires sign-in and the request carries no accepted session.
+
+    Surface-agnostic counterpart of :func:`_webapp_caller_signed_out`: the standalone
+    dashboard is gated too, and ``/api/status`` is public on every surface, so the gate
+    never verified a session for it either.
+    """
+    if request is None or not getattr(request.app.state, "auth_required", False):
+        return False
+    if getattr(request.state, "session", None) is None:
+        from hermes_cli.dashboard_auth.middleware import peek_session
+        request.state.session = await run_in_threadpool(peek_session, request)
+    from hermes_cli.web_server import _require_token
+    try:
+        _require_token(request)
+    except HTTPException:
+        return True
+    return False
+
+
 async def _webapp_caller_signed_out(request: Request) -> bool:
     """True when this request reached the gateway's Webapp behind its sign-in gate with no
     session the gate would accept. ``/api/status`` is public, so the gate never verified one."""
@@ -539,9 +583,10 @@ async def get_status(profile: Optional[str] = None,
     """
     from hermes_cli.web_server import _GATEWAY_HEALTH_URL
     signed_out = await _webapp_caller_signed_out(request)
+    caller_signed_out = signed_out or await _caller_signed_out(request)
     status_scope = None
     # A signed-out caller's ``?profile=`` is ignored: an unknown name's 404 would tell it which exist.
-    requested_profile = "" if signed_out else (profile or "").strip()
+    requested_profile = "" if caller_signed_out else (profile or "").strip()
     profile_dir: Optional[Path] = None
     if requested_profile and requested_profile.lower() != "current":
         profile_dir = _resolve_profile_dir(requested_profile)
@@ -629,6 +674,10 @@ async def get_status(profile: Optional[str] = None,
 
         if signed_out:
             return {key: value for key, value in status.items() if key in _WEBAPP_SIGNED_OUT_STATUS_KEYS}
+        if auth["auth_required"] and caller_signed_out:
+            # Standalone dashboard on a gated bind: keep the public liveness/product surface,
+            # drop deployment recon (see _PUBLIC_STATUS_DROP_KEYS).
+            status = _redact_public_status(status)
         return status
     finally:
         if status_scope is not None:

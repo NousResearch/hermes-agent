@@ -7,6 +7,8 @@ public body (Hermes Cloud lists profiles from it without a session, #60585).
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -19,6 +21,10 @@ from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
 LAN = "http://192.168.50.220:9130"
 IDENTITY = ("profiles", "parked_profiles", "gateway_shared_with", "install_id", "memory", "disk",
             "nous_session_valid", "active_sessions", "gateway_mode")
+#: Recon that waits for sign-in on every gated surface: internal URLs (``listener_base`` plus the
+#: per-platform ``metrics`` host/port block), the install identity, the account verdict and the
+#: multiplexer co-tenants. A liveness probe needs none of it.
+RECON = ("gateway_shared_with", "install_id", "nous_session_valid", "gateway_heartbeat_stale_s")
 
 
 @pytest.fixture(scope="module")
@@ -62,6 +68,14 @@ def test_signed_out_webapp_status_carries_no_profile_or_install_identity(wildcar
     assert body["version"]
     if wildcard_gate == "dashboard":
         assert body["profiles"] == ["default", "coder"]  # Hermes Cloud's contract (#60585)
+        # Deployment recon waits for sign-in here too (a wildcard bind is reachable by everyone).
+        assert [key for key in RECON if key in body] == []
+        assert "listener_base" not in json.dumps(body)
+        login = client.post("/auth/password-login",
+                            json={"provider": "basic", "username": "admin", "password": "hunter2"})
+        assert login.status_code == 200, login.text
+        signed_in = client.get("/api/status").json()
+        assert signed_in["install_id"] and signed_in["profiles"] == ["default", "coder"]
         return
     assert [key for key in IDENTITY if key in body] == []
     # ``?profile=`` is no profile-name oracle either: an unknown name answers like a real one.

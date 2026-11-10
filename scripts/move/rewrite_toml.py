@@ -1,8 +1,10 @@
 """Old module names a move leaves in ``pyproject.toml``: entry points and package-data keys change, package-list rows
-with no generated old-path file behind them go; the rest is flagged."""
+with no generated old-path file behind them go, ``[tool.hermes] update-startup-files`` follows its files; the rest is
+flagged."""
 from __future__ import annotations
 
 import ast
+import importlib.util
 import re
 from pathlib import Path, PurePosixPath
 
@@ -16,6 +18,12 @@ _PACKAGE_ROW = re.compile(r"""^\s*(["'])([\w.]+?)(\.\*)?\1\s*,?\s*(?:#.*)?$""")
 _ENTRY_TABLES = ("project.scripts", "project.gui-scripts")
 _PACKAGE_TABLES = ("tool.setuptools.packages.find",)
 _REQUIRED = "hermes_agent/compat/required_names.py"
+_SHIM_WRITER = "scripts/move/generate_shims.py"
+_STARTUP_TABLE, _STARTUP_KEY = "tool.hermes", "update-startup-files"
+_STARTUP_START = re.compile(rf"^\s*{_STARTUP_KEY}\s*=\s*\[")
+_STARTUP_ENTRY = re.compile(r'"([^"\\\n]+)"')
+_STARTUP_WIDTH = 120
+"""A startup-list line that grows past this many characters is wrapped; shorter lines keep their layout."""
 
 
 def rewrite_pyproject(root: Path, plan, write: bool) -> tuple[int, list[str]]:
@@ -23,8 +31,9 @@ def rewrite_pyproject(root: Path, plan, write: bool) -> tuple[int, list[str]]:
 
     Entry-point values (``module:attr``) and ``[tool.setuptools.package-data]`` keys follow their module. A
     package-list row (``"pkg"``, ``"pkg.*"``) of a moved package stays while a generated old-path file lives under
-    it (``required_names.py``) and goes otherwise: ``hermes_agent.*`` already covers the new place. Any other string
-    naming a moved module or path is flagged.
+    it (``required_names.py``) and goes otherwise: ``hermes_agent.*`` already covers the new place. Each
+    ``update-startup-files`` entry this move relocated becomes its new path, and the old path stays beside it while a
+    generated old-path file lives there. Any other string naming a moved module or path is flagged.
     """
     file = root / "pyproject.toml"
     if not file.is_file():
@@ -32,8 +41,17 @@ def rewrite_pyproject(root: Path, plan, write: bool) -> tuple[int, list[str]]:
     bom = "\ufeff" if file.read_bytes().startswith(b"\xef\xbb\xbf") else ""
     lines = file.read_text(encoding="utf-8-sig").splitlines(keepends=True)
     shimmed = _shimmed_packages(root, plan)
+    startup = _startup_span(lines)
     table, count, flags, out = "", 0, [], []
+    if startup is not None:
+        first, last = startup
+        new_lines, count = _rewrite_startup(lines[first:last + 1], dict(plan.paths), _generated_paths(root))
+        lines = lines[:first] + new_lines + lines[last + 1:]
+        startup = (first, first + len(new_lines) - 1)
     for number, line in enumerate(lines, 1):
+        if startup is not None and startup[0] <= number - 1 <= startup[1]:
+            out.append(line)
+            continue
         if line.lstrip().startswith("#"):
             out.append(line)
             continue
@@ -67,6 +85,82 @@ def _rewrite_line(line: str, table: str, plan, shimmed: set[str]) -> tuple[str |
             and row.group(2) not in shimmed:
         return None, True
     return line, False
+
+
+def _startup_span(lines: list[str]) -> tuple[int, int] | None:
+    """First and last index of the ``[tool.hermes] update-startup-files`` array; None when there is none."""
+    table, first = "", None
+    for index, line in enumerate(lines):
+        if first is None:
+            if header := _HEADER.match(line):
+                table = re.sub(r"""["']""", "", header.group(1))
+            elif table == _STARTUP_TABLE and _STARTUP_START.match(line):
+                first = index
+        if first is None:
+            continue
+        code = _STARTUP_ENTRY.sub("", line).partition("#")[0]
+        if "]" in (code.partition("[")[2] if index == first else code):
+            return first, index
+    return None
+
+
+def _rewrite_startup(block: list[str], moved: dict[str, str], generated: set[str]) -> tuple[list[str], int]:
+    """The startup-list lines with each entry this move relocated respelled, and how many entries changed.
+
+    The old path is kept, followed by the new one, while a generated old-path file lives there; an entry whose new
+    path the list already names is not added twice, so a second run changes nothing.
+    """
+    present = set(_STARTUP_ENTRY.findall("".join(block)))
+    count, out = 0, []
+
+    def entry(match: re.Match) -> str:
+        nonlocal count
+        old, separator = match.group(1), match.group(2) or ""
+        if old not in moved:
+            return match.group(0)
+        names = ([old] if old in generated else []) + ([moved[old]] if moved[old] not in present else [])
+        present.add(moved[old])
+        if names == [old]:
+            return match.group(0)
+        count += 1
+        return ", ".join(f'"{name}"' for name in names) + separator if names else ""
+
+    for line in block:
+        new = re.sub(r'"([^"\\\n]+)"(\s*,[ \t]*)?', entry, line)
+        if new == line:
+            out.append(line)
+        elif new.strip():
+            out += _wrapped(new)
+    return out, count
+
+
+def _wrapped(line: str) -> list[str]:
+    """``line`` split into lines of at most ``_STARTUP_WIDTH`` characters when it is a plain row of entries."""
+    body = line.rstrip("\r\n")
+    if len(body) <= _STARTUP_WIDTH or not re.fullmatch(r'\s*(?:"[^"\n]*",\s*)*"[^"\n]*",?\s*', body):
+        return [line]
+    indent, ending = body[:len(body) - len(body.lstrip())], line[len(body):]
+    rows, row = [], ""
+    for name in _STARTUP_ENTRY.findall(body):
+        piece = f'"{name}",'
+        if row and len(indent) + len(row) + 1 + len(piece) > _STARTUP_WIDTH:
+            rows.append(row)
+            row = piece
+        else:
+            row = f"{row} {piece}" if row else piece
+    rows.append(row)
+    return [indent + row + ending for row in rows]
+
+
+def _generated_paths(root: Path) -> set[str]:
+    """Repository paths of the old-path files ``generate_shims.py`` writes for this tree."""
+    script = root / _SHIM_WRITER
+    if not script.is_file():
+        return set()
+    spec = importlib.util.spec_from_file_location("_move_generate_shims", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return set(module.generated())
 
 
 def _shimmed_packages(root: Path, plan) -> set[str]:

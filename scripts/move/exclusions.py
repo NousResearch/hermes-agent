@@ -14,7 +14,7 @@ from __future__ import annotations
 import ast
 
 SHIPPED = "called by shipped updaters and installers of earlier releases"
-PERSISTED = "text persisted into units, launchers and desktop entries that outlive this tree"
+PERSISTED = "text persisted into units, launchers, desktop entries and the Codex MCP config that outlive this tree"
 IDENTITY = "matches processes started before the move by their old command line"
 FROZEN = "frozen code for historical updaters"
 TORN_UPDATE = "torn-update fallback that reads the directory a killed update moved aside"
@@ -57,6 +57,8 @@ EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("hermes_cli/_launchers.py", '"    import hermes_bootstrap\\n"', PERSISTED),
     ("hermes_cli/_launchers.py", 'command = ([str(root / ".hermes/bin/hermes"), "--run-module", "run_agent"]', PERSISTED),
     ("hermes_cli/_subprocess_compat.py", "def _text_names_hermes(", IDENTITY),
+    ("hermes_cli/codex_runtime_plugin_migration.py", '"args": ["-P", "-m", "agent.transports.hermes_tools_mcp_server"],',
+     PERSISTED),
     ("hermes_cli/container_boot.py", 'if any("main-wrapper.sh" in part for part in argv):', IDENTITY),
     ("hermes_cli/dashboard_procs.py", "def _dashboard_subcommand_index(", IDENTITY),
     ("hermes_cli/data_cleanup.py", 'if (canonical / "hermes_cli" / "__init__.py").is_file():', SHIPPED),

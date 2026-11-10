@@ -40,7 +40,7 @@ from exclusions import BY_HAND, EXCLUDED, IDENTITY, KEPT_NAMES, anchor_spans
 from renames import config_keys, current_name, git, module_renames, moved_modules, renamed_paths
 from pieces import respell, text_of
 from rewrite_toml import rewrite_pyproject
-from sinks import ARGV, CODE, COMMAND, LOGGER, MODULE, STRINGS, SYS_MODULES, TARGET, Findings, Sink, \
+from sinks import ARGV, CODE, COMMAND, LOGGER, MODULE, NAMED_HELPERS, STRINGS, SYS_MODULES, TARGET, Findings, Sink, \
     SinkFinder, helper_parameters, string_parts
 
 DYNAMIC, STRING_REF, BY_PATH, FILE_MATH, BY_HAND_KIND, MODULE_STRING, MODULE_TABLE, CODE_STRING, KEPT_NAME, \
@@ -53,6 +53,7 @@ _DASH_M = re.compile(r"(?<![\w-])(-m(?:\s+|[\"'],\s*[\"']))([A-Za-z_][\w.-]*)")
 _DASH_C = re.compile(r"(?<![\w-])-c\s+([\"'])(.+?)(?<!\\)\1", re.DOTALL)
 _CODE_IMPORT = re.compile(r"(?<![\w.])((?:from|import)\s+)([A-Za-z_][\w.]*)(?=\s+import\b|\s*(?:$|[\n,;)#]|\\n| as\b))",
                           re.MULTILINE)
+_FROM_CLAUSE = re.compile(r"(?<![\w.])from\s+\.*[\w.]*\s+$")
 _PYTHON_SHEBANG = re.compile(r"#!.*\bpython")
 _WORD = re.compile(r"[a-z]+")
 _MODULE_ATTRIBUTES = {"__file__", "__name__", "__path__", "__spec__", "__loader__", "__dict__", "__all__", "__doc__"}
@@ -177,6 +178,12 @@ class Plan:
                     or bool({parts[size], "__getattr__"} & self.names[prefix])
         return False
 
+    def is_patch_target(self, text: str) -> bool:
+        """A target ``patch`` can resolve: a bound name (``is_target``), or any attribute of a moved module, since
+        modules that bind attributes at run time (registries) show none at their top level; a wrong attribute still
+        fails loudly in ``patch``."""
+        return self.is_target(text) or self.is_module(text.rpartition(".")[0])
+
     def has_module_prefix(self, text: str) -> bool:
         parts = text.partition(":")[0].split(".")
         return any(".".join(parts[:size]) in self.names for size in range(len(parts), 0, -1))
@@ -199,7 +206,7 @@ class Plan:
         for name in (module, self.new(module)):
             if name is not None and function in self.helpers.get(name, {}):
                 return self.helpers[name][function]
-        return {}
+        return NAMED_HELPERS.get(f"{module.removeprefix('hermes_agent.')}.{function}", {})
 
 
 @dataclass
@@ -458,7 +465,7 @@ class _Rewriter(cst.CSTTransformer):
                                                   "command lines; check whether this test mirrors it")
             return updated
         valid = {MODULE: self.plan.is_module, ARGV: self.plan.is_module,
-                 TARGET: self.plan.has_module_prefix if sink.loose else self.plan.is_target}.get(sink.kind)
+                 TARGET: self.plan.has_module_prefix if sink.loose else self.plan.is_patch_target}.get(sink.kind)
         if valid is not None and not valid(text):
             self._flag(original, STRING_REF, text, f"{sink.kind} string does not resolve in the moved tree; fix by hand")
             return updated
@@ -575,6 +582,8 @@ class _Rewriter(cst.CSTTransformer):
                 found = True
         if "import" in text:
             for match in _CODE_IMPORT.finditer(text):
+                if match.group(1).startswith("import") and _FROM_CLAUSE.search(text, 0, match.start()):
+                    continue  # ``from pkg import name``: ``name`` is an attribute of ``pkg``, never a module of its own
                 if self.plan.new(match.group(2)) is not None:
                     self._flag(node, CODE_STRING, match.group(0).strip(), "code in a string no interpreter receives "
                                                                           "here imports a moved module")

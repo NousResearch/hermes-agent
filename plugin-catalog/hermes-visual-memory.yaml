@@ -1,0 +1,43 @@
+name: hermes-visual-memory
+repo: https://github.com/majorminorlabs/hermes-voice
+sha: b30ce59b70d4813468516c7f0a9ff390e88f3dec
+subdir: extras/visual-memory
+title: Hermes Visual Memory
+description: >-
+  Your agent remembers what a camera saw on your desk: "what's in front of you?", "what did I take away?",
+  "where did I last see my keys?", "what was here yesterday?". Built for a used Echo Show running Hermes Eye,
+  with before/after pictures on its screen. Vision goes through Hermes's own model routing (its own
+  "Visual memory" slot) or a local OpenAI-compatible model such as Qwen 3.6 in Ollama.
+  Disclosure — off until the user turns it on by voice; the first tool call starts background threads inside
+  Hermes: a camera loop reading one snapshot a second from Hermes Eye on the LAN (only while on), a
+  token-protected API on 127.0.0.1:28950, and a display feed on the LAN (port 28951) that answers only the
+  Echo's address and this computer; pictures go to the vision model Hermes routes the task to (a cloud
+  provider if that is the user's vision model) or to the local server the user sets; SQLite and snapshots in
+  the plugin's data directory, pictures deleted after 14 days; reads EYE_TOKEN through Hermes; no shell
+  commands, no telemetry.
+maintainer: majorminorlabs
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+version: "0.3.0"
+platforms: [macos, linux]
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/majorminorlabs/hermes-voice/b30ce59b70d4813468516c7f0a9ff390e88f3dec/extras/visual-memory/docs/watching.jpg
+  - https://raw.githubusercontent.com/majorminorlabs/hermes-voice/b30ce59b70d4813468516c7f0a9ff390e88f3dec/extras/visual-memory/docs/comparison.jpg
+known_issues:
+  - "Needs a camera running Hermes Eye (an Echo Show 5 with the app from this repository)."
+  - "Small metal things (keys, clips) get a different name on most looks with local models."
+capabilities:
+  provides_tools:
+    - visual_memory
+    - what_changed
+    - find_object
+    - describe_scene
+    - object_history
+    - show_evidence
+    - forget_visual_memory
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - EYE_TOKEN

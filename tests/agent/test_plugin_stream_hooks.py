@@ -935,7 +935,7 @@ def test_manager_unload_retires_only_its_observers_across_reload(monkeypatch, tm
             a_dispatcher.events.join()
             queue_drained.set()
 
-        drainer = threading.Thread(target=wait_for_queue_drain)
+        drainer = threading.Thread(target=wait_for_queue_drain, daemon=True)
         drainer.start()
         assert queue_drained.wait(timeout=5.0)
         with delivered_lock:
@@ -1138,6 +1138,20 @@ def test_lazy_discovery_snapshots_callbacks_from_captured_manager(monkeypatch, t
     assert not producer.is_alive()
 
 
+def test_busy_stream_observer_keeps_moa_streaming(monkeypatch):
+    from agent.turn_api_call import _should_stream
+
+    agent = _agent()
+    agent.provider = "moa"
+    manager = _patch_test_callback_manager(monkeypatch, {"on_stream_delta": [lambda **kwargs: None]})
+    manager._discovery_lock = threading.Lock()
+    manager._discovery_lock.acquire()
+    try:
+        assert _should_stream(agent) is True
+    finally:
+        manager._discovery_lock.release()
+
+
 def test_stream_capability_lookup_does_not_discover(monkeypatch, tmp_path):
     from agent import plugin_stream_hooks as psh
     from hermes_cli import plugins
@@ -1157,8 +1171,8 @@ def test_stream_capability_lookup_does_not_discover(monkeypatch, tmp_path):
     monkeypatch.setattr(psh, "stream_reasoning_deltas_enabled", lambda: True)
     token = set_hermes_home_override(home)
     try:
-        assert psh.has_stream_observer_hooks() is False
-        assert psh.has_reasoning_stream_observer_hooks() is False
+        assert psh.has_stream_observer_hooks() is True
+        assert psh.has_reasoning_stream_observer_hooks() is True
         assert discovery_calls == []
         assert manager._discovered is False
     finally:

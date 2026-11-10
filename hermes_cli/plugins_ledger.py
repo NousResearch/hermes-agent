@@ -271,6 +271,8 @@ class PluginLedgerMixin:
         """Unload registrations while excluding discovery/deferred loading."""
         retired_observers = []
         with self._discovery_lock, _plugin_home_scope(self.home_path):
+            if plugin is None:
+                self._reset_event_bus()
             try:
                 from agent.plugin_stream_hooks import retire_plugin_observer_dispatchers
 

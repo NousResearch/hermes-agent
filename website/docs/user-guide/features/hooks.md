@@ -571,9 +571,8 @@ injection continues.
 Delivery uses the same host-owned bounded observer dispatcher as streaming
 hooks: one FIFO of 1024 pending events per callback, non-blocking enqueue, and
 drop-oldest overflow behavior. A callback that is slow or raises cannot delay
-memory injection or other consumers. Shutdown places a stop sentinel and
-allows a bounded one-second drain by default; a stuck daemon worker may be
-left behind, so consumers must tolerate delayed or dropped events.
+memory injection or other consumers. Observer workers are daemons and process
+shutdown does not drain them, so consumers must tolerate delayed or dropped events.
 
 Hermes does not itself redact, persist, export, or send this event anywhere;
 an enabled plugin is responsible for its own privacy policy and any user
@@ -945,7 +944,7 @@ def register(ctx):
 
 ### `pre_verify`
 
-Fires **once per turn when the agent edited code**, just before it finishes (after the built-in verify-on-stop guard). This is a user/plugin policy gate: a callback can keep the agent going — run a check, defer it, tidy the diff — instead of letting it stop.
+Fires at the bounded verify gate when the agent edited code, just before it finishes (after the built-in verify-on-stop guard). It can fire again after a continuation, until the nudge limit is reached. This is a user/plugin policy gate: a callback can keep the agent going — run a check, defer it, tidy the diff — instead of letting it stop.
 
 Hermes' shipped verification guidance is not a default `pre_verify` hook. It is appended to the evidence-based verify-on-stop nudge when edited code lacks fresh verification evidence, so it does not create a second default continuation path. Set `agent.verify_guidance: false` to keep that built-in evidence nudge terse.
 

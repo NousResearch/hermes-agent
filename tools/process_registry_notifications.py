@@ -163,6 +163,8 @@ def delegation_wakes_parent(evt: dict) -> bool:
         return False
     if evt.get("_sibling_failed"):
         return True
+    if evt.get("role") == "cron_run":
+        return False  # a manual cron run's outcome is finished text, like a scheduled one's: a note
     raw = evt.get("results")
     # No child results (a single child's event, or a crashed batch's ``results=[]``): the unit's own
     # status decides. Otherwise the children do, so an interrupted-only batch's aggregate error stays asleep.
@@ -349,7 +351,6 @@ def _format_async_delegation(evt: dict) -> str:
         else:  # error / timeout / failed / unknown (owner died)
             lines.append(
                 f"The subagent did not complete successfully (status={status})." + (f"\n{error}" if error else ""))
-            lines += _failure_recovery_lines(evt)
             lines += _recovery_lines(evt)
         if summary:
             lines += ["Partial output:", summary]

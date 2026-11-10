@@ -144,3 +144,34 @@ def _batch_event(status):
                          "error": _REFUSAL if status == "error" else None,
                          "failure_reason": "content_policy_blocked" if status == "error" else None}],
             "dispatched_at": 1700000000.0, "completed_at": 1700000060.0}
+
+
+@pytest.mark.asyncio
+async def test_failed_manual_cron_run_stays_a_note(tmp_path, monkeypatch):
+    """``cronjob(action='run')`` reports through the same event with ``role=cron_run``. Its outcome is
+    finished text, as a scheduled run's is: a turn over it would only spend a model call."""
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
+        evt = {"type": "async_delegation", "session_key": route, "delegation_id": "deleg_cron", "role": "cron_run",
+               "goal": "Manual run of cron job 'RESULT_deleg_cron'", "status": "error", "summary": None,
+               "error": "RESULT_deleg_cron failed", "dispatched_at": 1700000000.0, "completed_at": 1700000060.0}
+        delegation._persist_dispatch(evt)
+        delegation._persist_completion(evt, {"status": "error", "error": evt["error"]})
+        assert await runner._deliver_async_delegation_group([dict(evt, parent_session_id=target)]) is True
+        seen = _turns(runner, authority, target, "deleg_cron")
+        await authority._drain(ref)
+        assert seen == []
+        assert len(_notes(authority, target, "deleg_cron")) == 1
+    finally:
+        authority.db.close()
+
+
+def test_cron_run_coalesced_with_a_failed_delegation_still_wakes():
+    """One admission carries the batch: a cron run as its primary must not hide a failed sibling."""
+    from tools.process_registry_notifications import delegation_wakes_parent
+    cron = {"type": "async_delegation", "role": "cron_run", "status": "error", "error": "job failed"}
+    assert not delegation_wakes_parent(cron)
+    assert delegation_wakes_parent(dict(cron, _sibling_failed=True))
+    assert not delegation_wakes_parent(dict(cron, status="completed", summary="ok"))
+

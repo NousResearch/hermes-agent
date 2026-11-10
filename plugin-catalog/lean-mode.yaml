@@ -1,6 +1,6 @@
 name: lean-mode
 repo: https://github.com/aoyamari/hermes-lean-mode
-sha: "2b10a269808336cdce558a18ade3f62e9b6b0f2d"
+sha: "d41b4ef8e0a9fa222ceaee15c017fd8317b61a7b"
 subdir: ""
 description: >-
   Cheap-model subagent (quick_run) with a dollar cap, auto-escalation when the

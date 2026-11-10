@@ -579,3 +579,30 @@ class TestHoldInboundAcrossReconnect:
         await adapter._redispatch_held_inbound()
         held_texts = [e.text for e in adapter._held_inbound_events]
         assert held_texts == ["boom", "after"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply_chunk", [0, 1])
+async def test_typed_voice_note_reply_answers_a_clarify_with_every_merged_chunk(reply_chunk):
+    """Two merged chunks, either one a typed reply to a person's voice note, answer a pending
+    clarify with the whole typed text: never the replied-to speech or its attachment note."""
+    from types import SimpleNamespace
+
+    from gateway.run import GatewayRunner
+
+    adapter = _make_adapter()
+    cached = SimpleNamespace(path="cache/audio/voice.ogg", media_type="audio/ogg", kind="audio", display_name="voice.ogg")
+    adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+    chunks = [_make_event("option B"), _make_event("and keep the logs")]
+    reply_to = SimpleNamespace(voice=SimpleNamespace(file_name="voice.ogg"), from_user=SimpleNamespace(is_bot=False))
+    await adapter._cache_replied_media(SimpleNamespace(reply_to_message=reply_to), chunks[reply_chunk])
+
+    for chunk in chunks:
+        adapter._enqueue_text_event(chunk)
+    await async_wait_until(lambda: adapter.handle_message.called, timeout=2.0)
+
+    merged = adapter.handle_message.call_args[0][0]
+    assert "saved at:" in merged.text  # the note still reaches the agent as context
+    runner = object.__new__(GatewayRunner)
+    runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
+    assert await runner._prepare_clarify_reply_text(merged) == "option B\nand keep the logs"

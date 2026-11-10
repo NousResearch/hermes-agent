@@ -16,6 +16,9 @@ from hermes_cli import gateway, gateway_windows
 from hermes_cli import gateway_runtime_service as service
 from hermes_cli.gateway_runtime_service_identity import _vbs_identity, launcher_text
 
+# Host-independent: run on every lane, including native Windows, where the launchers actually live.
+pytestmark = pytest.mark.platforms("any")
+
 
 def _payload(root, version):
     python = root / f"NousResearchInc.HermesAgent_{version}_x64__pub" / "agent-payload" / "python" / "python.exe"
@@ -122,7 +125,10 @@ def test_the_repair_keeps_the_installed_home_spelling(store_update, monkeypatch)
     """Ensure passes the canonical (resolved) home, but install wrote the configured spelling, which may
     be a link to the real directory (as ``%LOCALAPPDATA%\\hermes`` can be): the repair keeps that spelling."""
     link = store_update.home.parent / "hermes-link"
-    link.symlink_to(store_update.home, target_is_directory=True)
+    try:
+        link.symlink_to(store_update.home, target_is_directory=True)
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
     monkeypatch.setenv("HERMES_HOME", str(link))
     cmd = link / "gateway-service" / store_update.cmd.name
     monkeypatch.setattr(gateway, "get_python_path", lambda: str(store_update.old))

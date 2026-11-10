@@ -32,7 +32,7 @@ def github(tmp_path, monkeypatch):
                        "html_url": "https://github.com/acme/repo/actions/runs/42"}
                 if state.get("stale"):
                     run["head_sha"] = "b" * 40
-                runs = [] if state.get("missing") else [run]
+                runs = state.get("runs", [] if state.get("missing") else [run])
                 value = [{"total_count": 100 + len(runs), "check_runs": [
                     {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
                     for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
@@ -107,6 +107,33 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.platforms("linux")
+def test_newest_same_name_run_per_app_decides_acceptance(github):
+    """A rerun on the same head supersedes its earlier attempt (#122688): only each app's
+    newest run (highest id) is evidence, whatever its timestamps or page order."""
+    def run(run_id, conclusion, started, app=1, status="completed"):
+        return {"id": run_id, "name": "required", "head_sha": "a" * 40, "app": {"id": app},
+                "status": status, "conclusion": conclusion, "started_at": started}
+    old, new = "2026-11-10T21:00:00Z", "2026-11-10T21:05:00Z"
+    cases = [
+        ([run(41, "cancelled", old), run(42, "success", new)], True),
+        ([run(42, "success", new), run(41, "cancelled", old)], True),
+        # Cancelled while queued: its start stamp postdates the replacement that cancelled it.
+        ([run(41, "cancelled", new), run(42, "success", old)], True),
+        ([run(41, "success", old), run(42, "failure", new)], False),
+        ([run(41, "success", old), run(42, None, None, status="queued")], False),
+    ]
+    with connect() as conn:
+        for runs, accepted in cases:
+            github["runs"] = runs
+            tid = kb.create_task(conn, title="rerun", completion_contract="acme/repo")
+            assert kb.complete_task(conn, tid, result="done", metadata={
+                "published_pr": "https://github.com/acme/repo/pull/7"}) is accepted, runs
+            receipt = json.loads(conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+            assert [c["id"] for c in receipt["checks"]] == [42]
 
 
 @pytest.mark.platforms("linux")

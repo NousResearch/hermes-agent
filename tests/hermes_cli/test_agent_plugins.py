@@ -211,6 +211,20 @@ def test_unknown_fields_and_non_object_extensions_are_nonfatal(tmp_path: Path) -
     assert len(package.diagnostics) == 2
 
 
+@pytest.mark.parametrize("declared", [{"trust": "untrusted", "future_key": 5}, {"future_key": 5}])
+def test_unknown_server_declaration_key_is_ignored_and_known_keys_still_apply(tmp_path: Path, declared: dict) -> None:
+    # A key a newer Hermes added must not make the package uninstallable on this one (REA's
+    # `timeout` broke every v0.22.2 install); the keys this release knows, trust included, still hold.
+    _remote_package(tmp_path)
+    _write_json(tmp_path / "plugin.json", _manifest(extensions={
+        "com.nousresearch.hermes": {"servers": {"trade": declared}}}))
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+    assert package.mcp_servers["trade"].get("trust") == declared.get("trust")
+    assert "trade" not in package.server_declarations
+    assert [d.scope for d in package.diagnostics] == ["server:trade"]
+    assert "future_key" in package.diagnostics[0].message
+
+
 def test_invalid_skill_does_not_hide_valid_sibling(tmp_path: Path) -> None:
     _write_json(tmp_path / "plugin.json", _manifest())
     _write_skill(tmp_path, "valid-skill", license="MIT", compatibility="Linux")

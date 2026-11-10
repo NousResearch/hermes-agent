@@ -63,6 +63,13 @@ async def test_a_running_turn_reads_working_until_it_settles(owner):
 
 
 @pytest.mark.asyncio
+async def test_a_row_names_its_source(owner):
+    # Desktop's poll can see a messaging turn settle before its messaging row loads; the source
+    # on the live row is what keeps that settle from reading as a Desktop completion.
+    assert (await owner.active())['chat']['source'] == 'telegram'
+
+
+@pytest.mark.asyncio
 async def test_a_turn_blocked_on_a_prompt_reads_waiting(owner, monkeypatch):
     await owner.submit('hi')
     controls = owner.authority.sessions['chat'].controls

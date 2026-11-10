@@ -5,9 +5,9 @@ trial (``hermes_cli.welcome_trial``), and on the first hosted connector action f
 Nous identity (``tools.connectors.gateway.config.ensure_guest_identity``, gated by ``guest_allowed``).
 Either mints an anonymous Nous account (``POST /api/anonymous/create``); its ``anon_`` credential is
 later exchanged for short-lived JWTs (``POST /api/anonymous/token``). The result is persisted as the
-singleton ``providers.nous``. Only a guest stamped with the trial claim carries inference, and only on
-the backend the desktop spawned on this machine (:func:`free_inference_active`); every other guest
-serves connectors and managed tools. In the resolver ladder (``resolve_provider``) a guest that
+singleton ``providers.nous``. Only a guest stamped with the trial claim carries inference
+(:func:`free_inference_active`), on every surface of the install once the desktop claimed it: chats,
+cron, side agents, workers, the CLI. Every other guest serves connectors and managed tools. In the resolver ladder (``resolve_provider``) a guest that
 carries inference sits directly above the implicit AWS Bedrock chain (NS-829): any explicit provider
 (env key, ``model.provider``, OpenRouter pool, a logged-in ``active_provider``) beats it, and the
 ladder never creates one.
@@ -200,19 +200,26 @@ def has_guest() -> bool:
 
 
 def on_local_desktop_backend() -> bool:
-    """This process is the backend the desktop app spawned on this machine: never an SSH, URL or
-    cloud backend, and never a gateway or shell the desktop merely launched."""
-    from hermes_cli.anon_challenge import client_surface
-    from hermes_cli.process_identity import is_local_desktop_backend
-    return client_surface() == "desktop" and is_local_desktop_backend()
+    """This activity is work for the Desktop app on this machine: a request from, or a turn of a chat
+    created by, a connection ``process_identity.local_desktop_client`` accepted. Never an SSH, URL or
+    cloud backend, a shell the desktop launched, or the gateway's other clients."""
+    from hermes_cli.process_identity import serves_local_desktop_now
+    return serves_local_desktop_now()
 
 
 def free_inference_active(state: Any = None) -> bool:
-    """The welcome trial carries inference here: a guest that claimed it (or was grandfathered),
-    guests still allowed, and this is the desktop's local backend. *state* defaults to the profile's."""
+    """The welcome trial carries inference: a guest that claimed it and guests
+    still allowed. Only the claim is the local Desktop's (``welcome_trial``); once claimed, every
+    surface of the install runs on it. *state* defaults to the profile's."""
     state = current_nous_state() if state is None else state
-    return (is_guest_state(state) and state.get(WELCOME_CLAIM_FLAG) is True and guest_allowed()
-            and on_local_desktop_backend())
+    return is_guest_state(state) and state.get(WELCOME_CLAIM_FLAG) is True and guest_allowed()
+
+
+def trial_model() -> str:
+    """The last rung of model resolution, below every model the user named (``model.default``, a cron
+    or task pin): ``nous/welcome`` while the welcome trial carries inference, else ''. Never written to
+    config.yaml, so it stops applying the moment the user configures a real model."""
+    return GUEST_MODEL if free_inference_active() else ""
 
 
 def has_free_tier_account() -> bool:
@@ -501,12 +508,11 @@ def _mint_locked(client: httpx.Client, portal: str, auth_store: dict[str, Any], 
         "portal_base_url": portal.rstrip("/"),
         "user_id": minted.get("user_id"), "org_id": minted.get("org_id"),
         "idle_ttl_days": minted.get("idle_ttl_days"),
-        # Always present: an absent key marks a guest minted before the claim existed (grandfathering).
         WELCOME_CLAIM_FLAG: welcome_claim,
     }
     _store_provider_state(auth_store, "nous", state, set_active=False)
     _save_auth_store(auth_store)
-    _write_shared_nous_state(state)
+    _write_shared_nous_state(state, renewal=False)
     logger.info("Nous free tier ready (identity minted)")
     return state
 
@@ -623,7 +629,8 @@ def _reconcile_and_provision(*, timeout_seconds: float, force: bool = False,
         _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store,
         _store_provider_state, _resolve_verify)
     from hermes_cli.auth_nous import (
-        _nous_http_client, _nous_shared_store_lock, _read_shared_nous_state, _write_shared_nous_state)
+        _SHARED_RENEWAL_KEY, _nous_http_client, _nous_shared_store_lock, _read_shared_nous_state,
+        _write_shared_nous_state)
     portal = _portal_base_url()
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -631,14 +638,14 @@ def _reconcile_and_provision(*, timeout_seconds: float, force: bool = False,
         with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds, 5.0)):
             shared = _read_shared_nous_state()
             if shared and _shared_identity_key(shared) != _shared_identity_key(profile_state):
-                state = dict(shared)
+                state = {k: v for k, v in shared.items() if k != _SHARED_RENEWAL_KEY}  # another account's tokens
                 _store_provider_state(auth_store, "nous", state, set_active=not is_guest_state(state))
                 _save_auth_store(auth_store)
                 logger.debug("Nous identity adopted from the shared store")
                 return state
             if profile_state:
                 if not shared:
-                    _write_shared_nous_state(profile_state)
+                    _write_shared_nous_state(profile_state, renewal=False)
                 return profile_state
             # A caller queued on these locks behind a mint that just failed waits out its cooldown.
             failure = _mint_failure_for_profile()
@@ -702,6 +709,9 @@ def ensure_portal_identity(
         raise err from exc
     if state is not None:
         _clear_mint_failure()
+        # Adopting a sibling profile's sign-in replaced this profile's guest under the locks above.
+        from hermes_cli.guest_handoff import drain
+        drain()
     return state
 
 
@@ -992,25 +1002,6 @@ def set_guest_flag(flag: str) -> Optional[dict[str, Any]]:
     return state
 
 
-def stamp_legacy_guest_claim() -> Optional[dict[str, Any]]:
-    """Grandfathering's write (``welcome_trial.grandfather_existing_guest``): stamp the welcome claim on
-    a guest minted before the key existed and publish it to the shared store, in one transaction under
-    the auth-then-shared locks. Nothing is written (None) unless, inside the locks, the guest still has
-    no key and the shared store is empty or holds that same guest: a sign-in another profile made is
-    never overwritten, whenever it landed."""
-    from hermes_cli.auth import _provider_state_transaction
-    from hermes_cli.auth_nous import _nous_shared_store_lock, _read_shared_nous_state, _write_shared_nous_state
-    with _provider_state_transaction("nous") as (auth_store, state, source_path), _nous_shared_store_lock():
-        shared = _read_shared_nous_state()
-        if (not is_guest_state(state) or source_path is None or WELCOME_CLAIM_FLAG in state
-                or (shared and _shared_identity_key(shared) != _shared_identity_key(state))):
-            return None
-        state = {**state, WELCOME_CLAIM_FLAG: True}
-        _save_guest_state(auth_store, state, source_path)
-        _write_shared_nous_state(state)
-    return state
-
-
 def _save_guest_state(auth_store: dict[str, Any], state: dict[str, Any], source_path: Path) -> None:
     """Write the guest's ``providers.nous`` back to the store it was read from (the caller holds its lock)."""
     from hermes_cli.auth import _auth_file_path, _load_auth_store, _same_path, _save_auth_store, _store_section
@@ -1023,101 +1014,13 @@ def _save_guest_state(auth_store: dict[str, Any], state: dict[str, Any], source_
         _save_auth_store(source_store, target_path=source_path)
 
 
-# --- ``hermes auth upgrade``: sign the guest into a real Nous account, keeping its connectors ---------
+# --- Sign-in completion: the account state from a token grant, and the config settle -------------
 #
-# Wire: the normal device-code flow, with a promotion intent registered on NAS BETWEEN the code
-# request and the token poll (``POST /api/anonymous/promotion-intent {token, user_code, device_code}``).
-# NAS then transfers the guest's connectors into whichever account approves that device code. We
-# watch ``POST /api/anonymous/promotion-status {claim_code}`` until it leaves ``pending``; only a
-# ``completed`` promotion is followed by the token grant, which ``persist_nous_credentials`` writes
-# over the guest singleton and the shared store. The server never reports expiry: our own
-# ``expires_in`` clock ends the wait. User-facing copy never says guest / anonymous / claim.
+# Every Nous sign-in is the plain device-code login (``anon_sign_in.run_sign_in``). The free tier it
+# replaces hands its apps over in ``guest_handoff`` after the save. User-facing copy never says
+# guest / anonymous / claim.
 
 UPGRADED_AUTH_METHOD = "oauth_device_code"
-
-
-def register_promotion_intent(
-    client: httpx.Client, portal_base_url: str, anon_token: str, *, user_code: str, device_code: str,
-) -> dict[str, Any]:
-    """``POST /api/anonymous/promotion-intent`` -> ``{claim_code, claim_url, expires_in, interval}``."""
-    response = client.post(
-        f"{portal_base_url.rstrip('/')}/api/anonymous/promotion-intent", headers=_anon_headers(),
-        json={"token": anon_token, "user_code": user_code, "device_code": device_code})
-    payload = _raise_for_anon_status(response, action="sign-in")
-    if not isinstance(payload.get("claim_code"), str) or not payload["claim_code"]:
-        logger.info("Nous free tier sign-in returned no transfer code")
-        raise _anon_err(ANON_FAILURE_COPY[ANON_SERVER_ERROR], ANON_SERVER_ERROR)
-    return payload
-
-
-def _retry_after_seconds(response: httpx.Response, default: float) -> float:
-    seconds = parse_retry_after_seconds(response.headers)
-    return default if seconds is None else seconds
-
-
-def _sleep_until(wake: float, cancelled: Optional[Callable[[], bool]]) -> bool:
-    """Sleep until the monotonic time *wake*. Returns True when *cancelled* fired first.
-
-    Without a hook this is one plain :func:`time.sleep`. With one the sleep is cut into <= 1 s
-    ticks so an attempt stopped from outside ends in about a second instead of blocking to the
-    sign-in code's own expiry.
-    """
-    if cancelled is None:
-        remaining = wake - time.monotonic()
-        if remaining > 0:
-            time.sleep(remaining)
-        return False
-    while True:
-        if cancelled():
-            return True
-        remaining = wake - time.monotonic()
-        if remaining <= 0:
-            return False
-        time.sleep(min(1.0, remaining))
-
-
-def wait_for_promotion(
-    client: httpx.Client, portal_base_url: str, claim_code: str, *, expires_in: int, interval: int,
-    cancelled: Optional[Callable[[], bool]] = None,
-) -> dict[str, Any]:
-    """Poll ``POST /api/anonymous/promotion-status`` until it leaves ``pending`` or our clock runs out.
-
-    Returns the final status payload; ``{"status": "timeout"}`` when ``expires_in`` elapsed. 429 honours
-    ``Retry-After``; other non-2xx statuses raise through :func:`_raise_for_anon_status`.
-
-    *cancelled* is an optional hook a surface passes to stop an attempt it no longer wants (a newer
-    sign-in replaced it, the user cancelled, the process is shutting down). It is polled at the top
-    of every iteration and on a <= 1 s tick while sleeping; once it has fired this call returns
-    ``{"status": "cancelled"}`` for every outcome except a ``completed`` transfer already in hand,
-    which is reported so the caller's ``cancel_wins_after_promotion`` ruling can decide it.
-    Passing nothing is today's behaviour.
-    """
-    deadline = time.monotonic() + max(1, int(expires_in))
-    wait = max(0, int(interval))
-    while time.monotonic() < deadline:
-        if cancelled is not None and cancelled():
-            return {"status": "cancelled"}
-        response = client.post(
-            f"{portal_base_url.rstrip('/')}/api/anonymous/promotion-status", headers=_anon_headers(),
-            json={"claim_code": claim_code})
-        if response.status_code == 429:
-            retry = min(_retry_after_seconds(response, default=max(1, wait)),
-                        max(0.0, deadline - time.monotonic()))
-            if _sleep_until(time.monotonic() + retry, cancelled):
-                return {"status": "cancelled"}
-            continue
-        payload = _raise_for_anon_status(response, action="sign-in")
-        status = str(payload.get("status") or "unknown")
-        if status != "pending":
-            # A completed transfer is already committed on the account service; report it even when
-            # the hook fired during this request. run_sign_in's cancel_wins_after_promotion
-            # rules what each surface does with it. Every other terminal outcome loses to a cancel.
-            if status != "completed" and cancelled is not None and cancelled():
-                return {"status": "cancelled"}
-            return payload
-        if _sleep_until(time.monotonic() + wait, cancelled):
-            return {"status": "cancelled"}
-    return {"status": "timeout"}
 
 
 def _account_state_from_token(
@@ -1213,9 +1116,9 @@ def persist_nous_credentials(*args, **kwargs):
 # The flow imports this module only inside calls, so either module can be imported first.
 from hermes_cli.anon_sign_in import (
     AlreadySignedIn,
+    Cancelled,
     Code,
     Completed,
-    Declined,
     FREE_TIER_RATE_LIMIT_CARD,
     FREE_TIER_RATE_LIMIT_CHAT,
     Failed,
@@ -1224,9 +1127,7 @@ from hermes_cli.anon_sign_in import (
     LOGIN_DM_ONLY,
     LOGIN_NOT_ALLOWED,
     LOGIN_STARTING,
-    Retired,
     SignInState,
-    Superseded,
     TimedOut,
     UPGRADE_ALREADY_SIGNED_IN,
     UPGRADE_CANCELLED,
@@ -1234,18 +1135,12 @@ from hermes_cli.anon_sign_in import (
     UPGRADE_NOT_COMPLETED,
     UPGRADE_NO_DEFAULT_CHAT,
     UPGRADE_NO_DEFAULT_TERMINAL,
-    UPGRADE_REASON_COPY,
     UPGRADE_START,
     UPGRADE_TIMED_OUT,
-    UPGRADE_UNAVAILABLE,
-    UPGRADE_UNAVAILABLE_CHAT,
     UPGRADE_WAITING,
     UPGRADE_WAITING_UP_TO,
-    Unavailable,
     Waiting,
-    _RETIRED_REASONS,
     _default_persist_guard,
-    _outcome_state,
     format_wait_line,
     run_sign_in,
 )

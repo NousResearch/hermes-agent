@@ -942,6 +942,45 @@ describe('the drain loop wires drain → deliver → reply', () => {
     stopBotRelay()
   })
 
+  it('posts a refused receipt back as the sender’s terminal answer, without an admission', async () => {
+    // A same-id resend after the FIFO refused the delivery (nothing committed) answers the
+    // declared refused result: terminal, so the refusal reaches the sender instead of staying retained.
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {return { envelopes: call.connectionId === 'a' ? [envelope] : [] }}
+
+      if (call.method === 'bot_relay.deliver') {
+        return { status: 'failed', refused: true, delivery_id: envelope.id, error: 'Bot Chat delivery refused',
+          reason: 'agent_blocked', reply: '' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await pushAndSettle()
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toEqual({
+      id: envelope.id, error: 'Bot Chat delivery refused', reason: 'agent_blocked'
+    })
+    stopBotRelay()
+  })
+
+  it('retains an answer with neither an admission nor a refusal', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {return { envelopes: call.connectionId === 'a' ? [envelope] : [] }}
+
+      if (call.method === 'bot_relay.deliver') {return { status: 'failed', delivery_id: envelope.id, error: 'lost' }}
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await pushAndSettle()
+    expect(calls.filter(call => call.method === 'bot_relay.reply')).toHaveLength(0)
+    stopBotRelay()
+  })
+
   it('tells the target which connection the sender is on, so its author id names the machine', async () => {
     const calls = respondWith(call => {
       if (call.method === 'bot_relay.outbox.drain') {

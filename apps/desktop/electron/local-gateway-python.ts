@@ -2,7 +2,8 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { statSync } from 'node:fs'
 import path from 'node:path'
 
-import { hiddenWindowsChildOptions } from './windows-child-options'
+import type { GatewayTicketPurpose } from './local-gateway'
+import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
 interface TicketEndpoint {
   profile_id: string
@@ -77,7 +78,7 @@ class TicketBridge {
     this.child.on('close', () => this.dispose())
   }
 
-  request(endpoint: TicketEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create'): Promise<string> {
+  request(endpoint: TicketEndpoint, purpose: GatewayTicketPurpose): Promise<string> {
     clearTimeout(this.idleTimer)
 
     return new Promise((resolve, reject) => {
@@ -163,6 +164,9 @@ interface ResolvedTicketBackend {
   shell?: boolean
   env?: NodeJS.ProcessEnv
   root?: string
+  /** A bundled CLI still launches normally, but ticket minting needs its interpreter. */
+  ticketCommand?: string
+  ticketEnv?: NodeJS.ProcessEnv
 }
 
 const RUNTIME_COMMAND_TIMEOUT_MS = 30_000
@@ -172,7 +176,9 @@ function launcherRuntimePython(backend: ResolvedTicketBackend & { root: string }
   return new Promise((resolve, reject) => {
     const fail = (detail: string) => reject(new Error(`Gateway ticket bootstrap could not resolve the installed Hermes Python runtime: ${detail}`))
 
-    const child = spawn(backend.command, ['--print-runtime-command'], hiddenWindowsChildOptions({
+    // A .cmd override is a shell backend: quote it as the backend spawn does, or cmd.exe
+    // splits a launcher path with a space at the first one (#74064).
+    const child = spawn(windowsShellCommand(backend.command, Boolean(backend.shell)), ['--print-runtime-command'], hiddenWindowsChildOptions({
       cwd: backend.root, env: { ...process.env, ...backend.env }, shell: Boolean(backend.shell), stdio: ['ignore', 'pipe', 'ignore']
     }))
 
@@ -221,6 +227,10 @@ function isFile(candidate: string): boolean {
  * PYTHONPATH is its whole import closure (-P still keeps the cwd out).
  */
 export async function ticketRuntimeFor(backend: ResolvedTicketBackend): Promise<{ command: string; env?: NodeJS.ProcessEnv }> {
+  if (backend.ticketCommand) {
+    return { command: backend.ticketCommand, env: { ...backend.env, ...backend.ticketEnv } }
+  }
+
   if (backend.kind === 'python' && !backend.shell) {
     return backend
   }
@@ -238,7 +248,7 @@ export function createGatewayTicketResolver(resolveBackend: () => Promise<Resolv
   let cached: Promise<{ command: string; env?: NodeJS.ProcessEnv }> | undefined
   let cachedGeneration = -1
 
-  return async (endpoint: TicketEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create'): Promise<string> => {
+  return async (endpoint: TicketEndpoint, purpose: GatewayTicketPurpose): Promise<string> => {
     const generation = bridgeGeneration
 
     if (!cached || cachedGeneration !== generation) {
@@ -264,7 +274,7 @@ export function mintGatewayTicketWithPython(
   backend: { command: string; env?: NodeJS.ProcessEnv },
   cwd: string,
   endpoint: TicketEndpoint,
-  purpose: 'interactive' | 'native-http' | 'native-profile-create'
+  purpose: GatewayTicketPurpose
 ): Promise<string> {
   const env = { ...process.env, ...backend.env, HERMES_HOME: endpoint.profile_id,
     PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }

@@ -1,4 +1,5 @@
 """Non-destructive bridge allocation for multiplexed secondary profiles."""
+import os
 import socket
 from contextlib import suppress
 from pathlib import Path
@@ -10,7 +11,22 @@ SECONDARY_PORT_LAST = 3999
 
 
 def port_is_free(port: int) -> bool:
+    """Whether the WhatsApp Node bridge could bind ``port`` on 127.0.0.1 right now.
+
+    Contract: this answers for the bridge's own bind semantics, not for an arbitrary binder. On
+    POSIX the bridge (Express/libuv) sets SO_REUSEADDR, so a port holding only TIME-WAIT entries
+    reads as free here even though a binder without SO_REUSEADDR would get EADDRINUSE; a live
+    listener still reads as busy. Its callers are this module's bridge-port allocation and
+    ownership checks and the adapter's pre-spawn wait for the old bridge to release its port.
+    Do not reuse it to gate a process that binds without SO_REUSEADDR.
+    """
     with socket.socket() as sock:
+        # A just-stopped bridge can leave its accepted TCP connections in TIME-WAIT. The Node
+        # bridge enables this option too, so match its bind semantics while still rejecting a listener.
+        # POSIX only, like libuv: on Windows SO_REUSEADDR lets a bind share a live listener's port,
+        # which would read a foreign bridge as free (Windows binds past TIME-WAIT without it).
+        if os.name != "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
         except OSError:

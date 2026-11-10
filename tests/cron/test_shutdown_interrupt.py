@@ -355,7 +355,7 @@ class TestExecutionScopedInterruption:
         }
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
                  "cron.scheduler.run_job",
@@ -430,7 +430,7 @@ class TestBaseExceptionThroughOwnerFencedFlow:
         return (
             patch("cron.scheduler.claim_dispatch", return_value=True),
             patch("agent.secret_scope.set_secret_scope", return_value=None),
-            patch("agent.secret_scope.build_profile_secret_scope", return_value=None),
+            patch("agent.secret_scope.build_profile_secret_scope", return_value={}),
             patch("agent.secret_scope.reset_secret_scope"),
             patch("cron.scheduler.run_job", side_effect=run_side_effect),
             patch("cron.scheduler.heartbeat_fire_claim", return_value=True),
@@ -543,7 +543,7 @@ class TestRunOneJobHonoursInterruptedFlag:
 
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
                  "cron.scheduler.run_job",
@@ -578,7 +578,7 @@ class TestRunOneJobHonoursInterruptedFlag:
 
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
                  "cron.scheduler.run_job",
@@ -614,7 +614,7 @@ class TestRunOneJobHonoursInterruptedFlag:
 
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch("cron.scheduler.run_job", side_effect=RuntimeError("boom")), \
              patch("cron.scheduler.mark_job_run") as mock_mark:

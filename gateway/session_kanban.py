@@ -1,5 +1,6 @@
 """Trusted dispatcher claims enter the ordinary owner's durable admission queue."""
 import asyncio
+import contextlib
 from contextlib import closing
 from dataclasses import asdict, replace
 import threading
@@ -104,6 +105,7 @@ async def run_task(connection, params):
     from hermes_cli import kanban_db as kb
     import os
     import psutil
+    from hermes_cli.process_identity import worker_birth
     context = json.loads(policy.kanban_json)
 
     def admit_claim():
@@ -124,13 +126,29 @@ async def run_task(connection, params):
                     raise RuntimeStoreError('stale_kanban_claim')
                 kb._append_event(conn, task.id, 'owner_admitted',
                     {'db': owner_db, 'session_id': ref.session_id,
-                     'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
+                     'request_id': request_id, 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
                     run_id=task.current_run_id)
     from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
     await connection.resume(ref, {})
-    receipt = await authority.submit(connection.actor, Submission(request_id, ref,
-        {'text': f'work kanban task {params["task_id"]}'}, 'queue'))
+    # Finite like the `chat -q` worker it replaced: nobody can answer an approval or clarify in a
+    # card (approvals.single_query_mode applies). Never unattended: that is `-z`'s auto-approval.
+    # A retry of an attempt admitted before cards were finite resubmits its committed payload,
+    # so the store returns the original receipt instead of admission_conflict.
+    from hermes_state_runtime import find_session_admission
+    committed = None if not saved else await asyncio.to_thread(find_session_admission, authority.db,
+        principal_id=connection.actor.subject, session_id=ref.session_id, request_id=request_id)
+    payload: dict = {'text': f'work kanban task {params["task_id"]}'}
+    if committed is None or 'finite' in committed['payload']:
+        payload['finite'] = True
+    # The dispatcher's trusted producer marker (#134889 KB-8): nobody waits on a card attempt, so one
+    # lost across an owner restart settles interrupted instead of pausing the card session. An
+    # attempt main committed without it resubmits unmarked (same digest, original receipt).
+    card = None
+    if committed is None or 'kanban_card_v1' in committed['payload']:
+        card = {'board': context.get('board'), 'task_id': params['task_id'], 'run_id': params['run_id']}
+    receipt = await authority.submit(connection.actor, Submission(request_id, ref, payload, 'queue'),
+                                     _kanban_card=card)
     return {'session_id': ref.session_id, 'receipt': asdict(receipt)}
 
 
@@ -217,13 +235,45 @@ def run_worker_turns(agent, frame, history):
         return _run_worker_turns(agent, frame, history)
 
 
+@contextlib.contextmanager
+def _worker_workspace(frame):
+    """A managed worker's chat turn in its session's workspace, as the in-process turn runner binds it
+    (#140665): the session id as the terminal task id, the route as the session key (persistent Docker
+    keys the workspace container from it) and the frozen cwd as the session's mount. Yields the task
+    id, or None for a frame with no session scope (nothing is bound then)."""
+    session_id = (frame.get('scope') or {}).get('session_id')
+    if not session_id:
+        yield None
+        return
+    from gateway.session_authorities import served_profile_name
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from gateway.session_policy import bind_turn_workspace, restore_policy
+    from hermes_state_keys import profile_from_session_key
+    policy = restore_policy(frame['policy'])
+    route = frame.get('route') or session_id
+    # The profile its in-process turns bind, so persistent Docker keys the container they and the
+    # session's side agents use (#140665): a served secondary's name, which its routes carry
+    # (``agent:<name>:``); none for the launch home, whatever its name (``hermes -p beta gateway``
+    # keys ``agent:main:``, and only the default profile runs the multiplexer).
+    profile = served_profile_name(frame.get('home'))
+    tokens = set_session_vars(session_key=route, session_id=session_id,
+                              profile=profile if profile_from_session_key(route) == profile else '')
+    try:
+        bind_turn_workspace(policy, session_id)
+        yield session_id
+    finally:
+        clear_session_vars(tokens)
+
+
 def _run_worker_turns(agent, frame, history):
     context = json.loads(frame['policy'].get('kanban_json') or 'null')
     if context is None:
         from gateway.session_display import worker_display_kwargs
         author = frame.get('turn_author')
-        return agent.run_conversation(frame['text'], conversation_history=history, **worker_display_kwargs(),
-                                      **({'turn_author': author} if author is not None else {}))
+        with _worker_workspace(frame) as task_id:
+            return agent.run_conversation(frame['text'], conversation_history=history, **worker_display_kwargs(),
+                                          **({'task_id': task_id} if task_id else {}),
+                                          **({'turn_author': author} if author is not None else {}))
     from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code
     code, last_output = 1, ''
     try:
@@ -262,6 +312,33 @@ def _record_worker_result(context, code, last_output):
                  'last_output': last_output}, run_id=context['run_id'])
 
 
+def record_worker_loss(policy, reason, *, pid=None, bound=False):
+    """Append a run-scoped ``worker_lost`` event for this attempt to the card's board.
+
+    Dropped when the card has moved past the run (it says nothing about the current attempt).
+    Never raises: the caller's own loss handling must not depend on the board write.
+    """
+    try:
+        context = json.loads(policy.kanban_json or 'null')
+        if not context:
+            return
+        from hermes_cli.kanban_db_connect import connect_closing
+        from hermes_cli import kanban_db as kb
+        run_id = int(context['run_id'])
+        with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
+            row = conn.execute('SELECT status, current_run_id FROM tasks WHERE id=?',
+                               (context['task_id'],)).fetchone()
+            if row is None or row[0] != 'running' or row[1] != run_id:
+                return
+            kb._append_event(conn, context['task_id'], 'worker_lost',
+                             {'reason': str(reason)[:200], 'claim_lock': context['claim_lock'],
+                              'run_id': run_id, 'pid': pid, 'bound': bool(bound)},
+                             run_id=run_id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception('kanban worker_lost record failed')
+
+
 def _bound_worker_matches(conn, context):
     import os
     row = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='worker_bound' ORDER BY id DESC LIMIT 1",
@@ -298,19 +375,26 @@ def worker_exit_code(path, params):
     return worker_result(path, params).get('exit_code', 1)
 
 
+# Who wrote a card attempt's prompts: the dispatcher, never the operator, so memory providers do not
+# file "work kanban task t_..." and the worker's progress notes as the human's own turns (#137406).
+# Not a ``bot:<profile>`` id: a Bot Mode profile named ``kanban`` would share its memory key.
+KANBAN_TURN_AUTHOR = {'id': 'kanban:dispatcher', 'name': 'Kanban dispatcher', 'is_bot': True}
+
+
 def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
         raise ValueError('kanban_skills_unavailable')
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
-    result = agent.run_conversation(prompt, conversation_history=history)
+    result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 
     def recover(nudge):
         nonlocal result
         prior = result.get('messages') if isinstance(result, dict) else None
         result = agent.run_conversation(nudge, conversation_history=prior or
-                                        agent._session_db.get_messages_as_conversation(agent.session_id))
+                                        agent._session_db.get_messages_as_conversation(agent.session_id),
+                                        turn_author=KANBAN_TURN_AUTHOR)
     # Same in-place retry as the one-shot CLI worker (agent/kanban_turn_recovery.py), but the
     # carrier is this frame's bound claim, never the owner process's environment.
     from agent.kanban_turn_recovery import recover_failed_kanban_turns
@@ -332,7 +416,8 @@ def _run_task_turns(agent, frame, history, context):
             kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'])
     def turn(prompt):
         nonlocal result
-        result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id))
+        result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id),
+                                        turn_author=KANBAN_TURN_AUTHOR)
         return result.get('final_response', '')
     run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,
         task_status_fn=status, block_fn=block, max_turns=context['goal_max_turns'] or DEFAULT_MAX_TURNS,

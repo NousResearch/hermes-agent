@@ -13,7 +13,7 @@ export const enCatalogInstall: CatalogInstallTranslations = {
   hideNames: 'hide names',
   skill: name => `skill ${name}`,
   kind: { plugin: 'plugin', skill: 'skill' },
-  tier: { official: 'official', community: 'community' },
+  tier: { official: 'official', verified: 'verified', community: 'community' },
   targetProfile: profile => `Installs into your ${profile} profile`,
   sendFailed: 'Could not send your answer. Try again.',
   commitLabel: 'Commit',

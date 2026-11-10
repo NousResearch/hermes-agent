@@ -2,16 +2,18 @@
 
 ``BaseEnvironment.execute`` is request/response: it captures output and returns. The desktop that
 follows the terminal backend needs three things that are not: the RFB byte stream between the
-Desktop pane and the sandbox's Xvnc, cua-driver's MCP-over-stdio server, and agent-browser
-invocations whose daemon must outlive the call. All three are "spawn argv in the sandbox, keep
+Desktop pane and the sandbox's Xvnc, cua-driver's MCP-over-stdio server, and the bot's Chromium,
+which must outlive the call that started it. All three are "spawn argv in the sandbox, keep
 stdin/stdout as pipes". Each spawn-per-call backend has a local argv prefix that gives exactly that
-(``docker exec -i``, ``ssh``, ``apptainer exec``); this module is the one place that knows it.
+(``docker exec -i``, ``ssh``); this module is the one place that knows them.
 
 SDK backends (modal, daytona, vercel) have no argv prefix: ``exec_prefix`` returns None there and
-the desktop stays on the gateway host (or refuses, per ``bot_desktop.placement``).
+the desktop stays on the gateway host (or refuses, per ``bot_desktop.placement``). Plugin backends
+that declare ``supports_streams`` supply the prefix from their environment's own ``exec_prefix()``.
 """
 from __future__ import annotations
 
+import logging
 import shlex
 import socket
 import subprocess
@@ -20,15 +22,16 @@ from typing import Optional, Sequence
 
 from tools.environments.base import BaseEnvironment
 
+logger = logging.getLogger(__name__)
+
 
 def exec_prefix(env: BaseEnvironment, *, user: Optional[str] = None, interactive: bool = True) -> Optional[list[str]]:
     """Local argv that runs its remainder inside ``env``, or None for backends without one.
 
-    ``user`` selects the sandbox-side account (docker only; ssh runs as the configured login, apptainer as
-    the caller). ``interactive`` keeps stdin open (``docker exec -i``); ssh and apptainer always do.
+    ``user`` selects the sandbox-side account (docker only; ssh runs as the configured login).
+    ``interactive`` keeps stdin open (``docker exec -i``); ssh always does.
     """
     from tools.environments.docker import DockerEnvironment
-    from tools.environments.singularity import SingularityEnvironment
     from tools.environments.ssh import SSHEnvironment
 
     if isinstance(env, DockerEnvironment):
@@ -43,11 +46,34 @@ def exec_prefix(env: BaseEnvironment, *, user: Optional[str] = None, interactive
         return argv + [container]
     if isinstance(env, SSHEnvironment):
         return env._build_ssh_command()
-    if isinstance(env, SingularityEnvironment):
-        if not getattr(env, "_instance_started", False):
-            return None
-        return [env.executable, "exec", f"instance://{env.instance_id}"]
-    return None
+    return _plugin_exec_prefix(env, user=user, interactive=interactive)
+
+
+def _plugin_exec_prefix(env: BaseEnvironment, *, user: Optional[str], interactive: bool) -> Optional[list[str]]:
+    """A plugin environment's own ``exec_prefix()`` (``TerminalEnvironmentProvider.supports_streams``)."""
+    hook = getattr(env, "exec_prefix", None)
+    if not callable(hook):
+        return None
+    try:
+        prefix = hook(user=user, interactive=interactive)
+    except Exception:
+        logger.warning("%s.exec_prefix() failed; treating the backend as unable to stream",
+                       type(env).__name__, exc_info=True)
+        return None
+    if not prefix:
+        return None
+    if not isinstance(prefix, (list, tuple)):
+        # A plain string would be split into one-character argv words.
+        logger.warning("%s.exec_prefix() returned %s, not a list of argv words; treating the backend as unable "
+                       "to stream", type(env).__name__, type(prefix).__name__)
+        return None
+    return [str(part) for part in prefix]
+
+
+def sandbox_temp_dir(env: BaseEnvironment) -> str:
+    """``env.get_temp_dir()``, or ``/tmp`` for a plugin environment that doesn't subclass ``BaseEnvironment``."""
+    get_temp_dir = getattr(env, "get_temp_dir", None)
+    return str(get_temp_dir()) if callable(get_temp_dir) else "/tmp"  # no-tmp: ok — sandbox-side temp dir
 
 
 def supports_streams(env: BaseEnvironment) -> bool:
@@ -144,6 +170,10 @@ class PortForward:
         self._server.listen(16)
         self.local_port: int = self._server.getsockname()[1]
         self._closed = False
+        # Connections that never reached the target (relay not started, it exited non-zero before
+        # relaying a byte back, or the browser path it asked for is gone): the one cheap signal that
+        # whatever listened there may be gone.
+        self.failures = 0
         threading.Thread(target=self._accept_loop, name=f"port-forward-{self.local_port}", daemon=True).start()
 
     def _accept_loop(self) -> None:
@@ -160,7 +190,10 @@ class PortForward:
                                user=self.user)
         except Exception:
             conn.close()
+            self.failures += 1
             return
+
+        request: list[bytes] = []
 
         def to_remote() -> None:
             try:
@@ -168,6 +201,8 @@ class PortForward:
                     data = conn.recv(65536)
                     if not data:
                         break
+                    if not request:
+                        request.append(data)
                     proc.stdin.write(data)
                     proc.stdin.flush()
             except (OSError, ValueError):
@@ -179,11 +214,13 @@ class PortForward:
                     pass
 
         threading.Thread(target=to_remote, daemon=True).start()
+        reply = b""
         try:
             while True:
                 data = proc.stdout.read1(65536) if hasattr(proc.stdout, "read1") else proc.stdout.read(65536)
                 if not data:
                     break
+                reply = reply or data
                 conn.sendall(data)
         except OSError:
             pass
@@ -191,6 +228,8 @@ class PortForward:
             try:
                 conn.close()
             finally:
+                if (not reply and _exited_nonzero(proc)) or _stale_browser_path(request, reply):
+                    self.failures += 1
                 proc.kill()
 
     def close(self) -> None:
@@ -199,6 +238,28 @@ class PortForward:
             self._server.close()
         except OSError:
             pass
+
+
+def _stale_browser_path(request: list[bytes], reply: bytes) -> bool:
+    """A Chromium relaunched on the same port answers the old ``/devtools/browser/<id>`` with 404: the
+    endpoint the caller cached is gone even though the port relayed a reply."""
+    return (bool(request) and request[0].startswith(b"GET /devtools/browser/")
+            and reply.startswith((b"HTTP/1.1 404 ", b"HTTP/1.0 404 ")))
+
+
+def _exited_nonzero(proc: subprocess.Popen) -> bool:
+    try:
+        return proc.wait(timeout=2) != 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def forward_failures(env: BaseEnvironment, remote_port: int, *, remote_host: str = "127.0.0.1") -> int:
+    """How many connections through ``forward_port(env, remote_port)`` never reached the target (0 while no
+    forward is open). A caller caching "the target is up" re-checks only once this changes."""
+    with _forwards_lock:
+        fwd = _forwards.get((id(env), remote_host, int(remote_port)))
+    return fwd.failures if fwd is not None else 0
 
 
 def forward_port(env: BaseEnvironment, remote_port: int, *, remote_host: str = "127.0.0.1",

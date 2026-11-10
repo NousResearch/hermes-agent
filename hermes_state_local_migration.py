@@ -1,4 +1,5 @@
 """Transactional legacy binding; never a second transcript writer."""
+import functools
 import json
 import time
 
@@ -15,6 +16,52 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp'})
 # Legacy labels that are not creation sources of their own (session_policy.SURFACES).
 LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
+# Labels a routeless row can carry that never name a chat app: automation and recovery rows, a
+# retired platform, and a third-party WebUI that runs its own agent on this state.db (adopting its rows
+# would legitimise a second writer, so they stay read-only: gateway/session_history_mount.py).
+NOT_CLIENT_LABELS = frozenset({'cron', 'subagent', 'kanban', 'bot_room', 'a2a', 'webhook', 'api_server',
+                               'import', 'recovered', 'curator', 'batch', 'homeassistant', 'webui',
+                               'local', 'unknown'})
+
+
+@functools.lru_cache(maxsize=1)
+def _messaging_labels():
+    """Every platform Hermes ships: the enum and the bundled platform plugins. A runtime-registered
+    catalog plugin (hermes-mobile's ``mobile``) is not in it: its rows are routed, which excludes them."""
+    from gateway.config import Platform
+    bundled, aliases = Platform._scan_bundled_plugin_platforms()
+    return frozenset({platform.value for platform in Platform} | set(bundled) | set(aliases))
+
+
+def not_client_labels():
+    """Labels :func:`client_label` refuses, for queries that pre-filter rows."""
+    return LEGACY_LOCAL_SOURCES | NOT_CLIENT_LABELS | _messaging_labels()
+
+
+def client_label(source):
+    """Whether *source* is a client app's own label (``mobile``, ``ios``): not a local surface, a
+    shipped messaging platform, or an automation / foreign-writer label."""
+    return isinstance(source, str) and bool(source.strip()) and source not in not_client_labels()
+
+
+def client_history_row(row):
+    """A chat a client app wrote under its own label before ``session.create`` took only surfaces.
+
+    The pre-authority ``hermes serve`` stored whatever ``source`` a client sent, so phone apps signed
+    in through the dashboard login left routeless rows labelled ``mobile``, ``ios`` and the like. They
+    are the owner's Desktop-style chats: adopted as ``gui``. A routed row is never one, which keeps a
+    plugin platform sharing the label (hermes-mobile registers ``mobile``) on its messaging route."""
+    return client_label(row.get('source')) and not any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
+
+
+def legacy_history_row(row):
+    """Whether resume adopts *row* as old local history: a local surface's label, or a client app's."""
+    return row.get('source') in LEGACY_LOCAL_SOURCES or client_history_row(row)
+
+
+def legacy_creation_source(row):
+    """The creation source an adopted legacy row resumes on (session_policy.SURFACES)."""
+    return 'gui' if client_history_row(row) else LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
 
 
 def legacy_account_label(row):
@@ -24,12 +71,31 @@ def legacy_account_label(row):
     return row['source'] == 'desktop' and isinstance(user_id, str) and user_id.startswith('nous:')
 
 
-def validate_legacy_row(db, row):
+def login_owned_by(row, subject):
+    """Whether *subject* owns the login stamp a served dashboard put on this row.
+
+    Older ``hermes serve`` builds stamped the WS-upgrade login as ``<provider>:<user id>``
+    (tui_gateway/session_transports.py), and the gateway stored a Webapp login as its
+    ``auth:v1:[...]`` subject. Hermes is single-user and sign-in is owner-only, so both name the
+    machine owner: the host owner's subject adopts them (gateway.owner_identity.same_owner).
+    """
+    user_id = row.get('user_id')
+    if not isinstance(user_id, str) or not subject:
+        return False
+    from gateway.owner_identity import same_owner
+    return same_owner(user_id, subject)
+
+
+def validate_legacy_row(db, row, *, subject=None):
     # Unrouted old local history only. Existing identity, foreign profile,
     # API, messaging, delegate and canonical rows require their own authority.
-    if (row['source'] not in LEGACY_LOCAL_SOURCES
+    # ``subject``: the adopting caller, whose own login stamp is not a foreign identity. A ``user_id``
+    # stamp equal to ``subject`` itself names that principal: it is already its history by
+    # ``authorize_history``'s rule, so it adopts like an unstamped row.
+    user_id = row.get('user_id')
+    if (not legacy_history_row(row)
             or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
-            or (row.get('user_id') and not legacy_account_label(row))
+            or (user_id and not legacy_account_label(row) and not login_owned_by(row, subject))
             or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):
         raise RuntimeStoreError('not_found')
 
@@ -41,10 +107,10 @@ def bind_legacy_target(db, conn, receipt):
     row = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
     if row is None:
         raise RuntimeStoreError('not_found')
-    validate_legacy_row(db, dict(row))
-    from hermes_state_mutation_binding import BINDING_PREFIX
+    validate_legacy_row(db, dict(row), subject=receipt['principal_id'])
+    from hermes_state_mutation_binding import BINDING_PREFIX, binding_names
     imported = conn.execute('SELECT value FROM state_meta WHERE key=?', (BINDING_PREFIX + target,)).fetchone()
-    if imported and json.loads(imported[0]) != [receipt['profile_id'], receipt['principal_id']]:
+    if imported and not binding_names(imported[0], receipt['principal_id']):
         raise RuntimeStoreError('permission_denied')
     from hermes_state_compression import _CHAIN_STEP_SQL
     if conn.execute(_CHAIN_STEP_SQL, (target,)).fetchone() is not None:
@@ -60,9 +126,12 @@ def bind_legacy_target(db, conn, receipt):
         raise RuntimeStoreError('storage_unavailable')
     source = receipt['entry']['origin']
     # Binding is a read-side claim: the row keeps main's ``source`` label and its end stamp. The first
-    # admitted turn reopens it (``reopen_local_session``), exactly as the classic surfaces did.
-    conn.execute('UPDATE sessions SET session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
-                 (receipt['route'], receipt['session_id'], receipt['principal_id'], 'dm', _json(source), target))
+    # admitted turn reopens it (``reopen_local_session``), exactly as the classic surfaces did. A client
+    # app's own label is the exception: bound, the row has a route, so the label alone would read it as
+    # a messaging chat; it becomes the Desktop chat it resumes as (``created_source`` keeps provenance).
+    label = 'desktop' if client_history_row(dict(row)) else row['source']
+    conn.execute('UPDATE sessions SET source=?,session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
+                 (label, receipt['route'], receipt['session_id'], receipt['principal_id'], 'dm', _json(source), target))
     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, _json({
         'session_id': receipt['session_id'], 'profile_id': receipt['profile_id'],
         'principal_id': receipt['principal_id'], 'legacy_session_id': target})))

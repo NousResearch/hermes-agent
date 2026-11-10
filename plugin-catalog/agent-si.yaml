@@ -1,0 +1,15 @@
+name: agent-si
+repo: https://github.com/joelbrilliant/hermes-agent-si
+sha: adf7abc1d89b1e1ea686ac2fd29e2b95b454f4fe
+version: "0.1.1"
+description: "Sourced, model-free memory: a brain of facts that cite sources and quotes, plus search over past Hermes, Claude Code, Codex and Grok sessions on this machine, in one ranked list. No model, no key, no network, no dependencies. Refuses to store words the user didn't say; says when sources disagree. Disclosure — none"
+maintainer: joelbrilliant
+tier: community
+category: memory
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/joelbrilliant/hermes-agent-si#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -169,7 +169,7 @@ def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_go
         lines.append(f"Context you provided: {evt['context']}")
     if evt.get("toolsets"):
         lines.append(f"Toolsets: {', '.join(evt['toolsets'])}")
-    lines.append(f"Role: {evt.get('role') or 'leaf'}   Model: {evt.get('model') or '?'}")
+    lines.append(f"Role: {evt.get('role') or 'leaf'}" + (f"   Model: {evt['model']}" if evt.get("model") else ""))
     return lines
 
 
@@ -297,7 +297,8 @@ def _format_async_delegation(evt: dict) -> str:
         "you can act on the result or re-dispatch if things have changed.",
         completed_at, with_goal=True)
     lines += _notice_lines([evt]) + [
-        f"Status: {status}   API calls: {evt.get('api_calls', 0)}   Duration: {evt.get('duration_seconds', '?')}s"
+        f"Status: {status}" + (f"   API calls: {evt['api_calls']}" if evt.get("api_calls") is not None else "")
+        + f"   Duration: {evt.get('duration_seconds', '?')}s"
         + (" [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""),
         "--- RESULT ---"]
     if status in _DONE and summary:
@@ -372,6 +373,36 @@ def process_completion_display_text(events: list) -> str:
 
 
 HEARTBEAT_DISPLAY_KIND = "hidden"  # a wake, not a message: no surface paints the row
+HEARTBEAT_OUTPUT_CHARS = 2000
+
+
+def heartbeat_output_tail(output: str, omitted: int = 0) -> tuple[str, int]:
+    """A tick's output capped to its newest characters (a long job's latest lines are what matter),
+    and the count of characters cut before it. ``omitted`` counts characters already cut before
+    ``output``. The count rides the tick as its own field (``omitted``): text a job printed is never
+    read back as a cut marker."""
+    if len(output) > HEARTBEAT_OUTPUT_CHARS:
+        omitted += len(output) - HEARTBEAT_OUTPUT_CHARS
+        output = output[-HEARTBEAT_OUTPUT_CHARS:]
+    return output, omitted
+
+
+def join_heartbeat_outputs(earlier: dict, later: dict) -> dict:
+    """Two consecutive ticks' ``output``/``omitted`` as one tick's, capped the same way, counting
+    every character either cut. A later tick that was itself cut leaves none of the earlier output."""
+    earlier_cut, earlier_text = int(earlier.get("omitted") or 0), str(earlier.get("output") or "")
+    later_cut, later_text = int(later.get("omitted") or 0), str(later.get("output") or "")
+    if later_cut:
+        output, omitted = heartbeat_output_tail(later_text, earlier_cut + len(earlier_text) + later_cut)
+    else:
+        output, omitted = heartbeat_output_tail(earlier_text + later_text, earlier_cut)
+    return {"output": output, "omitted": omitted}
+
+
+def heartbeat_output_text(evt: dict) -> str:
+    """A tick's output as the agent reads it: the cut marker, rendered here only, then the tail."""
+    omitted, output = int(evt.get("omitted") or 0), str(evt.get("output") or "")
+    return f"...({omitted} earlier characters omitted)\n{output}" if omitted else output
 
 
 def heartbeat_display_text(evt: dict) -> str:
@@ -450,7 +481,7 @@ def format_process_notification(evt: dict) -> str | None:
             f"[Background process {_sid} heartbeat #{evt.get('seq', '?')} — still running after "
             f"{_format_age(float(evt.get('elapsed') or 0))} (next in {evt.get('interval', '?')}s when there "
             f"is new output; you will also be told when it exits).\n"
-            f"{attribution}Command: {_cmd}\nOutput since last heartbeat:\n{evt.get('output', '')}]")
+            f"{attribution}Command: {_cmd}\nOutput since last heartbeat:\n{heartbeat_output_text(evt)}]")
     if evt_type == "watch_match":
         _sup = evt.get("suppressed", 0)
         return (

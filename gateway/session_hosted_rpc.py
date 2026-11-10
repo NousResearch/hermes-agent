@@ -12,6 +12,7 @@ import hashlib
 import json
 
 from gateway.hosted_room_driver import TaskIdentity
+from gateway.owner_identity import same_owner
 from gateway.session_contract import SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
@@ -121,7 +122,7 @@ class HostedRoomAuthorityRPC:
         rows = list_session_admissions(self.authority.db, session_id=self.ref.session_id, pending_only=False)
         result = []
         for row in rows:
-            if row['principal_id'] != self.principal.subject or not row['request_id'].startswith('hosted:'):
+            if not same_owner(row['principal_id'], self.principal.subject) or not row['request_id'].startswith('hosted:'):
                 continue
             try:
                 task, generation = json.loads(row['request_id'][7:])
@@ -133,7 +134,7 @@ class HostedRoomAuthorityRPC:
             result.append((row, identity, generation))
         return result
 
-    def _terminal(self, row, task, generation):
+    def _terminal(self, row, task, generation, *, notify=True):
         from gateway.session_results import admission_result
         saved = admission_result(self.authority.db, row['admission_id'])
         # Unknown discard and queued cancellation never ran: no result exists to recover.
@@ -145,7 +146,7 @@ class HostedRoomAuthorityRPC:
                    'message_id': row['admission_id'], 'settlement_id': row['admission_id'],
                    'task_id': task.task_id, 'execution_generation': generation}
         callback = self.callbacks.pop(row['admission_id'], None)
-        if callback is not None:
+        if callback is not None and notify:
             callback(receipt)
         return receipt
 
@@ -156,14 +157,14 @@ class HostedRoomAuthorityRPC:
         rows = self._rows()
         if any(row['status'] == 'unknown' for row, _, _ in rows):
             raise RuntimeStoreError('unknown_execution')
-        from gateway.session_hosted_attachments import submission_payload
+        from gateway.session_hosted_attachments import prepare_before_submit, submission_payload
         from gateway.session_ingress_media import capture_lease
         # One lease from capture through the admission commit: documents ride in the prompt text,
         # so submit's own lease does not hold them, and an older row's release could unlink a
         # shared content-addressed capture in between.
         with capture_lease():
-            payload = await asyncio.to_thread(
-                submission_payload, self, params['prompt'], params.get('attachments'))
+            payload = await asyncio.to_thread(prepare_before_submit, partial(
+                submission_payload, self, params['prompt'], params.get('attachments')))
             authorize_write = self.authorize_write
             receipt = await self.authority.submit(self.principal, Submission(
                 request_id, self.ref, payload, 'queue'),
@@ -197,9 +198,14 @@ class HostedRoomAuthorityRPC:
                 self._terminal(row, task, generation)
 
     async def _history(self, params):
-        from gateway.session_local_recovery import local_history
+        from gateway.session_local_recovery import local_history, prepare_history
+        # Authorize (restoring a cold room session) before the read names its live entry, and again after
+        # the await (``_rows``): a delete in between answers not_found, never a KeyError.
+        self.authority.authorize(self.principal, self.ref, 'session:read')
+        prepared = await prepare_history(self.authority, self.ref)
         rows = self._rows()
-        history = list(local_history(self.authority, self.ref))
+        history = self.authority.unless_deleted(
+            self.ref, lambda: list(local_history(self.authority, self.ref, prepared)))
         for row, task, generation in rows:
             if row['status'] == 'terminal':
                 receipt = self._terminal(row, task, generation)
@@ -242,7 +248,11 @@ class HostedRoomAuthorityRPC:
                   'task_id': current[1].task_id if current else None,
                   'execution_generation': current[2] if current else None,
                   'status': current[0]['status'] if current else 'idle'}
-        snapshot = await self.authority.attach(self.principal, self.ref)
+        live = self.authority.sessions.get(self.ref.session_id)
+        if current is not None and current[0]['status'] == 'started' and live is not None:
+            # The member's current tool and last frame, for the room's "scout · terminal · 7s".
+            result.update(live.event_stream.progress_for(current[0]['generation']))
+        snapshot = await self.authority.attach(self.principal, self.ref, history=False)  # prompts only
         if snapshot.prompts:
             prompt = next((p for p in snapshot.prompts if p.get('kind') == 'approval'), None)
             if prompt:
@@ -270,7 +280,9 @@ class HostedRoomAuthorityRPC:
         if type(generation) is not int or generation < 1:
             raise RuntimeStoreError('invalid_params')
         matches = [(row, task) for row, task, hosted_generation in self._rows()
-                   if (row['status'] == 'unknown' or (row['status'] == 'terminal' and row['outcome'] == 'interrupted'))
+                   # A terminal row is an earlier discard's committed outcome (interrupted, or the retained
+                   # answer it recovered): replaying the exact call returns that same receipt.
+                   if row['status'] in {'unknown', 'terminal'}
                    and task.task_id == params['expected_task_id']
                    and hosted_generation == generation]
         if len(matches) != 1:
@@ -280,13 +292,18 @@ class HostedRoomAuthorityRPC:
         if row['status'] == 'unknown':
             await self.authority.resolve_unknown(
                 self.principal, self.ref, row['admission_id'], row['generation'])
-        return {'discarded': True, 'status': 'cancelled', 'task_id': task.task_id,
-                'execution_generation': generation}
+            # Resolution commits a retained captured answer as ``completed``, not interrupted:
+            # report the outcome it committed, so the room settles that answer, never a cancel.
+            row = next(r for r, _, _ in self._rows() if r['admission_id'] == row['admission_id'])
+        # The discarding caller settles the room task from this reply. The attempt's own terminal
+        # callback would settle it a second time and, for a local member, re-enter the room's
+        # preparation from the loop while the caller waits on this reply.
+        return {**self._terminal(row, task, generation, notify=False), 'discarded': True}
 
     async def _approve(self, params):
         if params['choice'] not in {'once', 'deny'}:
             raise RuntimeStoreError('invalid_params')
-        snapshot = await self.authority.attach(self.principal, self.ref)
+        snapshot = await self.authority.attach(self.principal, self.ref, history=False)  # prompts only
         prompt = next((p for p in snapshot.prompts if p.get('prompt_id') == params['request_id']
                        and p.get('kind') == 'approval'), None)
         if prompt is None:

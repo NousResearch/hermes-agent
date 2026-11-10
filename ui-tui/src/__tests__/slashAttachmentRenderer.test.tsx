@@ -41,7 +41,7 @@ function mount(canonical = false, extra: (method: string, params: any) => unknow
 
     if (method === 'image.detach') {
       images.set(params.session_id, (images.get(params.session_id) ?? []).filter(path => path !== params.path))
-    } else if (!method.startsWith('complete.') && method !== 'shared_metrics.slash_command') {
+    } else if (!method.startsWith('complete.') && !['command.observe', 'shared_metrics.slash_command'].includes(method)) {
       throw new Error(`Unexpected RPC: ${method}`)
     }
 
@@ -73,7 +73,7 @@ function mount(canonical = false, extra: (method: string, params: any) => unknow
     stderr: new PassThrough() as any, patchConsole: false })
 
   return {
-    home, images, pending, request,
+    home, images, pending, request, sys,
     get composer() { return composer },
     get output() { return output },
     async submit(command: string) {
@@ -307,4 +307,69 @@ it('`/queue` with an image journals its attachment in the first durable write', 
     expect(entries.map(name => JSON.parse(readFileSync(join(journal, name), 'utf8')).attachments)).toEqual([
       [expect.objectContaining({ mime: 'image/png' })]])
   } finally { save.mockRestore(); h.close() }
+})
+
+const queuedText = (h: ReturnType<typeof mount>) => h.composer.refs.queueRef.current.map(item => item.text)
+
+const lastNotice = (h: ReturnType<typeof mount>) => h.sys.mock.calls.at(-1)?.[0]
+
+it('does not queue the words list or clear when those /queue verbs are used', async () => {
+  const h = mount(true)
+
+  try {
+    h.composer.actions.enqueue('one')
+    h.composer.actions.enqueue('two')
+    const destination = h.composer.refs.queueRef.current[0]!.destination!
+
+    await h.submit('/queue list')
+    expect(queuedText(h)).toEqual(['one', 'two'])
+    expect(lastNotice(h)).toBe('Queue (2 pending):\n  1. one\n  2. two')
+    await h.submit('/queue clear')
+    expect(queuedText(h)).toEqual([])
+    expect(lastNotice(h)).toBe('Cleared 2 queued prompts.')
+    expect(pendingInputs.loadPendingInputs(destination)).toEqual([])
+    await h.submit('/queue clear the logs')
+    expect(queuedText(h)).toEqual(['clear the logs'])
+  } finally { h.close() }
+})
+
+it('edits, removes, and reorders queued prompts instead of sending the verb', async () => {
+  const h = mount(true)
+
+  try {
+    h.composer.actions.enqueue('one')
+    h.composer.actions.enqueue('two')
+    await h.submit('/queue edit 2 replacement')
+    expect(queuedText(h)).toEqual(['one', 'replacement'])
+    expect(lastNotice(h)).toBe('Updated queue item 2: replacement')
+    await h.submit('/queue move 2 1')
+    expect(queuedText(h)).toEqual(['replacement', 'one'])
+    const destination = h.composer.refs.queueRef.current[0]!.destination!
+
+    expect(pendingInputs.loadPendingInputs(destination).map(item => item.text)).toEqual(['replacement', 'one'])
+    await h.submit('/queue rm 1')
+    expect(queuedText(h)).toEqual(['one'])
+    expect(pendingInputs.loadPendingInputs(destination).map(item => item.text)).toEqual(['one'])
+    await h.submit('/queue add list')
+    expect(queuedText(h)).toEqual(['one', 'list'])
+    await h.submit('/queue edit the config')
+    expect(queuedText(h)).toEqual(['one', 'list', 'edit the config'])
+  } finally { h.close() }
+})
+
+it('lists an empty queue from a bare /queue and does not enqueue the word list', async () => {
+  const h = mount(true)
+
+  try {
+    await h.submit('/queue list')
+    expect(queuedText(h)).toEqual([])
+    expect(lastNotice(h)).toBe(
+      'Queue is empty.  Usage: /queue <prompt> | /queue list | /queue edit N <prompt> | /queue rm N | /queue move FROM TO | /queue clear'
+    )
+    await h.submit('/queue')
+    expect(queuedText(h)).toEqual([])
+    expect(lastNotice(h)).toBe(
+      'Queue is empty.  Usage: /queue <prompt> | /queue list | /queue edit N <prompt> | /queue rm N | /queue move FROM TO | /queue clear'
+    )
+  } finally { h.close() }
 })

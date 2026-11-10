@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.platforms.base import _ssrf_redirect_guard
+from gateway.platforms.base import ssrf_redirect_guard
 
 
 def _ensure_slack_mock():
@@ -123,8 +123,8 @@ def test_redirect_guard_is_wired(monkeypatch, method_name):
     kwargs = _RecordingClient.last_kwargs
     assert kwargs is not None
     hooks = kwargs.get("event_hooks", {})
-    assert _ssrf_redirect_guard in hooks.get("response", []), (
-        "AsyncClient must register _ssrf_redirect_guard to block "
+    assert ssrf_redirect_guard in hooks.get("response", []), (
+        "AsyncClient must register ssrf_redirect_guard to block "
         "redirect-based SSRF"
     )
 

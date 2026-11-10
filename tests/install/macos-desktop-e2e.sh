@@ -89,7 +89,12 @@ export HOME_SANDBOX="$WORK_ROOT/home"
 
 step() { printf '\n=== %s ===\n' "$*"; }
 ok()   { printf '  OK %s\n' "$*"; }
-fail() { printf 'E2E ASSERTION FAILED: %s\n' "$*" >&2; exit 1; }
+fail() {
+  printf 'E2E ASSERTION FAILED: %s\n' "$*" >&2
+  # The checked update hands this exact line to the known-failure classifier.
+  [ -z "${FAILURE_FILE:-}" ] || printf 'E2E ASSERTION FAILED: %s\n' "$*" > "$FAILURE_FILE"
+  exit 1
+}
 # shellcheck source=../e2e-assets/ts-prefix.sh
 source "$(dirname "$0")/e2e-assets/ts-prefix.sh" 2>/dev/null || ts_prefix() { cat; }
 # shellcheck source=../install/e2e-assets/preserve-plugins.sh
@@ -268,6 +273,14 @@ phase_install() {
       }
     }
   }' "$installed_bin" || fail "installed app did not close normally; no smoke launch attempted"
+  # One journey mock from the first checkpoint on, as installer-script-e2e.sh does: the gateway
+  # this checkpoint starts is detached, survives this step, and keeps the provider URL it read
+  # at boot; phase_update's mock_start rebinds that URL's port. Without it the smoke starts a
+  # private mock whose port nothing can reclaim.
+  # shellcheck source=../install/e2e-assets/mock-provider.sh
+  source "$ASSETS/mock-provider.sh"
+  PATH="$(dirname "$HERMES_E2E_NODE"):$PATH" mock_start "$WORK_ROOT"
+  trap mock_stop EXIT
   desktop_checkpoint old "$OLD_SHA" desktop-installer@latest
 }
 
@@ -436,10 +449,40 @@ PYEOF
   step "PASS: $OLD_REF -> $TARGET_LABEL via $UPDATE_METHOD"
 }
 
+# Runs the real update path unchanged. A failure stays a failure unless
+# known-failures.cjs matches the exact start commit, method pair, assertion
+# and fresh bootstrap-installer.log signatures (tests/install/KNOWN_FAILURES.md).
+phase_checked_update() {
+  local hermes_logs="$HOME_SANDBOX/.hermes/logs" rc=0 error receipt
+  rm -f "$WORK_ROOT/known-failure.json" "$LOG_DIR/known-failure.json" "$WORK_ROOT/update-failure.txt"
+  # Only evidence produced by this update attempt can match an exception.
+  if [ -f "$hermes_logs/bootstrap-installer.log" ]; then
+    mv -f "$hermes_logs/bootstrap-installer.log" "$hermes_logs/bootstrap-installer.log.before-update"
+  fi
+  set +e
+  (set -e; FAILURE_FILE="$WORK_ROOT/update-failure.txt"; phase_update)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || return 0
+  # phase_update snapshots HERMES_HOME/logs only once the checkout lands.
+  mkdir -p "$LOG_DIR/install-logs"
+  cp -R "$hermes_logs" "$LOG_DIR/install-logs/hermes-logs" 2>/dev/null || true
+  error="$(cat "$WORK_ROOT/update-failure.txt" 2>/dev/null || true)"
+  receipt="$("$HERMES_E2E_NODE" "$ASSETS/known-failures.cjs" "$WORK_ROOT" desktop-installer@latest "$UPDATE_METHOD" "$error" macos)" \
+    || exit "$rc"
+  cp "$WORK_ROOT/known-failure.json" "$LOG_DIR/known-failure.json"
+  local id title
+  id="$(printf '%s' "$receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+  title="$(printf '%s' "$receipt" | python3 -c 'import json,sys; print(json.load(sys.stdin)["title"])')"
+  printf 'KNOWN FAILURE [%s]: %s\n' "$id" "$title"
+  [ -z "${GITHUB_OUTPUT:-}" ] || printf 'known_failure=%s\n' "$id" >> "$GITHUB_OUTPUT"
+  [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf 'Known historical failure: %s. See the result chart footnote and uploaded known-failure.json.\n' "$title" >> "$GITHUB_STEP_SUMMARY"
+}
+
 case "$PHASE" in
   stage)   phase_stage ;;
   install) phase_install ;;
-  update)  phase_update ;;
-  all)     phase_stage; phase_install; phase_update ;;
+  update)  phase_checked_update ;;
+  all)     phase_stage; phase_install; phase_checked_update ;;
   *) echo "error: --phase must be stage, install, update or all" >&2; exit 1 ;;
 esac

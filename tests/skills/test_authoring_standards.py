@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 import hermes_yaml as yaml
 
+from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT
+
 REPO = Path(__file__).resolve().parents[2]
 MARKETING = re.compile(
     r"\b(powerful|comprehensive|seamless|revolutionary|cutting-edge|state-of-the-art)\b",
@@ -103,7 +105,9 @@ def test_description_hardline(p):
     desc = str(fm.get("description") or "")
     if _grandfathered(p, "description"):
         return
-    assert len(desc) <= 60, f"{_rel(p)}: description {len(desc)} chars (hardline 60)"
+    # The index's clip width: a shipped description over it would reach the prompt clipped.
+    assert len(desc) <= SKILL_PROMPT_DESC_LIMIT, (
+        f"{_rel(p)}: description {len(desc)} chars (hardline {SKILL_PROMPT_DESC_LIMIT})")
     assert desc.rstrip().endswith("."), f"{_rel(p)}: description must end with a period"
     m = MARKETING.search(desc)
     assert not m, f"{_rel(p)}: marketing word in description: {m.group(0)!r}"

@@ -1,0 +1,39 @@
+name: yandex-disk
+repo: https://github.com/akinfold/hermes-yandex-disk
+sha: 32250084b6406169d18c9c98e985a6d53342d173
+subdir: hermes_yandex_disk
+title: "Yandex Disk"
+description: "Browse, search, read, write, upload, download, copy, move, share, delete and restore files on Yandex Disk over its REST API. Disclosure — sends every request to cloud-api.yandex.net, or to the https URL in YANDEX_DISK_BASE_URL if you set one, with your YANDEX_DISK_OAUTH_TOKEN read through Hermes; file bytes go to the upload and download hosts the API hands out, without the token; unless YANDEX_DISK_ACTIONS leaves search out, loading the plugin sends one search request to learn whether the token may search, and yadisk_search is registered only if it may; every tool, permanent delete, emptying the bin and public share links included, is offered unless YANDEX_DISK_ACTIONS narrows them (read gives a read-only Disk); yadisk_upload reads a local file and sends it unredacted, and yadisk_download writes one, after Hermes' shared file-safety rules and the plugin's own: upload refuses .env files, Hermes' credential stores, Hermes' own directory and the home directories that hold keys and logins; download refuses credential files, Hermes' own directory, .hermes directories, agent instruction files such as AGENTS.md, system locations and paths outside HERMES_WRITE_SAFE_ROOT; other local files are within reach; YANDEX_DISK_ROOT confines Disk paths, not local ones; an upload from a URL makes Yandex fetch that URL; file names and contents written by other people reach the agent as tool output; no telemetry, no shell access, no background process. Independent community plugin, not affiliated with Yandex."
+maintainer: akinfold
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "0.6.2"
+docs_url: https://github.com/akinfold/hermes-yandex-disk#readme
+readme: true
+platforms: []
+known_issues:
+  - "Every tool is offered by default, permanent delete and emptying the bin included. Set YANDEX_DISK_ACTIONS to register fewer (read, download, write, share, delete, all or single tools, comma-separated; read is the README's advice for a first setup), then restart Hermes"
+  - "yadisk_search is registered only when the token's application may use Yandex Disk search; a token from a self-registered app or from Poligon usually may not, and the plugin then offers the other fourteen tools"
+  - "yadisk_upload sends any other local file the Hermes process can read, unredacted, and the write group includes upload; to keep the agent off local files, name the tools without upload and download, e.g. YANDEX_DISK_ACTIONS=read,mkdir,write_file,copy,move,trash_restore"
+capabilities:
+  provides_tools:
+    - yadisk_disk_info
+    - yadisk_list
+    - yadisk_search
+    - yadisk_read_file
+    - yadisk_trash_list
+    - yadisk_download
+    - yadisk_mkdir
+    - yadisk_write_file
+    - yadisk_upload
+    - yadisk_copy
+    - yadisk_move
+    - yadisk_trash_restore
+    - yadisk_publish
+    - yadisk_delete
+    - yadisk_trash_empty
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - YANDEX_DISK_OAUTH_TOKEN

@@ -132,6 +132,62 @@ def test_native_pipe_authenticated_peer_and_deadline(tmp_path):
     assert not server._thread.is_alive()
 
 
+def _serve_one_child_query(tmp_path, monkeypatch):
+    """Serve one query from a separate process whose PID the gateway cannot open, as when a
+    one-shot ``gateway ensure`` child has already exited (#139084). Returns (subjects, child)."""
+    import subprocess
+    import sys
+    import gateway.runtime_bootstrap_windows as rbw
+    real_process_sid, own = rbw._process_sid, os.getpid()
+
+    def process_sid(pid):
+        if pid != own:
+            raise PermissionError('cannot verify bootstrap peer process')  # OpenProcess on a gone PID
+        return real_process_sid(pid)
+    monkeypatch.setattr(rbw, '_process_sid', process_sid)
+    subjects = []
+
+    def handler(raw, subject):
+        subjects.append(subject)
+        return json.dumps({'ok': True}).encode() + b'\n'
+    server = rbw.NativeControlServer(tmp_path, handler)
+    server.start()
+    try:
+        child = subprocess.run(
+            [sys.executable, '-c', 'import sys; from pathlib import Path; '
+             'from gateway.runtime_bootstrap_windows import query_runtime_control as q; '
+             'sys.stdout.write(q(Path(sys.argv[1]), b"hello", 10).decode())', str(tmp_path)],
+            check=False, capture_output=True, text=True, timeout=30, cwd=os.getcwd())
+    finally:
+        server.close()
+    return subjects, child
+
+
+@pytest.mark.platforms("windows")
+def test_native_pipe_identifies_a_peer_whose_process_is_gone(tmp_path, monkeypatch):
+    """The peer's identity comes from the token captured when it opened the pipe, so a same-user
+    client is served even when its PID can no longer be opened (#139084)."""
+    import gateway.runtime_bootstrap_windows as rbw
+    owner = rbw._process_sid(os.getpid())
+    subjects, child = _serve_one_child_query(tmp_path, monkeypatch)
+    assert child.returncode == 0, child.stderr
+    assert json.loads(child.stdout) == {'ok': True}
+    assert subjects == ['sid:' + owner]
+
+
+@pytest.mark.platforms("windows")
+def test_native_pipe_refuses_a_peer_it_cannot_identify(tmp_path, monkeypatch):
+    """No token and no readable process: the peer stays refused, never served as anonymous."""
+    import gateway.runtime_bootstrap_windows as rbw
+
+    def no_token(handle):
+        raise PermissionError('cannot impersonate named-pipe peer')
+    monkeypatch.setattr(rbw, '_pipe_client_sid', no_token, raising=False)
+    subjects, child = _serve_one_child_query(tmp_path, monkeypatch)
+    assert subjects == []
+    assert child.returncode != 0
+
+
 @pytest.mark.platforms("windows")
 def test_native_pipe_handler_may_dial_its_own_pipe(tmp_path):
     """A hosted room whose source and member share one multiplexer re-enters the control pipe
@@ -232,3 +288,31 @@ def test_native_pipe_never_drops_a_client_that_lands_between_idle_accepts(tmp_pa
         server.close()
     assert injected.get("reply") == {"echo": "injected"}, injected.get("error")
     assert server._error is None, server._error
+
+
+@pytest.mark.platforms("windows")
+def test_client_reads_a_real_gateway_pipes_owner_dacl_and_session(tmp_path):
+    """The facts the client half judges a server by when it cannot open the server process
+    (#140706), read from a live gateway pipe through the client's own handle: owner this user, or
+    Administrators when this process is elevated; a DACL of exactly this user; this session."""
+    import _winapi
+    import gateway.runtime_bootstrap_windows as rbw
+    from gateway.control_socket import windows_pipe_name
+    from hermes_dir_acl import process_is_elevated
+    server = rbw.NativeControlServer(tmp_path, lambda raw, subject: b'{}\n')
+    server.start()
+    try:
+        handle = _winapi.CreateFile(windows_pipe_name(tmp_path), 0xC0000000, 0, _winapi.NULL,
+                                    _winapi.OPEN_EXISTING, 0, _winapi.NULL)
+        try:
+            own = rbw._process_sid(os.getpid())
+            owner, aces = rbw._pipe_security(handle)
+            assert owner == own or (owner == rbw._ADMINISTRATORS_SID and process_is_elevated()), owner
+            assert aces == ((rbw._ACCESS_ALLOWED_ACE, own),)
+            assert rbw._pipe_server_session(handle) == rbw._session_of(os.getpid())
+            # Same token on both ends: attached, whichever owner this runner's token gives the pipe.
+            assert rbw._peer_subject(handle, server=True) == 'sid:' + own
+        finally:
+            _winapi.CloseHandle(handle)
+    finally:
+        server.close()

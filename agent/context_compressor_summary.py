@@ -35,6 +35,8 @@ class SummaryDispatchMixin:
         is refused, so every later attempt aborts (#123362). Name the main runtime explicitly.
         A stall-fallback ``pinned`` route replaces the whole route: merged over the main runtime, the
         main api_key/base_url would ride into the fallback entry's call (to its host, or instead of it).
+        The main route is complete even with empty fields: an authoritative task keeps compression
+        policy but never fills an unset endpoint/key/wire mode from the failed aux route (#130895).
         """
         if pinned:
             # Clear first: a keyless pin (local server) resolves its own credential, never the main one.
@@ -47,6 +49,9 @@ class SummaryDispatchMixin:
             return
         if not getattr(self, "_summary_model_fallen_back", False):
             return
+        from agent.auxiliary_task_config import authoritative_auxiliary_task
+
+        call_kwargs["task"] = authoritative_auxiliary_task(call_kwargs.get("task") or "compression")
         for key, value in (
             ("provider", self.provider),
             ("model", self.model),

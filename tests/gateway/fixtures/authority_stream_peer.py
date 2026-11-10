@@ -272,6 +272,12 @@ def main():
     peer = ThreadingHTTPServer(('127.0.0.1', 0), ModelPeer)
     peer.requests = []
     peer.blocked = os.environ.get('STREAM_PROBE_MODE') == 'blocked'
+    if peer.blocked:
+        # The stalled observer must hit a mailbox bound while the session replay buffer (4 MB) still
+        # holds the whole turn and the terminal frame (the whole reply) still fits the byte cap, so
+        # bound it by frames: the 330 chunks below exceed this.
+        from tui_gateway.transport import FanoutTransport
+        FanoutTransport._MAX_PENDING_FRAMES = 256
     peer.acks = queue.Queue()
     peer.command = 'printf owned-effect > ' + shlex.quote(str(target))
     threading.Thread(target=peer.serve_forever, daemon=True).start()

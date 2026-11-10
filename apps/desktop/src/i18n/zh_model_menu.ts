@@ -1,4 +1,5 @@
 export const zhModelMenu = {
+  pickDeferred: (model: string) => `${model} 将从你的下一条消息开始生效`,
   search: '搜索模型',
   noModels: '未找到模型',
   editModels: '编辑模型…',

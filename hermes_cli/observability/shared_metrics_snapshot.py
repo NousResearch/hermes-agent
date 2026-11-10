@@ -127,6 +127,7 @@ def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:
     with contextlib.suppress(Exception):
         language = _display_language()
     from .shared_metrics_install import install_v4_snapshot_fields
+    from .shared_metrics_prepared_compaction import prepare_ahead_state
 
     return {**contract.install_snapshot_fields(
         memory_provider=_sub(_sub(config, "memory"), "provider"),
@@ -140,4 +141,4 @@ def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:
         main_provider=_sub(model, "provider") if isinstance(model, dict) else None,
         terminal_backend=_sub(_sub(config, "terminal"), "backend"),
         display_language=language,
-    ), **install_v4_snapshot_fields(config)}
+    ), **install_v4_snapshot_fields(config), "compression_prepare_ahead": prepare_ahead_state(config)}

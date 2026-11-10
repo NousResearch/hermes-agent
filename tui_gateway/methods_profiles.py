@@ -587,9 +587,8 @@ def _describe_toolsets(cfg):
     toolsets_out = []
     for ts_name, ts_label, ts_desc in _get_effective_configurable_toolsets():
         enabled = ts_name in (pinned_set if pinned_set is not None else platform_enabled)
-        # Default-off integrations (+ opt-in yuanbao) are noise unless already enabled.
-        if not _toolset_allowed_for_platform(ts_name, "cli") or (
-                (ts_name in default_off or ts_name == "yuanbao") and not enabled):
+        # Default-off integrations are noise unless already enabled.
+        if not _toolset_allowed_for_platform(ts_name, "cli") or (ts_name in default_off and not enabled):
             continue
         toolsets_out.append({"name": ts_name, "label": ts_label, "description": ts_desc or "",
                              "tool_count": _try(lambda: len(set(resolve_toolset(ts_name))), 0),
@@ -738,15 +737,48 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
             try:
                 from hermes_cli.skills_config import save_disabled_skills
                 save_disabled_skills(cfg, _clean_names(params["disabled_skills"]))
-                applied["skills"] = True
+                applied["skills"] = _landed(cfg, ("skills", "disabled"))
                 cfg = load_config() or {}
             except Exception:
                 applied["skills"] = False
         if isinstance(params.get("enabled_toolsets"), list):
-            applied["toolsets"] = _best_effort(lambda: _save_toolset_pin(cfg, params["enabled_toolsets"], save_config))
+            applied["toolsets"] = _best_effort(lambda: _save_toolset_pin(cfg, params["enabled_toolsets"], save_config)) \
+                and _landed(cfg, ("platform_toolsets", "cli"))
         if want_mcp:
+            mcp_cfg = load_config() or {}
             applied["mcp_servers"] = _best_effort(lambda: _save_mcp_toggles(
-                load_config() or {}, params["enabled_mcp_servers"], launch_mcp, save_config))
+                mcp_cfg, params["enabled_mcp_servers"], launch_mcp, save_config)) \
+                and _landed(mcp_cfg, ("mcp_servers",), _mcp_toggle_state)
+
+
+def _mcp_toggle_state(servers):
+    """Every toggle field ``_save_mcp_toggles`` writes, per server: ``enabled`` AND the legacy
+    ``disabled`` it removes. A lock that kept ``disabled: true`` leaves the server off for the
+    editor (and on for the runtime) although ``enabled`` landed, so it must not read as applied."""
+    if not isinstance(servers, dict):
+        return servers
+    return {k: (e.get("enabled"), e.get("disabled", _ABSENT)) for k, e in servers.items() if isinstance(e, dict)}
+
+
+_ABSENT = "<absent>"
+
+
+def _landed(cfg: dict, path: tuple, key=lambda v: v) -> bool:
+    """Whether the section a bulk ``save_config`` was asked to write now reads back as written.
+    Under Remote Config a bulk save omits a locked key (with a stderr note) instead of raising, so
+    an editor that reported success after the save would acknowledge an edit the plane refused.
+    Compared on the user layer as read back (the effective doc in remote mode), absent == absent."""
+    from hermes_cli.config import read_user_config_raw
+
+    def at(doc):
+        node = doc
+        for seg in path:
+            if not isinstance(node, dict) or seg not in node:
+                return None
+            node = node[seg]
+        return node
+
+    return key(at(read_user_config_raw() or {})) == key(at(cfg))
 
 
 def _unlink_asset_files(assets_dir, asset) -> int:

@@ -217,13 +217,17 @@ async def probe(mode, peer):
         assert captured.message_type == kind and captured.media_types == [mime]
         assert captured.media_text_inlined == [False]
         assert Path(captured.media_urls[0]).read_bytes() == b'owned-media-' + kind.value.encode()
+    # An uncached remote URL is dropped with a note; the message text is still admitted.
+    remote = restore_native(snapshot_native(runner, replace(
+        event, media_urls=['https://example.invalid/not-captured'], media_types=['image/png'])))
+    assert remote.text.startswith('context\n') and 'image/png' in remote.text, remote.text
+    assert remote.media_urls == [] and remote.media_types == []
     denied = []
     cases = [replace(event, metadata={key: True}) for key in
              ('internal', 'whatsapp_from_owner', 'gateway_session_id', '_authorization_profile_home', 'arbitrary')]
     cases += [replace(event, source=replace(source, role_authorized=True)),
               replace(event, source=replace(source, delivered_via_upstream_relay=True)),
               replace(event, internal=True), replace(event, prompt_response={'prompt_id': 'forged'}),
-              replace(event, media_urls=['https://example.invalid/not-captured']),
               replace(event, channel_prompt={'untyped': True})]
     foreign_home = replace(source)
     foreign_home._authorization_profile_home = state / 'foreign-home'

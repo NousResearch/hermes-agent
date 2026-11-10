@@ -1,21 +1,24 @@
 name: senler-io-user
 title: Senler.io
 repo: https://github.com/SenlerBot/senler-io-user-hermes-plugin
-sha: d36f1bff7714549c8f388099ee96ecdbe7eff595
-description: "Connect your Senler.io account through MCP OAuth and automate selected webhook events with an outbound Relay connection. Disclosure — When you ask to connect, it adds a `senler-io-user` MCP server (mcp-senler-io-user.senler.io; OAuth handled by Hermes) to the profile's config.yaml, and Relay setup enables a `senler-io` gateway platform there. Once you enable automation, the gateway keeps an outbound WSS connection to a Senler-supplied Relay address and runs unattended agent turns on incoming Senler events (customer messages, leads, etc.); the platform is `trusted_inbound`, so these events bypass Hermes allowlists and pairing, and customer text reaches the model as untrusted data. During those runs a hook blocks every tool except the Senler MCP and pins replies to the event's dialog, but other Senler MCP writes run without a Hermes approval prompt, limited only by your saved instructions and your Senler account permissions. Relay credentials, instructions, event payloads and reports are stored unencrypted in `<HERMES_HOME>/senler-io-relay.sqlite3`; result reports (up to 16,000 characters) and this machine's hostname (as the Relay client name) are sent to Senler."
+sha: 2294619a45f313f7c4d7c6b75bfa8e3781659253
+description: "Get task-specific guidance for Senler agents, automations and knowledge, connect your account through MCP OAuth, and automate selected webhook events with an outbound Relay connection. Disclosure — Hermes installs the declared `python-socks[asyncio]` dependency for native SOCKS proxy support. First activation of the enabled plugin adds a `senler-io-user` MCP server (mcp-senler-io-user.senler.io; OAuth handled by Hermes) to the profile's config.yaml and records completion through plugin settings, which native uninstall clears. Reinstalling and enabling the plugin prepares a missing MCP again. The old durable marker from 0.5.2–0.5.3 is ignored, so upgrading restores a missing entry once, including an entry manually removed before this upgrade. Existing compatible and disabled connections are preserved; later loads in the same installation respect manual removal. Explicit chat setup can restore a removed connection. Relay setup enables a `senler-io` gateway platform in the same profile. Once you enable automation, the gateway keeps an outbound WSS connection to a Senler-supplied Relay address and runs unattended agent turns on incoming Senler events (customer messages, leads, etc.); the platform is `trusted_inbound`, so these events bypass Hermes allowlists and pairing, and customer text reaches the model as untrusted data. During those runs a hook allows the Senler MCP and native tool discovery and pins customer replies to the event's dialog, but other Senler MCP writes run without a Hermes approval prompt, limited only by your saved instructions and your Senler account permissions. Relay credentials, instructions, event payloads and reports are stored unencrypted in `<HERMES_HOME>/senler-io-relay.sqlite3`; result reports (up to 16,000 characters) and this machine's hostname (as the Relay client name) are sent to Senler. Configured monitoring also stores notification recipients, queued texts and delivery receipts in that database; the selected native Hermes messaging adapter sends summaries and delivery-test messages to the saved recipient."
 maintainer: SenlerBot
 tier: community
 category: automation
-version: "0.4.1"
-docs_url: https://github.com/SenlerBot/senler-io-user-hermes-plugin/blob/d36f1bff7714549c8f388099ee96ecdbe7eff595/README.md
-image: https://raw.githubusercontent.com/SenlerBot/senler-io-user-hermes-plugin/d36f1bff7714549c8f388099ee96ecdbe7eff595/assets/catalog-banner.png
+version: "0.5.6"
+docs_url: https://github.com/SenlerBot/senler-io-user-hermes-plugin/blob/2294619a45f313f7c4d7c6b75bfa8e3781659253/README.md
+image: https://raw.githubusercontent.com/SenlerBot/senler-io-user-hermes-plugin/2294619a45f313f7c4d7c6b75bfa8e3781659253/assets/catalog-banner.png
 readme: true
 known_issues:
-  - "Preview: Windows Desktop sign-in is confirmed; a real Senler Relay workflow still needs end-to-end verification."
+  - "After updating, restart the backend used by Desktop and the gateway; a new chat alone may still use older loaded plugin code."
+  - "Preview: Windows Desktop sign-in was previously confirmed; automatic MCP appearance still needs a Desktop UI check, and a real Senler Relay workflow needs end-to-end verification."
   - "Requires current Hermes with native MCP OAuth and Relay transport; gateway proxy mode and multiplexed profiles are unsupported."
+  - "Monitoring notifications require a connected messaging channel; arbitrary Desktop/TUI chats are unsupported."
 capabilities:
   provides_tools:
     - senler_connect
+    - senler_relay
   provides_hooks:
     - pre_tool_call
     - on_session_end

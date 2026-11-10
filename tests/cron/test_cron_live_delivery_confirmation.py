@@ -395,3 +395,13 @@ class TestStandaloneSendIsBounded:
 
         assert error is None
         assert f"delivered to telegram:{CHAT_ID}" in caplog.text
+
+
+@pytest.mark.parametrize("cron_cfg,expected", [(None, True), ({"delivery": {"notify": False}}, False)])
+def test_standalone_fallback_carries_the_cron_notify_choice(cron_cfg, expected):
+    """The live lane sends ``metadata["notify"] = cron.delivery.notify``; the standalone fallback
+    must pass the same choice, or a brief that buzzes in-process lands silently out of process."""
+    _, _, standalone_calls = _run(_job(), "Nightly report.", {"success": True, "filtered": "x", "delivered": False},
+                                  cron_cfg=cron_cfg)
+
+    assert [call["kwargs"]["notify"] for call in standalone_calls] == [expected]

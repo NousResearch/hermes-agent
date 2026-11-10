@@ -45,6 +45,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from agent.deadline import poll_until
+
 logger = logging.getLogger(__name__)
 
 #: How long a caller waits for the owner's control socket after seeing its record (see module doc).
@@ -200,17 +202,18 @@ def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
         return None
     # Liveness BEFORE the dial. A record we cannot prove live must not make us open a socket at an
     # address it chose; proving the PID first is also what keeps a stale record from naming a peer.
-    if not hr.liveness_is_proven(record):
+    # A free host lock falsifies a pid that merely looks alive: treating it as a silent-but-live
+    # gateway is the never-expiring transient refuse (#138343, #133744).
+    if not hr.record_names_live_owner(record):
         return None
     home = record_home(record)
-    deadline = time.monotonic() + max(0.0, wait_for_channel)
-    while True:
+    def _matching_identity():
         identity = _identify(home)
-        if _identity_matches(identity, record, home):
-            return HostGateway(record.pid, home, _served_from_identity(identity))
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(_CHANNEL_POLL_S)
+        return identity if _identity_matches(identity, record, home) else None
+
+    identity = poll_until(_matching_identity, max(0.0, wait_for_channel), _CHANNEL_POLL_S)
+    if identity is not None:
+        return HostGateway(record.pid, home, _served_from_identity(identity))
     # An owner exists and has not answered: the served set is UNKNOWN, never the record's word.
     return HostGateway(record.pid, home, (), served_known=False)
 

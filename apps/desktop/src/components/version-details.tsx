@@ -41,6 +41,20 @@ function ChannelRow({ action }: { action?: ReactNode }) {
   )
 }
 
+/** One side of a client/backend pair; a side that did not answer renders nothing. */
+function SideVersionRow({ label, value }: { label: string; value?: string }) {
+  if (!value) {
+    return null
+  }
+
+  return (
+    <div className="flex justify-between gap-4">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd>v{shortVersion(value)}</dd>
+    </div>
+  )
+}
+
 /**
  * Shared build-provenance display. Reads from `$desktopVersion`
  * (populated from the build stamp / `hermes:version` IPC), so every
@@ -87,6 +101,8 @@ export function VersionDetails({ version, channelAction }: { version: DesktopVer
           {version.dirty && <span className="text-warning"> (!)</span>}
         </dd>
       </div>
+      <SideVersionRow label={u.versionDetailsClient} value={version.clientVersion} />
+      <SideVersionRow label={u.versionDetailsBackend} value={version.backendVersion} />
       {version.commit && (
         <div className="flex justify-between gap-4">
           <dt className="text-muted-foreground">{u.versionDetailsCommit}</dt>

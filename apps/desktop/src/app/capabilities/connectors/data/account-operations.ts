@@ -8,6 +8,7 @@ import { atom } from 'nanostores'
 
 import type { ProfileScope } from '@/hermes'
 import { type ConnectionTarget, parseConnectionTarget } from '@/store/connection-request'
+import { noteFreeTierAppConnected } from '@/store/free-tier-sign-in'
 import { activeGatewayConnectionId } from '@/store/gateway'
 import { normalizeProfileKey } from '@/store/profile'
 
@@ -212,5 +213,11 @@ function refetchOnSettle(operation: AccountOperation): void {
     return
   }
 
-  invalidateConnectors(operation.scope, 'list', 'accounts')
+  // The first connect can create the identity the page opened without, so its bundled catalog and
+  // empty rules are re-read too.
+  invalidateConnectors(operation.scope, 'list', 'accounts', 'catalog', 'policy')
+
+  if (operation.targets.some(target => target.state === 'connected')) {
+    noteFreeTierAppConnected()
+  }
 }

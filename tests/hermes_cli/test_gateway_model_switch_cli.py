@@ -142,18 +142,20 @@ def test_a_declined_owner_warning_switches_nothing(gateway, monkeypatch):
     assert any("Model switch cancelled." in line for line in printed)
 
 
-def test_a_once_restore_nobody_can_confirm_is_not_committed(gateway, monkeypatch):
-    """``/model big --once`` then the restore to the smaller model: the owner can refuse it (large
-    context). Without a prompt (-q) the token is never sent: the session stays on the one-turn model,
-    the CLI says so and follows it instead of claiming the restore."""
+def test_one_turn_restore_does_not_rewrite_the_session(gateway, monkeypatch):
+    """``/model --once`` never commits, so restoring the previous route is local. An owner guard
+    cannot pin the shared session to the one-turn model, and the next turn is not an override."""
     from cli import HermesCLI
     conn, client = gateway
-    printed = []
-    monkeypatch.setattr("cli._cprint", lambda text, *_a, **_k: printed.append(str(text)))
-    cli = _cli(model="big-model")
-    cli.agent = GatewayAgent(connection=conn, session_id=SID, model="big-model", provider="openrouter")
+    monkeypatch.setattr("cli._cprint", lambda *_a, **_k: None)
+    conn.state(SID).info.update(model="small-model", provider="openrouter")
+    cli = _cli(model="big-model", provider="openrouter")
+    cli.agent = GatewayAgent(connection=conn, session_id=SID, model="small-model", provider="openrouter")
+    assert cli.agent.switch_model(new_model="big-model", new_provider="openrouter", once=True) is True
+    client.calls.clear()
     client.mutate_replies = [REFUSAL]
-    HermesCLI._restore_model_runtime_snapshot(cli, {"model": "small-model", "provider": "openrouter"})
-    assert [m["payload"] for m in _mutations(client)] == [{"model": "small-model", "provider": "openrouter"}]
-    assert (cli.model, cli.agent.model) == ("big-model", "big-model")
-    assert any("Model not switched" in line and "small-model" in line for line in printed)
+    HermesCLI._restore_model_runtime_snapshot(cli, {
+        "model": "small-model", "provider": "openrouter", "api_key": "k", "base_url": "", "api_mode": ""})
+    assert _mutations(client) == []
+    assert (cli.model, cli.agent.model) == ("small-model", "small-model")
+    assert cli.agent._turn_route is None

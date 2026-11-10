@@ -1,3 +1,12 @@
+// Loaded once at collection, outside every test's budget: vi.resetModules() keeps each module's
+// transformed code, so the fresh copy a test imports only re-evaluates it. Without this the first
+// test pays the cold transform of the whole graph and times out on a loaded runner.
+import './live-sync'
+import './onboarding-intro'
+import './onboarding-presence'
+import './onboarding-run'
+import './session'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { OnboardingRequest } from './onboarding-run'

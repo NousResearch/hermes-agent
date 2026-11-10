@@ -15,7 +15,8 @@ from tools.connectors.contract import Actor, SettleReason, TargetState, allowed,
 logger = logging.getLogger(__name__)
 
 # Not a config key: a user-tunable wait with clamp rails was a foot-gun (PR1 shipped one, unmerged).
-OPERATION_DEADLINE_SECONDS = 300.0
+# As long as a connect link lives (10 minutes), so a slow authorization settles connected, not failed.
+OPERATION_DEADLINE_SECONDS = 600.0
 
 
 class IllegalTransition(ValueError):
@@ -49,6 +50,8 @@ class Target:
     alias: Optional[str] = None
     # The existing account a reconnect repairs, by id: an unnamed account, which no alias can address.
     repair_id: Optional[str] = None
+    # What an MCP row will run or contact ({kind, target, env?, cwd?}), scrubbed; the card shows it before consent.
+    launch: Optional[dict[str, Any]] = None
 
     @property
     def resolved(self) -> bool:
@@ -73,6 +76,8 @@ class Target:
             out["attempt"] = self.attempt
         if self.required_env:
             out["required_env"] = self.required_env
+        if self.launch:
+            out["launch"] = self.launch
         out.update(self.extra)
         return out
 
@@ -242,6 +247,7 @@ class ConnectionOperation:
         for target in result["targets"]:
             target.pop("connection_id", None)
             target.pop("resolved", None)  # the card's flag; the model reads state
+            target.pop("launch", None)  # the card's consent line; the model named the server itself
         if result.get("settled_at") is None:
             return result
         from tools.registry import registry

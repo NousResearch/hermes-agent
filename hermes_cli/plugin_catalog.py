@@ -28,7 +28,7 @@ from datetime import UTC
 
 logger = logging.getLogger(__name__)
 
-CATALOG_TIERS = ("official", "community")
+CATALOG_TIERS = ("official", "verified", "community")
 # Browse taxonomy for the catalog page / picker. Entries without one land on the Desktop shelf
 # (the common case for community submissions); "general" is for plugins that fit no shelf.
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
@@ -38,7 +38,10 @@ LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
 LIVE_CATALOG_MAX_STALE_SECONDS = 24 * 60 * 60
 LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
-_MAX_LIVE_BYTES = 2 * 1024 * 1024
+# The published doc passed 2 MiB on 2026-11-09 (2,109,306 bytes for 1,268 entries, about 1.7 KB each), and a
+# client that refuses it silently installs its own in-tree pins and misses newer removals. 16 MiB leaves
+# room for roughly 9,000 entries while still bounding a hostile or broken response.
+_MAX_LIVE_BYTES = 16 * 1024 * 1024
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")

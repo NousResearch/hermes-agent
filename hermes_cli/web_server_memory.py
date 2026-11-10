@@ -19,11 +19,11 @@ def _normalize_memory_provider_name(name: Any) -> str:
     return "" if is_core_memory_provider(provider) else provider
 
 
-def _load_memory_provider(name: str):
+def _load_memory_provider(name: str, *, register_skills: Optional[bool] = None):
     try:
         from plugins.memory import load_memory_provider
 
-        return load_memory_provider(name)
+        return load_memory_provider(name, register_skills=register_skills)
     except Exception:
         _log.debug("Failed to load memory provider %s", name, exc_info=True)
         return None
@@ -319,8 +319,12 @@ def _memory_provider_is_configured(name: str, provider: Any) -> bool:
 
 
 def _memory_provider_status(row: dict[str, Any], setup: dict[str, Any], configured: bool, schema_fields: list) -> str:
+    from plugins.memory import parked_provider_notice
+
     if row["missing"]:
         return "missing"
+    if parked_provider_notice(row["name"]):  # plugins.disabled parks it: it will not load
+        return "unavailable"
     if not setup.get("dependencies_installed", True):
         return "unavailable"
     if not configured or (not row["available"] and schema_fields):

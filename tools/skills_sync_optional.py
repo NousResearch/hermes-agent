@@ -26,7 +26,7 @@ def _content_hash(directory: Path) -> str:
         from tools.skills_guard import content_hash
         return content_hash(directory)
     except Exception:
-        return _ss()._dir_hash(directory)
+        return _ss().dir_hash(directory)
 
 
 def _safe_rel_install_path(path: Path, base: Path) -> str:
@@ -109,7 +109,7 @@ def _optional_skill_index() -> dict[str, tuple[str, str, Path]]:
     if optional_dir.exists():
         for skill_md, src, install_path in _iter_optional_skills(optional_dir, root_relative=True):
             value = (src.name, install_path, src)
-            index[src.name] = index[ss._read_skill_name(skill_md, src.name)] = value
+            index[src.name] = index[ss.read_skill_name(skill_md, src.name)] = value
     return index
 
 
@@ -144,14 +144,14 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
     backup_root = ss._skills_dir() / ".restore-backups" / f"official-optional-{timestamp}"
     for folder_name, install_path, src in targets if restore else []:
         dest = ss._skills_dir() / Path(*install_path.split("/"))
-        canonical_ok = dest.exists() and ss._dir_hash(dest) == ss._dir_hash(src)
+        canonical_ok = dest.exists() and ss.dir_hash(dest) == ss.dir_hash(src)
         # Active copies by frontmatter name or folder slug (the curator may have moved the skill
         # into another category); ``dest`` itself is handled below.
-        names = {folder_name, ss._read_skill_name(src / "SKILL.md", folder_name)}
+        names = {folder_name, ss.read_skill_name(src / "SKILL.md", folder_name)}
         for md in ss._iter_active_skill_mds(sort=True):
             match = md.parent
             if match != dest and match.exists() and (
-                    match.name == folder_name or ss._read_skill_name(md, match.name) in names):
+                    match.name == folder_name or ss.read_skill_name(md, match.name) in names):
                 backed_up.append(_move_to_restore_backup(match, backup_root))
         if dest.exists() and not canonical_ok:
             backed_up.append(_move_to_restore_backup(dest, backup_root))
@@ -216,7 +216,7 @@ def _backfill_optional_provenance(quiet: bool = False) -> list[str]:
             if (found := _relocated_dest(src.name, installed_dir_index)) is None:
                 continue
             dest, install_path = found  # still requires a byte-identical hash below
-        if install_path in existing_paths or ss._dir_hash(dest) != ss._dir_hash(src):
+        if install_path in existing_paths or ss.dir_hash(dest) != ss.dir_hash(src):
             continue
         timestamp = datetime.now(UTC).isoformat()
         installed[lock_name] = {

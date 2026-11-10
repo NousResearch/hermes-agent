@@ -84,12 +84,12 @@ def mux(tmp_path, peer):
     return {'root': root, 'boot': boot, 'env': env, 'config': config, 'log': tmp_path / 'gateway.log'}
 
 
-def start_daemon(mux, timeout=90):
+def start_daemon(mux, timeout=90, *, extra_args=()):
     """Boot the multiplexer the way ``hermes gateway run`` does; the canonical gateway command-line
     matcher (``gateway.status.looks_like_gateway_command_line``) is what the CLI's liveness probes
     apply to the recorded PID, so the fixture must spawn a recognisable launcher."""
     log = mux['log'].open('a+', encoding='utf-8', errors='replace')
-    proc = subprocess.Popen([sys.executable, '-m', 'hermes_cli.main', 'gateway', 'run', '--quiet'], cwd=ROOT,
+    proc = subprocess.Popen([sys.executable, '-m', 'hermes_cli.main', 'gateway', 'run', '--quiet', *extra_args], cwd=ROOT,
                             env=mux['env'], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
     desc = {}
     deadline = time.monotonic() + timeout
@@ -311,4 +311,289 @@ def test_invalid_hot_profile_config_is_parked_and_unserved(mux):
         assert 'boot' in desc.get('parked_profiles', {}), desc
         wait_recorded(root, lambda r: 'boot' not in r, 'parked boot withdrawn from the recorded set')
     finally:
+        stop(proc, expect=None)
+
+
+async def chat_for(root, home, desc, *, during_turn=None):
+    """Exercise the real session/agent path; only the model HTTP wire is a fixture."""
+    grant = control(root, 'session-ticket', {'profile_id': str(home.resolve()),
+                    'instance_id': desc['instance_id'], 'purpose': 'interactive'})
+    url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws'
+    async with connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + grant['ticket']]) as ws:
+        async def until(predicate):
+            async with asyncio.timeout(40):
+                while True:
+                    reply = json.loads(await ws.recv())
+                    if predicate(reply):
+                        return reply
+
+        await ws.send(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'session.create',
+            'params': {'request_id': 'profile-stop-chat', 'source': 'cli'}}))
+        created = await until(lambda r: r.get('id') == 1)
+        assert 'result' in created, created
+        sid = created['result']['session_id']
+        # Keep the same connection and conversation for a second turn after the stop.
+        for index in range(2):
+            text = 'WS_SHARED BLOCK_FIFO' if during_turn and index == 0 else 'WS_SHARED'
+            await ws.send(json.dumps({'jsonrpc': '2.0', 'id': index + 2, 'method': 'prompt.submit',
+                'params': {'session_id': sid, 'text': text, 'input_id': f'profile-stop-{index}'}}))
+            submitted = await until(lambda r: r.get('id') == index + 2)
+            assert 'result' in submitted, submitted
+            if during_turn and index == 0:
+                await during_turn()
+            terminal = await until(lambda r: r.get('params', {}).get('type') in {'message.complete', 'error'})
+            assert 'LOCAL_ACK_WS_SHARED' in json.dumps(terminal), terminal
+
+
+def test_stop_secondary_keeps_host_and_survives_host_restart(mux, peer):
+    """A satellite's runtime PID is its serving host, never its process to kill."""
+    import threading
+    peer.blocked, peer.release = threading.Event(), threading.Event()
+    root, boot = mux['root'], mux['boot']
+    proc, desc = start_daemon(mux)
+
+    async def stop_during_primary_turn():
+        assert await asyncio.to_thread(peer.blocked.wait, 10), 'primary turn never reached model'
+        try:
+            stopped = await asyncio.to_thread(subprocess.run,
+                [sys.executable, '-m', 'hermes_cli.main', '-p', 'boot', 'gateway', 'stop'],
+                cwd=ROOT, env=mux['env'], capture_output=True, text=True, timeout=45, check=False)
+            assert stopped.returncode == 0, (stopped.stdout, stopped.stderr)
+            assert (boot / 'gateway.parked').exists(), (stopped.stdout, stopped.stderr)
+            assert proc.poll() is None, tail(mux)
+            after = control(root, 'identify')
+            assert after['instance_id'] == desc['instance_id']
+            assert served_homes(after) == {root.resolve()}
+        finally:
+            peer.release.set()
+
+    try:
+        asyncio.run(chat_for(root, root, desc, during_turn=stop_during_primary_turn))
+        # An explicit host restart exercises persisted stop intent, not merely cached status.
+        stop(proc)
+        proc, desc = start_daemon(mux)
+        assert served_homes(desc) == {root.resolve()}
+        started = subprocess.run(
+            [sys.executable, '-m', 'hermes_cli.main', '-p', 'boot', 'gateway', 'start'],
+            cwd=ROOT, env=mux['env'], capture_output=True, text=True, timeout=45, check=False,
+        )
+        assert started.returncode == 0, (started.stdout, started.stderr)
+        assert not (boot / 'gateway.parked').exists()
+        after = control(root, 'identify')
+        assert after['instance_id'] == desc['instance_id']
+        assert served_homes(after) == {root.resolve(), boot.resolve()}
+        asyncio.run(chat_for(root, boot, after))
+    finally:
+        peer.release.set()
+        stop(proc, expect=None)
+
+
+def test_standalone_secondary_stops_without_stopping_host(mux):
+    """Positive OS ownership still permits stopping a real independent gateway."""
+    root, boot = mux['root'], mux['boot']
+    config = {**mux['config'], 'gateway': {'standalone': True, 'multiplex_profiles': False}}
+    (boot / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
+    host, desc = start_daemon(mux)
+    child = None
+    try:
+        assert served_homes(desc) == {root.resolve()}
+        standalone = {**mux, 'root': boot, 'env': {**mux['env'], 'HERMES_HOME': str(boot)},
+                      'log': mux['log'].with_name('standalone.log')}
+        child, _ = start_daemon(standalone)
+        stopped = subprocess.run(
+            [sys.executable, '-m', 'hermes_cli.main', '-p', 'boot', 'gateway', 'stop'],
+            cwd=ROOT, env=mux['env'], capture_output=True, text=True, timeout=45, check=False)
+        assert stopped.returncode == 0, (stopped.stdout, stopped.stderr)
+        child.wait(timeout=30)
+        assert host.poll() is None
+        assert control(root, 'identify')['instance_id'] == desc['instance_id']
+        assert not (boot / 'gateway.parked').exists()
+    finally:
+        if child is not None:
+            stop(child, expect=None)
+        stop(host, expect=None)
+
+
+def test_unsupervised_host_without_profile_flag_can_stop(mux):
+    proc, _ = start_daemon(mux, extra_args=('--no-supervise',))
+    try:
+        result = subprocess.run(
+            [sys.executable, '-m', 'hermes_cli.main', 'gateway', 'stop'],
+            cwd=ROOT, env=mux['env'], capture_output=True, text=True, timeout=45, check=False)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert 'Stopped gateway for this profile' in result.stdout, (result.stdout, result.stderr)
+        proc.wait(timeout=30)
+    finally:
+        stop(proc, expect=None)
+
+
+def hot_profile(mux, name):
+    """A profile created behind the multiplexer's back, landing parked in one rename: the 30s
+    profile watcher skips parked profiles, so it stays unserved until ``serve_hot``."""
+    staging = mux['root'].parent / f'{name}.staging'
+    staging.mkdir(mode=0o700)
+    (staging / 'config.yaml').write_text(json.dumps(mux['config']), encoding='utf-8')
+    (staging / 'gateway.parked').touch()
+    return staging.rename(mux['root'] / 'profiles' / name)
+
+
+def lifecycle(root, verb, home):
+    """``serve-profile``/``unserve-profile`` *home*. Past 5s the verb answers ``pending`` and keeps
+    running; then wait (bounded) until the recorded set shows it, which is written once the verb's
+    own work completes (``identify`` drops a retiring profile before its turns are joined)."""
+    serve = verb == 'serve-profile'
+    reply = control(root, verb, {'name': home.name})
+    if reply.get('pending'):
+        wait_until(lambda: (home.name in (recorded_served(root) or [])) == serve,
+                   timeout=60, interval=.2, what=f'{verb} {home.name} after pending')
+        reply = {('served' if serve else 'unserved'): home.name}
+    return reply
+
+
+def serve_hot(root, home):
+    """Unpark *home* and serve it by the verb. A watcher tick landing in between serves it first;
+    then retire and re-serve it by the verb (ticks are 30s apart), so ``served`` is the verb's own."""
+    (home / 'gateway.parked').unlink()
+    reply = lifecycle(root, 'serve-profile', home)
+    if 'already served' in reply.get('error', ''):
+        assert lifecycle(root, 'unserve-profile', home).get('unserved') == home.name
+        reply = lifecycle(root, 'serve-profile', home)
+    assert reply.get('served') == home.name, reply
+
+
+def unserve_hot(root, home):
+    """Retire *home* by the verb, then park it. ``gateway stop`` parks first; unserving first keeps
+    the watcher from retiring it ahead of the verb. A tick in between that re-served it is retired
+    by a second verb, which waits out any in-flight watcher reconcile (one lock)."""
+    reply = lifecycle(root, 'unserve-profile', home)
+    (home / 'gateway.parked').touch()
+    again = lifecycle(root, 'unserve-profile', home)
+    assert again.get('unserved') == home.name or 'is not served' in again.get('error', ''), again
+    return reply
+
+
+def mint(root, home, desc):
+    return control(root, 'session-ticket', {'profile_id': str(home.resolve()),
+                   'instance_id': desc['instance_id'], 'purpose': 'interactive'})['ticket']
+
+
+async def submit_turn(desc, ticket, *, during_turn=None):
+    """One session.create + prompt.submit through *ticket*; returns ``(session_id, terminal event)``."""
+    url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws'
+    async with connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket]) as ws:
+        async def until(predicate):
+            async with asyncio.timeout(60):
+                while True:
+                    reply = json.loads(await ws.recv())
+                    if predicate(reply):
+                        return reply
+        await ws.send(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'session.create',
+                                  'params': {'request_id': 'serve-verb', 'source': 'cli'}}))
+        created = await until(lambda r: r.get('id') == 1)
+        assert 'result' in created, created
+        sid = created['result']['session_id']
+        text = 'WS_SHARED BLOCK_FIFO' if during_turn else 'WS_SHARED'
+        await ws.send(json.dumps({'jsonrpc': '2.0', 'id': 2, 'method': 'prompt.submit',
+                                  'params': {'session_id': sid, 'text': text, 'input_id': 'serve-verb-0'}}))
+        submitted = await until(lambda r: r.get('id') == 2)
+        assert 'result' in submitted, submitted
+        if during_turn:
+            await during_turn()
+        terminal = await until(lambda r: r.get('params', {}).get('type') in {'message.complete', 'error'})
+        return sid, terminal
+
+
+def owned_session(home, desc, sid):
+    """*sid* is committed in *home*'s own state.db, fenced by this multiplexer's epoch."""
+    import sqlite3
+    with sqlite3.connect(f"file:{home / 'state.db'}?mode=ro", uri=True) as db:
+        epoch = db.execute('SELECT instance_id FROM runtime_epoch').fetchone()
+        row = db.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone()
+    return epoch == (desc['instance_id'],) and row is not None
+
+
+def test_serve_and_unserve_profile_verbs_add_and_retire_its_session_owner(mux):
+    """``serve-profile <name>`` builds the profile's authority (it mints, admits and commits that
+    profile's sessions); ``unserve-profile <name>`` retires it: discovery drops it, a ticket for it
+    is refused (an earlier-minted one no longer redeems), and the other profiles keep serving."""
+    root, boot = mux['root'], mux['boot']
+    proc, desc = start_daemon(mux)
+    try:
+        hot = hot_profile(mux, 'hot')
+        assert hot.resolve() not in served_homes(control(root, 'identify'))
+        with pytest.raises(AssertionError, match='bootstrap binding rejected'):
+            mint(root, hot, desc)
+
+        assert 'is parked' in control(root, 'serve-profile', {'name': 'hot'}).get('error', '')
+        serve_hot(root, hot)
+        desc = control(root, 'identify')
+        assert served_homes(desc) == {root.resolve(), boot.resolve(), hot.resolve()}, desc
+        wait_recorded(root, lambda r: r == ['default', 'boot', 'hot'], 'hot recorded')
+        # A second serve of a served profile is refused, not rebuilt.
+        assert 'already served' in control(root, 'serve-profile', {'name': 'hot'}).get('error', '')
+
+        sid, terminal = asyncio.run(submit_turn(desc, mint(root, hot, desc)))
+        assert 'LOCAL_ACK_WS_SHARED' in json.dumps(terminal), terminal
+        assert owned_session(hot, desc, sid), tail(mux)
+        assert not owned_session(root, desc, sid)
+
+        stale = mint(root, hot, desc)  # minted while served, redeemed after the unserve
+        unserved = unserve_hot(root, hot)
+        assert unserved.get('unserved') == 'hot', (unserved, tail(mux))
+        desc = control(root, 'identify')
+        assert served_homes(desc) == {root.resolve(), boot.resolve()}, desc
+        wait_recorded(root, lambda r: r == ['default', 'boot'], 'hot withdrawn from the recorded set')
+        assert 'is not served' in control(root, 'unserve-profile', {'name': 'hot'}).get('error', '')
+        with pytest.raises(AssertionError, match='bootstrap binding rejected'):
+            mint(root, hot, desc)
+        from websockets.exceptions import InvalidStatus
+        with pytest.raises(InvalidStatus):
+            asyncio.run(submit_turn(desc, stale))
+
+        # Control: the launch profile and the boot-time secondary still admit and answer turns.
+        for home in (boot, root):
+            sid, terminal = asyncio.run(submit_turn(desc, mint(root, home, desc)))
+            assert 'LOCAL_ACK_WS_SHARED' in json.dumps(terminal), (home, terminal)
+            assert owned_session(home, desc, sid), (home, tail(mux))
+        assert proc.poll() is None
+    finally:
+        stop(proc, expect=None)
+
+
+def test_unserve_profile_during_a_running_turn_stops_it_before_retiring(mux, peer):
+    """Retirement Stops the profile's executing turn and joins it before answering ``unserved``:
+    the turn ends interrupted while its model call is still blocked, and the host keeps running."""
+    import threading
+
+    class Gate(threading.Event):
+        """``ModelPeer`` fails the blocked call itself once its 15s wait times out; record that."""
+        timed_out = False
+
+        def wait(self, timeout=None):
+            released = super().wait(timeout)
+            self.timed_out |= not released
+            return released
+
+    peer.blocked, peer.release = threading.Event(), Gate()
+    root = mux['root']
+    proc, desc = start_daemon(mux)
+    hot = hot_profile(mux, 'hot')
+
+    async def unserve_mid_turn():
+        assert await asyncio.to_thread(peer.blocked.wait, 10), 'hot turn never reached the model'
+        unserved = await asyncio.to_thread(unserve_hot, root, hot)
+        assert unserved.get('unserved') == 'hot', (unserved, tail(mux))
+
+    try:
+        serve_hot(root, hot)
+        desc = control(root, 'identify')
+        _, terminal = asyncio.run(submit_turn(desc, mint(root, hot, desc), during_turn=unserve_mid_turn))
+        payload = terminal['params'].get('payload', {})
+        assert (payload.get('status'), payload.get('outcome')) == ('interrupted', 'cancelled'), terminal
+        # Ended by the Stop while the model call was still blocked, not after the gate gave up on it.
+        assert not peer.release.timed_out, (terminal, tail(mux))
+        assert hot.resolve() not in served_homes(control(root, 'identify'))
+        assert proc.poll() is None, tail(mux)
+    finally:
+        peer.release.set()
         stop(proc, expect=None)

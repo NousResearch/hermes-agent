@@ -360,8 +360,8 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
 
     Mirrors ``_agent_cache_base_for_env`` in tools/image_generation_tool.py: docker/modal mount at
     ``/root/.hermes``; ssh/daytona/vercel_sandbox under ``~/.hermes``; plugin backends declare
-    ``cache_path_base`` (None = host paths stay correct); local/singularity/unknown unchanged
-    (Apptainer auto-binds the host home, so translation would dangle).
+    ``cache_path_base`` (None = host paths stay correct, e.g. the singularity plugin); local/unknown
+    unchanged.
 
     * docker / modal — bind-mounted (docker) or per-file-synced (modal) at ``/root/.hermes`` (the
     *container_base* default). * ssh / daytona / vercel_sandbox — file-synced under the remote user's home;

@@ -159,7 +159,10 @@ def test_canonical_safe_launch_is_frozen_policy_executed_in_isolated_worker(tmp_
             return db.execute(sql, args).fetchall()
 
     def records():
-        return [json.loads(line) for line in audit.read_text(encoding='utf-8').splitlines()]
+        # The owner and its children keep appending while we read, and on ext4/tmpfs a read can
+        # land mid-append. A record's newline is the last byte written, so only newline-terminated
+        # lines are finished records; an unterminated tail is an append still in flight.
+        return [json.loads(line) for line in audit.read_text(encoding='utf-8').split('\n')[:-1]]
 
     def worker_pids(owner_pid):
         return sorted({r['pid'] for r in records() if r['kind'] == 'start' and r['ppid'] == owner_pid

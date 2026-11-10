@@ -10,16 +10,20 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
+import sqlite3
 import stat
 import tempfile
 import threading
+from hermes_dir_acl import make_user_dir
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
 from utils import fsync_directory
 
+logger = logging.getLogger(__name__)
 
 _API_IMAGE_NAME = re.compile(r'api_[0-9a-f]{32}\.(png|jpg|gif|webp)')
 _SHA256_NAME = re.compile(r'[0-9a-f]{64}')
@@ -33,23 +37,37 @@ _lease_lock = threading.Lock()
 _lease_scope = ContextVar('native_media_lease_scope', default=None)
 
 
+class _CaptureScope(list):
+    def __init__(self, authority):
+        super().__init__()
+        self.authority = authority
+        self.all_paths = []
+        self.abandoned = False
+        self.write_started = False
+
+    def append(self, path):
+        super().append(path)
+        self.all_paths.append(path)
+
+
 @contextmanager
-def capture_lease():
+def capture_lease(authority=None):
     """Hold every path captured inside this block (capture through admission commit or refusal)
     against a concurrent release: an older turn's settlement or cancellation that names the same
     content-addressed bytes would otherwise unlink them before the new admission holds them."""
-    token = _lease_scope.set([])
+    scope = _CaptureScope(authority)
+    token = _lease_scope.set(scope)
     try:
-        yield
+        yield scope
     finally:
         drop_capture_lease()
         _lease_scope.reset(token)
 
 
-def drop_capture_lease(paths=None):
+def drop_capture_lease(paths=None, *, scope=None):
     """End this scope's lease on *paths* (default: all) early, e.g. before a refused admission
     releases its own fresh capture, which its lease would otherwise keep from collection."""
-    held = _lease_scope.get()
+    held = scope if scope is not None else _lease_scope.get()
     if not held:
         return
     with _lease_lock:
@@ -60,9 +78,41 @@ def drop_capture_lease(paths=None):
                 del _leases[path]
 
 
-def _media_root():
+async def abandon_capture(scope):
+    """Mark *scope*'s capture abandoned and release it, once: no row can own these bytes. A no-op for no
+    scope, a scope without an authority, or one already abandoned (its release ran or is arranged)."""
+    if scope is None or scope.authority is None or scope.abandoned:
+        return
+    scope.abandoned = True
+    await release_abandoned_capture(scope)
+
+
+async def release_abandoned_capture(scope):
+    """Collect every path published by an abandoned worker, including after its caller left."""
+    if scope.authority is None:
+        return
+    drop_capture_lease(scope=scope)
+    references = [{'path': path, 'sha256': Path(path).parent.name} for path in set(scope.all_paths)]
+    if references:
+        import asyncio
+        await asyncio.to_thread(release_unheld_media, scope.authority.db, references)
+
+
+def native_inputs_store():
+    """The store's path as the profile names it, unresolved. The one value ``make_user_dir`` gets:
+    ``resolve()`` erases a link planted below the Hermes home (``cache/documents`` -> elsewhere),
+    and an elevated grant on the resolved path would land outside the home with no home fence."""
     from gateway.platforms.base import get_document_cache_dir
-    return get_document_cache_dir().resolve() / 'native-inputs'
+    return get_document_cache_dir() / 'native-inputs'
+
+
+def native_inputs_root():
+    """This profile's content-addressed store of retained native inputs (``<root>/<sha256>/<name>``),
+    resolved: what the identity checks compare against."""
+    return native_inputs_store().resolve()
+
+
+_media_root = native_inputs_root
 
 
 # Public ``prompt.submit`` attachments: a local client stages image bytes in the
@@ -117,7 +167,7 @@ def admit_attachments(attachments, *, admitted=None):
             raise RuntimeStoreError('invalid_params')
         if any(digest is not None and digest != reference['sha256']
                for digest, reference in zip(hashes, committed['media'])):
-            raise RuntimeStoreError('admission_conflict')
+            raise RuntimeStoreError('admission_conflict', **ADMITTED_REQUEST_CONFLICT)
         retry = True
     else:
         # Retry identity is the committed bytes, not the disposable staging name.
@@ -132,31 +182,57 @@ def admit_attachments(attachments, *, admitted=None):
     return {'attachments_v1': {'media': capture_native_media(paths), 'media_types': mimes}}
 
 
-def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload):
+def ingress_fingerprint(payload, raw=None):
+    """SHA-256 of a delivery as received: its prepared payload and the provider payload the hook also
+    sees (``raw_message``: a webhook's parsed, route-script-transformed body; None on relay, whose
+    wire fields are all in the payload). Transport headers (delivery id, signature, attempt counters,
+    timestamps) never reach the hook and are not hashed. Media count by bytes: a redelivery
+    re-captures them under a fresh staging name (``reconcile_native_retry``)."""
+    envelope = {**payload['native_text_v1']}
+    envelope.pop('ingress_sha256', None)
+    if 'media' in envelope:
+        envelope['media'] = [[media['sha256'], media['size']] for media in envelope['media']]
+    received = {**payload, 'native_text_v1': envelope}
+    if raw is not None:
+        received = {'payload': received, 'raw_message': raw}
+    canonical = json.dumps(received, sort_keys=True, separators=(',', ':'), default=repr)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload, raw=None):
     """A redelivered native message (lost provider ACK, Relay buffer replay) re-downloads its media
     under a fresh disposable staging name, so its captured path differs from the committed one.
     Retry identity is the committed bytes, not that name: when this exact identity already holds
     the same digests and sizes in the same order, the committed references stand in for the fresh
     capture (whose now-unowned copy is collected) and the admission digest decides the rest, so
-    changed bytes or any other changed field still conflict."""
-    fresh = payload.get('native_text_v1', {}).get('media')
-    if not fresh:
-        return payload
+    changed bytes or any other changed field still conflict. A delivery committed in
+    ``pre_gateway_dispatch``-rewritten form resolves to its committed payload when the resend matches
+    the fingerprint recorded at ingress (``ingress_fingerprint``); a changed resend, or a row
+    committed before fingerprints, is compared exactly as above."""
+    fresh = payload.get('native_text_v1', {}).get('media') or []
     with db._read_ctx() as conn:
         row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
                            'target_session_id=? AND request_id=?', (principal_id, session_id, request_id)).fetchone()
-    committed = json.loads(row[1]).get('native_text_v1', {}).get('media') if row is not None else None
-    if not committed or [(r['sha256'], r['size']) for r in committed] != [(r['sha256'], r['size']) for r in fresh]:
-        return payload
-    if row[0] != 'terminal':
+    retained = json.loads(row[1]) if row is not None else {}
+    recorded = retained.get('native_text_v1', {}).get('ingress_sha256')
+    if recorded is not None and recorded == ingress_fingerprint(payload, raw):
+        resolved = retained
+    else:
+        committed = retained.get('native_text_v1', {}).get('media')
+        if not fresh or not committed or [(r['sha256'], r['size']) for r in committed] != [
+                (r['sha256'], r['size']) for r in fresh]:
+            return payload
+        resolved = {**payload, 'native_text_v1': {**payload['native_text_v1'], 'media': committed}}
+    committed = resolved['native_text_v1'].get('media', [])
+    if committed and row[0] != 'terminal':
         # A live row still executes these bytes, so they must verify (a terminal one is digest evidence).
         restore_native_media(committed)
     kept = {reference['path'] for reference in committed}
     unowned = [reference for reference in fresh if reference['path'] not in kept]
-    drop_capture_lease({reference['path'] for reference in unowned})
-    release_unheld_media(db, unowned, retain_history=False)
-    return {**payload, 'native_text_v1': {**payload['native_text_v1'], 'media': committed}}
-
+    if unowned:
+        drop_capture_lease({reference['path'] for reference in unowned})
+        release_unheld_media(db, unowned, retain_history=False)
+    return resolved
 
 def _attachment_hashes(paths):
     hashes = []
@@ -214,7 +290,7 @@ def capture_native_media(paths):
             root = target.parent.parent
             if target.parent.resolve() != target.parent:
                 raise RuntimeStoreError('invalid_params')
-            target.parent.mkdir(mode=0o700, exist_ok=True)
+            make_user_dir(native_inputs_store() / target.parent.name, mode=0o700, exist_ok=True)
             with _lease_lock:
                 scope = _lease_scope.get()
                 if scope is not None:
@@ -243,7 +319,7 @@ def _capture_file(path, limit, total, references, staged):
         root = _media_root()
         if root.resolve() != root:
             raise RuntimeStoreError('invalid_params')
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        make_user_dir(native_inputs_store(), mode=0o700, parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix='.capture-', dir=root)
         temporary = Path(name)
         staged.append(temporary)
@@ -422,14 +498,19 @@ def collect_unheld_api_images(db):
     unowned, so it collects nothing."""
     from hermes_constants import get_hermes_home
     if Path(db.db_path).resolve().parent != get_hermes_home().resolve():
-        import logging
-        logging.getLogger(__name__).warning(
+        logger.warning(
             'Skipped retained API image collection: %s is not the active profile store', db.db_path)
         return 0
     root = _media_root()
-    return release_unheld_media(db, [
-        {'path': str(path), 'sha256': path.parent.name} for path in (root.glob('*/api_*') if root.is_dir() else ())
-        if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
+    try:
+        return release_unheld_media(db, [
+            {'path': str(path), 'sha256': path.parent.name} for path in (root.glob('*/api_*') if root.is_dir() else ())
+            if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
+    except sqlite3.DatabaseError:
+        # Callers run after a committed delete or during startup recovery: neither may fail on it.
+        # ``DatabaseError`` also covers a corrupt store, not only ``OperationalError`` (locked, limits).
+        logger.exception('API image collection failed; files stay for the next sweep')
+        return 0
 
 
 def _history_mentions(conn, references, after_id=0):
@@ -445,10 +526,12 @@ def _history_mentions(conn, references, after_id=0):
         for tail in (reference['sha256'] + sep + Path(raw).name for sep in ('/', '\\')):
             needles[tail] = needles[json.dumps(tail)[1:-1]] = raw
     prefixes = sorted({reference['sha256'] for reference in references})
-    match = ' OR '.join(['instr(content,?)'] * len(prefixes))
-    query = f'SELECT content FROM messages WHERE ({match})' + (' AND id>?' if after_id else '')
+    # The digests are ONE bound JSON array, never one ``instr`` term each: the statement's size
+    # must not grow with the candidate count (SQLite's expression-depth limit fails at ~1000 terms).
+    query = ('WITH digests(value) AS MATERIALIZED (SELECT value FROM json_each(?)) SELECT content FROM messages '
+             'WHERE EXISTS (SELECT 1 FROM digests WHERE instr(content, digests.value))' + (' AND id>?' if after_id else ''))
     mentioned = set()
-    for (content,) in conn.execute(query, (*prefixes, *((after_id,) if after_id else ()))):
+    for (content,) in conn.execute(query, (json.dumps(prefixes), *((after_id,) if after_id else ()))):
         text = content.decode('utf-8', 'replace') if isinstance(content, bytes) else str(content)
         mentioned.update(raw for needle, raw in needles.items() if needle in text)
     return mentioned

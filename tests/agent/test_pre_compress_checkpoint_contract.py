@@ -15,10 +15,12 @@ from types import SimpleNamespace
 import pytest
 
 from agent.conversation_compression import (
-    CompressionCheckpointUnavailable,
-    _checkpoint_blocked,
     _direct_messages_for_pre_compress_memory,
     _pre_compress_memory_context,
+)
+from agent.conversation_compression_checkpoint import (
+    CompressionCheckpointUnavailable,
+    _checkpoint_blocked,
     _warn_checkpoint_required_without_capable_provider,
 )
 from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
@@ -461,7 +463,7 @@ def test_agent_init_refuses_checkpoint_required_on_codex_app_server():
     compaction, so the compress_context() guard alone cannot cover native
     turns — init_agent has to refuse before a turn exists.
     """
-    from agent.agent_init import (
+    from agent.conversation_compression_checkpoint import (
         _refuse_checkpoint_required_on_codex_app_server,
     )
 

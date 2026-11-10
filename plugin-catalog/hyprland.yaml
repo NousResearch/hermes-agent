@@ -1,0 +1,24 @@
+name: hyprland
+repo: https://github.com/mddragon18/hyprland-computer-use
+sha: eef766e18200338b772b14c20dbf03d603c84982
+subdir: plugin/hyprland
+description: "Hyprland-native computer use for Hermes: grim capture, wlr-virtual-pointer clicks/drags/scroll, wtype text, and window-scoped target enforcement. No XWayland, accessibility tree, root, or /dev/uinput. Disclosure — the pointer helper is C source you build locally (`make -C <plugin>/pointer`) and the plugin runs it, or the binary named in `computer_use.hyprland.pointer_bin` / `HYPRLAND_CU_POINTER_BIN`, to inject pointer events; screenshots of the screen or the targeted window go to your model like any computer-use backend; capturing a named app focuses its window; and text that starts with `-` (or that wtype refuses) is typed by pasting through the Wayland clipboard, which overwrites your clipboard and leaves that text in it."
+maintainer: mddragon18
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/mddragon18/hyprland-computer-use/blob/eef766e18200338b772b14c20dbf03d603c84982/plugin/hyprland/README.md
+version: "0.3.0"
+title: "Hyprland Computer Use"
+platforms:
+  - linux
+readme: true
+known_issues:
+  - "The pointer helper is C source and must be built locally: make -C ~/.hermes/plugins/hyprland/pointer (catalog rule 17 forbids shipping binaries)."
+  - "Modifier+click and modifier+drag are unsupported: holding a key across a pointer event needs /dev/uinput."
+  - "Requires Hyprland with wlr-virtual-pointer-unstable-v1 (present in default Hyprland builds)."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

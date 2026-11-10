@@ -35,11 +35,12 @@ async def test_cancel_uses_observed_generation_and_mutations_fail_explicitly(tmp
         await agent.set_session_model(session_id="shared", model_id="new-model")
     methods = [method for method, _ in calls]
     assert methods and set(methods) <= {"session.resume", "session.mutate"}, methods
-    # Edit-policy mode is still unsupported and must not reach the authority at all.
-    before = len(calls)
-    with pytest.raises(GatewayClientError, match="unavailable"):
+    # An edit-policy mode is the same canonical mutation: a stale answer propagates verbatim too.
+    calls.clear()
+    with pytest.raises(GatewayClientError, match="stale_generation"):
         await agent.set_session_mode(session_id="shared", mode_id="dont_ask")
-    assert len(calls) == before, "Unsupported operations must not reach an alternate writer"
+    methods = [method for method, _ in calls]
+    assert methods and set(methods) <= {"session.resume", "session.mutate"}, methods
 
 
 @pytest.mark.asyncio

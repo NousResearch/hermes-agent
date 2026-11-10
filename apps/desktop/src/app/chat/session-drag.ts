@@ -12,6 +12,10 @@
  *     into that surface's composer (ChatDropOverlay owns the visual);
  *   - a sidebar PROJECT ROW → move: re-home the session under that project
  *     (same call the row's own "Move to project" menu item makes);
+ *   - the sidebar PINNED section → pin: same call as the row's "Pin" menu
+ *     item (a row already in Pinned isn't a pin target — it reorders there);
+ *   - a sidebar SESSION LIST, from a pinned row → unpin: same call as the
+ *     row's "Unpin" menu item;
  *   - anything else (terminal, gutters) → deny.
  *
  * Zones that don't host a chat surface are NOT targets — the overlay never
@@ -48,10 +52,11 @@ import {
 } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
 import { translateNow } from '@/i18n'
+import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
 import { moveSessionToProject, projectIdForCwd } from '@/store/projects'
-import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
+import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 import { $sessionTiles, nextSessionTileForWorkspace, openSessionTile, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
@@ -60,6 +65,8 @@ import { NO_PROJECT_ID } from './sidebar/projects/workspace-groups'
 import { tileZoneHost } from './tile-zone-host'
 
 const PROJECT_ROW_DROP_ATTR = 'data-session-drop-hover'
+const PIN_DROP_SELECTOR = '[data-session-pin-drop]'
+const UNPIN_DROP_SELECTOR = '[data-session-unpin-drop]'
 
 /** A sidebar project row's drop geometry — tagged by `ProjectOverviewRow` via
  *  `data-sessions-project`. */
@@ -130,12 +137,17 @@ export function startSessionDrag(
   let composers: ZoneRect[] = []
   let zoneHost = new Map<string, ReturnType<typeof tileZoneHost>>()
   let projectRows: ProjectRowSnapshot[] = []
+  let pinTarget: { el: HTMLElement; rect: ZoneRect } | null = null
+  let unpinTargets: { el: HTMLElement; rect: ZoneRect }[] = []
 
   // Commit intent, updated per resolved move (the machinery flushes the final
   // move before commit, so these always match the released-at position).
   let split: { anchor: string; before?: null | string; pos: TileDock } | null = null
   let link: null | string = null
   let moveToProject: null | string = null
+  let pin = false
+  let unpin = false
+  let hoveredUnpin: HTMLElement | null = null
   // The project row currently painted as the drop target, so a move to a
   // different row (or off any row) clears the one it left — imperative like
   // the source's own opacity, not React state (a repaint here shouldn't
@@ -145,6 +157,26 @@ export function startSessionDrag(
   const clearProjectHover = () => {
     hoveredProjectRow?.removeAttribute(PROJECT_ROW_DROP_ATTR)
     hoveredProjectRow = null
+  }
+
+  const setUnpinHover = (el: HTMLElement | null) => {
+    unpin = el !== null
+
+    if (hoveredUnpin !== el) {
+      hoveredUnpin?.removeAttribute(PROJECT_ROW_DROP_ATTR)
+      el?.setAttribute(PROJECT_ROW_DROP_ATTR, 'true')
+      hoveredUnpin = el
+    }
+  }
+
+  const setPinHover = (on: boolean) => {
+    pin = on
+
+    if (on) {
+      pinTarget?.el.setAttribute(PROJECT_ROW_DROP_ATTR, 'true')
+    } else {
+      pinTarget?.el.removeAttribute(PROJECT_ROW_DROP_ATTR)
+    }
   }
 
   // The drag SOURCE (sidebar row or tile tab). Captured synchronously — React
@@ -169,6 +201,22 @@ export function startSessionDrag(
       const draggedSession = $sessions.get().find(s => sessionMatchesStoredId(s, payload.id))
       const cwd = draggedSession?.cwd?.trim() || ''
       projectRows = snapshotProjectRows(cwd ? projectIdForCwd(cwd) : null)
+      // A row dragged out of Pinned has nothing to pin (it reorders there) —
+      // instead the session lists become unpin targets. Any other row gets
+      // Pinned as its pin target.
+      const fromPinned = Boolean(source?.closest(PIN_DROP_SELECTOR))
+
+      // A session that's already pinned (e.g. dragged from its tile tab) has
+      // nothing to pin either: pinSession would re-append it to the bottom.
+      const alreadyPinned = draggedSession
+        ? $pinnedSessionIds.get().includes(sessionPinId(draggedSession))
+        : $pinnedSessionIds.get().includes(payload.id)
+
+      const pinEl = fromPinned || alreadyPinned ? null : queryAllVisible<HTMLElement>(PIN_DROP_SELECTOR)[0]
+      pinTarget = pinEl ? { el: pinEl, rect: snapRect(pinEl) } : null
+      unpinTargets = fromPinned
+        ? queryAllVisible<HTMLElement>(UNPIN_DROP_SELECTOR).map(el => ({ el, rect: snapRect(el) }))
+        : []
       source?.style.setProperty('opacity', '0.45')
       // The same sentinel the zone overlay + chat surfaces key off — the
       // whole drop language (sheets, pills, caret, link overlay) lights up.
@@ -181,9 +229,23 @@ export function startSessionDrag(
       }
 
       clearProjectHover()
+      setPinHover(false)
+      setUnpinHover(null)
     },
 
     resolveMove(x, y): DropHint | null {
+      if (pinTarget && rectContains(pinTarget.rect, x, y)) {
+        split = null
+        link = null
+        moveToProject = null
+        clearProjectHover()
+        setPinHover(true)
+
+        return null
+      }
+
+      setPinHover(false)
+
       // The sidebar hosts no MAIN tile, so it's outside every pane-shell
       // zone — a project row is the one thing in that dead space a session
       // drop still resolves against. Checked first: it's a flat, disjoint
@@ -206,6 +268,16 @@ export function startSessionDrag(
 
       moveToProject = null
       clearProjectHover()
+
+      const unpinTarget = unpinTargets.find(t => rectContains(t.rect, x, y))
+      setUnpinHover(unpinTarget?.el ?? null)
+
+      if (unpinTarget) {
+        split = null
+        link = null
+
+        return null
+      }
 
       const zone = zones.find(z => rectContains(z.rect, x, y))
       const host = zone ? zoneHost.get(zone.id) : null
@@ -279,6 +351,16 @@ export function startSessionDrag(
       } else if (link) {
         // The "link to chat" drop: an @session chip in that surface's composer.
         requestComposerInsertRefs([sessionInlineRef(payload)], { target: link })
+      } else if (pin || unpin) {
+        // Same store calls as the row's own "Pin" / "Unpin" menu items.
+        const session = $sessions.get().find(s => sessionMatchesStoredId(s, payload.id))
+        const pinId = session ? sessionPinId(session) : payload.id
+
+        if (pin) {
+          pinSession(pinId)
+        } else {
+          unpinSession(pinId)
+        }
       } else if (moveToProject) {
         // Same RPC the row's own "Move to project" menu item calls — the drop
         // is a shortcut onto that existing path, not a parallel one.

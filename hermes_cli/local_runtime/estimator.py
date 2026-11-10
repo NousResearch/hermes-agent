@@ -85,6 +85,10 @@ class ModelProfile:
     # Compute-buffer bytes per window token at the launch posture (plan_launch sets it from
     # window_compute_bytes, the microbatch and the context count); zero prices none.
     window_compute_per_token: int = 0
+    # One copy of one sequence's recurrent state, exact from the SSM shape (0 = unknown). The
+    # window price keeps its per-layer allowance; this prices the extra copies speculative
+    # decoding keeps.
+    recurrent_state_bytes: int = 0
 
     @property
     def window_compute_bytes(self) -> int:
@@ -117,6 +121,10 @@ class HardwareBudget:
     # except integrated GPUs (b11370 #28160); Hermes passes --lazy-mode on to NVIDIA's, so only
     # AMD/Intel integrated GPUs load them up front.
     lazy_reads: bool = True
+    # Windows unified memory, live budgets only: commit the server may take for the models and
+    # their prompt caches. Windows charges every GPU allocation to commit (RAM it can see plus
+    # the page file), so this is the real ceiling there. None everywhere else.
+    commit_room_bytes: int | None = None
 
 
 def as_loaded(profile: ModelProfile, budget: HardwareBudget) -> ModelProfile:
@@ -170,7 +178,8 @@ def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
         embd_table_bytes=header.embd_table_bytes,
         n_ctx_train=header.n_ctx_train, layers=layers, swa_window=header.sliding_window,
         moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab,
-        ffn_block_bytes=dict(header.ffn_block_bytes), lazy_bytes=header.lazy_bytes)
+        ffn_block_bytes=dict(header.ffn_block_bytes), lazy_bytes=header.lazy_bytes,
+        recurrent_state_bytes=header.recurrent_state_bytes)
 
 
 def kv_dtype_factor(flash_attention: bool) -> float:

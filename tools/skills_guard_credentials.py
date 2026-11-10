@@ -8,8 +8,14 @@ scans without these rules. Leaf module: nothing here imports ``tools.skills_guar
 
 import re
 
+# Case-sensitive, and ``.hermes`` must be a whole path segment, so ``.hermes-project.env``, ``myapp.hermes.env``
+# or a ``hermes_home_env_path`` variable do not match. A call right after a negation ("Never call
+# ``load_dotenv(HERMES_HOME/.env)``") is prose that forbids it; the negation voids only that call, not the line.
+_NEGATED_CALL = "".join(f"(?<!{re.escape(neg + verb + tick)})" for neg in ("ever ", "o not ", "n't ", "void ")
+                        for verb in ("", "call ", "use ", "run ") for tick in ("", "`"))
 SKILL_ONLY_PATTERNS = [(re.compile(
-    r'\b(?:load_dotenv|dotenv_values)\s*\([^\n]*(?:HERMES_HOME|get_hermes_home|\.hermes\b)', re.IGNORECASE),
+    rf'\b(?=(?:load_dotenv|dotenv_values)\s*\(){_NEGATED_CALL}(?:load_dotenv|dotenv_values)\s*\([^\n]*'
+    r'(?:HERMES_HOME|get_hermes_home|[~/\\"\']\.hermes(?:[/\\"\']|$))'),
     "hermes_env_dotenv", "high", "exfiltration", "loads the Hermes .env (every key of the profile) into the script")]
 ENV_READ_IDS = frozenset({"python_getenv_secret", "python_environ_get_secret"})
 # The name a getenv / environ.get / environ[...] call reads: its first argument only, so a provider name in a

@@ -1,0 +1,34 @@
+name: lydite
+title: Lydite
+repo: https://github.com/aoricloud/lydite
+sha: 5454680daa8e477e1c6710606b718c20ab971b47
+subdir: hermes
+description: >-
+  Hand a GitHub issue and the command that proves it done to Lydite from the chat. Sandboxed Claude Code workers do
+  the job, Lydite replays your proof itself, and a pull request comes back with a receipt (cost, workers, retries,
+  the commit that was reviewed and replayed, and what was not replayed). Also hands Hermes the lessons Lydite keeps
+  for a repository, read-only, and has Lydite check a plan file before a launch. Disclosure: after your approval of
+  each launch, starts the already-installed `lydite` binary (argument list, no shell) as a detached background
+  process; Lydite runs git, gh, Claude Code workers and your proof inside its sandbox and reaches GitHub and the model
+  provider of its profile; the child environment is a closed list (no Hermes key, no YOLO setting); reads the plan
+  file and the lesson files you name; no telemetry.
+maintainer: aoricloud
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/aoricloud/lydite/tree/5454680daa8e477e1c6710606b718c20ab971b47/hermes
+version: "0.3.2"
+image: https://raw.githubusercontent.com/aoricloud/lydite/5454680daa8e477e1c6710606b718c20ab971b47/hermes/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/aoricloud/lydite/5454680daa8e477e1c6710606b718c20ab971b47/hermes/docs/screenshot-approval.png
+  - https://raw.githubusercontent.com/aoricloud/lydite/5454680daa8e477e1c6710606b718c20ab971b47/hermes/docs/screenshot-receipt.png
+platforms: [linux]
+known_issues:
+  - "Linux only: Lydite's sandbox wall holds there."
+  - "Needs the lydite binary (attested release of github.com/aoricloud/lydite), Claude Code, gh and srt installed, and a Lydite profile accepted by a human."
+  - "Lydite's own commands and status lines are still in French; pull request receipts are in English."
+capabilities:
+  provides_tools: [lydite_lancer, lydite_etat, lydite_lecons, lydite_plan]
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

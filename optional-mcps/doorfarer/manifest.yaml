@@ -1,0 +1,50 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: doorfarer
+description: >-
+  Doorfarer door-to-door trip search: ground leg to every reachable airport
+  plus flights, ranked cheapest, fastest or balanced. Free, no sign-in.
+  Affiliate booking links are disclosed.
+source: https://github.com/3nterTheV0id/doorfarer
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Streamable HTTP, no authentication required
+# (verified live on 10 November 2026: initialize and tools/list succeed
+# anonymously). Homepage: https://doorfarer.com
+
+transport:
+  type: http
+  url: https://doorfarer.com/mcp
+
+auth:
+  type: none
+
+# Four search tools are read-only. send_feedback is excluded by default,
+# matching the kiwi catalog entry (no telemetry/feedback tools without
+# explicit user opt-in). Users can enable it later with
+# `hermes mcp configure doorfarer`.
+tools:
+  default_enabled:
+    - find_trips
+    - find_group_trips
+    - price_calendar
+    - trip_details
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - doorfarer
+    - door-to-door
+    - flight search
+  hosts:
+    - doorfarer.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.
+
+  Search only — Doorfarer does not book or take payment. Booking happens
+  on the linked partner sites. Booking links are labelled affiliate links
+  and never change the ranking.

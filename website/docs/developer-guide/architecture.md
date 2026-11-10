@@ -59,7 +59,9 @@ hermes-agent/
 ├── hermes_state.py           # SQLite session/state database facade (+ hermes_state_*.py siblings)
 ├── hermes_constants.py       # HERMES_HOME, profile-aware paths
 ├── hermes_agent/             # the Python package
-│   └── batch_runner.py           # Batch trajectory generation
+│   ├── batch_runner.py           # Batch trajectory generation
+│   │
+│   └── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 │
 ├── agent/                    # Agent internals
 │   ├── prompt_builder.py     # System prompt assembly
@@ -130,7 +132,6 @@ hermes-agent/
 │                             #   (Home Assistant: `homeassistant` catalog plugin;
 │                             #    Yuanbao: `yuanbao` Hermes Labs plugin)
 │
-├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)
 ├── plugins/memory/           # Memory provider plugins
 ├── plugins/context_engine/   # Context engine plugins

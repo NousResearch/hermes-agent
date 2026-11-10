@@ -165,6 +165,7 @@ class TestRuntimeFtsRebuild:
             ("/usr/local/bin/hermes-agent", "serve"),
             ("/usr/local/bin/hermes-acp", "--stdio"),
             ("/usr/bin/python3", "-m", "hermes_cli.main", "gateway"),
+            ("/usr/bin/python3", "-m", "acp_adapter"),
             ("/usr/bin/python3", "-m", "hermes_agent.acp_adapter"),
             ("/usr/bin/python3", "-Im", "hermes_cli.main", "gateway"),
             ("/usr/bin/python3", "-mhermes_cli.main", "gateway"),

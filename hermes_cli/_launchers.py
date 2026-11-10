@@ -127,8 +127,8 @@ def publishes_service_launcher(repo_root: Path) -> bool:
 #: Publish-UserCommand and hermes_cli/_install_repair.py.
 WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
 
-#: command name -> (entry module, callable) — mirrors pyproject.toml
-#: [project.scripts].
+#: command name -> (entry module, callable): the commands in pyproject.toml [project.scripts];
+#: hermes-acp keeps its old module name because launcher files persist it.
 ENTRY_POINTS = {
     "hermes": ("hermes_cli.main", "main"),
     "hermes-acp": ("acp_adapter.entry", "main"),

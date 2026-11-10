@@ -20,8 +20,8 @@ import pytest
 _PLUGIN_SOURCE = '''\
 from hermes_agent.agent.transports import register_transport
 from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 class DialectTransport(ChatCompletionsTransport):

@@ -80,13 +80,14 @@ def test_provider_headers_run_no_git_until_read_and_stay_a_dict_for_overrides(tm
         ),
         # A lazy header derived from another profile's unread lazy header (nested resolution).
         "gmi-tag": (
-            "from providers.base import LazyHeaders\n"
+            "from hermes_agent.providers.base import LazyHeaders\n"
             "headers = LazyHeaders({'User-Agent': lambda: base.default_headers['User-Agent'] + ' eu'})\n"
             "register_provider(dataclasses.replace(base, name='gmi-tag', aliases=(), default_headers=headers))\n"
         ),
     }
     code = (
-        "import json, os, pathlib, hermes_cli.config, providers\n"
+        "import json, os, pathlib, hermes_cli.config\n"
+        "from hermes_agent import providers\n"
         "providers.list_providers()\n"
         "log = os.environ['PATH'].split(os.pathsep)[0] + '/../git.log'\n"
         "before = open(log, encoding='utf-8-sig').read().splitlines() if os.path.exists(log) else []\n"
@@ -95,7 +96,7 @@ def test_provider_headers_run_no_git_until_read_and_stay_a_dict_for_overrides(tm
         "    plugin = pathlib.Path(os.environ['HERMES_HOME'], 'plugins', 'model-providers', name)\n"
         "    plugin.mkdir(parents=True)\n"
         "    (plugin / '__init__.py').write_text('import dataclasses\\n'\n"
-        "        'from providers import get_provider_profile, register_provider\\n'\n"
+        "        'from hermes_agent.providers import get_provider_profile, register_provider\\n'\n"
         "        \"base = get_provider_profile('gmi')\\n\" + body)\n"
         "providers._home_layer(force_stamp_check=True)\n"
         "from hermes_cli.version_info import get_version_info\n"

@@ -17,8 +17,8 @@ import pytest
 
 _PLUGIN = textwrap.dedent(
     """
-    from providers import register_provider
-    from providers.base import ProviderProfile
+    from hermes_agent.providers import register_provider
+    from hermes_agent.providers.base import ProviderProfile
 
     register_provider(ProviderProfile(name="{name}", auth_type="api_key", env_vars=("X_KEY",),
                                       base_url="https://{name}.invalid/v1"))

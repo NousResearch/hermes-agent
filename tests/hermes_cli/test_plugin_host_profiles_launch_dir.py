@@ -7,8 +7,8 @@ import pytest
 from hermes_cli.plugin_host_profiles import load_hosted_profiles
 
 PROVIDER_PLUGIN = '''
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 register_provider(ProviderProfile(name="cwdprobe", base_url="https://cwdprobe.example/v1"))
 '''

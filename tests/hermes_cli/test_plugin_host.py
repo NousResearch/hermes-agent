@@ -151,8 +151,8 @@ def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path
 
 MODEL_PROVIDER_PLUGIN = '''
 import os
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 class HostModel(ProviderProfile):
     def build_extra_body(self, *, session_id=None, **context):

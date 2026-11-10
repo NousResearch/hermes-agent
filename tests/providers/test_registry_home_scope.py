@@ -22,8 +22,8 @@ TOKEN = "fake-ambient-token-0123456789abcdef"
 
 _PLUGIN = textwrap.dedent(
     f"""
-    from providers import register_provider
-    from providers.base import ProviderProfile
+    from hermes_agent.providers import register_provider
+    from hermes_agent.providers.base import ProviderProfile
 
     register_provider(ProviderProfile(
         name="{SLUG}", aliases=("{SLUG}-alias",), display_name="Ambient Fake", auth_type="api_key",

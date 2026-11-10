@@ -125,7 +125,7 @@ def test_safe_worker_never_discovers_or_invokes_customizations(tmp_path, mode):
             if kind == "standalone":
                 code = "mark('plugin-import')\ndef register(ctx):\n    mark('plugin-register')\n    ctx.register_hook('on_session_start', lambda **kw: mark('plugin-hook'))\n"
             else:
-                code = "from providers import register_provider\nfrom providers.base import ProviderProfile\nmark('" + name + "')\nregister_provider(ProviderProfile(name='" + name.split("/")[-1] + "'))\n"
+                code = "from hermes_agent.providers import register_provider\nfrom hermes_agent.providers.base import ProviderProfile\nmark('" + name + "')\nregister_provider(ProviderProfile(name='" + name.split("/")[-1] + "'))\n"
             (p / "__init__.py").write_text(prefix + code)
         if mode != "ordinary":
             from agent.safe_worker_policy import _bind_safe_worker_policy
@@ -135,11 +135,11 @@ def test_safe_worker_never_discovers_or_invokes_customizations(tmp_path, mode):
             if event == "open" and "plugins" in Path(str(args[0])).parts and args[1] != "w":
                 reads.append(str(args[0]))
         sys.addaudithook(audit)
-        import providers
+        from hermes_agent import providers
         from hermes_cli import plugins, lifecycle
         plugins.discover_plugins()
         providers.list_providers()
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
         providers.register_provider(ProviderProfile(name="injected"))
         injected = providers.get_provider_profile("injected")
         manager = plugins.get_plugin_manager()

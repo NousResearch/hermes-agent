@@ -11,8 +11,8 @@ from hermes_cli import plugins as plugins_mod
 
 TWO_PROFILE_PLUGIN = '''
 import os
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 class Hosted(ProviderProfile):
     def build_extra_body(self, *, session_id=None, **context):

@@ -26,8 +26,8 @@ from hermes_agent.providers.base import ProviderProfile
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _PLAIN_PROFILE = (
-    "from providers import register_provider\n"
-    "from providers.base import ProviderProfile\n"
+    "from hermes_agent.providers import register_provider\n"
+    "from hermes_agent.providers.base import ProviderProfile\n"
     "register_provider(ProviderProfile(\n"
     "    name={name!r},\n"
     "    aliases=({alias!r},),\n"

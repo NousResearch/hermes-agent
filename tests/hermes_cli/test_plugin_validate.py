@@ -268,8 +268,8 @@ class TestModelProviderKind:
             tmp_path,
             manifest={**BASE_MANIFEST, "name": "probe-provider", "kind": "model-provider"},
             init_py=(
-                "from providers import register_provider\n"
-                "from providers.base import ProviderProfile\n"
+                "from hermes_agent.providers import register_provider\n"
+                "from hermes_agent.providers.base import ProviderProfile\n"
                 "register_provider(ProviderProfile(name='probe_provider_fixture'))\n"),
         )
         report = validate_plugin_dir(d)
@@ -283,7 +283,7 @@ class TestModelProviderKind:
         d = _make_plugin(
             tmp_path,
             manifest={**BASE_MANIFEST, "name": "empty-provider", "kind": "model-provider"},
-            init_py="import providers\n",
+            init_py="from hermes_agent import providers\n",
         )
         report = validate_plugin_dir(d)
         assert not report.ok

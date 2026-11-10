@@ -70,6 +70,19 @@ _PLUGIN_DIR_STAMP_TTL_SECONDS = 1.0
 _PLUGIN_DIR_MTIME_TICK_NS = 2_000_000_000
 
 
+def _add_old_folder() -> None:
+    """The folder's old place at the checkout root: a provider file dropped there still loads, and
+    ``import providers.<name>`` finds it before any discovery pass, as it did before the move."""
+    from hermes_cli._startup_fast import project_root_str
+
+    _old_folder = os.path.join(project_root_str(), "providers")
+    if os.path.isdir(_old_folder) and _old_folder not in __path__:
+        __path__.append(_old_folder)
+
+
+_add_old_folder()
+
+
 @dataclass
 class _HomeLayer:
     """The ``$HERMES_HOME/plugins`` providers of ONE profile home.

@@ -8,6 +8,8 @@ Verifies that:
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -80,8 +82,8 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     user_gmi = hermes_home / "plugins" / "model-providers" / "gmi"
     user_gmi.mkdir(parents=True)
     (user_gmi / "__init__.py").write_text(
-        "from providers import register_provider\n"
-        "from providers.base import ProviderProfile\n"
+        "from hermes_agent.providers import register_provider\n"
+        "from hermes_agent.providers.base import ProviderProfile\n"
         "\n"
         "custom_gmi = ProviderProfile(\n"
         '    name="gmi",\n'
@@ -111,3 +113,43 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
 
     # Clean up: reset discovery state so other tests see the bundled version
     _clear_provider_caches()
+
+
+def test_provider_file_in_the_old_providers_folder_still_registers(tmp_path, monkeypatch):
+    """``<repo>/providers/<name>.py`` is the documented legacy drop-in; the move must keep it loading."""
+    import hermes_agent.providers as _pkg
+    import hermes_cli._startup_fast as startup_fast
+
+    (tmp_path / "providers").mkdir()
+    (tmp_path / "providers" / "legacy_dropin.py").write_text(
+        "from hermes_agent.providers import register_provider\n"
+        "from hermes_agent.providers.base import ProviderProfile\n"
+        "register_provider(ProviderProfile(name='legacy-dropin'))\n"
+    )
+    monkeypatch.setattr(startup_fast, "project_root_str", lambda: str(tmp_path))
+    monkeypatch.setattr(_pkg, "__path__", list(_pkg.__path__))
+    monkeypatch.setattr(_pkg, "_SOURCES", {})
+    _pkg._add_old_folder()
+    _clear_provider_caches()
+    try:
+        assert _pkg.get_provider_profile("legacy-dropin") is not None
+    finally:
+        sys.modules.pop("hermes_agent.providers.legacy_dropin", None)
+        vars(_pkg).pop("legacy_dropin", None)
+        _clear_provider_caches()
+
+
+def test_old_folder_module_imports_by_its_old_name_in_a_fresh_process(tmp_path):
+    """Before the move, ``import providers.<name>`` loaded a drop-in with no discovery pass first."""
+    (tmp_path / "providers").mkdir()
+    (tmp_path / "providers" / "legacy_direct.py").write_text("VALUE = 'loaded'\n")
+    script = (
+        "import hermes_cli._startup_fast as startup_fast\n"
+        f"startup_fast.project_root_str = lambda: {str(tmp_path)!r}\n"
+        "from providers.legacy_direct import VALUE\n"
+        "print(VALUE)\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
+                            capture_output=True, text=True, timeout=120, check=False)
+    assert result.stdout.strip() == "loaded", result.stderr

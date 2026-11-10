@@ -127,7 +127,7 @@ def test_user_provider_plugin_name_and_model_never_leave(direct_runtime, tmp_pat
     plugin.mkdir(parents=True)
     (plugin / "plugin.yaml").write_text("name: acmecorp-internal\nkind: model-provider\n")
     (plugin / "__init__.py").write_text(
-        "from providers import register_provider\nfrom providers.base import ProviderProfile\n"
+        "from hermes_agent.providers import register_provider\nfrom hermes_agent.providers.base import ProviderProfile\n"
         "register_provider(ProviderProfile(name='acmecorp-internal', aliases=('acme-llm',),\n"
         "    env_vars=('ACMECORP_LLM_API_KEY',), base_url='https://llm.acmecorp.internal/v1'))\n")
     assert get_provider_profile("acmecorp-internal") is not None

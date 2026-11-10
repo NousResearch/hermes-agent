@@ -111,8 +111,8 @@ def test_malformed_vendor_model_options_fall_back_to_the_session_default(tmp_pat
 _FROZEN_SUBCLASS_PLUGIN = '''
 """Frozen shape of an out-of-tree ACP provider built on the deprecated alias (kimchi-acp-provider)."""
 import os
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 from agent.copilot_acp_client import CopilotACPClient as _Base
 
 

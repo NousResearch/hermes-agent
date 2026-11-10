@@ -1,7 +1,7 @@
 name: grok-bot-twin
 title: Grok Bot Twin
 repo: https://github.com/hudsonwa/grok-bot-twin
-sha: a3574888839b646347b1697bd5e15371c71238b3
+sha: e927fc800c7fcc74654d8373fc8c2b1d8c190ed6
 subdir: ""
 version: "0.1.0"
 description: "Try Hermes without leaving Grok. Gives each Grok desktop-app bot a Hermes twin profile and a Desktop Twins page (conflicts, restore points); `hermes twin demo` needs no Grok account. Name and description changes reach the twin in seconds; instructions stay on the by-hand list; skills travel through your own optional Mirror bot; routines and connectors stay by hand. Unofficial; not affiliated with xAI. Disclosure: runs the external botport CLI (never bundled or downloaded; setup verifies its attestation and pins its digest; `hermes twin setup --allow-unattested` is a loud, recorded opt-out for local builds), `gh attestation verify` and `hermes cron resume`. Via botport, reads the Grok app's bot list (id, name, description) and the selected bots' local transcript files (capped, parsed only for routine-change events); never login or credential files. Writes only plugin-data/grok-bot-twin/ plus botport's twin profiles. No account credentials; botport stores one owner-only pair key per twin (rotated by `hermes twin mirror --rotate-key`, deleted by `hermes twin remove`); with the Mirror bot link on, a copy lives in that bot's chat. One background thread checks file metadata. The plugin makes no network calls. No telemetry. The optional activity digest (off by default, per twin) goes to your own Grok bot, which runs on xAI's service."
@@ -9,12 +9,12 @@ maintainer: hudsonwa
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-docs_url: https://github.com/hudsonwa/grok-bot-twin/blob/a3574888839b646347b1697bd5e15371c71238b3/README.md
+docs_url: https://github.com/hudsonwa/grok-bot-twin/blob/e927fc800c7fcc74654d8373fc8c2b1d8c190ed6/README.md
 screenshots:
-  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/a3574888839b646347b1697bd5e15371c71238b3/docs/screenshots/conflict-card.png
-  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/a3574888839b646347b1697bd5e15371c71238b3/docs/screenshots/ready-to-switch.png
-  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/a3574888839b646347b1697bd5e15371c71238b3/docs/screenshots/twins-page.png
-  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/a3574888839b646347b1697bd5e15371c71238b3/docs/screenshots/add-twins-preview.png
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/e927fc800c7fcc74654d8373fc8c2b1d8c190ed6/docs/screenshots/conflict-card.png
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/e927fc800c7fcc74654d8373fc8c2b1d8c190ed6/docs/screenshots/ready-to-switch.png
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/e927fc800c7fcc74654d8373fc8c2b1d8c190ed6/docs/screenshots/twins-page.png
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/e927fc800c7fcc74654d8373fc8c2b1d8c190ed6/docs/screenshots/add-twins-preview.png
 readme: true
 platforms: [macos, linux]
 known_issues:

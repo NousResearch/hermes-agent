@@ -19,6 +19,7 @@ from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_loop as _loop
 from tools import mcp_tool_registration as _registration
 from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
+from tools.mcp_tool_server_run import ParkReason
 from tools.mcp_tool_scope import _key_name, _key_scope, _key_visible_in_scope, _resolve_server_key, _server_key
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -897,7 +898,7 @@ def mcp_server_reconnecting(name: str) -> bool:
         server = _core._servers.get(_resolve_server_key(name))
     if server is None or server.session is not None or not server._ever_connected:
         return False
-    if server._park_reason and "permanent" in server._park_reason:
+    if server._park_reason in (ParkReason.PERMANENT, ParkReason.INITIAL_PERMANENT):
         return False
     return server._task is None or not server._task.done()
 

@@ -94,7 +94,7 @@ def _warn_unknown_cost_keys(server_name: str, key, tool_names: list[str]) -> Non
     if unknown := unknown_cost_keys(_core._server_cost_policies.get(key), tool_names):
         logger.warning("MCP server '%s': tool_costs names %s, which the server does not offer, so those calls "
                        "carry no cost and no spend limit. Use the server's own tool names (without Hermes' "
-                       "'mcp_%s_' prefix).", server_name, unknown, server_name)
+                       "'mcp__%s__' prefix).", server_name, unknown, server_name)
 
 
 def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:

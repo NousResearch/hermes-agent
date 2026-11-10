@@ -39,7 +39,7 @@ def test_auth_parked_oauth_server_ignores_discovery_until_credentials_change(mon
         monkeypatch.setitem(mcp_tool._servers, "cloud", task)
         run = asyncio.ensure_future(task.run(cfg))
         await _settle()
-        assert attempts and task._was_parked and not run.done()
+        assert attempts and task._park_reason is not None and not run.done()
 
         for _ in range(5):  # five agent builds re-running discovery
             _select_new_servers({"cloud": cfg})

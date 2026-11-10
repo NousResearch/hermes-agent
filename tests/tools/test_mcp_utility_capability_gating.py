@@ -51,8 +51,8 @@ def _make_fake_server(*, initialize_result):
     ``_select_utility_schemas`` inspects: ``name``, ``session``,
     ``initialize_result``.
 
-    A plain ``MCPServerTask`` uses ``__slots__`` and needs an asyncio
-    loop for the ``Event``/``Lock`` init — overkill for unit scope.
+    A plain ``MCPServerTask`` needs an asyncio loop for the
+    ``Event``/``Lock`` init — overkill for unit scope.
     """
     server = MagicMock()
     server.name = "test-server"

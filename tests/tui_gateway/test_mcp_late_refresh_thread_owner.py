@@ -31,15 +31,12 @@ from tui_gateway import entry
 
 @pytest.fixture
 def clean_discovery_globals():
-    """Snapshot and restore both modules' discovery-thread globals."""
-    saved_entry = entry._mcp_discovery_thread
+    """Snapshot and restore the shared discovery-thread registry."""
     saved_startup = startup._mcp_discovery_thread
-    entry._mcp_discovery_thread = None
     startup._mcp_discovery_thread = {}
     try:
         yield
     finally:
-        entry._mcp_discovery_thread = saved_entry
         startup._mcp_discovery_thread = saved_startup
 
 
@@ -58,8 +55,6 @@ def test_entry_in_flight_sees_startup_thread(clean_discovery_globals):
     stop = threading.Event()
     startup._mcp_discovery_thread[hermes_home_key()] = _alive_thread(stop)
     try:
-        # Entry's own thread is None, but the startup thread is alive.
-        assert entry._mcp_discovery_thread is None
         assert entry.mcp_discovery_in_flight() is True
     finally:
         stop.set()

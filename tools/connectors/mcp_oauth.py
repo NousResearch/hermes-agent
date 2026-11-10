@@ -322,7 +322,7 @@ def start(
     cfg["auth"] = "oauth"
     hermes_home = str(get_hermes_home().expanduser().resolve(strict=False))
     flow = DashboardOAuthFlow(
-        flow_id=secrets.token_urlsafe(24), server_name=server_name, profile=None,
+        flow_id=secrets.token_urlsafe(24), server_name=server_name,
         hermes_home=hermes_home, redirect_uri="", reconnect_live=False)
     with _COMMIT_GUARD:
         older = _ACTIVE.get((hermes_home, server_name))

@@ -12,6 +12,7 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
+from hermes_constants import display_hermes_home
 from hermes_platform import declaration
 from tools.registry import invalidate_check_fn_cache, tool_error
 from tools.ansi_strip import strip_unicode_tags, strip_unicode_tags_deep
@@ -31,7 +32,7 @@ declaration.on_change = invalidate_check_fn_cache
 
 _NEEDS_REAUTH_MSG = (
     "MCP server '{s}' requires re-authentication.{detail} Run `hermes mcp login {s}` (or delete the tokens file under "
-    "~/.hermes/mcp-tokens/ and restart). Do NOT retry this tool — ask the user to re-authenticate.")
+    "{home}/mcp-tokens/ and restart). Do NOT retry this tool — ask the user to re-authenticate.")
 _STDIO_NO_RESPAWN_MSG = (
     "MCP server '{s}' stdio subprocess had exited (this is not a timeout — the call never reached the server). A "
     "respawn was requested but no fresh session came back within {t:.0f}s. Wait a few seconds before retrying; if it "
@@ -235,6 +236,10 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
     reconnect may be completing, so wait briefly before a breaker strike; still down -> ask the
     server task to rebuild (probing a dead transport would re-arm the breaker forever)."""
     from tools import mcp_tool_discovery as _discovery  # lazy: discovery -> registration -> handlers cycle
+    server = _discovery._get_connected_server_for_call(server_name)
+    wait = min(5.0, float(tool_timeout or 5.0))
+    if server and (server.session or _loop._wait_for_server_session_ready(server, timeout=wait)):
+        return server, None
     not_connected = tool_error(f"MCP server '{server_name}' is not connected")
     from tools.mcp_liveness import unavailable_details
     details = unavailable_details(server_name)
@@ -252,10 +257,6 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
             user_action=current.user_action,
             retry=current.retry,
         )
-    server = _discovery._get_connected_server_for_call(server_name)
-    wait = min(5.0, float(tool_timeout or 5.0))
-    if server and (server.session or _loop._wait_for_server_session_ready(server, timeout=wait)):
-        return server, None
     _core._bump_server_error(server_name)
     if server and _loop._signal_reconnect(server):
         return None, tool_error(f"MCP server '{server_name}' transport is down; reconnect requested. Do NOT retry this "
@@ -335,8 +336,8 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
         result = _retry_once(server_name, retry_call, op_description, "auth recovery")
         if result is not None:
             return result
-    return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name, detail=_auth_error_detail(exc)),
-                   needs_reauth=True, server=server_name)
+    message = _NEEDS_REAUTH_MSG.format(s=server_name, detail=_auth_error_detail(exc), home=display_hermes_home())
+    return _strike(server_name, message, needs_reauth=True, server=server_name)
 
 
 def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,

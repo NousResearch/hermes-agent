@@ -290,7 +290,6 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     flow = DashboardOAuthFlow(
         flow_id=flow_id,
         server_name=name,
-        profile=profile,
         hermes_home=flow_home,
         redirect_uri=(cfg.get("oauth") or {}).get("redirect_uri") or _mcp_oauth_callback_url(request, name),
         reconnect_live=flow_home == process_home,

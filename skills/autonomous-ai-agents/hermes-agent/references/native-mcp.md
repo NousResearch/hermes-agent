@@ -39,7 +39,7 @@ mcp_servers:
 Restart Hermes Agent. On startup it will:
 1. Connect to the server
 2. Discover available tools
-3. Register them with the prefix `mcp_time_*`
+3. Register them with the prefix `mcp__time__*`
 4. Inject them into all platform toolsets
 
 You can then use the tools naturally -- just ask the agent to get the current time.
@@ -57,7 +57,7 @@ mcp_servers:
     args: ["-y", "pkg-name"]   # (optional) command arguments, default: []
     env:                       # (optional) environment variables for the subprocess
       SOME_API_KEY: "value"
-    timeout: 120               # (optional) per-tool-call timeout in seconds, default: 120
+    timeout: 120               # (optional) per-tool-call timeout in seconds, default: 300
     connect_timeout: 60        # (optional) initial connection timeout in seconds, default: 60
 ```
 
@@ -69,7 +69,7 @@ mcp_servers:
     url: "https://my-server.example.com/mcp"   # (required) server URL
     headers:                                     # (optional) HTTP headers
       Authorization: "Bearer sk-..."
-    timeout: 180               # (optional) per-tool-call timeout in seconds, default: 120
+    timeout: 180               # (optional) per-tool-call timeout in seconds, default: 300
     connect_timeout: 60        # (optional) initial connection timeout in seconds, default: 60
 ```
 
@@ -82,7 +82,7 @@ mcp_servers:
 | `env`             | dict   | `{}`    | Extra environment variables for the subprocess    |
 | `url`             | string | --      | Server URL (HTTP transport, required)             |
 | `headers`         | dict   | `{}`    | HTTP headers sent with every request              |
-| `timeout`         | int    | `120`   | Per-tool-call timeout in seconds                  |
+| `timeout`         | int    | `300`   | Per-tool-call timeout in seconds                  |
 | `connect_timeout` | int    | `60`    | Timeout for initial connection and discovery      |
 
 Note: A server config must have either `command` (stdio) or `url` (HTTP), not both.
@@ -103,15 +103,15 @@ When Hermes Agent starts, `discover_mcp_tools()` is called during tool initializ
 MCP tools are registered with the naming pattern:
 
 ```
-mcp_{server_name}_{tool_name}
+mcp__{server_name}__{tool_name}
 ```
 
 Hyphens and dots in names are replaced with underscores for LLM API compatibility.
 
 Examples:
-- Server `filesystem`, tool `read_file` → `mcp_filesystem_read_file`
-- Server `github`, tool `list-issues` → `mcp_github_list_issues`
-- Server `my-api`, tool `fetch.data` → `mcp_my_api_fetch_data`
+- Server `filesystem`, tool `read_file` → `mcp__filesystem__read_file`
+- Server `github`, tool `list-issues` → `mcp__github__list_issues`
+- Server `my-api`, tool `fetch.data` → `mcp__my_api__fetch_data`
 
 ### Auto-Injection
 
@@ -121,7 +121,7 @@ After discovery, MCP tools are automatically injected into all `hermes-*` platfo
 
 - Each server runs as a long-lived asyncio Task in a background daemon thread
 - Connections persist for the lifetime of the agent process
-- If a connection drops, automatic reconnection with exponential backoff kicks in (up to 5 retries, max 60s backoff)
+- If a connection drops, automatic reconnection with exponential backoff kicks in (up to 5 retries, max 60s backoff), then the server is parked and re-probed every 5 minutes
 - On agent shutdown, all connections are gracefully closed
 
 ### Idempotency
@@ -222,11 +222,11 @@ hermes pm repair
 - Check that the server is listed under `mcp_servers` (not `mcp` or `servers`)
 - Ensure the YAML indentation is correct
 - Look at Hermes Agent startup logs for connection messages
-- Tool names are prefixed with `mcp_{server}_{tool}` -- look for that pattern
+- Tool names are prefixed with `mcp__{server}__{tool}` -- look for that pattern
 
 ### Connection keeps dropping
 
-The client retries up to 5 times with exponential backoff (1s, 2s, 4s, 8s, 16s, capped at 60s). If the server is fundamentally unreachable, it gives up after 5 attempts. Check the server process and network connectivity.
+The client retries up to 5 times with exponential backoff (1s, 2s, 4s, 8s, 16s, capped at 60s). If the server is fundamentally unreachable, it is parked after 5 attempts and re-probed every 5 minutes. Check the server process and network connectivity.
 
 ## Examples
 
@@ -239,7 +239,7 @@ mcp_servers:
     args: ["mcp-server-time"]
 ```
 
-Registers tools like `mcp_time_get_current_time`.
+Registers tools like `mcp__time__get_current_time`.
 
 ### Filesystem Server (npx)
 
@@ -251,7 +251,7 @@ mcp_servers:
     timeout: 30
 ```
 
-Registers tools like `mcp_filesystem_read_file`, `mcp_filesystem_write_file`, `mcp_filesystem_list_directory`.
+Registers tools like `mcp__filesystem__read_file`, `mcp__filesystem__write_file`, `mcp__filesystem__list_directory`.
 
 ### GitHub Server with Authentication
 
@@ -265,7 +265,7 @@ mcp_servers:
     timeout: 60
 ```
 
-Registers tools like `mcp_github_list_issues`, `mcp_github_create_pull_request`, etc.
+Registers tools like `mcp__github__list_issues`, `mcp__github__create_pull_request`, etc.
 
 ### Remote HTTP Server
 

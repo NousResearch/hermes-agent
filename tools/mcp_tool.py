@@ -313,50 +313,6 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
     scopes must enter/exit in the same Task). Run state machine, transport bring-up and
     keepalive/liveness live in the three mixins."""
 
-    __slots__ = (
-        "_auth_park",
-        "_auth_type",
-        "_config",
-        "_elicitation",
-        "_error",
-        "_ever_connected",
-        "_idle_timeout_seconds",
-        "_inflight_tasks",
-        "_last_park_line",
-        "_last_tool_call_at",
-        "_lifecycle_started_at",
-        "_list_cache_meta",
-        "_max_lifetime_seconds",
-        "_park_reason",
-        "_pending_call_context",
-        "_pending_refresh_tasks",
-        "_permanent_grace_used",
-        "_ping_unsupported",
-        "_ready",
-        "_reconnect_event",
-        "_reconnect_retries",
-        "_reconnecting",
-        "_recycled_reason",
-        "_refresh_lock",
-        "_registered_tool_names",
-        "_resolved_identity",
-        "_rpc_lock",
-        "_sampling",
-        "_session_proven",
-        "_shutdown_event",
-        "_sse_fallback",
-        "_stdio_child_pids",
-        "_suspect_reason",
-        "_task",
-        "_teardown_race",
-        "_tools",
-        "_was_parked",
-        "initialize_result",
-        "name",
-        "session",
-        "tool_timeout",
-    )
-
     def __init__(self, name: str):
         self.name = name
         self.session: Optional[Any] = None
@@ -389,8 +345,6 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # Status/URL/body of the last HTTP rejection the Streamable HTTP client saw; names the real
         # cause when the SDK reports only ``Server returned an error response``.
         self._http_rejection: dict = {}
-        # True from park until proven healthy again; logs the revival once.
-        self._was_parked: bool = False
         # Why the server is parked (the revival_reason handed to _park), None once healthy again.
         # Lets cron preflight tell a network-blip park (recovering) from a permanent-error park
         # (revoked credentials, dead endpoint) that must not run the job tool-less forever.
@@ -407,9 +361,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # reconnect/shutdown teardown can fail them fast instead of orphaning them on a dying transport.
         self._inflight_tasks: set = set()
         self._reconnecting: bool = False
-        # Latched by races (teardown-vs-keepalive, auth-lock corruption); ensure_healthy()
-        # verifies before the next call.
-        # See #77765, #81051, #84132.
+        # Last suspicion logged by mark_suspect (dedupes the warning).
         self._suspect_reason: Optional[str] = None
         # Teardown that failed in-flight calls => next reconnect is RACE RECOVERY, not a
         # budget charge.

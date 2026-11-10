@@ -43,8 +43,6 @@ class AuthSpec:
     type: str  # "api_key" | "oauth" | "none"
     env: list[EnvVarSpec] = field(default_factory=list)
     provider: Optional[str] = None  # OAuth-specific (third-party provider like Google)
-    scopes: list[str] = field(default_factory=list)
-    env_var: Optional[str] = None
     # Pre-registered OAuth client block copied verbatim to ``mcp_servers.<name>.oauth`` (vendors
     # without Dynamic Client Registration). Secrets stay ``${VAR}`` references declared in ``env``.
     oauth: dict[str, Any] = field(default_factory=dict)
@@ -61,7 +59,6 @@ class TransportSpec:
     command: Optional[str] = None
     args: list[str] = field(default_factory=list)
     url: Optional[str] = None
-    version: Optional[str] = None  # informational, pinned
     # Static env for the stdio subprocess (telemetry opt-outs, mode flags). NOT for secrets — those
     # go through auth.env so they are prompted for and land in ~/.hermes/.env.
     env: dict[str, str] = field(default_factory=dict)
@@ -184,7 +181,7 @@ def _parse_transport(path: Path, raw: Any) -> TransportSpec:
         raise CatalogError(f"{path}: transport.env must be a mapping of string to string")
     transport = TransportSpec(
         type=t_type, command=transport_raw.get("command"), args=[str(a) for a in args],
-        url=transport_raw.get("url"), version=transport_raw.get("version"), env=dict(env_raw))
+        url=transport_raw.get("url"), env=dict(env_raw))
     if t_type == "stdio" and not transport.command:
         raise CatalogError(f"{path}: stdio transport requires 'command'")
     if t_type == "http" and not transport.url:
@@ -227,8 +224,7 @@ def _parse_auth(path: Path, raw: Any, name: str, http: bool) -> AuthSpec:
     if undeclared:
         raise CatalogError(f"{path}: auth.oauth references env vars not declared in auth.env: {undeclared}")
     return AuthSpec(
-        type=a_type, env=env_list, provider=auth_raw.get("provider"),
-        scopes=list(auth_raw.get("scopes") or []), env_var=auth_raw.get("env_var"), oauth=dict(oauth))
+        type=a_type, env=env_list, provider=auth_raw.get("provider"), oauth=dict(oauth))
 
 
 def _parse_tools(path: Path, raw: Any) -> ToolsSpec:

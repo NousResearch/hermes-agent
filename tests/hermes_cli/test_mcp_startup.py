@@ -274,7 +274,6 @@ def _reset_mcp_server_filter():
 )
 def test_set_mcp_server_filter_normalizes(_reset_mcp_server_filter, toolsets, expected):
     assert mcp_startup.set_mcp_server_filter(toolsets) == expected
-    assert mcp_startup.get_mcp_server_filter() == expected
 
 
 def test_discover_mcp_tools_spawns_only_allowed_servers(monkeypatch):
@@ -352,7 +351,7 @@ def test_prepare_agent_startup_installs_server_filter(monkeypatch, _reset_mcp_se
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
     main_mod._prepare_agent_startup(_agent_args(toolsets="terminal,code-mcp"))
-    assert mcp_startup.get_mcp_server_filter() == ["terminal", "code-mcp"]
+    assert mcp_startup._mcp_server_filter == ["terminal", "code-mcp"]
 
 
 @pytest.mark.parametrize(("status", "retried"), [("lazy", False), ("configured", True)])

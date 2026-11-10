@@ -310,7 +310,6 @@ def test_dashboard_flow_falls_back_to_dcr(tmp_path, monkeypatch, private_ports):
     flow = DashboardOAuthFlow(
         flow_id="flow-1",
         server_name="srv",
-        profile=None,
         hermes_home=str(tmp_path),
         redirect_uri="https://agent.example/api/mcp/oauth/callback/srv",
     )

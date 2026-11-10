@@ -571,16 +571,16 @@ You can pick any local name (`hermes mcp add my-codex --preset codex` is fine); 
 Hermes prefixes MCP tools so they do not collide with built-in names:
 
 ```text
-mcp_<server_name>_<tool_name>
+mcp__<server_name>__<tool_name>
 ```
 
 Examples:
 
 | Server | MCP tool | Registered name |
 |---|---|---|
-| `filesystem` | `read_file` | `mcp_filesystem_read_file` |
-| `github` | `create-issue` | `mcp_github_create_issue` |
-| `my-api` | `query.data` | `mcp_my_api_query_data` |
+| `filesystem` | `read_file` | `mcp__filesystem__read_file` |
+| `github` | `create-issue` | `mcp__github__create_issue` |
+| `my-api` | `query.data` | `mcp__my_api__query_data` |
 
 In practice, you usually do not need to call the prefixed name manually — Hermes sees the tool and chooses it during normal reasoning.
 
@@ -606,8 +606,8 @@ When supported, Hermes also registers utility tools around MCP resources and pro
 
 These are registered per server with the same prefix pattern, for example:
 
-- `mcp_github_list_resources`
-- `mcp_github_get_prompt`
+- `mcp__github__list_resources`
+- `mcp__github__get_prompt`
 
 ### Important
 
@@ -1011,7 +1011,7 @@ mcp_servers:
 - With `spend_limit`, a costed call that would take the chat past the limit asks first, even on a `trust: full` server that otherwise never prompts, and every further costed call in that chat asks again: that prompt offers only Allow Once and Deny, and an earlier Session or Always answer for the tool does not silence it. Where nobody can answer (cron jobs, `hermes chat -q`, a gateway with no approver), the call is refused without running and the model is told not to retry.
 - Below the limit, a `trust: full` server still runs costed tools without asking; on a `trust: untrusted` server every write-capable call already asks and the prompt now carries the cost. Tools annotated `readOnlyHint: true` stay unprompted unless the budget requires it.
 - [YOLO](../security.md#yolo-mode) (`/yolo`, `--yolo`) and `approvals.mode: off` skip the `trust: untrusted` prompt (`/yolo` for that chat, `--yolo` for that process, `approvals.mode: off` for that profile), but not the spend limit: below the limit a costed call runs without asking, and a call that would cross it still asks (or is refused where nobody can answer, such as a cron job with `approvals.mode: off`).
-- A malformed `tool_costs`, `spend_limit` or `cost_unit` skips the server with an error naming the key, so a budget you declared is never silently dropped. A `tool_costs` key the server does not offer (a typo, or Hermes' `mcp_<server>_` display prefix copied in) is named in a warning at connect time: use the server's own tool names.
+- A malformed `tool_costs`, `spend_limit` or `cost_unit` skips the server with an error naming the key, so a budget you declared is never silently dropped. A `tool_costs` key the server does not offer (a typo, or Hermes' `mcp__<server>__` display prefix copied in) is named in a warning at connect time: use the server's own tool names.
 
 A [portable plugin package](../../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages) can declare the same table for its server. If you add a same-name `mcp_servers` entry (for example to set `trust: full`), the package's `tool_costs`, `spend_limit` and `cost_unit` still apply unless your entry sets those keys itself; `spend_limit: 0` turns the package's limit off and `tool_costs: {}` drops its costs.
 

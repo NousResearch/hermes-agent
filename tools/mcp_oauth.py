@@ -207,10 +207,6 @@ class OAuthNonInteractiveError(RuntimeError):
     """Raised when OAuth requires browser interaction in a non-interactive env."""
 
 
-# Port of the most recent callback-port resolution. Legacy global; per-flow closures are the
-# real mechanism (concurrent flows must not share it).
-_oauth_port: int | None = None
-
 # Interactivity gates for OAuth stdin prompts. ContextVars, NOT threading.local: background
 # discovery sets them on its own thread while connect+OAuth runs on the `mcp-event-loop` thread
 # via run_coroutine_threadsafe, which copies the calling context into the coroutine. `forced`
@@ -795,13 +791,10 @@ def _announce_authorization_url(
 
 
 def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_host: str | None = None):
-    """Redirect handler closing over this flow's port (a closure, not ``_oauth_port``, keeps concurrent
-    flows isolated). ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the
-    hint; ``redirect_host`` is the loopback hostname the provider will actually redirect to (see
+    """Redirect handler closing over this flow's port, so concurrent flows stay isolated (#44588).
+    ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the hint;
+    ``redirect_host`` is the loopback hostname the provider will actually redirect to (see
     :func:`_resolve_redirect_uri`).
-
-    Using a closure instead of reading the module-level ``_oauth_port`` avoids cross-server state pollution
-    when multiple MCP servers run OAuth concurrently (fixes #44588).
     """
     async def _redirect_handler(authorization_url: str) -> None:
         dashboard_flow = get_dashboard_oauth_flow()
@@ -870,10 +863,8 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
     document aborts at the authorization endpoint, so no redirect arrives and a bare "timed out" would
     hide the cause. Raises ``OAuthNonInteractiveError`` on timeout or when non-interactive.
 
-    Closing over the port (instead of reading the module-level ``_oauth_port``) keeps concurrent OAuth flows
-    isolated: flow A's waiter listens on flow A's port even when flow B's ``_configure_callback_port``
-    overwrites the legacy global afterwards (#34260, the callback-side sibling of the #44588
-    redirect-handler fix).
+    Closing over the port keeps concurrent OAuth flows isolated: flow A's waiter listens on flow A's port
+    even after flow B resolves its own (#34260).
     """
     async def _wait():
         dashboard_flow = get_dashboard_oauth_flow()
@@ -1051,13 +1042,7 @@ def _configure_callback_port(cfg: dict, storage: HermesTokenStorage | None = Non
     """Resolve the callback port into ``cfg['_resolved_port']`` (0 = non-loopback URI). Precedence:
     dashboard flow / cached https redirect URI → CIMD pinned port (sets ``cfg['_cimd_url']``) →
     ``oauth.redirect_port`` → cached registration port → fresh ephemeral port (the only parked one).
-    Also sets the legacy ``_oauth_port``.
-
-    NOTE: also sets the legacy module-level ``_oauth_port`` so existing calls to ``_wait_for_callback`` keep
-    working. The legacy global is the root cause of issue #5344 (port collision on concurrent OAuth flows);
-    replacing it with a ContextVar is out of scope for this consolidation PR.
     """
-    global _oauth_port
     dashboard_flow = get_dashboard_oauth_flow()
     # A pre-registered client with a pinned ``redirect_port`` (no DCR; the vendor matches the registered
     # loopback URI exactly) keeps its loopback listener even under the dashboard/Desktop flow: the
@@ -1087,7 +1072,6 @@ def _configure_callback_port(cfg: dict, storage: HermesTokenStorage | None = Non
     # (#22161). Explicit and cached ports are fixed, known values and bind via the reuse_address path
     # instead.
     cfg["_resolved_port"] = port
-    _oauth_port = port
     return port
 
 

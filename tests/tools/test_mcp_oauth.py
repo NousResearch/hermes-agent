@@ -37,10 +37,10 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-async def _wait_for_callback():
-    """Await the per-flow waiter on the legacy module-level port (the removed shim)."""
+async def _wait_for_callback(port: int):
+    """Await the per-flow callback waiter bound to *port*."""
     import tools.mcp_oauth as mod
-    return await mod._make_callback_waiter(mod._oauth_port)()
+    return await mod._make_callback_waiter(port)()
 
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
@@ -453,7 +453,7 @@ class TestCallbackPortReservation:
         monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
 
         async def drive():
-            task = asyncio.create_task(_wait_for_callback())
+            task = asyncio.create_task(_wait_for_callback(port))
             threading.Thread(
                 target=_hit_callback_when_ready,
                 args=(f"http://127.0.0.1:{port}/callback?code=abc123&state=xyz",),
@@ -472,7 +472,7 @@ class TestCallbackPortReservation:
     @pytest.mark.usefixtures("require_mcp_2_sdk")  # asserts the 2.0-only AuthorizationCodeResult.code
     def test_concurrent_flows_keep_their_own_callback_ports(self, monkeypatch):
         """#34260: flow A's waiter listens on A's port even after flow B
-        overwrites the legacy module-level global.
+        resolves its own.
 
         This is the callback-side sibling of the #44588 redirect-handler fix:
         without a per-flow waiter, A's callback wait would bind B's port and
@@ -491,10 +491,10 @@ class TestCallbackPortReservation:
         cfg_a: dict = {"cimd": False}
         port_a = mod._configure_callback_port(cfg_a)
         waiter_a = mod._make_callback_waiter(port_a)
-        # Flow B configures afterwards — overwrites mod._oauth_port.
+        # Flow B configures afterwards.
         cfg_b: dict = {"cimd": False}
         port_b = mod._configure_callback_port(cfg_b)
-        assert mod._oauth_port == port_b != port_a
+        assert port_b != port_a
 
         async def drive():
             task = asyncio.create_task(waiter_a())
@@ -759,7 +759,7 @@ class TestWaitForCallbackNoBlocking:
         import tools.mcp_oauth as mod
         import asyncio
 
-        mod._oauth_port = _find_free_port()
+        port = _find_free_port()
         monkeypatch.setattr(mod, "_is_interactive", lambda: True)
         # EOF on the paste reader so only the HTTP-listener timeout drives it.
         monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: ""))
@@ -770,7 +770,7 @@ class TestWaitForCallbackNoBlocking:
         with patch.object(mod.asyncio, "sleep", instant_sleep):
             with patch("builtins.input", side_effect=AssertionError("input() must not be called")):
                 with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
-                    asyncio.run(_wait_for_callback())
+                    asyncio.run(_wait_for_callback(port))
 
 
 class TestBuildOAuthAuthNonInteractive:
@@ -805,7 +805,7 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
         import tools.mcp_oauth as mod
         import asyncio
 
-        mod._oauth_port = _find_free_port()
+        port = _find_free_port()
         monkeypatch.setattr(mod, "_is_interactive", lambda: False)
 
         # Binding the callback listener or entering the poll loop is the bug.
@@ -817,7 +817,7 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
         monkeypatch.setattr(mod.asyncio, "sleep", no_sleep)
 
         with pytest.raises(OAuthNonInteractiveError, match="interactive session"):
-            asyncio.run(_wait_for_callback())
+            asyncio.run(_wait_for_callback(port))
         fake_server.assert_not_called()
 
     def test_redirect_handler_rejects_and_does_not_open_browser(self, monkeypatch, capsys):
@@ -962,7 +962,7 @@ class TestWaitForCallbackPasteIntegration:
         """Background MCP discovery must not race the CLI/TUI stdin reader."""
         import tools.mcp_oauth as mod
 
-        mod._oauth_port = _find_free_port()
+        port = _find_free_port()
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = True
         monkeypatch.setattr(mod.sys, "stdin", mock_stdin)
@@ -973,7 +973,7 @@ class TestWaitForCallbackPasteIntegration:
         with patch.object(mod.asyncio, "sleep", instant_sleep):
             with mod.suppress_interactive_oauth():
                 with pytest.raises(OAuthNonInteractiveError):
-                    asyncio.run(_wait_for_callback())
+                    asyncio.run(_wait_for_callback(port))
         mock_stdin.readline.assert_not_called()
 
 
@@ -1007,7 +1007,7 @@ class TestWaitForCallbackSkipIntegration:
     def test_skip_raises_non_interactive_error(self, monkeypatch):
         """Skip token must raise OAuthNonInteractiveError (mcp_tool handles as non-fatal)."""
         import tools.mcp_oauth as mod
-        mod._oauth_port = _find_free_port()
+        port = _find_free_port()
         monkeypatch.setattr(mod, "_is_interactive", lambda: True)
         monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
 
@@ -1015,7 +1015,7 @@ class TestWaitForCallbackSkipIntegration:
             pass
         with patch.object(mod.asyncio, "sleep", instant_sleep):
             with pytest.raises(OAuthNonInteractiveError, match="user_skipped"):
-                asyncio.run(_wait_for_callback())
+                asyncio.run(_wait_for_callback(port))
 
 
 # ---------------------------------------------------------------------------

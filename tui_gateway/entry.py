@@ -25,9 +25,6 @@ from tui_gateway.transport import TeeTransport
 
 logger = logging.getLogger(__name__)
 
-# Discovery thread spawned by THIS module; None when delegated to the shared owner in
-# hermes_cli.mcp_startup (current path). The wait/in-flight/join helpers consult both.
-_mcp_discovery_thread = None
 # Set once MCP servers are found configured so wait_for_mcp_discovery can re-invoke the
 # idempotent spawn on later builds without a config re-probe.
 _mcp_discovery_enabled = False
@@ -209,12 +206,6 @@ def wait_for_mcp_discovery(timeout: float | None = None) -> None:
     """Block until background MCP discovery finishes, up to the resolved bound (config
     ``mcp_discovery_timeout``; ``timeout`` overrides). The agent snapshots its tool list ONCE
     at build time, so this bounded join lets already-spawning servers land."""
-    thread = _mcp_discovery_thread
-    if thread is not None and thread.is_alive():
-        fallback = timeout if timeout is not None else 0.75
-        bound = _mcp_startup_call("_resolve_discovery_timeout", timeout, default=fallback)
-        thread.join(timeout=bound)
-        return
     # Shared-owner path: re-invoke the idempotent spawn first so a zero-connected run gets
     # its retry instead of latching the process MCP-less (runs under the CALLER's profile).
     # Discovery is spawned via the shared owner (ensure_mcp_discovery_started → hermes_cli.mcp_startup);
@@ -233,36 +224,15 @@ def wait_for_mcp_discovery(timeout: float | None = None) -> None:
 
 
 def mcp_discovery_in_flight() -> bool:
-    """True if ANY background MCP discovery thread is still running: the late-refresh
-    scheduler calls this regardless of surface, so it MUST consult both owners.
-
-    There are two independent discovery-thread owners by surface: the stdio ``hermes --tui`` path spawns ITS
-    thread here (``_mcp_discovery_thread``), while the desktop app + dashboard WebSocket sidecar
-    (``tui_gateway/ws.py``) and ``hermes dashboard`` spawn theirs via
-    ``hermes_cli.mcp_startup.start_background_mcp_discovery``. The late-refresh scheduler imports this
-    function regardless of surface, so it MUST consult both — checking only the entry thread left the
-    desktop/dashboard surfaces with no late refresh, so a slow MCP server's tools never surfaced for the
-    whole session (#51587).
-    """
-    thread = _mcp_discovery_thread
-    if thread is not None and thread.is_alive():
-        return True
+    """True while the shared ``hermes_cli.mcp_startup`` discovery thread is running; every surface
+    spawns through that owner, so the late-refresh scheduler sees slow servers on all of them (#51587)."""
     return _mcp_startup_call("mcp_discovery_in_flight", default=False)
 
 
 def join_mcp_discovery(timeout: float | None = None) -> bool:
-    """Join both discovery owners; True once neither is alive. Accepts an unbounded wait
-    (off-critical-path late-refresh waiter); ``timeout`` bounds EACH join, entry thread first.
-
-    Joins both discovery-thread owners (see ``mcp_discovery_in_flight``): the entry thread first, then the
-    ``hermes_cli.mcp_startup`` thread used by the desktop/dashboard surfaces. See #51587.
-    """
-    entry_done = True
-    thread = _mcp_discovery_thread
-    if thread is not None:
-        thread.join(timeout=timeout)
-        entry_done = not thread.is_alive()
-    return entry_done and _mcp_startup_call("join_mcp_discovery", timeout=timeout, default=True)
+    """Join the shared discovery thread; True once it is not alive. Accepts an unbounded wait
+    (off-critical-path late-refresh waiter)."""
+    return _mcp_startup_call("join_mcp_discovery", timeout=timeout, default=True)
 
 
 # Spurious stdin-EOF recovery tracker (shared open-file-description O_NONBLOCK flip).

@@ -7,6 +7,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Optional
 from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
 from tools import mcp_tool_errors as _errors
@@ -14,6 +15,13 @@ from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
 
 logger = logging.getLogger("tools.mcp_tool")
+
+
+class ParkReason(StrEnum):
+    BUDGET = "from parked state"
+    PERMANENT = "from parked state (permanent error)"
+    INITIAL_PERMANENT = "after permanent initial failure"
+    INITIAL_RETRIES = "after initial connection failures"
 
 
 @dataclass
@@ -179,7 +187,7 @@ class MCPServerRunMixin:
         lines/month). A park for a DIFFERENT reason (auth error after connection refused) is new
         information and warns again."""
         line = msg % args if args else msg
-        if self._was_parked and line == self._last_park_line:
+        if self._park_reason is not None and line == self._last_park_line:
             logger.debug(msg, *args)
         else:
             self._last_park_line = line
@@ -198,7 +206,6 @@ class MCPServerRunMixin:
         # the park is a TIMED wait: every _PARKED_RETRY_INTERVAL we wake and attempt one reconnect ourselves
         # (#57129). An explicit _reconnect_event.set() (OAuth recovery, manual /mcp refresh) still wakes us
         # immediately.
-        self._was_parked = True
         self._park_reason = revival_reason
         self._deregister_tools()
         self._reconnect_event.clear()
@@ -409,7 +416,7 @@ class MCPServerRunMixin:
                     "MCP server '%s': %d consecutive reconnects without a healthy session (rapid-drop budget "
                     "exhausted), parking; will self-probe every %ds until it recovers (state: degraded → parked)",
                     self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL)
-                if not await self._park_and_rearm("from parked state", budget):
+                if not await self._park_and_rearm(ParkReason.BUDGET, budget):
                     return False
         # Clear readiness too: a stale _ready lets handler recovery mistake old for fresh.
         self._ready.clear()
@@ -470,7 +477,7 @@ class MCPServerRunMixin:
                 "MCP server '%s' failed after %d reconnection attempts, parking; will self-probe every %ds "
                 "until it recovers (state: degraded → parked): %s: %s",
                 self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
-            return await self._park_and_rearm("from parked state", budget)
+            return await self._park_and_rearm(ParkReason.BUDGET, budget)
         logger.debug("MCP server '%s' connection lost (attempt %d/%d), reconnecting in %.0fs: %s: %s",
                      self.name, self._reconnect_retries, _core._MAX_RECONNECT_RETRIES, budget.backoff,
                      type(root).__name__, root)
@@ -488,14 +495,14 @@ class MCPServerRunMixin:
             self._log_park("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
                            self.name, detail, type(root).__name__, root)
             self._arm_auth_park(root)
-            return await self._park_initial_failure(exc, "after permanent initial failure", budget)
+            return await self._park_initial_failure(exc, ParkReason.INITIAL_PERMANENT, budget)
         budget.initial_retries += 1
         if budget.initial_retries > _core._MAX_INITIAL_CONNECT_RETRIES:
             self._log_park(
                 "MCP server '%s' failed initial connection after %d attempts, parking until a reconnect is "
                 "requested (state: connecting → parked): %s: %s",
                 self.name, _core._MAX_INITIAL_CONNECT_RETRIES, type(root).__name__, root)
-            return await self._park_initial_failure(exc, "after initial connection failures", budget)
+            return await self._park_initial_failure(exc, ParkReason.INITIAL_RETRIES, budget)
         logger.debug(
             "MCP server '%s' initial connection failed (attempt %d/%d), retrying in %.0fs: %s: %s",
             self.name, budget.initial_retries, _core._MAX_INITIAL_CONNECT_RETRIES, budget.backoff,
@@ -523,7 +530,7 @@ class MCPServerRunMixin:
             "MCP server '%s' hit a permanent error, parking without retries; will self-probe every %ds "
             "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
         self._arm_auth_park(root)
-        return await self._park_and_rearm("from parked state (permanent error)", budget)
+        return await self._park_and_rearm(ParkReason.PERMANENT, budget)
 
     def _arm_auth_park(self, root: BaseException) -> None:
         """Record the OAuth credentials an auth-failure park failed with. Until a re-authorization

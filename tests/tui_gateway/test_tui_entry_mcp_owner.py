@@ -18,7 +18,6 @@ from tui_gateway import entry
 
 
 def test_wait_falls_through_to_shared_owner(monkeypatch):
-    monkeypatch.setattr(entry, "_mcp_discovery_thread", None)
     # The fall-through to the shared owner only exists for the stdio TUI,
     # which arms this flag in main(); other surfaces call the startup wait
     # directly from _make_agent and must NOT be waited twice.
@@ -39,7 +38,6 @@ def test_wait_falls_through_to_shared_owner(monkeypatch):
 
 
 def test_wait_noop_when_no_owner_has_a_thread(monkeypatch):
-    monkeypatch.setattr(entry, "_mcp_discovery_thread", None)
     monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
 
     start = time.monotonic()
@@ -58,7 +56,6 @@ def test_wait_reinvokes_shared_spawn_when_discovery_enabled(monkeypatch):
     it exactly once, so the per-agent-build wait must re-invoke the
     idempotent spawn when this process is MCP-enabled.
     """
-    monkeypatch.setattr(entry, "_mcp_discovery_thread", None)
     monkeypatch.setattr(entry, "_mcp_discovery_enabled", True)
 
     calls = []
@@ -76,7 +73,6 @@ def test_wait_reinvokes_shared_spawn_when_discovery_enabled(monkeypatch):
 
 def test_wait_skips_spawn_when_discovery_not_enabled(monkeypatch):
     """Non-MCP sessions must not import/spawn discovery on the wait path."""
-    monkeypatch.setattr(entry, "_mcp_discovery_thread", None)
     monkeypatch.setattr(entry, "_mcp_discovery_enabled", False)
 
     calls = []

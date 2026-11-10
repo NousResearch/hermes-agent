@@ -7,7 +7,7 @@ accumulated thousands of identical lines per month (10,548 for one server in
 the report) and drowned the genuinely-new errors in gateway.error.log. The
 park lines now go through ``MCPServerTask._log_park``: the first park (a real
 state transition) warns; re-parks while the server never revived are demoted
-to DEBUG. A session that proves healthy clears ``_was_parked``, so the next
+to DEBUG. A session that proves healthy clears ``_park_reason``, so the next
 outage warns again.
 """
 
@@ -17,6 +17,7 @@ import logging
 import pytest
 
 from tools.mcp_tool import MCPServerTask
+from tools.mcp_tool_server_run import ParkReason
 
 
 def _fast_time(monkeypatch, tmp_path):
@@ -86,7 +87,7 @@ def test_reparked_server_logs_once_not_per_probe(monkeypatch, tmp_path, caplog):
 
 @pytest.mark.no_isolate
 def test_park_after_revival_warns_again(monkeypatch, tmp_path, caplog):
-    """A server that revived (session proven → ``_was_parked`` cleared) and then
+    """A server that revived (session proven → ``_park_reason`` cleared) and then
     fails again must warn on its next park: a fresh outage is a state
     transition, not probe chatter."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -148,7 +149,7 @@ def test_park_for_a_different_reason_warns_again(caplog):
     task = MCPServerTask("t")
     with caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
         task._log_park("MCP server '%s' parked: %s", "t", "ConnectionError: refused")
-        task._was_parked = True  # _park() latches this on the first park
+        task._park_reason = ParkReason.BUDGET  # _park() records this on the first park
         task._log_park("MCP server '%s' parked: %s", "t", "ConnectionError: refused")
         task._log_park("MCP server '%s' parked: %s", "t", "OAuthError: token revoked")
         task._log_park("MCP server '%s' parked: %s", "t", "OAuthError: token revoked")

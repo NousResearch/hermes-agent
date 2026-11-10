@@ -239,7 +239,7 @@ def pending_charge(policy_key: Any, server_name: str, tool_name: str, session_ke
 
 
 def unknown_cost_keys(policy: Optional[CostPolicy], tool_names: list[str]) -> list[str]:
-    """Declared tool names the server does not offer: a typo, or Hermes' ``mcp_<server>_`` display prefix
+    """Declared tool names the server does not offer: a typo, or Hermes' ``mcp__<server>__`` display prefix
     copied into the table. Those tools would run with no cost and no budget, so registration warns."""
     if policy is None or not tool_names:
         return []

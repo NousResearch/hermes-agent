@@ -47,10 +47,6 @@ def set_mcp_server_filter(toolsets: object) -> Optional[list[str]]:
     return _mcp_server_filter
 
 
-def get_mcp_server_filter() -> Optional[list[str]]:
-    return _mcp_server_filter
-
-
 def _has_configured_mcp_servers() -> bool:
     """Cheap config probe so non-MCP users avoid importing the MCP stack."""
     try:
@@ -277,15 +273,8 @@ def _current_home_thread() -> Optional[threading.Thread]:
 
 
 def mcp_discovery_in_flight() -> bool:
-    """True if THIS module's discovery thread (for the current profile home) is still running.
-
-    Mirrors ``tui_gateway.entry.mcp_discovery_in_flight``; surfaces that start discovery here
-    (desktop, dashboard sidecar) populate this thread, so the late-refresh scheduler consults both.
-
-    Those processes populate THIS module's ``_mcp_discovery_thread``, not ``tui_gateway.entry``'s, so the
-    late-refresh scheduler must consult both to decide whether a slow server's tools are still pending (see
-    #51587).
-    """
+    """True if the discovery thread for the current profile home is still running; the late-refresh
+    scheduler reads this through ``tui_gateway.entry.mcp_discovery_in_flight`` (#51587)."""
     thread = _current_home_thread()
     return thread is not None and thread.is_alive()
 

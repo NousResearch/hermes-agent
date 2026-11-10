@@ -264,7 +264,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         with suppress(Exception):
             _estop_key = self._session_key_for_source(source)
             _estop_state = self._peek_session_state(_estop_key)
-            if _estop_state is not None and _estop_state.persistent.update_prompt_pending:
+            if _estop_state is not None and _estop_state.persistent.update_prompt_pending \
+                    and not self._hm_update_reply_refused(event):
                 return True
             # A running session covers steering plus pending clarify / tool approvals it holds.
             if self._is_session_running(_estop_key):
@@ -317,6 +318,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return str(e)
         return None
 
+    def _hm_update_reply_refused(self, event: MessageEvent) -> bool:
+        """Whether *event*'s sender may not answer the pending ``/update`` prompt (not its opener nor
+        an admin of the chat scope): their message is ordinary chat, never the update answer."""
+        from gateway.approval_actor import update_prompt_refusal
+        from gateway.slash_access import policy_for_runner_source
+        return update_prompt_refusal(event.user_id or event.source.user_id,
+                                     admin_ids=policy_for_runner_source(self, event.source).admin_user_ids) is not None
+
     def _hm_update_prompt_reply(self, event: MessageEvent, _quick_key: str) -> Optional[str]:
         """Consume a reply to a pending ``/update`` prompt (routed to the detached update process via
         ``.update_response``); None when nothing was consumed. Recognized slash commands must bypass
@@ -324,10 +333,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         _up_state = self._peek_session_state(_quick_key)
         if _up_state is None or not _up_state.persistent.update_prompt_pending:
             return None
-        from gateway.approval_actor import update_prompt_refusal
-        from gateway.slash_access import policy_for_runner_source
-        if update_prompt_refusal(event.user_id or event.source.user_id,
-                                 admin_ids=policy_for_runner_source(self, event.source).admin_user_ids):
+        if self._hm_update_reply_refused(event):
             return None  # another member's message in a shared chat: an ordinary message, not the answer
         # Accept /approve and /deny as shorthand for yes/no
         cmd = event.get_command()

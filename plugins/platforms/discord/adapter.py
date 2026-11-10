@@ -6469,6 +6469,8 @@ def _define_discord_view_classes() -> None:
         """Yes/No buttons for ``hermes update`` prompts; the answer is written to
         ``.update_response`` for the detached update process to pick up."""
 
+        is_update_prompt = True  # opener_refusal binds it to the /update sender
+
         def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.session_key = session_key

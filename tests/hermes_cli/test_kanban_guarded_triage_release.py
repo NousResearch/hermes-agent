@@ -312,7 +312,7 @@ def test_prior_authorizer_cannot_remove_scoped_guard_policy(kanban_home):
 
         def prior_authorizer(action, _arg1, _arg2, _database, _source):
             if getattr(conn, "_hermes_authorizer_locked", False):
-                conn.set_authorizer(None)
+                sqlite3.Connection.set_authorizer(conn, None)
             policy_restored.append(action)
             return sqlite3.SQLITE_OK
 

@@ -180,11 +180,7 @@ def _guard_authorizer(conn: sqlite3.Connection) -> Iterator[None]:
     previous = getattr(conn, "_hermes_authorizer_callback", None)
     tracked_policy = hasattr(conn, "_hermes_authorizer_locked")
 
-    def authorize(action, arg1, arg2, database, source):
-        if previous is not None:
-            previous_result = previous(action, arg1, arg2, database, source)
-            if previous_result != sqlite3.SQLITE_OK:
-                return previous_result
+    def authorize(action, _arg1, _arg2, _database, _source):
         if action in _GUARD_DENIED_ACTIONS:
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK

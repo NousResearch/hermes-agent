@@ -1,4 +1,4 @@
-# Community catalog entry — nvidia-switchyard
+# Catalog entry — nvidia-switchyard (verified: NVIDIA-owned repository)
 #
 # Owner-submitted: NVIDIA owns and maintains the repository below.
 # Exact-SHA pin (40-hex). No self-updating code: nemo-switchyard comes from PyPI as a declared
@@ -24,7 +24,7 @@ description: >-
   <HERMES_HOME>/switchyard/; after removal it restores the replaced models, stops its sidecar and deletes its
   provider copy; it never rewrites saved conversations. No telemetry.
 maintainer: NVIDIA
-tier: community
+tier: verified
 category: models
 version: "0.1.0"
 platforms: [linux, macos, windows]

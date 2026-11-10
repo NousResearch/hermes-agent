@@ -1,24 +1,27 @@
 name: bot-dashboard
 repo: https://github.com/trookish/hermes-bot-dashboard
-sha: a1bc74c56ebc19ea0b2cb3d5c188d5f6d6cc79f2
+sha: 938454e0eb9256af06da7d1e8ca32e340609848e
 title: Bot Dashboard
 description: >-
   Two desktop panes in one plugin. Bot shows the focused bot's dashboard - profile and
-  model, scheduled jobs, TaskNotes tasks, notes, projects and the custom widgets that bot
-  pinned for you; Group shows a group chat's members, activity, shared tasks and projects,
-  and follows a group chat you open. Ships one agent tool (bot_panel) so a bot can edit its
-  own panel and a group_dashboard tool so any member bot can read or shape a group's dashboard,
-  plus a pre_llm_call hook that restates a short standing rule on every turn (open a
-  todo_list task per unit of work, record decisions as panel notes) with a first-turn
-  snapshot of the panel.
-  Disclosure - reads the local Hermes home (bot profiles, group room records, TaskNotes
-  tasks and HermesBrain projects) and writes only the plugin's own widget, note and layout
-  files under the profile's plugin data; the panes talk to the Hermes API on 127.0.0.1,
-  with no third-party network calls, no shell commands and no stored credentials.
+  model, scheduled jobs, notes, the custom widgets that bot pinned for you, and optional
+  tasks and projects from a markdown notes vault you point it at in the plugin settings;
+  Group shows a group chat's members, activity, shared tasks and projects, and follows a
+  group chat you open. Ships two agent tools in its own bot_dashboard toolset - bot_panel
+  edits the bot's own panel, group_dashboard lets any member bot read or shape a group's
+  dashboard - plus a pre_llm_call hook that adds a short panel snapshot on the first turn
+  only (and an optional per-turn instruction, empty unless the user writes one).
+  Disclosure - reads the local Hermes home (bot profiles, config.yaml, group room
+  records) and, only if the user sets vault_path, markdown notes in that folder; writes
+  only each bot's own panel files (widgets, notes, layout) under its profile and, when the
+  user creates or ticks a task, that task's note in the configured vault folder. Widgets
+  render in a sandboxed opaque-origin frame with a no-network Content-Security-Policy. The
+  panes talk to the Hermes API on 127.0.0.1, with no third-party network calls, no shell
+  commands and no stored credentials.
 maintainer: trookish
 tier: community
 category: desktop
-version: "1.1.2"
+version: "1.2.0"
 requires_hermes: ">=0.20.0"
 docs_url: https://github.com/trookish/hermes-bot-dashboard#readme
 platforms: []

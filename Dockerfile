@@ -207,8 +207,8 @@ COPY pm/ pm/
 # pm's lazy imports resolve get_default_hermes_root()/project_venv_dir()
 # from hermes_constants (stdlib-only) at install time — a sealed-stage
 # `python3 -m pm.cli install` fails with "No module named
-# 'hermes_constants'" without it on the path. Copy the module next to pm.
-COPY hermes_constants.py hermes_constants.py
+# 'hermes_agent'" without it on the path. Copy the module next to pm.
+COPY hermes_agent/__init__.py hermes_agent/hermes_constants.py hermes_agent/
 # PM imports the shared stdlib locking owner before deps exist.
 COPY hermes_agent/__init__.py hermes_agent/
 COPY hermes_agent/hermes_cli/__init__.py hermes_agent/hermes_cli/runtime_state.py hermes_agent/hermes_cli/

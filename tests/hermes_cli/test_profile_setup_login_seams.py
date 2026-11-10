@@ -40,7 +40,7 @@ def start():
             "expires_in": 60, "interval": 1, "state": {"polls": 0}}
 
 def poll(state):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     polls = state["polls"] + 1
     _log("poll", polls=polls, home=str(get_hermes_home()))
     if polls < int(os.environ.get("ACME_APPROVE_AT", "2")):
@@ -50,7 +50,7 @@ def poll(state):
     return {"status": "approved", "credential": "acme-secret"}
 
 def save(credential):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     _log("save", home=str(get_hermes_home()), credential=credential)
 
 def flow(config, current_model, args):

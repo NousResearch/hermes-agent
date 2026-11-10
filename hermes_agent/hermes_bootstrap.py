@@ -439,11 +439,11 @@ def harden_import_path(src_root: str | None = None) -> None:
     The cwd reaches ``sys.path`` as ``""``/``"."`` (script/``-m`` launches) AND as an
     absolute path (venv activation, PYTHONPATH), so both are handled: relative forms are
     dropped and the Hermes root is *relocated* to the front, not merely inserted when
-    absent. ``src_root`` defaults to this module's directory (the repo root for every
-    shipped entry point), never an inherited ``HERMES_PYTHON_SRC_ROOT``: a checkout's dev
+    absent. ``src_root`` defaults to the parent of this module's directory (the repo root for
+    every shipped entry point), never an inherited ``HERMES_PYTHON_SRC_ROOT``: a checkout's dev
     shell exports that, and an install started from it would import the checkout's code.
     """
-    root = src_root or os.path.dirname(os.path.abspath(__file__))
+    root = src_root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 
@@ -479,7 +479,7 @@ install_never_free_environ()
 # Every entry point imports this module before its dependency graph.
 from pathlib import Path
 
-_root = Path(__file__).resolve().parent
+_root = Path(__file__).resolve().parents[1]
 try:
     os.getcwd()
 except FileNotFoundError:
@@ -510,48 +510,15 @@ harden_import_path(str(_root))
 def _settle_interrupted_update() -> None:
     """Put back the tree a killed ``hermes update`` left half-moved, before PM, launch preparation or
     any Hermes package imports from it (``hermes_agent.hermes_cli._early_recovery``; ``hermes_agent.hermes_cli.main`` repeats the
-    call for entries that never reach this module). A killed ZIP swap can leave ``hermes_agent/hermes_cli/`` itself
-    moved aside: the journal-driven restore then runs from that moved-aside copy, the code that wrote
-    the journal. Root files are never absent mid-swap (``update_cmd_zip._commit_staged_replacements``)."""
+    call for entries that never reach this module). Launchers reach this module through the root
+    ``hermes_bootstrap.py``, which runs the same repair first and also repairs a ZIP swap killed with
+    ``hermes_agent/`` moved aside."""
     try:
         from hermes_agent.hermes_cli import _early_recovery as recovery
     except ImportError:
-        new_aside = _root / "hermes_agent.hermes-update-old"
-        old_aside = _root / "hermes_cli.hermes-update-old"
-        if not (_root / ".hermes-update-zip-swap").is_file():
-            return  # not a torn update: the imports below report the real damage
-        if (new_aside / "hermes_cli" / "_early_recovery.py").is_file():
-            module = "hermes_agent.hermes_cli._early_recovery"
-            stand_ins = {"hermes_agent": [str(new_aside), str(_root / "hermes_agent")],
-                         "hermes_agent.hermes_cli": [str(new_aside / "hermes_cli"), str(_root / "hermes_agent" / "hermes_cli")]}
-        elif (old_aside / "_early_recovery.py").is_file() or (_root / "hermes_cli" / "_early_recovery.py").is_file():
-            module = "hermes_cli._early_recovery"
-            stand_ins = {"hermes_cli": [str(old_aside), str(_root / "hermes_cli")]}
-        else:
-            return
-        import importlib
-        import types
-
-        # The moved-aside directory stands in for its package (its ``__init__`` not run), so the
-        # repair's own ``update_lock`` import finds the custody code beside it: without that the
-        # restore refuses to repair unguarded. Dropped again unless it relaunches.
-        for name, path in stand_ins.items():
-            package = types.ModuleType(name)
-            package.__path__ = path
-            sys.modules[name] = package
-        tops = {name.split(".")[0] for name in stand_ins}
-        try:
-            recovery = importlib.import_module(module)
-
-            if recovery.restore_interrupted_pull(_root):
-                recovery.relaunch_after_restore()
-        finally:
-            for name in [n for n in sys.modules if n.split(".")[0] in tops]:
-                del sys.modules[name]
-        return
+        return  # the imports below report the real damage
     if recovery.restore_interrupted_pull(_root):
         recovery.relaunch_after_restore()
-
 
 _settle_interrupted_update()
 

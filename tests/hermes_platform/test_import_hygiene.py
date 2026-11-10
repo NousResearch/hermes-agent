@@ -25,7 +25,7 @@ new_top_levels = {name.partition('.')[0] for name in set(sys.modules) - before}
 unexpected = sorted(
     name
     for name in new_top_levels
-    if name not in sys.stdlib_module_names and not name.startswith('hermes_platform')
+    if name not in sys.stdlib_module_names and name != 'hermes_agent'
 )
 assert not unexpected, unexpected
 """

@@ -44,7 +44,7 @@ _CHILD = textwrap.dedent('''
     if mode.startswith("sqlite"):
         # The selected interpreter is the shim: its SQLite probe is the runtime-safety fact.
         sys.executable = os.environ["PROBE_SHIM"]
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_cli.config import DEFAULT_CONFIG, ensure_hermes_home
     home = Path(os.environ["HERMES_HOME"])
     home.mkdir(parents=True, exist_ok=True)

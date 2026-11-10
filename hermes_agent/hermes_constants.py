@@ -547,10 +547,10 @@ def _version_probe_ok(path: str) -> bool:
     return result is not None and result.returncode == 0
 
 
-# Install tree root (this file lives at <install_root>/hermes_constants.py). Used by secure_parent_dir() to
+# Install tree root (this file lives at <install_root>/hermes_agent/hermes_constants.py). Used by secure_parent_dir() to
 # skip chmod on the install dir — chmodding it 0700 breaks hermes-user traversal in Docker (UID 10000). See
 # #25821, #93050.
-_INSTALL_ROOT = Path(__file__).resolve().parent
+_INSTALL_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _is_executable_file(path: str) -> bool:
@@ -1387,7 +1387,7 @@ def project_venv_dir(project_root) -> Path | None:
     # Out-of-tree install: the path is real by construction (never invented), and non-venv installs
     # keep today's ``None`` so the ``or root / "venv"`` fallback cannot install into a base interpreter.
     running = Path(sys.prefix)
-    if (Path(__file__).resolve().parent == root.resolve()
+    if (Path(__file__).resolve().parents[1] == root.resolve()
             and sys.prefix != sys.base_prefix
             and venv_python_path(running).is_file()
             and _venv_installs_checkout(running, root)):

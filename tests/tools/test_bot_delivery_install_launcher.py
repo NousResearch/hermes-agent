@@ -76,7 +76,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
     # Load the checkout's constants before the launcher's bootstrap import;
     # an editable test interpreter may also expose an older installed checkout.
     import shutil
-    shutil.copyfile(real_root / "hermes_constants.py", root / "hermes_constants.py")
+    shutil.copyfile(real_root / "hermes_agent" / "hermes_constants.py", root / "hermes_constants.py")
     (package / "__init__.py").write_text(
         f"__path__.append({str(real_root / 'hermes_agent' / 'hermes_cli')!r})\n", encoding="utf-8")
     (package / "main.py").write_text(

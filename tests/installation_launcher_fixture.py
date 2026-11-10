@@ -21,7 +21,8 @@ def publish_fixture_launcher(root: Path, main_source: str) -> Path:
     (root / "hermes_agent" / "__init__.py").touch()
     (root / "hermes_agent" / "hermes_cli" / "__init__.py").touch()
     # Real modules, never the forwarding files at the old paths, which need the whole package.
-    for relative, source in (("hermes_constants.py", "hermes_constants.py"),
+    for relative, source in (("hermes_constants.py", "hermes_agent/hermes_constants.py"),
+                             ("hermes_agent/hermes_constants.py", "hermes_agent/hermes_constants.py"),
                              ("hermes_cli/_launchers.py", "hermes_agent/hermes_cli/_launchers.py"),
                              ("hermes_agent/hermes_cli/_launchers.py", "hermes_agent/hermes_cli/_launchers.py"),
                              ("pm/environments.py", "pm/environments.py")):

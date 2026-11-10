@@ -432,7 +432,7 @@ class TestSecureParentDir:
         0700 because it has 3 path parts and passed the ``< 3`` guard, locking
         out UID 10000 (hermes user) from traversing the install dir.
         """
-        install_root = Path(hermes_constants.__file__).resolve().parent
+        install_root = Path(hermes_constants.__file__).resolve().parents[1]
 
         # Directly under the install root (e.g. /opt/hermes/auth.json)
         target = install_root / "auth.json"
@@ -458,7 +458,7 @@ class TestSecureParentDir:
         still receive parent-dir hardening. Pins that the exclusion cannot
         silently widen into a string-prefix match.
         """
-        install_root = Path(hermes_constants.__file__).resolve().parent
+        install_root = Path(hermes_constants.__file__).resolve().parents[1]
 
         # Prefix-named sibling of the install root (/opt/hermes-data/...).
         prefix_sibling = Path(str(install_root) + "-data")
@@ -605,7 +605,7 @@ class TestProjectVenvDirOutOfTree:
 
     @staticmethod
     def _running_from(monkeypatch, checkout, venv):
-        monkeypatch.setattr(hermes_constants, "__file__", str(checkout / "hermes_constants.py"))
+        monkeypatch.setattr(hermes_constants, "__file__", str(checkout / "hermes_agent" / "hermes_constants.py"))
         monkeypatch.setattr(sys, "prefix", str(venv))
         monkeypatch.setattr(sys, "base_prefix", str(checkout / "no-such-base"))
 

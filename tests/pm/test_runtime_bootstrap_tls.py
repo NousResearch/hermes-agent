@@ -23,7 +23,9 @@ def test_staged_uv_prepares_pm_before_any_tool_download(tmp_path):
     stage = tmp_path / "source"
     for name in ("pm", "hermes_cli", "hermes_agent"):
         shutil.copytree(repo / name, stage / name, ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copy2(repo / "hermes_constants.py", stage / "hermes_constants.py")
+    for name in ("hermes_agent/__init__.py", "hermes_agent/hermes_constants.py"):
+        (stage / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repo / name, stage / name)
     home = tmp_path / "home"
     store = home / "tools"
     target = current_target()
@@ -98,7 +100,9 @@ def test_pm_cli_verifies_tls_with_platform_trust(tmp_path, monkeypatch):
     repo = tmp_path / "source"
     for name in ("pm", "hermes_cli", "hermes_agent"):
         shutil.copytree(source / name, repo / name, ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copy2(source / "hermes_constants.py", repo / "hermes_constants.py")
+    for name in ("hermes_agent/__init__.py", "hermes_agent/hermes_constants.py"):
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / name, repo / name)
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "PM test CA")])
     now = datetime.now(UTC)

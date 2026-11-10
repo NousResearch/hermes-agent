@@ -45,7 +45,8 @@ _ISSUE_NUMBER = re.compile(r"(^test_\d{4,6}_)|(_\d{4,6}\.py$)")
 def _source_dirs() -> set[str]:
     return {
         p.name
-        for p in REPO_ROOT.iterdir()
+        for root in (REPO_ROOT, REPO_ROOT / "hermes_agent")
+        for p in root.iterdir()
         if p.is_dir() and (p / "__init__.py").exists()
     }
 

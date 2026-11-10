@@ -34,6 +34,7 @@ def test_minted_launcher_reads_current_selection_and_editable_members(tmp_path, 
     (root / "hermes_agent" / "__init__.py").write_text("")
     (root / "hermes_agent" / "hermes_cli" / "__init__.py").write_text("")
     (root / "hermes_agent" / "hermes_cli" / "runtime_state.py").write_bytes(Path(runtime_state.__file__).read_bytes())
+    (root / "hermes_agent" / "hermes_constants.py").write_bytes(Path(hermes_constants.__file__).read_bytes())
     (root / "hermes_bootstrap.py").write_text(
         "from pathlib import Path\nfrom pm.environments import activate_dependencies\n"
         "activate_dependencies(Path(__file__).resolve().parent)\n"

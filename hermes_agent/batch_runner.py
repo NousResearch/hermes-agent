@@ -11,7 +11,7 @@ try:
     import hermes_agent.hermes_bootstrap as hermes_bootstrap  # noqa: PLR0402
 except ModuleNotFoundError as exc:
     # Partial ``hermes update`` (git reset landed, ``uv pip install -e .`` did not).
-    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
+    if exc.name != "hermes_agent.hermes_bootstrap" and not "hermes_agent.hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import json

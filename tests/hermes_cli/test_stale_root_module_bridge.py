@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import sys
 
-def test_drop_stale_root_modules_leaves_complete_utils_alone():
-    from hermes_agent import utils
-    from hermes_agent.hermes_cli.stale_modules import drop_stale_root_modules
 
-    assert hasattr(utils, "file_signature")
-    before = sys.modules["hermes_agent.utils"]
+def test_drop_stale_root_modules_leaves_complete_utils_alone(monkeypatch):
+    from hermes_agent import utils
+    from hermes_agent.hermes_cli.stale_modules import _ROOT_MODULE_REQUIRED_ATTRS, drop_stale_root_modules
+
+    (root_utils,) = _ROOT_MODULE_REQUIRED_ATTRS
+    monkeypatch.setitem(sys.modules, root_utils, utils)
     assert drop_stale_root_modules() == []
-    assert sys.modules["hermes_agent.utils"] is before
+    assert sys.modules[root_utils] is utils

@@ -16,7 +16,6 @@ import contextvars
 import copy
 import dataclasses
 import inspect
-import json
 import logging
 import math
 import os
@@ -24,7 +23,6 @@ import tempfile
 import time
 import uuid
 import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 
@@ -47,6 +45,8 @@ from hermes_state_pidns import holder_namespace_token
 from agent.conversation_compression_watermark import held_archive_watermark
 
 logger = logging.getLogger(__name__)
+SplitStatus = Literal["not_applicable", "pending", "in_place_committed", "rotated_committed", "aborted", "failed_not_indexed"]
+CommitStatus = Literal["committed", "aborted"]
 
 
 @contextlib.contextmanager
@@ -2500,7 +2500,7 @@ class _CompactionLifecycle:
         self._agent = agent
         self.status_emitted = status_emitted
         self._done_emitted = False
-        self.commit_status = "aborted"
+        self.commit_status: CommitStatus = "aborted"
 
     def complete(self, *, force_terminal: bool = False) -> None:
         if self._done_emitted:
@@ -3515,7 +3515,7 @@ class _CommitOutcome:
     commit_started_at: float
     refused_prompt: Optional[str] = None
     old_session_id: Optional[str] = None
-    split_status: str = "not_applicable"
+    split_status: SplitStatus = "not_applicable"
     session_commit_succeeded: bool = False
     compacted_in_place: bool = False
     made_progress: bool = False
@@ -3559,7 +3559,7 @@ def _commit_compaction(
     session_commit_succeeded = False
     compacted_in_place = False
     commit_started_at = time.monotonic()
-    split_status = "not_applicable"
+    split_status: SplitStatus = "not_applicable"
     old_session_id: Optional[str] = None  # bound only once rotation begins
     if agent._session_db:
         split_status = "pending"

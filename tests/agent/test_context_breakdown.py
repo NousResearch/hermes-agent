@@ -30,12 +30,12 @@ def _make_agent(
     return agent, {"stable": stable, "context": context, "volatile": volatile}
 
 def test_breakdown_includes_major_categories():
-    stable = (
-        "base guidance\n"
-        "<available_skills>\n  demo:\n    - hello: hi\n</available_skills>"
-    )
+    stable = "base guidance"
     context = "# Project Context\nFollow AGENTS.md"
-    volatile = "Current time: now"
+    volatile = (
+        "<available_skills>\n  demo:\n    - hello: hi\n</available_skills>\n\n"
+        "Current time: now"
+    )
     history = [{"role": "user", "content": "hello there"}]
     agent, parts = _make_agent(stable=stable, context=context, volatile=volatile)
 
@@ -92,6 +92,29 @@ def test_empty_transcript_still_reports_the_conversation_category():
     # "not configured" is exactly what their absence communicates.
     assert "mcp" not in categories
     assert "skills" not in categories
+
+def test_skills_index_from_the_prompt_builder_is_reported_as_skills():
+    from types import SimpleNamespace
+
+    skills_index = "<available_skills>\n  demo:\n    - hello: hi\n</available_skills>"
+    agent = SimpleNamespace(
+        load_soul_identity=False, skip_context_files=True, valid_tool_names=["skills_list"],
+        _task_completion_guidance=False, _tool_use_enforcement=False, _environment_probe=False,
+        _kanban_worker_guidance="", _memory_store=None, _memory_manager=None, model="", provider="",
+        platform="", pass_session_id=False, session_id="", _emit_status=lambda *_a, **_k: None,
+        tools=[{"type": "function", "function": {"name": "skills_list", "description": "list"}}],
+        context_compressor=SimpleNamespace(context_length=200_000, last_prompt_tokens=0),
+    )
+    with (
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("model_tools.get_toolset_for_tool", return_value=None),
+        patch("agent.prompt_builder.build_skills_system_prompt", return_value=skills_index),
+    ):
+        data = compute_session_context_breakdown(agent, [])
+
+    categories = {item["id"]: item["tokens"] for item in data["categories"]}
+    assert categories["skills"] > 0
 
 # ── /context renderers (pure functions over the payload) ────────────────────
 

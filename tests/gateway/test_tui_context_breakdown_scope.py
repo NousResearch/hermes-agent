@@ -23,7 +23,8 @@ async def test_context_breakdown_without_a_resident_agent_estimates_the_stored_f
     sid = (await owner.call('session.create', request_id='idle', source='tui', cwd=str(owner.workdir)))['session_id']
     db = owner.authority.db
     stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
-    prompt = 'You are Hermes. ' * 50 + '\n<available_skills>\n  - plan: write plans\n</available_skills>'
+    identity, skills = 'You are Hermes. ' * 50, '<available_skills>\n  - plan: write plans\n</available_skills>'
+    prompt = f'{identity}\n{skills}'
     tools = [{'type': 'function', 'function': {'name': 'terminal', 'parameters': {'type': 'object'}}},
              {'type': 'function', 'function': {'name': 'mcp_docs_search', 'description': 'search ' * 20}}]
     db.update_system_prompt(stored, prompt)
@@ -32,7 +33,7 @@ async def test_context_breakdown_without_a_resident_agent_estimates_the_stored_f
     db.append_message(stored, 'assistant', 'hi')
     assert owner.authority.agent(SimpleNamespace(session_id=sid)) is None
 
-    monkeypatch.setattr(system_prompt, 'build_system_prompt_parts', lambda a: {'stable': prompt})
+    monkeypatch.setattr(system_prompt, 'build_system_prompt_parts', lambda a: {'stable': identity, 'volatile': skills})
     expected = compute_session_context_breakdown(SimpleNamespace(tools=tools), db.get_resume_conversations(stored)[0])
     actual = await owner.call('session.context_breakdown', session_id=sid)
     assert actual['categories'] == expected['categories'], actual

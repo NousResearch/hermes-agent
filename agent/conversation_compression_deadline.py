@@ -31,8 +31,8 @@ def resolve_context_compression_timeouts(compression_cfg: Optional[dict] = None)
     if cfg is None:
         cfg = {}
         with contextlib.suppress(Exception):
-            from hermes_cli.config import load_config
-            raw = load_config()
+            from hermes_cli.config import load_config_readonly
+            raw = load_config_readonly()
             maybe = raw.get("compression", {}) if isinstance(raw, dict) else {}
             cfg = maybe if isinstance(maybe, dict) else {}
     if isinstance(cfg, dict):

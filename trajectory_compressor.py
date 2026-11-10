@@ -739,13 +739,13 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 # CLI
 # ---------------------------------------------------------------------------
 
-def _load_cli_config(config: str, target_max_tokens: Optional[int], tokenizer: Optional[str]) -> CompressionConfig:
+def _load_cli_config(config: Optional[str], target_max_tokens: Optional[int], tokenizer: Optional[str]) -> CompressionConfig:
     """Load the YAML config (defaults if missing) and apply CLI overrides."""
-    if Path(config).exists():
+    if config and Path(config).exists():
         print(f"📋 Loading config from {config}")
         compression_config = CompressionConfig.from_yaml(config)
     else:
-        print(f"⚠️  Config not found at {config}, using defaults")
+        print("Using built-in defaults" if not config else f"⚠️  Config not found at {config}, using defaults")
         compression_config = CompressionConfig()
     if target_max_tokens:
         compression_config.target_max_tokens = target_max_tokens
@@ -828,7 +828,7 @@ def _run_dir_mode(input_path: Path, output: Optional[str], compression_config: C
     print("\n✅ Compression complete!")
 
 
-def main(input: str, output: str | None = None, config: str = "configs/trajectory_compression.yaml", target_max_tokens: int | None = None,
+def main(input: str, output: str | None = None, config: str | None = None, target_max_tokens: int | None = None,
          tokenizer: str | None = None, sample_percent: float | None = None, seed: int = 42, dry_run: bool = False):
     """
     Compress agent trajectories to fit within a target token budget.

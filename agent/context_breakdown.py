@@ -70,9 +70,9 @@ def _bytes_to_tokens(size: Optional[int]) -> Optional[int]:
     return None if size is None else (int(size) + 3) // CHARS_PER_TOKEN
 
 
-def _skills_block(stable: str) -> str:
-    """The live ``<available_skills>`` block inside the stable tier, or ''."""
-    m = _SKILLS_BLOCK_RE.search(stable)
+def _skills_block(text: str) -> str:
+    """The live ``<available_skills>`` block inside text, or ''."""
+    m = _SKILLS_BLOCK_RE.search(text)
     return m.group(0) if m else ""
 
 
@@ -180,11 +180,10 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[list[dict]]
     messages = messages or []
     parts = build_system_prompt_parts(agent)
     stable = parts.get("stable", "") or ""
-    skills_index = _skills_block(stable)
+    volatile = parts.get("volatile", "") or ""
+    skills_index = _skills_block(volatile)
     memory_block, user_block = _memory_blocks(agent)
-    system_prompt_text = _join(
-        _strip_blocks(stable, skills_index), _strip_blocks(parts.get("volatile", "") or "", memory_block, user_block)
-    )
+    system_prompt_text = _join(stable, _strip_blocks(volatile, skills_index, memory_block, user_block))
     breakdown = _categories(system_prompt_text, skills_index, list(getattr(agent, "tools", None) or []), messages,
                             rules=parts.get("context", "") or "", memory=_join(memory_block, user_block))
     estimated_total = breakdown["estimated_total"]
@@ -235,7 +234,7 @@ def compute_context_details(agent: Any) -> dict[str, Any]:
     from hermes_cli.prompt_size import _compute_skills_breakdown, _compute_toolsets_breakdown
     from agent.system_prompt import build_system_prompt_parts
 
-    skills_block = _skills_block(build_system_prompt_parts(agent).get("stable", "") or "")
+    skills_block = _skills_block(build_system_prompt_parts(agent).get("volatile", "") or "")
     tools = list(getattr(agent, "tools", None) or [])
     return {
         "skills": [

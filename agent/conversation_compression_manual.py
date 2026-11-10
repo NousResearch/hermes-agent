@@ -9,7 +9,7 @@ here so ``--preview`` / ``--aggressive`` and the lock-skip wording cannot drift 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Literal, Optional, Sequence
 
 #: Every surface renders the same refusal; hard truncation has no persistence path outside the guarded
 #: ``_compress_context`` rotation, so ``--aggressive`` is refused rather than mis-parsed as a focus topic.
@@ -31,7 +31,7 @@ class CompressRequest:
 
 @dataclass
 class CompressResult:
-    status: str  # "preview" | "compressed" | "lock_skipped" | "nothing_to_do"
+    status: Literal["preview", "compressed", "lock_skipped", "nothing_to_do"]
     before_messages: list[dict[str, Any]]
     after_messages: list[dict[str, Any]]
     before_tokens: int

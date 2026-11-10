@@ -35,7 +35,8 @@ from agent.context_compressor_window import CompactionWindowMixin
 from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
-from agent.context_compressor_retry import retryable_user_text, typed_prompt_content
+from agent.context_compressor_retry import retryable_user_text
+from agent.message_metadata import typed_prompt_content
 from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
@@ -2869,7 +2870,6 @@ class ContextCompressor(
         # _config_threshold_percent (the raw config value snapshotted above), so switching small -> large
         # correctly drops back to the configured value. See #32221.
         self._config_context_length = config_context_length
-        self._configured_threshold_percent = self.threshold_percent
         self._resolved_context_length: int | None = None
         self._threshold_tokens = self._tail_token_budget = self._max_summary_tokens = None
         self.compression_count = 0
@@ -4486,11 +4486,6 @@ Write only the summary body. Do not include any preamble or prefix."""
                     break
             return _unwrapped(prior_blocks) if prior_blocks else None
         return None
-
-    @staticmethod
-    def _get_tool_call_id(tc) -> str:
-        """Canonical call ID for logging only; matching must use _tool_call_id_variants."""
-        return (_tc_get(tc, "call_id") or _tc_get(tc, "id") or "").strip()
 
     @staticmethod
     def _tool_call_id_variants(tc) -> set:

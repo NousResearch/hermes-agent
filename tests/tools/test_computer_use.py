@@ -1017,7 +1017,6 @@ class TestCuaDriverSessionReconnect:
         session._lock = threading.Lock()
         session._started = True
         session._capabilities = {}
-        session._capability_version = ""
         session._ready_event = None  # populated by real _start_lifecycle
         session._shutdown_event = None
         session._lifecycle_future = None
@@ -2161,14 +2160,6 @@ class TestCuaToolCoverageExpansion:
         backend._session.supports_capability = lambda cap, tool=None: False
         return backend
 
-    # ── App lifecycle ────────────────────────────────────────────
-
-    def test_launch_app_requires_bundle_id_or_name(self):
-        backend = self._backend()
-        import pytest
-        with pytest.raises(ValueError, match="bundle_id or name"):
-            backend.launch_app()
-
     # ── Generic escape hatch ────────────────────────────────────
 
     def test_call_tool_preserves_caller_session(self):
@@ -2445,13 +2436,3 @@ class TestBoundsScaleField:
         out = json.loads(_capture_response(cap))
         assert out["bounds_scale"] == pytest.approx(3799 / 1455, abs=0.01)
         assert f"~{out['bounds_scale']}x" in out["summary"]
-
-    def test_no_scale_when_spaces_match(self):
-        from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_scale
-
-        elems = [UIElement(index=0, role="Button", label="OK",
-                           bounds=(10, 10, 50, 20), app="")]
-        assert _bounds_scale(elems, 1455, 791) is None
-        assert _bounds_scale([], 1455, 791) is None
-        assert _bounds_scale(elems, 0, 0) is None

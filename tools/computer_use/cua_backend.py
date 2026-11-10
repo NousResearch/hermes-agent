@@ -189,7 +189,8 @@ def _run_quiet(argv: list[str], *, timeout: float, swallow: Any = (), **kw: Any)
     kw.setdefault("stdin", subprocess.DEVNULL)
     kw.setdefault("encoding", "utf-8")
     kw.setdefault("errors", "replace")
-    "stdout" in kw or kw.setdefault("capture_output", True)
+    if "stdout" not in kw:
+        kw.setdefault("capture_output", True)
     try:
         return subprocess.run(argv, text=True, timeout=timeout, stdin=kw.pop("stdin"), encoding=kw.pop("encoding"),  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
                               errors=kw.pop("errors"), **kw)
@@ -309,7 +310,8 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         importlib.invalidate_caches()
         with contextlib.ExitStack() as rollback:  # a failed start stops the private daemon, then re-raises
             if self._embedded_daemon is not None:
-                rollback.callback(self._embedded_daemon.stop) and self._embedded_daemon.start()
+                rollback.callback(self._embedded_daemon.stop)
+                self._embedded_daemon.start()
             self._session.start()
             rollback.pop_all()
         # Declare this run's identity. Non-fatal: cua-driver accepts anonymous calls (cursor won't render), so degrade.
@@ -333,7 +335,8 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             self._best_effort("end_session failed (continuing teardown)",
                               self._session.call_tool, "end_session", {"session": self._session_id})
         with contextlib.ExitStack() as teardown:  # every step runs even if one raised (LIFO: session, bridge, daemon)
-            self._embedded_daemon is None or teardown.callback(self._embedded_daemon.stop)
+            if self._embedded_daemon is not None:
+                teardown.callback(self._embedded_daemon.stop)
             teardown.callback(self._bridge.stop)
             teardown.callback(self._session.stop)
 
@@ -363,20 +366,6 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
-
-    def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
-                   urls: Optional[list[str]] = None, additional_arguments: Optional[list[str]] = None,
-                   creates_new_application_instance: bool = False) -> dict[str, Any]:
-        """Idempotent launch returning ``{pid, bundle_id, name, windows[]}``. ``creates_new_application_instance=True``
-        forces a fresh instance so concurrent runs touching the same app get isolated windows."""
-        if not bundle_id and not name:
-            raise ValueError("launch_app requires either bundle_id or name")
-        args: dict[str, Any] = {"session": self._session_id, **{k: v for k, v in (
-            ("bundle_id", bundle_id), ("name", name), ("urls", urls and list(urls)),
-            ("additional_arguments", additional_arguments and list(additional_arguments)),
-            ("creates_new_application_instance", creates_new_application_instance or None)) if v}}
-        out = self._session.call_tool("launch_app", args)
-        return out["structuredContent"] or {"data": out["data"]}
 
     def bring_to_front(self, *, pid: int, window_id: Optional[int] = None) -> ActionResult:
         """Activate a window so subsequent foreground-dispatched input lands on it."""

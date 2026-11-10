@@ -2549,7 +2549,7 @@ DEFAULT_CONFIG = {
         # walk timeout still fails at every bound (measured; a depth bound does not help there either).
         "ax_max_elements": 200,
         # Disable cua-driver's cursor overlay, which can peg a core when idle (macOS redraw loop;
-        # Linux/WSL2 idle spin). None = auto (off on macOS + headless/ WSL2 Linux, on elsewhere);
+        # Linux/WSL2 idle spin). None = auto (off on macOS, headless/WSL2 Linux and Linux X11; on for Windows and Wayland);
         # True = always disable; False = always enable.
         # The overlay shows where agent actions land but can peg a core when idle (macOS vImage redraw loop
         # #47032; Linux/WSL2 idle spin #28152). cua-driver ≥ 0.6.x supports --no-overlay; Hermes also calls

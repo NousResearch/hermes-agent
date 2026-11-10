@@ -321,8 +321,7 @@ class _CaptureMixin:
         app_name = target["app_name"]
         # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling back
         # to the frontmost window.
-        if app or not self._last_app:
-            self._last_app = app_name or app or ""
+        self._last_app = app_name or app or ""
         png_b64, image_mime_type, elements, window_title = (
             self._capture_vision() if mode == "vision" else self._capture_window_state())
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)

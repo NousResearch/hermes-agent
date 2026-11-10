@@ -197,7 +197,7 @@ class _CuaDriverSession:
         # #47072.
         self._capabilities: dict[str, set] = {}
         self._tool_schemas: dict[str, dict[str, Any]] = {}
-        self._capability_version, self._ready_event = "", threading.Event()
+        self._ready_event = threading.Event()
         self._shutdown_event: Optional[asyncio.Event] = None  # created on bridge loop
         self._lifecycle_future = None  # concurrent.futures.Future
         self._setup_error: Optional[BaseException] = None
@@ -263,9 +263,9 @@ class _CuaDriverSession:
     # safe from the bridge-loop thread without taking self._lock (which stop() may hold while awaiting this
     # coro's future). See #55048 Bug 1.
     async def _populate_capabilities(self, session: Any) -> None:
-        """Cache per-tool capability sets, input schemas and capability_version from tools/list. Soft
+        """Cache per-tool capability sets and input schemas from tools/list. Soft
         prerequisite: on failure the map stays empty (capability False)."""
-        self._capabilities, self._tool_schemas, self._capability_version = {}, {}, ""
+        self._capabilities, self._tool_schemas = {}, {}
         try:
             tools_list = await session.list_tools()
             for tool in getattr(tools_list, "tools", []) or []:
@@ -276,10 +276,6 @@ class _CuaDriverSession:
                 self._capabilities[tool_name] = (
                     {c for c in caps if isinstance(c, str)} if isinstance(caps, list) else set())
                 self._tool_schemas[tool_name] = dict(schema) if isinstance(schema, dict) else {}
-            # capability_version is a sibling of `tools` in tools/list (NOT in initialize).
-            cv = _tool_field(tools_list, "capability_version")
-            if isinstance(cv, str):
-                self._capability_version = cv
         except Exception as e:
             logger.debug("cua-driver tools/list capability discovery failed: %s", e)
 
@@ -378,11 +374,6 @@ class _CuaDriverSession:
         """tools/list populated the map; when False ``_has_tool`` is untrustworthy."""
         return bool(self._capabilities)
 
-    @property
-    def capability_version(self) -> str:
-        """Driver-advertised capability vocabulary version ("" on old builds)."""
-        return self._capability_version
-
     # ── Error classification (instance-patchable seams; result-shape checks live at module level) ──
     @staticmethod
     def _is_closed_session_error(exc: Exception) -> bool:
@@ -426,7 +417,7 @@ class _CuaDriverSession:
                 except Exception as e:
                     logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
                 self._started = False
-                self._capabilities, self._tool_schemas, self._capability_version = {}, {}, ""
+                self._capabilities, self._tool_schemas = {}, {}
                 self._start_lifecycle_locked()
                 self._started = True
             if clear_timeout_suspect:

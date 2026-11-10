@@ -76,4 +76,30 @@ def test_type_without_app_unchanged():
     out = _dispatch_result(backend, "type", {"text": "9"})
     assert out.get("ok") is True
 
+def test_unqualified_capture_retargets_the_guard_to_the_captured_app(monkeypatch):
+    """capture(app='kate') then capture() of kcalc: input sent with app='kate' would reach kcalc."""
+    from tools.computer_use import cua_backend_capture
+    from tools.computer_use.cua_backend_capture import _CaptureMixin
+
+    windows = {"kate": {"app_name": "kate", "pid": 11, "window_id": 1},
+               "kcalc": {"app_name": "kcalc", "pid": 22, "window_id": 2}}
+
+    class _Backend(_CaptureMixin):
+        _last_app = None
+
+        def _resolve_capture_windows(self, mode, app, pid, window_id):
+            return [{**windows[app or "kcalc"], "title": "", "z_index": 1, "off_screen": False}]
+
+        def _set_active_target(self, target):
+            self._active_pid, self._active_window_id = target["pid"], target["window_id"]
+
+        def _capture_vision(self):
+            return None, None, [], ""
+
+    monkeypatch.setattr(cua_backend_capture, "_linux_x11_active_window_id", lambda: None)
+    backend = _Backend()
+    backend.capture("vision", app="kate")
+    backend.capture("vision")
+    assert _dispatch_result(backend, "click", {"element": 3, "app": "kate"})["code"] == "input_target_mismatch"
+
 # ── unknown-action suggestions ──────────────────────────────────────────

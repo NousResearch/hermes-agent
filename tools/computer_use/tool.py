@@ -632,7 +632,6 @@ def _bounds_hints(elements: list[UIElement], image_width: int, image_height: int
             "space — derive click points from element bounds, or scale screenshot positions up accordingly")
     return round(max(max_x / image_width, max_y / image_height), 2), note
 
-_bounds_scale = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[0]
 _bounds_space_note = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[1]
 
 def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
@@ -975,7 +974,3 @@ def check_computer_use_requirements() -> bool:
         return get_active_provider().is_available()
     except LookupError:
         return True
-
-def get_computer_use_schema() -> dict[str, Any]:
-    from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-    return COMPUTER_USE_SCHEMA

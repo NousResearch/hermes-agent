@@ -231,10 +231,7 @@ def _use_gateway(browser_cfg: dict) -> bool:
     holds no credentials in managed mode (#108310)."""
     if is_truthy_value(browser_cfg.get("use_gateway"), default=False):
         return True
-    try:
-        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
-    except Exception:  # pragma: no cover — helper ships with the package
-        return False
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
     return str(browser_cfg.get("cloud_provider") or "").strip().lower() == NOUS_MANAGED_PROVIDER
 
 
@@ -988,9 +985,8 @@ def _dynamic_schema_overrides() -> dict:
 
 BROWSER_EXEC_SCHEMA = {
     "name": "browser_exec",
-    # Static fallback description, used only when the managed CLI is unavailable
-    "description": (_HEADER_BASE + _HELPERS_DIGEST
-                    + "\n\n(The browser-use CLI is not installed yet. Install it with `hermes tools` (Browser Automation → Browser Use).)"),
+    # Static fallback description, used only when the dynamic override raises
+    "description": _HEADER_BASE + _HELPERS_DIGEST,
     "parameters": {
         "type": "object",
         "properties": {

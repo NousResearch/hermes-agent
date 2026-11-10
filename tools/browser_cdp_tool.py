@@ -459,8 +459,7 @@ BROWSER_CDP_SCHEMA: dict[str, Any] = {
         "supervisor's live connection — the only reliable way on Browserbase where stateless CDP calls hit "
         "signed-URL expiry.\n"
         "- Each stateless call (without frame_id) is independent — sessions and event subscriptions do not "
-        "persist between calls. For stateful workflows, prefer the dedicated browser tools or use frame_id "
-        "routing."
+        "persist between calls. For stateful workflows, use frame_id routing."
     ),
     "parameters": {
         "type": "object",

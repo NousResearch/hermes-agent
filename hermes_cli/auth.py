@@ -1046,9 +1046,32 @@ def _merge_disk_cooldown_state(
 
         # Model cooldowns are independent observations: keep the latest reset per model so a
         # writer that just cooled one model cannot erase another process's cooldown for another.
-        from agent.credential_pool_model_cooldowns import merge_model_cooldowns
-        merged_cooldowns = merge_model_cooldowns(disk_entry.get("model_cooldowns"), entry.get("model_cooldowns"))
-        merged = {**entry, "model_cooldowns": merged_cooldowns} if merged_cooldowns else entry
+        from agent.credential_pool_model_cooldowns import (
+            merge_model_cooldown_kinds, merge_model_cooldowns, migrate_model_cooldowns,
+        )
+        # Upgrade both snapshots the same way (one clock) before merging: an un-migrated disk row
+        # (kindless, uncapped, or for a model this provider does not serve) must not win the merge
+        # back over its migrated form, or the upgrade would never stick.
+        now = time.time()
+        disk_cd, disk_kinds, _ = migrate_model_cooldowns(
+            provider_id, disk_entry.get("model_cooldowns"), disk_entry.get("model_cooldown_kinds"), now,
+        )
+        mem_cd, mem_kinds, _ = migrate_model_cooldowns(
+            provider_id, entry.get("model_cooldowns"), entry.get("model_cooldown_kinds"), now,
+        )
+        merged_cooldowns = merge_model_cooldowns(disk_cd, mem_cd)
+        merged = {k: v for k, v in entry.items() if k != "model_cooldowns"}
+        if merged_cooldowns:
+            merged["model_cooldowns"] = merged_cooldowns
+        elif "model_cooldowns" in entry:
+            merged["model_cooldowns"] = None
+        merged_kinds = merge_model_cooldown_kinds((disk_cd, disk_kinds), (mem_cd, mem_kinds))
+        # Always take the kinds from the merge result: keeping the entry's own kinds when the
+        # merge yields none would leave a stale "entitlement" on a cooldown another (kindless)
+        # writer now owns, and model-less callers would then skip an active window cooldown.
+        merged = {k: v for k, v in merged.items() if k != "model_cooldown_kinds"}
+        if merged_kinds:
+            merged["model_cooldown_kinds"] = merged_kinds
         disk_status_fields = {f: disk_entry.get(f) for f in _POOL_STATUS_FIELDS}
 
         mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0

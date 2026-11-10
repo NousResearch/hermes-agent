@@ -41,10 +41,11 @@ DAEMON_STRIPPED_ENV = (
 
 
 # The daemon would inherit an elevated client's token, and no normal window can reach it (gateway_elevated).
+# Installing the task is not offered: registered through the UAC hand-off it can start the gateway
+# elevated too (#152218).
 CLIENT_ELEVATED_REMEDY = (
     "Hermes is running as administrator, and a gateway it started would run as administrator too, "
-    "which locks every normal Hermes window out of it. Start Hermes from a normal (non-administrator) "
-    "window, or run hermes gateway install once so the gateway always starts without administrator rights")
+    "which locks every normal Hermes window out of it. Start Hermes from a normal (non-administrator) window")
 
 
 def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: bool = False,

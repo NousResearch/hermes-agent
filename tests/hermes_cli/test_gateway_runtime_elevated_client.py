@@ -2,8 +2,9 @@
 
 The unmanaged start inherits the client's token. A Desktop or terminal run as administrator, with no
 Scheduled Task registered, started a gateway every normal Hermes window then refused as
-``gateway_elevated``, until someone stopped it from an admin prompt. The registered task starts the
-gateway without elevation whatever the client's token, so that path stays open.
+``gateway_elevated``, until someone stopped it from an admin prompt. A registered task starts under
+its own principal, not the client's token, so that path stays open. The remedy names only a normal
+window: a task registered through the UAC hand-off can itself start the gateway elevated (#152218).
 """
 import time
 
@@ -28,7 +29,7 @@ def test_ensure_from_an_elevated_client_refuses_instead_of_starting(tmp_path, mo
     result = runtime.ensure_gateway_runtime(tmp_path / "profile", timeout=5.0)
 
     assert (result.state, result.reason_code) == ("inaccessible", "client_elevated")
-    assert "administrator" in result.detail and "hermes gateway install" in result.detail
+    assert "non-administrator" in result.detail and "gateway install" not in result.detail
     assert elevated == []
 
 
@@ -37,7 +38,8 @@ def test_detached_restart_from_an_elevated_client_names_the_remedy(tmp_path, cap
 
     assert start.start_detached_replacement(tmp_path / "profile") == 1
     err = capsys.readouterr().err
-    assert "client_elevated" in err and "hermes gateway install" in err and elevated == []
+    assert "client_elevated" in err and "non-administrator" in err and "gateway install" not in err
+    assert elevated == []
 
 
 def test_an_elevated_client_still_starts_the_registered_task(tmp_path, monkeypatch, elevated):

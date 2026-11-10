@@ -260,7 +260,7 @@ def _attempt_text_response(entry: Optional[_ClarifyEntry], response: str) -> str
     coerced, reason = _coerce_text_response_detailed(entry, response)
     if coerced is None:
         return TEXT_REJECTED_SELECTION if reason == "invalid_selection" else TEXT_REJECTED_PROSE
-    if resolve_gateway_clarify(entry.clarify_id, coerced, session_key=session_key):
+    if resolve_gateway_clarify(entry.clarify_id, coerced, session_key=entry.session_key):
         return TEXT_RESOLVED
     return TEXT_NO_PENDING  # lost a race with a button/callback resolution — no work left
 

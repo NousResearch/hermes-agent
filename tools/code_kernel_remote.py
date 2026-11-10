@@ -137,10 +137,11 @@ class RemoteKernel:
     def _owning_scope(self):
         """Bind the captured owning scope for trusted teardown: the kernel record itself is the
         authority for whose sandbox its commands may reach, never a caller's bound scope. With the
-        owner already bound (or never hosted) this is the identity."""
-        from tools.environments.sandbox_scope import hosted_scope
-        scope = self.owner_scope
-        if scope is None or hosted_scope() is scope:
+        owning sandbox already bound (a later turn of it: its own, newer fence) or never hosted
+        this is the identity."""
+        from tools.environments.sandbox_scope import hosted_scope, sandbox_identity
+        scope, bound = self.owner_scope, hosted_scope()
+        if scope is None or (bound is not None and sandbox_identity(bound) == sandbox_identity(scope)):
             yield
             return
         from hermes_scope import push_state

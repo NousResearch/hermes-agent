@@ -1,5 +1,6 @@
 """A hosted agent's process activity leaves this host's process files alone: the running-process
-checkpoint (``processes.json``) and the completed-process receipts under ``logs/process-results``."""
+checkpoint (``processes.json``) and the completed-process receipts under ``logs/process-results``.
+Its remote kernel's commands run under the turn that issues them."""
 from __future__ import annotations
 
 import json
@@ -72,3 +73,27 @@ def test_a_local_background_start_still_writes_the_checkpoint(tmp_path):
         assert session.id in json.dumps(json.loads(ckpt.read_text(encoding="utf-8")))
     finally:
         registry.kill_process(session.id)
+
+
+def test_a_remote_kernel_command_on_a_later_turn_runs_under_that_turns_scope():
+    """The kernel record keeps the scope of the turn that spawned it; a later turn of the same
+    sandbox runs its kernel commands under its own scope (and fence), not the spawning turn's."""
+    from agent.runtime_scope import bind_state
+    from hermes_scope import Fence
+    from tools.code_kernel_remote import RemoteKernel
+    from tools.environments.sandbox_scope import ScopedEnvironment, sandbox_identity
+
+    turn1, turn2 = A.for_turn("s", "turn-1", Fence(1, 1)), A.for_turn("s", "turn-2", Fence(1, 2))
+    reached = []
+
+    class Backend:
+        def execute(self, command, cwd=None, timeout=30, scope=None):
+            reached.append(scope)
+            return {"output": ""}
+
+    kernel = RemoteKernel(env=ScopedEnvironment(Backend(), sandbox_identity(A), owner=turn1), env_type="stub",
+                          kernel_dir="/workspace/k", pid="4242", rpc_token="tok",
+                          owner="sandbox:acme/agent-a:s", owner_scope=turn1)
+    with bind_state(turn2):
+        kernel.sh("true")
+    assert reached and reached[-1] is turn2, f"a turn-2 kernel command ran under {reached[-1]!r}"

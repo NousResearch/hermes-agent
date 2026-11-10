@@ -1,7 +1,7 @@
 name: stitchslop
 title: Stitch Slop
 repo: https://github.com/mojomast/hermes-stitchslop
-sha: 9b24e147955330be08c44b22fe7268c659bfdbe1
+sha: 51c12d0fd957fb4f40f98253570eb33d791c314c
 subdir: ""
 description: >-
   Work on the embroidery design open in Stitch Slop, watch it in a pane, and digitize
@@ -21,12 +21,12 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/mojomast/hermes-stitchslop#readme
-version: "0.2.1"
-image: https://raw.githubusercontent.com/mojomast/hermes-stitchslop/9b24e147955330be08c44b22fe7268c659bfdbe1/assets/banner.png
+version: "0.2.2"
+image: https://raw.githubusercontent.com/mojomast/hermes-stitchslop/51c12d0fd957fb4f40f98253570eb33d791c314c/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hermes-stitchslop/9b24e147955330be08c44b22fe7268c659bfdbe1/assets/pane.jpg
-  - https://raw.githubusercontent.com/mojomast/hermes-stitchslop/9b24e147955330be08c44b22fe7268c659bfdbe1/assets/diagram.png
-  - https://raw.githubusercontent.com/mojomast/hermes-stitchslop/9b24e147955330be08c44b22fe7268c659bfdbe1/assets/stitch.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-stitchslop/51c12d0fd957fb4f40f98253570eb33d791c314c/assets/pane.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-stitchslop/51c12d0fd957fb4f40f98253570eb33d791c314c/assets/diagram.png
+  - https://raw.githubusercontent.com/mojomast/hermes-stitchslop/51c12d0fd957fb4f40f98253570eb33d791c314c/assets/stitch.jpg
 readme: true
 platforms: [linux]
 known_issues: []

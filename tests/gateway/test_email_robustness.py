@@ -82,6 +82,8 @@ class TestTransportSecurity(unittest.TestCase):
             "EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
             "EMAIL_IMAP_HOST": "127.0.0.1", "EMAIL_IMAP_PORT": "1143",
             "EMAIL_SMTP_HOST": "127.0.0.1", "EMAIL_SMTP_PORT": "1025",
+            # keep the per-test sandbox: the adapter resolves its thread store under HERMES_HOME
+            "HERMES_HOME": os.environ["HERMES_HOME"],
         }, clear=True):
             from plugins.platforms.email.adapter import EmailAdapter
 

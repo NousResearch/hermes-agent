@@ -232,7 +232,8 @@ class GatewayTopicThreadsMixin:
             await asyncio.to_thread(self.session_store.restore_route, departed,
                                     expected_session_id=session_entry.session_id)
             raise TopicLinkedElsewhere(t("gateway.topic.already_linked")) from None
-        for key in released:
+        for key in released:  # the left topic's next message is a new conversation: none of its overrides
+            self._clear_conversation_scope(key, reason="handoff_moved")
             self._evict_cached_agent(key)
         return holds
 

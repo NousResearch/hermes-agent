@@ -1,38 +1,7 @@
 name: confidential-mode
 repo: https://github.com/ainsleys/hermes-confidential-mode
 sha: e407486a2227be8cafe7b4350586f3016ebff573
-description: >-
-  Hermes Confidential Mode locks a Hermes profile to one tier: attested (a Tinfoil enclave, or NEAR AI
-  Cloud's gateway and models, verified and pinned to a build you approve) or on-host-only (loopback and
-  hosts you list). While locked, the plugin refuses off-tier main model calls before they are sent;
-  refuses to lock while a side call, fallback, memory, MCP URL or delegation route would leave the tier;
-  on the attested tier encrypts request bodies to the verified enclave or model key and pins every
-  inference connection to the TLS key of the attestation the plugin accepted (the attestation fetch itself
-  is not pinned, by design), with headers, sizes and NEAR images still visible to the vendor; and asks you
-  the first time each tool it does not class as on-host (by where the tool's data goes) runs in each conversation during a lock,
-  blocking the call when nobody can answer. The plugin logs each model call's host and size, never its text, and
-  renders a receipt whose attached enclave evidence replays offline; the rest of the receipt is the
-  plugin's own record. The attested tier needs TINFOIL_API_KEY or NEAR_AI_API_KEY. Shell and code
-  execution are not inspected for network access, and a side call that strays mid-turn is recorded, not
-  stopped. Disclosure: the plugin contacts the vendor (atc.tinfoil.sh, the Tinfoil router and the
-  *.tinfoil.sh collateral proxies, or cloud-api.near.ai), Intel Trust Authority (portal and portal.eu),
-  Sigstore's TUF CDN, and GitHub (raw.githubusercontent.com, api.github.com) for NEAR compose files, also
-  in the background after a verification stages a NEAR entry; the plugin sends no telemetry. The plugin
-  writes under <HERMES_HOME>/plugin-data/ (including the ledger, evidence blobs, pins.yaml,
-  allowlist.yaml, state and SDK caches), Hermes' tool-discovery cache on a terminal lock, and, on a revoke
-  only, config.yaml, removing its own plugin_rule:confidential-mode:tool entries from command_allowlist
-  and no other entry, through Hermes' save_config, which also normalises legacy model and max_turns keys
-  as any Hermes config save does; the plugin reads config.yaml and script files a locked tool call runs.
-  The plugin reads TINFOIL_API_KEY and NEAR_AI_API_KEY through Hermes' secret scope, checks only whether
-  OPENROUTER_API_KEY and NOUS_API_KEY are set (to report Hermes' side-call fall-through), reads
-  TERMINAL_ENV, TERMINAL_CWD, HERMES_HOME, CONFIDENTIAL_MODE_PROGRESS and CONFIDENTIAL_MODE_NO_FETCH, sets
-  XDG_CONFIDENTIAL_MODE_TOOL_PROCESS, stores no credential and runs no shell command or subprocess. The
-  plugin starts daemon threads of five kinds: an attestation, a pins.yaml match record, a NEAR
-  compose-file fetch, the own-host-name DNS lookup, and, while locked, one long-running re-verification
-  thread per attested provider. During each Tinfoil attestation only, the plugin wraps the SDK's fetch
-  functions and requests.Session.request process-wide, inert for every other thread, and puts the original
-  functions back afterwards. hermes plugins validate counts 31 private core import sites
-  (docs/DISCLOSURE.md).
+description: "Hermes Confidential Mode locks a Hermes profile to one tier: attested (a Tinfoil enclave, or NEAR AI Cloud's gateway and models, verified and pinned to a build you approve) or on-host-only (loopback and hosts you list). While locked, the plugin refuses off-tier main model calls before they are sent; refuses to lock while a side call, fallback, memory, MCP URL or delegation route would leave the tier; on the attested tier encrypts request bodies to the verified enclave or model key and pins every inference connection to the TLS key of the attestation the plugin accepted (the attestation fetch itself is not pinned, by design), with headers, sizes and NEAR images still visible to the vendor; and asks you the first time each tool it does not class as on-host (by where the tool's data goes) runs in each conversation during a lock, blocking the call when nobody can answer. The plugin logs each model call's host and size, never its text, and renders a receipt whose attached enclave evidence replays offline; the rest of the receipt is the plugin's own record. The attested tier needs TINFOIL_API_KEY or NEAR_AI_API_KEY. Shell and code execution are not inspected for network access, and a side call that strays mid-turn is recorded, not stopped. Disclosure — the plugin contacts the vendor (atc.tinfoil.sh, the Tinfoil router and the *.tinfoil.sh collateral proxies, or cloud-api.near.ai), Intel Trust Authority (portal and portal.eu), Sigstore's TUF CDN, and GitHub (raw.githubusercontent.com, api.github.com) for NEAR compose files, also in the background after a verification stages a NEAR entry; the plugin sends no telemetry. The plugin writes under <HERMES_HOME>/plugin-data/ (including the ledger, evidence blobs, pins.yaml, allowlist.yaml, state and SDK caches), Hermes' tool-discovery cache on a terminal lock, and, on a revoke only, config.yaml, removing its own plugin_rule:confidential-mode:tool entries from command_allowlist and no other entry, through Hermes' save_config, which also normalises legacy model and max_turns keys as any Hermes config save does; the plugin reads config.yaml and script files a locked tool call runs. The plugin reads TINFOIL_API_KEY and NEAR_AI_API_KEY through Hermes' secret scope, checks only whether OPENROUTER_API_KEY and NOUS_API_KEY are set (to report Hermes' side-call fall-through), reads TERMINAL_ENV, TERMINAL_CWD, HERMES_HOME, CONFIDENTIAL_MODE_PROGRESS and CONFIDENTIAL_MODE_NO_FETCH, sets XDG_CONFIDENTIAL_MODE_TOOL_PROCESS, stores no credential and runs no shell command or subprocess. The plugin starts daemon threads of five kinds: an attestation, a pins.yaml match record, a NEAR compose-file fetch, the own-host-name DNS lookup, and, while locked, one long-running re-verification thread per attested provider. During each Tinfoil attestation and each hermes confidential replay, the plugin wraps the Tinfoil SDK's fetch functions and requests.Session.request process-wide, inert for every other thread, and puts the original functions back afterwards; before its first verification it also re-points the Tinfoil SDK's cache-directory constants and sigstore-python's TUF directory function at its plugin-data directory for the rest of the process. The plugin adds a locked-mode note to each locked turn's context and may append one notice line to a reply. hermes plugins validate counts 31 private core import sites, all reads (docs/DISCLOSURE.md)."
 maintainer: ainsleys
 tier: community
 category: models

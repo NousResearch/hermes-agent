@@ -155,9 +155,11 @@ def collect(root: Path = ROOT) -> dict[str, list[str]]:
         text = (root / rel).read_text(encoding="utf-8-sig")
         tree = ast.parse(text)
         old_depth = len(original_path(rel.as_posix()).split("/"))
+        inner: set[int] = set()  # the shorter climbs inside a longer one are not sites of their own
         for node in ast.walk(tree):
-            if not isinstance(node, ast.expr) or (levels := climb(node)) is None:
+            if id(node) in inner or not isinstance(node, ast.expr) or (levels := climb(node)) is None:
                 continue
+            inner.update(id(sub) for sub in ast.walk(node) if sub is not node)
             if levels >= len(rel.parts):
                 found["root_from_file"].add((rel.as_posix(), node.lineno))
             elif old_depth < len(rel.parts) and levels >= old_depth:

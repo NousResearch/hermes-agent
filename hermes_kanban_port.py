@@ -32,9 +32,14 @@ the ambient caller with no scope bound, as today's CLI does.
 The local backend's shared root is the one declared exception to agent isolation
 (:attr:`KanbanStore.LOCAL_SHARED_BOARD`): a single-user machine's dispatcher and its workers hand
 off through that one root, so the local store serves any scope of its tenant, whatever the
-profile. It is a property of the backend's own class, never a fixture option, and it is refused
-wherever the process runs hosted (:func:`resolve_kanban_storage`): a shared deployment's tenants
-each get their own agents' boards, behind a backend that pins the agent too.
+profile. It is a property of the backend's own class, never a fixture option, and the
+conformance suite asserts its inverse cross-agent matrix from it. A shared deployment's tenants
+each get their own agents' boards, behind a backend that pins the agent too, and that refusal is
+structural, not inspected: wherever the process runs hosted, :func:`resolve_kanban_storage`
+refuses the local backend on what cannot be lied about (the name that selects it, the module its
+provider class is defined in) and the local store itself refuses to open
+(:mod:`hermes_kanban_port_local`), so a wrapper, a forwarding proxy or a provider that opens the
+local backend under another name fails at the store, whoever calls it.
 """
 
 from __future__ import annotations
@@ -71,19 +76,12 @@ class KanbanStore(ABC):
     #: and its workers hand off through the one root; the conformance suite
     #: (``hermes_conformance.kanban``) asserts the inverse cross-agent matrix for a store that
     #: declares it. A backend that pins the agent — anything a shared deployment serves — never
-    #: sets it, and a subclass cannot unset it: the declaration cannot be hidden behind a
-    #: wrapper, a subclass or an un-declaring provider (:func:`resolve_kanban_storage` opens the
-    #: store wherever the process runs hosted and refuses it).
+    #: sets it. The declaration is what the suite asserts, never what hosted mode trusts: a
+    #: wrapper or a subclass can hide it, so wherever the process runs hosted the local backend
+    #: is refused on what cannot be lied about — the name and the module
+    #: (:func:`resolve_kanban_storage`) — and the local store refuses to open itself
+    #: (``hermes_kanban_port_local``), whoever reaches it.
     LOCAL_SHARED_BOARD: bool = False
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        declared = cls.__dict__.get("LOCAL_SHARED_BOARD")
-        if declared is not None and not declared and any(
-                base.__dict__.get("LOCAL_SHARED_BOARD") for base in cls.__mro__[1:]):
-            raise TypeError(
-                f"{cls.__name__} cannot declare LOCAL_SHARED_BOARD false: a backend that keeps "
-                "one board root shared across every profile cannot hide it behind a subclass")
 
     # --- Boards
 
@@ -327,33 +325,23 @@ def _hosted_process(hosted: Optional[bool]) -> bool:
     return bool(is_hosted())
 
 
-def _serves_shared_board_root(provider: KanbanStorageProvider) -> bool:
-    """Whether the store *provider* actually opens keeps the one shared board root — the
-    declaration a wrapper or a subclass cannot hide: the store is opened and inspected (its
-    own class, every class it inherits from, and the local store itself), then closed. Only
-    :func:`resolve_kanban_storage` calls this, wherever the process runs hosted."""
-    from hermes_kanban_port_local import LocalKanbanStore
-    storage = provider.open()
-    try:
-        store = storage.kanban
-        return (any(cls.__dict__.get("LOCAL_SHARED_BOARD") for cls in type(store).__mro__)
-                or isinstance(store, LocalKanbanStore))
-    finally:
-        storage.close()
-
-
 def resolve_kanban_storage(name: str, *, hosted: Optional[bool] = None) -> KanbanStorageProvider:
     """The provider named *name* (``"local"`` or empty: the local backend). Raises ``LookupError``
     with the reason for a named provider that is missing, refused or unavailable: storage never
-    falls back to another store. A provider that keeps one board root shared across every profile
-    of a single-user machine (``LOCAL_SHARED_BOARD``, the local exception) is refused wherever
-    the process runs hosted: a shared deployment's tenants each get their own agents' boards,
-    behind a backend that pins the agent too. The declaration is checked where it cannot be
-    hidden — the provider's own class and, hosted, the store it actually opens."""
+    falls back to another store. Wherever the process runs hosted, the single-user machine's
+    local backend cannot serve: a shared deployment's tenants each get their own agents' boards,
+    behind a backend that pins the agent too. The refusal here is on what cannot be lied about —
+    the name that selects the local backend, the module a provider class is defined in when that
+    module is the local backend's, and the one shared-board-root declaration a provider cannot
+    make and still isolate tenants — and it never opens a store to check, because a provider can
+    hand one store to whoever asks and another to its callers. The local store refuses to open in
+    a hosted process itself (``hermes_kanban_port_local``), so every other path that reaches it —
+    a wrapper, a forwarding proxy, a provider that opens the local backend under another name —
+    fails at the store, whoever calls it."""
     name = name.strip()
     if name in ("", "local"):
         from hermes_kanban_port_local import LocalKanbanStorageProvider
-        provider = LocalKanbanStorageProvider()
+        provider = LocalKanbanStorageProvider(hosted=hosted)
     else:
         from plugins.kanban_storage import KanbanStorageRefused, load_kanban_storage
         try:
@@ -364,9 +352,12 @@ def resolve_kanban_storage(name: str, *, hosted: Optional[bool] = None) -> Kanba
             raise LookupError(f"kanban storage {name!r}: no such kanban storage provider")
         if not provider.is_available():
             raise LookupError(f"kanban storage {name!r} is not available here")
-    if _hosted_process(hosted) and (getattr(type(provider), "LOCAL_SHARED_BOARD", False)
-                                     or _serves_shared_board_root(provider)):
-        raise LookupError(
-            f"kanban storage {name!r} keeps one board root shared across every profile of a "
-            "single-user machine; it cannot serve hosted tenants")
+    if _hosted_process(hosted):
+        from hermes_kanban_port_local import LocalKanbanStorageProvider
+        if (name in ("", "local")
+                or type(provider).__module__ == LocalKanbanStorageProvider.__module__
+                or getattr(type(provider), "LOCAL_SHARED_BOARD", False)):
+            raise LookupError(
+                f"kanban storage {name!r} keeps one board root shared across every profile of a "
+                "single-user machine; it cannot serve hosted tenants")
     return provider

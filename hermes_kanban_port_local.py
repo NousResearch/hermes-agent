@@ -17,8 +17,12 @@ the ambient caller with no scope bound (today's CLI), are served. A hosted backe
 
 The shared root is the declared local exception (:attr:`KanbanStore.LOCAL_SHARED_BOARD`): the
 conformance suite's same-tenant cross-agent matrix asserts its inverse — another local
-profile's scope is served on this handle — and :func:`hermes_kanban_port.resolve_kanban_storage`
-refuses the backend wherever the process runs hosted.
+profile's scope is served on this handle. The root is a single-user machine's, so the store
+refuses to open wherever the process serves hosted tenants: the resolver
+(:func:`hermes_kanban_port.resolve_kanban_storage`) refuses the backend there by its name and
+its module, and this — the store's own
+refusal — catches every other path that reaches it, whoever calls it: a wrapper, a forwarding
+proxy or a provider that opens the local backend under another name all fail here.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from hermes_kanban_port import (
-    KanbanPinRefused, KanbanStorage, KanbanStorageProvider, KanbanStore,
+    KanbanPinRefused, KanbanStorage, KanbanStorageProvider, KanbanStore, _hosted_process,
 )
 
 
@@ -40,7 +44,15 @@ class LocalKanbanStore(KanbanStore):
     #: through it — so the store serves any scope of its tenant, whatever the profile.
     LOCAL_SHARED_BOARD = True
 
-    def __init__(self) -> None:
+    def __init__(self, *, hosted: Optional[bool] = None) -> None:
+        # One board root per machine cannot serve a shared deployment: refuse here, at the open,
+        # so every path that reaches this store fails the same way whoever calls it. The explicit
+        # answer wins (``resolve_kanban_storage`` passes its own); without one, ask the hosted
+        # boot profile the same guarded way the resolver does.
+        if _hosted_process(hosted):
+            raise LookupError(
+                "the local kanban store keeps one board root shared across every profile of a "
+                "single-user machine; it refuses to open in a hosted process")
         from hermes_cli import kanban_db as kb
         # Today's resolution, once: the root this store serves is fixed from here on.
         self.home = kb.kanban_home()
@@ -320,14 +332,21 @@ class LocalKanbanStorageProvider(KanbanStorageProvider):
     #: wherever the process runs hosted (``resolve_kanban_storage``).
     LOCAL_SHARED_BOARD = LocalKanbanStore.LOCAL_SHARED_BOARD
 
+    def __init__(self, *, hosted: Optional[bool] = None) -> None:
+        #: The caller's explicit answer to whether this process serves hosted tenants, carried
+        #: to the store at open (``LocalKanbanStore.__init__``): the resolver passes its own.
+        #: ``None`` — the default — leaves the store to ask the hosted boot profile itself.
+        self.hosted = hosted
+
     @property
     def name(self) -> str:
         return "local"
 
     def open(self) -> KanbanStorage:
         """The store for the kanban root this process resolves today; the root freezes here and
-        the pin is checked by every operation."""
-        return KanbanStorage(LocalKanbanStore())
+        the pin is checked by every operation. The store refuses to open wherever the process
+        serves hosted tenants, whoever constructed this provider."""
+        return KanbanStorage(LocalKanbanStore(hosted=self.hosted))
 
     def assert_isolating(self) -> None:
         """A local store is one root per machine and refuses every other tenant (``_pin``); its

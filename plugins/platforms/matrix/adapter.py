@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from html import escape as _html_escape
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Optional, Set
 
 from agent.i18n import t
 from agent.secret_scope import get_secret
@@ -58,7 +58,7 @@ try:
     from mautrix.types import (
         ContentURI, EventID, EventType, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
 except ImportError:
-    # Import-safe stubs without mautrix: check_matrix_requirements() gates production use, but
+    # Import-safe stubs without mautrix: ensure_matrix_deps() gates production use, but
     # tests exercise adapter methods so the attributes must exist.
     ContentURI = EventID = RoomID = UserID = str  # type: ignore[misc,assignment]
 
@@ -720,7 +720,7 @@ def matrix_deps_present() -> bool:
     """PASSIVE registry ``check_fn`` — must never install; ``ensure_matrix_deps`` is the installer.
 
     Registry ``check_fn`` — called from status displays and config loading, so it must never install
-    anything. The ACTIVE lazy-installer (``check_matrix_requirements``) is registered as ``ensure_deps_fn``
+    anything. The ACTIVE lazy-installer (``ensure_matrix_deps``) is registered as ``ensure_deps_fn``
     and runs from ``create_adapter()`` when this returns False (#79812).
     """
     try:
@@ -922,18 +922,6 @@ class MatrixAdapter(BasePlatformAdapter):
         """Scoped env var → ``config.extra[key]`` (YAML, per profile) → ``default``; true/1/yes semantics."""
         configured = _extra_or_secret(config.extra, key, env_name, default)
         return configured if isinstance(configured, bool) else str(configured).lower() in ("true", "1", "yes")
-
-    @staticmethod
-    def _configured_bool(config, key: str) -> Optional[bool]:
-        """Parse a YAML bool / "true"/"off"-style string from config.extra; None if unset."""
-        configured = config.extra.get(key)
-        if configured is None:
-            return None
-        if isinstance(configured, bool):
-            return configured
-        if isinstance(configured, str):
-            return configured.lower() not in {"false", "0", "no", "off"}
-        return bool(configured)
 
     @staticmethod
     def _parse_require_mention(config) -> bool:
@@ -1380,6 +1368,7 @@ class MatrixAdapter(BasePlatformAdapter):
             with suppress(Exception):
                 await self._client.api.session.close()
             self._client = None
+        self._mark_disconnected()
         logger.info("Matrix: disconnected")
 
     async def send(

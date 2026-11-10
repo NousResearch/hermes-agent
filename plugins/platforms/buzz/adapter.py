@@ -23,7 +23,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 # Profile-scoped read (adapter startup, Slack pattern #59739): a scoped read honors the profile's own

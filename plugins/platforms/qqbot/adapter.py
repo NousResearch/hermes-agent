@@ -19,9 +19,9 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import urlparse
 
 try:
@@ -525,7 +525,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             elif t == "RESUMED":
                 logger.info("[%s] Session resumed", self._log_tag)
             elif t in self._INBOUND_HANDLERS:
-                asyncio.create_task(self._on_message(t, d))
+                task = asyncio.create_task(self._on_message(t, d))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             elif t == "INTERACTION_CREATE":
                 self._create_task(self._on_interaction(d))
             else:

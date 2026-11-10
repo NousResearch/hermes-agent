@@ -24,7 +24,7 @@ import shutil
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 try:
     from aiohttp import web

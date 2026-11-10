@@ -17,7 +17,7 @@ import os
 import re
 from pathlib import Path
 from urllib.parse import unquote as _unquote
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -271,6 +271,7 @@ class MattermostAdapter(BasePlatformAdapter):
             self._ws = None
         if self._session and not self._session.closed:
             await self._session.close()
+        self._mark_disconnected()
         logger.info("Mattermost: disconnected")
 
     async def _resolve_root_id(self, post_id: str) -> str:

@@ -767,3 +767,13 @@ def test_configured_mattermost_bot_is_authorized(monkeypatch):
     assert runner._is_user_authorized(source) is False
     monkeypatch.setenv("MATTERMOST_ALLOW_BOTS", "mentions")
     assert runner._is_user_authorized(source) is True
+
+
+@pytest.mark.asyncio
+async def test_disconnect_reports_not_connected():
+    adapter = _make_adapter()
+    adapter._running = True
+
+    await adapter.disconnect()
+
+    assert adapter.is_connected is False

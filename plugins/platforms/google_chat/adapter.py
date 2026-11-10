@@ -22,7 +22,7 @@ import re
 import threading
 import time
 from pathlib import Path as _Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from agent.i18n import t
@@ -199,7 +199,7 @@ def ensure_google_chat_deps() -> bool:
     network) propagates so the registry logs the reason. Resets the failed-import
     cache so ``create_adapter()`` can load modules after install.
     """
-    global _google_modules_loaded, GOOGLE_CHAT_AVAILABLE
+    global _google_modules_loaded
     if GOOGLE_CHAT_AVAILABLE:
         return True
     from pm import InstallError, ensure_import

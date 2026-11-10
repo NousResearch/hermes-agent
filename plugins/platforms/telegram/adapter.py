@@ -13,9 +13,8 @@ import html as _html
 import re
 import time
 from contextvars import ContextVar
-from datetime import datetime, timezone, UTC
 from weakref import WeakValueDictionary
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Awaitable, Callable, Iterator, Optional, Set
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)

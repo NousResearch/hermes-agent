@@ -8,7 +8,7 @@ if unset). The bridge owns Raft message cursors/bodies; the agent uses the Raft 
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 import functools
 import hmac
 import json
@@ -25,7 +25,7 @@ import time
 import uuid
 import weakref
 from pathlib import Path as _Path
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Optional
 
 try:
     from aiohttp import web

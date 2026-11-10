@@ -18,9 +18,9 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Optional
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:  # type checkers see httpx as always-imported; runtime keeps it optional
@@ -729,7 +729,9 @@ class PhotonAdapter(BasePlatformAdapter):
         ``disconnect()``, which cancels those very tasks (via its own wrapper task, so the
         ``current_task()`` guard can't help) — the CancelledError would kill the notifier
         mid-handoff: no log, no reconnect. A fresh task can be cancelled freely."""
-        asyncio.create_task(self._notify_fatal_error_logged())
+        task = asyncio.create_task(self._notify_fatal_error_logged())
+        self._detached_fatal_tasks.add(task)
+        task.add_done_callback(self._detached_fatal_tasks.discard)
 
     async def _notify_fatal_error_logged(self) -> None:
         try:

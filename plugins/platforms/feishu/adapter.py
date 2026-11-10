@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Literal, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -2471,9 +2471,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         """Return True if this card action token was already processed within the dedup window."""
         now = time.time()
         # Prune expired tokens lazily each call.
-        expired = [t for t, ts in self._card_action_tokens.items() if now - ts > _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS]
-        for t in expired:
-            del self._card_action_tokens[t]
+        expired = [tok for tok, ts in self._card_action_tokens.items() if now - ts > _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS]
+        for tok in expired:
+            del self._card_action_tokens[tok]
         if token in self._card_action_tokens:
             return True
         self._card_action_tokens[token] = now
@@ -3596,20 +3596,17 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         seen_data = payload.get("message_ids", {}) if isinstance(payload, dict) else {}
         now = time.time()
         ttl = _FEISHU_DEDUP_TTL_SECONDS
-        if isinstance(seen_data, list):  # legacy format: plain list of IDs, no timestamps
-            entries: dict[str, float] = {str(item).strip(): 0.0 for item in seen_data if str(item).strip()}
-        elif isinstance(seen_data, dict):
-            entries = {}
-            for key, value in seen_data.items():
-                if isinstance(key, str) and key.strip() and isinstance(value, (int, float, str)):
-                    try:
-                        entries[key] = float(value)
-                    except ValueError:
-                        pass
-        else:
+        if not isinstance(seen_data, dict):
             return
-        # Drop TTL-expired entries; ts=0.0 (legacy) is immortal for one migration cycle.
-        valid: dict[str, float] = {m: ts for m, ts in entries.items() if ts == 0.0 or ttl <= 0 or now - ts < ttl}
+        entries: dict[str, float] = {}
+        for key, value in seen_data.items():
+            if isinstance(key, str) and key.strip() and isinstance(value, (int, float, str)):
+                try:
+                    entries[key] = float(value)
+                except ValueError:
+                    pass
+        # Drop TTL-expired entries.
+        valid: dict[str, float] = {m: ts for m, ts in entries.items() if ttl <= 0 or now - ts < ttl}
         # Size cap keeps the most recently seen IDs.
         sorted_ids = sorted(valid, key=lambda k: valid[k], reverse=True)[:self._dedup_cache_size]
         self._seen_message_order = list(reversed(sorted_ids))

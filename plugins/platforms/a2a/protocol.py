@@ -13,7 +13,7 @@ import time
 import uuid
 from collections import OrderedDict, defaultdict, deque
 from concurrent.futures import Future
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any, Optional
 

@@ -10,8 +10,8 @@ import re
 import time
 import traceback
 import uuid
-from datetime import datetime, timezone, UTC
-from typing import Any, Dict, List, Optional, Set
+from datetime import datetime, UTC
+from typing import Any, List, Optional, Set
 
 # Optional SDKs: catch broad Exception, not just ImportError — their transitive cryptography
 # dependency can raise AttributeError on version skew; a broken optional SDK must degrade gracefully.
@@ -143,7 +143,7 @@ def dingtalk_deps_present() -> bool:
     """PASSIVE registry ``check_fn`` — must never install; credentials are gated separately.
 
     Registry ``check_fn`` — called from status displays and config loading, so it must never install
-    anything. The ACTIVE lazy-installer (``check_dingtalk_requirements``) is registered as
+    anything. The ACTIVE lazy-installer (``ensure_dingtalk_deps``) is registered as
     ``ensure_deps_fn`` and runs from ``create_adapter()`` when this returns False (#79812).
     """
     return DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE
@@ -734,7 +734,9 @@ class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILAB
             msg_id, conversation_id = getattr(chatbot_msg, "message_id", None) or "", getattr(chatbot_msg, "conversation_id", None) or ""
             if msg_id and conversation_id:
                 self._adapter._spawn_bg(self._adapter._send_emotion(msg_id, conversation_id, t("platform.dingtalk.emotion.thinking"), recall=False))
-            asyncio.create_task(self._safe_on_message(chatbot_msg))  # surfaces exceptions in logs instead of losing them
+            task = asyncio.create_task(self._safe_on_message(chatbot_msg))  # surfaces exceptions in logs instead of losing them
+            self._adapter._background_tasks.add(task)
+            task.add_done_callback(self._adapter._background_tasks.discard)
         except Exception:
             logger.exception("[%s] Error preparing incoming message", self._adapter.name)
             return AckMessage.STATUS_SYSTEM_EXCEPTION, "error"

@@ -14,7 +14,7 @@ import re
 import ssl
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from gateway.platforms._shared import (
     coerce_port, get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
@@ -595,8 +595,6 @@ def register(ctx):
         label="IRC",
         adapter_factory=IRCAdapter,
         check_fn=check_requirements,
-        # ACTIVE lazy-installer — create_adapter() calls this when check_fn is False, right before the
-        # gateway connects Teams (#79812).
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"],

@@ -16,9 +16,9 @@ import time
 import uuid
 from collections import OrderedDict
 from contextlib import suppress
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from urllib.parse import quote, unquote
 
 import httpx

@@ -1673,7 +1673,7 @@ class TestMatrixDisconnect:
     async def test_disconnect_closes_api_session(self):
         """disconnect() should close client.api.session."""
         adapter = _make_adapter()
-        adapter._sync_task = None
+        adapter._sync_task, adapter._running = None, True
 
         mock_session = MagicMock()
         mock_session.close = AsyncMock()
@@ -1688,7 +1688,7 @@ class TestMatrixDisconnect:
         await adapter.disconnect()
 
         mock_session.close.assert_awaited_once()
-        assert adapter._client is None
+        assert adapter._client is None and adapter.is_connected is False
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ import uuid
 from collections import deque
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Iterator, Optional
 from urllib.parse import urlparse
 
 try:

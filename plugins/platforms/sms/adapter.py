@@ -18,7 +18,7 @@ import hmac
 import logging
 import re
 import urllib.parse
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult

@@ -3,7 +3,6 @@ native send (image/video/voice/file)."""
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import logging

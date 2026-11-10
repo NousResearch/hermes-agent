@@ -6,7 +6,6 @@ import email as email_lib
 from contextlib import contextmanager, suppress
 import imaplib
 import logging
-import os
 import re
 import smtplib
 import socket
@@ -20,7 +19,7 @@ from email.parser import BytesHeaderParser
 from email.utils import formatdate, parseaddr
 from email import encoders
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, List, Optional
 
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t

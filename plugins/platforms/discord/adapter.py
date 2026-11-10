@@ -27,7 +27,7 @@ import time
 import traceback
 from collections import defaultdict
 from contextlib import nullcontext, suppress
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, Optional, Any
 from urllib.parse import quote, urljoin
 
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
@@ -1389,11 +1389,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             try:
                 await self._notify_fatal_error()
             except Exception as notify_exc:  # pragma: no cover - defensive logging
-                logger.warning(
-                    "[%s] Failed to notify gateway supervisor about Discord task exit: %s",
-                    self.name, notify_exc, exc_info=True,
-                )
-        asyncio.create_task(_notify())
+                logger.warning("[%s] Failed to notify gateway supervisor about Discord task exit: %s",
+                               self.name, notify_exc, exc_info=True)
+        task = asyncio.create_task(_notify())
+        self._detached_fatal_tasks.add(task)
+        task.add_done_callback(self._detached_fatal_tasks.discard)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Discord and start receiving events."""

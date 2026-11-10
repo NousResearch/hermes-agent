@@ -13,7 +13,7 @@ had just cancelled.
 
 from typing import Any
 
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageType
 
 
 def contact_text(contact) -> str:

@@ -8,7 +8,7 @@ import asyncio, base64, contextlib, hashlib, json, logging, mimetypes, os, re, s
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, List, Optional
 from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
@@ -836,7 +836,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 # Dispatch before persisting: the off-loop write is an await, and a disconnect that
                 # cancels it must not leave the advanced cursor on disk with this batch undelivered.
                 for message in response.get("msgs") or []:
-                    asyncio.create_task(self._process_message_safe(message))
+                    task = asyncio.create_task(self._process_message_safe(message))
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
                 # atomic_json_write fsyncs + renames: persist off the loop, and only when the cursor
                 # moved (an empty long-poll echoes the same buffer back every cycle).
                 if response.get("get_updates_buf") and str(response["get_updates_buf"]) != sync_buf:

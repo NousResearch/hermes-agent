@@ -3555,6 +3555,7 @@ explainer:
     compression: "這一輪已停止，因為另一個程序正在壓縮此工作階段。你的訊息應該已經儲存 — 請在壓縮完成後再傳送一次。"
     compression_closed: "這一輪已停止，因為此工作階段已因上下文壓縮而輪替，且無法接手其進行中的後續工作階段。儲存空間本身正常 — 請重新整理客戶端（或開始新的一輪），讓它取得新的工作階段 ID，然後再傳送一次訊息。"
     turn_lease: "這一輪已停止，因為另一個 Hermes 程序接管了此工作階段。你的回覆未儲存 — 請等另一個程序完成後再傳送一次訊息。"
+    owner_unavailable: "這一輪已停止，因為此 Hermes 工作程序無法聯繫到擁有工作階段儲存空間的程序（閘道） — 它正在為更新而排空、正在重新啟動，或事件迴圈已停滯 — 因此這則訊息未儲存。磁碟和其他 Hermes 程序沒有問題：請再傳送一次訊息；若持續失敗，請執行 `hermes {profile_arg}gateway status`。"
     session_row_missing: "此工作階段在聊天仍開啟時已從儲存空間中刪除，且 Hermes 無法重新建立它，因此這則訊息未儲存。請再傳送一次訊息；若持續失敗，請執行 `hermes {profile_arg}doctor`。"
     locked: "這一輪已停止，因為工作階段儲存空間忙碌中（另一個 Hermes 程序正在寫入狀態資料庫）。你的訊息應該已經儲存 — 請稍後再傳送一次。"
     replaced: "工作階段資料庫檔案在 Hermes 執行期間被替換，因此這則訊息未儲存（副本保存在 {home}/sessions/）。請停止 Hermes（`hermes {profile_arg}gateway stop`），執行 `hermes {profile_arg}doctor` — 不要執行 `hermes {profile_arg}doctor --fix`，那會就地修復錯誤的檔案 — 然後重新啟動並再傳送一次訊息。進階復原步驟請見日誌。"

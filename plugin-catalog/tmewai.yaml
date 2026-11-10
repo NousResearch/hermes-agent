@@ -1,6 +1,6 @@
 name: tmewai
 repo: https://github.com/hadialjurdi7-dot/hermes-tmewai
-sha: 7ec225732dc9df01936456ab7f3041608017d8ad
+sha: b010a13bde8ace2d1a28e12fb550003f3fd0ceb4
 subdir: tmewai
 description: >-
   Local, offline index for your own Facebook JSON export (Meta's

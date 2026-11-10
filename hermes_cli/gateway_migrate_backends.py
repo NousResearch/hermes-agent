@@ -31,6 +31,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from hermes_platform.host.facts import os_family
+
 # Unit-name patterns for installed-but-not-running units. Running backends are found by argv, so a
 # unit with any other name is still reported while it runs.
 _UNIT_PATTERNS = ("hermes-serve*", "hermes-dashboard*", "hermes-backend*")
@@ -132,7 +134,7 @@ def _installed_units() -> list[tuple[str, str, str]]:
 
 
 def _on_macos() -> bool:
-    return sys.platform == "darwin"
+    return os_family() == "darwin"
 
 
 def _launchd_plists() -> dict[str, tuple[str, Optional[str], list[str]]]:
@@ -259,10 +261,10 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids,
         item.supervisor = "desktop-local"
     elif _container_cgroup(pid) or _in_container():
         item.supervisor = "container"
-    elif sys.platform != "win32":
+    elif os_family() != "win32":
         ppid = _process_ppid(pid)
         # On macOS launchd is the parent of every job and every orphan: ppid 1 proves no supervisor.
-        orphan = ppid is not None and ppid <= 1 and sys.platform != "darwin"
+        orphan = ppid is not None and ppid <= 1 and os_family() != "darwin"
         item.supervisor = "detached" if orphan else ("manual" if ppid and ppid > 1 else "unknown")
     with contextlib.suppress(Exception):
         from hermes_cli.dashboard_procs import _hermes_home_for_pid

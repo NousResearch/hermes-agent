@@ -1061,6 +1061,144 @@ class TestTeamsStandaloneSend:
 
 
 # ---------------------------------------------------------------------------
+# Tests: TEAMS_TOKEN_URL (external token broker instead of the client secret)
+# ---------------------------------------------------------------------------
+
+_BROKER = "http://token-broker:8080/teams/token"
+
+
+def _clear_teams_env(monkeypatch):
+    for name in ("TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID",
+                 "TEAMS_TOKEN_URL", "TEAMS_TOKEN_BEARER", "TEAMS_SERVICE_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+
+class _RecordingTokenClient:
+    """httpx.AsyncClient stand-in: records each token POST, answers with Entra's JSON shape."""
+    posts: list = []
+
+    def __init__(self, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return None
+
+    async def post(self, url, data=None, headers=None):
+        type(self).posts.append((url, dict(data or {}), dict(headers or {})))
+        resp = MagicMock()
+        resp.raise_for_status = lambda: None
+        resp.json = lambda: {"access_token": f"tok-{len(type(self).posts)}", "expires_in": 3600}
+        return resp
+
+
+class TestTeamsTokenBroker:
+
+    def test_validate_config_accepts_broker_without_secret(self, monkeypatch):
+        _clear_teams_env(monkeypatch)
+        assert validate_config(_make_config(client_id="id", tenant_id="tenant", token_url=_BROKER)) is True
+        assert validate_config(_make_config(client_id="id", tenant_id="tenant")) is False
+
+    def test_env_enablement_seeds_token_url_without_secret(self, monkeypatch):
+        _clear_teams_env(monkeypatch)
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "id")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        assert _teams_mod._env_enablement() is None
+        monkeypatch.setenv("TEAMS_TOKEN_URL", _BROKER)
+        seed = _teams_mod._env_enablement()
+        assert seed["token_url"] == _BROKER
+        assert "client_secret" not in seed
+
+    @pytest.mark.anyio
+    async def test_connect_hands_sdk_a_token_provider_not_a_secret(self, monkeypatch):
+        _clear_teams_env(monkeypatch)
+        captured = {}
+
+        class _Stop(Exception):
+            pass
+
+        def fake_app(**kwargs):
+            captured.update(kwargs)
+            raise _Stop()  # enough to see the auth kwargs; connect() reports CONNECT_FAILED
+
+        monkeypatch.setattr(_teams_mod, "App", fake_app)
+        monkeypatch.setattr(_teams_mod, "ClientOptions", MagicMock())
+        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
+        monkeypatch.setattr(_teams_mod, "web", MagicMock())
+        adapter = TeamsAdapter(_make_config(client_id="id", tenant_id="tenant", token_url=_BROKER))
+        assert await adapter.connect() is False
+        assert "client_secret" not in captured
+        assert captured["token"] == adapter._sdk_token
+        assert captured["client_id"] == "id" and captured["tenant_id"] == "tenant"
+
+    @pytest.mark.anyio
+    async def test_connect_without_secret_or_broker_is_missing_credentials(self, monkeypatch):
+        _clear_teams_env(monkeypatch)
+        monkeypatch.setattr(_teams_mod, "App", MagicMock())
+        monkeypatch.setattr(_teams_mod, "ClientOptions", MagicMock())
+        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
+        adapter = TeamsAdapter(_make_config(client_id="id", tenant_id="tenant"))
+        assert await adapter.connect() is False
+        assert adapter._fatal_error_code == "MISSING_CREDENTIALS"
+
+    @pytest.mark.anyio
+    async def test_connect_rejects_non_http_broker_url(self, monkeypatch):
+        _clear_teams_env(monkeypatch)
+        monkeypatch.setattr(_teams_mod, "App", MagicMock())
+        monkeypatch.setattr(_teams_mod, "ClientOptions", MagicMock())
+        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
+        adapter = TeamsAdapter(_make_config(client_id="id", tenant_id="tenant", token_url="file:///etc/token"))
+        assert await adapter.connect() is False
+        assert adapter._fatal_error_code == "INVALID_CONFIG"
+
+    @pytest.mark.anyio
+    async def test_broker_token_request_and_per_scope_cache(self, monkeypatch):
+        _clear_teams_env(monkeypatch)
+        _RecordingTokenClient.posts = []
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", tenant_id="tenant", token_url=_BROKER, token_bearer="agent-proxy-token"))
+        with patch("httpx.AsyncClient", _RecordingTokenClient):
+            bf1 = await adapter._get_botframework_token()
+            bf2 = await adapter._get_botframework_token()
+            other = await adapter._get_botframework_token("api://other/.default")
+        assert bf1 == bf2 == "tok-1" and other == "tok-2"
+        assert len(_RecordingTokenClient.posts) == 2
+        url, form, headers = _RecordingTokenClient.posts[0]
+        assert url == _BROKER
+        assert form == {"client_id": "id", "tenant_id": "tenant", "scope": "https://api.botframework.com/.default"}
+        assert headers == {"Authorization": "Bearer agent-proxy-token"}
+
+    @pytest.mark.anyio
+    async def test_sdk_token_provider_joins_list_scopes(self):
+        adapter = TeamsAdapter(_make_config(client_id="id", tenant_id="tenant", token_url=_BROKER))
+        adapter._get_botframework_token = AsyncMock(return_value="tok")
+        assert await adapter._sdk_token(["https://api.botframework.com/.default"], "tenant") == "tok"
+        adapter._get_botframework_token.assert_awaited_once_with("https://api.botframework.com/.default")
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_uses_broker(self, monkeypatch):
+        _clear_teams_env(monkeypatch)
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        monkeypatch.setenv("TEAMS_TOKEN_URL", _BROKER)
+        monkeypatch.setenv("TEAMS_TOKEN_BEARER", "agent-proxy-token")
+        session = _FakeAiohttpSession([
+            _FakeAiohttpResponse(200, {"access_token": "brokered"}), _FakeAiohttpResponse(200, {"id": "msg-1"})])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(PlatformConfig(enabled=True, extra={}), "19:abc@thread.skype", "hi")
+
+        assert result == {"success": True, "message_id": "msg-1"}
+        token_url, token_kwargs = session.calls[0]
+        assert token_url == _BROKER
+        assert "client_secret" not in token_kwargs["data"]
+        assert token_kwargs["headers"]["Authorization"] == "Bearer agent-proxy-token"
+        assert session.calls[1][1]["headers"]["Authorization"] == "Bearer brokered"
+
+
+# ---------------------------------------------------------------------------
 # Tests: require_mention gating (RSC-delivered history)
 # ---------------------------------------------------------------------------
 

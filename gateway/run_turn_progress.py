@@ -78,6 +78,8 @@ def _owed_send_failed(st) -> bool:
     is retried (bounded) instead of dropped. Arms ``flood_pending`` so the idle tick retries."""
     st.owed_send_failures += 1
     if st.owed_send_failures >= _OWED_SEND_ATTEMPTS:
+        logger.warning("Progress: gave up on carried tool-progress lines after %d failed sends",
+                       _OWED_SEND_ATTEMPTS)
         st.owed_send_failures, st.owed_fresh = 0, False
         return False
     st.flood_pending = True

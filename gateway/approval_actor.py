@@ -70,12 +70,12 @@ def may_answer(authority: dict, actor_id: Any, admin_ids: Any = (), extra: Any =
 
 
 def approval_commands(choice: Optional[str] = None) -> tuple[str, ...]:
-    """The slash commands that may give an exec-approval answer: ``approve`` for an approval; a deny
-    also accepts ``approve``, because whoever may approve may refuse; either when the choice is not
-    known yet (a pre-check before the settle rechecks the exact one)."""
-    if choice is None or choice == "deny":
-        return ("deny", "approve") if choice else ("approve", "deny")
-    return ("approve",)
+    """The slash command an exec-approval answer is: ``deny`` for a deny, else ``approve``; either
+    when the choice is not known yet (a pre-check before the settle rechecks the exact one).
+    ``SlashAccessPolicy.can_run`` lets an ``approve`` holder run ``deny`` too."""
+    if choice is None:
+        return ("approve", "deny")
+    return ("deny",) if choice == "deny" else ("approve",)
 
 
 def _refusal_name(authority: dict, commands: tuple[str, ...]) -> str:

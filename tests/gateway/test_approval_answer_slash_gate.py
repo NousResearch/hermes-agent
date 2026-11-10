@@ -221,3 +221,6 @@ def test_narrowed_approvers_take_precedence_over_the_slash_gate(approvers, user_
     _raise_approval("k", "telegram", requester=MEMBER)
     extra = {"allow_admin_from": [ADMIN], "user_allowed_commands": user_cmds}
     assert (approval_refusal("k", who, extra=extra, choice=choice) is None) is allowed
+    if approvers == ["*"]:  # the typed command passes the same slash gate the button does
+        typed = "/deny" if choice == "deny" else "/approve"
+        assert (_runner(extra)._check_slash_access(_event(who, typed).source, typed[1:]) is None) is allowed

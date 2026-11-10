@@ -44,8 +44,11 @@ class SlashAccessPolicy:
     def can_run(self, user_id: Optional[str], canonical_cmd: str) -> bool:
         if self.is_admin(user_id):
             return True
+        allowed = self.user_allowed_commands
         return bool(canonical_cmd) and (
-            canonical_cmd in _ALWAYS_ALLOWED_FOR_USERS or canonical_cmd in self.user_allowed_commands
+            canonical_cmd in _ALWAYS_ALLOWED_FOR_USERS or canonical_cmd in allowed
+            # whoever may approve a pending approval may also refuse it (/deny, Deny button, "no")
+            or (canonical_cmd == "deny" and "approve" in allowed)
         )
 
 

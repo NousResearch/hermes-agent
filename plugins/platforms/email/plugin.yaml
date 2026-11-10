@@ -41,3 +41,7 @@ optional_env:
     description: "Exact authserv-id on your mail server's topmost Authentication-Results header, e.g. mx.google.com (required unless EMAIL_TRUST_FROM_HEADER=true)"
     prompt: "Receiving MTA authserv-id"
     password: false
+  - name: EMAIL_QUOTE_ORIGINAL
+    description: "Quote the received email below replies (true/false, default false)"
+    prompt: "Quote original email in replies"
+    password: false

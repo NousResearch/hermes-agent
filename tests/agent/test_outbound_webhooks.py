@@ -596,8 +596,8 @@ class TestDelivery:
         script = tmp_path / "fire_and_exit.py"
         script.write_text(
             "import sys\n"
-            f"sys.path.insert(0, {str(Path(outbound_webhooks.__file__).resolve().parents[1])!r})\n"
-            "from agent import outbound_webhooks\n"
+            f"sys.path.insert(0, {str(Path(outbound_webhooks.__file__).resolve().parents[2])!r})\n"
+            "from hermes_agent.agent import outbound_webhooks\n"
             "from hermes_cli.plugins import get_plugin_manager\n"
             f"cfg = {cfg!r}\n"
             "outbound_webhooks.register_from_config(cfg)\n"

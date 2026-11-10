@@ -14,7 +14,7 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 from plugins.memory import find_provider_dir, load_memory_provider
 
 _PROVIDER = """
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 class P(MemoryProvider):
     name = "fakemem"

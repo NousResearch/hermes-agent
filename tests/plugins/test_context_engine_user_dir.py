@@ -7,7 +7,7 @@ from pathlib import Path
 from textwrap import dedent
 
 _ENGINE_SRC = dedent('''
-    from agent.context_engine import ContextEngine
+    from hermes_agent.agent.context_engine import ContextEngine
 
     class Demo(ContextEngine):
         @property

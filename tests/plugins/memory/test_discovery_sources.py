@@ -20,7 +20,7 @@ import pytest
 import plugins.memory as memory_plugins
 
 PROVIDER_SOURCE = """\
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 
 class Provider(MemoryProvider):

@@ -59,7 +59,7 @@ def _write_config(home: str, text: str) -> None:
         fp.write(text)
 
 
-_RELOAD_PREFIXES = ("agent.auxiliary_client", "agent.image_routing",
+_RELOAD_PREFIXES = ("hermes_agent.agent.auxiliary_client", "hermes_agent.agent.image_routing",
                     "hermes_agent.tools.vision_tools", "hermes_cli.config")
 
 

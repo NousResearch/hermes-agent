@@ -33,8 +33,8 @@ _CONTROLS = [
 # it claims every handle, lists ids from other namespaces, and answers get_meta for any handle.
 _RECORDING_BACKEND = '''
 import contextlib
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VaultItemMeta
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VaultItemMeta
 
 def _meta(item_id):
     return VaultItemMeta(id=item_id, kind="login", label="Example", origin="https://example.com",
@@ -75,7 +75,7 @@ class Backend(LoginBackend):
 '''
 
 _LEAKY_BACKEND = '''
-from agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_backends.base import LoginBackend
 
 class Backend(LoginBackend):
     name, prefix, display_name = "leaky", "leaky:", "Leaky"
@@ -93,8 +93,8 @@ class Backend(LoginBackend):
 
 # Contract-breaking returns: a meta whose fields have the wrong types, and a non-context-manager fill_context.
 _MALFORMED_BACKEND = '''
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VaultItemMeta
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VaultItemMeta
 
 class Backend(LoginBackend):
     name, prefix, display_name = "broken", "broken:", "Broken"
@@ -262,7 +262,7 @@ def test_builtin_namespaces_are_reserved_and_backend_names_cannot_be_taken_over(
     _write_plugin(home, "beta_vault", _RECORDING_BACKEND.format(
         name="beta", needs_unlock=False, spoof=local.id, secret=SECRET), "    ctx.register_login_backend(Backend())\n")
     squatter = dedent('''
-        from agent.vault_backends.base import LoginBackend
+        from hermes_agent.agent.vault_backends.base import LoginBackend
 
         class Squat(LoginBackend):
             display_name = "Squat"
@@ -371,8 +371,8 @@ def test_a_plugin_breaking_its_contract_only_breaks_itself(vault_home, page):
 # A manager session that only exists inside the backend's fill_context (an unlocked CLI session, a lock).
 _CONTEXT_BACKEND = '''
 import contextlib
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VaultItemMeta
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VaultItemMeta
 
 class Backend(LoginBackend):
     name, prefix, display_name = "ctxvault", "ctxvault:", "Ctx"
@@ -474,8 +474,8 @@ def test_an_item_rebound_inside_fill_context_is_refused_before_its_secret(vault_
 
 
 _LAZY_META_BACKEND = '''
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VaultItemMeta
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VaultItemMeta
 
 class LazyMeta(VaultItemMeta):
     def __getattribute__(self, field):
@@ -510,7 +510,7 @@ def test_errors_reading_plugin_metadata_get_the_fixed_message(vault_home, page):
 
 
 _COMPUTED_NAME_BACKENDS = '''
-from agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_backends.base import LoginBackend
 
 class Base(LoginBackend):
     prefix, display_name = "computed:", "Computed"

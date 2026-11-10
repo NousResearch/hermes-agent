@@ -79,11 +79,11 @@ def _read_or_none(path: Path) -> Optional[bytes]:
 # own from the modules listed here). Loaded at the commit point,
 # while the tree is still the code this process runs; ``test_update_post_swap_imports`` drives each.
 POST_MOVE_MODULES = (
-    "agent.delegation_context",
-    "agent.provider_base",
-    "agent.provider_registry",
-    "agent.terminal_env_provider",
-    "agent.terminal_env_registry",
+    "hermes_agent.agent.delegation_context",
+    "hermes_agent.agent.provider_base",
+    "hermes_agent.agent.provider_registry",
+    "hermes_agent.agent.terminal_env_provider",
+    "hermes_agent.agent.terminal_env_registry",
     "hermes_agent.gateway.config_loader",
     "hermes_agent.gateway.platform_registry",
     "hermes_agent.gateway.runtime_ownership",

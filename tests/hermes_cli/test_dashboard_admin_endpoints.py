@@ -245,8 +245,8 @@ class TestMemoryEndpoints:
         ).status_code == 400
 
     _SCOPEDPROV_INIT = """
-from agent.memory_provider import MemoryProvider
-from agent.secret_scope import get_secret
+from hermes_agent.agent.memory_provider import MemoryProvider
+from hermes_agent.agent.secret_scope import get_secret
 
 
 class ScopedProvMemoryProvider(MemoryProvider):

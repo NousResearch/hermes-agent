@@ -197,7 +197,7 @@ def save_provider_env_credential(env_var: str, value: str) -> dict[str, Any]:
 
     # ``load_pool`` is idempotent and additive-only for env sources, so re-running is safe even when
     # the pool already had this entry. Best-effort: never masks the successful .env write above.
-    _for_each_provider(providers, "agent.credential_pool.load_pool")
+    _for_each_provider(providers, "hermes_agent.agent.credential_pool.load_pool")
 
     return {"ok": True, "key": env_var, "config_updates": config_updates}
 

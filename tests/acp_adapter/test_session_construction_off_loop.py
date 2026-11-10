@@ -120,7 +120,7 @@ def test_import_memory_provider_module_imports_without_constructing(tmp_path, mo
     provider.mkdir(parents=True)
     (provider / "__init__.py").write_text(
         "import sys\nsys.modules['_warmprov_marker'] = True\n"
-        "from agent.memory_provider import MemoryProvider\n"
+        "from hermes_agent.agent.memory_provider import MemoryProvider\n"
         "def register(ctx):\n    sys.modules['_warmprov_registered'] = True\n",
         encoding="utf-8",
     )

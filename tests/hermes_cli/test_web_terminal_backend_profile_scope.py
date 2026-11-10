@@ -14,7 +14,7 @@ pytest.importorskip("fastapi")
 from starlette.testclient import TestClient
 
 BACKEND_PLUGIN = '''
-from agent.terminal_env_provider import TerminalEnvironmentProvider
+from hermes_agent.agent.terminal_env_provider import TerminalEnvironmentProvider
 
 class Box(TerminalEnvironmentProvider):
     @property

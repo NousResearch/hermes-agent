@@ -191,7 +191,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict], module_loader) -> st
     Returns the one-line notice for skills whose name is a built-in command (no ``/<name>`` entry;
     ``hermes_agent.agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
-    sc = module_loader("agent.skill_commands")
+    sc = module_loader("hermes_agent.agent.skill_commands")
     for k, info in sorted(sc.get_interactive_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))

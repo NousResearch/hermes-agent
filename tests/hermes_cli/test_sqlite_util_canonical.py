@@ -62,7 +62,7 @@ def test_open_db_closes_the_half_open_connection_when_initialize_raises(monkeypa
 
 # Every store that opens its own SQLite file (path -> module attribute holding the opener).
 _STORE_OPENERS = (
-    ("agent.verification_evidence", "_connect"),
+    ("hermes_agent.agent.verification_evidence", "_connect"),
     ("hermes_agent.cron.executions", "_connect"),
     ("hermes_agent.cron.incidents", "_connect"),
     ("hermes_agent.cron.notepad", "_connect"),
@@ -85,7 +85,7 @@ def test_every_store_opens_through_the_canonical_open_db(monkeypatch, tmp_path, 
             monkeypatch.setattr(module, name, tmp_path / f"{name.lower()}.db")
     if module_name == "hermes_agent.cron.incidents":
         monkeypatch.setattr(module._executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
-    if module_name == "agent.verification_evidence":
+    if module_name == "hermes_agent.agent.verification_evidence":
         monkeypatch.setattr(module, "_db_path", lambda: tmp_path / "ve.db")
     if module_name in ("hermes_agent.gateway.delivery_ledger", "hermes_agent.tools.async_delegation"):
         monkeypatch.setattr(module, "_db_path", lambda: tmp_path / "state.db")

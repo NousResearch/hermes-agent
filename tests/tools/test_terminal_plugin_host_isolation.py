@@ -14,7 +14,7 @@ from hermes_cli.plugins import PluginManager
 
 BACKEND_PLUGIN = '''
 from pathlib import Path
-from agent.terminal_env_provider import TerminalEnvironmentProvider
+from hermes_agent.agent.terminal_env_provider import TerminalEnvironmentProvider
 
 MARKER = Path(__file__).with_name("created")
 

@@ -214,7 +214,7 @@ def test_real_plugin_source_discovery_applies_dotenv(monkeypatch, tmp_path):
     )
     (plugin_dir / "__init__.py").write_text(
         "from pathlib import Path\n"
-        "from agent.secret_sources.base import (\n"
+        "from hermes_agent.agent.secret_sources.base import (\n"
         "    SECRET_SOURCE_API_VERSION, FetchResult, SecretSource,\n"
         ")\n\n"
         "class FixtureVault(SecretSource):\n"
@@ -249,7 +249,7 @@ def test_real_plugin_source_discovery_applies_dotenv(monkeypatch, tmp_path):
 
 _FIXTURE_PLUGIN = (
     "from pathlib import Path\n"
-    "from agent.secret_sources.base import (\n"
+    "from hermes_agent.agent.secret_sources.base import (\n"
     "    SECRET_SOURCE_API_VERSION, FetchResult, SecretSource,\n"
     ")\n\n"
     "class FixtureVault(SecretSource):\n"

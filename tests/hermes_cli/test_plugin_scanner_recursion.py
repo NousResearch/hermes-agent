@@ -292,7 +292,7 @@ class TestRegisterImageGenProvider:
             hermes_home / "plugins",
             ["my-img-plugin"],
             register_body=(
-                "from agent.image_gen_provider import ImageGenProvider\n"
+                "from hermes_agent.agent.image_gen_provider import ImageGenProvider\n"
                 "    class P(ImageGenProvider):\n"
                 "        @property\n"
                 "        def name(self): return 'fake-ctx'\n"

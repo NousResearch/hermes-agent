@@ -9,10 +9,14 @@ bit, per-turn thread-locals, the thread-scoped sudo cache, context variables) is
 from __future__ import annotations
 
 import contextvars
+import importlib
 import threading
 import time
 
+import pytest
+
 from hermes_agent.gateway.turn_executor import _UnboundedThreadExecutor
+from hermes_agent.gateway.turn_thread_reset import _PER_TURN_THREAD_LOCALS, reset_reused_thread_state
 
 
 def _wait_parked(ex, n=1):
@@ -108,3 +112,13 @@ def test_a_reused_worker_does_not_log_as_the_previous_turns_session():
         assert tag == "", f"the reused thread logs as {tag!r}"
     finally:
         ex.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("module_name, attr", _PER_TURN_THREAD_LOCALS)
+def test_the_reset_clears_every_listed_thread_local(module_name, attr):
+    # The reset finds each module in sys.modules by this name: a row a module move left on the
+    # old name clears nothing, and turn 1's callbacks stay live in turn 2.
+    local = getattr(importlib.import_module(module_name), attr)
+    local.previous_turn = "session-a"
+    reset_reused_thread_state()
+    assert not hasattr(local, "previous_turn")

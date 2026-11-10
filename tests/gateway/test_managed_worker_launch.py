@@ -185,7 +185,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
             assert await asyncio.to_thread(peer.blocked.wait, 240), (home / 'restart.log').read_text()
             workers = query('SELECT execution_id,status FROM worker_executions WHERE session_id=?', (sid,))
             assert len(workers) == 1, workers
-            children = [p for p in psutil.Process(owner.pid).children() if p.cmdline()[-2:] == ['-m', 'agent.managed_worker']]
+            children = [p for p in psutil.Process(owner.pid).children() if p.cmdline()[-2:] == ['-m', 'hermes_agent.agent.managed_worker']]
             assert len(children) == 1, [(p.pid, p.cmdline()) for p in psutil.Process(owner.pid).children()]
             pid = children[0].pid
             opened = [json.loads(line) for line in audit.read_text().splitlines()]
@@ -260,7 +260,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         assert len(peer.requests) == (3 if peer.control_mode else 2), json.dumps([
             {'model': r.get('model'), 'roles': [m['role'] for m in r['messages']],
              'user': [str(m.get('content'))[:120] for m in r['messages'] if m['role'] == 'user']} for r in peer.requests])
-        print(json.dumps({'owner_pid': owner.pid, 'worker_pid': pid, 'worker_module': 'agent.managed_worker',
+        print(json.dumps({'owner_pid': owner.pid, 'worker_pid': pid, 'worker_module': 'hermes_agent.agent.managed_worker',
                           'model_requests': len(peer.requests), 'rows': rows, 'detach_survived': True,
                           'canonical_sqlite_opens': [], 'canonical_fds': canonical_fds}))
         if worker_action == 'history':

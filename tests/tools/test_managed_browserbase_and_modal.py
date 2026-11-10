@@ -53,13 +53,13 @@ def _restore_tool_and_agent_modules():
         for name, module in sys.modules.items()
         if name == "hermes_agent.tools"
         or name.startswith("hermes_agent.tools.")
-        or name == "agent"
-        or name.startswith("agent.")
+        or name == "hermes_agent.agent"
+        or name.startswith("hermes_agent.agent.")
     }
     try:
         yield
     finally:
-        _reset_modules(("hermes_agent.tools", "agent"))
+        _reset_modules(("hermes_agent.tools", "hermes_agent.agent"))
         sys.modules.update(original_modules)
 
 
@@ -84,7 +84,7 @@ def _enable_managed_nous_tools(monkeypatch):
 
 
 def _install_fake_tools_package():
-    _reset_modules(("hermes_agent.tools", "agent"))
+    _reset_modules(("hermes_agent.tools", "hermes_agent.agent"))
 
     tools_package = types.ModuleType("hermes_agent.tools")
     tools_package.__path__ = [str(TOOLS_DIR)]  # type: ignore[attr-defined]
@@ -95,7 +95,7 @@ def _install_fake_tools_package():
     sys.modules["hermes_agent.tools.environments"] = env_package
 
     agent_package = types.ModuleType("hermes_agent.agent")
-    agent_package.__path__ = [str(REPO_ROOT / "agent")]  # type: ignore[attr-defined]
+    agent_package.__path__ = [str(REPO_ROOT / "hermes_agent" / "agent")]  # type: ignore[attr-defined]
     sys.modules["hermes_agent.agent"] = agent_package
     sys.modules["hermes_agent.agent.auxiliary_client"] = types.SimpleNamespace(
         call_llm=lambda *args, **kwargs: "",

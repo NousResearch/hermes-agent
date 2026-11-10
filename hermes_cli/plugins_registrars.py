@@ -25,67 +25,67 @@ from hermes_cli.plugins_loader import _plugin_home_scope, _serialized_replacemen
 logger = logging.getLogger(__name__)
 
 _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str, Any]], ...] = (
-    ("register_login_backend", "login_backend", "agent.vault_backend_registry",
-     "agent.vault_backends.base:LoginBackend", "login backend",
+    ("register_login_backend", "login_backend", "hermes_agent.agent.vault_backend_registry",
+     "hermes_agent.agent.vault_backends.base:LoginBackend", "login backend",
      "Register a trusted in-process browser-vault LoginBackend; explicit vault.<name>.enabled "
      "is required. Registration is profile-scoped and removed on plugin unload. "
      "Backend instances must read active-profile configuration lazily. Accepted only from bundled "
      "plugins and catalog installs at tier verified or official.",
      {"normalize": None, "reject_message": "Plugin '%s' login backend rejected: %s",
       "admit": "hermes_cli.plugins_cmd_catalog:login_backend_provenance_error", "identity": "static_name"}),
-    ("register_browser_page_backend", "browser_page_backend", "agent.browser_page_registry",
-     "agent.browser_page_backend:BrowserPageBackend", "browser page backend",
+    ("register_browser_page_backend", "browser_page_backend", "hermes_agent.agent.browser_page_registry",
+     "hermes_agent.agent.browser_page_backend:BrowserPageBackend", "browser page backend",
      "Register an :class:`agent.browser_page_backend.BrowserPageBackend` so ``browser_vault`` inspects and "
      "fills the pages of a browser with no CDP endpoint (Camofox). Profile-scoped, removed on plugin "
      "unload; accepted only from bundled plugins and catalog installs at tier verified or official.",
      {"reject_message": "Plugin '%s' browser page backend rejected: %s",
       "admit": "hermes_cli.plugins_cmd_catalog:browser_page_backend_provenance_error"}),
-    ("register_image_gen_provider", "image_gen_provider", "agent.image_gen_registry",
-     "agent.image_gen_provider:ImageGenProvider", "image_gen provider",
+    ("register_image_gen_provider", "image_gen_provider", "hermes_agent.agent.image_gen_registry",
+     "hermes_agent.agent.image_gen_provider:ImageGenProvider", "image_gen provider",
      "Register an :class:`agent.image_gen_provider.ImageGenProvider`; "
      "``provider.name`` is matched by ``image_gen.provider``.", {"article": "an"}),
-    ("register_video_gen_provider", "video_gen_provider", "agent.video_gen_registry",
-     "agent.video_gen_provider:VideoGenProvider", "video_gen provider",
+    ("register_video_gen_provider", "video_gen_provider", "hermes_agent.agent.video_gen_registry",
+     "hermes_agent.agent.video_gen_provider:VideoGenProvider", "video_gen provider",
      "Register an :class:`agent.video_gen_provider.VideoGenProvider`; "
      "``provider.name`` is matched by ``video_gen.provider``.", {}),
-    ("register_web_search_provider", "web_search_provider", "agent.web_search_registry",
-     "agent.web_search_provider:WebSearchProvider", "web provider",
+    ("register_web_search_provider", "web_search_provider", "hermes_agent.agent.web_search_registry",
+     "hermes_agent.agent.web_search_provider:WebSearchProvider", "web provider",
      "Register an :class:`agent.web_search_provider.WebSearchProvider`; "
      "``provider.name`` is matched by ``web.search_backend`` / ``web.extract_backend`` / ``web.backend``.",
      {}),
-    ("register_browser_provider", "browser_provider", "agent.browser_registry",
-     "agent.browser_provider:BrowserProvider", "browser provider",
+    ("register_browser_provider", "browser_provider", "hermes_agent.agent.browser_registry",
+     "hermes_agent.agent.browser_provider:BrowserProvider", "browser provider",
      "Register an :class:`agent.browser_provider.BrowserProvider`; "
      "``provider.name`` is matched by ``browser.cloud_provider`` (consulted by "
      "``tools.browser_session_cloud.get_cloud_provider``).", {}),
     ("register_terminal_environment_provider", "terminal_environment_provider",
-     "agent.terminal_env_registry", "agent.terminal_env_provider:TerminalEnvironmentProvider",
+     "hermes_agent.agent.terminal_env_registry", "hermes_agent.agent.terminal_env_provider:TerminalEnvironmentProvider",
      "terminal environment provider",
      "Register a :class:`agent.terminal_env_provider.TerminalEnvironmentProvider`; ``provider.name`` "
      "is matched by ``terminal.backend`` when no built-in backend has that name. Built-in names (local, "
      "docker, modal, daytona, vercel_sandbox, ssh) are rejected — plugins never shadow "
      "in-tree backends.",
      {"normalize": "lower", "reject_message": "Plugin '%s' terminal environment provider rejected: %s"}),
-    ("register_secret_source", "secret_source", "agent.secret_sources.registry",
-     "agent.secret_sources.base:SecretSource", "secret source",
+    ("register_secret_source", "secret_source", "hermes_agent.agent.secret_sources.registry",
+     "hermes_agent.agent.secret_sources.base:SecretSource", "secret source",
      "Register a :class:`agent.secret_sources.base.SecretSource`, run by ``load_hermes_dotenv()`` "
      "(after ``~/.hermes/.env``, before credentials are read) when ``secrets.<name>`` is enabled. The "
      "orchestrator owns ordering/precedence/provenance; the source only fetches. Since dotenv usually "
      "loads before discovery, the manager re-pulls enabled plugin sources afterwards.",
      {"normalize": None, "register": "register_source", "param": "source"}),
-    ("register_tts_provider", "tts_provider", "agent.tts_registry",
-     "agent.tts_provider:TTSProvider", "TTS provider",
+    ("register_tts_provider", "tts_provider", "hermes_agent.agent.tts_registry",
+     "hermes_agent.agent.tts_provider:TTSProvider", "TTS provider",
      "Register an :class:`agent.tts_provider.TTSProvider`; ``provider.name`` is matched by "
      "``tts.provider`` unless it is a built-in name (rejected with a warning) or a "
      "``tts.providers.<name>: type: command`` entry shares it (command-providers win).",
      {"normalize": "lower"}),
-    ("register_transcription_provider", "transcription_provider", "agent.transcription_registry",
-     "agent.transcription_provider:TranscriptionProvider", "transcription provider",
+    ("register_transcription_provider", "transcription_provider", "hermes_agent.agent.transcription_registry",
+     "hermes_agent.agent.transcription_provider:TranscriptionProvider", "transcription provider",
      "Register an :class:`agent.transcription_provider.TranscriptionProvider`; ``provider.name`` is "
      "matched by ``stt.provider`` unless it is a built-in name (rejected) or a ``stt.providers.<name>: "
      "type: command`` entry shares it (command-providers win).", {"normalize": "lower"}),
-    ("register_delegation_provider", "delegation_provider", "agent.delegation_registry",
-     "agent.delegation_provider:DelegationProvider", "delegation provider",
+    ("register_delegation_provider", "delegation_provider", "hermes_agent.agent.delegation_registry",
+     "hermes_agent.agent.delegation_provider:DelegationProvider", "delegation provider",
      "Register an :class:`agent.delegation_provider.DelegationProvider`; ``provider.name`` is matched by "
      "``delegation.backend``. It decides each ``delegate_task`` task's route (model/provider or a Hermes "
      "profile) and may add per-task schema parameters; core keeps the subagent lifecycle.",

@@ -590,7 +590,7 @@ class TestWebServerEndpoints:
     _FLATPROV_INIT = """
 import json
 from pathlib import Path
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 
 class FlatProvMemoryProvider(MemoryProvider):

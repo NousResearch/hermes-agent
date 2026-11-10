@@ -54,7 +54,7 @@ def user_dir_honcho(monkeypatch, tmp_path, _isolate_hermes_home):
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "__init__.py").write_text(textwrap.dedent('''
         """fake provider: register_memory_provider"""
-        from agent.memory_provider import MemoryProvider
+        from hermes_agent.agent.memory_provider import MemoryProvider
         from .client import read_fields  # relative import: only a real package load resolves it
 
         class UserDirProvider(MemoryProvider):

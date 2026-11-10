@@ -493,7 +493,7 @@ def test_native_safe_mode_cli_executes_in_managed_worker(harness):
             proc.kill(); out, err = proc.communicate(timeout=10)
             raise AssertionError(('safe-mode CLI timed out', out, err))
         out, err = out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
-        starts = [r for r in records(audit) if r['kind'] == 'start' and 'agent.managed_worker' in ' '.join(r['argv'])]
+        starts = [r for r in records(audit) if r['kind'] == 'start' and 'hermes_agent.agent.managed_worker' in ' '.join(r['argv'])]
         evidence = {'owner_pid': owner.pid, 'gateway_pid': gateway_pid, 'worker_starts': starts,
                     'worker_errors': [r for r in records(audit) if r['kind'] == 'worker_error'],
                     'worker_executions': query(home, 'SELECT execution_id,status FROM worker_executions'),
@@ -515,7 +515,7 @@ def test_native_safe_mode_cli_executes_in_managed_worker(harness):
         # sits between the daemon's Popen and the real worker interpreter on Windows.
         workers = sorted({r['pid'] for r in rows if r['kind'] == 'start'
                           and gateway_pid in [r['ppid'], *(a[0] for a in r['ancestors'] if isinstance(a, list))]
-                          and r['argv'][-2:] == ['-m', 'agent.managed_worker']})
+                          and r['argv'][-2:] == ['-m', 'hermes_agent.agent.managed_worker']})
         assert len(workers) == 1 and workers[0] != gateway_pid, [(r['pid'], r['ppid'], r['argv'][-3:]) for r in rows if r['kind'] == 'start']
         worker = workers[0]
         # Positive control: the witness is live in the gateway, so worker silence is real.

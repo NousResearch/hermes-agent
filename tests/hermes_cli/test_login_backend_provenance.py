@@ -28,7 +28,7 @@ _GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
 
 _PLUGIN = '''
-from agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_backends.base import LoginBackend
 
 
 class Backend(LoginBackend):

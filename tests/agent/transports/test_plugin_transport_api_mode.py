@@ -18,8 +18,8 @@ from types import SimpleNamespace
 import pytest
 
 _PLUGIN_SOURCE = '''\
-from agent.transports import register_transport
-from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.transports import register_transport
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 from providers import register_provider
 from providers.base import ProviderProfile
 

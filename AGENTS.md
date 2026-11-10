@@ -144,7 +144,7 @@ Every former god file is a **facade** (public entry points + the names other pac
 
 | Area | Read | Covers |
 |---|---|---|
-| `hermes_agent/run_agent.py`, `agent/` | `hermes_agent/agent/AGENTS.md` | turn phases, message-flow invariants, compression, model/aux resolution, i18n |
+| `hermes_agent/run_agent.py`, `hermes_agent/agent/` | `hermes_agent/agent/AGENTS.md` | turn phases, message-flow invariants, compression, model/aux resolution, i18n |
 | `cli.py`, `hermes_cli/` | `hermes_cli/AGENTS.md` | CLI mixins, slash registry, config system, skins, `hermes update`, profiles / multiplex |
 | `hermes_agent/gateway/` | `hermes_agent/gateway/AGENTS.md` | adapters, message guards, streaming, notifications, token locks, § Profile scope |
 | `plugins/platforms/` new adapter | `hermes_agent/gateway/platforms/ADDING_A_PLATFORM.md` | step-by-step adapter guide |

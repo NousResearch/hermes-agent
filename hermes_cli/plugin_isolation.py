@@ -63,18 +63,18 @@ HOST_REMOTE_FACADES: frozenset[str] = frozenset({
 # Object-taking ctx methods and the ABC the parent checks. The host sends the object's method table
 # and the parent builds a subclass of that ABC whose methods run in the host.
 HOST_OBJECT_BASES: dict[str, str] = {
-    "register_image_gen_provider": "agent.image_gen_provider:ImageGenProvider",
-    "register_video_gen_provider": "agent.video_gen_provider:VideoGenProvider",
-    "register_web_search_provider": "agent.web_search_provider:WebSearchProvider",
-    "register_browser_provider": "agent.browser_provider:BrowserProvider",
-    "register_terminal_environment_provider": "agent.terminal_env_provider:TerminalEnvironmentProvider",
-    "register_secret_source": "agent.secret_sources.base:SecretSource",
-    "register_tts_provider": "agent.tts_provider:TTSProvider",
-    "register_transcription_provider": "agent.transcription_provider:TranscriptionProvider",
-    "register_delegation_provider": "agent.delegation_provider:DelegationProvider",
-    "register_context_engine": "agent.context_engine:ContextEngine",
-    "register_context_reference": "agent.context_references:ContextReferenceProvider",
-    "register_memory_provider": "agent.memory_provider:MemoryProvider",
+    "register_image_gen_provider": "hermes_agent.agent.image_gen_provider:ImageGenProvider",
+    "register_video_gen_provider": "hermes_agent.agent.video_gen_provider:VideoGenProvider",
+    "register_web_search_provider": "hermes_agent.agent.web_search_provider:WebSearchProvider",
+    "register_browser_provider": "hermes_agent.agent.browser_provider:BrowserProvider",
+    "register_terminal_environment_provider": "hermes_agent.agent.terminal_env_provider:TerminalEnvironmentProvider",
+    "register_secret_source": "hermes_agent.agent.secret_sources.base:SecretSource",
+    "register_tts_provider": "hermes_agent.agent.tts_provider:TTSProvider",
+    "register_transcription_provider": "hermes_agent.agent.transcription_provider:TranscriptionProvider",
+    "register_delegation_provider": "hermes_agent.agent.delegation_provider:DelegationProvider",
+    "register_context_engine": "hermes_agent.agent.context_engine:ContextEngine",
+    "register_context_reference": "hermes_agent.agent.context_references:ContextReferenceProvider",
+    "register_memory_provider": "hermes_agent.agent.memory_provider:MemoryProvider",
 }
 
 # Hooks whose payload carries live handles (the gateway runner, the session store). In the host the

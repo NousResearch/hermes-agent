@@ -53,7 +53,7 @@ def _caller_summary(limit=8):
     frame, frames = sys._getframe(2), []
     while frame is not None and len(frames) < limit:
         module = frame.f_globals.get('__name__', '?')
-        if not module.startswith('agent.runtime_session_'):
+        if not module.startswith('hermes_agent.agent.runtime_session_'):
             frames.append(f'{module}:{frame.f_code.co_name}:{frame.f_lineno}')
         frame = frame.f_back
     return ' <- '.join(frames)

@@ -668,7 +668,7 @@ class TestUserInstalledProviderDiscovery:
         plugin_dir = tmp_path / "plugins" / name
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "__init__.py").write_text(
-            "from agent.memory_provider import MemoryProvider\n"
+            "from hermes_agent.agent.memory_provider import MemoryProvider\n"
             "class MyProvider(MemoryProvider):\n"
             f"    @property\n"
             f"    def name(self): return {name!r}\n"
@@ -704,7 +704,7 @@ class TestUserInstalledProviderDiscovery:
         plugin_dir = tmp_path / "plugins" / "byterover"
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "__init__.py").write_text(
-            "from agent.memory_provider import MemoryProvider\n"
+            "from hermes_agent.agent.memory_provider import MemoryProvider\n"
             "class Fake(MemoryProvider):\n"
             "    @property\n"
             "    def name(self): return 'byterover-FAKE'\n"
@@ -742,7 +742,7 @@ class TestUserInstalledProviderCli:
         plugin_dir = tmp_path / "plugins" / name
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "__init__.py").write_text(
-            "from agent.memory_provider import MemoryProvider\n"
+            "from hermes_agent.agent.memory_provider import MemoryProvider\n"
             "from . import config\n"
             "class MyProvider(MemoryProvider):\n"
             "    @property\n"
@@ -847,7 +847,7 @@ class TestEntryPointMemoryProviderDiscovery:
             )
         module_file.write_text(
             "from pathlib import Path\n"
-            "from agent.memory_provider import MemoryProvider\n"
+            "from hermes_agent.agent.memory_provider import MemoryProvider\n"
             "class Provider(MemoryProvider):\n"
             "    @property\n"
             "    def name(self): return 'entrymem'\n"

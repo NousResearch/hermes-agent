@@ -434,7 +434,7 @@ class _ProviderCollector:
         drop_hooks()
         self.provider = host.load_instance(
             provider_dir, module_name=module_name, capture="register_memory_provider",
-            base_ref="agent.memory_provider:MemoryProvider", ctx=self, before_reload=drop_hooks)
+            base_ref="hermes_agent.agent.memory_provider:MemoryProvider", ctx=self, before_reload=drop_hooks)
         return self.provider
 
     def register_hook(self, hook_name, callback, *, hold_stream=False):

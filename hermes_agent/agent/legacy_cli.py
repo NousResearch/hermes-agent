@@ -3,7 +3,7 @@
 A console script calls its target with no arguments, so pointing ``hermes-agent``
 at ``hermes_agent.run_agent.main`` ignored argv entirely: ``--help``, ``--version`` and a bare
 invocation all ran a real model turn with ``main()``'s built-in demo query, and
-``--query`` was silently dropped (#54648). ``python hermes_agent/run_agent.py`` routes through
+``--query`` was silently dropped (#54648). ``python -m hermes_agent.run_agent`` routes through
 here too, so the installer's PATH launcher behaves the same way.
 """
 
@@ -61,7 +61,7 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Callable[..., object
     """Parse ``argv`` (default ``sys.argv[1:]``) and run one query through ``hermes_agent.run_agent.main``.
 
     Metadata flags and a bare invocation never reach the runner; ``run`` lets
-    ``python hermes_agent/run_agent.py`` pass its own ``main`` instead of importing the module twice.
+    ``python -m hermes_agent.run_agent`` pass its own ``main`` instead of importing the module twice.
     """
     parser = _build_parser()
     args = parser.parse_args(argv)

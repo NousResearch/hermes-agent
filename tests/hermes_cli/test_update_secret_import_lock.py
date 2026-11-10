@@ -20,6 +20,10 @@ from hermes_cli import env_loader
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+BITWARDEN_MODULES = {
+    "agent.secret_sources.bitwarden",
+    "hermes_agent.agent.secret_sources.bitwarden",
+}
 
 
 def _probe_startup_modules(
@@ -77,7 +81,7 @@ def test_complete_update_dispatch_does_not_import_cryptography(tmp_path):
         run_main=True,
     )
 
-    assert "agent.secret_sources.bitwarden" not in loaded
+    assert not BITWARDEN_MODULES & loaded
     assert not any(
         name == "cryptography" or name.startswith("cryptography.") for name in loaded
     )
@@ -86,7 +90,7 @@ def test_complete_update_dispatch_does_not_import_cryptography(tmp_path):
 def test_normal_startup_still_loads_enabled_external_secret_source(tmp_path):
     loaded = _probe_startup_modules(tmp_path, ["hermes", "chat"])
 
-    assert "agent.secret_sources.bitwarden" in loaded
+    assert BITWARDEN_MODULES & loaded
 
 
 @pytest.mark.parametrize("external_secrets", [True, False])

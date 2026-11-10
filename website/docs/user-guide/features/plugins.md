@@ -1182,16 +1182,21 @@ def _arguments(parser):
 
 
 def _session_to_resume(args):
+    wanted = args.resume or args.title
+    if not wanted:
+        return None  # a new chat: a new profile has no session store to open yet
     from hermes_constants import get_hermes_home
     from hermes_state import SessionDB
 
     db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
     try:
-        if args.resume:
-            return db.resolve_session_id(args.resume)  # the summary prints a short id
-        return db.resolve_session_by_title(args.title) if args.title else None
+        # The summary prints a short id: resolve_session_id takes a unique prefix.
+        found = db.resolve_session_id(args.resume) if args.resume else db.resolve_session_by_title(args.title)
     finally:
         db.close()
+    if not found:
+        raise SystemExit(f"hermes my-client: no session matches {wanted!r}")
+    return found
 
 
 def _run_chat(args):

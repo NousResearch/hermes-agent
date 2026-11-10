@@ -221,3 +221,105 @@ def test_severity_at_or_above_uses_threshold_semantics():
     assert kd.severity_at_or_above("error", "critical") is False
     assert kd.severity_at_or_above("mystery", "warning") is False
     assert kd.severity_at_or_above("warning", None) is True
+
+
+# ---------------------------------------------------------------------------
+# prose_phantom_refs — the advisory flag needs an acknowledgement path
+#
+# The flag is appended *after* the completion that raises it commits, so the
+# only events that can clear it are later ones. Ids that legitimately live on
+# another copy of the board (the review-gate matrix's fixture card, a card a
+# reviewer filed in a probe copy) land here too, so a comment must clear the
+# advisory warning; the error-level hallucinated_cards flag must not.
+# ---------------------------------------------------------------------------
+
+
+_PHANTOM_FLAG = {"phantom_refs": ["t_dead0001"], "source": "completion_summary"}
+
+
+def _prose_kinds(task, events):
+    return [d.kind for d in kd.compute_task_diagnostics(task, events, [], now=10_000)]
+
+
+def test_prose_phantom_refs_fires_on_unknown_id_in_completion():
+    """A post-completion flag on a done card is a warning with a comment action —
+    nothing else can acknowledge it, because the completing event predates it."""
+    events = [
+        _event("created", ts=100),
+        _event("completed", ts=200),
+        _event("suspected_hallucinated_references", ts=201, **_PHANTOM_FLAG),
+    ]
+    diags = [d for d in kd.compute_task_diagnostics(_task(status="done"), events, [], now=10_000)
+             if d.kind == "prose_phantom_refs"]
+    assert len(diags) == 1
+    d = diags[0]
+    assert d.severity == "warning"
+    assert d.data["phantom_refs"] == ["t_dead0001"]
+    assert d.actions[0].kind == "comment"
+    assert d.actions[0].suggested is True
+
+
+def test_prose_phantom_refs_clears_on_a_comment():
+    """The acknowledgement path: a comment after the flag clears the advisory."""
+    events = [
+        _event("completed", ts=200),
+        _event("suspected_hallucinated_references", ts=201, **_PHANTOM_FLAG),
+        _event("commented", ts=300),
+    ]
+    assert "prose_phantom_refs" not in _prose_kinds(_task(status="done"), events)
+
+
+def test_prose_phantom_refs_still_clears_on_a_later_completion():
+    """The pre-existing clearing event keeps working: widening the set must not
+    drop ``completed``/``edited``."""
+    for kind in ("completed", "edited"):
+        events = [
+            _event("suspected_hallucinated_references", ts=200, **_PHANTOM_FLAG),
+            _event(kind, ts=300),
+        ]
+        assert "prose_phantom_refs" not in _prose_kinds(_task(status="done"), events)
+
+
+def test_hallucinated_cards_is_not_cleared_by_a_comment():
+    """A refused completion is an error, not an advisory: a comment must not
+    launder it — only a later completion/edit resolves it."""
+    blocked = _event("completion_blocked_hallucination", ts=200,
+                     phantom_cards=["t_deadbeef1"], reason="hallucinated_cards")
+    commented = _event("commented", ts=300)
+    task = _task(status="ready")
+    assert "hallucinated_cards" in _prose_kinds(task, [blocked, commented])
+    assert "hallucinated_cards" not in _prose_kinds(task, [blocked, _event("completed", ts=300)])
+
+
+def test_prose_phantom_ack_round_trips_through_db(kanban_home):
+    """End to end on a real DB: ``complete_task`` appends the flag post-commit,
+    the rule surfaces it on the sqlite Row objects the CLI/dashboard pass, and a
+    comment written by :func:`kb.add_comment` clears it."""
+    conn = kbc.connect()
+    try:
+        task_id = kb.create_task(conn, title="prose phantom", assignee="w")
+
+        def kinds():
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            events = list(conn.execute(
+                "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,),
+            ).fetchall())
+            runs = list(conn.execute(
+                "SELECT * FROM task_runs WHERE task_id = ? ORDER BY id", (task_id,),
+            ).fetchall())
+            return [(d.kind, d) for d in kd.compute_task_diagnostics(row, events, runs)]
+
+        assert kb.complete_task(
+            conn, task_id, summary="done; nothing filed, the probe board holds t_deadbeef1",
+        )
+        found = dict(kinds())
+        assert "prose_phantom_refs" in found
+        assert found["prose_phantom_refs"].data["phantom_refs"] == ["t_deadbeef1"]
+
+        kb.add_comment(
+            conn, task_id, "w",
+            "t_deadbeef1 is a scratch-fixture id on another board copy, not this board",
+        )
+        assert "prose_phantom_refs" not in dict(kinds())
+    finally:
+        conn.close()

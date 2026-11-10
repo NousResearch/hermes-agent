@@ -48,6 +48,7 @@ export function SimplifiedAgentList({
   const colors = useStore($profileColors)
   const registry = useStore($connectionsRegistry)
   const activeConnection = useStore($activeConnectionId)
+  const activeProfile = useStore($activeGatewayProfile)
   const [pending, setPending] = useState<string | null>(null)
   useFleetRoster(true)
   const { agents: sorted, owner, sessionsByAgent } = agents
@@ -183,6 +184,7 @@ export function SimplifiedAgentList({
                           <span aria-hidden />
                         )}
                         <RowButton
+                          aria-current={selected && agent.profile === activeProfile ? 'true' : undefined}
                           aria-label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}
                           className="flex min-h-7.5 min-w-0 items-center gap-2 rounded-sm px-2 text-left text-xs font-medium hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
                           disabled={pending !== null}

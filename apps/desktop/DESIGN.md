@@ -77,6 +77,12 @@ Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
 replace the foreground transcript or steal focus.
 
+The redesigned Sessions sidebar groups the active gateway and its agents in
+one rounded, neutral-tinted surface: a stronger header above a subtler body.
+The active agent name uses the primary foreground; other names use secondary
+foreground. Agent emphasis is scoped to the active connection and profile, not
+the display name. These highlights do not change expansion or navigation.
+
 ## Surfaces & elevation
 
 Floating panels (base `Dialog`, route overlays, boot/install/update surfaces,

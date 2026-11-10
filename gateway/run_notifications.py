@@ -240,7 +240,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 result = await adapter.send_private_notice(source.chat_id, source.user_id, content, metadata=metadata)
                 if getattr(result, "success", False):
                     return
-        await adapter.send(source.chat_id, content, metadata=metadata)
+        from gateway.session_parallel import record_delivery
+        await record_delivery(self, source, adapter.send(source.chat_id, content, metadata=metadata))
 
     async def _deliver_media_from_response(
         self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None
@@ -294,20 +295,24 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     images.extend(url_images)
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    from gateway.session_parallel import record_delivery
+                    await record_delivery(self, event.source, adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta))
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        from gateway.session_parallel import record_delivery
+                        await record_delivery(self, event.source, adapter.send_voice(
                             chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
-                        )
+                        ))
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
+                        from gateway.session_parallel import record_delivery
+                        await record_delivery(self, event.source, adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta))
                     else:
-                        await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                        from gateway.session_parallel import record_delivery
+                        await record_delivery(self, event.source, adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta))
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
@@ -675,6 +680,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         Prefer the persisted session-store origin; the active foreground event causes cross-topic bleed.
         """
         from gateway.run import _parse_session_key
+        import re
         session_key = str(evt.get("session_key") or "").strip()
         derived = {}
         if session_key:
@@ -689,6 +695,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             cached_source = detached_live_source(self, session_key) or self._get_cached_session_source(session_key)
             if cached_source is not None:
                 return cached_source
+            if re.search(r':work:[a-f0-9]{64}$', session_key):
+                logger.warning('Deferring parallel work notification without its authoritative origin: %s', session_key)
+                return None
             derived = _parse_session_key(session_key) or {}
         profile = derived.get("profile")
         platform_name = str(evt.get("platform") or derived.get("platform") or "").strip().lower()
@@ -1762,9 +1771,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if adapter and chat_id:
             with _log_suppressed(logging.ERROR, "Watcher delivery error: %s"):
                 send_meta = {"thread_id": thread_id} if thread_id else None
-                await adapter.send(
+                from gateway.session_parallel import record_delivery
+                await record_delivery(self, source, adapter.send(
                     chat_id, message_text, metadata=_non_conversational_metadata(send_meta, platform=platform_name),
-                )
+                ))
 
     @staticmethod
     def _build_process_completion_event(watcher: dict, session, session_id: str) -> dict:

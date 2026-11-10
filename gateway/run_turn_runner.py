@@ -294,6 +294,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                             (lambda: ctx.progress_queue.put(("__reset__",))) if ctx.progress_queue is not None else None
                         ),
                         on_before_finalize=pause_typing_before_finalize,
+                        on_receipt=lambda result: self._record_work_receipt(result),
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
@@ -587,6 +588,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
 
     async def _send_shared_clarify(self, entry, **kwargs):
         result = await self._ctx._status_adapter.send_clarify(**kwargs)
+        self._record_work_receipt(result, prompt=self._work_prompt('clarify', kwargs['clarify_id']))
         if self._approval_owner is not None and result.success:
             authority, session_id, generation = self._approval_owner
             from gateway import local_viewer_events
@@ -657,7 +659,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         def _text_fallback():
             """Schedule the plain-text prompt when the native card cannot render; None = no such path."""
             coro = text_fallback_coro(ctx._status_adapter, **send_kwargs)
-            return None if coro is None else self._schedule(coro, "Clarify text fallback failed to schedule")
+            return None if coro is None else self._schedule(self._capture_work_receipt(
+                coro, prompt=self._work_prompt('clarify', clarify_id)), "Clarify text fallback failed to schedule")
         entry = clarify_mod.register(
             clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
             multi_select=bool(multi_select),
@@ -750,11 +753,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if _renders_exec_approval_buttons(type(adapter)):
             try:
                 fut = self._schedule(
-                    adapter.send_exec_approval(
+                    self._capture_work_receipt(adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
                         description=desc, metadata=ctx._status_thread_metadata,
                         request_id=approval_data.get("request_id"), **flags,
-                    ),
+                    ), prompt=self._work_prompt('approval', approval_data.get('request_id'))),
                     "send_exec_approval scheduling error",
                 )
                 if fut is None:
@@ -824,7 +827,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
             fut = self._schedule(
-                adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
+                self._capture_work_receipt(adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)),
+                                           prompt=self._work_prompt('approval', approval_data.get('request_id'))),
+                "Approval text-send scheduling error",
             )
             if fut is not None:
                 res = fut.result(timeout=15)

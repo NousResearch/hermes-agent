@@ -237,6 +237,8 @@ class StreamTransportMixin:
 
     def _track_preview_ids_from_result(self, result: Any) -> None:
         """Record the primary id plus any continuation ids from an oversized split."""
+        if self._on_receipt is not None:
+            self._on_receipt(result)
         raw = getattr(result, "raw_response", None) or {}
         raw_ids = raw.get("message_ids") if isinstance(raw, dict) else None
         for mid in (getattr(result, "message_id", None),
@@ -288,6 +290,7 @@ class StreamTransportMixin:
             return False
         if not getattr(result, "success", False):
             return False
+        self._track_preview_ids_from_result(result)
         new_message_id = getattr(result, "message_id", None)
         # Best-effort preview cleanup; never delete the message just sent.
         await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")

@@ -110,6 +110,25 @@ def _read_text(path: str, limit: int = 65536) -> str:
         return ""
 
 
+@functools.cache
+def kernel_boot_identity() -> tuple[str, str]:
+    """Linux machine + kernel boot IDs, or empty values when either is unprovable.
+
+    Unlike a PID, timeout or wall-clock boot time, a changed kernel UUID proves
+    local processes from the earlier boot cannot still execute. Container-only
+    restarts deliberately keep the same kernel identity.
+    """
+    if os_family() != 'linux':
+        return '', ''
+    import uuid
+    machine = _read_text('/etc/machine-id').strip()
+    boot = _read_text('/proc/sys/kernel/random/boot_id').strip()
+    try:
+        return uuid.UUID(machine).hex, str(uuid.UUID(boot))
+    except ValueError:
+        return '', ''
+
+
 def _winreg_str(subkey: str, name: str) -> str:
     import winreg
 

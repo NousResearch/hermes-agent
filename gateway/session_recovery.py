@@ -164,6 +164,9 @@ class SessionRecoveryMixin:
         """Query one durable gateway session row. Scoped Slack lookups disable SessionDB's
         platform/chat/user fallback: that tuple has no workspace id and could revive another team's
         session; the caller performs one explicit exact lookup of the old unscoped key instead."""
+        from gateway.session_parallel import binding_of
+        if binding_of(source) is not None:
+            allow_peer_fallback = False  # a sibling's shared peer is not this work's transcript
         return self._peer_row(
             self._db_for_key(session_key), source=source.platform.value, session_key=session_key,
             user_id=source.user_id,

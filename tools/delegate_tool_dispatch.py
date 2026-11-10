@@ -173,7 +173,8 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         from tools.delegate_tool_prefix_gate import PrefixCacheGate
         gate = PrefixCacheGate.for_children(batch.children, _get_prefix_stagger_seconds())
         run = batch.run_child if gate is None else partial(_run_gated, batch, gate, honor_parent_interrupt)
-        futures = {executor.submit(contextvars.copy_context().run, run, i, t, child): i for i, t, child in batch.children}
+        from agent.physical_work import submit_work
+        futures = {submit_work(executor, contextvars.copy_context().run, run, i, t, child): i for i, t, child in batch.children}
         pending = set(futures)
         while pending:
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:

@@ -238,6 +238,10 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
                 'route': runner.session_store._generate_session_key(event.source),
                 'event': deepcopy({name: getattr(event, name) for name in _EVENT_FIELDS}),
                 'timestamp': event.timestamp.isoformat()}
+    from dataclasses import asdict
+    from gateway.session_parallel import binding_of
+    if binding := binding_of(event.source):
+        envelope['parallel_work'] = asdict(binding)
     if event.source.platform.value == 'webhook':
         from gateway.platforms.webhook_delivery import route_digest, snapshot_destination
         adapter = runner._adapter_for_source(event.source)
@@ -299,6 +303,9 @@ def restore_native_source(payload, runner=None):
         runner = runner or callback_runner()
         if runner is not None:
             restore_provenance(runner, source, envelope['provenance'])
+    if 'parallel_work' in envelope:
+        from gateway.session_parallel import restore_binding
+        restore_binding(source, envelope['parallel_work'])
     return source
 
 

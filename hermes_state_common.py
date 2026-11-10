@@ -594,6 +594,28 @@ CREATE TABLE IF NOT EXISTS runtime_epoch (
     epoch INTEGER NOT NULL CHECK (epoch > 0),
     instance_id TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS parallel_work (
+    work_id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    route TEXT NOT NULL UNIQUE,
+    requester TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS parallel_work_anchors (
+    scope TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    work_id TEXT NOT NULL REFERENCES parallel_work(work_id) ON DELETE CASCADE,
+    prompt_kind TEXT,
+    prompt_id TEXT,
+    prompt_generation INTEGER,
+    PRIMARY KEY(scope, message_id)
+);
+CREATE TABLE IF NOT EXISTS parallel_work_physical (
+    token TEXT PRIMARY KEY,
+    work_id TEXT NOT NULL REFERENCES parallel_work(work_id) ON DELETE CASCADE,
+    machine_id TEXT NOT NULL DEFAULT '',
+    boot_id TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS session_admissions (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     admission_id TEXT NOT NULL UNIQUE,

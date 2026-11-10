@@ -605,10 +605,13 @@ class SessionAuthority:
         if (scope := _lease_scope.get()) is not None:
             scope.write_started = True
         native_write_started.set(True)  # shielded from here: a cancelled caller may still commit
+        from gateway.session_parallel import admission_guard
+        guard = admission_guard(self.runner, source, ref.session_id, request_id,
+                                session_retry_admission.compose(rewrite, self._admission_gate(fence)))
         return await tracked_write(self, partial(
             self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,
             request_id=request_id, payload=payload,
-            authorize=session_retry_admission.compose(rewrite, self._admission_gate(fence)),
+            authorize=guard,
             raw=getattr(event, 'raw_message', None)),
             then=admitted, ordered=True, after=lambda _receipt: self._schedule_admitted(committed[0]))
 
@@ -1462,6 +1465,9 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     epoch = await asyncio.to_thread(begin_runtime_epoch, db, instance_id=instance_id)
     # Hot-serve builds a profile while the loop serves the others: both writes stay off it.
     await asyncio.to_thread(recover_session_inputs, db, epoch=epoch)
+    from hermes_platform.host.facts import kernel_boot_identity
+    from hermes_state_parallel import reconcile_rebooted_physical
+    await asyncio.to_thread(reconcile_rebooted_physical, db, *kernel_boot_identity())
     # A lost automation turn has nobody to resolve it: it settles interrupted before any FIFO runs.
     from gateway.session_unattended_unknown import settle_recovered_unattended
     await asyncio.to_thread(settle_recovered_unattended, db, epoch)

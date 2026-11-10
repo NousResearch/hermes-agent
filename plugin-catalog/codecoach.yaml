@@ -1,0 +1,31 @@
+name: codecoach
+repo: https://github.com/heyitstony97-max/codecoach
+sha: "fccd39f557adb8dd6bd433af5b2bd9077cf5b042"
+title: CodeCoach
+description: "Learn C or Python by building a real program one small step at a time: every example really ran in a sandbox, every pass is a real test, and hints never give away the answer. Disclosure — Code exercises run inside a bubblewrap sandbox (no network, host filesystem not mounted); if you turn on `allow_unsandboxed_code` on a machine without bwrap, learner and model-submitted C/Python code runs directly on your host as your user with no Hermes approval prompt. Imported .txt/.md/.pdf files (any non-hidden path you or the agent names) are sent to your configured model."
+maintainer: heyitstony97-max
+tier: community
+category: desktop
+version: "1.0.0"
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/heyitstony97-max/codecoach
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/heyitstony97-max/codecoach/fccd39f557adb8dd6bd433af5b2bd9077cf5b042/docs/img/project-step.png
+  - https://raw.githubusercontent.com/heyitstony97-max/codecoach/fccd39f557adb8dd6bd433af5b2bd9077cf5b042/docs/img/project-run.png
+platforms: [linux]
+known_issues:
+  - "Running code needs bubblewrap (bwrap), and gcc for C. Without bwrap CodeCoach refuses to run any code and the Projects page says what to install; that is why the entry lists Linux only."
+  - "On a local 27B model the first lesson of a project appears 2 to 3 minutes after Start; later steps are built in the background while you code."
+capabilities:
+  provides_tools:
+    - codecoach_import
+    - codecoach_next
+    - codecoach_answer
+    - codecoach_hint
+    - codecoach_progress
+    - codecoach_report
+    - codecoach_ask
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

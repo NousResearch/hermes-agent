@@ -26,8 +26,13 @@ def register_rpc(self, name: str, handler: Callable[..., Any]) -> PluginRegistra
 
 
 def emit_to_session(self, session_id: str, event: str, payload: Optional[dict[str, Any]] = None) -> bool:
-    """Push ``plugin.<plugin_id>.<event>`` to the viewers of ``session_id`` only."""
-    return emit_plugin_session_event(self.plugin_id, session_id, event, payload)
+    """Push ``plugin.<plugin_id>.<event>`` to the viewers of ``session_id`` only.
+
+    Looked up in the plugin's own profile (its manager's home), never the ambient scope: a thread the
+    plugin started carries none, and on a multiplexed gateway that would read as the launch profile."""
+    from hermes_cli.plugins_loader import _plugin_home_scope
+    with _plugin_home_scope(self._manager.home_path):
+        return emit_plugin_session_event(self.plugin_id, session_id, event, payload)
 
 
 def plugin_rpc_handler(method: Any) -> Optional[Callable[..., Any]]:

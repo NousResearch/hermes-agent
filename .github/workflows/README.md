@@ -86,9 +86,13 @@ this.
 The pattern repeats across files:
 
 - **Pull requests:** one run per PR per workflow. A new push cancels the older
-  run (`cancel-in-progress: true` only for `pull_request`).
-- **Pushes to `main` and dispatches:** keyed on `github.ref`. They are never
-  cancelled by a newer commit in `ci.yaml`. Some children (`tests.yml`,
+  run (`cancel-in-progress: true` for `pull_request`).
+- **Dispatches on a side branch** (`refs/heads/*` other than `main`): keyed on
+  `github.ref`; in `ci.yaml` a newer dispatch on the same branch cancels the
+  older run, so a re-dispatch never queues behind a stale one.
+- **Pushes to `main`, dispatches on `main` or a tag:** keyed on `github.ref`.
+  `ci.yaml` does not set `cancel-in-progress` for them (GitHub may still
+  replace a *pending* run in the group). Some children (`tests.yml`,
   `lint.yml`, …) still use `cancel-in-progress` for non-tag refs.
 - **Release / `commit`-pinned calls:** keyed on `github.run_id`, never
   cancelled. A parent rerun cannot kill a child that is still running.
@@ -261,6 +265,21 @@ ones. OSV runs on a weekly schedule.
   the lane-bound consumers `tests`, `tests-os`, `e2e-desktop-update`,
   `remote-backends` and `catalog-tests`: when `detect` selected their lane,
   they must succeed.
+- **Cancelled duplicate (PR runs, `--allow-superseded`):** GitHub can deliver
+  one push as two `pull_request` runs (seen when the push also dismisses a
+  stale review). The per-PR concurrency group cancels the older copy, and
+  branch protection requires the gate of every check suite on the SHA. A gate
+  whose only non-successes are `cancelled` jobs passes when the Actions API
+  shows a later-started (`run_started_at`, then higher run id) live or
+  successful run of the same workflow, event, head SHA, head branch and head
+  repository; that run's gate is the real verdict. (Fork runs carry no
+  `pull_requests`, so the PR itself can't be matched; the same branch opened
+  against two bases is not told apart.) Delegation only points forward, so the
+  last run to start never passes by delegation, and a rerun never delegates
+  (attempt 2 of a fork run approved after `action_required` counts as its
+  first). A run cancelled while still waiting in the concurrency group never
+  runs its gate at all, so it leaves no gate behind. Otherwise it fails as
+  before.
 - **Release mode:** every required job must be `success`. Only the deferred
   `e2e-desktop` may skip. The PR-only checks are steps of `repo-guards`, which
   runs on every event, so they never reach the gate as a skip.

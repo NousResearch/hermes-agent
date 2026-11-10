@@ -31,12 +31,15 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from hermes_cli._startup_fast import project_root_str
+
+PROJECT_ROOT = Path(project_root_str())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_cli.config import load_config
+from hermes_cli.web_server_profiles import _CONFIG_MUTATION_LOCK
 from hermes_cli.version_info import get_version_info
 
 try:
@@ -674,12 +677,6 @@ def get_install_id() -> Optional[str]:
     return _shared_get_install_id(cache=_INSTALL_ID_CACHE)
 
 
-# Serializes config.yaml read-modify-write cycles for handlers on worker threads
-# (asyncio.to_thread): config.py's _CONFIG_LOCK covers each load/save call, not
-# the span between them, so two off-loop updates could drop each other's writes.
-# RLock so nested helpers that also take it can't self-deadlock.
-_CONFIG_MUTATION_LOCK = threading.RLock()
-
 # A finished ``gateway-restart`` child does not mean the gateway is back (it
 # exits once the restart is handed off), so in-flight reuse stops coalescing
 # exactly when a stale frontend re-fires every few seconds (#89034: 77 restarts,
@@ -807,6 +804,9 @@ from hermes_cli.web_routers import (
     delegation as _delegation_routes,
     webapp_access as _webapp_access_routes,
     ui_preferences as _ui_preferences_routes,
+    gateway_connections as _gateway_connections_routes,
+    gateway_connections_reach as _gateway_connections_reach_routes,
+    webapp_relay_proxy as _webapp_relay_proxy_routes,
 )
 
 import hermes_cli.web_routers.desktop_plugins as _desktop_plugin_routes
@@ -849,10 +849,14 @@ app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 app.include_router(_webapp_routes.router)
+# The saved-connections proxy checks its surface per request (WebSocket routes take no Request).
+app.include_router(_webapp_relay_proxy_routes.router)
 app.include_router(_shared_metrics_routes.router)
 app.include_router(_delegation_routes.router)
 app.include_router(_webapp_access_routes.router, dependencies=[_Depends(_route_on("web_access"))])
 app.include_router(_ui_preferences_routes.router, dependencies=[_Depends(_route_on("ui_preferences"))])
+app.include_router(_gateway_connections_routes.router, dependencies=[_Depends(_route_on("gateway_connections"))])
+app.include_router(_gateway_connections_reach_routes.router, dependencies=[_Depends(_route_on("gateway_connections"))])
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
@@ -1403,7 +1407,14 @@ def _run_serve(serve, config, host: str, port: int) -> None:
         raise
 
 
-def start_server(
+def start_server(*args, **kwargs):
+    """Run the dashboard/serve backend; no lazy install may prompt on an inherited TTY (#125607)."""
+    from pm.extras import suppress_interactive_install_prompts
+    with suppress_interactive_install_prompts():
+        return _start_server_runtime(*args, **kwargs)
+
+
+def _start_server_runtime(
     host: str = "127.0.0.1",
     port: int = 9119,
     open_browser: bool = True,

@@ -1,0 +1,30 @@
+name: shopmate
+repo: https://github.com/DaveTech2/Shopmate
+sha: 0f7eb1cafbeb2719b73126358735951539929470
+title: Shopmate
+description: "Personal shopper agent: finds products with live Google Shopping prices and photos (SerpAPI, or a labelled demo catalog without a key), quotes delivery to the customer's location with doorstep or pickup-stop options, and on an explicit yes takes payment by Paystack (NGN, GHS, KES, ZAR, USD, XOF, EGP, RWF) or crypto via NOWPayments, verifying it before marking the order paid. 14 tools plus the shopmate:shopping skill. Disclosure — payments plugin: on checkout it creates Paystack payment links and NOWPayments crypto invoices on the operator's own merchant keys (the `confirm=true` step is a model-set flag, not a Hermes approval; no money moves until the customer pays); network calls to serpapi.com, api.paystack.co, api.nowpayments.io, open.er-api.com, nominatim.openstreetmap.org, ipapi.co (auto-locate is on by default and sends the host's public IP when a conversation has no saved location) and maps.app.goo.gl (expanding shared Maps short links); carts, saved locations and orders (customer name, email, phone and address) are stored in the plugin data directory; API keys are optional and read through Hermes's secret scope."
+maintainer: DaveTech2
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/DaveTech2/Shopmate#readme
+version: "0.4.1"
+capabilities:
+  provides_tools:
+    - shop_categories
+    - shop_search
+    - set_location
+    - pickup_stops
+    - shop_product
+    - cart_add
+    - cart_update
+    - cart_remove
+    - cart_view
+    - cart_clear
+    - delivery_quote
+    - payment_options
+    - checkout
+    - order_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,21 @@
+name: glasses-platform
+repo: https://github.com/100yenadmin/glasses-platform
+sha: dbc797b6cc4063261c5be298288e599322913b98
+title: Hermes Glasses
+description: "Your own Hermes agent on your smart glasses: it sees what you see, answers by voice, and taps you on the lens when something is due. A gateway platform that adds glasses as a channel over one WebSocket, with short spoken-style replies to the device that asked, camera photos (requested when you ask what you are looking at, or taken by the agent with its glasses_capture_photo tool), streamed replies for heads-up displays, approval and clarify prompts on every device, and cron and heartbeat pushes to all of a user's devices, queued in memory while they are offline. Speaks the bridge protocol of the community hermes-glasses iOS app (v0) and a richer v1; a simulator is included. Disclosure — opens an unencrypted WebSocket listener on all interfaces (port 8765, /voice) that refuses to start without a device token (use Tailscale or a TLS proxy off your home network); each device token gets full agent chat as its user, bypassing the gateway allowlist, including answering approval prompts and clarify questions; the agent can take a glasses camera photo at any time during a glasses conversation and photos are also captured automatically on visual keywords (auto_capture: off disables that), saved in Hermes's image cache; the device's new-session button answers Hermes's /new confirmation for that user; no outbound network calls, shell commands or telemetry."
+maintainer: 100yenadmin
+tier: community
+category: platform
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/100yenadmin/glasses-platform#readme
+version: "0.1.2"
+image: https://raw.githubusercontent.com/100yenadmin/glasses-platform/b8db447a8302c76dcde1d9ab55ae88ddb55d06ef/docs/media/banner.png
+platforms: []
+known_issues:
+  - "Preview: proven against the bundled simulator and a real Hermes gateway with real models; not yet tested on real glasses or with the iOS app on a device."
+  - "Needs a companion app that speaks its WebSocket protocol, such as the community hermes-glasses iOS app in bridge mode."
+capabilities:
+  provides_tools: [glasses_capture_photo]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

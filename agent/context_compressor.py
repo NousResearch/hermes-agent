@@ -24,7 +24,6 @@ from agent.auxiliary_client import (
     CODEX_STREAM_STALL_MARKER,
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
-    _is_connection_error,
     _message_field,
     aux_interrupt_protection,
     call_llm,
@@ -42,13 +41,13 @@ from agent.context_compressor_tail import (
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
-from agent.error_classifier import FailoverReason, classify_api_error
+from agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
-    strip_opaque_replay_items,
 )
+from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
 from agent.context_default_record import last_defaulted_context_length
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
@@ -220,7 +219,7 @@ def _is_refusal_response(response: Any, content: str) -> bool:
     return bool(_response_refusal_text(response)) or _is_summary_refusal(content)
 
 
-def _is_summary_access_or_quota_error(exc: Exception) -> bool:
+def _is_summary_access_or_quota_error(exc: Exception, verdict: Optional[ClassifiedError] = None) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
 
     # No active secret scope is a missing-credential failure of our own making;
@@ -236,7 +235,7 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
         UnscopedSecretError = ()  # type: ignore[assignment]
     if UnscopedSecretError and isinstance(exc, UnscopedSecretError):
         return True
-    reason = classify_api_error(exc).reason
+    reason = (verdict or classify_api_error(exc)).reason
     if reason is FailoverReason.rate_limit:
         return False
     if reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
@@ -717,7 +716,7 @@ class _SummaryFailureKind:
         return next((reason for flagged, reason in reasons if flagged), "failed")
 
 
-def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
+def _classify_summary_failure(e: Exception, verdict: ClassifiedError) -> _SummaryFailureKind:
     """Classify a summary-call exception by status code / message shape.
 
     A "refusal content" RuntimeError (prose or provider ``refusal`` field) deliberately rides the
@@ -738,8 +737,8 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         # Malformed/non-JSON bodies (HTML 502 as application/json) surface as JSONDecodeError or
         # APIResponseValidationError "expecting value"; treat as transient.
         json_decode=isinstance(e, json.JSONDecodeError) or "expecting value" in err,
-        # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
-        streaming_closed=_is_connection_error(e) and not stall,
+        # Premature-close / dead-network errors (a TLS certificate failure too): short cooldown, then abort.
+        streaming_closed=(verdict.reason is FailoverReason.ssl_cert_verification or bool(verdict.error_context.get("transport"))) and not stall,
         # HTTP 200 with empty body from a degraded provider, the sibling "no usable response" shapes from
         # _validate_llm_response, and Gemini's prompt block of the summary request (once empty content).
         empty_content=getattr(e, "code", None) == "gemini_prompt_blocked" or (isinstance(e, RuntimeError) and any(
@@ -749,7 +748,7 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         )),
         # Truncated summary: one main-model retry, then ABORT preserving the session.
         truncated=isinstance(e, RuntimeError) and _TRUNCATED_SUMMARY_MARKER in err,
-        overloaded=classify_api_error(e).reason is FailoverReason.overloaded
+        overloaded=verdict.reason is FailoverReason.overloaded
         or any(marker in err for marker in ("overloaded", "at capacity", "over capacity")),
     )
 
@@ -1302,9 +1301,9 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     text_tokens = estimate_tokens_rough(content) if isinstance(content, str) else _content_length_for_budget(content) // _CHARS_PER_TOKEN
     tokens = text_tokens + 10  # +10 for role/key overhead
     tokens += sum(estimate_tokens_rough(str(tc)) for tc in msg.get("tool_calls") or [] if isinstance(tc, dict))
-    for key in _ALWAYS_REPLAYED_BUDGET_KEYS:
-        # Opaque ciphertext is priced only by real usage (same rule as the preflight estimator).
+    for key in _ALWAYS_REPLAYED_BUDGET_KEYS:  # ciphertext priced by provider count, never bytes (#125920)
         tokens += _serialized_length_for_budget(strip_opaque_replay_items(msg.get(key))) // _CHARS_PER_TOKEN
+    tokens += codex_reasoning_replay_tokens(msg)
     if not charge_stale_thinking:
         return tokens
     # Wire ships at most ONE generic thinking key (reasoning_content wins);
@@ -3136,7 +3135,8 @@ class ContextCompressor(
         charge_all_thinking = self._stale_thinking_on_wire()
         native_budget = self._native_anthropic_budget()
         if native_budget:
-            return lambda i: native_budget(messages[i])
+            costs = native_budget(messages)
+            return lambda i: costs[i]
         return lambda i: _estimate_msg_budget_tokens(messages[i], charge_all_thinking or i == newest_asst_idx)
 
     def _prune_boundary(
@@ -4103,8 +4103,9 @@ Write only the summary body. Do not include any preamble or prefix."""
                 _SUMMARY_FAILURE_COOLDOWN_SECONDS,
             )
             return None
-        kind = _classify_summary_failure(e)
-        access_error = _is_summary_access_or_quota_error(e)
+        verdict = classify_api_error(e)
+        kind = _classify_summary_failure(e, verdict)
+        access_error = _is_summary_access_or_quota_error(e, verdict)
         # Auth/permission/quota failures are not retryable: flag so compress() preserves the
         # session. A distinct summary_model still gets the one-shot main-model fallback.
         if access_error:
@@ -4820,9 +4821,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
 
         last_visible_role = _last_template_visible_role(compressed)
+        from agent.message_metadata import MESSAGE_UID, mark_inflight_restatement, message_uid_or_none, record_absorbed_message, typed_ask_fields
         if self._has_merged_inflight_replay(inflight):
-            # Never copy a summary carrier (its metadata marks it synthetic): restate as a plain user row.
-            replay = {"role": "user", "content": task_text}
+            # Never copy a summary carrier (its metadata marks it synthetic): a plain user row, keeping only the ask stamp.
+            replay = {"role": "user", "content": task_text, "display_metadata": typed_ask_fields(inflight)}
         else:
             replay = _fresh_compaction_message_copy(inflight)
         replay.pop(_COMPACTION_TAIL_MARKER, None)
@@ -4848,7 +4850,6 @@ Write only the summary body. Do not include any preamble or prefix."""
         # occurrence of it. When the original survived in the protected head,
         # retaining it gives the durable transcript two active rows with the
         # same message_uid and renders the request twice after reload.
-        from agent.message_metadata import MESSAGE_UID, mark_inflight_restatement, message_uid_or_none, record_absorbed_message
         mark_inflight_restatement(replay)  # only the standalone row: the merged layout is already a summary
 
         if replay_uid := message_uid_or_none(replay):
@@ -4947,28 +4948,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             return False
 
     def _native_anthropic_budget(self):
-        """Per-message tail budget on a preserved-thinking native Anthropic route, else None. That route
-        replays exactly the projected carriers minus this session's rejected signatures — what the
-        preflight estimate prices — never the canonical ``reasoning`` keys."""
-        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
-
-        if (getattr(self, "api_mode", "") or "") != "anthropic_messages" or not native_anthropic_preserves_prior_thinking(
-            getattr(self, "base_url", ""), getattr(self, "model", "")
-        ):
-            return None
-        from agent.anthropic_thinking_replay import session_rejected_thinking, strip_rejected_thinking
-        from agent.message_sanitization import native_anthropic_accounting_projection
-
-        rejected = session_rejected_thinking(self, getattr(self, "_session_db", None), getattr(self, "_session_id", ""))
-
-        def budget(msg: dict[str, Any]) -> int:
-            request_copy = dict(msg)
-            if rejected:
-                strip_rejected_thinking(request_copy, rejected)
-            (projected,), readable = native_anthropic_accounting_projection([request_copy])
-            return _estimate_msg_budget_tokens(projected) + sum(estimate_tokens_rough(text) for text in readable)
-
-        return budget
+        """Tail prices on a preserved-thinking native Anthropic route, else None (``context_compressor_tail``)."""
+        from agent.context_compressor_tail import native_anthropic_tail_prices
+        return native_anthropic_tail_prices(self)
 
     def _find_tail_cut_by_tokens(
         self, messages: list[dict[str, Any]], head_end: int, token_budget: int | None = None,

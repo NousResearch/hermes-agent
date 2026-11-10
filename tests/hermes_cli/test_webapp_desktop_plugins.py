@@ -70,6 +70,18 @@ def test_webapp_loads_the_app_level_plugins_folder_whole(webapp, hermes_root):
     assert json.loads(marker.json()["text"]) == {"package": "big-pkg"}
 
 
+def test_webapp_serves_a_standalone_plugins_install_origin(webapp, hermes_root):
+    # The loader reads it to match the catalog card; without the route the Webapp's card keeps "Install".
+    folder = _install(hermes_root, "accent-picker", "export default { id: 'accent' }")
+    origin = {"catalogName": "accent-picker", "repo": "https://github.com/x/y", "sha": "a" * 40}
+    (folder / ".hermes-origin.json").write_text(json.dumps(origin), encoding="utf-8")
+
+    read = webapp.get("/api/desktop-plugins/read", params={"path": str(folder.resolve() / ".hermes-origin.json")})
+
+    assert read.status_code == 200
+    assert json.loads(read.json()["text"]) == origin
+
+
 def test_webapp_reads_nothing_but_plugin_entries_and_markers(webapp, hermes_root):
     folder = _install(hermes_root, "notes", "export default {}")
     (folder / "secrets.txt").write_text("token", encoding="utf-8")
@@ -115,7 +127,7 @@ def test_a_linked_plugin_folder_loads_like_native_desktop(webapp, hermes_root, t
     assert webapp.get("/api/desktop-plugins/read", params={"path": str(link / "notes.txt")}).status_code == 404
 
 
-@pytest.mark.parametrize("entry", ["plugin.js", ".hermes-package.json"])
+@pytest.mark.parametrize("entry", ["plugin.js", ".hermes-package.json", ".hermes-origin.json"])
 def test_a_linked_entry_file_is_never_followed(webapp, hermes_root, entry):
     # Only folders are followed: a linked entry could name `.env`, which /api/fs refuses to read.
     (hermes_root / ".env").write_text("OPENAI_API_KEY=sk-test", encoding="utf-8")

@@ -57,6 +57,10 @@ Subagent reads require the current parent's live object ancestry, not merely equ
 session IDs; tails are bounded to 16 KiB. Missing or retired children return
 `available: false`. These are reads, not child steering or stop controls.
 
+`subagent.list` rows also carry `child_session_id`: the child's own stored session
+(`null` until it has one). A child's stored transcript, live or finished, is
+`session.transcript` with `subagent_id` (see [Gateway local sessions](./gateway-local-sessions.md)).
+
 Managed-worker policies return `unsupported_projection` for process/subagent reads:
 the owner's process-local registry cannot truthfully describe another interpreter.
 Control mutations (`session.control`), process mutations and subagent steering are
@@ -134,7 +138,8 @@ dispatch, native CLI/Desktop/ACP attach) resolves its authority from the routed
 profile's home, so recovery, FIFO order and exactly-once settlement hold per profile
 and a secondary's rows never land in the default's ledger. A served secondary's
 clients discover the multiplexer through the default home's descriptor
-(`served_profiles`) and attach to its control socket with their own `profile_id`.
+(`served_profiles`) and attach to its control socket with their own `profile_id`
+([Local control socket](#local-control-socket-public-client-contract)).
 
 ## Shared authority local slash commands
 
@@ -244,6 +249,35 @@ from the standalone protocol. Both parameters and successful results are checked
 ACP and finite CLI viewers detach with an explicit recovery notice if an accepted
 input becomes blocked behind an unknown execution. The accepted input remains
 queued: resolve the lost turn before continuing, rather than resending it.
+
+## Private control request workers
+
+The POSIX control listener owns two executors of its own: one for hosted producer
+requests and one for every other control request. A `hosted-producer` operation
+synchronously calls back through `hosted-attest` and `identify`, then waits for
+canonical session work on the owner loop, so its callbacks must not queue behind
+the producers waiting for them, and neither pool occupies the loop's default
+executor used by session work. Each pool's worker count is the
+`ThreadPoolExecutor` default and its queue is unbounded: enough simultaneous
+slow requests of one kind still queue behind each other; the split only removes
+the producer-to-callback dependency cycle. Request scheduling does not replace
+the existing peer and envelope checks.
+
+Stopping the listener cancels queued work and retires both pools. Already-running
+handlers retain their existing RPC deadlines; a restarted listener gets fresh
+pools. The Windows named-pipe listener retains its native worker lifecycle.
+
+Hosted-room recovery handles persisted stops before policy checkpoint work. An
+uncertain canonical attempt is resolved only for a saved Stop naming the exact
+task and execution generation, and only when the member reports it inactive.
+The member's canonical queue must acknowledge cancellation before the room task
+is marked cancelled; an inactive `unknown` attempt is not itself an acknowledgement.
+Resolving it reports the outcome the member's queue actually committed: when that
+owner still held the turn's finished answer (only its settlement write failed),
+the answer is committed and the room settles and publishes it once instead of
+cancelling the task. Discard of an indeterminate attempt follows the same rule.
+This preserves history and lets the next group input proceed without replaying
+the lost turn.
 
 ## Private native HTTP authentication
 
@@ -376,7 +410,12 @@ existing reservation or starting owner is waited for, not replaced. When absence
 is established, an existing service takes precedence; an unmanaged process is
 requested only when no service is found. This command never installs or rewrites
 service definitions, enables linger, elevates privileges, or clears update fences.
-Ambiguous or inaccessible ownership fails closed.
+One exception: on Windows it re-renders the gateway launcher scripts (the `.vbs` the
+Scheduled Task and the Startup entry run, and the `.cmd` beside it) when they are
+the installer's own for the home whose gateway serves the profile (the multiplexer
+root for a served profile) and the interpreter they name no longer exists, as after
+a Microsoft Store update. The task and the Startup entry themselves
+are left unchanged. Ambiguous or inaccessible ownership fails closed.
 
 Before requesting a service start, `ensure` checks its canonical profile directory
 and execution account, not just its unit/task name. Linux uses the manager's
@@ -435,6 +474,111 @@ Service persistence is separately opt-in during setup. Imports and noninteractiv
 setup do not install a missing service based on an imported preference. See
 [optional service installation](#optional-service-installation).
 
+## Local control socket (public client contract)
+
+Each gateway listens on a local control socket. It is how a client on the same machine finds the
+gateway that serves its profile and gets a WebSocket ticket, without spawning Python. Three verbs
+are public: `identify` (read-only), `resolve-profile` and the public form of `session-ticket`.
+Every other verb, the `session-ticket` parameters `subject` and `scope`, and purposes other than
+`interactive` are internal to Hermes (Desktop, the dashboard, the updater) and may change.
+Starting or recovering a gateway stays `hermes gateway attach --start` / `--recover`
+([below](#hermes-gateway-attach)).
+
+**Envelope.** One connection carries one request: one UTF-8 JSON object plus `\n` (at most
+64 KiB), then one reply line (at most 512 KiB), then the server closes. A request is
+`{"protocol": 1, "id": 1, "verb": "<verb>", "params": {...}}`, with `protocol` the integer `1`
+and `id` an integer or a string of at most 128 characters. `resolve-profile` and `session-ticket`
+refuse any other top-level key and `params` that is not an object. The reply is `{"ok": true, "protocol": 1, "id": <your id>, "result": {...}}` or
+`{"ok": false, "protocol": 1, "id": <your id>, "error": "<text>"}`. The `error` strings below are
+part of the contract.
+
+**`resolve-profile`** takes `{"home": "<absolute profile home>"}` and answers with the verdict
+`hermes gateway attach` discovery gives for that home (a verdict that is not attachable is still
+`ok: true`). Send a plain absolute path: one with a `.` or `..` component, a repeated separator or
+a trailing separator is refused as invalid parameters. Symlinks in it are resolved.
+
+| Field | Meaning |
+|---|---|
+| `resolve_protocol` | `1` |
+| `state`, `reason_code`, `detail` | The discovery verdict: `ready`, `draining`, `starting`, `absent`, `inaccessible`, `incompatible` or `conflict`, with its bounded code and remedy |
+| `attachable` | `ready`, or a restart's after-turn wait (`draining`/`restart_wait`) |
+| `update_fenced` | An update owns the install. `hermes gateway attach --start` would not return this verdict as it is, so a client that wants to start goes through the CLI |
+| `control` | `self` (this is the profile's own socket), `host` (the multiplexer answering for a profile it may serve) or `null` (a home outside this gateway's root) |
+| `message` | When not attachable: the `gateway <state>: <reason>` lines `attach --json` prints |
+| `endpoint` | `null`, or `attach --json`'s `endpoint` plus `ws_url`, `ws_protocol` and `ticket_protocol_prefix` |
+| `install_code_sha` | The commit installed on disk now. When it differs from `endpoint.code_sha`, the gateway outlived `hermes update` |
+
+**`session-ticket`, public form:** `{"profile_id": <endpoint.profile_id>, "instance_id":
+<endpoint.instance_id>, "purpose": "interactive"}`, plus `"restart_wait": "refuse"` for machine
+pollers. Send `profile_id` exactly as `resolve-profile` returned it (the gateway compares it as a
+string) on the same socket that answered. Check that the reply echoes `profile_id`, `instance_id`
+and `runtime_protocol: 1`; its `ticket` expires after `expires_in_seconds` (30). Then dial
+`ws_url` with the subprotocols `[ws_protocol, ticket_protocol_prefix + ticket]`, from loopback,
+with no `Origin` header, and check that the server selected `ws_protocol`. Mint a new ticket for
+every connection and reconnect.
+
+| Case | `error` |
+|---|---|
+| `resolve-profile`: bad envelope | `PermissionError: invalid resolve envelope` |
+| `resolve-profile`: `params` other than one absolute `home` | `PermissionError: invalid resolve parameters` |
+| A gateway older than the verb | `unknown verb: 'resolve-profile'` (plus `supported_verbs`): use `hermes gateway attach --json` |
+| Peer not verified as your OS user | `PermissionError: authenticated runtime bootstrap unavailable` |
+| `session-ticket`: bad envelope | `PermissionError: invalid bootstrap envelope` |
+| Missing or unknown parameters, `restart_wait` other than `refuse` | `PermissionError: invalid bootstrap parameters` (an owner older than `restart_wait` answers this too: retry once without it) |
+| The owner restarted since `resolve-profile` | `PermissionError: stale runtime instance`: resolve again |
+| A profile this gateway does not serve, an unknown purpose | `PermissionError: bootstrap binding rejected` |
+| 1024 tickets outstanding | `PermissionError: bootstrap capacity exhausted` |
+
+**Rendezvous.** The socket node and its `gateway.sock.path` pointer are the only files in a
+profile home a client touches. They are a rendezvous, not Hermes data: read no lock, state file or
+config. Try the profile home, then, for a named profile `<root>/profiles/<name>` (name not starting
+with `.`), the root, whose multiplexer answers for the profiles it serves. For each candidate,
+canonicalized like Python's `Path.resolve`:
+
+- **POSIX (Linux, macOS):** the candidate must be a directory you own that others cannot write
+  (a group-writable home needs the group-privacy check Python does: use the CLI). Use
+  `<candidate>/gateway.sock` when it exists; it must be a socket you own with no group or other
+  access. Otherwise read `<candidate>/gateway.sock.path` (opened without following links: a
+  regular file you own, mode 0600, at most 4096 bytes). Its target must be absolute and end in
+  `hermes-gw-<sha256 of the canonical home, 16 hex>/control.sock`, inside a 0700 directory you own,
+  and be a 0600 socket you own. Do not compare the target's temp root with your own `TMPDIR`: a
+  gateway started by **launchd** has its own `$TMPDIR` (`/var/folders/…/T/`), and the pointer is
+  the authority. No node, or a refused connection (a crashed gateway's leftover), means try the
+  next candidate. Any other failed check is a refusal: stop, do not try the next candidate.
+- **Windows:** the pipe `\\.\pipe\hermes-gateway-<sha256 of the normcased canonical home, 16 hex>`.
+  A client must verify that the pipe server runs as your SID before trusting its answer; a client
+  that cannot (Node) uses `hermes gateway attach --json` on every connect.
+
+Ask the first candidate that answers `resolve-profile`. A `profile_mismatch` from the profile's
+own socket means try the next candidate; otherwise that answer is the verdict, and that socket
+mints the ticket. No candidate answering means no gateway runs.
+
+**Security model.** The boundary is the same OS user on the same machine; the socket is never a
+TCP port. On POSIX the socket is 0600 in a home others cannot write (or in a 0700 private
+directory), and the gateway reads the kernel's peer uid on every connection (`SO_PEERCRED` on
+Linux, `getpeereid` on macOS): it mints tickets only for its own uid, and none at all where the
+platform reports no peer credentials. On Windows the pipe has a protected DACL that grants only
+the user's SID, refuses remote clients, claims the first instance, and requires the client's token
+SID to equal the gateway's. A ticket is 256 random bits, stored only as a hash, valid for 30
+seconds, single-use, bound to the gateway instance, the profile and the purpose, and revoked when
+the gateway stops. It authenticates `/api/ws` only. The gateway never logs it; a client must not
+log it, the subprotocol list or the CLI's stdout, or put it in a URL. `resolve-profile` carries no
+credential and answers any peer that can connect, like `identify`. It checks the home against
+the answering gateway's root before it looks inside it: the resolved home must be the gateway's
+own home or a named profile `<root>/profiles/<name>` directly under it, so a symlink that leads
+out of the root resolves outside and is refused. Only then does it follow a private overlay's
+`gateway.lock` link, and only to an owner home that passes the same check. Any other home gets
+`profile_mismatch` with `control: null`, and nothing outside the root is opened, created or
+changed (the only calls that reach outside are resolving the home's path and an in-root
+`gateway.lock` link). For a home it accepts it does what discovery does: an unserved profile's
+same-user lock left at mode 0644 by an older Hermes is narrowed to 0600, as
+`hermes gateway attach` does. None of this protects against code already running as your user,
+or root.
+
+The contract is pinned by `apps/shared/src/node/control-socket.vectors.json`: request and reply
+pairs a client in any language can replay, run against the gateway by
+`tests/gateway/test_control_socket_vectors.py`.
+
 ## `hermes gateway attach`
 
 `hermes gateway attach --json` is the public attach step for a local client that has its own UI
@@ -477,6 +621,8 @@ SID-checked named pipe on Windows; a profile served by the default multiplexer g
 from the multiplexer's control socket. It is single-use, bound to the caller's profile and that
 owner's `instance_id`, and expires after 30 seconds. `attach` prints it to stdout for the calling
 process only; it never logs it. Run `attach` again for each new connection and each reconnect.
+A client that speaks the control socket itself gets the same verdict and ticket without the spawn:
+see [Local control socket](#local-control-socket-public-client-contract).
 
 With no owner to attach, the JSON adds `message` and has no `url` or `ticket`. `message` is
 the verdict Ink shows: `gateway <state>: <reason_code>` (`not ready` when there is no code),
@@ -628,7 +774,6 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── bluebubbles/adapter.py  # Apple iMessage via BlueBubbles macOS server
 ├── weixin/adapter.py       # Weixin (personal WeChat) via iLink Bot API
 ├── qqbot/                  # QQ Bot (Tencent QQ) via Official API v2
-├── yuanbao/adapter.py      # Yuanbao (Tencent) DM/group WebSocket
 └── …                       # google_chat, ntfy, photon, raft, simplex, …
 
 gateway/platforms/                  # core base + HTTP ingress adapters

@@ -491,8 +491,6 @@ gateway:
     root_new: "To start a new parallel Hermes chat, open the All Messages topic at the top of this bot interface and send any message there. Telegram will create a new topic for it.\n\nEach topic is an independent Hermes session. Use /new inside an existing topic only if you want to replace that topic's current session."
     new_header: "Started a new Hermes session in this topic.\n\nTip: for parallel work, open All Messages and send a message there to create a separate topic instead of using /new here. /new replaces the session attached to the current topic."
     help: "/topic — enable multi-session DM mode (one bot, many parallel chats)\n\nUsage:\n  /topic             Enable topic mode, or show status if already on\n  /topic help        Show this message\n  /topic off         Disable topic mode and clear topic bindings\n  /topic <id>        Inside a topic: restore a previous session by ID\n\nHow it works:\n1. Run /topic once in this DM — Hermes checks BotFather Threads\n   Settings are enabled and flips on multi-session mode.\n2. Tap All Messages at the top of the bot and send any message.\n   Telegram creates a new topic for that message; each topic is\n   an independent Hermes session (fresh history, fresh context).\n3. The root DM becomes a system lobby — send /topic, /status,\n   /help, /usage there. Normal prompts go in a topic.\n4. /new inside a topic resets just that topic's session.\n5. /topic <id> inside a topic restores an old session into it."
-    system_topic_name: "System"
-    system_topic_intro: "System topic for Hermes commands and status."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Could not determine chat ID."
     mode_not_enabled: "Multi-session topic mode is not currently enabled for this chat."
@@ -629,6 +627,8 @@ gateway:
     action_always: "Always Allow"
     action_deny: "Deny"
     deadline: "If you don't answer within {window} it will NOT run."
+    not_requester: "Only {requester} can answer this approval."
+    not_requester_admins_only: "Only an admin or a listed approver can answer this approval."
     text_choice_once: "Reply `{prefix}approve` to run it once"
     text_choice_session: "`{prefix}approve session` to allow this pattern for the rest of this session"
     text_choice_always: "`{prefix}approve always` to allow it permanently"
@@ -636,6 +636,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", or {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Preview shortened: the full command ({total} characters) is in the message above."
+    truncated_deny_only: "Preview shortened ({total} characters) and the full command could not be shown here, so only Deny is offered. Review it in the CLI or Desktop app."
+    text_prompt_deny_only: "The full approval prompt is too long for this platform, so only Deny is offered. Review it in the CLI or Desktop app."
   notify:
     media_kind:
       audio: "audio"
@@ -1018,9 +1021,6 @@ platform:
     approved: "✅ Approved."
     denied: "❌ Denied."
     approval_expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
-  yuanbao:
-    slow_response_notice: "This task is a bit involved — still working on it, please hang on..."
-    owner_command_denied: "⚠️ {command} is only available to the creator in private chat mode"
   shared:
     truncated_suffix: "\n...(truncated)"
     unknown: "unknown"

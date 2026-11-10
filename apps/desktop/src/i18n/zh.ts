@@ -28,6 +28,11 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+  gatewayGroupOpen: {
+    opening: "正在打开群聊…",
+    lookupFailed: "无法在网关上查找此群组，请重试。",
+    missing: "此群聊已不存在。"
+  },
   catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',
@@ -1987,15 +1992,20 @@ export const zhOverrides = {
       browserRealProfile: {
         label: '使用我的真实浏览器配置文件',
         description:
-          '将默认浏览器的登录信息和 Cookie 复制到托管快照中，代理使用该快照进行浏览。绝不会直接打开你的真实配置文件。将应用于新会话。',
+          '将默认浏览器的登录信息和 Cookie 复制到托管快照中，代理使用该快照进行浏览，应用内浏览器也会用它们登录。绝不会直接打开你的真实配置文件。将应用于新会话。',
         enabledTitle: '真实配置文件浏览：已开启',
         enabledMessage: '新会话将使用默认浏览器配置文件的快照进行浏览。',
         disabledTitle: '真实配置文件浏览：已关闭',
-        disabledMessage: '配置文件快照将被删除；新会话使用干净的浏览器。',
+        disabledMessage: '配置文件快照将被删除，应用内浏览器也会退出这些登录；新会话使用干净的浏览器。',
         failedSave: '无法保存真实配置文件设置',
+        reimportSignins: '重新导入登录信息',
+        signinsImportedTitle: '应用内浏览器登录',
+        signinsImported: count => `已使用浏览器配置文件中的 ${count} 个 Cookie 登录应用内浏览器。`,
+        signinsRemote: '此后端运行在另一台机器上，因此不会将其浏览器配置文件导入应用内浏览器。',
+        signinsFailed: '无法将登录信息导入应用内浏览器',
         prompt: {
           title: '让网站保持登录状态',
-          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，网站打开时即已登录。',
+          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，无论是代理还是应用内浏览器，网站打开时即已登录。',
           bulletSnapshot: 'Cookie 和登录信息会复制到托管快照中。',
           bulletLiveProfile: '绝不会直接打开你的真实浏览器配置文件。',
           bulletLocal: '所有数据都不会离开这台电脑。',

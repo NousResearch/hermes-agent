@@ -45,7 +45,8 @@ class ProviderError(Exception):
 
 
 class InvalidCodeError(Exception):
-    """OAuth callback ``code``/``state`` failed validation. Middleware -> HTTP 400."""
+    """A code, state or token failed validation (not an outage): the OAuth callback answers 400,
+    ``verify_session`` returns ``None``."""
 
 
 class InvalidCredentialsError(Exception):
@@ -58,19 +59,25 @@ class RefreshExpiredError(Exception):
     rejects it."""
 
 
+# PyJWKClient.get_signing_key's message when the (refetched) JWKS has no key for the token's kid.
+_JWKS_KID_MISS = "Unable to find a signing key that matches"
+
+
 def classify_jwks_lookup_error(exc: BaseException) -> Exception:
     """Map a ``PyJWKClient.get_signing_key_from_jwt`` failure to the protocol. Only a genuine
     transport failure (``PyJWKClientConnectionError``, or an unexpected JWKS shape) is a
     :class:`ProviderError` (503, never forces logout). A non-JWT bearer (``DecodeError``), a JWKS
-    with no key for this ``kid`` (``PyJWKSetError``) or any other invalid token is simply not
+    with no usable key or no key for this ``kid``, or any other invalid token is simply not
     verifiable by this provider -> :class:`InvalidCodeError` (``verify_session`` returns ``None``).
     Folding "cannot parse" into "cannot reach" once made every opaque bearer a fast 503.
 
     * ``jwt.DecodeError`` — the bearer is not a JWT at all (an opaque peer key, a legacy session token,
     garbage). #94558: hosted agents answered every non-JWT bearer with a fast 503 ``Auth provider 'nous'
     unreachable`` even though Portal was healthy, because "cannot parse" and "cannot reach" were folded into
-    one branch. * ``jwt.PyJWKSetError`` — the JWKS was fetched fine but holds no key for this token's
-    ``kid`` (rotated/foreign key).
+    one branch. * ``jwt.PyJWKSetError`` — the JWKS was fetched fine but holds no usable keys. * A bare
+    ``PyJWKClientError`` "Unable to find a signing key that matches" — the JWKS was fetched (and
+    refetched) fine but has no key for this token's ``kid`` (rotated/foreign key). PyJWT raises it
+    without a subclass, so the message prefix is the only discriminator.
     """
     try:
         import jwt
@@ -80,7 +87,8 @@ def classify_jwks_lookup_error(exc: BaseException) -> Exception:
     # parents.
     if isinstance(exc, jwt.PyJWKClientConnectionError):
         return ProviderError(f"JWKS lookup failed: {exc}")
-    if isinstance(exc, (jwt.DecodeError, jwt.PyJWKSetError)):
+    if isinstance(exc, (jwt.DecodeError, jwt.PyJWKSetError)) or (
+            isinstance(exc, jwt.PyJWKClientError) and str(exc).startswith(_JWKS_KID_MISS)):
         return InvalidCodeError(f"token not verifiable by this provider: {exc}")
     if isinstance(exc, jwt.PyJWKClientError):
         return ProviderError(f"JWKS lookup failed: {exc}")

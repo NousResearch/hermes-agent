@@ -487,8 +487,6 @@ gateway:
     root_new: "Um einen neuen parallelen Hermes-Chat zu starten, öffnen Sie oben in dieser Bot-Oberfläche das Thema „Alle Nachrichten“ und senden dort eine beliebige Nachricht. Telegram erstellt dafür ein neues Thema.\n\nJedes Thema ist eine eigenständige Hermes-Sitzung. Verwenden Sie /new in einem bestehenden Thema nur, wenn Sie dessen aktuelle Sitzung ersetzen möchten."
     new_header: "Neue Hermes-Sitzung in diesem Thema gestartet.\n\nTipp: Für paralleles Arbeiten öffnen Sie „Alle Nachrichten“ und senden dort eine Nachricht, um ein separates Thema zu erstellen, statt hier /new zu verwenden. /new ersetzt die an das aktuelle Thema gebundene Sitzung."
     help: "/topic — Multi-Sitzungs-Modus für Direktnachrichten aktivieren (ein Bot, viele parallele Chats)\n\nVerwendung:\n  /topic             Themenmodus aktivieren oder Status anzeigen, falls bereits an\n  /topic help        Diese Nachricht anzeigen\n  /topic off         Themenmodus deaktivieren und Themen-Bindungen löschen\n  /topic <id>        In einem Thema: frühere Sitzung per ID wiederherstellen\n\nSo funktioniert es:\n1. Führen Sie /topic einmal in dieser Direktnachricht aus — Hermes prüft, ob die\n   BotFather-Threads-Einstellungen aktiviert sind, und schaltet den Multi-Sitzungs-Modus ein.\n2. Tippen Sie oben im Bot auf „Alle Nachrichten“ und senden Sie eine beliebige Nachricht.\n   Telegram erstellt dafür ein neues Thema; jedes Thema ist eine\n   eigenständige Hermes-Sitzung (neuer Verlauf, neuer Kontext).\n3. Die Haupt-Direktnachricht wird zur System-Lobby — senden Sie dort /topic, /status,\n   /help, /usage. Normale Prompts gehören in ein Thema.\n4. /new in einem Thema setzt nur die Sitzung dieses Themas zurück.\n5. /topic <id> in einem Thema stellt dort eine alte Sitzung wieder her."
-    system_topic_name: "System"
-    system_topic_intro: "System-Thema für Hermes-Befehle und Status."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Chat-ID konnte nicht ermittelt werden."
     mode_not_enabled: "Der Multi-Sitzungs-Themenmodus ist für diesen Chat derzeit nicht aktiviert."
@@ -625,6 +623,8 @@ gateway:
     action_always: "Immer erlauben"
     action_deny: "Ablehnen"
     deadline: "Wenn Sie nicht innerhalb von {window} antworten, wird er NICHT ausgeführt."
+    not_requester: "Nur {requester} kann diese Freigabe beantworten."
+    not_requester_admins_only: "Nur ein Admin oder eine gelistete freigebende Person kann diese Freigabe beantworten."
     text_choice_once: "Antworten Sie mit `{prefix}approve`, um ihn einmalig auszuführen"
     text_choice_session: "`{prefix}approve session`, um dieses Muster für den Rest dieser Sitzung zu erlauben"
     text_choice_always: "`{prefix}approve always`, um ihn dauerhaft zu erlauben"
@@ -632,6 +632,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", oder {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Vorschau gekürzt: Der vollständige Befehl ({total} Zeichen) steht in der Nachricht darüber."
+    truncated_deny_only: "Vorschau gekürzt ({total} Zeichen) und der vollständige Befehl konnte hier nicht angezeigt werden, daher ist nur Ablehnen möglich. Prüfe ihn in der CLI oder der Desktop-App."
+    text_prompt_deny_only: "Die vollständige Freigabeanfrage ist für diese Plattform zu lang, daher ist nur Ablehnen möglich. Prüfe sie in der CLI oder der Desktop-App."
   notify:
     media_kind:
       audio: "Audio"
@@ -974,9 +977,6 @@ platform:
     approved: "✅ Genehmigt."
     denied: "❌ Abgelehnt."
     approval_expired: "⌛ Genehmigung abgelaufen — Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
-  yuanbao:
-    slow_response_notice: "Diese Aufgabe ist etwas aufwendiger — ich arbeite noch daran, bitte einen Moment Geduld..."
-    owner_command_denied: "⚠️ {command} ist im privaten Chatmodus nur für den Ersteller verfügbar"
   shared:
     truncated_suffix: "\n...(gekürzt)"
     unknown: "unbekannt"
@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Nur ein autorisierter Matrix-Benutzer kann diese Steuerelemente verwenden."
       not_requester: "Nur der Benutzer, der diese Aktion angefordert hat, kann diese Steuerelemente verwenden."
   feishu:
+    clarify:
+      title: "Hermes benötigt Ihre Eingabe"
+      other: "✏️ Eigene Antwort"
+      awaiting_typed: "Warte auf eingegebene Antwort von {user}…"
+    picker:
+      apply_error: "Fehler beim Anwenden der Auswahl: {error}"
     approval:
       action_session: "Sitzung"
       action_always: "Dauerhaft"
@@ -1474,6 +1480,8 @@ platform:
     prompt_other: "✏️ Eigene Antwort"
     prompt_expired: ⌛ Diese Abfrage wartet nicht mehr auf eine Antwort. Senden Sie Ihre Antwort als normale Nachricht.
 slash:
+  rewind:
+    description: "Zu einem früheren Prompt zurückspulen, um ihn zu bearbeiten & erneut zu senden, oder von dort abzweigen (Esc Esc)"
   approve:
     description: "Einen ausstehenden gefährlichen Befehl genehmigen"
   bg:
@@ -1701,6 +1709,20 @@ slash:
   quit:
     description: "CLI beenden (--delete entfernt zusätzlich den Sitzungsverlauf)"
 cli:
+  backtrack:
+    title: "↺ Verlauf — einen Prompt zum Bearbeiten wählen"
+    keys_hint: "Verlauf durchsuchen · ↑↓/jk scrollen · ←→/hl Prompts · ↵ bearbeiten · f abzweigen · esc zurück"
+    prime_hint: "esc erneut, um die vorige Nachricht zu bearbeiten"
+    no_previous: "Keine vorige Nachricht zum Bearbeiten."
+    editing_hint: "↺ Prompt {number} wird bearbeitet — Enter spult hierher zurück und sendet · Esc Esc bricht ab"
+    edit_cancelled: "↺ Zurückspulen abgebrochen; nichts wurde entfernt."
+    rewound: "↺ Zu Prompt {number} zurückgespult ({count} Nachricht(en) archiviert); Bearbeitung wird gesendet."
+    forked: "⑂ Vor Prompt {number} abgezweigt; die ursprüngliche Sitzung {parent} bleibt unverändert. Bearbeite den Prompt unten und drücke Enter zum Senden."
+    nothing: "(._.) Keine früheren Prompts zum Zurückspulen."
+    target_changed: "(x_x) Die Sitzung hat sich geändert, seit du Prompt {number} gewählt hast; nichts wurde entfernt. Deine Bearbeitung ist wieder im Eingabefeld."
+    invalid: "(._.) Kein Prompt {value} — wähle 1 bis {total}."
+    usage: "Verwendung: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Zurückspulen fehlgeschlagen; Verlauf wurde nicht geändert: {error}"
   modern:
     thought_for: "Nachgedacht für {seconds}s"
     thought: "Nachgedacht"
@@ -2164,6 +2186,7 @@ cli:
     images_attached_other: "📎 {count} Bilder angehängt"
     command_interrupted: "Befehl unterbrochen."
     welcome: "Willkommen bei Hermes Agent! Geben Sie Ihre Nachricht ein oder /help für Befehle."
+    vscode_images_hint: "VS Code kann hier Bilder in voller Auflösung anzeigen: aktiviere terminal.integrated.enableImages in den Einstellungen."
     activated_skills_label: "Aktivierte Skills:"
     redaction_disabled_title: "⚠  Schwärzung von Geheimnissen ist DEAKTIVIERT"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). API-Schlüssel und Tokens können im Klartext in der Chat-Ausgabe, in Sitzungs-JSONs und in Logs erscheinen. Setzen Sie {setting} in config.yaml, um sie wieder zu aktivieren."
@@ -2618,6 +2641,7 @@ cli:
     goal_turns: "⊙ Ziel {used}/{max}"
     goal: "⊙ Ziel"
     ctx_pinned: " angeheftet"
+    ctx_fallback: " Fallback"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Stash ({count} Eintrag)"
@@ -3957,3 +3981,8 @@ plan_usage:
   large_notice_limit: "Großes Modell: {name} erreicht ({resets})."
   large_notice_limit_stops: "Großes Modell: {name} erreicht ({resets}), es läuft bis dahin nicht."
   large_notice_percent: "Großes Modell: verbraucht pro Nachricht mehr von deinem Plan. Monatslimit für große Modelle: {percent} genutzt."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ In den rückgängig gemachten Turns geänderte Dateien: {files}. Führe /rollback aus, um Checkpoints aufzulisten und einen wiederherzustellen."
+    more: "+{count} weitere"

@@ -100,7 +100,7 @@ If these dependencies are damaged, run `hermes pm repair` and restart Hermes.
 For source setup, use the [PM developer workflow](../../reference/package-management.md#developer-workflow).
 Messaging and voice extras are separate requests, not implied by `all`.
 
-When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
+When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet, it builds automatically on first launch with the Node and pnpm Hermes provisions.
 
 The Chat tab is part of every `hermes dashboard` launch — the embedded browser chat pane (running the TUI over PTY/WebSocket) is always available, with no extra flag required.
 
@@ -393,8 +393,8 @@ onboards Telegram/Discord/etc. users to a paired gateway. Full parity with
 Connect Hermes to any messaging platform from the browser — full parity with
 `hermes setup gateway`. The page lists every supported channel (Telegram,
 Discord, Slack, Matrix, Mattermost, WhatsApp, Signal, BlueBubbles/iMessage,
-Email, SMS/Twilio, DingTalk, Feishu/Lark, WeCom, WeChat, QQ Bot, Yuanbao, plus
-the API server and webhook endpoints) with its live connection status.
+Email, SMS/Twilio, DingTalk, Feishu/Lark, WeCom, WeChat, QQ Bot, plus
+the API server and webhook endpoints) with its live connection status; platforms from installed plugins (Yuanbao, Home Assistant, ...) appear too.
 
 - **Configure** — open a per-platform form with exactly the fields that channel needs (bot token, app token, server URL, allowlist, etc.). Secrets render as password inputs and are stored redacted; leaving a field blank keeps the existing value. Required fields are marked and validated. A "Setup guide" link points to the platform's credential docs.
 - **Enable / disable** — toggle a channel on or off. The credential stays on disk; only the active state changes.
@@ -864,7 +864,7 @@ curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
 
 The bundled `plugins/dashboard_auth/session_token` plugin makes the **deployment session token** (`HERMES_DASHBOARD_SESSION_TOKEN`) a first-class gated-mode credential. This is the shape secret-managed deployments already provision — a single shared token (nix/agenix hands it over as a decrypted file; the Nix modules set `HERMES_DASHBOARD_SESSION_TOKEN=file:<path>` from `backend.sessionTokenFile`) that Hermes Desktop's remote-gateway **"Session token"** field presents. Without this provider, a non-loopback bind with only a provisioned token hit the fail-closed gate and pushed the operator into basic-auth or OAuth credentials the deployment never asked for.
 
-When the env var is provisioned, the provider registers automatically and `verify_session` constant-time-compares the presented credential against it. Both legs a token-mode client uses run through that seam — the REST `Authorization: Bearer` path and the `/api/ws` `?token=` upgrade credential — so one provisioned token authorizes both. There is **no browser sign-in flow**: `/login` renders a note explaining the credential channel instead of sign-in buttons, and the provider is never offered by the auto-SSO redirect.
+When the env var is provisioned, the provider registers automatically and `verify_session` constant-time-compares the presented credential against it. Both legs a token-mode client uses run through that seam — REST, where Desktop's "Session token" connection sends the token in the `X-Hermes-Session-Token` header (a bearer token in the `Authorization` header works too and wins when both are sent; only this provider's token works in the dedicated header), and the `/api/ws` `?token=` upgrade credential — so one provisioned token authorizes both. There is **no browser sign-in flow**: `/login` renders a note explaining the credential channel instead of sign-in buttons, and the provider is never offered by the auto-SSO redirect.
 
 :::warning Treat the token like a password
 The provisioned token grants full dashboard access to whoever holds it. Provision it from a secret manager (never a Nix store path), rotate by redeploying the secret — rotation invalidates every saved client copy, which surfaces as "HTTP reachable but the WebSocket fails" in Desktop until the new token is pasted in. There is no per-user identity behind it: for shared or internet-facing deployments prefer the [Nous Research](#default-provider-nous-research) or [self-hosted OIDC](#self-hosted-oidc-provider) provider.
@@ -1243,13 +1243,35 @@ Instead of the in-app setting, you can point the desktop at a backend with an en
 
 ## CORS
 
-The web server restricts CORS to localhost origins only:
+The web server grants CORS, and accepts browser WebSocket upgrades, only for its own origin: a
+loopback origin (`localhost`, `127.0.0.1`, `[::1]`) on the port the server is bound to. That is
+`http://127.0.0.1:9119` for a default `hermes dashboard`, the `--port` you chose, or the ephemeral
+port a Desktop backend binds. The packaged desktop app loads from `file://` and is not affected.
 
-- `http://localhost:9119` / `http://127.0.0.1:9119` (production)
-- `http://localhost:3000` / `http://127.0.0.1:3000`
-- `http://localhost:5173` / `http://127.0.0.1:5173` (Vite dev server)
+A backend spawned by a desktop dev build also trusts that build's own renderer (the loopback
+`HERMES_DESKTOP_DEV_SERVER` it inherits, such as an [`hgui` slot](../../developer-guide/worktree-ui-dev.md#hgui--desktop-app-from-the-worktree)
+on `5174+N`). No fixed dev-server port is trusted: pages served from any other local port, including
+Vite apps on `5173` or `5174`, get no CORS headers and their WebSocket upgrades are refused, so they
+cannot read the session token or open the terminal.
 
-If you run the server on a custom port, that origin is added automatically.
+Reached through a port forward (`ssh -L 8000:localhost:9119`, `docker -p 8080:9119`), the
+dashboard's own page still opens its WebSocket upgrades: an Origin that names exactly the host and
+port the upgrade was sent to is that page.
+
+A reverse proxy on another loopback port that rewrites `Host` to the backend's address (nginx on
+`https://localhost:8443` in front of `127.0.0.1:9119`) needs its address in `dashboard.public_url`
+(`webapp.public_url` for the Webapp). That exact origin (scheme, host and port) is then trusted
+too; other loopback ports still are not. The same rules apply on a `0.0.0.0` or `::` bind: sign-in
+cookies are `SameSite=Lax`, and browsers send them from a page on another port of the same host.
+
+A desktop dev build passes the variable to the backends it starts over SSH, and replaces a backend
+it started earlier for a different renderer URL. The sockets Desktop opens to a gateway on the same
+machine are one-use, ticketed native dials that carry no Origin, so a dev build can use a local
+gateway that is already running without restarting it, and it does not pass the variable to a
+gateway it starts (that gateway outlives the dev session). Only a connection that presents the dev
+renderer's Origin to a backend Desktop did not start (for example a remote backend you start
+yourself and reach directly) needs that backend started with `HERMES_DESKTOP_DEV_SERVER` set to the
+build's renderer URL.
 
 ## Development
 
@@ -1261,11 +1283,11 @@ hermes dashboard --no-open
 
 # Terminal 2: start the Vite dev server with HMR
 cd web/
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 ```
 
-The Vite dev server at `http://localhost:5173` proxies `/api` requests to the FastAPI backend at `http://127.0.0.1:9119`.
+The Vite dev server at `http://localhost:5173` proxies `/api` requests, WebSockets included, to the FastAPI backend at `http://127.0.0.1:9119` (set `HERMES_DASHBOARD_URL` to use another backend). It reads the session token from the backend server-side. It forwards WebSocket upgrades with their `Host` and `Origin` unchanged, so the page's Origin names the host and port it dialled and the backend admits it as same-origin without trusting port `5173`. This holds when `HERMES_DASHBOARD_URL` points at a port forward to the backend (for example `http://127.0.0.1:8000` through `ssh -L 8000:localhost:9119`). Vite's own CORS is turned off, so other local pages cannot read the token from the dev server either.
 
 The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-style components. Production builds output to `hermes_cli/web_dist/` which the FastAPI server serves as a static SPA.
 
@@ -1273,7 +1295,7 @@ The build is CPU- and memory-intensive (Vite 8's Rust-native Rolldown bundler pa
 
 ## Automatic Build on Update
 
-When you run `hermes update`, the web frontend is automatically rebuilt if `npm` is available. This keeps the dashboard in sync with code updates. If `npm` isn't installed, the update skips the frontend build and `hermes dashboard` will build it on first launch.
+When you run `hermes update`, the web frontend is automatically rebuilt with the Node and pnpm Hermes provisions. This keeps the dashboard in sync with code updates. If the update cannot provision them (for example with lazy installs disabled), it skips the frontend build and `hermes dashboard` will build it on first launch.
 
 ## Themes & plugins
 

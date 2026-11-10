@@ -1,0 +1,41 @@
+name: hermes-strudel-studio
+title: Hermes Strudel Studio
+repo: https://github.com/mojomast/poptart
+sha: 42356ddb9eff2eea2419bbd223ee159f353e4632
+subdir: integration/hermes
+description: >-
+  Local Strudel live-coding studio for Hermes: write patterns, hit Play, and
+  let the agent compose alongside you with one poptart_studio tool and a
+  Desktop SandboxedFrame pane. Disclosure — lazily starts a Node sidecar on
+  127.0.0.1 with a random per-install token in private profile plugin-data
+  (mode 0600 on POSIX; inherited user-private ACL on Windows; token never
+  reaches guests or the browser); evaluated music
+  runs only after user Play/apply in isolated frames (not an OS sandbox);
+  Strudel patterns may fetch samples/CDN over the network; audio output to
+  the host. AGPL-3.0-or-later with toaster GPL notices — review LICENSE and
+  NOTICE before redistribute. Self-contained catalog install; Node 22+ is
+  required at runtime, not npm or a local build. No self-updater.
+maintainer: mojomast
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.2.5"
+docs_url: https://github.com/mojomast/poptart/blob/42356ddb9eff2eea2419bbd223ee159f353e4632/INTEGRATION.md
+readme: true
+platforms: []
+image: https://raw.githubusercontent.com/mojomast/poptart/42356ddb9eff2eea2419bbd223ee159f353e4632/docs/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/poptart/42356ddb9eff2eea2419bbd223ee159f353e4632/docs/assets/hermes-webapp.png
+  - https://raw.githubusercontent.com/mojomast/poptart/42356ddb9eff2eea2419bbd223ee159f353e4632/docs/assets/studio-playing.png
+  - https://raw.githubusercontent.com/mojomast/poptart/42356ddb9eff2eea2419bbd223ee159f353e4632/docs/assets/layout-right-library.png
+  - https://raw.githubusercontent.com/mojomast/poptart/42356ddb9eff2eea2419bbd223ee159f353e4632/docs/assets/plugin-card.png
+known_issues:
+  - "Windows import and locking fallback are mock-tested; native Windows runtime remains unverified."
+  - "Physical speaker check and non-Chromium browsers are not fully covered in automated tests."
+  - "License stack is AGPL-3.0-or-later plus toaster GPL notices; confirm redistributability for your use."
+capabilities:
+  provides_tools:
+    - poptart_studio
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,7 +1,7 @@
 /**
  * HERMES_PYTHON for the electron contracts that drive real hermes_cli / pm code
  * (mac-sign, source-backend, checkout-source). CI exports the PM test
- * environment's interpreter; a developer's plain `npx vitest` does not, and the
+ * environment's interpreter; a developer's plain `pnpm exec vitest` does not, and the
  * PATH python3 lacks the application dependencies. Resolve the checkout's test
  * interpreter the way scripts/run_tests.sh does. Workers inherit process.env.
  */

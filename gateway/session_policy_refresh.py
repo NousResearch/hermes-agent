@@ -138,7 +138,7 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
     """Off the owner loop: the stored policy, its refresh from this profile home's files, and the generation
     it was derived at. None when the session takes no refresh or nothing moved. *adopt_only*: the adoption
     of a frozen Bot Chat alone, without the config-derived settings (a later open on the same attachment)."""
-    from gateway.run import _load_gateway_config
+    from gateway.session_local import load_profile_config
     from gateway.session_policy import SURFACES, restore_policy
     from hermes_state_local import local_receipt
     from hermes_state_mutation_prepared import policy_picks
@@ -151,7 +151,7 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
         return None
     home = Path(authority.db.db_path).resolve().parent
     terminal = {} if mcp_only or adopt_only else build_profile_terminal_scope(home)
-    live, picked = _load_gateway_config(home / 'config.yaml'), policy_picks(authority.db, session_id)
+    live, picked = load_profile_config(home), policy_picks(authority.db, session_id)
     base = old
     if not mcp_only:
         # Opening a Bot Chat an earlier build froze adopts it: it follows its profile from now on.

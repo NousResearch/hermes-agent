@@ -1,47 +1,37 @@
 #!/command/with-contenv sh
 # shellcheck shell=sh
-# Make supervise/ trees for ALL declared s6 services queryable and
-# controllable by the unprivileged hermes user (UID 10000).
+# Let the unprivileged hermes group query and control the STATIC s6-rc
+# services (dashboard, main-hermes, profile-gateways) without handing
+# it any part of the root supervision tree.
 #
-# Background (PR #30136 review item I4): the entire s6 lifecycle
-# (s6-svc, s6-svstat, s6-svwait) is dispatched as the hermes user
-# inside the container (every Hermes runtime path runs under
-# ``s6-setuidgid hermes``). But s6-supervise creates each service's
-# ``supervise/`` and top-level ``event/`` directory with mode 0700
-# owned by its effective UID — which is root, because s6-supervise
-# is spawned by s6-svscan running as PID 1. So unprivileged clients
-# get EACCES on every probe / control call against the slot.
+# s6-supervise creates each service's ``supervise/`` 0700 and its
+# control FIFO 0600, owned by its effective UID — root, because it is
+# spawned by the root s6-svscan (PID 1). Hermes runtime paths
+# (``hermes doctor`` etc.) run as hermes and need ``s6-svstat`` and
+# ``s6-svc`` against these slots, i.e. group search on ``supervise/``,
+# group read on ``supervise/status`` + ``supervise/lock`` and group
+# write on ``supervise/control``.
 #
-# Two fixes, one in each registration path:
+# Ownership stays root: root s6-supervise keeps writing ``status``
+# (via ``status.new``), ``death_tally`` and the event FIFOs, so a
+# hermes-owned or hermes-writable directory there would let the hermes
+# user redirect those root writes. The service-root ``event/`` fifodir
+# is left as s6 made it — nothing in Hermes subscribes to static
+# services' events.
 #
-# 1. For RUNTIME-registered profile gateways (created via the s6
-#    runtime register hooks in profiles.py): the Python helper
-#    ``_seed_supervise_skeleton`` pre-creates supervise/ + event/ +
-#    supervise/control owned by hermes BEFORE s6-svscanctl -a fires.
-#    s6-supervise's mkdir/mkfifo are EEXIST-safe, so it inherits our
-#    ownership and never tries to chown back to root.
-#
-# 2. For STATIC s6-rc services (dashboard, main-hermes) declared at
-#    image-build time under /etc/s6-overlay/s6-rc.d/*: these are
-#    compiled by s6-rc at boot, and s6-supervise spawns BEFORE
-#    cont-init.d gets to run — so by the time we're here, the
-#    supervise/ tree is already there as root:root 0700. We chown
-#    it here. s6-supervise will keep using the same files; it never
-#    re-asserts ownership on a running service.
+# Per-profile gateway slots are not affected: they live in their own
+# scandir under an s6-svscan that runs as hermes (see
+# 02-reconcile-profiles and the profile-gateways service).
 #
 # This script runs as root after 01-hermes-setup but before
-# 02-reconcile-profiles, so the chowns are settled before the
-# Python reconciler walks the scandir. Lexicographic ordering
-# guarantees this — the suffix is unusual because we want to slot
-# in between 01 and the existing 02-reconcile-profiles without
-# renumbering both (which would be a churn-noise patch on its own).
+# 02-reconcile-profiles. s6-rc static services' supervisors are
+# already running by now, so their supervise/ trees exist.
 
 set -eu
 
 # /run/s6-rc/servicedirs holds the live, compiled service directories
 # for every static (s6-rc) service. Symlinks under /run/service/*
-# point here. Per-service supervise/ + event/ both need hermes
-# ownership for s6-svstat etc. to work as hermes.
+# point here.
 SVC_ROOT=/run/s6-rc/servicedirs
 
 if [ ! -d "$SVC_ROOT" ]; then
@@ -53,38 +43,33 @@ for svc in "$SVC_ROOT"/*; do
     [ -d "$svc" ] || continue
     name=$(basename "$svc")
 
-    # Skip s6-overlay-internal services (they need to stay root-only;
-    # the s6rc-* helpers manage the supervision tree itself).
+    # Skip s6-overlay-internal services (they stay root-only; the
+    # s6rc-* helpers manage the supervision tree itself).
     case "$name" in
         s6rc-*|s6-linux-*)
             continue
             ;;
     esac
 
-    # supervise/ tree — needed by s6-svstat / s6-svc.
-    if [ -d "$svc/supervise" ]; then
-        chown -R hermes:hermes "$svc/supervise" 2>/dev/null || \
-            echo "[supervise-perms] could not chown $svc/supervise"
-        # 0710 = group searchable. ``s6-svstat`` only needs to openat
-        # status, not list the dir, but giving the hermes group +x is
-        # the minimum that lets group members access the contents.
-        chmod 0710 "$svc/supervise" 2>/dev/null || true
-        # supervise/control is a FIFO that s6-svc writes commands
-        # into; the hermes user needs +w. Owner is already hermes
-        # after the recursive chown above; widen perms to 0660 so
-        # ``s6-svc`` works for any member of the hermes group too.
-        if [ -p "$svc/supervise/control" ]; then
-            chmod 0660 "$svc/supervise/control" 2>/dev/null || true
-        fi
-    fi
+    sup="$svc/supervise"
+    [ -d "$sup" ] && [ ! -L "$sup" ] || continue
 
-    # Top-level event/ dir — s6-svlisten1 / s6-svwait subscribe here.
-    if [ -d "$svc/event" ]; then
-        chown hermes:hermes "$svc/event" 2>/dev/null || \
-            echo "[supervise-perms] could not chown $svc/event"
-        # Preserve s6's 03730 mode (setgid + g+rwx + sticky).
-        chmod 03730 "$svc/event" 2>/dev/null || true
+    chown root:hermes "$sup" 2>/dev/null || \
+        echo "[supervise-perms] could not chgrp $sup"
+    chmod 0750 "$sup" 2>/dev/null || true
+
+    # s6-svc writes commands into the control FIFO.
+    if [ -p "$sup/control" ]; then
+        chown root:hermes "$sup/control" 2>/dev/null || true
+        chmod 0660 "$sup/control" 2>/dev/null || true
     fi
+    # s6-svstat reads status and probes lock.
+    for f in lock status; do
+        if [ -f "$sup/$f" ] && [ ! -L "$sup/$f" ]; then
+            chown root:hermes "$sup/$f" 2>/dev/null || true
+            chmod 0640 "$sup/$f" 2>/dev/null || true
+        fi
+    done
 done
 
-echo "[supervise-perms] chowned supervise/ trees for static s6-rc services"
+echo "[supervise-perms] static s6-rc services: supervise/ readable/controllable by group hermes"

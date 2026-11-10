@@ -268,6 +268,7 @@ _CONFIG_GETTERS = {
     "personality": _cfg_get_personality,
     "reasoning": _cfg_get_reasoning,
     "fast": _cfg_get_fast,
+    "daybreak": lambda params: {"value": (_load_cfg().get("agent") or {}).get("daybreak") is True},
     "busy": lambda params: {"value": _load_busy_input_mode()},
     "approval_mode": lambda params: {"value": _load_approval_mode()},
     "approvals.mode": lambda params: {"value": _load_approval_mode()},

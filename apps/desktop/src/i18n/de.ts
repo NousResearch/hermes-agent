@@ -19,6 +19,7 @@ import { deNotifications } from './de_notifications'
 import { deOnboarding } from './de_onboarding'
 import { dePluginPreviewAccess } from './de_plugin_preview_access'
 import { dePluginUpdate } from './de_plugin_update'
+import { dePluginUpdateAll } from './de_plugin_update_all'
 import { dePreviewWeb } from './de_preview_web'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
@@ -28,6 +29,11 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
+  gatewayGroupOpen: {
+    opening: "Gruppenchat wird geöffnet…",
+    lookupFailed: "Diese Gruppe konnte auf dem Gateway nicht gefunden werden. Versuche es erneut.",
+    missing: "Dieser Gruppenchat existiert nicht mehr."
+  },
   sharedMetrics: deSharedMetrics,
   firstRun: deFirstRun,
   intro: introDe,
@@ -2386,15 +2392,20 @@ export const deOverrides = {
       browserRealProfile: {
         label: 'Mein echtes Browser-Profil verwenden',
         description:
-          'Kopiert die Anmeldungen und Cookies Ihres Standardbrowsers in einen verwalteten Schnappschuss, mit dem der Agent browst. Ihr Live-Profil wird nie direkt geöffnet. Gilt für neue Sessions.',
+          'Kopiert die Anmeldungen und Cookies Ihres Standardbrowsers in einen verwalteten Schnappschuss, mit dem der Agent browst, und meldet auch den In-App-Browser damit an. Ihr Live-Profil wird nie direkt geöffnet. Gilt für neue Sessions.',
         enabledTitle: 'Echtes Profil-Browsen aktiv',
         enabledMessage: 'Neue Sessions browsen mit einem Schnappschuss Ihres Standard-Browserprofils.',
         disabledTitle: 'Echtes Profil-Browsen deaktiviert',
-        disabledMessage: 'Der Profil-Schnappschuss wird gelöscht; neue Sessions verwenden einen sauberen Browser.',
+        disabledMessage: 'Der Profil-Schnappschuss wird gelöscht und der In-App-Browser davon abgemeldet; neue Sessions verwenden einen sauberen Browser.',
         failedSave: 'Die Echtes-Profil-Einstellung konnte nicht gespeichert werden',
+        reimportSignins: 'Anmeldungen erneut importieren',
+        signinsImportedTitle: 'Anmeldungen im In-App-Browser',
+        signinsImported: count => `In-App-Browser mit ${count} Cookie${count === 1 ? '' : 's'} aus Ihrem Browserprofil angemeldet.`,
+        signinsRemote: 'Dieses Backend läuft auf einem anderen Rechner, daher wird sein Browserprofil nicht in den In-App-Browser importiert.',
+        signinsFailed: 'Anmeldungen konnten nicht in den In-App-Browser importiert werden',
         prompt: {
           title: 'Auf Ihren Websites angemeldet bleiben',
-          body: 'Lassen Sie Hermes mit einem Schnappschuss Ihres Standard-Browserprofils browsen, damit Websites bereits angemeldet öffnen.',
+          body: 'Lassen Sie Hermes mit einem Schnappschuss Ihres Standard-Browserprofils browsen, damit Websites bereits angemeldet öffnen, für den Agenten und im In-App-Browser.',
           bulletSnapshot: 'Cookies und Anmeldungen werden in einen verwalteten Schnappschuss kopiert.',
           bulletLiveProfile: 'Ihr Live-Browserprofil wird nie direkt geöffnet.',
           bulletLocal: 'Nichts verlässt diesen Computer.',
@@ -2519,6 +2530,7 @@ export const deOverrides = {
         `An Commit ${sha} gepinnt. Updates werden abgelehnt, bis es mit einem neuen Pin neu installiert wird.`,
       pinnedBadge: sha => `gepinnt @ ${sha}`,
       ...dePluginUpdate,
+      ...dePluginUpdateAll,
       ...dePluginPreviewAccess,
       uninstall: 'Deinstallieren',
       uninstallTip: (name: string, profile: string) => `${name} aus ${profile} deinstallieren`,
@@ -2984,6 +2996,32 @@ export const deOverrides = {
       'Versuchen Sie den Neustart erneut; wenn er weiterhin fehlschlägt, öffnen Sie die Logs und senden Sie Diagnosedaten.',
     restartAgain: 'Erneut neu starten',
     openLogs: 'Logs öffnen',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'Kein Bot-Token nötig',
+      intro: (platform: string) => `${platform} erreicht diesen Agenten über den gemeinsamen Hermes-Bot. Verknüpfe dein ${platform}-Konto damit und schreib dem Bot, um mit deinem Agenten zu sprechen.`,
+      link: (platform: string) => `${platform} verknüpfen`,
+      linkAnother: (platform: string) => `Weiteres ${platform}-Konto verknüpfen`,
+      linkedAccounts: 'Verknüpfte Konten',
+      unlink: 'Trennen',
+      unlinkFailed: 'Konto konnte nicht getrennt werden',
+      stepOpen: (platform: string) => `1. Scanne den Code mit dem Handy oder öffne den Bot in ${platform}.`,
+      stepSend: '2. Sende dem Bot diese Nachricht von dem Konto, das du verknüpfen willst:',
+      open: (platform: string) => `${platform} öffnen`,
+      copy: 'Nachricht kopieren',
+      copied: 'Kopiert',
+      copyFailed: (command: string) => `Kopieren fehlgeschlagen. Tippe stattdessen ${command}.`,
+      waiting: 'Warte darauf, dass der Bot deine Nachricht sieht. Der Code gilt einmal.',
+      linked: (platform: string) => `${platform}-Konto verknüpft. Schreib dem Bot, um mit deinem Agenten zu sprechen.`,
+      expired: 'Der Code ist abgelaufen, bevor er benutzt wurde. Hol dir einen neuen Code und versuch es erneut.',
+      refused: (platform: string) => `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
+      qrAlt: (platform: string) => `QR-Code für den gemeinsamen ${platform}-Bot`,
+      managed: 'Von Team Gateway verwaltet',
+      managedNote: (platform: string) => `Team Gateway übernimmt auf dieser Instanz das Messaging, daher schaltet das Gateway die direkte ${platform}-Verbindung bei jedem Start ab. Um sie parallel zum Relay zu betreiben, setze GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in der Umgebung des Gateways (eine direkte Verbindung verhindert das Herunterskalieren auf null und kann Nachrichten doppelt zustellen).`,
+      managedIntro: 'Die Konten dieses Agenten werden im Nous Portal verknüpft.',
+      openPortal: 'Konten im Nous Portal verknüpfen',
+      noNewAccount: (platform: string) => `Der Code ist nicht mehr aktiv und es ist kein neues Konto erschienen. Falls dein ${platform}-Konto nicht aufgeführt ist, hol dir einen neuen Code und versuche es erneut.`
+    },
     telegramQr: {
       title: 'Wählen Sie, wie Sie Ihren Telegram-Bot verbinden',
       subtitle:
@@ -4503,7 +4541,9 @@ export const deOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `sendet ${level} auf dieser Route`,
       updateFailed: 'Aktualisierung der Modelloptie schlug fehl',
-      fastFailed: 'Aktualisierung des Schnell-Modus schlug fehl'
+      fastFailed: 'Aktualisierung des Schnell-Modus schlug fehl',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Aktualisierung von Daybreak schlug fehl'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4613,6 +4653,15 @@ export const deOverrides = {
           subagent_definitions: 'Subagent-Definitionen',
           system_prompt: 'System-Prompt',
           tool_definitions: 'Tool-Definitionen'
+        },
+        compact: {
+          action: 'Unterhaltung verdichten',
+          busyHint: 'Beende oder stoppe zuerst die laufende Antwort',
+          confirm: 'Verdichten',
+          hint: 'Älteren Kontext zusammenfassen, um Platz zu schaffen. Dieses Gespräch wird fortgesetzt.',
+          question: 'Diese Unterhaltung zu einer Zusammenfassung verdichten?',
+          questionNamed: title => `„${title}“ zu einer Zusammenfassung verdichten?`,
+          working: 'Verdichte …'
         },
         empty: 'Noch keine Kontext-Daten',
         loading: 'Aufschlüsselung wird geladen…',
@@ -5072,6 +5121,7 @@ export const deOverrides = {
       readAloud: 'Vorlesen',
       copyFullResponse: 'Vollständige Antwort kopieren',
       readAloudFullResponseHint: 'Umschalt-Klick: vollständige Antwort vorlesen',
+      contentRefusedNotice: 'Diese Nachricht wurde vom Sicherheitsfilter des Modells abgelehnt – versuche eine andere Anfrage.',
       editMessage: 'Nachricht bearbeiten',
       expandMessage: 'Nachricht aufklappen',
       scrollToBottom: 'Nach unten scrollen',
@@ -5150,6 +5200,10 @@ export const deOverrides = {
       authorized: server => `${server} autorisiert`,
       failed: server => `Einrichtung für ${server} fehlgeschlagen`,
       toolCount: count => (count === 1 ? '1 Tool' : `${count} Tools`),
+      launchCommand: target => `Führt aus: ${target}`,
+      launchRemote: target => `Verbindet mit: ${target}`,
+      launchEnv: keys => `Umgebung: ${keys}`,
+      launchCwd: dir => `Arbeitsverzeichnis: ${dir}`,
       envRequired: 'Füllen Sie zuerst die erforderlichen Anmeldedaten aus',
       sendFailed: 'MCP-Einrichtungsantwort konnte nicht gesendet werden',
       reloadFailed:

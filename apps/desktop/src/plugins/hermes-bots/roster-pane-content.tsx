@@ -14,7 +14,8 @@ interface RosterContentProps {
   staleNotice: string | number | null
   isLoading: boolean
   initialRosterLoading: boolean
-  roster: RosterRow[]
+  /** Bots plus gateway rooms: either kind alone is a list to show. */
+  listedCount: number
   error: ReturnType<typeof useRoster>['error']
   gatewayUp: boolean
   refetch: ReturnType<typeof useRoster>['refetch']
@@ -45,7 +46,7 @@ export function renderRosterContent({
   staleNotice,
   isLoading,
   initialRosterLoading,
-  roster,
+  listedCount,
   error,
   gatewayUp,
   refetch,
@@ -77,11 +78,11 @@ export function renderRosterContent({
           {staleNotice}
         </div>
       ) : null}
-      {(isLoading || initialRosterLoading) && !roster.length ? (
+      {(isLoading || initialRosterLoading) && !listedCount ? (
         <div className="flex flex-1 items-center justify-center">
           <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
         </div>
-      ) : error && !roster.length ? (
+      ) : error && !listedCount ? (
         <div className="grid gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)">
           <div>
             {gatewayUp
@@ -92,7 +93,7 @@ export function renderRosterContent({
             {b.roster.retryNow}
           </Button>
         </div>
-      ) : roster.length === 0 ? (
+      ) : listedCount === 0 ? (
         <PanelEmpty description={b.roster.emptyDesc} icon="hubot" title={b.roster.emptyTitle} />
       ) : allBotsHidden && !hiddenExpanded ? (
         <div className="grid content-start gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)">
@@ -143,7 +144,7 @@ export function renderRosterContent({
                 {hasRosterConstraint ? (
                   <div className="flex w-full items-center gap-1 px-2 py-1.5 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
                     <Codicon name="eye-closed" />
-                    <span>Hidden</span>
+                    <span>{b.roster.hidden}</span>
                     <span className="text-(--ui-text-quaternary)">{matchingHiddenBots.length}</span>
                   </div>
                 ) : (
@@ -153,7 +154,7 @@ export function renderRosterContent({
                     onClick={() => $showHiddenBots.set(!hiddenExpanded)}
                   >
                     <DisclosureCaret open={hiddenExpanded} />
-                    <span>Hidden</span>
+                    <span>{b.roster.hidden}</span>
                     <span className="text-(--ui-text-quaternary)">{hiddenBots.length}</span>
                   </RowButton>
                 )}

@@ -891,6 +891,24 @@ def _resolve_alias_fallback(
     return next((r for r in results if r is not None), None)
 
 
+def effective_context_pin(
+    config_context_length: int | None, model: str, provider: str, base_url: str = "",
+    configured_model: str | None = None, configured_provider: str | None = None,
+    configured_base_url: str | None = None) -> int | None:
+    """The ``model.context_length`` pin that still applies to ``model`` on this route, or None when the
+    route changed from the configured one (the pin belongs to that model). Fail-closed: None on error."""
+    if config_context_length is None or not (configured_model or configured_provider or configured_base_url):
+        return config_context_length
+    try:
+        from hermes_cli.route_identity import should_clear_context_pin
+        clear = should_clear_context_pin(
+            configured_model, model, configured_base_url, base_url, configured_provider, provider)
+    except Exception:  # any route-identity failure drops the pin, as resolve_display_context_length always did
+        logger.debug("context pin route check failed for %s", model, exc_info=True)
+        return None
+    return None if clear else config_context_length
+
+
 def resolve_display_context_length(
     model: str, provider: str, base_url: str = "", api_key: str = "",
     model_info: Optional[ModelInfo] = None, custom_providers: list | None = None,
@@ -908,15 +926,8 @@ def resolve_display_context_length(
     ``custom_providers[].models.<id>.context_length`` are honored — this closes #15779 where ``/model``
     switch ignored user-set overrides.
     """
-    if config_context_length is not None and (configured_model or configured_provider or configured_base_url):
-        try:
-            from hermes_cli.route_identity import should_clear_context_pin
-            if should_clear_context_pin(
-                    configured_model, model, configured_base_url, base_url, configured_provider, provider):
-                config_context_length = None
-        except Exception:
-            config_context_length = None
-
+    config_context_length = effective_context_pin(
+        config_context_length, model, provider, base_url, configured_model, configured_provider, configured_base_url)
     try:
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(

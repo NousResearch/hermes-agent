@@ -13,9 +13,11 @@ import logging
 import re
 from pathlib import Path
 
+from hermes_cli._startup_fast import project_root_str
+
 logger = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(project_root_str())
 
 CUSTOM = "custom"
 

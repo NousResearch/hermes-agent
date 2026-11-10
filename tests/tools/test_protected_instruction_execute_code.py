@@ -243,6 +243,11 @@ def test_child_guard_survives_a_cell_that_clears_its_globals(tmp_path):
         "cp other.md SOUL.md",
         "mv /tmp/x CLAUDE.md",
         "install -m 644 other.md AGENTS.md",
+        "truncate -s0 AGENTS.md",
+        "dd if=/dev/zero of=AGENTS.md",
+        'sh -c "echo changed > AGENTS.md"',
+        """python -c "open('AGENTS.md','w').write('x')\"""",
+        """python -c "import pathlib; pathlib.Path('AGENTS.md').write_text('x')\"""",
     ],
 )
 def test_terminal_write_targets_sees_mechanical_shell_writes(command):
@@ -259,6 +264,11 @@ def test_terminal_write_targets_sees_mechanical_shell_writes(command):
         "cat AGENTS.md",
         "grep -n TODO AGENTS.md",
         'echo "see AGENTS.md"',
+        'echo "AGENTS.md" > notes.txt',
+        "cp AGENTS.md backup/",
+        "cat notes.txt > AGENTS.md.bak",
+        "sed -n 1p AGENTS.md",
+        """python -c "print(open('AGENTS.md').read())\"""",
         'python -c "print(1)"',
     ],
 )

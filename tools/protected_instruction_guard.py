@@ -133,7 +133,7 @@ def terminal_write_targets(
     env_type: str = "local",
     workdir: str | None = None,
 ) -> list[str]:
-    """Protected instruction paths a terminal *command* appears to write.
+    """Protected instruction paths a terminal *command* writes.
 
     Empty for a remote backend (ssh/modal/...): the path it writes lives on that host's
     filesystem, not this one, so resolving it here would compare against the wrong tree.
@@ -143,11 +143,9 @@ def terminal_write_targets(
     spec = guard_spec()
     if not spec.get("enabled"):
         return []
-    if not re.search(SHELL_WRITE_SHAPE, command or "", re.IGNORECASE):
-        return []
     base_dir = workdir or cwd or os.getcwd()
     targets: list[str] = []
-    for token in _command_path_tokens(command):
+    for token in _write_target_tokens(command):
         base = os.path.basename(token.rstrip("/\\")).lower()
         if not _basename_matches(base, spec):
             continue
@@ -159,6 +157,144 @@ def terminal_write_targets(
         if _is_exempt(path, spec) or path in targets:
             continue
         targets.append(path)
+    return targets
+
+
+# Redirect spellings, longest first so `2>>` wins over `2>`.
+_REDIRECT_RE = re.compile(r"(\d?&?>>?|&>)")
+# Commands whose LAST non-flag argument is the file they write.
+_DEST_LAST_CMDS = frozenset({"cp", "mv", "install", "ln", "rsync", "scp"})
+# Commands whose every non-flag argument is a file they write.
+_DEST_ALL_CMDS = frozenset({"tee", "truncate", "touch"})
+# In-place editors: the file arguments are written in place. `-i`, `-i.bak`, `-si`,
+# `--in-place`, `--in-place=.bak` all count.
+_INPLACE_RE = re.compile(r"^(?:-[A-Za-z]*i[A-Za-z]*(?:\.[^\s]*)?|--in-place(?:=.*)?)$")
+
+
+def _write_target_tokens(command: str) -> list[str]:
+    """Extract the paths a shell command *writes*, positionally.
+
+    Scanning every token for a protected basename would flag a mention —
+    ``echo "AGENTS.md" > notes.txt`` writes notes.txt, not AGENTS.md — so the write targets
+    are picked out by position instead: the word after a redirect, every argument of
+    ``tee``/``truncate``/``touch``, the destination of ``cp``/``mv``/``install``, and the file
+    arguments of an in-place editor. Shell is Turing-complete, so this is best-effort by
+    construction; what it does cover, it covers without guessing.
+    """
+    import shlex
+
+    try:
+        words = shlex.split(command or "", posix=True)
+    except ValueError:
+        words = (command or "").split()
+    if not words:
+        return []
+
+    targets: list[str] = []
+    # A wrapper (`sh -c "..."`, `cmd.exe /c "..."`) hides the real command inside one word;
+    # unwrap the common spellings before scanning.
+    words = _unwrap_wrappers(words)
+
+    index = 0
+    while index < len(words):
+        word = words[index]
+        match = _REDIRECT_RE.fullmatch(word)
+        if match:
+            # `>file` glues the path to the operator; `> file` separates it.
+            index += 1
+            if index < len(words):
+                targets.append(_strip_quotes(words[index]))
+            index += 1
+            continue
+        if _REDIRECT_RE.match(word) and len(word) > 1:
+            # Glued form: `>file`, `2>>file`, `&>file`.
+            rest = _REDIRECT_RE.sub("", word, count=1)
+            if rest:
+                targets.append(_strip_quotes(rest))
+        index += 1
+
+    # Command-position scan for the argument-taking writers.
+    for position, word in enumerate(words):
+        name = os.path.basename(word).lower()
+        if name in _DEST_LAST_CMDS:
+            args = _non_flag_args(words[position + 1:])
+            if len(args) >= 2:
+                targets.append(args[-1])
+        elif name in _DEST_ALL_CMDS:
+            targets.extend(_non_flag_args(words[position + 1:]))
+        elif name in ("sed", "perl", "ruby"):
+            inplace = any(_INPLACE_RE.match(w) for w in words[position + 1:])
+            if inplace:
+                targets.extend(_non_flag_args(words[position + 1:], skip_scripts=True))
+        elif name == "dd":
+            for w in words[position + 1:]:
+                if w.startswith("of="):
+                    targets.append(_strip_quotes(w[3:]))
+
+    # A `python -c '...'` one-liner is source, not a path list: scan it for the mechanical
+    # open(..., 'w') / write_text shapes and take the literal that follows.
+    for position, word in enumerate(words):
+        if os.path.basename(word).lower().startswith("python") and "-c" in words[position + 1:]:
+            source = " ".join(words[position + 1:])
+            targets.extend(_python_inline_targets(source))
+
+    return [t for t in dict.fromkeys(targets) if t]
+
+
+def _unwrap_wrappers(words: list[str]) -> list[str]:
+    """Re-split words that hide a command inside quotes (`sh -c "a > b"`, `cmd /c "a > b"`)."""
+    out: list[str] = []
+    for word in words:
+        if " " in word or ">" in word:
+            out.extend(part for part in word.split() if part)
+        else:
+            out.append(word)
+    return out
+
+
+def _non_flag_args(words: list[str], *, skip_scripts: bool = False) -> list[str]:
+    """Non-flag words, dropping the sed/perl script expression when *skip_scripts*."""
+    args = []
+    for word in words:
+        if not word or word.startswith("-"):
+            continue
+        if _REDIRECT_RE.fullmatch(word):
+            break
+        args.append(_strip_quotes(word))
+    if skip_scripts and args:
+        # The first argument of an in-place editor is its expression, not a file.
+        args = args[1:]
+    return args
+
+
+def _strip_quotes(word: str) -> str:
+    return word.strip("\"'").rstrip(";,")
+
+
+_PY_INLINE_TARGET_RE = re.compile(
+    r"""(?:open|Path)\(\s*(?P<q>['"])(?P<path>[^'"]+)(?P=q)\s*(?:,\s*(?P<mode>['"][^'"]*['"]))?"""
+)
+
+
+def _python_inline_targets(source: str) -> list[str]:
+    """Literal paths an inline Python snippet writes.
+
+    ``open(p, 'w')`` writes; a bare ``open(p)``/``open(p, 'r')`` only reads, so the mode has to
+    say so — treating every ``open()`` as a write turned ``print(open('AGENTS.md').read())``
+    into a false prompt. ``Path(p).write_text(...)`` is a write by construction.
+    """
+    targets = []
+    for match in _PY_INLINE_TARGET_RE.finditer(source):
+        mode = match.group("mode")
+        if mode is None:
+            # No explicit mode: a write only when the call itself is a writer. The optional
+            # `)` covers `Path(p).write_text(...)`, where the call has already closed.
+            tail = source[match.end():match.end() + 40]
+            if re.match(r"\s*\)?\s*\.\s*(?:write_text|write_bytes|touch)\b", tail):
+                targets.append(match.group("path"))
+            continue
+        if any(ch in mode for ch in "wax+"):
+            targets.append(match.group("path"))
     return targets
 
 
@@ -182,26 +318,6 @@ def terminal_write_block(
     from tools.file_tools_write_guards import _request_protected_instruction_approval
 
     return _request_protected_instruction_approval(targets, task_id)
-
-
-def _command_path_tokens(command: str) -> list[str]:
-    """Word-split *command* into candidate paths (shell-aware, falling back to whitespace)."""
-    import shlex
-
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        tokens = (command or "").split()
-    out = []
-    for token in tokens:
-        # `>file`, `>>file` and `2>file` keep the redirect glued to the path; strip it so the
-        # basename compare sees the path itself.
-        token = token.lstrip("<>|&")
-        if token.startswith("2>"):
-            token = token[2:].lstrip("<>|&")
-        if token and not token.startswith("-"):
-            out.append(token)
-    return out
 
 
 def _basename_matches(base: str, spec: dict) -> bool:

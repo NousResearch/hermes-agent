@@ -16,21 +16,18 @@ from hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
 from hermes_cli.toolset_validation import parse_platform_toolsets_value
 # Re-exports: keep ``hermes_cli.tools_config.X`` callers and test patch targets resolving.
-from hermes_cli.tools_config_cua import (
-    _post_setup_no_window_flags, _cua_driver_cmd, _cua_version_summary, _resolved_cua_driver_cmd, _cua_driver_env,
-    _cua_driver_contract_status, _cua_driver_install_ready)
 from hermes_cli.tools_config_post_setup import (
     _ensure_browser_use_cli, _run_post_setup, valid_post_setup_keys, run_post_setup_command, _POST_SETUP_INSTALLED,
-    _post_setup_already_installed, _module_installed, _POST_SETUP_READY)
+    _post_setup_already_installed, _POST_SETUP_READY)
 from hermes_cli.tools_config_providers import (
     _plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, _plugin_browser_providers,
     _plugin_tts_providers, web_provider_capabilities, _visible_providers, provider_readiness_status,
     _toolset_needs_configuration_prompt, _configure_tool_category, _web_tier_matches, _is_provider_active,
     _detect_active_provider_index, IMAGEGEN_BACKENDS, _plugin_image_gen_catalog, _plugin_video_gen_catalog,
-    _configure_imagegen_model, _configure_imagegen_model_for_plugin, _configure_videogen_model_for_plugin,
+    _configure_imagegen_model, _configure_imagegen_model_for_plugin,
     _select_plugin_image_gen_provider, _select_plugin_video_gen_provider, STT_MODEL_CATALOG, _configure_stt_model,
     _write_provider_config, apply_provider_selection, _configure_provider, _reconfigure_provider,
-    _configure_vision_backend, _configure_vision_provider_model, _configure_simple_requirements)
+    _configure_vision_backend, _configure_simple_requirements)
 from hermes_cli.tools_config_mcp import (
     _configure_mcp_tools_interactive, _apply_toolset_change, _apply_mcp_change, tools_disable_enable_command)
 
@@ -113,6 +110,9 @@ _DEFAULT_OFF_TOOLSETS = {"spotify", "discord", "discord_admin", "video", "video_
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.
 _CONFIG_ONLY_TOOLSETS = {"stt"}
+
+# Older configs and clients used a bare ``hermes`` composite for the CLI + API-server surface.
+_LEGACY_TOOLSET_ALIASES: dict[str, tuple[str, ...]] = {"hermes": ("hermes-cli", "hermes-api-server")}
 
 
 def _xai_credentials_present() -> bool:
@@ -575,40 +575,18 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     toolset_names = _coerce_platform_toolsets_value(platform_toolsets.get(platform), platform)
     # An explicitly saved list (even a composite like ``hermes-discord``) is an opt-in to the platform's
     # native default-off toolsets — see _default_off_toolsets.
-    # Track whether the user explicitly saved a toolset list for this platform (vs. falling back to the
-    # platform default). See #35527.
     explicitly_configured = isinstance(toolset_names, list)
     if not explicitly_configured:
         toolset_names = [_platform_default_toolset(platform)]
     # YAML may parse bare numeric names (``12306:``) as int; normalise so sorted() never mixes types.
     toolset_names = [str(ts) for ts in toolset_names]
 
-    # Expand legacy toolset aliases.  Older Hermes versions and clients used
-    # bare ``"hermes"`` as a composite toolset covering both the CLI and the
-    # API-server surface.  Modern code expects ``"hermes-cli"`` (and
-    # ``"hermes-api-server"`` for the HTTP endpoint), so configs persisted
-    # by those older versions still carry the legacy name; without expansion
-    # ``resolve_toolset("hermes")`` returns ``[]`` — all tools silently
-    # disappear.
-    _LEGACY_TOOLSET_ALIASES: dict = {
-        "hermes": ("hermes-cli", "hermes-api-server"),
-    }
-    expanded: list = []
-    for name in toolset_names:
-        aliases = _LEGACY_TOOLSET_ALIASES.get(name)
-        if aliases:
-            expanded.extend(aliases)
-        else:
-            expanded.append(name)
-    toolset_names = expanded
+    toolset_names = [alias for name in toolset_names for alias in _LEGACY_TOOLSET_ALIASES.get(name, (name,))]
 
     configurable_keys = _configurable_keys()
     plugin_ts_keys = _get_plugin_toolset_keys()
     platform_default_keys = _platform_default_keys()
-    # Plugin toolsets are first-class on a saved list: ``[hermes-cli, a2a]`` must survive filtering.
-    # Plugin-provided toolsets are first-class on a platform-toolsets list — explicit config like
-    # ``[hermes-cli, a2a]`` must survive filtering just like a built-in configurable toolset would. See
-    # issue #81163.
+    # Plugin toolsets are first-class on a saved list: ``[hermes-cli, a2a]`` must survive filtering (#81163).
     explicit_known_keys = configurable_keys | plugin_ts_keys
 
     if any(ts in explicit_known_keys for ts in toolset_names):

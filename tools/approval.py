@@ -51,7 +51,6 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 # --- Per-session approval state (thread-safe) -----------------------------------------------------------------------
 
 _lock = threading.RLock()  # re-entrant: a card settle checks and resolves under one hold
-_pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 # Session keys whose launch YOLO (`hermes chat --yolo` session policy) was already seeded by
@@ -104,8 +103,6 @@ def _denial_breaker_addendum(session_key: str) -> str:
     threshold = _get_denial_breaker_threshold()
     if threshold <= 0 or count < threshold:
         return ""
-    # WARNING (was DEBUG): a failed/blocked guardian call is a real event the operator needs to see — the
-    # whole point of #82846 is that the hang was invisible. Log the elapsed time and error class too.
     logger.warning(
         "Smart-approval circuit breaker tripped for session %s: %d consecutive denials (threshold %d)",
         session_key, count, threshold,
@@ -305,12 +302,6 @@ def get_pending_gateway_approval(session_key: str) -> dict | None:
         return dict(queue[0].data)
 
 
-def submit_pending(session_key: str, approval: dict):
-    """Store a pending approval request for a session."""
-    with _lock:
-        _pending[session_key] = approval
-
-
 def approve_session(session_key: str, pattern_key: str):
     """Approve a pattern for this session only."""
     with _lock:
@@ -355,7 +346,6 @@ def clear_session(session_key: str) -> None:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _launch_yolo_applied.discard(session_key)
-        _pending.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
             # the prompt was withdrawn, nobody denied it.
@@ -492,8 +482,10 @@ def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
 def _read_permanent_allowlist() -> set:
     """``command_allowlist`` of the active profile's config as a set (empty on malformed input)."""
     from hermes_cli.config import load_config_readonly
-    config = load_config_readonly()
-    raw = config.get("command_allowlist")
+    return _parse_permanent_allowlist(load_config_readonly().get("command_allowlist"))
+
+
+def _parse_permanent_allowlist(raw) -> set:
     legacy = isinstance(raw, str)
     if legacy:
         # Old config-set versions serialized list values as scalar strings.
@@ -559,7 +551,7 @@ def save_permanent_allowlist(patterns: set):
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
-        on_disk = set(config.get("command_allowlist", []) or [])
+        on_disk = _parse_permanent_allowlist(config.get("command_allowlist"))
         with _lock:
             key = _baseline_key()
             baseline = _permanent_baseline_by_home.get(key, set())
@@ -637,19 +629,12 @@ def _gateway_notify_cb(session_key: str):
         return _gateway_notify_cbs.get(session_key)
 
 
-def _pending_result(spec, session_key: str, *, command: str, description: str,
-                    pattern_key: str, pattern_keys: list[str], body: str | None,
+def _pending_result(spec, *, command: str, description: str,
+                    pattern_key: str, body: str | None,
                     smart_denied: bool) -> dict:
-    """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
-    ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
+    """Result for an approval nobody can answer right now (no gateway notifier, no CLI panel).
+    Command/code gates return the backward-compatible
     ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``."""
-    pending = {"command": command, "pattern_key": pattern_key}
-    if spec.pending_keys:
-        pending["pattern_keys"] = pattern_keys
-    pending["description"] = description
-    if smart_denied:
-        pending.update(smart_denied=True, allow_permanent=False)
-    submit_pending(session_key, pending)
     if not spec.pending_keys:
         return {
             "approved": False, "pattern_key": pattern_key, "status": "approval_required",
@@ -1017,8 +1002,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             if not spec.pending_keys:
                 display_command, display_description = command, description
             return _pending_result(
-                spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
-                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+                spec, command=display_command, description=display_description, pattern_key=pattern_key,
+                body=pending_body, smart_denied=smart_denied,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
@@ -1352,17 +1337,13 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     (the terminal auto-approve contract); the hardline floor still blocks catastrophic
     ``terminal()`` commands the script issues.
 
-    See #30882.
-    The hardline floor still blocks catastrophic ``terminal()`` commands the script issues; running
-    arbitrary code headlessly without any approval surface is trusted-by-config (set a gateway/ask surface
-    or ``approvals.cron_mode`` to require approval). See #30882.
+    Running arbitrary code headlessly without any approval surface is trusted-by-config (set a gateway/ask
+    surface or ``approvals.cron_mode`` to require approval). See #30882.
     """
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION
 
-    # Isolated backends already sandbox the child. vercel_sandbox has no host-bind concept so it stays always-skipped.
-    if env_type == "vercel_sandbox":
-        return _approved()
+    # Isolated backends already sandbox the child.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _approved()
     approval_mode = approval_context._get_approval_mode()

@@ -71,12 +71,6 @@ def _save_blocked_payload(command: str) -> str | None:
             "# Auto-saved by Hermes: this command exceeded the inline command\n"
             "# parser limit and was blocked from direct execution. Review it,\n"
             f"# then run it via: bash {path}\n" + command + ("" if command.endswith("\n") else "\n"),
-            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash the gateway thread on
-            # locale-mismatched Windows (#53137).
-            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash the gateway thread on
-            # locale-mismatched Windows (#53137).
-            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash the gateway thread on
-            # locale-mismatched Windows (#53137).
             encoding="utf-8", errors="replace",
         )
         return str(path)

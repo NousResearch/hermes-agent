@@ -678,9 +678,9 @@ def _run_write_gate(build_staging):
     except Exception:
         return None  # fail open
     decision = wa.evaluate_gate(wa.SKILLS)
-    if decision.allow:
+    if decision.verdict == "allow":
         return None
-    if decision.blocked:
+    if decision.verdict == "blocked":
         return tool_error(decision.message, success=False)
     payload, gist = build_staging(wa)
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())

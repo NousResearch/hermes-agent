@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from tools.connectors.gateway.names import parse_connector_name
 from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
+from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME
 
 logger = logging.getLogger("tools.tool_labels")
 
@@ -31,8 +32,6 @@ _APP_TITLES = {
     "stripe_mcp": "Stripe",
     "todoist": "Todoist",
 }
-
-BRIDGE_TOOL_NAMES = frozenset({"tool_call", "tool_search", "tool_describe"})
 
 __all__ = [
     "BRIDGE_TOOL_NAMES", "CONNECTOR_EMOJI", "DEFAULT_TOOL_EMOJI", "MCP_EMOJI", "ToolLabel",
@@ -147,7 +146,7 @@ def _bridge_labels(function_name: str, args: dict[str, Any]) -> list[ToolLabel]:
 
 def labels_for_call(function_name: str, function_args: Any) -> list[ToolLabel]:
     args = function_args if isinstance(function_args, dict) else {}
-    if function_name in ("tool_search", "tool_describe"):
+    if function_name in (TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME):
         return _bridge_labels(function_name, args)
     if function_name != "tool_call":
         label = label_for_tool_name(function_name, args)

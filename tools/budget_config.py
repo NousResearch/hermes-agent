@@ -1,7 +1,7 @@
 """Configurable budget constants for tool result persistence.
 Per-tool resolution: pinned > config overrides > registry > default."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from agent.model_metadata import CHARS_PER_TOKEN
 
@@ -50,10 +50,9 @@ class BudgetConfig:
     turn_budget: int = DEFAULT_TURN_BUDGET_CHARS
     preview_size: int = DEFAULT_PREVIEW_SIZE_CHARS
     mcp_result_size: int = DEFAULT_MCP_RESULT_SIZE_CHARS
-    tool_overrides: dict[str, int] = field(default_factory=dict)
 
     def resolve_threshold(self, tool_name: str) -> int | float:
-        """Priority: pinned -> tool_overrides -> mcp_ prefix -> registry per-tool -> default.
+        """Priority: pinned -> mcp_ prefix -> registry per-tool -> default.
         MCP tools get ``mcp_result_size`` (no registry entry). MCP and registry values
         are capped at ``default_result_size`` so a context-scaled budget for a small
         model still constrains tools registering a fixed 100K ``max_result_size_chars``.
@@ -63,8 +62,6 @@ class BudgetConfig:
         """
         if tool_name in PINNED_THRESHOLDS:
             return PINNED_THRESHOLDS[tool_name]
-        if tool_name in self.tool_overrides:
-            return self.tool_overrides[tool_name]
         if tool_name.startswith(MCP_TOOL_PREFIX):
             return min(self.mcp_result_size, self.default_result_size)
         from tools.registry import registry

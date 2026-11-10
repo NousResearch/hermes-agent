@@ -8,7 +8,6 @@ import os
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from hermes_constants import get_hermes_home
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 logger = logging.getLogger(__name__)
@@ -29,11 +28,6 @@ class ManagedToolGatewayConfig:
 def _clean(value: object) -> Optional[str]:
     """*value* stripped when it is a non-blank string, else None."""
     return value.strip() if isinstance(value, str) and value.strip() else None
-
-
-def auth_json_path():
-    """Return the Hermes auth store path, respecting HERMES_HOME overrides."""
-    return get_hermes_home() / "auth.json"
 
 
 def _read_nous_provider_state() -> Optional[dict]:

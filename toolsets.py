@@ -235,7 +235,7 @@ TOOLSETS = {
 # Toolset -> the session platforms it exists for, from the specs that carry ``platforms``.
 TOOLSET_SESSION_PLATFORMS = {name: spec["platforms"] for name, spec in TOOLSETS.items() if "platforms" in spec}
 
-# Captured before create_custom_toolset() can add user-named tools: shared metrics may export only
+# Shared metrics may export only
 # these names, so a plugin, MCP server or custom toolset name never leaves the machine.
 BUILTIN_TOOL_NAMES = frozenset(tool for spec in TOOLSETS.values() for tool in spec["tools"])
 BUILTIN_TOOLSET_NAMES = frozenset(TOOLSETS)
@@ -486,11 +486,6 @@ def agent_tool_surface(agent: Any, tools: list[dict[str, Any]]) -> list[dict[str
 def validate_toolset(name: str) -> bool:
     return (name in {"all", "*"} or name in TOOLSETS
             or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases())
-
-
-def create_custom_toolset(name: str, description: str, tools: list[str] | None = None, includes: list[str] | None = None) -> None:
-    """Register a runtime toolset in TOOLSETS."""
-    TOOLSETS[name] = _ts(description, tools or [], includes or [])
 
 
 def get_toolset_info(name: str) -> dict[str, Any]:

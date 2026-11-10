@@ -200,7 +200,6 @@ _LEGACY_TOOLSET_MAP = {
 _tool_defs_cache: dict[tuple, list[dict[str, Any]]] = {}
 _tool_defs_expiry: dict[tuple, float] = {}  # cache key -> time.monotonic() deadline
 _tool_defs_cache_lock = threading.Lock()
-# FIFO cap: 8 covers a long-lived gateway's warm set of platform/toolset combos.
 # Hard cap on memoized get_tool_definitions() results. A long-lived Gateway process sees many distinct
 # toolset/config fingerprints over its lifetime (per-session toolset sets, config edits, kanban-task
 # toggles); without a bound the cache grows unboundedly. 8 comfortably covers the warm working set (the
@@ -347,9 +346,7 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
             if ts_name not in TOOLSET_SESSION_PLATFORMS:
                 tools.update(resolve_toolset(ts_name))
     # Disabled toolsets are always subtracted LAST, so a tool in a disabled
-    # toolset is stripped even when a composite (hermes-cli) re-enables it.
-    # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a
-    # disabled toolset are strictly stripped out. See issue #17309.
+    # toolset is stripped even when a composite (hermes-cli) re-enables it (#17309).
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
     return tools

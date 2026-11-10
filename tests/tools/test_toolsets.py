@@ -8,7 +8,6 @@ from toolsets import (
     resolve_toolset,
     get_all_toolsets,
     validate_toolset,
-    create_custom_toolset,
     get_toolset_info,
 )
 
@@ -118,22 +117,6 @@ class TestGetToolsetInfo:
         info = get_toolset_info("debugging")
         assert info["is_composite"] is True
         assert info["tool_count"] > len(info["direct_tools"])
-
-class TestCreateCustomToolset:
-    def test_runtime_creation(self):
-        create_custom_toolset(
-            name="_test_custom",
-            description="Test toolset",
-            tools=["web_search"],
-            includes=["terminal"],
-        )
-        try:
-            tools = resolve_toolset("_test_custom")
-            assert "web_search" in tools
-            assert "terminal" in tools
-            assert validate_toolset("_test_custom") is True
-        finally:
-            del TOOLSETS["_test_custom"]
 
 class TestRegistryOwnedToolsets:
     def test_registry_membership_is_live(self, monkeypatch):

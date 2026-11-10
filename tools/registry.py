@@ -1,7 +1,7 @@
 """Central registry for all hermes-agent tools: each tool file calls ``registry.register()``
 at import to declare schema, handler, toolset membership and availability check;
 ``model_tools.py`` queries the registry instead of keeping parallel data structures.
-Cycle-safe import chain: this module imports nothing from model_tools or tool files;
+Cycle-safe import chain: model_tools and tool files are imported only lazily inside functions;
 tools/*.py import it at module level; model_tools.py imports both; run_agent/cli import
 model_tools."""
 

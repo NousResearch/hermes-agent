@@ -24,7 +24,6 @@ _ENV = ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERM
 
 def _clear_approvals():
     approval_module._session_approved.clear()
-    approval_module._pending.clear()
     approval_module._permanent_approved.clear()
     approval_module._permanent_approved_by_home.clear()
 

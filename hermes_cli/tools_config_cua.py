@@ -45,10 +45,6 @@ def _post_setup_no_window_flags(*, streams_to_console: bool = False) -> int:
     return flags or 0
 
 
-def _cua_driver_cmd() -> str:
-    return os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip() or "cua-driver"
-
-
 def _cua_version_summary(raw: str, *, limit: int = 120) -> str:
     """Bound an external binary's potentially multiline version banner."""
     return next((line.strip()[:limit] for line in (raw or "").splitlines() if line.strip()), "")

@@ -17,16 +17,6 @@ import threading
 import time
 
 
-# ========================================================================= Human-wait accounting (per
-# session) ========================================================================= Tracks the wall-clock
-# time the agent spends verifiably blocked on a HUMAN prompt (CLI approval prompt, gateway approval
-# round-trip). The concurrent tool batch deadline in agent/tool_executor.py excludes this time so a slow
-# human answer never times a batch out — but ONLY this time. Measuring human waits at the source (rather
-# than residency in the authorization gate, which is arbitrary code) is what keeps a wedged pre_tool_call
-# plugin or a dead approval client from growing the exclusion 1:1 with wall clock and defeating the deadline
-# entirely (#79719). Keyed by session so one gateway session's pending approval cannot extend a different
-# session's batch deadline. State is process-global like the rest of this module's approval state; entries
-# are bounded by _HUMAN_WAIT_MAX_SESSIONS.
 class _HumanWaitState:
     __slots__ = ("completed_seconds", "pending", "window_started")
 
@@ -147,9 +137,7 @@ def human_wait_seconds(session_key: str | None = None) -> float:
     life of the process — except when an idle session's entry is evicted under
     cap pressure, which can only shrink a consumer's baseline delta to zero (the
     safe direction: the deadline fires sooner). Deadline consumers snapshot a
-    baseline at batch start and use the delta. Each window's contribution is
-    clamped to :func:`human_wait_ceiling` (belt-and-braces against the
-    wedged-window hang).
+    baseline at batch start and use the delta.
 
     Each window's contribution is clamped to :func:`human_wait_ceiling`: every legitimate human wait
     self-terminates at ``approvals.timeout`` (both the CLI prompt join and the gateway poll loop enforce

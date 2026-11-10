@@ -282,8 +282,7 @@ class TestSkillManageBatch(unittest.TestCase):
         from unittest.mock import patch as _patch
 
         class _Decision:
-            allow = False
-            blocked = False
+            verdict = "stage"
             message = "staged for review"
 
         staged = {}

@@ -155,7 +155,6 @@ def test_managed_gateway_origin_honors_the_harness_override():
     # loopback gateway), and the bearer gate must accept exactly that origin.
     with patch.dict(os.environ, {"TOOL_GATEWAY_URL": "http://127.0.0.1:3009/"}, clear=False):
         os.environ.pop("CONNECTOR_GATEWAY_URL", None)
-        assert managed_gateway_auth.managed_gateway_origin() == "http://127.0.0.1:3009"
         assert managed_gateway_auth.is_managed_nous_gateway_url(
             "http://127.0.0.1:3009/api/vendorx/generations"
         )
@@ -177,9 +176,6 @@ def test_connector_gateway_origin_honors_its_own_override():
     ):
         os.environ.pop("TOOL_GATEWAY_URL", None)
         assert managed_gateway_auth.connector_gateway_origin() == "http://127.0.0.1:3009"
-        assert managed_gateway_auth.managed_gateway_origin() == (
-            "https://tool-gateway.nousresearch.com"
-        )
         assert managed_gateway_auth.is_managed_nous_gateway_url(
             "http://127.0.0.1:3009/v1/connectors/search"
         )

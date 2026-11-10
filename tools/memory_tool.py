@@ -89,9 +89,9 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
     except Exception:
         return None
     decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
-    if decision.allow:
+    if decision.verdict == "allow":
         return None
-    if decision.blocked:
+    if decision.verdict == "blocked":
         FAILURE_CLASS.set("gate_refused")
         return tool_error(decision.message, success=False)
     if (unmatched := _pin_matched_entries(store, payload)) is not None:

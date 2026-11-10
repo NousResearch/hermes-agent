@@ -201,11 +201,10 @@ def estimate_tokens_from_schemas(tool_defs: Iterable[dict[str, Any]]) -> int:
     return math.ceil(sum(map(_chars, tool_defs)) / CHARS_PER_TOKEN)
 
 
-def should_activate(config: ToolSearchConfig, deferrable_tokens: int,
-                    context_length: Optional[int], *, connections_granted: bool = False) -> bool:
+def should_activate(config: ToolSearchConfig, deferrable_tokens: int, *, connections_granted: bool = False) -> bool:
     """``"off"`` never activates; ``"on"``/``"auto"`` activate whenever any deferrable tool
     exists ("auto" is reserved for a future budget-gated mode — do not distinguish them
-    without that design). ``context_length`` is kept for caller compatibility."""
+    without that design)."""
     if config.enabled == "off":
         return False
     if deferrable_tokens > 0:
@@ -335,7 +334,6 @@ class AssemblyResult:
     activated: bool
     deferred_count: int = 0
     deferred_tokens: int = 0
-    threshold_tokens: int = 0
     # 0 = passthrough; 1 = bridge + per-tool listing; 2 = bare bridge / server summary only.
     tier: int = 0
     listing_form: str = "none"  # "full" | "names" | "mixed" | "groups" | "none"
@@ -351,16 +349,15 @@ def assemble_tool_defs(tool_defs: list[dict[str, Any]], *, context_length: Optio
     visible, deferrable = classify_tools(incoming, config.effective_defer_tools)
     connections_granted = connections_in_scope(incoming)
     if not deferrable:
-        if should_activate(config, 0, context_length, connections_granted=connections_granted):
+        if should_activate(config, 0, connections_granted=connections_granted):
             return AssemblyResult(tool_defs=incoming + bridge_tool_schemas(0, connections_granted=connections_granted),
                                   activated=True, tier=2)
         return AssemblyResult(tool_defs=incoming, activated=False)
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
-    if not should_activate(config, deferrable_tokens, context_length):
+    if not should_activate(config, deferrable_tokens):
         return AssemblyResult(
             tool_defs=incoming, activated=False, deferred_count=len(deferrable),
-            deferred_tokens=deferrable_tokens,
-            threshold_tokens=int((context_length or 0) * (config.threshold_pct / 100.0)), tier=0)
+            deferred_tokens=deferrable_tokens, tier=0)
     listing, listing_form = None, "none"
     listing_budget = listing_token_budget(config, context_length)
     if config.listing != "off":
@@ -375,7 +372,7 @@ def assemble_tool_defs(tool_defs: list[dict[str, Any]], *, context_length: Optio
         tier, len(visible), len(deferrable), deferrable_tokens, listing_form, listing_budget)
     return AssemblyResult(
         tool_defs=visible + bridge, activated=True, deferred_count=len(deferrable),
-        deferred_tokens=deferrable_tokens, threshold_tokens=listing_budget,
+        deferred_tokens=deferrable_tokens,
         tier=tier, listing_form=listing_form)
 
 

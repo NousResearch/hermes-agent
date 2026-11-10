@@ -21,7 +21,7 @@ import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -153,13 +153,11 @@ def current_origin() -> str:
 
 @dataclass(slots=True, kw_only=True)
 class GateDecision:
-    """Result of evaluating the write gate; exactly one flag is True. ``allow``: do the real write;
+    """Result of evaluating the write gate. ``verdict`` ``allow``: do the real write;
     ``blocked``: user denied the inline prompt (``message`` says why); ``stage``: caller must
     ``stage_write`` the payload (``message`` is the user-facing "staged for approval" note)."""
 
-    allow: bool = False
-    blocked: bool = False
-    stage: bool = False
+    verdict: Literal["allow", "blocked", "stage"]
     message: str = ""
 
 
@@ -194,7 +192,7 @@ def _staged(subsystem: str) -> GateDecision:
     else:
         where = (f"pending records live in {_pending_path(subsystem, '').parent} "
                  f"(review from an interactive CLI session with {command})")
-    return GateDecision(stage=True, message=(f"Staged for approval ({subsystem}.write_approval is on). "
+    return GateDecision(verdict="stage", message=(f"Staged for approval ({subsystem}.write_approval is on). "
                                              f"Not yet saved — {where}."))
 
 
@@ -204,7 +202,7 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: st
     exists, else stage. The gate only ever delays a write, never silently refuses it; ``blocked``
     is produced only when the user actively denies the inline prompt."""
     if not write_approval_enabled(subsystem):
-        return GateDecision(allow=True)
+        return GateDecision(verdict="allow")
     # Skills are too big to review inline; a background write runs in a daemon thread with no user.
     if subsystem == SKILLS or current_origin() == "background_review":
         return _staged(subsystem)
@@ -212,8 +210,8 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: st
     if granted is None:
         return _staged(MEMORY)
     if granted:
-        return GateDecision(allow=True)
-    return GateDecision(blocked=True, message="Memory write denied by user. The change was not saved.")
+        return GateDecision(verdict="allow")
+    return GateDecision(verdict="blocked", message="Memory write denied by user. The change was not saved.")
 
 
 def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:

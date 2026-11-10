@@ -192,7 +192,7 @@ class TestThresholdGate:
     def test_off_never_activates(self):
         from tools.tool_search import ToolSearchConfig, should_activate
         cfg = ToolSearchConfig.from_raw({"enabled": "off"})
-        assert not should_activate(cfg, deferrable_tokens=1_000_000, context_length=200_000)
+        assert not should_activate(cfg, deferrable_tokens=1_000_000)
 
 
     def test_token_estimate_proportional_to_schema_size(self):

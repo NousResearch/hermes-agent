@@ -44,7 +44,6 @@ def isolated_approvals(monkeypatch):
     monkeypatch.setattr(A, "prompt_dangerous_approval", _boom)
     monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", _boom)
     monkeypatch.setattr(A, "save_permanent_allowlist", _boom)
-    monkeypatch.setattr(A, "submit_pending", _boom, raising=False)
     yield A
     A._permanent_approved.clear()
     A._permanent_approved.update(saved)

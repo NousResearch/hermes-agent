@@ -2668,8 +2668,7 @@ class TestMCPSelectiveToolLoading:
 
         async def run():
             with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-                 patch("tools.registry.registry", mock_registry), \
-                 patch("toolsets.create_custom_toolset"):
+                 patch("tools.registry.registry", mock_registry):
                 return await _discover_and_register_server(name, config)
 
         try:

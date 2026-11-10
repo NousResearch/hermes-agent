@@ -8,14 +8,16 @@
  * loop.
  *
  * Whether reordering is needed is decided per terminal, not per platform.
- * A handful of terminals lay out RTL runs themselves — macOS CoreText
- * terminals, VTE-based terminals (GNOME Terminal, Tilix, Xfce Terminal…),
- * Konsole and mlterm — and on those software reordering would double-apply
- * and re-reverse the text. Everywhere else, including Windows Terminal and
- * conhost (https://github.com/microsoft/terminal/issues/538), WSL, VS Code's
- * xterm.js, Kitty, Alacritty, Ghostty, WezTerm (bidi shipped off) and plain
- * xterm, codepoints reach the screen in logical order with no bidi, so RTL
- * runs must be reordered here.
+ * A handful of terminals lay out RTL runs themselves — macOS Terminal.app,
+ * VTE-based terminals (GNOME Terminal, Tilix, Xfce Terminal…) from 0.58,
+ * Konsole from 22.12, and mlterm — and on those software reordering would
+ * double-apply and re-reverse the text. Everywhere else, including Windows
+ * Terminal and conhost (https://github.com/microsoft/terminal/issues/538),
+ * WSL, VS Code's xterm.js, Kitty, Alacritty, Ghostty, plain xterm, and the
+ * two that have bidi but don't use it here (WezTerm ships it off, iTerm2
+ * hides it behind an advanced setting and skips the alternate screen),
+ * codepoints reach the screen in logical order with no bidi, so RTL runs
+ * must be reordered here.
  *
  * Detection is overridable: HERMES_TUI_BIDI=1 forces software reordering on
  * (a terminal we misclassify, or a bidi-capable terminal the user wants
@@ -37,6 +39,23 @@ let needsSoftwareBidi: boolean | undefined
 const ENV_ON_RE = /^(?:1|true|yes|on)$/i
 const ENV_OFF_RE = /^(?:0|false|no|off)$/i
 
+/** VTE and Konsole both export their version packed as MAJOR*10000 +
+ *  MINOR*100 + PATCH (e.g. 7603 = 0.76.3, 240800 = 24.8.0). Anything
+ *  unparseable counts as unknown, and unknown means we reorder. */
+function packedVersion(raw: string | undefined): number | undefined {
+  const version = parseInt((raw ?? '').trim(), 10)
+
+  return Number.isFinite(version) && version > 0 ? version : undefined
+}
+
+/** VTE gained bidi in 0.58 (GNOME 3.34). */
+const VTE_BIDI_MIN = 5800
+
+/** Konsole reorders through ICU from 22.12. Earlier builds ran the bidi
+ *  algorithm per run of identical attributes, so a coloured line came out
+ *  wrong (invent.kde.org MR 722, KDE bug 403729). */
+const KONSOLE_BIDI_MIN = 221200
+
 /**
  * Terminals that implement bidi layout themselves. On these we must leave
  * logical order untouched — reordering here would be applied twice.
@@ -44,20 +63,29 @@ const ENV_OFF_RE = /^(?:0|false|no|off)$/i
 function terminalHasNativeBidi(env: NodeJS.ProcessEnv): boolean {
   const termProgram = (env.TERM_PROGRAM ?? '').trim()
 
-  // macOS CoreText-backed terminals run the full bidi algorithm.
-  if (termProgram === 'iTerm.app' || termProgram === 'Apple_Terminal') {
+  // macOS CoreText-backed Terminal.app runs the full bidi algorithm.
+  // iTerm2 deliberately isn't here: its bidi is opt-in (Settings > Advanced >
+  // Support right-to-left-text) and doesn't cover the alternate screen, which
+  // is exactly where fullscreen mode lives. Same reasoning as WezTerm below.
+  if (termProgram === 'Apple_Terminal') {
     return true
   }
 
-  // VTE-based terminals do bidi themselves since VTE 0.58 (GNOME 3.34).
-  // Same signal the TUI already uses for ANSI dim (shouldUseAnsiDim).
-  if (env.VTE_VERSION) {
-    return true
+  // VTE-based terminals (GNOME Terminal, Tilix, Xfce Terminal, Guake…). The
+  // version gate matters twice: bidi arrived in 0.58, and fribidi is an
+  // optional build dependency, so a terminal can report a version and still
+  // lay RTL out in logical order. shouldUseAnsiDim reads the same variable.
+  const vteVersion = packedVersion(env.VTE_VERSION)
+
+  if (vteVersion !== undefined) {
+    return vteVersion >= VTE_BIDI_MIN
   }
 
-  // Konsole lays out RTL runs through Qt's text engine.
-  if (env.KONSOLE_VERSION) {
-    return true
+  // Konsole lays out RTL runs through ICU from 22.12.
+  const konsoleVersion = packedVersion(env.KONSOLE_VERSION)
+
+  if (konsoleVersion !== undefined) {
+    return konsoleVersion >= KONSOLE_BIDI_MIN
   }
 
   // mlterm handles bidi when built/configured with it.

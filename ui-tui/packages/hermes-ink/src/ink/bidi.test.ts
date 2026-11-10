@@ -35,19 +35,36 @@ describe('shouldReorderBidi', () => {
   it('still reorders where bidi exists but is off by default', () => {
     // WezTerm implements bidi but ships it disabled (bidi_enabled = false).
     expect(shouldReorderBidi({ TERM_PROGRAM: 'WezTerm' } as NodeJS.ProcessEnv)).toBe(true)
+    // iTerm2's bidi is opt-in (Settings > Advanced > Support right-to-left-text)
+    // and doesn't cover the alternate screen, which fullscreen mode uses.
+    expect(shouldReorderBidi({ TERM_PROGRAM: 'iTerm.app' } as NodeJS.ProcessEnv)).toBe(true)
   })
 
   it('leaves terminals that do bidi themselves untouched', () => {
-    expect(shouldReorderBidi({ TERM_PROGRAM: 'iTerm.app' } as NodeJS.ProcessEnv)).toBe(false)
     expect(shouldReorderBidi({ TERM_PROGRAM: 'Apple_Terminal' } as NodeJS.ProcessEnv)).toBe(false)
     // VTE-based terminals (GNOME Terminal, Tilix, Xfce Terminal, Guake…) since VTE 0.58.
     expect(shouldReorderBidi({ VTE_VERSION: '7603' } as NodeJS.ProcessEnv)).toBe(false)
-    expect(shouldReorderBidi({ KONSOLE_VERSION: '221201' } as NodeJS.ProcessEnv)).toBe(false)
+    expect(shouldReorderBidi({ VTE_VERSION: '5800' } as NodeJS.ProcessEnv)).toBe(false)
+    // Konsole reorders through ICU from 22.12.
+    expect(shouldReorderBidi({ KONSOLE_VERSION: '221200' } as NodeJS.ProcessEnv)).toBe(false)
+    expect(shouldReorderBidi({ KONSOLE_VERSION: '240800' } as NodeJS.ProcessEnv)).toBe(false)
     expect(shouldReorderBidi({ TERM: 'mlterm' } as NodeJS.ProcessEnv)).toBe(false)
   })
 
+  it('reorders on builds older than their terminal bidi support', () => {
+    // VTE 0.50 has no bidi, and fribidi stays optional past 0.58 — a build
+    // without it still reports a version but emits logical order.
+    expect(shouldReorderBidi({ VTE_VERSION: '5003' } as NodeJS.ProcessEnv)).toBe(true)
+    // Konsole before 22.12 reordered per run of identical attributes, so a
+    // coloured line came out wrong (KDE bug 403729).
+    expect(shouldReorderBidi({ KONSOLE_VERSION: '211202' } as NodeJS.ProcessEnv)).toBe(true)
+    // Unparseable version = unknown, and unknown means we reorder.
+    expect(shouldReorderBidi({ VTE_VERSION: 'nonsense' } as NodeJS.ProcessEnv)).toBe(true)
+    expect(shouldReorderBidi({ KONSOLE_VERSION: '' } as NodeJS.ProcessEnv)).toBe(true)
+  })
+
   it('honors the HERMES_TUI_BIDI override', () => {
-    expect(shouldReorderBidi({ HERMES_TUI_BIDI: '1', TERM_PROGRAM: 'iTerm.app' } as NodeJS.ProcessEnv)).toBe(true)
+    expect(shouldReorderBidi({ HERMES_TUI_BIDI: '1', TERM_PROGRAM: 'Apple_Terminal' } as NodeJS.ProcessEnv)).toBe(true)
     expect(shouldReorderBidi({ HERMES_TUI_BIDI: '0', TERM: 'xterm-kitty' } as NodeJS.ProcessEnv)).toBe(false)
     expect(shouldReorderBidi({ HERMES_TUI_BIDI: 'on' } as NodeJS.ProcessEnv)).toBe(true)
     expect(shouldReorderBidi({ HERMES_TUI_BIDI: 'off', TERM: 'xterm' } as NodeJS.ProcessEnv)).toBe(false)
@@ -73,7 +90,7 @@ describe('reorderBidi', () => {
   })
 
   it('is a no-op on terminals with native bidi', () => {
-    expect(reorderAs('שלום', { TERM_PROGRAM: 'iTerm.app' } as NodeJS.ProcessEnv)).toBe('שלום')
+    expect(reorderAs('שלום', { TERM_PROGRAM: 'Apple_Terminal' } as NodeJS.ProcessEnv)).toBe('שלום')
   })
 })
 

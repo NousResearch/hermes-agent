@@ -7,7 +7,7 @@ description: "Local runtime policy, redacted execution history, supported-file r
 maintainer: folarihn
 tier: community
 category: tools
-requires_hermes: ">=0.20.0"
+requires_hermes: ">=0.21.5"
 platforms:
   - windows
   - linux

@@ -155,7 +155,7 @@ def probe(surface, scenario, directory):
             texts = [item['text'] for item in received]
             delegation_delivered = None
             if delegation:
-                with open_persistence_reader(ad._db_path()) as store:
+                with open_persistence_reader(ad._scope().profile_dir) as store:
                     record = store.coordination.get_delegation(delegation_id=delegation['delegation_id'])
                 delegation_delivered = (record.delivery_state, record.delivery_attempts) == ('delivered', 1)
             return {'surface': surface, 'scenario': scenario, 'children': count,

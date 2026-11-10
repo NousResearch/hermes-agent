@@ -58,12 +58,14 @@ What you'll see:
 | Command | What it does |
 |---|---|
 | `/goal <text>` | Set (or replace) the standing goal. Kicks off the first turn immediately so you don't need to send a separate message. |
-| `/goal -- <text>` | Set goal text that starts with a control word (`/goal -- pause the nightly cron`). Without `--`, `resume`/`continue`/`unpause`/`pause`/`status`/`show`/`unwait` followed by words run the control command and ignore the rest. |
+| `/goal -- <text>` | Set goal text that starts with a control word (`/goal -- pause the nightly cron`). Without `--`, `resume`/`continue`/`unpause`/`recover`/`pause`/`status`/`show`/`unwait` followed by words run the control command and ignore the rest. |
 | `/goal draft <text>` | Draft a structured completion contract from a plain-language objective, then set it. See [Completion contracts](#completion-contracts). |
 | `/goal show` | Print the active goal's completion contract. |
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
 | `/goal resume` | Resume the loop (resets the turn counter back to zero). |
+| `/goal continue` or `/goal unpause` | Alias of `/goal resume`: unpause the goal and reset the turn counter. |
+| `/goal recover` | Take the next step toward an active goal without resetting the turn counter. Refuses paused goals and exhausted budgets; use `/goal resume` for those. Used by the Desktop's **Resume goal** action after a crash. |
 | `/goal clear` | Drop the goal entirely. |
 | `/goal wait <pid> [reason]` | Park the loop on a background process — it stops re-poking the agent every turn while the process runs, and auto-resumes when it exits. |
 | `/goal unwait` | Drop the wait barrier and resume the loop immediately. |
@@ -206,6 +208,12 @@ Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the 
 
 Any real message you send while a goal is active takes priority over the continuation loop. On the CLI your message lands in `_pending_input` ahead of the queued continuation; on the gateway it goes through the adapter FIFO the same way. The judge runs again after your turn — so if your message happens to complete the goal, the judge will catch it and stop.
 
+### Answering a blocked goal
+
+If the judge pauses a goal as `blocked`, your next normal message resumes that same goal **before the agent starts working**, without resetting its turn budget. For example, “I fixed the environment; continue” needs no separate `/goal resume`. The judge checks progress after the reply and can block again if more input is needed.
+
+Automatic notifications and background wakeups do not count as your answer. Explicit pauses, interrupts, exhausted budgets, and judge-failure pauses still require an explicit resume. A pause you request during the resumed turn is not undone when that turn finishes.
+
 ### Mid-run safety (gateway)
 
 While an agent is already running, `/goal status`, `/goal pause`, `/goal clear`, `/goal wait`, and `/goal unwait` are safe to run — they only touch control-plane state and don't interrupt the current turn. Setting a **new** goal mid-run (`/goal <new text>`) is rejected with a message telling you to `/stop` first, so the old continuation can't race the new one.
@@ -217,6 +225,21 @@ A continuation prompt is not a reply to the message that set the goal, so on pla
 ### Persistence
 
 Goal state lives in `SessionDB.state_meta` keyed by `goal:<session_id>`. That means `/resume` picks up right where you left off — set a goal, close your laptop, come back tomorrow, `/resume`, and the goal is still standing exactly as you left it (active, paused, or done).
+
+### After a crash or app restart
+
+If the process running the turn dies mid-goal — you quit the Desktop app, the backend is killed, the machine reboots — the goal is not lost. It stays `active` with the same `turns_used`; only the interrupted turn is gone.
+
+On reconnect the Desktop marks the goal card **Interrupted** and offers a **Resume goal** action. That action runs `/goal recover` through the existing `goal.continue` control action: it takes the next step toward the same active goal **without resetting the turn budget**, unlike `/goal resume` (and its `/goal continue` and `/goal unpause` aliases), which unpauses the goal and zeroes the counter. Recovery refuses paused goals and exhausted budgets. The interrupted turn is not replayed — the agent picks up from the persisted state, retaining its completion contract, subgoals, and quality gates.
+
+To have the continuation fire automatically as soon as the app reconnects, opt in:
+
+```yaml
+goals:
+  auto_resume_on_reconnect: true   # default: false
+```
+
+With it off (the default) nothing runs until you click **Resume goal**. With it on, the continuation is dispatched on reconnect and is bounded by `desktop.auto_continue.max_attempts`, so a goal that crashes the backend every turn stops retrying instead of looping.
 
 ### Prompt cache
 
@@ -232,6 +255,11 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+
+  # Continue an interrupted goal automatically when the Desktop reconnects
+  # after a crash or app restart, instead of waiting for "Resume goal".
+  # Default false. Bounded by desktop.auto_continue.max_attempts.
+  auto_resume_on_reconnect: false
 ```
 
 ### Choosing the judge model

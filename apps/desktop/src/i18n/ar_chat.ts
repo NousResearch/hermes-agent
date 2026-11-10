@@ -201,6 +201,7 @@ export const arChat = {
     goalActive: 'الهدف نشط',
     goalBlocked: 'الهدف متعذر',
     goalDone: 'اكتمل الهدف',
+    goalInterrupted: 'منقطع',
     goalPaused: 'الهدف متوقف مؤقتًا',
     goalWaiting: 'الهدف قيد الانتظار',
     subagents: count => `${count} ${count === 1 ? 'وكيل فرعي' : 'وكيل فرعي'}`,

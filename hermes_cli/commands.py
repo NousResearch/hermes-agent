@@ -8,7 +8,6 @@ command, append a ``CommandDef``; to add an alias, set ``aliases=("short",)``.
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Optional
@@ -24,21 +23,6 @@ def _localized(key: str, default: str) -> str:
     """``t(key)`` with *default* when no catalog (not even ``en``) carries the key."""
     value = t(key)
     return default if value == key else value
-
-
-# Category identifiers -> ``slash.category.<slug>`` (identifiers stay English; labels are localized
-# only at render time via ``category_label``).
-_CATEGORY_SLUGS: dict[str, str] = {
-    "Session": "session", "Configuration": "configuration", "Info": "info",
-    "Tools & Skills": "tools_skills", "Plugins": "plugins", "Exit": "exit",
-    "Context": "context", "Background & Automation": "background_automation",
-}
-
-
-def category_label(category: str) -> str:
-    """Localized label for a registry category / help sub-group identifier."""
-    slug = _CATEGORY_SLUGS.get(category)
-    return _localized(f"slash.category.{slug}", category) if slug else category
 
 
 @dataclass(frozen=True)
@@ -77,9 +61,6 @@ class CommandDef:
         return _localized(f"slash.{self.name}.description", self.description)
 
 
-VALID_BUSY_POLICIES: frozenset[str] = frozenset({"dispatch", "reject", "interrupt_then_dispatch"})
-
-
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
     CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
@@ -88,7 +69,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reset",), args_hint="[name]",
                busy_policy="interrupt_then_dispatch", busy_handler="new"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
-               gateway_only=True, args_hint="[off|help|session-id]"),
+               gateway_only=True, args_hint="[off|help|session-id]", subcommands=("off", "help")),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True, desktop="terminal"),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -96,7 +77,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("history", "Show conversation history", "Session",
                cli_only=True),
     CommandDef("save", "Export the current conversation (bare /save shows usage)", "Session",
-               args_hint="<json|md|html> [filename] [redact]"),
+               args_hint="<json|md|html> [filename] [redact]", subcommands=("json", "md", "html")),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
     CommandDef("prompt", "Compose your next prompt in $EDITOR (markdown), then send it", "Session",
                cli_only=True, args_hint="[initial text]", aliases=("compose",)),
@@ -118,6 +99,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[number] [--all]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
                cli_only=True, aliases=("snap",), args_hint="[create|restore <id>|prune]",
+               subcommands=("create", "restore", "prune"),
                desktop="terminal"),
     CommandDef("export", "Export a profile (config, skills, theme) to a shareable archive", "Configuration",
                cli_only=True, args_hint="[profile] [-o output.tar.gz]"),
@@ -130,7 +112,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("pause", "Pause new work globally (emergency stop); '/pause off' resumes", "Session",
                gateway_only=True, args_hint="[reason | off]", busy_policy="dispatch"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
-               gateway_only=True, args_hint="[session|always]", busy_policy="dispatch"),
+               gateway_only=True, args_hint="[session|always]", subcommands=("session", "always"),
+               busy_policy="dispatch"),
     CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
                gateway_only=True, args_hint="[all] [reason]", busy_policy="dispatch"),
     CommandDef("bg", "Run a prompt in a separate background session", "Session",
@@ -193,6 +176,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="reject", busy_handler="model", desktop="hidden"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",), args_hint="[auto|codex_app_server]",
+               subcommands=("auto", "codex_app_server"),
                busy_policy="reject", busy_handler="codex-runtime"),
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]", argument_mode="options"),
@@ -248,7 +232,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
-               args_hint="[list|disable|enable] [name...]", cli_only=True, argument_mode="options"),
+               args_hint="[list|disable|enable] [name...]", subcommands=("list", "disable", "enable"),
+               cli_only=True, argument_mode="options"),
     CommandDef("toolsets", "List available toolsets", "Tools & Skills",
                cli_only=True, desktop="terminal"),
     CommandDef("skills", "Search, install, inspect, or manage skills",
@@ -333,7 +318,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",), desktop="terminal"),
     CommandDef("platform", "Pause, resume, or list a failing gateway platform", "Info",
-               gateway_only=True, args_hint="<pause|resume|list> [name]"),
+               gateway_only=True, args_hint="<pause|resume|list> [name]", subcommands=("pause", "resume", "list")),
     CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
                cli_only=True, args_hint="[number]", desktop="terminal"),
     CommandDef("paste", "Attach clipboard image from your clipboard", "Info",
@@ -345,7 +330,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",),
                busy_policy="dispatch", execute="version"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info",
-               args_hint="[nous|local]"),
+               args_hint="[nous|local]", subcommands=("nous", "local")),
 
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
@@ -415,7 +400,7 @@ def build_commands_by_category() -> dict[str, dict[str, str]]:
     """Localized ``{category: {"/command": description}}`` (excludes gateway_only).
 
     Built per call so a ``display.language`` change applies without a restart; category keys are
-    the registry identifiers -- render them with ``category_label``.
+    the registry identifiers.
     """
     grouped: dict[str, dict[str, str]] = {}
     for cmd in COMMAND_REGISTRY:
@@ -440,16 +425,9 @@ def build_commands() -> dict[str, str]:
 # every ``from hermes_cli.commands import COMMANDS`` sees the active language.
 _LAZY_LOCALIZED_TABLES = {"COMMANDS": build_commands, "COMMANDS_BY_CATEGORY": build_commands_by_category}
 
-# Subcommands lookup: "/cmd" -> ["sub1", ...]; explicit ``subcommands`` first (in
-# registry order), then pipe patterns in args_hint ("[on|off|status]") as fallback.
+# Subcommands lookup: "/cmd" -> ["sub1", ...] in registry order.
 SUBCOMMANDS: dict[str, list[str]] = {
-    f"/{_cmd.name}": list(_cmd.subcommands) for _cmd in COMMAND_REGISTRY if _cmd.subcommands}
-
-_PIPE_SUBS_RE = re.compile(r"[a-z]+(?:\|[a-z]+)+")
-for _cmd in COMMAND_REGISTRY:
-    _m = _PIPE_SUBS_RE.search(_cmd.args_hint) if _cmd.args_hint else None
-    if _m and f"/{_cmd.name}" not in SUBCOMMANDS:
-        SUBCOMMANDS[f"/{_cmd.name}"] = _m.group(0).split("|")
+    f"/{cmd.name}": list(cmd.subcommands) for cmd in COMMAND_REGISTRY if cmd.subcommands}
 
 
 # /help sub-groups for the large "Session" category (category itself is load-bearing for gateway
@@ -476,13 +454,6 @@ def is_gateway_known_command(name: str | None) -> bool:
         plugin_name == name for plugin_name, _d, _h in _iter_plugin_command_entries())
 
 
-# Commands with explicit mid-run handling (busy_policy != "reject"). Kept
-# under its historical name for introspection/tests; the real bypass set is
-# every resolvable command (see should_bypass_active_session).
-ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
-    cmd.name for cmd in COMMAND_REGISTRY if cmd.busy_policy != "reject")
-
-
 def is_interrupt_then_dispatch(command_name: str | None) -> bool:
     """Guard 1 (gateway/platforms/base.py) routes these through the cancel-handoff path."""
     cmd = resolve_command(command_name) if command_name else None
@@ -495,8 +466,8 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     command text reaching the pending queue, so a queued mid-run /model (or /reasoning, /voice,
     /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /sethome, /reset)
     would silently interrupt the agent AND get discarded — a zero-char response. See issue
-    #5057 / PRs #6252, #10370, #4665. ACTIVE_SESSION_BYPASS_COMMANDS remains the subset with
-    explicit Level-2 handlers; the rest fall through to the catch-all.
+    #5057 / PRs #6252, #10370, #4665. Commands with busy_policy != "reject" have explicit
+    Level-2 handlers; the rest fall through to the catch-all.
 
     See #10370, #4665, #5057, #6252.
     """

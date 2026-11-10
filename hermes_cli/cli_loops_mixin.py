@@ -256,7 +256,7 @@ class CLILoopsMixin:
 
     def _cmd_egress(self, cmd_original: str):
         from hermes_cli.slash_exec import CommandContext, execute_command
-        text = execute_command("egress", CommandContext(surface="cli")).text
+        text = execute_command("egress", CommandContext()).text
         self._console_print(text, highlight=False, markup=False)
 
     def _cmd_statusbar(self, cmd_original: str):

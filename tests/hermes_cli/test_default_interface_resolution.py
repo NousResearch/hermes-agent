@@ -149,6 +149,13 @@ class TestWantsTuiEarly:
         assert m._wants_tui_early([]) is True
 
 
+def test_env_tui_on_a_pipe_runs_classic_at_both_resolvers(monkeypatch):
+    _patch_config(monkeypatch, "cli")
+    _fake_tty(monkeypatch, False)
+    monkeypatch.setenv("HERMES_TUI", "1")
+    assert m._wants_tui_early(["chat", "-q", "x"]) is False
+    assert m._resolve_use_tui(_args()) is False
+
 
 # ---------------------------------------------------------------------------
 # argument parser — flags exist at both levels and are relaunch-inherited

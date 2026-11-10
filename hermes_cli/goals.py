@@ -1180,13 +1180,6 @@ class GoalManager:
         )
         return self._save()
 
-    def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
-        """Attach or replace the completion contract on the active goal."""
-        if self._state is None:
-            return None
-        self._state.contract = contract or GoalContract()
-        return self._save()
-
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
         if not self._state:
             return None

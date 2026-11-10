@@ -64,10 +64,6 @@ def declared_snapshots(table: str) -> list[tuple[str, ...]]:
     return snapshots
 
 
-def current_declared_columns(table: str) -> tuple[str, ...]:
-    return declared_snapshots(table)[-1]
-
-
 def reachable_physical_layouts(
     table: str,
     accept: Optional[Callable[[tuple[str, ...], int], bool]] = None,

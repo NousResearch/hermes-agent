@@ -1,9 +1,4 @@
-"""Registry-owned slash command execution (thin slice).
-
-Invariant: an executor's output depends only on ``ctx.args`` / ``ctx.options`` — never on
-``ctx.surface`` — so the core text is identical across surfaces for a fixed context (enforced by
-tests/hermes_cli/test_commands_execute.py).
-"""
+"""Registry-owned slash command execution: pure formatters whose text depends only on ``ctx.args`` and ``ctx.options``."""
 
 from __future__ import annotations
 
@@ -19,17 +14,14 @@ __all__ = [
     "CommandReply",
     "execute_command",
     "resolve_executor",
-    "run_execute",
 ]
 
 
 @dataclass(frozen=True)
 class CommandContext:
     """Surface-provided inputs for a shared command executor."""
-    surface: str = "cli"                # "cli" | "gateway" | "tui" — decoration only
     args: str = ""                      # raw argument string after the command word
     options: Mapping[str, Any] = field(default_factory=dict)  # surface params (page_size, ...)
-    config_get: Callable[[str, Any], Any] | None = None       # optional config accessor
 
 
 @dataclass(frozen=True)
@@ -38,7 +30,6 @@ class CommandReply:
     ``data`` it derived so a surface can re-render with its own decoration."""
     text: str
     data: Mapping[str, Any] = field(default_factory=dict)
-    format: str = "plain"               # "plain" | "markdown" (hint, not a contract)
 
 
 # Executors — pure formatters, no agent/session mutation.
@@ -129,7 +120,7 @@ def _exec_help(ctx: CommandContext) -> CommandReply:
                 lines.append(t("gateway.help.more_use_commands", count=len(sorted_cmds) - 10))
     except Exception:
         pass
-    return CommandReply("\n".join(lines), format="markdown")
+    return CommandReply("\n".join(lines))
 
 
 def _exec_commands(ctx: CommandContext) -> CommandReply:
@@ -141,7 +132,7 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
     try:
         requested_page = int((ctx.args or "").strip() or 1)
     except ValueError:
-        return CommandReply(t("gateway.commands.usage"), format="markdown")
+        return CommandReply(t("gateway.commands.usage"))
 
     allowed = ctx.options.get("allowed_commands")
     entries = list(gateway_help_lines(allowed))
@@ -161,7 +152,7 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
         pass
 
     if not entries:
-        return CommandReply(t("gateway.commands.none"), format="markdown")
+        return CommandReply(t("gateway.commands.none"))
 
     try:
         page_size = max(1, int(ctx.options.get("page_size", 20)))
@@ -178,7 +169,7 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
         lines.extend(["", " | ".join(nav_parts)])
     if page != requested_page:
         lines.append(t("gateway.commands.out_of_range", requested=requested_page, page=page))
-    return CommandReply("\n".join(lines), format="markdown")
+    return CommandReply("\n".join(lines))
 
 
 EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
@@ -196,17 +187,11 @@ def resolve_executor(cmd_def: Any) -> Callable[[CommandContext], CommandReply] |
     return EXECUTORS.get(getattr(cmd_def, "execute", None) or "")
 
 
-def run_execute(cmd_def: Any, ctx: CommandContext) -> CommandReply | None:
-    """Run ``cmd_def``'s registry-owned executor, if any."""
-    fn = resolve_executor(cmd_def)
-    return None if fn is None else fn(ctx)
-
-
 def execute_command(name: str, ctx: CommandContext) -> CommandReply:
     """Run the shared executor for ``name``; ``LookupError`` when unknown or not migrated."""
     from hermes_cli.commands import resolve_command
     cmd_def = resolve_command(name)
-    reply = run_execute(cmd_def, ctx) if cmd_def is not None else None
-    if reply is None:
+    fn = resolve_executor(cmd_def) if cmd_def is not None else None
+    if fn is None:
         raise LookupError(f"no registry-owned executor for /{name}")
-    return reply
+    return fn(ctx)

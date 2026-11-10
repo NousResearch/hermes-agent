@@ -52,7 +52,7 @@ def test_non_chat_agent_command_still_registers_hooks(monkeypatch):
         register_from_config=lambda *a, **k: calls.append("webhooks")))
     from hermes_cli import mcp_startup
     monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **k: None)
-    main_mod._prepare_agent_startup(_args("rl"))
+    main_mod._prepare_agent_startup(_args("acp"))
     assert calls == ["hooks", "webhooks"]
 
 
@@ -60,7 +60,6 @@ def test_non_chat_agent_command_still_registers_hooks(monkeypatch):
     ("gateway", {"gateway_command": "run"}, False),  # a service: a hidden console is not a person (#127822)
     ("cron", {"cron_command": "tick"}, False),       # scheduled: nobody at the console
     ("acp", {}, False),                              # stdin carries the protocol stream
-    ("rl", {}, True),                                # a foreground command may still ask at its terminal
 ])
 def test_only_foreground_commands_may_prompt_for_hook_consent(monkeypatch, command, subcommand, interactive):
     from hermes_cli import main as main_mod

@@ -752,18 +752,6 @@ class TestGoalManagerContract:
 
 
 
-    def test_set_contract_after_the_fact(self, hermes_home):
-        from hermes_cli.goals import GoalManager, GoalContract
-
-        mgr = GoalManager(session_id="c-after")
-        mgr.set("ship it")
-        assert not mgr.has_contract()
-        mgr.set_contract(GoalContract(verification="x"))
-        assert mgr.has_contract()
-        # Survives reload.
-        from hermes_cli.goals import GoalManager as GM2
-        assert GM2(session_id="c-after").has_contract()
-
     def test_persistence_roundtrip(self, hermes_home):
         from hermes_cli.goals import GoalManager, GoalContract
 

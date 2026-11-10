@@ -1,10 +1,9 @@
 """``hermes --cpu-profile PATH``: process-wide cProfile, written when the process exits.
 
 Enabled once after argument parsing and written from ``atexit``, so short commands and
-long-running ones (``gateway run``) are covered without wrapping every handler. The one-shot
-(``-z``) exit skips ``atexit`` on purpose (``main._exit_after_oneshot``) and calls
-:func:`write_cpu_profile` itself. A relative PATH lands in the active profile's
-``logs/profiles/``. Profiles cover THIS process only: under ``--tui`` that is the launcher,
+long-running ones (``gateway run``) are covered without wrapping every handler. Hard exits
+through ``os._exit`` call :func:`write_cpu_profile` themselves. A relative PATH lands in the
+active profile's ``logs/profiles/``. Profiles cover THIS process only: under ``--tui`` that is the launcher,
 while the agent runs in the TUI's own backend process.
 """
 

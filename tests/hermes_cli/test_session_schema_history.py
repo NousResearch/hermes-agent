@@ -39,7 +39,7 @@ def test_replayed_history_ends_at_current_schema(table: str) -> None:
         f"SCHEMA_HISTORY[{table!r}].events is out of order: append new events at the END with the next "
         f"sequence number, never insert mid-list (got {labels})"
     )
-    replayed = history.current_declared_columns(table)
+    replayed = history.declared_snapshots(table)[-1]
     declared = _declared_now(table)
     missing = [c for c in declared if c not in replayed]
     extra = [c for c in replayed if c not in declared]

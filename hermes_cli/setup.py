@@ -434,13 +434,6 @@ def _prompt_number(label: str, current, cast=int):
         return None
 
 
-def _prompt_int_setting(section: dict, key: str, label: str, current, accept) -> None:
-    """Prompt for an int; store it under *key* only when it parses and *accept* holds."""
-    value = _prompt_number(label, current)
-    if value is not None and accept(value):
-        section[key] = value
-
-
 _TOOL_PROGRESS_HELP = (
     "Tool Progress Display", "Controls how much tool activity is shown (CLI and messaging).",
     "  off     — Silent, just the final response",

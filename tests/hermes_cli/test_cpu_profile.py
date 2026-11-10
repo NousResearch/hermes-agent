@@ -31,24 +31,6 @@ def test_relative_cpu_profile_path_lands_in_the_profile_logs(tmp_path: Path):
     assert "cumulative" in (target.parent / "run.prof.txt").read_text(encoding="utf-8")
 
 
-def test_oneshot_hard_exit_still_writes_the_profile(tmp_path: Path):
-    """``-z`` leaves through ``os._exit`` (atexit skipped); the profile must still be written."""
-    hermes_home = tmp_path / "home"
-    hermes_home.mkdir()
-    target = tmp_path / "oneshot.prof"
-    code = (
-        "from hermes_cli.cpu_profile import enable_cpu_profile\n"
-        f"enable_cpu_profile({str(target)!r})\n"
-        "from hermes_cli.main import _exit_after_oneshot\n"
-        "_exit_after_oneshot(0)\n"
-    )
-
-    result = _run(["-c", code], hermes_home)
-
-    assert result.returncode == 0, result.stderr[-1000:]
-    assert pstats.Stats(str(target)).total_calls > 0
-
-
 def test_gateway_graceful_hard_exit_still_writes_the_profile(tmp_path: Path):
     """Every gateway exit funnels through ``os._exit`` (atexit skipped); the profile must still be written."""
     hermes_home = tmp_path / "home"

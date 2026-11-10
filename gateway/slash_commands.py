@@ -105,7 +105,7 @@ def _preview(text: str, limit: int = 60) -> str:
 def _execute(command: str, **ctx_kwargs):
     """Run *command* through the shared slash executor on the gateway surface."""
     from hermes_cli.slash_exec import CommandContext, execute_command
-    return execute_command(command, CommandContext(surface="gateway", **ctx_kwargs))
+    return execute_command(command, CommandContext(**ctx_kwargs))
 
 
 def _restart_notify_payload(event: MessageEvent) -> dict:

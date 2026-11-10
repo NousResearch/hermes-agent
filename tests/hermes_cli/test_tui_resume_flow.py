@@ -33,36 +33,6 @@ def main_mod(monkeypatch):
     return mod
 
 
-def test_exit_after_oneshot_flushes_stdio_and_calls_os_exit(
-    monkeypatch, main_mod
-):
-    flushed = []
-    exits = []
-
-    class FakeStream:
-        def __init__(self, name):
-            self.name = name
-
-        def flush(self):
-            flushed.append(self.name)
-
-    def fake_exit(rc):
-        exits.append(rc)
-        raise SystemExit(rc)
-
-    monkeypatch.setattr(main_mod.sys, "stdout", FakeStream("stdout"))
-    monkeypatch.setattr(main_mod.sys, "stderr", FakeStream("stderr"))
-    monkeypatch.setattr(main_mod.os, "_exit", fake_exit)
-    monkeypatch.setattr("logging.shutdown", lambda: None)
-
-    with pytest.raises(SystemExit) as exc:
-        main_mod._exit_after_oneshot(17)
-
-    assert exc.value.code == 17
-    assert exits == [17]
-    assert flushed == ["stdout", "stderr"]
-
-
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     monkeypatch.setenv("HERMES_PYTHON", sys.executable)
     captured = {}

@@ -1556,7 +1556,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         inside the running CLI). Bundles are loaded via ``/<bundle-name>``."""
         from cli import ChatConsole, _BOLD, _RST, _accent_hex
         from hermes_cli.slash_exec import CommandContext, execute_command
-        reply = execute_command("bundles", CommandContext(surface="cli"))
+        reply = execute_command("bundles", CommandContext())
         if "error" in reply.data:
             return _cp(f"\033[1;31m{_t('bundles.unavailable', error=reply.data['error'])}{_RST}")
         bundles = reply.data["bundles"]

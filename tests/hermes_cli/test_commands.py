@@ -390,6 +390,12 @@ class TestStackedSkillCompletion:
 # ── SUBCOMMANDS extraction ──────────────────────────────────────────────
 
 
+def test_subcommand_completion_offers_only_declared_subcommands():
+    completer = SlashCommandCompleter()
+    assert {c.text for c in _completions(completer, "/codex-runtime ")} == {"auto", "codex_app_server"}
+    assert {c.text for c in _completions(completer, "/snapshot ")} == {"create", "restore", "prune"}
+    assert _completions(completer, "/model mo") == []
+
 
 
 # ── Subcommand tab completion ───────────────────────────────────────────

@@ -36,7 +36,6 @@ from hermes_cli._subprocess_compat import suppress_platform_ver_console
 suppress_platform_ver_console()
 
 import os
-import re
 import sys
 
 # Inline path math so ``python hermes_cli/main.py`` (script mode: sys.path[0]
@@ -72,32 +71,6 @@ if _argv_is_gateway_run(sys.argv[1:]):
         del _arm_sw
     except Exception:
         pass
-
-
-def _exit_after_oneshot(rc: object) -> None:
-    """Exit one-shot mode without letting late native finalizers change rc.
-
-    The SIGABRT this guards against fires in a native-extension finalizer
-    during ``Py_FinalizeEx``, *after* the response printed. Flush, shut down
-    file logging, then ``os._exit`` past finalization. The ``atexit`` chain is
-    deliberately skipped — several handlers re-enter native code that may be
-    the abort source.
-
-    See #30387, #43055.
-    """
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.flush()
-        except Exception:
-            pass
-    from hermes_cli.cpu_profile import write_cpu_profile
-
-    write_cpu_profile()  # atexit never runs past os._exit
-    try:
-        logging.shutdown()
-    except Exception:
-        pass
-    os._exit(rc if isinstance(rc, int) else (0 if rc is None else 1))
 
 
 def _warn_if_unsupervised_pid1(pid: int | None = None) -> None:
@@ -196,8 +169,8 @@ def _config_default_interface_early() -> str:
 def _wants_tui_early(argv: list[str] | None = None) -> bool:
     """Earliest TUI decision, usable before argparse/config imports.
 
-    Precedence: ``--cli`` wins, then ``--tui``/``HERMES_TUI=1``, then a
-    real-TTY gate, then ``display.interface``. The TTY gate is load-bearing
+    Precedence matches ``_resolve_use_tui``: ``--cli`` wins, then ``--tui``,
+    then a real-TTY gate, then ``HERMES_TUI=1``, then ``display.interface``. The TTY gate is load-bearing
     for headless spawners (kanban workers, cron, pipes running ``chat -q``):
     a ``display.interface: tui`` default used to boot the TUI here, whose
     no-TTY bail-out exits 0 without doing the task. An explicit ``--tui``
@@ -207,14 +180,14 @@ def _wants_tui_early(argv: list[str] | None = None) -> bool:
         argv = sys.argv[1:]
     if "--cli" in argv:
         return False
-    if os.environ.get("HERMES_TUI") == "1" or any(flag in argv for flag in ("--tui", "--native", "--tui-native")):
+    if any(flag in argv for flag in ("--tui", "--native", "--tui-native")):
         return True
     try:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             return False
     except Exception:
         return False
-    return _config_default_interface_early() == "tui"
+    return os.environ.get("HERMES_TUI") == "1" or _config_default_interface_early() == "tui"
 
 
 # Mouse-tracking residue suppression — runs BEFORE every other import on the
@@ -343,7 +316,6 @@ _startup_fast.ensure_project_root_on_path()
 # cache HERMES_HOME at import time. --profile/-p is pre-parsed from sys.argv,
 # HERMES_HOME set, and the flag stripped so argparse never sees it. Falls back
 # to ~/.hermes/active_profile for the sticky default.
-_PROFILE_NAME_RE = r"^[a-z0-9][a-z0-9_-]{0,63}$"  # mirrors hermes_cli.profiles._PROFILE_ID_RE
 # Set only when -p/--profile was on argv. Sticky active_profile must not count:
 # `hermes desktop` with no flag must not overwrite Desktop's stored profile.
 _explicit_cli_profile: str | None = None
@@ -402,6 +374,7 @@ def _scan_profile_flag(argv: list) -> tuple:
     ``--flag``) are always a silent skip.
     """
     from hermes_cli._parser import top_level_value_flag_sets
+    from hermes_constants import PROFILE_ID_RE
 
     value_flags, optional_value_flags = top_level_value_flag_sets()
     i = 0
@@ -413,7 +386,7 @@ def _scan_profile_flag(argv: list) -> tuple:
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
             raw = argv[i + 1]
             value = raw.strip().casefold()
-            if re.match(_PROFILE_NAME_RE, value):
+            if PROFILE_ID_RE.match(value):
                 return value, 2, i
             if not saw_subcommand and not _looks_like_option_value(raw) and _looks_like_hermes_invocation():
                 _exit_invalid_profile_name(raw)
@@ -2715,7 +2688,7 @@ def _resolve_deferred_platform_cli_command(command_name: str | None) -> None:
         )
 
 
-_AGENT_COMMANDS = {None, "chat", "acp", "rl"}
+_AGENT_COMMANDS = {None, "chat", "acp"}
 _AGENT_SUBCOMMANDS = {"cron": ("cron_command", {"run", "tick"}), "gateway": ("gateway_command", {"run"}),
                       "curator": ("curator_command", {"run"})}  # curator run fires post_curator_run
 
@@ -2742,10 +2715,6 @@ def _agent_subcommand_selected(args) -> bool:
     """True for ``cron run/tick``, ``gateway run``, ``curator run`` (see _AGENT_SUBCOMMANDS)."""
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     return bool(_sub_attr and getattr(args, _sub_attr, None) in _sub_set)
-
-
-def _should_background_mcp_startup(args) -> bool:
-    return not _is_tui_chat_launch(args) and args.command in {None, "chat", "rl"}
 
 
 def _chat_runs_at_gateway(args) -> bool:
@@ -2808,26 +2777,13 @@ def _prepare_agent_startup(args) -> None:
         if _accept_hooks:  # rides session.create (env_launch_flags) and the classic CLI's consent check
             os.environ["HERMES_ACCEPT_HOOKS"] = "1"
         return
-    if _should_background_mcp_startup(args):
-        try:
-            from hermes_cli.mcp_startup import start_background_mcp_discovery
-
-            start_background_mcp_discovery(
-                logger=logger,
-                thread_name="cli-mcp-discovery",
-            )
-        except Exception:
-            logger.debug(
-                "Background MCP tool discovery failed at CLI startup",
-                exc_info=True,
-            )
     try:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config
         from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
 
         _hooks_cfg = load_config()
-        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks, interactive=args.command in {None, "chat", "rl"})
+        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks, interactive=args.command in {None, "chat"})
         if _accept_hooks and args.command == "gateway":  # every session-open re-sync keeps honouring it
             from agent.shell_hooks import accept_for_process
             accept_for_process()

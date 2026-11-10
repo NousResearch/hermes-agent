@@ -299,12 +299,12 @@ class CLICommandsSessionToolsMixin:
     def _handle_autoprune_command(self, cmd: str):
         """/autoprune [on|off|later|status] — the low-disk auto-prune decision."""
         from hermes_cli.slash_exec import CommandContext, execute_command
-        _say_block(execute_command("autoprune", CommandContext(surface="cli", args=cmd.partition(" ")[2])).text)
+        _say_block(execute_command("autoprune", CommandContext(args=cmd.partition(" ")[2])).text)
 
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
         from hermes_cli.slash_exec import CommandContext, execute_command
-        reply = execute_command("profile", CommandContext(surface="cli"))
+        reply = execute_command("profile", CommandContext())
         _say_block(f"  {_t('profile.profile', profile=reply.data['profile'])}",
                    f"  {_t('profile.home', home=reply.data['home'])}")
 

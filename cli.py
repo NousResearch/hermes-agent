@@ -1115,7 +1115,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
     # ``_handle_<name>_command(cmd)``. Looked up via getattr at dispatch time so
     # monkeypatching works. A handler returning False exits the REPL.
     _SLASH_DISPATCH: dict[str, tuple[str, bool]] = {
-        "exit": ("_cmd_exit", True), "quit": ("_cmd_exit", True), "help": ("_cmd_help", True),
+        "quit": ("_cmd_exit", True), "help": ("_cmd_help", True),
         "palette": ("_open_command_palette", False), "whoami": ("_handle_whoami_command", False),
         "profile": ("_handle_profile_command", False), "toolsets": ("show_toolsets", False),
         "config": ("show_config", False), "redraw": ("_cmd_redraw", True), "clear": ("_cmd_clear", True),
@@ -1709,12 +1709,12 @@ def main(
         image: Optional local image path to attach to a single query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
-        model: Model to use (default: anthropic/claude-opus-4-20250514)
+        model: Model to use
         provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
         reasoning: Reasoning effort for this run (none|minimal|low|medium|high|xhigh|max|ultra). Overrides agent.reasoning_effort.
         api_key: API key for authentication
         base_url: Base URL for the API
-        max_turns: Maximum tool-calling iterations (default: 60)
+        max_turns: Maximum tool-calling iterations (default: unlimited)
         verbose: Enable verbose logging
         compact: Use compact display mode
         list_tools: List available tools and exit

@@ -501,14 +501,20 @@ def activate_dependencies(project_root: Path) -> None:
         if not selected.is_dir():
             return  # External/Nix interpreter owns its original sys.path.
         built_for = venv_python_version(environment)
-    if not selected.is_dir():
-        raise RuntimeError(f"dependency environment has no site-packages: {selected}")
     # A foreign site-packages tree can only offer native extensions tagged for its
     # own ABI. Keep the caller's launch environment rather than letting pure Python
     # wrappers resolve beside unloadable extensions (#122555, #152211). Read the
     # environment's metadata because Windows site-packages paths carry no version.
     if built_for is not None and built_for != sys.version_info[:2]:
+        print(
+            f"hermes: dependency environment {environment} targets Python "
+            f"{built_for[0]}.{built_for[1]}; keeping the Python "
+            f"{sys.version_info[0]}.{sys.version_info[1]} launch environment",
+            file=sys.stderr,
+        )
         return
+    if not selected.is_dir():
+        raise RuntimeError(f"dependency environment has no site-packages: {selected}")
     import site
 
     sys.path[:] = [entry for entry in sys.path

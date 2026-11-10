@@ -9,11 +9,24 @@ import sys
 import pytest
 
 
-@pytest.mark.parametrize("minor_delta", [-1, 1])
-def test_foreign_python_generation_never_enters_the_running_interpreter(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minor_delta: int,
+@pytest.mark.parametrize(
+    ("minor_delta", "site_exists", "expected", "warns"),
+    [
+        (-1, True, ["False", "True", "True"], True),
+        (0, True, ["True", "False", "False"], False),
+        (1, True, ["False", "True", "True"], True),
+        (1, False, ["False", "True", "True"], True),
+    ],
+)
+def test_dependency_generation_activation_respects_the_running_interpreter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minor_delta: int,
+    site_exists: bool,
+    expected: list[str],
+    warns: bool,
 ) -> None:
-    """A lower or higher CPython generation stays out, even after repeated activation."""
+    """Matching activates; either foreign direction stays out, even when incomplete or repeated."""
     from pm import environments
 
     root = tmp_path / "repo"
@@ -28,11 +41,13 @@ def test_foreign_python_generation_never_enters_the_running_interpreter(
         if os.name == "nt"
         else f"lib/python{foreign[0]}.{foreign[1]}/site-packages"
     )
-    site.mkdir(parents=True)
+    venv.mkdir(parents=True)
     (venv / "pyvenv.cfg").write_text(
         f"version_info = {foreign[0]}.{foreign[1]}.0\n", encoding="utf-8"
     )
-    (site / "foreign_abi_only.py").write_text("ORIGIN = 'foreign'\n", encoding="utf-8")
+    if site_exists:
+        site.mkdir(parents=True)
+        (site / "foreign_abi_only.py").write_text("ORIGIN = 'foreign'\n", encoding="utf-8")
     (state / "facts.json").write_text(
         json.dumps({"schema": 1, "packages": {"venv": {"environment": str(venv)}}}),
         encoding="utf-8",
@@ -74,4 +89,5 @@ print(str(foreign_site.resolve()) not in os.environ.get("PYTHONPATH", "").split(
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines() == ["False", "True", "True"]
+    assert result.stdout.splitlines() == expected
+    assert ("keeping the Python" in result.stderr) is warns

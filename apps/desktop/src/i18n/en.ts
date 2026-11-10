@@ -3330,7 +3330,10 @@ export const en: Translations = {
 
   composer: {
     message: 'Message',
-    wakingProfile: profile => `Waking up ${profile}…`,
+    switchingProfile: profile => `Switching to ${profile}…`,
+    switchingProfileSlow: 'Still connecting. Messages you send now will wait and go to this agent.',
+    switchProfileFailed: profile => `Couldn’t switch to ${profile}`,
+    willSendTo: profile => `Will send to ${profile}`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',
     placeholderFollowUp: 'Send follow-up',

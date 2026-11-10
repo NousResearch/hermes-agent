@@ -200,3 +200,54 @@ test('an unrelated invalid_params keeps the generic toast', () => {
   )
   expect(lastMessage()).toBe('invalid_params')
 })
+
+// #143133: a model pick or option change on a chat whose launch API key changed showed the raw
+// `launch_credentials_unavailable` code. Every retry repeats it; a new chat runs on the current key.
+test('a launch-credentials refusal says the key changed and offers a new chat', () => {
+  notifyError(
+    new JsonRpcGatewayError('launch_credentials_unavailable', {
+      code: 4001,
+      data: {
+        reason: 'launch_credentials_unavailable',
+        field: 'model.api_key',
+        detail: 'changed in config.yaml since this session started'
+      }
+    }),
+    en.shell.modelOptions.updateFailed
+  )
+
+  const toast = $notifications.get()[0]
+  expect(toast?.message).toBe(en.assistant.thread.errorCodes.launch_credentials_unavailable.body)
+  expect(toast?.message).not.toContain('launch_credentials_unavailable')
+  expect(toast?.action?.label).toBe(en.assistant.thread.errorStartNewSession)
+
+  // A deferred pick's refusal event carries only the bare code.
+  clearNotifications()
+  notifyError(new Error('launch_credentials_unavailable'), en.desktop.modelSwitchFailed)
+  expect(lastMessage()).toBe(en.assistant.thread.errorCodes.launch_credentials_unavailable.body)
+})
+
+// A route that raises with a dict detail ({message, kind}: Saved connections Test and Connect on an SSH
+// row) showed the whole JSON body instead of its sentence.
+const sshTimeout = 'SSH operation to user@ssh.example.test timed out. It will be re-established on the next attempt.'
+
+const sshAuthFailed =
+  'SSH authentication to user@ssh.example.test failed. Hermes runs ssh non-interactively (BatchMode), so a key ' +
+  'requiring a passphrase or 2FA must be loaded into ssh-agent first. Original error: Permission denied (publickey).'
+
+const objectDetail = (message: string, kind: string) => `502: ${JSON.stringify({ detail: { message, kind } })}`
+
+test.each([
+  ['browser', (body: string) => body],
+  ['native IPC', (body: string) => `Error invoking remote method 'hermes:api': Error: ${body}`]
+])('a %s error with an object detail toasts its message, not the JSON', (_, wrap) => {
+  notifyError(new Error(wrap(objectDetail(sshTimeout, 'timeout'))), 'Test failed')
+
+  expect($notifications.get()[0]).toMatchObject({ message: sshTimeout, detail: undefined })
+})
+
+test('a long object-detail message keeps the fallback toast and puts the sentence in Details', () => {
+  notifyError(new Error(objectDetail(sshAuthFailed, 'auth-failed')), 'Test failed')
+
+  expect($notifications.get()[0]).toMatchObject({ message: 'Test failed', detail: sshAuthFailed })
+})

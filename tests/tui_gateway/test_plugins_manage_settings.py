@@ -64,3 +64,38 @@ def test_settings_writes_the_plugin_namespace_and_refuses_secrets_and_bad_types(
     for values in ({"api_key": "leak"}, {"retries": "two"}, {"mode": "reckless"}, {"unknown": 1}):
         assert _manage(action="settings", key="demo-plugin", values=values)["error"]["code"] == 4021
     assert "api_key" not in (plugins_home / "config.yaml").read_text(encoding="utf-8")
+
+
+PORTABLE_MANIFEST = """\
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "portable-demo",
+  "version": "1.0.0",
+  "extensions": {"com.nousresearch.hermes": {"config_schema": {
+    "show_chip": {"type": "bool", "default": true},
+    "api_key": {"type": "secret", "env": "PORTABLE_DEMO_KEY"}
+  }}}
+}
+"""
+
+
+def test_portable_plugin_json_schema_lists_and_saves_like_a_native_one(plugins_home, monkeypatch):
+    """Agent Plugins v1 forbids unknown top-level fields, so a portable package declares its form under
+    ``extensions.com.nousresearch.hermes.config_schema``; it must get the same list + save path, and a
+    save tells the plugin's Desktop half (``plugin.<id>.settings.changed``) so it applies without polling."""
+    sent = []
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda name, payload: sent.append((name, payload)))
+    (plugins_home / "plugins" / "portable-demo").mkdir()
+    (plugins_home / "plugins" / "portable-demo" / "plugin.json").write_text(PORTABLE_MANIFEST, encoding="utf-8")
+
+    rows = _manage(action="list")["result"]["plugins"]
+    fields = {f["key"]: f for f in next(r for r in rows if r["key"] == "portable-demo")["settings_schema"]}
+    assert fields["show_chip"]["type"] == "boolean" and fields["show_chip"]["value"] is True
+    assert fields["api_key"]["type"] == "secret" and fields["api_key"]["env"] == "PORTABLE_DEMO_KEY"
+
+    resp = _manage(action="settings", key="portable-demo", values={"show_chip": False})
+    assert resp["result"]["written"] == ["show_chip"]
+    from hermes_cli.config import load_config_readonly
+    assert load_config_readonly()["plugins"]["entries"]["portable-demo"]["settings"] == {"show_chip": False}
+    assert sent == [("plugin.portable-demo.settings.changed", {"written": ["show_chip"]})]
+    assert _manage(action="settings", key="portable-demo", values={"api_key": "leak"})["error"]["code"] == 4021

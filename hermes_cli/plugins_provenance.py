@@ -50,7 +50,7 @@ def read_sidecar_rows(plugins_dir: Path) -> dict:
         return {}
     try:
         data = json.loads(sidecar.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # ValueError: bad JSON and bytes that are not UTF-8
         return {}
     return data if isinstance(data, dict) else {}
 

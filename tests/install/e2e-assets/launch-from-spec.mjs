@@ -27,8 +27,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
-import { _electron } from '@playwright/test';
 import { prepareWindowForInput } from './window-input.cjs';
 import { assertStagedBranch, pickAppWindow, openAbout, readManualUpdateCommand, waitForUpdate } from './update-ui.cjs';
 import { installSourceBranchProbe, prepareSourceBranchEnvironment } from './source-branch-probe.cjs';
@@ -36,6 +36,9 @@ import { observeSourceUpdate } from './source-update-observer.mjs';
 import { runUpdateWindowChat } from './update-window-chat.mjs';
 import { isolateUpdateWindowEnvironment, isolatedElectronArgs, updateWindowEnvironment } from './smoke-env.mjs';
 import { sourceRuntimeSettleCommand } from './source-runtime-settle.mjs';
+
+// The checkout's tests-js declares the driver's Playwright.
+const { _electron } = createRequire(new URL('../../../tests-js/package.json', import.meta.url))('@playwright/test');
 
 /**
  * @typedef {{argv: string[], cwd: string, env: Record<string, string>,

@@ -1,4 +1,5 @@
 import { enAuxTasks } from './en_aux_tasks'
+import { enDelegationRouting } from './en_delegation_routing'
 import type { ModelSettingsTranslations } from './types_model_settings'
 
 export const enModelSettings: ModelSettingsTranslations = {
@@ -73,6 +74,7 @@ export const enModelSettings: ModelSettingsTranslations = {
       'A direct endpoint is active and takes precedence over the saved provider. Its endpoint and credentials are kept while this mode is selected.',
     directClear: 'Applying this route clears the direct endpoint and its stored key. Other request settings are kept.',
     catalogFailed: 'Model catalog unavailable. Enter a provider and model manually, or retry.',
-    draftHint: 'Changes stay local until applied.'
+    draftHint: 'Changes stay local until applied.',
+    routing: enDelegationRouting
   }
 }

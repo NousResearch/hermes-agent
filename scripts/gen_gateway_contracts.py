@@ -34,7 +34,7 @@ from tui_gateway.contracts.connectors import (
     ConnectorToolsSource,
 )
 from tui_gateway.contracts.connectors_operation import ConnectionSettleReason, ConnectionTargetState
-from tui_gateway.contracts.registry import CANONICAL_METHODS, EVENTS, METHODS, SERVER_REQUESTS
+from tui_gateway.contracts.registry import CANONICAL_METHODS, CANONICAL_NAMESPACES, EVENTS, METHODS, SERVER_REQUESTS
 from tools.connectors.contract import SettleReason, TargetState
 from tools.connectors.gateway.wire import ConnectionStatus
 from tools.connectors.portal.tools_cache import ToolsRead
@@ -213,6 +213,7 @@ def render_ts() -> str:
     models: list[type] = []
     for m in (*METHODS.values(), *CANONICAL_METHODS.values()):
         models += [m.params, m.result]
+    models += [n.params for n in CANONICAL_NAMESPACES.values()]
     for r in SERVER_REQUESTS.values():
         models += [r.params, r.result]
     for e in EVENTS.values():
@@ -255,6 +256,15 @@ def render_ts() -> str:
     out.append("export type CanonicalRpcMethod = keyof CanonicalRpcMethods\n")
     out.append("export const CANONICAL_RPC_METHODS = [\n" + _const_items(sorted(CANONICAL_METHODS))
                + "] as const satisfies readonly CanonicalRpcMethod[]\n")
+
+    out.append("\n// ── Canonical method namespaces: member names exist only at runtime (gate on `capability`) ──\n")
+    out.append("export interface CanonicalRpcNamespaces {\n")
+    for n in sorted(CANONICAL_NAMESPACES.values(), key=lambda x: x.name):
+        out.append(_doc(n.doc, "  "))
+        out.append(f"  {_prop(n.name)}: {{ method: `{n.prefix}${{string}}`; capability: {_lit(n.capability)}; "
+                   f"params: {name_of[n.params]}; result: unknown }}\n")
+    out.append("}\n")
+    out.append("export type CanonicalRpcNamespace = keyof CanonicalRpcNamespaces\n")
 
     out.append("\n// ── Server→client requests ──\n")
     out.append("export interface ServerRequestMap {\n")
@@ -299,6 +309,7 @@ def render_openrpc() -> str:
     all_models: list[type] = []
     for m in (*METHODS.values(), *CANONICAL_METHODS.values()):
         all_models += [m.params, m.result]
+    all_models += [n.params for n in CANONICAL_NAMESPACES.values()]
     for r in SERVER_REQUESTS.values():
         all_models += [r.params, r.result]
     for e in EVENTS.values():
@@ -338,6 +349,12 @@ def render_openrpc() -> str:
              "params": [{"name": "params", "schema": ref(m.params)}],
              "result": {"name": "result", "schema": ref(m.result)}}
             for m in sorted(CANONICAL_METHODS.values(), key=lambda x: x.name)
+        ],
+        "x-canonical-namespaces": [
+            {"name": n.name, "summary": " ".join(n.doc.split()), "x-prefix": n.prefix, "x-capability": n.capability,
+             "params": [{"name": "params", "schema": ref(n.params)}],
+             "result": {"name": "result", "schema": {}}}
+            for n in sorted(CANONICAL_NAMESPACES.values(), key=lambda x: x.name)
         ],
         "x-server-requests": [
             {"name": s.name, "summary": " ".join(s.doc.split()),

@@ -1,0 +1,19 @@
+name: openpaths
+title: OpenPaths
+repo: https://github.com/lee101/hermes-openpaths
+sha: d1e55ac08dabaae1e399d4a3a9da9f68346efd00
+version: "0.1.0"
+maintainer: lee101
+tier: community
+category: models
+docs_url: https://github.com/lee101/hermes-openpaths#readme
+readme: true
+platforms: []
+description: "OpenPaths model provider for Hermes: OpenAI-compatible inference at openpaths.io with auto, auto-easy-task, auto-medium-task, auto-hard-task and auto-think task-tier routes plus GPT, Claude, Gemini and DeepSeek models, live /models listing, and Hermes reasoning effort mapped to OpenPaths reasoning_effort. Disclosure — prompts, tool schemas, tool results and conversation context are sent to openpaths.io with your OPENPATHS_API_KEY and forwarded to the upstream model vendors it routes to; the plugin makes no other network calls and registers no tools or hooks."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OPENPATHS_API_KEY
+requires_hermes: ">=0.21.6"

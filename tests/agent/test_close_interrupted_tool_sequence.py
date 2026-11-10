@@ -71,3 +71,13 @@ def test_user_tail_is_left_untouched():
     assert close_interrupted_tool_sequence(messages, None) is False
     assert len(messages) == 1
 
+
+
+def test_only_an_interrupted_close_carries_the_stopped_mark():
+    """The closing row is the turn's last stored row: it alone tells a reopened transcript the turn was stopped."""
+    stopped = _tool_tail()
+    assert close_interrupted_tool_sequence(stopped, None, stopped=True) is True
+    assert stopped[-1]["display_metadata"] == {"interrupted": True}
+    truncated = _tool_tail()
+    assert close_interrupted_tool_sequence(truncated, "Response truncated.") is True
+    assert "display_metadata" not in truncated[-1]

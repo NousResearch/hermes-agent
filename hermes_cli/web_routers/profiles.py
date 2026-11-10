@@ -139,13 +139,15 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_
     ``base_url`` is the endpoint a bare ``custom``/``local`` pick binds to (a fresh profile's config
     names none); other providers ignore it."""
     from hermes_cli.config import load_config, save_config
+    from hermes_cli.config_backend import refusing_locked_omissions
     with _config_profile_scope(_scope_profile_name(validate_in or profile_dir)):
         provider, model = _normalize_main_model_assignment(provider, model)
         result = _validated_main_model_selection(load_config(), provider, model, base_url)
     with _config_profile_scope(_scope_profile_name(profile_dir)), _CONFIG_MUTATION_LOCK:  # RMW span
         cfg = load_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
-        save_config(cfg)
+        with refusing_locked_omissions("model"):
+            save_config(cfg)
 
 
 def _disable_unselected_skills(profile_dir: Path, keep: list[str]) -> int:
@@ -825,7 +827,10 @@ async def create_profile_endpoint(body: ProfileCreate):
         clone_config = clone
     with _profile_errors("POST /api/profiles failed", not_found=(),
                          bad_request=(ValueError, FileExistsError, FileNotFoundError)):
-        path = profiles_mod.create_profile(
+        # Off the loop: creation asks a live multiplexer to serve the profile now over its control
+        # socket, and on the gateway's own listener (the Webapp) that socket answers on this loop.
+        path = await asyncio.to_thread(
+            profiles_mod.create_profile,
             name=body.name, clone_from=clone_from, clone_all=body.clone_all,
             clone_config=clone_config, no_skills=body.no_skills, description=body.description,
             clone_channels=body.clone_channels, **({"soul": body.soul} if body.soul is not None else {}))
@@ -962,8 +967,8 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod
     with _profile_errors("PATCH /api/profiles/%s failed", name,
                          bad_request=(ValueError, FileExistsError)):
-        # Stops a running gateway (10 s poll), renames the directory, rewrites the Honcho
-        # host blocks and regenerates the wrapper script.
+        # Stops a running gateway (10 s poll), renames the directory, lets the profile's memory
+        # provider re-key its state and regenerates the wrapper script.
         path = await run_in_threadpool(profiles_mod.rename_profile, name, body.new_name)
     # For the default profile the rename lands as a presentation-only display_name; the
     # canonical id ("default") is always returned so callers keying on `name` stay correct.

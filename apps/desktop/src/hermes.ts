@@ -19,6 +19,7 @@ export {
 export type { ProfileScope, ResolvedOwner } from './api/client'
 export * from './api/config'
 export * from './api/cron'
+export * from './api/delegation'
 export * from './api/local-models'
 export * from './api/mcp'
 export * from './api/messaging'
@@ -29,6 +30,7 @@ export * from './api/sessions'
 export * from './api/skills'
 export * from './api/system'
 export * from './api/toolsets'
+export * from './api/webapp-access'
 
 export type {
   ActionResponse,
@@ -99,6 +101,10 @@ export type {
   ProjectFolder,
   ProjectInfo,
   ProjectsPayload,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinkedAccount,
+  RelayLinksResponse,
   SessionCreateResponse,
   SessionInfo,
   SessionMessage,

@@ -80,8 +80,8 @@ export const zhHantBoot = {
   },
   promptNotices: {
     legacySendUnconfirmed: '此伺服器無法確認這則訊息先前的傳送，它可能已經執行過。再次傳送前請先查看對話。',
+    restoredDraftAttachmentsDropped: '未傳送訊息中的附件沒有還原。傳送前請重新附加。',
     mcpReloadDeferred: '此對話正忙：MCP 變更會在目前輪次結束並再次重新載入 MCP 後生效，或在重新開啟對話時生效',
-    mcpReloadNotInChat: server => `此對話未啟用 ${server}`,
     mcpReloadUnavailable: servers => `未能連線：${servers}`,
     compactedTurnUnavailable: '這則訊息在壓縮對話時已被摘要，無法再還原或編輯。',
     staleTurnUnavailable: '這則訊息已不在此對話的歷史記錄中。',
@@ -120,6 +120,8 @@ export const zhHantBoot = {
     gitUnusable: 'Hermes 無法在這台電腦上執行 Git，因此無法檢查更新。',
     latestBody: '您正在執行最新版本。',
     versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsClient: '本裝置',
+    versionDetailsBackend: '已連線的後端',
     latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',

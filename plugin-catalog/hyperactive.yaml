@@ -1,0 +1,37 @@
+name: hyperactive
+title: hyperactive
+repo: https://github.com/justin06lee/hyperactive
+sha: "2f147d3e6a1a91389d4d50991b46a546b5ea804b"
+subdir: plugin
+version: "0.3.0"
+description: "Hermes, but it texts you first. Keeps your goals (life > year > quarter > week), promises both ways and decisions with review dates, and speaks first on Hermes's own cron: a daily brief, check-ins, decision reviews, nudges on stalled goals, and tap cards with a recommended answer. An unanswered card is re-asked after an hour and, only if low stakes, applied an hour later as a typed action the plugin performs itself (move or schedule its own reminder, set a goal's status); money, public and irreversible calls always wait for the person. Every message names the goal it serves and /ha why explains it. Disclosure — stores data in HERMES_HOME/plugin-data/hyperactive/; on first use or `hermes hyperactive setup` writes two 4-line shims to HERMES_HOME/scripts/ and creates two recurring cron jobs: hyperactive-pulse (no-agent, no model call) and hyperactive-brief (agent mode, one model call a day through Hermes's configured model, skipped when there is nothing to brief; brief_at empty turns it off); once set up, re-creates a missing job or shim on session start; the `hermes hyperactive` CLI runs `hermes cron` subprocesses; pre_llm_call appends a few lines of due items to turns and records a card answer when the message is exactly an option; reads Telegram reactions via gateway_platform_event. No network calls or telemetry of its own; no secrets; `hermes hyperactive uninstall` removes both jobs and shims."
+maintainer: justin06lee
+tier: community
+category: automation
+requires_hermes: ">=0.21.7"
+docs_url: https://github.com/justin06lee/hyperactive/tree/main/plugin#readme
+image: https://raw.githubusercontent.com/justin06lee/hyperactive/2f147d3e6a1a91389d4d50991b46a546b5ea804b/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/justin06lee/hyperactive/2f147d3e6a1a91389d4d50991b46a546b5ea804b/docs/media/screens/01-listens.png
+  - https://raw.githubusercontent.com/justin06lee/hyperactive/2f147d3e6a1a91389d4d50991b46a546b5ea804b/docs/media/screens/02-speaks-first.png
+  - https://raw.githubusercontent.com/justin06lee/hyperactive/2f147d3e6a1a91389d4d50991b46a546b5ea804b/docs/media/screens/03-low-stakes-applied.png
+  - https://raw.githubusercontent.com/justin06lee/hyperactive/2f147d3e6a1a91389d4d50991b46a546b5ea804b/docs/media/screens/04-money-held.png
+  - https://raw.githubusercontent.com/justin06lee/hyperactive/2f147d3e6a1a91389d4d50991b46a546b5ea804b/docs/media/screens/05-why.png
+readme: true
+known_issues:
+  - "A Telegram reaction answers the most recently asked card only (Hermes does not pass the delivered message id), and the reaction path has not been tested against a live bot yet."
+platforms: []
+capabilities:
+  provides_tools:
+    - ha_goal_add
+    - ha_followup
+    - ha_card
+    - ha_commit
+    - ha_decide
+    - ha_status
+  provides_hooks:
+    - pre_llm_call
+    - gateway_platform_event
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

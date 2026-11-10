@@ -52,6 +52,7 @@ import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $showToolActivity } from '@/store/tool-activity'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
+import { $toolProgressFor, formatToolProgress } from '@/store/tool-progress'
 import {
   $anyToolDisclosureOpen,
   $hideCodeDiffs,
@@ -294,8 +295,13 @@ function SearchResultsList({ hits }: { hits: SearchResultRow[] }) {
   )
 }
 
+// Error text is full of filename-shaped tokens (`README.md`, `agent.log`)
+// that the bare-domain branch of the shared linkifier mistakes for hosts, and
+// pretty links replace the displayed text with a fetched page title — either
+// way the painted headline stops matching the raw error string. Match the
+// system-message precedent: explicit URLs only, rendered verbatim.
 function LinkifiedText({ className, text }: { className?: string; text: string }) {
-  return <SharedLinkifiedText className={className} pretty text={cleanVisibleText(text)} />
+  return <SharedLinkifiedText className={className} explicitOnly pretty={false} text={cleanVisibleText(text)} />
 }
 
 function ToolTitle({
@@ -342,6 +348,24 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
   const persistedOpen = useStore($toolDisclosureOpen(disclosureId))
 
   return persistedOpen ?? fallbackOpen
+}
+
+/** A running row's trailing meta: live MCP progress (`42% · message`, when the server sends it) + the timer. */
+function ToolRunningMeta({ seconds, toolCallId = '' }: { seconds: number; toolCallId?: string }) {
+  const sessionId = useStore(useSessionView().$runtimeId) ?? ''
+  const progress = useMemo(() => $toolProgressFor(sessionId, toolCallId), [sessionId, toolCallId])
+  const progressText = formatToolProgress(useStore(progress))
+
+  return (
+    <>
+      {progressText && (
+        <span className={cn(SCAFFOLD_META_CLASS, 'max-w-64 truncate')} data-slot="tool-progress" title={progressText}>
+          {progressText}
+        </span>
+      )}
+      <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={seconds} />
+    </>
+  )
 }
 
 function ToolEntry({ part }: ToolEntryProps) {
@@ -541,7 +565,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const trailing = !embedded ? (
     <span className="flex shrink-0 items-center gap-1.5">
       <TimelineTimestamp className={SCAFFOLD_META_CLASS} completedAt={completedAt} timestamp={timestamp} />
-      {isPending && <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={elapsed} />}
+      {isPending && <ToolRunningMeta seconds={elapsed} toolCallId={toolCallId} />}
     </span>
   ) : undefined
 

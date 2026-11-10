@@ -50,7 +50,7 @@ Ejecuta esto en PowerShell:
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-El instalador de código fuente usa PM para Python 3.14, Node.js, npm,
+El instalador de código fuente usa PM para Python 3.14, Node.js, npm, pnpm,
 ripgrep, FFmpeg y las dependencias de Python. Si falta Git, descarga el archivo
 verificado de Git for Windows en el almacén de Hermes, sin reemplazar el Git
 del sistema. MSIX/App Installer es una distribución separada.
@@ -158,6 +158,7 @@ Si vienes de OpenClaw, Hermes puede importar automáticamente tu configuración,
 **En cualquier momento después de instalar:**
 
 ```bash
+hermes plugins install agent-importers  # una vez: OpenClaw, Claude Code, Codex y Cursor
 hermes claw migrate              # Migración interactiva (preset completo)
 hermes claw migrate --dry-run    # Vista previa de qué se migraría
 hermes claw migrate --preset user-data   # Migrar sin secretos

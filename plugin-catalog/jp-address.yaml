@@ -1,13 +1,14 @@
 name: jp-address
 repo: https://github.com/TakeshiTGAL/hermes-plugin-address
-sha: c778f382951fcc7f2b1a3f2feea77e26fdc3e70e
-description: "Splits one Japanese address into prefecture, city, town and the remainder with address_split, built on Geolonia's address data (CC BY 4.0, from the Digital Agency address base registry). Disclosure — Each call sends at most two HTTPS GET requests, with no API key, to japanese-addresses-v2.geoloniamaps.com or the JP_ADDRESS_BASE_URL you set (plain http only for 127.0.0.1 and localhost). The matched prefecture and municipality names go into the URL path; the house number, the lot and the building name are not sent. The tool is on for every surface, including gateways, and asks for no approval: anyone you allow on your Hermes gateway can call it. Turn a surface off with hermes tools. It writes no files and creates no cron job. A point can be coarser than the town and is not a rooftop geocode, and an address it cannot place for certain comes back as ambiguous or at the municipality instead of a guess. The publisher may change or stop the free host and suggests self-hosting for commercial use. Not tested from a Hermes model."
+sha: 318384409054e0d43329ed4cf002ea61014f3d6c
+description: 'Splits one Japanese address into prefecture, city, town and the remainder with address_split, built on Geolonia''s address data (CC BY 4.0, from the Digital Agency address base registry). Give it a Japanese postal address as written, such as 東京都千代田区霞が関2-1-2, and it returns the prefecture, city and town as separate fields. Disclosure — Each call sends at most two HTTPS GET requests, with no API key, to japanese-addresses-v2.geoloniamaps.com or the JP_ADDRESS_BASE_URL you set (plain http only for 127.0.0.1 and localhost). The matched prefecture and municipality names go into the URL path; the house number, the lot and the building name are not sent. JP_ADDRESS_BASE_URL is read for the active profile on each call, and an HTTP proxy set in the environment is not used. The tool is on for every surface, including gateways, and asks for no approval: anyone you allow on your Hermes gateway can call it. Turn a surface off with hermes tools. While the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off. It writes no files and creates no cron job. A point can be coarser than the town and is not a rooftop geocode, and an address it cannot place for certain comes back as ambiguous or at the municipality instead of a guess. The publisher may change or stop the free host and suggests self-hosting for commercial use. Called from Hermes with five models in a small sample of 18 sessions (see CHANGELOG.md).'
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 requires_hermes: '>=0.21.4'
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-address#readme
-version: "0.1.0"
+version: 0.1.1
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-address/318384409054e0d43329ed4cf002ea61014f3d6c/assets/catalog-banner.png
 platforms: []
 capabilities:
   provides_tools:

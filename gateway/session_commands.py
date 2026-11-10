@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shlex
 
+from gateway.session_cron_commands import cron_read
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,14 @@ _APPROVAL_COMMANDS = frozenset({'approve', 'deny'})
 # Reports with no messaging handler: the classic CLI's own text, built by the owner for this
 # session (gateway/session_info_reads.py).
 _INFO_READS = frozenset({'toolsets', 'platforms'})
+# The classic CLI's own handler, run by the owner (gateway/session_cron_commands.py): the profile's cron store
+# belongs to the gateway whose ticker fires its jobs, so no client writes it. Bare ``/cron`` and ``list``
+# read; every other form (add/edit/pause/resume/run/remove) is a control that writes the store. A write runs
+# only on a connection that is not attached to the session: the classic CLI's command socket
+# (GatewayConnection.call_until), which waits with no deadline. A viewer's own connection (Ink, Desktop, ACP
+# send /cron there) answers its reads, prompts and interrupts one request at a time with a deadline, and a
+# /cron run lasts as long as its job, so it keeps main's refusal whichever surface created the session.
+_OWNER_COMMANDS = frozenset({'cron'})
 # Commands that move the session's goal/loop/heartbeat state: every viewer's cards repaint after them.
 _AUTOMATION_COMMANDS = frozenset({'goal', 'subgoal', 'loop', 'heartbeat'})
 
@@ -50,13 +59,18 @@ _KANBAN_READS = frozenset({'', 'help', '--help', '-h', '?', 'list', 'ls', 'show'
                            'context', 'runs', 'log', 'diagnostics', 'diag'})
 
 
-def _first_token(arg):
-    """/kanban's verb as its handler parses it (shlex, hermes_cli/kanban.py ``run_slash``): an unclosed
-    quote can't run there either, so it is refused by name instead of failing as an internal error."""
+def _split(arg):
+    """``arg`` as a shlex-splitting handler parses it: an unclosed quote can't run there either, so it is
+    refused by name (before ``pre_command`` fires) instead of failing as an internal error."""
     try:
-        tokens = iter(shlex.split(arg) if arg.strip() else [])
+        return shlex.split(arg) if arg.strip() else []
     except ValueError as exc:
         raise RuntimeStoreError('invalid_params', field='arg', detail=str(exc)) from None
+
+
+def _first_token(arg):
+    """/kanban's verb as its handler parses it (shlex, hermes_cli/kanban.py ``run_slash``)."""
+    tokens = iter(_split(arg))
     for token in tokens:
         if token == '--board':
             next(tokens, None)
@@ -120,6 +134,8 @@ def command_verdict(name, arg=''):
     """``read`` / ``control`` / ``refused`` for a canonical registry command on a local session."""
     if _REFUSED_ARGUMENTS.get(name, lambda _a: False)(arg):
         return 'refused'
+    if name in _OWNER_COMMANDS:
+        return 'read' if cron_read(_split(arg)) is not None else 'control'  # main's /cron handler shlex-splits
     if (name in _CONTROL_COMMANDS or name in _HANDLER_CONTROLS or name in _PROMPT_COMMANDS
             or name in _SETTING_COMMANDS or name in _APPROVAL_COMMANDS
             or _CONTROL_ARGUMENTS.get(name, lambda _a: False)(arg)):
@@ -238,7 +254,7 @@ def _skill_directive(name, arg, route):
 
 
 async def _tui_read(authority, actor, ref, name, arg, before):
-    """Main's TUI sidecar text for a TUI session's /status, /context or /cron read, else None;
+    """Main's TUI sidecar text for a TUI session's /status or /context read, else None;
     ``before`` (its ``pre_command``) runs once the read is accepted."""
     from gateway.session_local import authorize_local_source
     from gateway.session_policy import policy_for_source
@@ -436,18 +452,25 @@ async def execute_command(connection, ref, params, *, dispatch=False):
                   'session:approve' if canonical in _APPROVAL_COMMANDS else
                   'session:control' if definition or runner_command else 'session:submit')
     authority.authorize(actor, ref, capability)
-    if verdict == 'refused':
-        raise RuntimeStoreError('unsupported_command', detail=REFUSAL_HINTS.get(canonical))
-    from gateway.session_local import authorize_local_source
     live = authority.sessions[ref.session_id]
+    if verdict == 'refused' or (verdict == 'control' and canonical in _OWNER_COMMANDS
+                                and ref.session_id in connection.subscriptions):
+        raise RuntimeStoreError('unsupported_command', detail=REFUSAL_HINTS.get(canonical))
+    from gateway.session_history_mount import is_history_mount, read_only
+    if is_history_mount(live):
+        raise read_only()  # no policy or agent to run even a read command against
+    from gateway.session_local import authorize_local_source
     if authorize_local_source(authority.runner, live.source) is not True:
         raise RuntimeStoreError('permission_denied')
     if capability != 'session:read':
         authority._require_admission_open()
-    if definition is not None and (canonical in _INFO_READS or authority._handle(ref).execution_state == 'idle'):
+    if definition is not None and (canonical in _INFO_READS or canonical in _OWNER_COMMANDS
+                                   or authority._handle(ref).execution_state == 'idle'):
         await before()  # mid-run the busy dispatcher fires it once it accepts the command (``BUSY_ACCEPTED``)
     if runner_command is not None:
-        with _profile_runtime_scope(home), _session_workspace(authority.runner, live.source):
+        from gateway.plugin_command_choice import viewer_choices
+        with (_profile_runtime_scope(home), _session_workspace(authority.runner, live.source),
+              viewer_choices(live, ref.session_id)):
             output = await _run_runner_command(authority.runner, live, name, arg, *runner_command)
         return {'type': 'exec', 'output': _text(output)}
     if definition is None:
@@ -459,6 +482,9 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     if canonical in _INFO_READS:
         from gateway.session_info_reads import run_info_read
         return await run_info_read(authority, live, canonical)
+    if canonical in _OWNER_COMMANDS:
+        from gateway.session_cron_commands import run_cron
+        return await run_cron(authority, arg)
 
     from gateway.platforms.base import MessageEvent
     from gateway.session_command_sink import capture

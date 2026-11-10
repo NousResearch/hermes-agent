@@ -26,7 +26,7 @@ def available_backends() -> list[str]:
 def missing_hints() -> list[str]:
     """Install hints for when no backend is available."""
     return [
-        "python3 -m pip install pypdfium2",
+        "pypdfium2: rerun with the documents interpreter $PY from the pdf skill's Prerequisites setup block",
         "poppler-utils (provides pdftoppm), e.g. apt-get install poppler-utils",
     ]
 

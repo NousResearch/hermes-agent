@@ -118,6 +118,50 @@ describe('JsonRpcRequestChannel', () => {
     }
   })
 
+  // A renderer stall (frozen window, intensive throttling, OS suspend) delays
+  // both the tick and the pong it is waiting for. The first tick after the
+  // stall must probe again instead of reading the local gap as peer silence.
+  it('a tick that ran a stall late gives the peer one probe before failing', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const failures: string[] = []
+
+      const channel = new JsonRpcRequestChannel({
+        heartbeatDeadlineMs: 300,
+        heartbeatIntervalMs: 100,
+        heartbeatLiveness: 'any-inbound',
+        onHeartbeatFailure: e => void failures.push(e.message)
+      })
+
+      const { sent, transport } = spyTransport()
+
+      channel.attach(transport)
+      channel.startHeartbeat()
+
+      const pings = () =>
+        sent.map(f => JSON.parse(f) as { id: string; method: string }).filter(f => f.method === 'gateway.ping')
+
+      // One tick on schedule: the ping goes out and its pong is never read.
+      await vi.advanceTimersByTimeAsync(100)
+      expect(pings()).toHaveLength(1)
+
+      // The renderer stalls 500 ms: the callback runs once with a stale clock,
+      // past the 300 ms deadline. That gap is local, so it re-probes.
+      vi.setSystemTime(Date.now() + 500)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(pings()).toHaveLength(2)
+      expect(failures).toEqual([])
+
+      // The fresh probe goes unanswered on schedule: one window, then the
+      // transport is dead. The grace is not renewable.
+      await vi.advanceTimersByTimeAsync(100)
+      expect(failures).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // 'response' mode itself stays available (explicit opt-in): a caller that
   // wants only a pong (or a response to its own request) to prove the
   // backend can answer keeps that stricter contract.
@@ -193,6 +237,22 @@ describe('JsonRpcRequestChannel', () => {
     expect(sent).toHaveLength(1)
   })
 
+  it('says it is the local Desktop first on the socket, in a call of its own', () => {
+    let local = true
+    const channel = new JsonRpcRequestChannel({ desktopLocal: () => local, requestIdPrefix: 'c' })
+    const { sent, transport } = spyTransport()
+    const params = () => sent.map(frame => JSON.parse(frame).params)
+
+    channel.attach(transport)
+    void channel.request('onboarding.state', { assume_fresh: true }).catch(() => undefined)
+    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
+    expect(params()).toEqual([{ desktop_local: true }, { assume_fresh: true }, { server_requests: true }])
+
+    local = false
+    channel.attach(spyTransport().transport)
+    expect(params()).toHaveLength(3)
+  })
+
   it('sends a not-shown decline only to a backend that advertised counting it', async () => {
     // An older backend settles a request on the first error frame, so a bystander window's decline
     // would beat the owner's answer (#113348): there `decline` must stay silent.
@@ -242,6 +302,16 @@ describe('JsonRpcRequestChannel', () => {
     expect(frames[1].id).toBe('srq-2')
     expect(frames[1].error?.code).toBe(-32601)
     expect(unhandled).toEqual(['tour'])
+  })
+
+  it('reports an error frame with no request id (the parse-error reply) instead of dropping it', () => {
+    const uncorrelated: Array<{ code?: number; message: string }> = []
+    const channel = new JsonRpcRequestChannel({ onUncorrelatedError: error => void uncorrelated.push({ code: error.code, message: error.message }) })
+
+    channel.attach(spyTransport().transport)
+    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'parse error' }, id: null }))
+
+    expect(uncorrelated).toEqual([{ code: -32700, message: 'parse error' }])
   })
 
   it('re-delivers open_requests from a response before the caller sees the result, tagged replayed', async () => {

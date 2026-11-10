@@ -19,9 +19,11 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
-from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
+from gateway.platforms.base_image_sniff import _looks_like_image
+from gateway.platforms.base_media_flags import pad_inline_flags
 
-from utils import normalize_proxy_url
+from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -246,6 +248,12 @@ def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
     return lo
 
 
+def fit_prefix(text: str, budget: int, measure, suffix: str = "...") -> str:
+    """``text``, or its longest prefix within ``budget`` ``measure`` units plus ``suffix`` (outside it)."""
+    n = _custom_unit_to_cp(text, budget, measure)
+    return text if n == len(text) else text[:n] + suffix
+
+
 def _prefix_within_utf16_limit(s: str, limit: int) -> str:
     """Longest prefix of *s* with UTF-16 length ≤ *limit*; never splits a surrogate pair."""
     return s[:_custom_unit_to_cp(s, limit, utf16_len)]
@@ -363,7 +371,7 @@ def _aiohttp_socks_connector(proxy_url: str):
     except ImportError:
         if proxy_url.lower().startswith("socks"):
             logger.warning("aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                           "Use an HTTP proxy instead.", proxy_url)
+                           "Use an HTTP proxy instead.", safe_proxy_url_for_log(proxy_url))
         return None
 
 
@@ -422,18 +430,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
+if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
+    sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
+from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
-    ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
+    ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
+    card_shows_whole_command, render_exec_approval)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
+from hermes_cli.home_data_layout import SECRET_CACHE_STORES
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -543,7 +554,7 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
         return d
 
     def cleanup(max_age_hours: int = MEDIA_CACHE_MAX_AGE_HOURS) -> int:
-        return _cleanup_cache_dir(get_dir(), max_age_hours)
+        return unlink_files_older_than(get_dir(), "*", max_age_hours * 3600)
     get_dir.__name__ = get_dir.__qualname__ = f"get_{kind}_cache_dir"
     cleanup.__name__ = cleanup.__qualname__ = f"cleanup_{kind}_cache"
     return get_dir, cleanup
@@ -551,13 +562,6 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
 
 get_image_cache_dir, cleanup_image_cache = _cache_dir_accessors(
     "image", "IMAGE_CACHE_DIR", "cache/images", "image_cache")
-
-
-def _looks_like_image(data: bytes) -> bool:
-    """Return True if *data* starts with a known image magic-byte sequence."""
-    return len(data) >= 4 and (data[:8] == b"\x89PNG\r\n\x1a\n" or data[:3] == b"\xff\xd8\xff"
-               or data[:6] in {b"GIF87a", b"GIF89a"} or data[:2] == b"BM"
-               or (data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP"))
 
 
 def _secure_media_cache_dir(cache_dir: Path) -> None:
@@ -669,18 +673,6 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
         cache_fn=cache_image_from_bytes, log_label="Media")
 
 
-def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:
-    """Delete files in *cache_dir* older than *max_age_hours*; return the count removed."""
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
-    for f in cache_dir.iterdir():
-        if f.is_file() and f.stat().st_mtime < cutoff:
-            with contextlib.suppress(OSError):
-                f.unlink()
-                removed += 1
-    return removed
-
-
 # Audio cache utilities (same pattern as images; feeds the STT tool).
 AUDIO_CACHE_DIR = get_hermes_dir("cache/audio", "audio_cache")
 get_audio_cache_dir, cleanup_audio_cache = _cache_dir_accessors(
@@ -784,12 +776,11 @@ def _sqlite_files(name: str) -> tuple[str, ...]:
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
 # files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
 # agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
-# recency window); pairing/ and mcp-tokens/ (live OAuth tokens) are denied as whole trees.
+# recency window); pairing/, mcp-tokens/ (live OAuth tokens) and webapp/ (the Webapp's credential) are whole trees.
 _ROOT_CREDENTIAL_PATHS = (
     ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
     "google_token.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
-    "webhook_subscriptions.json", os.path.join("cache", "bws_cache.json"),
-    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens",
+    "webhook_subscriptions.json", *SECRET_CACHE_STORES, "pairing", "mcp-tokens", "webapp",
     # Whole conversation history (every secret ever pasted into a chat) and the copied browser
     # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
     # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
@@ -964,37 +955,6 @@ def _parse_docker_volume_mounts() -> list[tuple[Path, Path]]:
     return mounts
 
 
-def _docker_sandbox_dir_candidates(session_key: str = "") -> list[str]:
-    """Candidate host sandbox dir names for the delivering session, best first. Mirrors
-    ``_resolve_container_task_id`` (tools/terminal_tool.py): containers are PROFILE-scoped
-    (``default``, else ``profile:<name>``); legacy ``session:<key>`` sandboxes stay as a fallback.
-    The key is passed explicitly because delivery runs after the turn's contextvars were cleared.
-
-    Takes the key explicitly because the delivery pipeline runs after ``_handle_message_with_agent`` cleared
-    the turn's session contextvars (#93950) — an ambient lookup here would silently collapse onto
-    ``default`` and miss the session's real sandbox.
-    """
-    try:
-        from tools.environments.path_utils import sanitize_task_id_for_path
-    except Exception:
-        return ["default"]
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        profile = get_active_profile_name() or "default"
-    except Exception:
-        profile = "default"
-    candidates: list[str] = []
-    # Explicit trusted-profiles opt-in: one shared container identity.
-    if shared := _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip():
-        candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
-    if profile != "default":
-        candidates.append(sanitize_task_id_for_path(f"profile:{profile}"))
-    candidates.append("default")
-    if session_key:  # bug-window legacy layout: per-session sandboxes
-        candidates.append(sanitize_task_id_for_path(f"session:{session_key}"))
-    return candidates
-
-
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
@@ -1005,35 +965,6 @@ def _docker_env_active() -> bool:
 def _docker_persistent_active() -> bool:
     """Docker backend with persistent containers (the default) enabled."""
     return _docker_env_active() and _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() in _TRUTHY
-
-
-def _docker_persistent_sandbox_roots(session_key: str, leaf: str) -> list[Path]:
-    """Existing ``<sandbox>/docker/<candidate>/<leaf>`` host dirs in candidate order;
-    the translator tries each until the file resolves. Empty unless Docker + persistent."""
-    if not _docker_persistent_active():
-        return []
-    try:
-        from tools.environments.base import get_sandbox_dir
-        base = get_sandbox_dir() / "docker"
-        return [cand for name in _docker_sandbox_dir_candidates(session_key)
-                if (cand := (base / name / leaf).resolve(strict=False)).is_dir()]
-    except Exception:
-        return []
-
-
-def _default_docker_workspace_host_roots(session_key: str = "") -> list[Path]:
-    """Existing host candidates for ``/workspace``: the explicit cwd mount
-    (``TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE``) if set, else the persistent sandbox layouts."""
-    if not _docker_persistent_active():
-        return []
-    if _tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in _TRUTHY:
-        cwd = _tenv("TERMINAL_CWD") or os.getcwd()
-        try:
-            host = Path(os.path.expanduser(cwd)).resolve(strict=False)
-        except (OSError, RuntimeError, ValueError):
-            return []
-        return [host] if host.is_dir() else []
-    return _docker_persistent_sandbox_roots(session_key, "workspace")
 
 
 def _cache_dir_container_mounts() -> list[tuple[Path, Path]]:
@@ -1063,9 +994,15 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
                    f", session_key={session_key}" if session_key else "")
 
 
-def _translate_docker_container_media_path(candidate: Path, session_key: str = "", *, quiet: bool = False) -> Optional[Path]:
+def _translate_docker_container_media_path(
+    candidate: Path, session_key: str = "", workspace_key: str = "", *, quiet: bool = False, workspace_cwd: str = "",
+) -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
-    auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
+    auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``.
+
+    ``workspace_key`` is the 16-hex digest of one session's host cwd ``workspace_cwd`` (its cwd
+    mount). It selects that session's ``<base>:ws:<digest>`` sandbox and is empty for MEDIA delivery.
+    """
     if not candidate.as_posix().startswith("/"):  # POSIX even on Windows gateways (not is_absolute)
         return None
     # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
@@ -1073,17 +1010,24 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     with contextlib.suppress(Exception):
         from tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
+    from gateway.platforms.docker_media_paths import (
+        _default_docker_workspace_host_roots, _docker_persistent_sandbox_roots,
+    )
     mounts = [*_parse_docker_volume_mounts(), *_cache_dir_container_mounts()]
     mounted = {c.as_posix() for _, c in mounts}
-    # Synthetic /workspace mounts: profile-scoped layout first, then legacy per-session.
+    # Synthetic /workspace mounts: this session's workspace sandbox, then the
+    # shared profile layout, then the legacy per-session dir.
     if "/workspace" not in mounted:
-        mounts.extend((root, Path("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
+        mounts.extend(
+            (root, Path("/workspace"))
+            for root in _default_docker_workspace_host_roots(session_key, workspace_key, workspace_cwd))
     # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
     # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
     # translating it via the home mount would dodge the host denylist.
     if "/root" not in mounted and not candidate.as_posix().startswith("/root/.hermes"):
         mounts.extend(
-            (root, Path("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
+            (root, Path("/root"))
+            for root in _docker_persistent_sandbox_roots(session_key, "home", workspace_key))
     if not mounts:
         _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved", quiet)
         return None
@@ -1263,6 +1207,11 @@ _MEDIA_EXT_ALTERNATION = "|".join(sorted((e.lstrip(".") for e in MEDIA_DELIVERY_
 # ``MEDIA:D:\path\早报.pdf（782.6 KB）`` or ``MEDIA:...pdf：内容`` — without these, the lookahead fails and the
 # attachment is silently dropped (#88038).
 _MEDIA_CJK_TERMINATORS = "（）〈〉《》：，。；！？、\u201c\u201d\u2018\u2019【】"
+
+# Image tags ``extract_images`` turns into attachments (the streamed display hides the same tags).
+MD_IMAGE_TAG_PATTERN = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
+HTML_IMAGE_TAG_PATTERN = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
+_IMAGE_URL_MARKERS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery')
 
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
@@ -1632,6 +1581,7 @@ class ExecApprovalPrompt:
     description: str
     smart_denied: bool
     metadata: Optional[dict[str, Any]] = None
+    request_id: Optional[str] = None  # the ``tools.approval`` request this card answers (and only that one)
 
     @property
     def choices(self) -> list[str]:
@@ -1644,8 +1594,8 @@ class SendResult:
     success: bool
     message_id: Optional[str] = None
     error: Optional[str] = None
-    # Adapter-specific metadata. Contract: Telegram edit-overflow partials set
-    # raw_response["partial_overflow"] so the stream consumer sends the missing tail.
+    # Adapter-specific metadata. Contracts: raw_response["partial_overflow"] (Telegram edit-overflow partial: the stream
+    # consumer sends the missing tail); raw_response["failure_notice_sent"] (a failed media send already posted a notice).
     raw_response: Any = None
     retryable: bool = False  # transient connection error — base retries automatically
     retry_after: Optional[float] = None  # server-requested delay (Telegram FloodWait) beats our backoff
@@ -1752,23 +1702,19 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         both_photo = existing_is_photo and incoming_is_photo
         incoming_has_media = bool(event.media_urls)
 
-        def _padded_inline_flags(msg: MessageEvent) -> list[Optional[bool]]:
-            flags = list(getattr(msg, "media_text_inlined", []) or [])
-            return flags + [None] * (len(msg.media_urls) - len(flags))
         incoming_inline_flags: list[Optional[bool]] = []
         if incoming_has_media:
-            existing.media_text_inlined = _padded_inline_flags(existing)
-            incoming_inline_flags = _padded_inline_flags(event)
+            existing.media_text_inlined = pad_inline_flags(existing)
+            incoming_inline_flags = pad_inline_flags(event)
         # A photo burst always absorbs; otherwise merge only when media is involved on either
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
             if both_photo or incoming_has_media:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+                existing.extend_media(event)
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-            existing.absorb_reply_expected(event)
+            existing.absorb_turn_input(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
             elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
@@ -1783,7 +1729,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
-            existing.absorb_reply_expected(event)
+            existing.absorb_turn_input(event)
             return
     pending_messages[session_key] = event
 
@@ -2532,9 +2478,9 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-            existing.absorb_reply_expected(event)
+                existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
+                existing.extend_media(event)
+            existing.absorb_turn_input(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
@@ -2746,6 +2692,7 @@ class BasePlatformAdapter(ABC):
     _EA_CODE_CLOSE: str = "\n```\n"
     _EA_DEADLINE_PREFIX: str = "\n\n"  # separates the deadline line from the reason line
     _EA_CMD_BUDGET: int = 3000
+    _EA_CARD_CAP: int = 0  # >0: the whole card must fit this cap, so the preview gets what the rest leaves
     _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
 
     @property
@@ -2775,44 +2722,24 @@ class BasePlatformAdapter(ABC):
         ``message_len_fn`` units: the platform cap applies to the wire payload, and escaping
         expands (``&`` → ``&amp;``), so a raw-length cut can still overflow. Returns raw text (the
         caller escapes); ``suffix`` rides outside ``budget`` like ``_truncate_preview``."""
-        text = str(text or "")
         escape = escape or self._ea_escape
-        len_fn = self.message_len_fn
-        if len_fn(escape(text)) <= budget:
-            return text
-        lo, hi = 0, len(text)
-        while lo < hi:  # escaped length is monotonic in the raw prefix, so bisect it
-            mid = (lo + hi + 1) // 2
-            if len_fn(escape(text[:mid])) <= budget:
-                lo = mid
-            else:
-                hi = mid - 1
-        return text[:lo] + suffix
+        return fit_prefix(str(text or ""), budget, lambda s: self.message_len_fn(escape(s)), suffix)
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
-        """Chars of command preview that fit; platforms with a hard message cap compute it."""
-        return self._EA_CMD_BUDGET
+        """Chars of command preview that fit; platforms with a hard message cap set ``_EA_CARD_CAP``."""
+        return exec_approval_cmd_budget(self, description, smart_denied)
 
     def _ea_deadline_line(self) -> str:
         """The "doing nothing means it will NOT run" line, with the configured approvals.timeout."""
         return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
 
     def _format_exec_approval(
-        self, command: str, description: Optional[str] = None, smart_denied: bool = False) -> str:
-        """Shared exec-approval prompt text: header + fenced (truncated) command + why it was
-        flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
-        platform-local. ``description=None`` renders the localized default reason."""
-        if description is None:
-            description = ea_default_reason_text()
-        if self._EA_REASON_BUDGET:
-            description = self._ea_fit(str(description or ""), self._EA_REASON_BUDGET)
-        cmd_preview = self._ea_fit(
-            str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
-        text = (f"{self._EA_HEADER}"
-                f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
-                f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"
-                f"{self._ea_deadline_line()}")
-        return text + self._EA_SMART_DENY_LINE if smart_denied else text
+        self, command: str, description: Optional[str] = None, smart_denied: bool = False,
+        full_command_shown: bool = False) -> str:
+        """Shared exec-approval prompt text: header + fenced (truncated) command + why it was flagged +
+        the deadline line, plus the smart-deny line (``base_exec_approval.render_exec_approval``)."""
+        return render_exec_approval(self, str(command or ""), ea_default_reason_text() if description is None
+                                    else description, smart_denied, full_command_shown)[0]
 
     # ── Exec-approval prompt (template method). The choice set is one rule for every button
     # surface — three separate "same fix × N adapters" commits motivated lifting it here.
@@ -2844,20 +2771,24 @@ class BasePlatformAdapter(ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, request_id: Optional[str] = None,
     ) -> SendResult:
-        """Interactive exec-approval prompt; a press resolves via
-        ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
-        render them natively in ``_send_exec_approval_prompt``."""
-        if description is None:
-            description = ea_default_reason_text()
-        prompt = ExecApprovalPrompt(
-            chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
-            description=description, smart_denied=smart_denied,
-            text=self._format_exec_approval(command, description, smart_denied),
-            actions=self._exec_approval_actions(
-                allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
-        return await self._send_exec_approval_prompt(prompt)
+        """Interactive exec-approval prompt; a press resolves via ``tools.approval.resolve_gateway_approval``.
+        Text and choice set are shared; adapters render them natively in ``_send_exec_approval_prompt``.
+        A preview that cannot hold the whole command is preceded by the full command; when that cannot
+        be sent, the card offers Deny only — nobody approves a command they could not read."""
+        description = ea_default_reason_text() if description is None else description
+        command = str(command or "")
+        actions = self._exec_approval_actions(
+            allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied)
+        text, truncated = render_exec_approval(self, command, description, smart_denied, True)
+        # The request was created Deny-only; Approve goes live once the card or the full command shows it whole.
+        if not await card_shows_whole_command(self, chat_id, session_key, request_id, command, metadata, truncated):
+            text = render_exec_approval(self, command, description, smart_denied, False)[0]
+            actions = [row for row in actions if row[1] == "deny"]
+        return await self._send_exec_approval_prompt(ExecApprovalPrompt(
+            chat_id=chat_id, session_key=session_key, metadata=metadata, command=command, description=description,
+            smart_denied=smart_denied, request_id=request_id, text=text, actions=actions))
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Render ``prompt`` with the platform's native buttons; the default has none."""
@@ -3009,15 +2940,10 @@ class BasePlatformAdapter(ABC):
     def extract_images(content: str) -> tuple[list[tuple[str, str]], str]:
         """Extract ``![alt](url)`` and ``<img src=...>`` image URLs from a response;
         returns ``([(url, alt_text), ...], content with those tags removed)``."""
-        md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
-        # <img src="url"> / <img src="url"></img> / <img src="url"/>
-        html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
-        # Only extract URLs that look like actual images.
-        markers = ('.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn',
-                   'replicate.delivery')
+        md_pattern, html_pattern = MD_IMAGE_TAG_PATTERN, HTML_IMAGE_TAG_PATTERN
         images = [(m.group(2), m.group(1)) for m in re.finditer(md_pattern, content)
                   if any(m.group(2).lower().endswith(ext) or ext in m.group(2).lower()
-                         for ext in markers)]
+                         for ext in _IMAGE_URL_MARKERS)]  # only URLs that look like actual images
         images.extend((match.group(1), "") for match in re.finditer(html_pattern, content))
         if not images:
             return images, content
@@ -3995,12 +3921,9 @@ class BasePlatformAdapter(ABC):
             # say so once per adapter (#102260).
             if not getattr(self, "_no_message_handler_logged", False):
                 self._no_message_handler_logged = True
-                logger.error(
-                    "[%s] Dropping inbound message: no gateway message handler "
-                    "is installed on this adapter. The adapter is connected and "
-                    "can send, but every inbound message is discarded.",
-                    self.name,
-                )
+                logger.error("[%s] Dropping inbound message: no gateway message handler is installed on this "
+                             "adapter. The adapter is connected and can send, but every inbound message is "
+                             "discarded.", self.name)
             return
 
         if event.allow_gateway_control:
@@ -4296,8 +4219,7 @@ class BasePlatformAdapter(ABC):
         chat_id = event.source.chat_id
 
         async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
-            """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
-            do."""
+            """MEDIA tags may route to send_voice (bare files never); an adapter's own failure notice is not repeated."""
             ext = Path(path).suffix.lower()
             if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                 result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
@@ -4310,7 +4232,8 @@ class BasePlatformAdapter(ABC):
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
-                await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
+                if not (isinstance(result.raw_response, dict) and result.raw_response.get("failure_notice_sent")):
+                    await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
             return result
         queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
         if queue:
@@ -4496,13 +4419,9 @@ class BasePlatformAdapter(ABC):
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
         read HERE — stamped on the interrupt event DURING the handler await; an earlier snapshot
         would let stale runs fire a fresher run's callbacks."""
-        _post_cb = self.pop_post_delivery_callback(
-            session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None))
-        if callable(_post_cb):
-            with contextlib.suppress(asyncio.TimeoutError, Exception):
-                _post_result = _post_cb()
-                if inspect.isawaitable(_post_result):
-                    await asyncio.wait_for(_post_result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+        await run_post_delivery_callback(self.pop_post_delivery_callback(
+            session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None)),
+            _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
 
     def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
@@ -4541,7 +4460,9 @@ class BasePlatformAdapter(ABC):
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         _thread_metadata = _thread_metadata_for_event(event)
-        typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
+        _typing_metadata = typing_metadata_for_turn(  # fixed now: a later inbound must not move it
+            self, event.source.chat_id, _reply_anchor_for_event(event), _thread_metadata)
+        typing_task = self._start_typing_refresh(event, interrupt_event, _typing_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
@@ -4623,7 +4544,7 @@ class BasePlatformAdapter(ABC):
                     self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
-                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata)
                 self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
@@ -4635,20 +4556,18 @@ class BasePlatformAdapter(ABC):
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
-            _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
-            # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
-            if isinstance(e, (SystemExit, KeyboardInterrupt)):
+            await self._notify_turn_error(event, e)
+            from hermes_cli.config_backend import ConfigBackendUnavailable as _outage  # this turn only
+            if isinstance(e, (SystemExit, KeyboardInterrupt)) and not isinstance(e, _outage):  # rest contained
                 raise
         finally:
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
-            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
-            # alive.
-            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it alive.
+            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
-            await self._stop_typing_refresh(
-                event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
+            await self._stop_typing_refresh(event.source.chat_id, None, metadata=_typing_metadata, stop_attempts=1)
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)
@@ -4788,8 +4707,8 @@ class BasePlatformAdapter(ABC):
         parent_chat_id: Optional[str] = None, message_id: Optional[str] = None,
         role_authorized: bool = False, auto_thread_created: bool = False,
         auto_thread_initial_name: Optional[str] = None) -> SessionSource:
-        """Build a SessionSource; with ``gateway.profile_routes`` configured the matching
-        profile is stamped on ``source.profile`` for per-profile HERMES_HOME isolation."""
+        """Build a SessionSource (``gateway.profile_routes`` stamps the matching ``source.profile``)."""
+        from gateway.bot_loop_guard import configured_bot_user
         def _opt(value) -> Optional[str]:
             return str(value) if value else None
         fields = dict(
@@ -4797,8 +4716,8 @@ class BasePlatformAdapter(ABC):
             user_id=None if user_id is None or user_id == "" else str(user_id),
             user_name=user_name, thread_id=_opt(thread_id),
             chat_topic=(chat_topic or "").strip() or None, user_id_alt=user_id_alt,
-            chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
-            guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
+            chat_id_alt=chat_id_alt, is_bot=is_bot or configured_bot_user(getattr(self, "config", None), user_id),
+            scope_id=_opt(scope_id), guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
             message_id=_opt(message_id))
         # Profile from configured routes, else the owning profile of a dedicated secondary bot (so no
         # later ``source.profile``-less fallback can re-route the message through the default bot's routes).
@@ -4847,7 +4766,7 @@ class BasePlatformAdapter(ABC):
         _len = len_fn or len
         if _len(content) <= max_length:
             return [content]
-        INDICATOR_RESERVE = 10   # room for " (XX/XX)"
+        INDICATOR_RESERVE = 12   # room for " (XXX/XXX)" once MarkdownV2-escaped to " \(XXX/XXX\)"
         FENCE_CLOSE = "\n```"
         chunks: list[str] = []
         remaining = content

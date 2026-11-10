@@ -412,6 +412,10 @@ export interface SettledClarifyProjection {
   streamId: string | null
 }
 
+/** A tool call that neither returned nor was sealed: it is still running. */
+export const hasUnresolvedToolCall = (message: ChatMessage) =>
+  message.parts.some(part => part.type === 'tool-call' && part.result === undefined && part.completedAt === undefined)
+
 /**
  * Find the message that owns a tool call, by its stable call id, anywhere in
  * the transcript — not just in the currently-streaming bubble.
@@ -429,13 +433,34 @@ export interface SettledClarifyProjection {
  * from an earlier turn, not the owner of the new one. Routing to it would
  * draw the new call over the old row and leave the live turn empty.
  *
+ * The `phase` splits the sealed-without-result case (a part `sealOpenToolParts`
+ * closed with `completedAt` but no `result` because the `tool.complete` was
+ * lost to a degraded websocket):
+ *
+ * • a `complete`-phase event is the call's own result arriving after settle
+ *   (#113035), so a sealed-no-result part is always its reconciled owner no
+ *   matter whether the owning turn has settled;
+ * • a `running`-phase event on a sealed-no-result part is a NEW call reusing
+ *   the id. Only re-arm it when the owning message is itself still in flight
+ *   (`pending` or `interim`) — the interim-boundary / mid-turn-user-message
+ *   paths that re-arm a sealed part seal the bubble IN PLACE and mark that
+ *   same message `interim`, so the evidence lives on the candidate row, not on
+ *   a session-wide `interimBoundaryPending` bit that can belong to a different
+ *   bubble. A sealed-no-result part on a settled prior turn (`pending` and
+ *   `interim` both false) is history, so the new call seeds its own bubble
+ *   instead of clobbering the prior turn's row. So is an `interim` row at or
+ *   above `turnAnchorId` (the newest row when this turn's `message.start`
+ *   arrived): the seal belonged to an earlier turn, and `interim` outlives it.
+ *
  * Newest-first among unresolved parts: interim boundaries append bubbles, so
  * the owner of an in-flight call is the most recent message that carries the
  * id without a result.
  */
 export function toolCallOwnerMessageId(
   messages: ChatMessage[],
-  payload: GatewayEventPayload | undefined
+  payload: GatewayEventPayload | undefined,
+  phase: 'running' | 'complete',
+  turnAnchorId?: null | string
 ): string | null {
   const stableId = toolId(payload)
 
@@ -443,17 +468,181 @@ export function toolCallOwnerMessageId(
     return null
   }
 
+  const anchorIndex = turnAnchorId ? messages.findIndex(message => message.id === turnAnchorId) : -1
+
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = messages[messageIndex]
 
     for (const part of message.parts) {
-      if (part.type === 'tool-call' && part.toolCallId === stableId && !Object.hasOwn(part, 'result')) {
-        return message.id
+      if (part.type !== 'tool-call' || part.toolCallId !== stableId || Object.hasOwn(part, 'result')) {
+        continue
       }
+
+      // A sealed-without-result part is a reconciled owner for a late
+      // COMPLETION (#113035: the call's own result arriving after settle) no
+      // matter whether the turn has settled. A RUNNING event on a sealed
+      // part is a NEW call reusing the id; only re-arm it when the owner is
+      // still in flight — the interim-boundary / mid-turn-user-message paths
+      // that re-arm a sealed part mark the owning message itself `interim`,
+      // so this is per-row evidence. A sealed part on a settled prior turn
+      // (`pending`/`interim` both false) is history, not the new call's owner;
+      // a session-wide boundary bit is deliberately not consulted, since it
+      // can be raised by a different bubble than the candidate row.
+      const inFlight = message.pending || (message.interim && messageIndex > anchorIndex)
+
+      if (phase === 'running' && part.completedAt !== undefined && !inFlight) {
+        continue
+      }
+
+      return message.id
     }
   }
 
   return null
+}
+
+const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
+
+// Keys `toolArgs` folds into a row's args from the event itself, not the call:
+// `todos` is the snapshot a todo tool's completion carries beside its args.
+const EVENT_ARG_KEYS = new Set(['context', 'preview', 'todos', TOOL_LABELS_ARG])
+
+/** True when an event carries exactly the arguments the row was called with. */
+function sameCallArgs(partArgs: unknown, payload: GatewayEventPayload | undefined): boolean {
+  const args = liveToolArgs(payload)
+  const argKeys = Object.keys(args)
+  const stored = parseMaybeJsonObject(partArgs)
+  const storedKeys = Object.keys(stored).filter(key => Object.hasOwn(args, key) || !EVENT_ARG_KEYS.has(key))
+
+  return storedKeys.length === argKeys.length && argKeys.every(key => sameJson(args[key], stored[key]))
+}
+
+/**
+ * The message a tool event should update.
+ *
+ * While a turn is live, a running event only re-arms a sealed row whose own
+ * message is still in flight (`toolCallOwnerMessageId`). With no turn live, a
+ * running event is usually a late copy of a call already on screen, so it
+ * takes the late-completion rule, but only when it carries exactly that
+ * row's arguments. A start whose `message.start` was missed also arrives
+ * with no turn live, and must not take over an older turn's row.
+ */
+export function toolEventOwnerMessageId(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload | undefined,
+  phase: 'running' | 'complete',
+  turnLive: boolean,
+  turnAnchorId?: null | string
+): string | null {
+  if (turnLive || phase === 'complete') {
+    return toolCallOwnerMessageId(messages, payload, phase, turnAnchorId)
+  }
+
+  const settledId = toolCallOwnerMessageId(messages, payload, 'complete')
+  const stableId = toolId(payload)
+
+  const settledPart = messages
+    .find(message => message.id === settledId)
+    ?.parts.find(part => part.type === 'tool-call' && part.toolCallId === stableId && !Object.hasOwn(part, 'result'))
+
+  return settledPart?.type === 'tool-call' && sameCallArgs(settledPart.args, payload)
+    ? settledId
+    : toolCallOwnerMessageId(messages, payload, phase, turnAnchorId)
+}
+
+const isQueuedPromptRow = (message: ChatMessage) => message.role === 'user' && message.id.startsWith('user-queued-')
+
+/**
+ * True while a projected queued prompt still waits for a later turn.
+ *
+ * Resume projects the queued prompt below the running turn's rows, and it
+ * stays on screen after its own turn starts, until history replaces it. The
+ * next `message.start` after it is drawn is that prompt's turn starting, so
+ * `markQueuedPromptStarted` records it on the row. Until then the row belongs
+ * to a later turn, whatever the running turn has drawn above or below it.
+ */
+export function queuedPromptAwaitsNextTurn(messages: ChatMessage[]): boolean {
+  const queued = messages.findLast(isQueuedPromptRow)
+
+  return Boolean(queued && !queued.queuedTurnStarted)
+}
+
+/** Record that the queued prompt's turn has started (on `message.start`). */
+export function markQueuedPromptStarted(messages: ChatMessage[]): ChatMessage[] {
+  const queuedIndex = messages.findLastIndex(isQueuedPromptRow)
+
+  if (queuedIndex < 0 || messages[queuedIndex].queuedTurnStarted) {
+    return messages
+  }
+
+  return messages.map((message, index) => (index === queuedIndex ? { ...message, queuedTurnStarted: true } : message))
+}
+
+/**
+ * True when a tool event is another copy of a call this turn already finished.
+ *
+ * Only an unresolved part can own an event (`toolCallOwnerMessageId`), so a
+ * second `tool.start` or `tool.complete` for a call that has already returned
+ * routes to the live bubble and gets drawn again as a new row. A background
+ * `delegate_task` returns in about a second, so any re-delivery of its
+ * frames showed the whole fan-out twice.
+ *
+ * Ids alone can't prove it's the same call: older backends pass through a
+ * provider's constant id (llama.cpp names every call alike). A copy also
+ * matches the finished part's content: a start carries exactly the same
+ * arguments (the same keys, ignoring the ones the event itself adds), a
+ * completion the same result. The search stops at the newest user message;
+ * a projected queued prompt is passed over only while it still waits for a
+ * later turn (`queuedPromptAwaitsNextTurn`). A later turn that reuses an id
+ * with the same arguments gets its own row.
+ *
+ * Content can't tell one case apart: an older constant-id backend running the
+ * same command twice in one turn. Its second call is hidden while it runs,
+ * and entirely when the output repeats. Current backends rename a reused id
+ * before `tool.start` goes out, so that only reaches an older backend.
+ */
+export function isRedeliveredToolEvent(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload | undefined,
+  phase: 'running' | 'complete',
+  { queuedIsNextTurn = false, turnAnchorId }: { queuedIsNextTurn?: boolean; turnAnchorId?: null | string } = {}
+): boolean {
+  const stableId = toolId(payload)
+
+  if (!stableId) {
+    return false
+  }
+
+  // A call still waiting on this event wins only when it is newer than the
+  // finished match: an older turn's sealed row must not take the copy.
+  const ownerId = toolCallOwnerMessageId(messages, payload, phase, turnAnchorId)
+
+  const repeats = (part: Extract<ChatMessagePart, { type: 'tool-call' }>) =>
+    phase === 'complete'
+      ? payload?.result !== undefined && sameJson(payload.result, part.result)
+      : sameCallArgs(part.args, payload)
+
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = messages[messageIndex]
+
+    if (message.id === ownerId || (message.role === 'user' && !(queuedIsNextTurn && isQueuedPromptRow(message)))) {
+      return false
+    }
+
+    for (const part of message.parts) {
+      if (
+        part.type === 'tool-call' &&
+        part.toolCallId === stableId &&
+        (!payload?.name || part.toolName === payload.name) &&
+        Object.hasOwn(part, 'result') &&
+        repeats(part)
+      ) {
+        return true
+      }
+    }
+  }
+
+  return false
 }
 
 interface PendingClarifyLocation {
@@ -619,7 +808,46 @@ export function restorePendingClarifyToolCall(
   payload: GatewayEventPayload,
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
-  return restorePendingBlockingToolCall(messages, { name: 'clarify', ...payload }, occurredAt)
+  const { at, ...projection } = rearmBlockingToolCall(messages, { name: 'clarify', ...payload }, occurredAt)
+  const requestId = toolId(payload)
+
+  return at && requestId ? { ...projection, messages: bindClarifyRow(projection.messages, at, requestId) } : projection
+}
+
+/**
+ * Tie the live clarify request to the one row the re-arm picked: that row carries the request id, every
+ * other open clarify row `''`, so `ClarifyToolLive` renders the request on that row only. Question text
+ * cannot decide this: an earlier call left without its completion, or a duplicated copy of this one, can
+ * ask the same question. A row already tied to another request keeps that id.
+ */
+function bindClarifyRow(messages: ChatMessage[], at: PendingClarifyLocation, requestId: string): ChatMessage[] {
+  return messages.map((message, messageIndex) => {
+    let changed = false
+
+    const parts = message.parts.map((part, partIndex) => {
+      if (part.type !== 'tool-call' || !QUESTION_CARD_TOOLS.has(part.toolName) || part.result !== undefined) {
+        return part
+      }
+
+      const owner = messageIndex === at.messageIndex && partIndex === at.partIndex
+
+      const clarifyRequestId = owner
+        ? requestId
+        : part.clarifyRequestId === undefined || part.clarifyRequestId === requestId
+          ? ''
+          : part.clarifyRequestId
+
+      if (part.clarifyRequestId === clarifyRequestId) {
+        return part
+      }
+
+      changed = true
+
+      return { ...part, clarifyRequestId }
+    })
+
+    return changed ? { ...message, parts } : message
+  })
 }
 
 /** Restore a blocking tool row (clarify, connection card) from a resume snapshot: mark the
@@ -629,6 +857,17 @@ export function restorePendingBlockingToolCall(
   clarifyPayload: GatewayEventPayload & { name: string },
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
+  const { at: _at, ...projection } = rearmBlockingToolCall(messages, clarifyPayload, occurredAt)
+
+  return projection
+}
+
+/** `restorePendingBlockingToolCall`, plus where the re-armed or appended part sits. */
+function rearmBlockingToolCall(
+  messages: ChatMessage[],
+  clarifyPayload: GatewayEventPayload & { name: string },
+  occurredAt: number
+): PendingClarifyProjection & { at: null | PendingClarifyLocation } {
   const location = findPendingClarifyLocation(messages, clarifyPayload, new Set([clarifyPayload.name]))
 
   if (location) {
@@ -636,7 +875,7 @@ export function restorePendingBlockingToolCall(
     const part = message.parts[location.partIndex]
 
     if (part.type !== 'tool-call') {
-      return { messages, streamId: message.id }
+      return { at: null, messages, streamId: message.id }
     }
 
     // A correlated row that settle sealed (stop, lost completion) is live
@@ -657,7 +896,7 @@ export function restorePendingBlockingToolCall(
     const next = [...messages]
     next[location.messageIndex] = { ...message, parts, pending: true }
 
-    return { messages: next, streamId: message.id }
+    return { at: location, messages: next, streamId: message.id }
   }
 
   const parts = upsertToolPart([], clarifyPayload, 'running', occurredAt)
@@ -666,18 +905,16 @@ export function restorePendingBlockingToolCall(
 
   if (tail?.role === 'assistant') {
     const next = [...messages]
-    next[tailIndex] = {
-      ...tail,
-      parts: [...completeOpenStreamParts(tail.parts, occurredAt), ...parts],
-      pending: true
-    }
+    const tailParts = [...completeOpenStreamParts(tail.parts, occurredAt), ...parts]
+    next[tailIndex] = { ...tail, parts: tailParts, pending: true }
 
-    return { messages: next, streamId: tail.id }
+    return { at: { messageIndex: tailIndex, partIndex: tailParts.length - 1 }, messages: next, streamId: tail.id }
   }
 
   const streamId = nextLiveToolId(`${clarifyPayload.name}-message`)
 
   return {
+    at: { messageIndex: messages.length, partIndex: 0 },
     messages: [
       ...messages,
       {
@@ -915,6 +1152,49 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
     toolResultMetadata: storedToolResultMetadata(toolMessage),
     isError: false
   }
+}
+
+/**
+ * Merge an activation page's stream row (`earlier`) with the live store's copy
+ * of that turn (`later`) so each tool call appears once. A call keeps its place
+ * in `earlier`, so text and reasoning that followed it there still follow it,
+ * and the live copy's fields win unless only the page's copy carries a result.
+ * Two parts are one call when tool name and id match and either their args
+ * match or neither has finished: ids repeat across calls (llama.cpp sends one
+ * constant id), and a finished call must not replace a running call, or an
+ * answered clarify an open one, that shares its id. A re-delivered
+ * `open_requests` marks the cached row changed, and a raw concat rendered the
+ * same call twice.
+ */
+export function concatPartsByToolCall(earlier: ChatMessagePart[], later: ChatMessagePart[]): ChatMessagePart[] {
+  const hasResult = (part: ChatMessagePart) => part.type === 'tool-call' && part.result !== undefined
+
+  const argsOf = (part: ChatMessagePart) =>
+    part.type === 'tool-call' ? (part.argsText ?? JSON.stringify(part.args ?? {})) : ''
+
+  const sameCall = (a: ChatMessagePart, b: ChatMessagePart) =>
+    a.type === 'tool-call' &&
+    b.type === 'tool-call' &&
+    Boolean(a.toolCallId) &&
+    a.toolCallId === b.toolCallId &&
+    a.toolName === b.toolName &&
+    (argsOf(a) === argsOf(b) || (!hasResult(a) && !hasResult(b)))
+
+  const placed = new Set<ChatMessagePart>()
+
+  const merged = earlier.map(part => {
+    const live = later.find(candidate => !placed.has(candidate) && sameCall(part, candidate))
+
+    if (!live) {
+      return part
+    }
+
+    placed.add(live)
+
+    return hasResult(part) && !hasResult(live) ? part : live
+  })
+
+  return [...merged, ...later.filter(part => !placed.has(part))]
 }
 
 export function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {

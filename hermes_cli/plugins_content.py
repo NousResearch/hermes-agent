@@ -19,6 +19,15 @@ logger = logging.getLogger("hermes_cli.plugins")
 __all__ = ["register_automation_blueprint", "register_skill"]
 
 
+def plugin_skill_owners(manager, qualified: str) -> set[str]:
+    """The names ``plugins.enabled``/``plugins.disabled`` may use for the plugin that registered
+    *qualified*: its key and manifest name. A portable plugin's skill prefix is a slug of its name
+    (``foo.bar`` -> ``foo-bar``), so the prefix alone can name a different plugin."""
+    entry = manager._plugin_skills.get(qualified) or {}
+    owners = {entry.get("plugin_key"), entry.get("plugin_name")} - {None, ""}
+    return owners or {qualified.partition(":")[0]}
+
+
 @_serialized_replacement
 def register_skill(
     self, name: str, path: Path, description: str = "",
@@ -29,6 +38,7 @@ def register_skill(
     is enabled. Not copied into ``~/.hermes/skills/``. Raises ``ValueError`` (``':'``/invalid
     chars) or ``FileNotFoundError``."""
     from agent.skill_utils import _NAMESPACE_RE
+    from hermes_cli.plugins_manifest import _portable_slug
     if ":" in name:
         raise ValueError(f"Skill name '{name}' must not contain ':' (the namespace is derived from the "
                          f"plugin name '{self.manifest.name}' automatically).")
@@ -40,12 +50,17 @@ def register_skill(
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"SKILL.md not found at {path}")
-    namespace = self.manifest.skill_namespace or self.manifest.name
+    namespace = _portable_slug(self.manifest.name) if self.manifest.portable else self.manifest.name
     qualified = f"{namespace}:{name}"
-    if self.manifest.portable and qualified in self._manager._plugin_skills:
-        raise ValueError(f"Plugin skill '{qualified}' is already registered")
+    existing = self._manager._plugin_skills.get(qualified)
+    # Native-over-native keeps last-wins replacement; a clash involving a portable plugin is refused
+    # either way round, so one plugin's instructions never load under another's name.
+    if existing and (self.manifest.portable
+                     or (existing.get("portable") and existing.get("plugin_key") != self.plugin_id)):
+        raise ValueError(f"Plugin skill '{qualified}' is already registered by plugin '{existing.get('plugin_key')}'")
     entry = {
-        "path": path, "plugin": namespace, "plugin_key": self.plugin_id, "bare_name": name,
+        "path": path, "plugin": namespace, "plugin_key": self.plugin_id, "plugin_name": self.manifest.name,
+        "portable": self.manifest.portable, "bare_name": name,
         "description": description, "frontmatter": dict(frontmatter or {}),
     }
     return self._register_entry("skill", qualified, self._manager._plugin_skills, entry,

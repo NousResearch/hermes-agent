@@ -1,0 +1,47 @@
+name: hermes-security
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: 85e835c3deb972ca49cb58f7d3517b10b6672a1a
+subdir: hermes-security
+title: Security
+description: 'Security review for a local repository. The agent builds a threat model, splits the code
+  into chunks and reviews them with parallel subagents, checks each candidate against the code and
+  traces whether an attacker can reach it. Reports keep evidence, rejected candidates and coverage
+  gaps, export to Markdown, JSON, CSV and SARIF, and get a Security page in Hermes Desktop. Standard,
+  deep and diff modes; `/security` slash command and `hermes security-review` CLI. Optional "Run tests
+  to confirm findings" writes small reproductions and runs them in a temporary copy of the repository;
+  testing a running app needs a per-scan grant (one origin, one hour, 200 requests) that agent tools
+  cannot issue. Apache-2.0 (parts adapted from Apache-2.0 source, see NOTICE). Disclosure — the first
+  scan downloads a pinned osv-scanner release from GitHub (about 55 MB, refused unless its SHA-256
+  matches) into the plugin data folder; package names and versions go to api.osv.dev and api.deps.dev,
+  declared runtime versions to endoflife.date (`HERMES_SECURITY_DEPENDENCY_CHECK=off` disables this).
+  Test confirmation runs repository code as your user in a temporary copy with credential-looking
+  environment variables removed; that is not a sandbox. The configured model provider receives the code
+  under review; scan data stays in the profile''s plugin data folder. With
+  `plugins.entries.hermes-security.allow_gateway_injection` turned on (off by default), the plugin
+  queues one "Continue security scan" message into the chat when a scan stalls, at most 3 times without
+  progress. No Python dependencies.'
+maintainer: NousResearch
+tier: official
+category: tools
+requires_hermes: ">=0.21.5"
+version: "0.1.2"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/85e835c3deb972ca49cb58f7d3517b10b6672a1a/assets/hermes-security.jpg
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/hermes-security
+platforms: []
+capabilities:
+  provides_tools:
+    - security_scan_start
+    - security_scan_get
+    - security_scan_checkpoint
+    - security_scan_submit_worker_result
+    - security_scan_record_validations
+    - security_scan_record_chains
+    - security_scan_finalize
+    - security_scan_cancel
+    - security_scan_export
+  provides_hooks:
+    - on_session_end
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

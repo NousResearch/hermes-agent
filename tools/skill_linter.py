@@ -93,8 +93,8 @@ def _check_frontmatter(frontmatter: dict[str, Any], skill_dir: Optional[Path]) -
     desc = str(frontmatter.get("description", "")).strip().strip("'\"")
     if len(desc) > SKILL_PROMPT_DESC_LIMIT:
         yield _warn("description-length",
-                    f"description is {len(desc)} chars; the skill index truncates past "
-                    f"{SKILL_PROMPT_DESC_LIMIT} chars + '...', losing routing "
+                    f"description is {len(desc)} chars; the skill index shows "
+                    f"{SKILL_PROMPT_DESC_LIMIT} and clips the rest, losing routing "
                     f"signal. Keep it to one sentence.")
     hits = [w for w in _MARKETING_WORDS if re.search(rf"\b{re.escape(w)}\b", desc.lower())]
     if hits:

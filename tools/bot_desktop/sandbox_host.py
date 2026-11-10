@@ -1,4 +1,4 @@
-"""Bot Desktop hosted INSIDE the configured terminal backend (docker / ssh / singularity).
+"""Bot Desktop hosted INSIDE the configured terminal backend (docker / ssh / a plugin backend with streams).
 
 Same launcher, same lease, same pane: only WHERE Xvnc + Xfce run changes. ``runtime`` decides between the
 gateway host and this module via ``placement()``; callers keep using ``runtime.start/stop/status/desktop_env``.
@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
 from tools.environments import streams
 
@@ -50,6 +51,16 @@ _RELAY = (
     "  if not d: break\n"
     "  os.write(1,d)\n"
 )
+
+
+def plugin_image_advice(backend: Optional[str]) -> Optional[str]:
+    """How to get the desktop stack into a plugin backend's sandbox, or None for a built-in backend: a plugin
+    picks its image through its own settings, so there is no ``terminal.<plugin>_image`` key to name."""
+    from tools.terminal_tool_config import _BUILTIN_BACKENDS
+    if not backend or backend in _BUILTIN_BACKENDS:
+        return None
+    return (f"give the {backend} plugin's sandbox the desktop stack through the plugin's own image setting "
+            f"({SANDBOX_IMAGE_HINT} has it)")
 
 
 def _marker() -> Path:
@@ -100,7 +111,7 @@ def marker_sandbox_alive(marker: dict[str, Any]) -> bool:
 
 
 def _remote_dir(env: Any, profile: str) -> str:
-    return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/{profile}"
+    return f"{streams.sandbox_temp_dir(env).rstrip('/')}/hermes-bot-desktop/{profile}"
 
 
 def desktop_home(env: Any) -> str:
@@ -120,7 +131,7 @@ def desktop_home(env: Any) -> str:
 
 
 def browser_profile_dir(env: Any) -> str:
-    """The ONE ``--user-data-dir`` the agent's agent-browser and the dock's Browser icon share inside the
+    """The ONE ``--user-data-dir`` the agent's browser and the dock's Browser icon share inside the
     sandbox (same rule as the host: two profiles would mean the human logs into a jar the bot never sees)."""
     return f"{desktop_home(env).rstrip('/')}/.hermes/bot-desktop/browser-profile"
 
@@ -134,7 +145,7 @@ _CHROMIUM_PROBE = (
 
 
 def chromium_executable(env: Any) -> Optional[str]:
-    """Path of the Playwright Chromium agent-browser uses inside ``env`` (the dock's Browser icon must run
+    """Path of the Playwright Chromium the agent's browser uses inside ``env`` (the dock's Browser icon must run
     the same binary), or None when the image has none. Cached on the env."""
     cached = getattr(env, "_bd_chromium", "unset")
     if cached != "unset":
@@ -223,10 +234,12 @@ def start(env: Any, profile: str, *, geometry: str, wait_seconds: float = 20.0,
     stop(env, profile)  # a dead launcher may have left Xvnc holding :20; the relaunch needs it gone
     missing = missing_binaries(env)
     if missing:
+        advice = plugin_image_advice(getattr(env, "_hermes_backend_name", None)) or (
+            f"use {SANDBOX_IMAGE_HINT} (the default sandbox base plus the desktop stack) as "
+            f"terminal.docker_image / modal_image")
         raise RuntimeError(
             f"Bot Desktop needs {', '.join(missing)} inside the terminal backend's sandbox. The configured image "
-            f"does not have them; use {SANDBOX_IMAGE_HINT} (the default sandbox base plus the desktop stack) as "
-            f"terminal.docker_image / modal_image / singularity_image, or set bot_desktop.placement: gateway.")
+            f"does not have them; {advice}, or set bot_desktop.placement: gateway.")
     user = _user_for(env)
     launcher = (Path(__file__).with_name("launcher.sh").read_bytes())
     wallpaper = Path(__file__).with_name("wallpaper.png").read_bytes()
@@ -257,13 +270,14 @@ def start(env: Any, profile: str, *, geometry: str, wait_seconds: float = 20.0,
     proc = streams.run_in(env, ["bash", "-c", spawn], child_env=child_env, user=user, timeout=30)
     if proc.returncode != 0:
         raise RuntimeError(f"sandbox desktop launcher did not start: {proc.stderr.decode('utf-8', 'replace')[-500:]}")
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
+    def _live_display() -> dict[str, str] | None:
         live = _published(env, rdir)
-        if live.get("DISPLAY"):
-            logger.info("Bot Desktop for profile %s up inside %s on %s", profile, type(env).__name__, live["DISPLAY"])
-            return _record(env, rdir, profile, live)
-        time.sleep(0.25)
+        return live if live.get("DISPLAY") else None
+
+    live = poll_until(_live_display, wait_seconds, 0.25)
+    if live:
+        logger.info("Bot Desktop for profile %s up inside %s on %s", profile, type(env).__name__, live["DISPLAY"])
+        return _record(env, rdir, profile, live)
     tail = streams.run_in(env, ["tail", "-c", "2000", f"{rdir}/launcher.log"], user=user, timeout=10).stdout
     stop(env, profile)
     raise RuntimeError(f"sandbox desktop did not publish its display within {wait_seconds:.0f}s:\n"

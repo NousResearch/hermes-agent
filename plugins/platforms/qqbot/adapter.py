@@ -1488,8 +1488,18 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         keyboard = build_approval_keyboard(prompt.session_key, allow_permanent="always" in choices,
                                            allow_once="once" in choices, request_id=prompt.request_id)
         # QQ requires a msg_id for passive replies; the last inbound id is the natural one.
+        reply_to = self._last_msg_id.get(prompt.chat_id)
+        rationale = str(prompt.contextual_reason or "").strip()
+        if len(rationale) > 1500:
+            rationale = rationale[:1497] + "..."
+        if rationale:
+            # The keyboard card has no rationale slot; a leading message carries the why.
+            try:
+                await self.send(prompt.chat_id, rationale, reply_to=reply_to)
+            except Exception as exc:
+                logger.debug("[QQ] failed to send contextual rationale: %s", exc)
         return await self.send_with_keyboard(
-            prompt.chat_id, prompt.text, keyboard, reply_to=self._last_msg_id.get(prompt.chat_id))
+            prompt.chat_id, prompt.text, keyboard, reply_to=reply_to)
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",

@@ -102,7 +102,11 @@ class FeishuChoiceCardsMixin:
         checked = self._validate_card_action(event=event, state=state, label="clarify", ident=clarify_id)
         if checked is None:
             return self._card_response()
-        user_name = checked[2]
+        open_id, _chat_id, user_name, user_id, _union_id = checked
+        from gateway.approval_actor import clarify_refusal, refusal_text
+        # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
+        if requester := clarify_refusal(clarify_id, user_id or open_id, extra=self.config.extra):
+            return self._card_toast(refusal_text(requester))  # only the clicker sees it; card unchanged
         from tools import clarify_gateway
 
         entry = clarify_gateway.get_pending(clarify_id)

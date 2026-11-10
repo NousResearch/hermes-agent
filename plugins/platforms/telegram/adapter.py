@@ -4489,11 +4489,15 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         choice = parts[1]  # once, always, cancel
         confirm_id = parts[2]
-        session_key = await self._claim_callback_state(
-            query, cb, self._slash_confirm_state, confirm_id, _unauthorized(),
-            _toast("platform.telegram.slash_confirm.already_resolved"))
-        if not session_key:
+        resolved = _toast("platform.telegram.slash_confirm.already_resolved")
+        if not (session_key := await self._claim_callback_state(
+                query, cb, self._slash_confirm_state, confirm_id, _unauthorized(), resolved, pop=False)):
             return
+        from gateway.approval_actor import refusal_text, slash_confirm_refusal
+        if requester := slash_confirm_refusal(session_key, confirm_id, getattr(query.from_user, "id", ""), extra=self.config.extra):
+            return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
+        if not self._slash_confirm_state.pop(confirm_id, None):  # a concurrent tap claimed it first
+            return await answer_callback(query, resolved)
         label_key = {"once": "slash_confirm.resolved_once", "always": "slash_confirm.resolved_always", "cancel": "slash_confirm.resolved_cancel"}.get(
             choice, "approval.resolved_generic")
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
@@ -4541,6 +4545,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             _toast("platform.telegram.slash_confirm.already_resolved"), pop=False)
         if not prompt or not await tap_matches_prompt(query, clarify_id, prompt, _toast("platform.telegram.prompt.invalid_choice")):
             return
+        from gateway.approval_actor import clarify_refusal, refusal_text
+        if requester := clarify_refusal(clarify_id, getattr(query.from_user, "id", ""), extra=self.config.extra):
+            return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         if choice_token == "other":
             # Flip to text-capture (the next message resolves it); keep _clarify_state until then.

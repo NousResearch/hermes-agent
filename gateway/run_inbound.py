@@ -373,8 +373,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key, include_choice_prompts=True)
         except Exception:
             return None
-        if _pending_clarify is None:
-            return None
+        if _pending_clarify is None or self._prompt_refused_to(event, "clarify_refusal", _pending_clarify.clarify_id):
+            return None  # another member's message is their own message, not this clarify's answer
         _clarify_has_audio = bool(self._pending_event_audio_paths(event))
         _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
 
@@ -433,6 +433,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 # Bound to this turn's run generation: once it ends, the normal policy applies.
                 event._clarify_superseded = _generation
         return None
+
+    def _prompt_refused_to(self, event: MessageEvent, check: str, *ids: Any) -> Optional[str]:
+        """The localized refusal when *event*'s sender may not answer the pending prompt *ids* name
+        (``gateway.approval_actor.<check>``: its requester, approvers, or this bot's admins), else None."""
+        from gateway import approval_actor
+        from gateway.slash_access import policy_for_runner_source
+        requester = getattr(approval_actor, check)(
+            *ids, event.sender_id() or "", admin_ids=policy_for_runner_source(self, event.source).admin_user_ids)
+        return approval_actor.refusal_text(requester) if requester else None
 
     async def _release_pending_clarify(self, pending, source) -> bool:
         """Withdraw *pending* as CANCELLED and retire its card; False if it already settled.
@@ -512,6 +521,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             or self._slash_confirm_text_choices().get(_norm_reply)
         )
         if _confirm_choice is not None:
+            if _refusal := self._prompt_refused_to(event, "slash_confirm_refusal", _quick_key,
+                                                   _pending_confirm.get("confirm_id")):
+                return _refusal  # left pending for its requester
             _resolved = await _slash_confirm_mod.resolve(
                 _quick_key, _pending_confirm.get("confirm_id"), _confirm_choice,
             )

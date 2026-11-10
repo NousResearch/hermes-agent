@@ -76,7 +76,9 @@ def test_fallen_back_route_names_main_for_micro_and_never_rides_into_a_pin():
 
     assert (captured.get("model"), captured.get("provider")) == ("main-model", "main-provider")
     assert "api_key" not in captured
-    assert "sk-MAIN-SECRET" not in repr({k: v for k, v in captured.items() if k != "main_runtime"})
+    # Micro must not reintroduce the revoked snapshot as a nested main-runtime override.
+    assert "api_key" not in captured["main_runtime"]
+    assert "sk-MAIN-SECRET" not in repr(captured)
 
     # A KEYLESS stall-fallback pin (local server) replaces the whole route: the main key never rides along.
     pin = {"provider": "custom", "model": "llama3", "base_url": "http://other-host:8080/v1", "api_key": None}

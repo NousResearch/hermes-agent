@@ -3,6 +3,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { useEffect, useMemo, useState } from 'react'
 
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import { SurfaceCloseButton } from '@/components/ui/surface-close'
 import { listAllProfileSessions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -52,7 +53,16 @@ export function SessionPickerDialog({ activeStoredSessionId, onOpenChange, onRes
         >
           <DialogPrimitive.Title className="sr-only">{t.commandCenter.sections.sessions}</DialogPrimitive.Title>
           <Command className="bg-transparent" loop>
-            <CommandInput onValueChange={setSearch} placeholder={t.commandCenter.searchPlaceholder} value={search} />
+            <CommandInput
+              onValueChange={setSearch}
+              placeholder={t.commandCenter.searchPlaceholder}
+              right={
+                <DialogPrimitive.Close asChild>
+                  <SurfaceCloseButton />
+                </DialogPrimitive.Close>
+              }
+              value={search}
+            />
             <CommandList className="max-h-[min(24rem,60vh)]">
               <CommandEmpty>{t.commandCenter.noResults}</CommandEmpty>
               <CommandGroup

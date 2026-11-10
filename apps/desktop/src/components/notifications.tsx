@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { CardStack, type CardStackAction } from '@/components/ui/card-stack'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
+import { SurfaceCloseButton } from '@/components/ui/surface-close'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AlertCircle, AlertTriangle, CheckCircle2, type IconComponent, Info } from '@/lib/icons'
@@ -138,11 +139,11 @@ function TopCenterStack({
       <NotificationDeck expanded={expanded} notifications={notifications} />
       {older.length > 0 && (
         <div className="pointer-events-auto flex min-h-8 items-center justify-between px-3 text-xs">
-          <Button className="-ml-2" onClick={onToggleExpanded} size="xs" type="button" variant="text">
+          <Button className="-ms-2" onClick={onToggleExpanded} size="xs" type="button" variant="text">
             {expanded ? copy.hide : copy.show} {copy.more(older.length)}
           </Button>
           <Button
-            className="-mr-2"
+            className="-me-2"
             onClick={() => {
               notifications.forEach(notification => noteUserDismissed(notification.id))
               clearNotifications()
@@ -277,7 +278,7 @@ function NotificationItem({ notification, stack }: { notification: AppNotificati
   return (
     <Alert
       aria-live={!stack.active ? 'off' : notification.kind === 'error' ? 'assertive' : 'polite'}
-      className="grid-cols-[auto_minmax(0,1fr)_auto] border-0 bg-transparent pr-2.5 text-xs shadow-none"
+      className="grid-cols-[auto_minmax(0,1fr)_auto] border-0 bg-transparent pe-2.5 text-xs shadow-none"
       role={notification.kind === 'error' ? 'alert' : 'status'}
       variant={styles.variant}
     >
@@ -334,19 +335,14 @@ function NotificationItem({ notification, stack }: { notification: AppNotificati
           )}
         </AlertDescription>
       </div>
-      <Button
+      <SurfaceCloseButton
         aria-label={copy.dismiss}
-        className="col-start-3 -mr-1 text-muted-foreground"
+        className="col-start-3 self-start"
         disabled={stack.busy || !stack.active}
         onClick={() => {
           void stack.depart(() => userDismiss(notification.id))
         }}
-        size="icon-xs"
-        type="button"
-        variant="ghost"
-      >
-        <Codicon name="close" size="0.875rem" />
-      </Button>
+      />
     </Alert>
   )
 }

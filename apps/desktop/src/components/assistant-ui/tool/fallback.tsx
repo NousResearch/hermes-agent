@@ -33,13 +33,12 @@ import {
   SCAFFOLD_META_CLASS,
   ScaffoldRow
 } from '@/components/chat/scaffold-row'
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { FadeText } from '@/components/ui/fade-text'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { SurfaceCloseButton } from '@/components/ui/surface-close'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { useI18n } from '@/i18n'
 import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
@@ -574,10 +573,10 @@ function ToolEntry({ part }: ToolEntryProps) {
   // It goes in the in-flow `action` slot (not `trailing`) so it can't overlap
   // the disclosure caret's hit-target — see the comment above `trailing`.
   const dismissAction = canDismiss ? (
-    <Button
+    <SurfaceCloseButton
       aria-label={statusCopy.dismiss}
       className={cn(
-        'size-5 rounded-md text-(--ui-text-tertiary) transition-opacity hover:text-(--ui-text-primary) hover:opacity-100',
+        'text-(--ui-text-tertiary) transition-opacity hover:text-(--ui-text-primary) hover:opacity-100',
         open
           ? 'opacity-80'
           : 'opacity-0 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80'
@@ -586,12 +585,7 @@ function ToolEntry({ part }: ToolEntryProps) {
         event.stopPropagation()
         dismissToolRow(disclosureId)
       }}
-      size="icon-xs"
-      type="button"
-      variant="ghost"
-    >
-      <Codicon name="close" size="0.75rem" />
-    </Button>
+    />
   ) : undefined
 
   if (dismissed) {

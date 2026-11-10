@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { RowButton } from '@/components/ui/row-button'
+import { SurfaceCloseButton } from '@/components/ui/surface-close'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -89,6 +90,7 @@ export function MasterDetail({
 
     event.preventDefault()
     const startX = event.clientX
+    const inlineSign = getComputedStyle(grid).direction === 'rtl' ? -1 : 1
     const startWidth = (grid.children[0] as HTMLElement).getBoundingClientRect().width
     const max = Math.max(SPLIT_MIN_LEFT_PX, grid.getBoundingClientRect().width - SPLIT_MIN_RIGHT_PX)
     setDragging(true)
@@ -96,7 +98,7 @@ export function MasterDetail({
     const onMove = (move: globalThis.PointerEvent) => {
       setPaneWidthOverride(
         resizeId,
-        Math.round(Math.min(max, Math.max(SPLIT_MIN_LEFT_PX, startWidth + (move.clientX - startX))))
+        Math.round(Math.min(max, Math.max(SPLIT_MIN_LEFT_PX, startWidth + (move.clientX - startX) * inlineSign)))
       )
     }
 
@@ -128,9 +130,10 @@ export function MasterDetail({
             {list}
             <div className="relative grid min-h-0 min-w-0">
               <div
-                className="group/vsash absolute inset-y-0 left-0 z-10 hidden w-1 -translate-x-1/2 cursor-col-resize sm:block"
+                className="group/vsash absolute inset-y-0 z-10 hidden w-1 -translate-x-1/2 cursor-col-resize rtl:translate-x-1/2 sm:block"
                 onDoubleClick={() => setPaneWidthOverride(resizeId, undefined)}
                 onPointerDown={startSplitDrag}
+                style={{ insetInlineStart: 0 }}
               >
                 <div
                   className={cn(
@@ -287,7 +290,7 @@ export function DetailPane({
       </div>
       <header className="flex h-9 shrink-0 items-center gap-2 px-3">
         <span className="min-w-0 truncate text-xs font-medium text-foreground">{title}</span>
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <div className="ms-auto flex shrink-0 items-center gap-1.5">
           {actions}
           <Tip label={collapsed ? t.common.expand : t.common.collapse}>
             <Button
@@ -301,11 +304,7 @@ export function DetailPane({
               <Codicon name={collapsed ? 'chevron-up' : 'chevron-down'} size="0.8125rem" />
             </Button>
           </Tip>
-          {onClose && (
-            <Button aria-label={t.common.close} className={ICON_BUTTON} onClick={onClose} size="icon" variant="ghost">
-              <Codicon name="close" size="0.8125rem" />
-            </Button>
-          )}
+          {onClose && <SurfaceCloseButton onClick={onClose} />}
         </div>
       </header>
       <div className="min-h-0 overflow-hidden" style={{ height: collapsed ? 0 : height }}>

@@ -28,19 +28,19 @@ export function OverlayBreadcrumbHeader({
     <div className={cn('mb-3 flex shrink-0 items-start justify-between gap-3', PAGE_INSET_X)}>
       <nav aria-label={group.label} className="flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)">
         <span className="shrink-0">{rootLabel}</span>
-        <ChevronRight aria-hidden className="size-3 shrink-0" />
+        <ChevronRight aria-hidden className="size-3 shrink-0 rtl:-scale-x-100" />
         {child ? (
           <>
             <Button onClick={group.onSelect} size="inline" variant="text">
               {group.label}
             </Button>
-            <ChevronRight aria-hidden className="size-3 shrink-0" />
+            <ChevronRight aria-hidden className="size-3 shrink-0 rtl:-scale-x-100" />
             {grandchild ? (
               <>
                 <Button className="min-w-0 truncate" onClick={child.onSelect} size="inline" variant="text">
                   {child.label}
                 </Button>
-                <ChevronRight aria-hidden className="size-3 shrink-0" />
+                <ChevronRight aria-hidden className="size-3 shrink-0 rtl:-scale-x-100" />
                 <span aria-current="page" className="truncate text-foreground">
                   {grandchild.label}
                 </span>

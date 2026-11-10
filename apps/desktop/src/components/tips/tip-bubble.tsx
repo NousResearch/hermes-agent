@@ -17,8 +17,8 @@ import { useEffect, useRef } from 'react'
 
 import { KbdCombo } from '@/components/ui/kbd'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { SurfaceCloseButton } from '@/components/ui/surface-close'
 import { useI18n } from '@/i18n'
-import { iconSize, X } from '@/lib/icons'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import type { TipSide } from '@/lib/tips/catalog'
 import type { ActiveTip } from '@/store/tips'
@@ -98,14 +98,11 @@ export function TipBubble({ action, anchor, keybind, onClose, side, text, title 
               </button>
             )}
           </div>
-          <button
+          <SurfaceCloseButton
             aria-label={t.tips.close}
-            className="-mr-0.5 -mt-0.5 shrink-0 cursor-pointer rounded-[3px] p-0.5 text-current/70 transition-colors hover:bg-current/15 hover:text-current"
+            className="text-current/70 hover:bg-current/15 hover:text-current"
             onClick={onClose}
-            type="button"
-          >
-            <X className={iconSize.sm} />
-          </button>
+          />
         </div>
       </PopoverContent>
     </Popover>

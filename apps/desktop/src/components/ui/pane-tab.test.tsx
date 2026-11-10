@@ -6,6 +6,26 @@ import { PaneTab, PaneTabLabel } from './pane-tab'
 
 afterEach(cleanup)
 
+describe('PaneTab title direction', () => {
+  it.each(['Example activity from a test gateway', 'عنوان محادثة طويل'])(
+    'isolates %s inside an RTL tab strip',
+    title => {
+      render(
+        <div dir="rtl">
+          <PaneTab onClose={vi.fn()}>
+            <PaneTabLabel>{title}</PaneTabLabel>
+          </PaneTab>
+        </div>
+      )
+      const label = screen.getByText(title)
+
+      expect(label.tagName).toBe('BDI')
+      expect(label.getAttribute('dir')).toBe('auto')
+      expect(label.textContent).toBe(title)
+    }
+  )
+})
+
 describe('PaneTab close gestures', () => {
   it('middle-click closes — pointer events only, no auxclick', () => {
     const onClose = vi.fn()

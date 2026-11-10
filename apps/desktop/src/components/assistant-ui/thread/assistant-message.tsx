@@ -47,6 +47,7 @@ import { ActionsMenu, renderActionItem } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
+import { SurfaceCloseButton } from '@/components/ui/surface-close'
 import { useI18n } from '@/i18n'
 import type { Translations } from '@/i18n/types'
 import {
@@ -74,8 +75,7 @@ import {
   MoreHorizontal,
   RefreshCwIcon,
   SmilePlusIcon,
-  VolumeXIcon,
-  XIcon
+  VolumeXIcon
 } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
@@ -969,6 +969,9 @@ const ErrorCard: FC<{ onDismiss?: () => void }> = ({ onDismiss }) => {
           <div className="aui-error-card-title">{title}</div>
           <div className="aui-error-card-body">{body}</div>
         </div>
+        {severity === 'degraded' && onDismiss && (
+          <SurfaceCloseButton aria-label={copy.dismissError} onClick={onDismiss} />
+        )}
       </div>
       <div className="aui-error-card-row">
         <ErrorCardActionRow surface={surface} />
@@ -986,11 +989,6 @@ const ErrorCard: FC<{ onDismiss?: () => void }> = ({ onDismiss }) => {
       </div>
       {diagnostics && (
         <ErrorDetailsBlock errorText={errorText} hidden={!detailsOpen} id={detailsId} surface={surface} />
-      )}
-      {severity === 'degraded' && onDismiss && (
-        <button aria-label={copy.dismissError} className="aui-error-card-close" onClick={onDismiss} type="button">
-          <XIcon aria-hidden className="size-4" />
-        </button>
       )}
     </ErrorPrimitive.Root>
   )

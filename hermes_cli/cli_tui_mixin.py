@@ -41,7 +41,7 @@ from typing import Optional
 
 from hermes_cli import cli_enter_burst as _enter_burst
 from hermes_cli.cli_enter_burst import RAPID_INPUT_ENTER_WINDOW_S as _RAPID_INPUT_ENTER_WINDOW_S
-from hermes_cli.cli_footer_split import FooterSplit
+from hermes_cli.cli_footer_split import footer_root
 from hermes_cli.cli_panel import _Panel
 from hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
 
@@ -2161,7 +2161,7 @@ class CLITuiMixin:
             filter=Condition(lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))),
         )
         self._register_extra_tui_keybindings(kb, input_area=input_area)
-        layout = Layout(FooterSplit(self._build_tui_layout_children(
+        layout = Layout(footer_root(self._build_tui_layout_children(
             sudo_widget=sudo_widget,
             secret_widget=secret_widget,
             connection_widget=connection_widget,

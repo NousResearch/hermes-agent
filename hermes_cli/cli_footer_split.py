@@ -9,11 +9,18 @@ exceed the budget by one and stock ``HSplit`` replaces the WHOLE footer with its
 " Window too small... " placeholder (#57393) — on any terminal size, including a maximised 200×50
 pane. Hermes's throttled ``_invalidate`` can then drop the healing repaint for the length of a
 tool call, so the placeholder sits there looking like a geometry error.
+
+The CLI builds it bottom-aligned (``footer_root``). prompt_toolkit never shrinks a non-full-screen
+app while it runs: ``Renderer.render`` paints into ``max(rows below the cursor, the last frame's
+height, the preferred height)``, so after a panel closes (completion menu, clarify, approval) the
+root is handed more rows than its children ask for. ``HSplit``'s default ``JUSTIFY`` left them
+blank under the status bar and the composer jumped up by the panel's height; bottom-aligned, they
+pad the space above the composer and the composer stays on the terminal's last rows.
 """
 from __future__ import annotations
 
 from prompt_toolkit.application import get_app
-from prompt_toolkit.layout import HSplit
+from prompt_toolkit.layout import HSplit, VerticalAlign
 
 
 class FooterSplit(HSplit):
@@ -37,3 +44,8 @@ class FooterSplit(HSplit):
             clipped.append(rows)
         get_app().invalidate()
         return clipped[::-1]
+
+
+def footer_root(children) -> FooterSplit:
+    """The CLI layout's root: a ``FooterSplit`` whose spare rows go above the composer."""
+    return FooterSplit(children, align=VerticalAlign.BOTTOM)

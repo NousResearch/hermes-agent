@@ -118,6 +118,23 @@ def test_a_named_profile_client_renders_the_root_launcher_for_the_root(store_upd
     assert [path.read_bytes() for path, _, _ in installed] == [content.encode(enc) for _, content, enc in installed]
 
 
+def test_the_repair_keeps_the_installed_home_spelling(store_update, monkeypatch):
+    """Ensure passes the canonical (resolved) home, but install wrote the configured spelling, which may
+    be a link to the real directory (as ``%LOCALAPPDATA%\\hermes`` can be): the repair keeps that spelling."""
+    link = store_update.home.parent / "hermes-link"
+    link.symlink_to(store_update.home, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(link))
+    cmd = link / "gateway-service" / store_update.cmd.name
+    monkeypatch.setattr(gateway, "get_python_path", lambda: str(store_update.old))
+    gateway_windows._write_launcher_scripts(gateway_windows._render_launchers(gateway_windows._launcher_settings(link), cmd))
+    monkeypatch.setattr(gateway, "get_python_path", lambda: str(store_update.new))
+    installed = gateway_windows._render_launchers(gateway_windows._launcher_settings(link), cmd)
+
+    assert gateway_windows.refresh_dead_launcher(store_update.home.resolve(), store_update.name)
+
+    assert [path.read_bytes() for path, _, _ in installed] == [content.encode(enc) for _, content, enc in installed]
+
+
 def test_a_live_or_foreign_launcher_is_left_alone(store_update, monkeypatch):
     assert gateway_windows.refresh_dead_launcher(store_update.home, store_update.name)
     before = store_update.vbs.read_bytes()

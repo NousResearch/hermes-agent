@@ -520,7 +520,8 @@ def refresh_dead_launcher(home: Path, task_name: str) -> bool:
     rewritten = False
     # One file at a time: the task and the Startup entry run the .vbs, so a broken .cmd helper must not
     # hold its repair back, and no failure here may stop discovery from querying the task.
-    for path, content, encoding in _render_launchers(_launcher_settings(home), vbs.with_suffix(".cmd")):
+    # The installed spelling, which the gate proved is ``home``: ensure passes a resolved, normcased home.
+    for path, content, encoding in _render_launchers(_launcher_settings(Path(configured)), vbs.with_suffix(".cmd")):
         try:
             if not path.exists() or path.read_bytes() != content.encode(encoding):
                 _write_launcher_scripts([(path, content, encoding)])

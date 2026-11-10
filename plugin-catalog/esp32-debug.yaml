@@ -1,14 +1,14 @@
 name: esp32-debug
 title: ESP32 Debug
 repo: https://github.com/snakeyear/hermes-esp32-debug
-sha: 65d59feafef8b499c171b021c456aaf22c60b7cf
+sha: 6b13b16a994187bc2d3ccbd16ab8f78fadd5d657
 description: "Read-only ESP32 debugging: find ESP32 boards on serial ports, read chip info, capture a bounded serial log, and decode panic backtraces to function and file:line against a hash-checked ELF."
 maintainer: snakeyear
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/snakeyear/hermes-esp32-debug#readme
-version: "0.1.2"
+version: "0.1.3"
 readme: true
 platforms: []
 known_issues:

@@ -148,8 +148,6 @@ def _runner_for_stall(adapter: _FakeAdapter) -> GatewayRunner:
     r.adapters = {"fake": adapter}
     r._profile_adapters = {}
     r._running_agents = {}
-    r._running_agents_ts = {}
-    r._queued_events = {}
     r._session_stall_notified = {}
     r._thread_metadata_for_source = lambda source, *a, **k: {
         "thread_id": getattr(source, "thread_id", None)
@@ -234,7 +232,7 @@ async def test_check_session_stalls_skips_pending_sentinel_without_activity():
     session_key = "agent:main:telegram:dm:5"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _AGENT_PENDING_SENTINEL
-    runner._running_agents_ts[session_key] = time.time() - 90
+    runner._session_state(session_key).turn.started_ts = time.time() - 90
 
     sent = await runner._check_session_stalls(60)
     assert sent == 0
@@ -249,7 +247,7 @@ async def test_check_session_stalls_ignores_raw_clock_without_summary():
     session_key = "agent:main:telegram:dm:raw"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _AgentWithoutSummary(time.time() - 999)
-    runner._running_agents_ts[session_key] = time.time() - 999
+    runner._session_state(session_key).turn.started_ts = time.time() - 999
 
     sent = await runner._check_session_stalls(60)
     assert sent == 0
@@ -280,7 +278,7 @@ async def test_check_session_stalls_queued_events_overflow_notifies():
     runner = _runner_for_stall(adapter)
     session_key = "agent:main:telegram:dm:overflow"
     event = _pending_event()
-    runner._queued_events[session_key] = [event]
+    runner._session_state(session_key).conversation.queued_events = [event]
     runner._running_agents[session_key] = _FakeAgent(time.time() - 120)
     runner._delivery_adapter_for = lambda source: adapter
 

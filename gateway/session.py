@@ -185,6 +185,7 @@ class SessionContext:
     # Keep that trusted event identity task-local; it must never alter the stored route.
     actor_user_id: Optional[str] = None
     actor_user_name: Optional[str] = None
+    turn_event: Any = None  # the MessageEvent the actor came from; a later fold may clear it (session_context)
     shared_multi_user_session: bool = False
     session_key: str = ""
     session_id: str = ""
@@ -1407,7 +1408,7 @@ def build_session_context(
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,
         actor_user_id=getattr(actor, "user_id", None), actor_user_name=getattr(actor, "user_name", None),
-        home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
+        turn_event=event, home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
     )
     if session_entry:
         context.session_key = session_entry.session_key

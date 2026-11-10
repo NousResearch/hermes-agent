@@ -105,6 +105,8 @@ _WHATSAPP_BRIDGE = ("scripts/whatsapp-bridge/", "plugins/platforms/whatsapp/")
 # Shift every package's tree (pnpm-workspace.yaml carries the overrides).
 _ROOT_NPM = {"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"}
 _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # docker setup
+# The docker_meta lint step runs it; it is not an image input, so it builds no image.
+_DOCKER_LINT = "scripts/ci/lint_docker.sh"
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
@@ -656,7 +658,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     )
     deps = any(f == "pyproject.toml" for f in files)
     npm_lock = any(f.split("/")[-1] in ("pnpm-lock.yaml", "package-lock.json") for f in files)
-    docker_meta = any(f.startswith(_DOCKER_META) for f in files)
+    docker_meta = any(f.startswith(_DOCKER_META) or f == _DOCKER_LINT for f in files)
     
     ret = {
         "python": python,

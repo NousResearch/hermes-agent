@@ -2476,7 +2476,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert _is_anthropic_frontier_tier("claude-fable-5") is True
         assert _is_anthropic_frontier_tier("anthropic/claude-fable-5") is True
         assert _is_anthropic_frontier_tier("anthropic/claude-fable-5:thinking") is True
-        assert _is_anthropic_frontier_tier("claude-opus-5-0") is True  # forward-compat
+        assert all(map(_is_anthropic_frontier_tier, ("claude-opus-5-0", "anthropic/claude-fable-5.2")))
 
         # Sonnet / Haiku remain non-frontier.
         assert _is_anthropic_frontier_tier("claude-sonnet-5") is False

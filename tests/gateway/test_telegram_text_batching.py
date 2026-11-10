@@ -13,6 +13,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SessionSource
 from gateway.platforms.event import MessageEvent, MessageType
+from tests.waiting import async_wait_until
 
 
 def _make_adapter():
@@ -50,6 +51,17 @@ def _make_adapter():
     adapter._held_inbound_events = []
     adapter._held_inbound_redispatch_task = None
     adapter.HELD_INBOUND_MAX = 64
+    return adapter
+
+
+def _make_default_adapter(monkeypatch):
+    """Construct an adapter with the production text-batch defaults."""
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    monkeypatch.delenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", raising=False)
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter.handle_message = AsyncMock()
     return adapter
 
 
@@ -99,6 +111,42 @@ class TestTextBatching:
         assert "part one" in dispatched.text
         assert "split by Telegram" in dispatched.text
 
+
+    @pytest.mark.asyncio
+    async def test_long_burst_survives_observed_delivery_gap(self, monkeypatch):
+        """A jittered client-side split is emitted as one MessageEvent."""
+        adapter = _make_default_adapter(monkeypatch)
+        first = "a" * 2566
+        second = "b" * 3955
+
+        observed_gap = 1.177  # a real client split delivered this far apart
+        real_sleep, real_delay_for, timers = asyncio.sleep, adapter._text_batch_delay_for, []
+        parked = 9876.5  # stands in for the flush delay so only the batch timer's sleep is driven
+
+        def delay_for(pending):
+            timers.append([real_delay_for(pending), asyncio.Event()])
+            return parked
+
+        async def batch_clock(delay, *a, **k):
+            if delay != parked:
+                return await real_sleep(delay, *a, **k)
+            await timers[-1][1].wait()  # parks until the test advances the clock past the window
+        adapter._text_batch_delay_for = delay_for
+        monkeypatch.setattr(asyncio, "sleep", batch_clock)
+
+        adapter._enqueue_text_event(_make_event(first))
+        await async_wait_until(lambda: timers, what="the first flush timer")
+        assert timers[0][0] > observed_gap  # the window outlasts the gap, so it is still open
+        adapter.handle_message.assert_not_called()
+
+        adapter._enqueue_text_event(_make_event(second))  # re-arms the timer, cancelling the first
+        await async_wait_until(lambda: len(timers) == 2, what="the re-armed flush timer")
+        timers[1][1].set()
+        await async_wait_until(lambda: adapter.handle_message.called, what="the batch flush")
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args.args[0]
+        assert dispatched.text == f"{first}\n{second}"
 
 
     @pytest.mark.asyncio

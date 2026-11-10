@@ -318,7 +318,7 @@ class TestVideoDownloadBlock:
                 super().__init__(name)
 
         fake_filters = SimpleNamespace(
-            **{name: _Names(name) for name in ("TEXT", "COMMAND", "LOCATION", "VENUE", "PHOTO", "VIDEO",
+            **{name: _Names(name) for name in ("TEXT", "COMMAND", "LOCATION", "VENUE", "CONTACT", "PHOTO", "VIDEO",
                                                 "VIDEO_NOTE", "AUDIO", "VOICE")},
             Document=SimpleNamespace(ALL=_Names("DOCUMENT")), Sticker=SimpleNamespace(ALL=_Names("STICKER")),
             StatusUpdate=None, MessageFilter=_Filter)

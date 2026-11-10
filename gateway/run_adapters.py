@@ -830,7 +830,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             from gateway.platform_registry import platform_registry
             # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
             await self._run_in_executor_with_context(platform_registry.get, platform.value)
-            adapter = self._create_adapter(platform, platform_config)
+            adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
             if not adapter:
                 if not self._adapter_may_heal(platform, platform_config):
                     # Became builtin/registered-but-None: a config change is needed, so stop retrying.
@@ -1321,7 +1321,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 continue
             with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                 try:
-                    adapter = self._create_adapter(platform, platform_config)
+                    adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
                 except Exception:
                     logger.error("[MULTIPLEX] Profile '%s': _create_adapter('%s') raised", profile_name,
                                  platform.value, exc_info=True)
@@ -1760,6 +1760,17 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         if adapter is not None:
             adapter.gateway_runner = self
         return adapter
+
+    async def _create_adapter_off_loop_deps(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
+        """``_create_adapter`` for async callers: a registered platform's dependency probe + lazy
+        install runs in the executor first, and the create that follows never re-runs the installer
+        on the loop (#125607). Inline, a minutes-long pm install froze the event loop until the
+        liveness watchdog killed the gateway (exit 75)."""
+        from gateway.platform_registry import platform_registry
+        # None (no registered entry) leaves create_adapter / the built-in path to decide as before.
+        deps_ok = await self._run_in_executor_with_context(platform_registry.ensure_deps, platform.value)
+        with platform_registry.deps_resolved_off_loop(deps_ok):
+            return self._create_adapter(platform, config)
 
     def _instantiate_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Instantiate the adapter for a platform: plugin registry first, then built-ins."""

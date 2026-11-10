@@ -170,8 +170,11 @@ def delegation_wakes_parent(evt: dict) -> bool:
     # status decides. Otherwise the children do, so an interrupted-only batch's aggregate error stays asleep.
     results = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
     results = results or [evt]
+    # The stall monitor stops a stuck unit with the same cooperative stop a user's does; its stall
+    # context on the event is what tells the two apart (``async_delegation._finalize``).
+    stopped = () if evt.get("stalled_after_quiet_seconds") is not None else _STOPPED
     return any(
-        (r.get("status") or ("failed" if r.get("error") else "completed")) not in (*_DONE, *_STOPPED)
+        (r.get("status") or ("failed" if r.get("error") else "completed")) not in (*_DONE, *stopped)
         for r in results)
 
 
@@ -264,6 +267,9 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
     lines += _recovery_lines(evt)
+    if evt.get("stalled_after_quiet_seconds") is not None and any(r.get("status") in _STOPPED for r in results):
+        lines.append(f"The stall monitor stopped this unit after {evt['stalled_after_quiet_seconds']:g}s without "
+                     "progress: an interrupted task below was stuck, not stopped by you or the user.")
     if evt.get("error") and not results:
         lines += ["--- ERROR ---", f"The batch did not complete successfully: {evt['error']}"]
         return "\n".join(lines)

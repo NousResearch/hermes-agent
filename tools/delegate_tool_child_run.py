@@ -637,6 +637,11 @@ def _build_result_entry(
                         and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
         if partial:
             interrupt_note, summary = summary.strip(), partial
+        if (stale_after := result.get("_stale_stop_seconds")) is not None:
+            # The heartbeat's stale verdict stopped it (``await_child``): a timeout, as when it never unwinds.
+            status = exit_reason = "timeout"
+            interrupt_note = (f"Subagent stopped making progress — no activity for {stale_after:g}s "
+                              "(heartbeat stale threshold); it was stopped.")
     elif result.get("failed") or result.get("error"):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
@@ -974,7 +979,11 @@ class _ChildRun:
                     "Subagent %d settled inside the %.1fs stale-result grace window — collecting its real result",
                     task_index, grace,
                 )
-                return future.result(), None, False
+                settled_result = future.result()
+                if isinstance(settled_result, dict) and settled_result.get("interrupted"):
+                    # It unwound on the stale verdict's stop, not a parent or user one: the entry says so.
+                    settled_result["_stale_stop_seconds"] = stale_after
+                return settled_result, None, False
             return future.result(), None, False
         except Exception as wait_exc:
             exc: BaseException = wait_exc  # ``as`` targets are unbound after the except block

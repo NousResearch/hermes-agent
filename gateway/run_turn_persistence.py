@@ -294,7 +294,7 @@ class GatewayTurnPersistenceMixin:
             watchers = process_registry.pending_watchers
             process_registry.pending_watchers = []
             for i, watcher in enumerate(watchers):
-                asyncio.create_task(self._run_process_watcher(watcher))
+                self._retain_background_task(asyncio.create_task(self._run_process_watcher(watcher)))
                 if i % 100 == 99:
                     await asyncio.sleep(0)
         except Exception as e:

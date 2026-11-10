@@ -879,3 +879,27 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text
         assert "make -j8 all" in text
+
+
+@pytest.mark.asyncio
+async def test_post_turn_watcher_blocks_scale_to_zero_until_it_finishes(monkeypatch, tmp_path):
+    """A watcher drained at turn end is live background work: a dormant instance must not
+    suspend while it polls, and stop must be able to cancel it."""
+    from tests.waiting import async_wait_until
+    from tools.process_registry import process_registry
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    release = asyncio.Event()
+
+    async def _blocking_watcher(_watcher):
+        await release.wait()
+    runner._run_process_watcher = _blocking_watcher
+    monkeypatch.setattr(process_registry, "pending_watchers", [_watcher_dict("proc_post_turn")])
+
+    await runner._hmwa_post_turn_hooks({}, {}, "")
+    await asyncio.sleep(0)
+
+    assert runner._scale_to_zero_has_live_background_work() is True
+    release.set()
+    await async_wait_until(lambda: not runner._scale_to_zero_has_live_background_work(),
+                           what="the finished watcher to leave the background task set")

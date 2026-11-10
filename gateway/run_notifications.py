@@ -800,13 +800,6 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         evt["_watch_next_retry_at"] = _refusal_retry_at(step)
         completion_queue.put(evt)
 
-    def _adapter_by_platform_value(self, platform_name: str):
-        """Literal ``p.value == platform_name`` scan over connected adapters (native adapters only)."""
-        for p, a in self.adapters.items():
-            if p.value == platform_name:
-                return a
-        return None
-
     async def _self_post_api_server(self, adapter, synth_text: str, raw_sid: str, evt: dict) -> bool:
         """Deliver to a non-push (api_server) session by raw session id.
 

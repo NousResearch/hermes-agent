@@ -201,7 +201,7 @@ def drain_requested(*, home: Optional[Path] = None) -> bool:
     gateway in ``draining`` (NS-570). A marker whose ``requested_at`` is older than
     :data:`DRAIN_REQUEST_MAX_AGE_SECONDS` is likewise treated as absent: it is a same-epoch orphan whose
     drain-gated action completed without a restart and was never cancelled (#85433). Both staleness checks
-    are lenient (see :func:`_marker_epoch_is_stale` / :func:`_marker_is_expired`): a legacy/corrupt marker
+    are lenient (see :func:`_active_drain_body` / :func:`_marker_is_expired`): a legacy/corrupt marker
     with no epoch and no timestamp, or an environment without ``/proc``, still reads as drain-active.
     """
     return _active_drain_body(home) is not None

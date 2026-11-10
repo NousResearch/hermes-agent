@@ -445,27 +445,6 @@ class GatewayControlServer:
                 writer.close()
 
 
-class _PipeControlProtocol(asyncio.Protocol):
-    """One-shot request/response protocol for the Windows named pipe."""
-    def __init__(self, server: GatewayControlServer) -> None:
-        self._server = server
-        self._transport: Any = None
-        self._buffer = bytearray()
-
-    def connection_made(self, transport) -> None:  # pragma: no cover - windows
-        self._transport = transport
-
-    def data_received(self, data: bytes) -> None:  # pragma: no cover - windows
-        self._buffer.extend(data)
-        if len(self._buffer) > _MAX_REQUEST_BYTES:
-            self._transport.close()
-        elif b"\n" in self._buffer:
-            try:
-                self._transport.write(self._server.handle_request_line(bytes(self._buffer).partition(b"\n")[0]))
-            finally:
-                self._transport.close()
-
-
 def query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, Any]] = None,
                           timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` a control verb; returns its ``result`` payload. Any failure (no/stale

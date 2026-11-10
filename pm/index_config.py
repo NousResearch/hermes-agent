@@ -40,6 +40,11 @@ _PIP_TO_UV = (
 TIMEOUT_HINT = ("uv timed out. If your network needs a package mirror, set index-url in "
                 "pip.conf (bridged to uv automatically) or UV_INDEX_URL; raise UV_HTTP_TIMEOUT "
                 "for slow links.")
+ISOLATED_TIMEOUT_HINT = (
+    "uv timed out. This isolated operation ignores package-index overrides; changing a mirror "
+    "setting will not redirect its downloads. Check connectivity to the pinned artifact URLs "
+    "and your proxy/CA configuration; UV_HTTP_TIMEOUT is still honored for slow HTTP requests."
+)
 
 
 def is_forwarded(key: str) -> bool:

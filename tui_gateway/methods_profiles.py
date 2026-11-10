@@ -4,6 +4,7 @@ server.py's globals (method_ctx.bind_module) and use them bare; module-level nam
 onto server.py, so they must not collide with its globals.
 """
 
+import contextlib
 import logging
 
 from hermes_cli.profiles_cache import yaml_scalar_to_json as _yaml_scalar_to_json

@@ -239,6 +239,10 @@ def assemble_api_request(
     # prepared request instead of running the advisors again.
     _moa_prepared_request = None
     if agent.provider == "moa":
+        # Advisors fan out inside prepare: the request-only replay price leaves the copies first.
+        from agent.message_metadata import drop_request_reasoning_tokens
+
+        drop_request_reasoning_tokens(api_messages)
         _moa_prepared_request, api_messages, pending_moa_prepared_request = _prepare_moa_request(
             agent, api_messages, pending_moa_prepared_request
         )
@@ -284,6 +288,10 @@ def assemble_api_request(
         request_pressure_tokens = _pressure_with_real_floor(
             agent.context_compressor, request_pressure_tokens
         )
+    # Measured: the request-only replay price must not reach a provider.
+    from agent.message_metadata import drop_request_reasoning_tokens
+
+    drop_request_reasoning_tokens(api_messages)
     return AssembledRequest(
         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,

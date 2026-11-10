@@ -3135,7 +3135,8 @@ class ContextCompressor(
         charge_all_thinking = self._stale_thinking_on_wire()
         native_budget = self._native_anthropic_budget()
         if native_budget:
-            return lambda i: native_budget(messages[i])
+            costs = native_budget(messages)
+            return lambda i: costs[i]
         return lambda i: _estimate_msg_budget_tokens(messages[i], charge_all_thinking or i == newest_asst_idx)
 
     def _prune_boundary(
@@ -4947,28 +4948,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             return False
 
     def _native_anthropic_budget(self):
-        """Per-message tail budget on a preserved-thinking native Anthropic route, else None. That route
-        replays exactly the projected carriers minus this session's rejected signatures — what the
-        preflight estimate prices — never the canonical ``reasoning`` keys."""
-        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
-
-        if (getattr(self, "api_mode", "") or "") != "anthropic_messages" or not native_anthropic_preserves_prior_thinking(
-            getattr(self, "base_url", ""), getattr(self, "model", "")
-        ):
-            return None
-        from agent.anthropic_thinking_replay import session_rejected_thinking, strip_rejected_thinking
-        from agent.message_sanitization import native_anthropic_accounting_projection
-
-        rejected = session_rejected_thinking(self, getattr(self, "_session_db", None), getattr(self, "_session_id", ""))
-
-        def budget(msg: dict[str, Any]) -> int:
-            request_copy = dict(msg)
-            if rejected:
-                strip_rejected_thinking(request_copy, rejected)
-            (projected,), thinking = native_anthropic_accounting_projection([request_copy])
-            return _estimate_msg_budget_tokens(projected) + sum(thinking)
-
-        return budget
+        """Tail prices on a preserved-thinking native Anthropic route, else None (``context_compressor_tail``)."""
+        from agent.context_compressor_tail import native_anthropic_tail_prices
+        return native_anthropic_tail_prices(self)
 
     def _find_tail_cut_by_tokens(
         self, messages: list[dict[str, Any]], head_end: int, token_budget: int | None = None,

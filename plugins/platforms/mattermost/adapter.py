@@ -426,7 +426,7 @@ class MattermostAdapter(BasePlatformAdapter):
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
-            file_ids, caption_parts = [], []
+            file_ids, caption_parts, retry = [], [], list(chunk)  # retry: refused links already went out
             try:
                 for image_url, alt_text in chunk:
                     loaded = await self._load_batch_image(image_url, len(file_ids))
@@ -435,6 +435,7 @@ class MattermostAdapter(BasePlatformAdapter):
                         sent = await self.send(chat_id, f"{alt_text}\n{image_url}" if alt_text else image_url,
                                                metadata=metadata)
                         delivered = delivered or sent.success
+                        retry.remove((image_url, alt_text))
                         continue
                     if alt_text:
                         caption_parts.append(alt_text)
@@ -449,12 +450,12 @@ class MattermostAdapter(BasePlatformAdapter):
                     delivered = True
                 else:
                     logger.warning("Mattermost: multi-image post failed, falling back")
-                    fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                    fallback = await super().send_multiple_images(chat_id, retry, metadata, human_delay=human_delay)
                     delivered = delivered or fallback.success
             except Exception as e:
                 logger.warning("Mattermost: multi-image send failed (chunk %d/%d), falling back: %s",
                                chunk_idx + 1, len(chunks), e, exc_info=True)
-                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback = await super().send_multiple_images(chat_id, retry, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 

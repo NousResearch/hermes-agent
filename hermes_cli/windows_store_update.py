@@ -73,8 +73,12 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     # The packaged interpreter receives its dependencies through PYTHONPATH.
     # Process their .pth files so pywin32 can find its extensions and DLLs.
+    # PYTHONPATH is environment input: each entry is judged against the deployment
+    # image before its .pth files can run; a refused entry is skipped, not processed.
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
     for directory in os.environ.get("PYTHONPATH", "").split(os.pathsep):
-        if directory:
+        if directory and not hosted_code_refusal(directory):
             site.addsitedir(directory)
     try:
         from winrt.runtime import ApartmentType, init_apartment, uninit_apartment

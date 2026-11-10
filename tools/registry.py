@@ -127,12 +127,18 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
     by ``(mtime_ns, size)``; a mismatch or corrupt cache re-scans that file. The write is
     best-effort and atomic, so concurrent processes race harmlessly."""
     from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
     if safe_worker_enabled():
         # Toolset filtering happens AFTER import. Keep the troubleshooting worker's
         # import graph closed over reviewed core tools, not plugin-backed wrappers
         # or a profile-writable discovery cache. Core approval/redaction stay intact.
         module_names = ["tools.file_tools", "tools.terminal_tool", "tools.process_registry"]
         for module_name in module_names:
+            refusal = hosted_code_refusal(module=module_name)
+            if refusal:
+                logger.warning("Skipping tool module %s: %s", module_name, refusal)
+                continue
             importlib.import_module(module_name)
         return module_names
     tools_path = (Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent).resolve()
@@ -170,6 +176,12 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
         _save_discovery_cache(fresh_cache)
     imported: list[str] = []
     for mod_name in module_names:
+        # The cache and an optional tools_dir select names, never search roots, but the
+        # module each name resolves to is still judged before it imports.
+        refusal = hosted_code_refusal(module=mod_name)
+        if refusal:
+            logger.warning("Skipping tool module %s: %s", mod_name, refusal)
+            continue
         try:
             importlib.import_module(mod_name)
             imported.append(mod_name)

@@ -9,7 +9,9 @@ answer before it loads. The census is structural and enforced by a test
 finds every dynamic code-loading primitive (``runpy``, ``spec_from_file_location``,
 the ``importlib.machinery`` file loaders, ``zipimport``, non-literal
 ``importlib.import_module``, ``exec``/``compile`` of file contents, ``sys.path``
-insertions) and each hit must either sit in a function that calls the predicate first
+insertions, and site-directory processing — ``site.addsitedir``/``site.addpackage``,
+whose ``.pth`` files execute import-time code) and each hit must either sit in a
+function that calls the predicate first
 or carry a named exemption explaining why its input is image-only — a NEW unguarded
 loader fails the census, so the guarantee does not depend on anyone noticing a new
 import site. The predicate itself (:func:`hosted_code_refusal`) is the single
@@ -136,6 +138,7 @@ __all__ = [
     "armed_by_start_flag",
     "hosted_code_refusal",
     "hosted_fence_installed",
+    "hosted_start_flag_requested",
     "install_hosted_code_fence",
     "prune_sys_path_outside_image",
     "startup_isolation_refusal",
@@ -273,6 +276,17 @@ def _refusal_for(path) -> str:
     return f"{_HOSTED_RULE}; {text} resolves outside that image, so its load is refused"
 
 
+def hosted_start_flag_requested() -> bool:
+    """Whether the start command carries the ``--hosted`` flag: read from argv alone, with no
+    arming, no install and no state — the earliest answer to "does this process serve tenants",
+    so loaders that run before the arm (the bootstrap's dependency activation, which precedes
+    the entry module's arm statement) can already refuse what a hosted process must not load.
+    The boot's preflight later confirms the flag against config, refusing a flagged start on a
+    deployment that is not hosted — a process that carries the flag never serves as a local
+    install, so honouring it here only ever refuses sooner."""
+    return any(arg == "--hosted" for arg in sys.argv[1:])
+
+
 def hosted_code_refusal(code_path=None, *, module: str | None = None) -> str:
     """THE one shared predicate every hosted discovery pre-check consults: ``""`` when the code
     may load in-process, else the reason it may not. A file or directory path is judged by its
@@ -283,12 +297,16 @@ def hosted_code_refusal(code_path=None, *, module: str | None = None) -> str:
     Enforcement does NOT depend on callers of this predicate: the installed fence
     (:func:`install_hosted_code_fence`) refuses the load itself at the compile, read and
     import boundaries, whatever a loader forgot. A dotted module's parent import is refused
-    there too, before the parent's module-level code can run. Dormant unless the boot froze a
-    hosted verdict (a local install answers ``""`` for everything)."""
-    from hermes_cli.hosted_mode import hosted_verdict_frozen
+    there too, before the parent's module-level code can run. Dormant unless this process
+    serves tenants — the start command's hosted flag (:func:`hosted_start_flag_requested`,
+    honoured even before the boot records its verdict, so the bootstrap's own loaders are
+    covered) or the boot's frozen hosted verdict. A local install answers ``""`` for
+    everything."""
+    if not hosted_start_flag_requested():
+        from hermes_cli.hosted_mode import hosted_verdict_frozen
 
-    if hosted_verdict_frozen() is not True:
-        return ""
+        if hosted_verdict_frozen() is not True:
+            return ""
     if code_path is None:
         origin = None
         if module:
@@ -543,7 +561,7 @@ def arm_from_start_argv() -> bool:
     fence takes holds only what survived it: an entry the prune removed is judged as new if
     anything adds it back. Idempotent; a start command without the flag arms nothing and
     prunes nothing (a local install is untouched)."""
-    if not any(arg == "--hosted" for arg in sys.argv[1:]):
+    if not hosted_start_flag_requested():
         return False
     global _armed_by_start_flag
     if _installed:  # an earlier arm (or an in-process install) already added the hook

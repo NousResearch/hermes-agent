@@ -180,6 +180,13 @@ def _store_script_maker(python_exe: Path):
     package = Path(python_exe).parent / "Lib" / "site-packages" / "pip" / "_vendor" / "distlib"
     if not (package / "scripts.py").is_file():
         return None
+    # The interpreter being bound can be resolved through runtime state, not necessarily
+    # this process's own: its vendored distlib is judged against the image BEFORE any of
+    # it loads; a refused package falls back to minting a .cmd, exactly like a torn pip.
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    if hosted_code_refusal(package):
+        return None
     import hashlib
     import importlib
     import importlib.util

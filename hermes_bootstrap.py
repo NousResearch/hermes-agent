@@ -450,6 +450,11 @@ def harden_import_path(src_root: str | None = None) -> None:
 
     root_abs = os.path.abspath(root)
     sys.path[:] = [p for p in sys.path if os.path.abspath(p) != root_abs]
+    # Nothing beyond the stdlib may run before the root is on sys.path (a legacy
+    # editable venv maps only the top-level packages it knew at build time), so this
+    # function guards nothing itself: an entry it inserts that resolves outside the
+    # deployment image is refused by the armed fence's import-time sys.path check
+    # before any import can use it (see the hosted fence's census entry for this site).
     sys.path.insert(0, root)
 
 
@@ -576,6 +581,13 @@ class RelaunchExit(SystemExit):
 
 from pm.environments import activate_dependencies, install_state_permission_message
 from hermes_cli._early_recovery import recover_if_needed
+try:
+    from hermes_cli.hosted_code_fence import HOSTED_BOOT_REFUSED_EXIT, HostedCodeRefused
+except ModuleNotFoundError:  # a tree that ships no fence can start nothing hosted either
+    HOSTED_BOOT_REFUSED_EXIT, HostedCodeRefused = 78, None
+# What the activation refusal is caught by: empty on a tree that ships no fence (nothing
+# hosted can start there, so nothing can raise it).
+_hosted_activation_refusals = (HostedCodeRefused,) if HostedCodeRefused else ()
 
 from hermes_cli._parser import command_argv
 
@@ -611,6 +623,12 @@ if not _pm_repair:
     try:
         recover_if_needed(_root)
         activate_dependencies(_root)
+    except _hosted_activation_refusals as exc:
+        # A hosted process never serves on a dependency environment from outside its
+        # image: refuse the boot with the provenance reason (the remedy is image-side,
+        # not a state repair), never a traceback.
+        print(f"hermes: {exc}", file=sys.stderr)
+        raise SystemExit(HOSTED_BOOT_REFUSED_EXIT) from None
     except (RuntimeError, OSError) as exc:
         if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):
             print(f"hermes: {message}", file=sys.stderr)

@@ -350,6 +350,13 @@ def _backend_for(kind: str) -> ConfigBackend:
     if not _KIND_RE.fullmatch(kind):
         raise ConfigBackendUnavailable(unknown)
     name = f"{_BACKENDS_PACKAGE}.{kind}"
+    # The kind is environment-selected config input: the backend module it names is
+    # judged by the file it resolves to before it imports, never by the name alone.
+    from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+
+    refusal = hosted_code_refusal(module=name)
+    if refusal:
+        raise HostedCodeRefused(refusal)
     module = sys.modules.get(name)
     if module is None:
         try:

@@ -1,8 +1,10 @@
 """Dependency-environment layout: where a project's venv generations live, which one
 is selected, and the interpreter inside any venv. Shared by PM and pre-import launchers.
 
-Only stdlib and hermes_constants: environment selection must work before
-any dependency from that environment has been imported.
+Only stdlib and hermes_constants at module scope: environment selection must work
+before any dependency from that environment has been imported. The activation's
+provenance guard imports the fence module lazily at call time — image code that itself
+imports only the stdlib, so activation still runs ahead of any dependency.
 """
 from __future__ import annotations
 
@@ -501,6 +503,29 @@ def activate_dependencies(project_root: Path) -> None:
             return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
+    # Site processing is a code load, not a path step: a .pth in the directory executes
+    # import-time code, and this activation runs during the bootstrap — BEFORE the start
+    # command's fence arms, so the fence cannot see it. The guard runs only when the
+    # start command says hosted: the flag read is stdlib-only (this module may not import
+    # Hermes code beyond the fence, which itself imports only the stdlib), and with the
+    # flag present the predicate answers from its stdlib-only image-roots check — so a
+    # local bootstrap imports nothing new here. A hosted deployment's dependency
+    # environment must live inside the image (its interpreter's own site-packages); a
+    # boot that freezes a hosted verdict only later (an in-process host) never re-runs
+    # this activation, and the fence its boot installs prunes and judges every search
+    # entry from then on.
+    try:
+        from hermes_cli.hosted_code_fence import (HostedCodeRefused, hosted_code_refusal,
+                                                  hosted_start_flag_requested)
+    except ModuleNotFoundError:
+        pass  # a tree that ships no fence can start nothing hosted: the guard is vacuous
+    else:
+        if hosted_start_flag_requested():
+            refusal = hosted_code_refusal(selected)
+            if refusal:
+                raise HostedCodeRefused(
+                    f"{refusal}; a hosted deployment's dependency environment must live "
+                    "inside the image (its interpreter's own site-packages)")
     import site
 
     sys.path[:] = [entry for entry in sys.path

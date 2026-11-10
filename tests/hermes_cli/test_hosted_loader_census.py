@@ -10,11 +10,12 @@ audit hook is defence in depth behind both. This file enforces (1) structurally:
 AST scan of the repository (tests excluded) finds every dynamic code-loading
 primitive — ``runpy.run_path``/``runpy.run_module``, ``importlib.util.spec_from_file_location``,
 ``importlib.machinery`` file loaders, ``zipimport.zipimporter``, ``importlib.import_module``
-with a non-literal argument, ``exec``/``compile`` of file contents, and ``sys.path``
-insertions — and each hit must either sit in a function that calls the predicate on
-the path first, or carry a named exemption explaining why the code it loads is
-image-only. A NEW unguarded loader fails this census: the guarantee does not depend
-on reviewers noticing a new import site.
+with a non-literal argument, ``exec``/``compile`` of file contents, ``sys.path`` insertions,
+and site-directory processing (``site.addsitedir``/``site.addpackage``, whose ``.pth``
+files execute import-time code) — and each hit must either sit in a function that calls
+the predicate on the path first, or carry a named exemption explaining why the code it
+loads is image-only. A NEW unguarded loader fails this census: the guarantee does not
+depend on reviewers noticing a new import site.
 """
 
 from __future__ import annotations
@@ -74,22 +75,16 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
         "this module's own project root, derived from __file__ — inside the image by construction",
     ("gateway/run.py", "_builtin_adapter_import"):
         "adapter module names from the literal _BUILTIN_ADAPTERS table in this module",
-    ("gateway/run.py", "_ensure_windows_gateway_venv_imports"):
-        "the deployment's own venv and its site directory, resolved from the interpreter running the gateway (Windows bootstrap)",
     ("gateway/run_agent_cache.py", "GatewayAgentCacheMixin._clear_session_boundary_security_state"):
         "core module names from the literal table in this function",
     ("hermes_bootstrap.py", "harden_import_path"):
-        "the bootstrap's own image root — the root this module computed from its own location",
+        "the bootstrap's own image root, or an operator env override — this function may run nothing beyond the stdlib before the root is on sys.path, so it guards nothing itself; an entry it inserts that resolves outside the image is refused by the armed fence's import-time sys.path check before any import can use it",
     ("hermes_cli/_launchers.py", "<module>"):
         "this module's own project root, derived from __file__ — inside the image by construction",
-    ("hermes_cli/_launchers.py", "_store_script_maker"):
-        "pip's vendored distlib inside the interpreter's own site-packages (the launcher's own managed interpreter)",
     ("hermes_cli/_startup_fast.py", "ensure_project_root_on_path"):
         "the project root this module computed from its own location — inside the image by construction",
     ("hermes_cli/cli_commands_session_tools.py", "_probe"):
         "optional-subsystem module names, bound as literals at every call site",
-    ("hermes_cli/config_backend.py", "_backend_for"):
-        "the backend kind is validated against the literal set of this build's config backends, so the module is always the image's own plugins.config_backends package",
     ("hermes_cli/console_engine.py", "_CliSurface.build"):
         "command module names from the literal command tables in this module",
     ("hermes_cli/console_engine.py", "_simple_command.handler"):
@@ -177,7 +172,7 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
     ("plugins/platforms/whatsapp_cloud/adapter.py", "_optional_module"):
         "resolver module names, bound as literals at every call site",
     ("pm/_venv_entry.py", "main"):
-        "the pm-managed venv's console entry point: it launches the requested command in that venv's own interpreter, never inside a Hermes process",
+        "the pm-managed venv's console entry point: it launches the requested command in that venv's own interpreter (its addsitedir processes that venv's .pth files there), never inside a Hermes process",
     ("pm/launch.py", "<module>"):
         "this module's own project root, derived from __file__ — inside the image by construction",
     ("pm/registry.py", "_builtins_loaded"):
@@ -206,8 +201,6 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
         "the literal httpx fallback table in this function",
     ("tools/mcp_tool_errors.py", "_optional_types"):
         "optional SDK module names, bound as literals at every call site",
-    ("tools/registry.py", "discover_builtin_tools"):
-        "the safe-worker core list is literal, and discovered names are always 'tools.'-prefixed, resolving inside the image's own tools package — the profile-writable cache only selects names, never paths",
     ("tools/tts_tool.py", "_sdk_importer._import"):
         "SDK module names, bound as literals at every _sdk_importer call site",
     ("tui_gateway/agent_factory.py", "_make_agent"):
@@ -229,6 +222,8 @@ _CALLED_PRIMITIVES = {
     ("importlib.machinery", "ExtensionFileLoader"): "importlib.machinery.ExtensionFileLoader",
     ("importlib", "import_module"): "importlib.import_module",
     ("zipimport", "zipimporter"): "zipimport.zipimporter",
+    ("site", "addsitedir"): "site.addsitedir",
+    ("site", "addpackage"): "site.addpackage",
 }
 
 _PREDICATE = "hosted_code_refusal"
@@ -400,6 +395,11 @@ def test_the_census_scans_something():
     assert any("spec_from_file_location" in hit.primitive for hit in hits)
     assert any(hit.primitive.startswith("sys.path.") for hit in hits)
     assert any(hit.primitive == "runpy.run_path" for hit in hits)
+    # Site processing is a code load (.pth files execute import-time code): the census
+    # must keep seeing every addsitedir/addpackage call site, or a new unguarded one
+    # would pass as a mere path step.
+    assert any(hit.primitive == "site.addsitedir" for hit in hits)
+    assert any(hit.primitive == "site.addpackage" for hit in hits)
 
 
 def test_every_exemption_entry_matches_a_real_hit():

@@ -73,6 +73,13 @@ def adopt(previous: Path, selected: Path, running: Path) -> bool:
         return False
     lease_generation(selected)  # The old lease stays: loaded modules keep reading from it.
     old, new = site_packages(previous), site_packages(selected)
+    # Guard before the swap: addpackage executes the new tree's .pth files, so the
+    # directory is judged against the image before any of them can run.
+    from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+
+    refusal = hosted_code_refusal(new)
+    if refusal:
+        raise HostedCodeRefused(refusal)
     sys.path[:] = [str(new) if entry and Path(entry).resolve() == old.resolve() else entry for entry in sys.path]
     known = {pth.name for pth in old.glob("*.pth")}
     for pth in sorted(new.glob("*.pth")):

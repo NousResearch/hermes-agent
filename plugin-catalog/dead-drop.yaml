@@ -3,7 +3,7 @@ title: Dead Drop
 repo: https://github.com/KMX415/dead-drop-hermes
 sha: 40c1551a9ed8b9d8fc15b481fdf2f4fc746487c6
 subdir: plugin
-description: Autonomous agent-to-agent messaging across teams through a shared private mailbox.
+description: "Autonomous agent-to-agent messaging across teams through a shared private mailbox. Disclosure — when you enable it (`active: true`), the model can send messages of up to 4000 chars, without a per-call Hermes approval, to the peer agents you list. Each message is committed, with your configured scope, to the private GitHub repository you name, readable by everyone with access to that repo, using the `DEAD_DROP_GITHUB_TOKEN` you store in Hermes. Sends are capped by `max_messages` and the deadline. Peer messages are fed back to the model as untrusted text. An optional cron job (`wake_enabled` plus the exact `wake_job_id`) can read and answer peer questions unattended. Requires Node.js 22+, which runs only the bundled engine, with a minimal environment."
 maintainer: KMX415
 tier: community
 category: automation

@@ -786,10 +786,11 @@ def _snapshot_review_usage(review_agent: Any) -> dict[str, Any]:
 
 def _record_review_usage_to_parent(
     parent_agent: Any, usage: dict[str, Any], *, task: str = "background_review",
-    session_id: Optional[str] = None,
+    session_id: Optional[str] = None, store: Any = None,
 ) -> None:
     """Record a fork's usage against the parent session (or ``session_id`` when given) under
-    ``task`` (best-effort, never raises). The fork has ``_session_db = None`` so
+    ``task`` (best-effort, never raises), through ``store`` when given, else the parent's own
+    handle. The fork has ``_session_db = None`` so
     conversation_loop's DB-gated accounting never sees its calls; route them through the
     aux-accounting chokepoint, which writes only ``session_model_usage`` — never the transcript
     or ``sessions`` row."""
@@ -800,7 +801,7 @@ def _record_review_usage_to_parent(
         if session_db is None or not session_id or not any(counts.values()):
             return  # no DB, or the fork made no successful API calls (e.g. failed at spawn)
         from agent.agent_init_session import agent_interface
-        if (store := agent_interface(parent_agent)) is not None:
+        if (store := store if store is not None else agent_interface(parent_agent)) is not None:
             from persistence.conversation.usage import TokenCounts
             api_calls = counts.pop("api_calls")
             store.usage.record_auxiliary_usage(
@@ -1174,6 +1175,7 @@ class _ReviewForkState:
     review_agent: Any = None
     review_messages: list[dict] = field(default_factory=list)
     review_usage: dict[str, Any] = field(default_factory=dict)
+    store: Any = None  # the fork's own reference on the parent's store, for its usage write
 
 
 def _release_fork_clients(review_agent: Any) -> None:
@@ -1251,7 +1253,7 @@ def _run_review_fork(
         # still attributed. The recorder never raises.
         if st.review_agent is not None:
             st.review_usage.update(_snapshot_review_usage(st.review_agent))
-            _record_review_usage_to_parent(agent, st.review_usage)
+            _record_review_usage_to_parent(agent, st.review_usage, store=st.store)
         # Publish completion as soon as the provider-capable phase has returned or startup
         # cancellation has fenced it out (unregister + finish are identity-scoped and idempotent).
         _track_review_fork(agent, st.review_agent, register=False)
@@ -1298,6 +1300,13 @@ def _run_review_in_thread(
         _set_thread_approval_callback(None)
         return
     st = _ReviewForkState()
+    # The gateway's stop may close the parent's handle while the review runs: the fork records its usage through its
+    # own reference on the same store, released when the fork finishes.
+    with suppress(Exception):
+        from agent.agent_init_session import agent_interface
+        if (parent_store := agent_interface(agent)) is not None:
+            from persistence_assembly import open_persistence
+            st.store = open_persistence(parent_store.scope)
     try:
         # Silence stdout/stderr for THIS thread only: a process-global redirect would blank every
         # other thread's console for the whole review.
@@ -1350,6 +1359,9 @@ def _run_review_in_thread(
         if st.review_agent is not None:
             with suppress(Exception), thread_scoped_silence():
                 _release_fork_clients(st.review_agent)
+        if st.store is not None:
+            with suppress(Exception):
+                st.store.close()
         # Clear the approval callback so a recycled thread-id doesn't inherit it.
         _set_thread_approval_callback(None)
 

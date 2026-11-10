@@ -13,6 +13,7 @@
       "entries": [
         "agent.account_usage",
         "agent.acp_client",
+        "agent.browser_page_backend:BrowserPageBackend",
         "agent.browser_provider",
         "agent.context_engine",
         "agent.credential_pool",
@@ -30,6 +31,8 @@
         "agent.terminal_env_provider",
         "agent.transports",
         "agent.transports.chat_completions",
+        "agent.vault_backends.base:LoginBackend",
+        "agent.vault_store:VaultItemMeta",
         "agent.video_gen_provider",
         "agent.web_search_provider",
         "cli",

@@ -29,6 +29,7 @@ import hermes_state_registry as registry
 import persistence_assembly
 from hermes_state import SessionDB
 from persistence.sqlite import _registry as holders
+from tests.fixtures.storage_holder import raw_holder
 
 
 @pytest.fixture(autouse=True)
@@ -452,7 +453,7 @@ class TestHolderlessSessionDB:
         first, second = SessionDB(db_path), SessionDB(db_path)
         store = persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=tmp_path))
         try:
-            holder = store.holder()
+            holder = raw_holder(store)
             assert first._holder is second._holder is holder
             assert holders.stats()["live_generations"] == 1
 

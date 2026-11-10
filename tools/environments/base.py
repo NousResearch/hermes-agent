@@ -293,6 +293,12 @@ class BaseEnvironment(ABC):
     # scanner flags in plugin code.
     _passwordless_sudo_probe_supported: bool = False
 
+    # Whether cleanup() ends the background processes spawned through this env. When it does,
+    # teardown settles them as lost so their pollers stop; a backend whose processes outlive
+    # cleanup() and stay reachable through the same env object (SSH reconnects) sets False so
+    # the poller keeps collecting the real result.
+    cleanup_stops_processes: bool = True
+
     # Local and Docker override this because they resolve allowlisted values
     # through the active profile scope; other backends keep plain snapshots.
     _profile_scoped_passthrough: bool = False

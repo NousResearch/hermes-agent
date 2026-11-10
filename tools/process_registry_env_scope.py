@@ -22,15 +22,18 @@ def has_running_in_env(registry, key: str, env: Optional[Any] = None) -> bool:
 
 
 def settle_env_closed(registry, env: Any) -> int:
-    """Settle every running process polled through ``env`` as lost, before ``env`` is closed.
+    """Settle every running process polled through ``env`` as lost, once ``env`` is closed.
 
     A sandbox process is observed only through its spawning environment object; once that
     object is closed the poller can no longer read its output or exit code, and some backends
     report the failure as output rather than raising, so the poller would retry forever.
     Marking the session exited stops the poller at its next check and publishes the result.
-    A process that exits between the snapshot and its settlement keeps its own result.
+    A process that exits between the snapshot and its settlement keeps its own result. A
+    backend whose processes outlive cleanup() (``cleanup_stops_processes = False``) is left
+    alone: its poller still reaches them and collects the real exit.
     Returns the number of sessions settled as lost."""
-    if env is None:
+    # Duck-typed: plugin backends and test doubles need not subclass BaseEnvironment.
+    if env is None or not getattr(env, "cleanup_stops_processes", True):
         return 0
     with registry._lock:
         sessions = [s for s in registry._running.values() if s.env_ref is env and not s.exited]

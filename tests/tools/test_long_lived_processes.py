@@ -75,6 +75,7 @@ class _SandboxLikeEnv(LongLivedProcessMixin):
             proc.kill()
 
 
+@pytest.mark.platforms("posix")  # POSIX argv and process-group signals
 def test_a_first_start_never_sees_the_table_without_its_lock():
     env = _HostEnv()
     # The first-touch window the old two-key init could leave: another thread saw the table
@@ -101,6 +102,7 @@ def test_attach_and_stop_take_the_same_lock_as_start():
     env.stop_all_processes()
 
 
+@pytest.mark.platforms("posix")  # POSIX argv and process-group signals
 def test_a_reused_name_reaps_the_old_records_children_and_pipes(tmp_path):
     pidfile = tmp_path / "child.pid"
     env = _HostEnv()
@@ -125,6 +127,7 @@ def test_a_reused_name_reaps_the_old_records_children_and_pipes(tmp_path):
                 os.killpg(child, signal.SIGKILL)
 
 
+@pytest.mark.platforms("posix")  # POSIX argv and process-group signals
 def test_a_failed_respawn_keeps_the_stale_record():
     """A respawn that fails (nonexistent executable) must keep the exited leader's record: its
     pipes and children are still the environment's to stop, and dropping the record would orphan
@@ -149,6 +152,7 @@ def test_a_failed_respawn_keeps_the_stale_record():
             old.stdout.close()
 
 
+@pytest.mark.platforms("posix")  # POSIX argv and process-group signals
 def test_stopping_a_backend_process_stops_the_service_inside_the_sandbox(tmp_path):
     env = _SandboxLikeEnv(tmp_path)
     env.start_process("svc", ["sleep", "60"])
@@ -173,6 +177,7 @@ def test_stopping_a_backend_process_stops_the_service_inside_the_sandbox(tmp_pat
                 os.kill(service_pid, signal.SIGKILL)
 
 
+@pytest.mark.platforms("posix")  # POSIX argv and process-group signals
 @pytest.mark.parametrize("impl", [_HostEnv, lambda tmp: _SandboxLikeEnv(tmp)])
 def test_streams_of_two_names_never_mix(tmp_path, impl):
     env = impl(tmp_path)

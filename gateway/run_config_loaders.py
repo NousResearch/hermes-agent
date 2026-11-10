@@ -39,7 +39,7 @@ logger = logging.getLogger("gateway.run")
 
 DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
-_BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
+_BUSY_INPUT_MODES = {"interrupt", "queue", "steer", "parallel"}
 
 
 class GatewayConfigLoadersMixin:
@@ -311,7 +311,7 @@ class GatewayConfigLoadersMixin:
     def _load_busy_input_mode(cls) -> str:
         """Gateway drain-time busy-input behavior from env/config (default ``interrupt``)."""
         mode = cls._env_or_cfg_str("HERMES_GATEWAY_BUSY_INPUT_MODE", "display", "busy_input_mode").lower()
-        return mode if mode in {"queue", "steer"} else "interrupt"
+        return mode if mode in {"queue", "steer", "parallel"} else "interrupt"
 
     @classmethod
     def _load_busy_text_mode(cls) -> str:

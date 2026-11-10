@@ -437,6 +437,11 @@ class GatewaySlashCommandsMixin(
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         await self._hm_stop_owner_turn(session_key)  # also between turns, before the next claim (N53)
+        from gateway.session_parallel import binding_of
+        if binding_of(source) is not None:
+            from gateway.session_parallel import stop_work
+            await stop_work(self, source, session_key)
+            return EphemeralReply('Stop requested for this work only. Capacity stays held until its worker finishes.')
 
         async def _stop(key: str, invalidation_reason: str) -> None:
             await self._interrupt_and_clear_session(
@@ -1010,8 +1015,23 @@ class GatewaySlashCommandsMixin(
         from gateway.session_setting_commands import local_live, session_busy_mode
         arg = event.get_command_args().strip().lower()
         live = local_live(self, event.source)
+        if arg == 'parallel':
+            if event.source.platform != Platform.DISCORD:
+                return EphemeralReply('Parallel mode is supported on Discord messaging only; no setting was changed.')
+            from cli import save_config_value
+            if not save_config_value('display.busy_input_mode', arg):
+                return EphemeralReply(t('gateway.busy.save_failed'))
+            profile_name = self._busy_profile_name_for_source(event.source)
+            if profile_name:
+                from gateway.run import _load_gateway_config
+                self._snapshot_profile_busy_modes(profile_name, _load_gateway_config())
+            else:
+                self._busy_input_mode = arg
+            return EphemeralReply('Parallel mode enabled. New requests start independent work; reply to a request or bot response to continue or /stop that work.')
         if not arg or arg == "status":
             mode = session_busy_mode(self, live) if live is not None else self._effective_busy_input_mode(event.source)
+            if mode == 'parallel':
+                return EphemeralReply('Busy input mode: parallel (Discord). Independent requests overlap; replies select their original work.')
             behavior = t(_BUSY_MODE_BEHAVIOR.get(mode, _BUSY_MODE_BEHAVIOR["interrupt"])[0])
             return EphemeralReply(t("gateway.busy.status", mode=mode, behavior=behavior))
         if arg not in _BUSY_MODE_BEHAVIOR:
@@ -1201,6 +1221,8 @@ class GatewaySlashCommandsMixin(
             ids, requester = answerable_request_ids(
                 session_key, event.sender_id(), resolve_all=resolve_all,
                 admin_ids=policy_for_runner_source(self, event.source).admin_user_ids)
+            from gateway.session_parallel import selected_approval_ids
+            ids = selected_approval_ids(self, event, ids)
             return (session_key, refusal_text(requester), []) if requester else (session_key, None, ids)
         _approval_state = self._peek_session_state(session_key)
         if _approval_state is not None and _approval_state.persistent.approvals is not None:

@@ -131,9 +131,11 @@ async def tracked_write(authority, write, then=None, *, ordered=False, after=Non
     return result
 
 
-def start_turn_worker(runner, worker, agent_holder, run_sync):
+def start_turn_worker(runner, worker, agent_holder, run_sync, *, source=None):
+    from gateway.session_parallel import binding_of, execute_turn
     authority = track_turn_worker(runner, worker, agent_holder)
-    worker.executor_task = asyncio.ensure_future(runner._run_in_executor_with_context(run_sync))
+    run = execute_turn(runner, source, run_sync) if binding_of(source) else runner._run_in_executor_with_context(run_sync)
+    worker.executor_task = asyncio.ensure_future(run)
     if authority is not None:
         # Normal settlement releases the retained agent promptly. A cancelled asyncio waiter is
         # not physical completion; leave that entry until worker_done proves the thread exited.
@@ -173,11 +175,12 @@ def stop_authority_work(authority):
 
 
 async def join_authority_work(authority, timeout):
+    from gateway.session_parallel import physical_count
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
         stop_authority_work(authority)
         if (not list(physical_workers(authority)) and not list(executing_sessions(authority))
-                and not mutation_tasks(authority) and not side_agents(authority)):
+                and not mutation_tasks(authority) and not side_agents(authority) and not physical_count(authority)):
             return
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError('Profile workers did not stop; ownership retained')

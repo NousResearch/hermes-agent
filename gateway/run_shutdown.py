@@ -804,10 +804,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
     # Drain / interrupt
     def _drain_work_counts(self) -> tuple:
         """``(agents, cron, api, deferred)`` the drain waits on; a managed-worker turn is a chat turn."""
-        return (
-            self._running_agent_count() + managed_turn_count(self), self._active_cron_job_count(),
-            self._active_api_run_count(), self._active_deferred_agent_worker_count(),
-        )
+        from gateway.session_parallel import drain_counts
+        return drain_counts(self)
 
     async def _drain_active_agents(
         self, timeout: float, cron_timeout: Optional[float] = None

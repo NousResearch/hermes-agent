@@ -136,6 +136,18 @@ def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
 
 
 class GatewayTurnProgressMixin:
+    def _work_prompt(self, kind, request_id):
+        owner = getattr(self, '_approval_owner', None)
+        return (kind, request_id, owner[2]) if owner is not None else None
+
+    def _record_work_receipt(self, result, *, prompt=None):
+        from gateway.session_parallel import record_output
+        record_output(self._runner, self._ctx.source, result, prompt=prompt)
+
+    async def _capture_work_receipt(self, send, *, prompt=None):
+        from gateway.session_parallel import record_delivery
+        return await record_delivery(self._runner, self._ctx.source, send, prompt=prompt)
+
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
     def _schedule(self, coro, log_message: str, loop=None):
@@ -165,6 +177,7 @@ class GatewayTurnProgressMixin:
 
     def _track_progress_result(self, result) -> None:
         """Remember a delivered progress/status message id for end-of-turn cleanup."""
+        self._record_work_receipt(result)
         ctx = self._ctx
         if ctx._cleanup_progress and getattr(result, "success", False) and getattr(result, "message_id", None):
             ctx._cleanup_msg_ids.append(str(result.message_id))
@@ -645,7 +658,7 @@ class GatewayTurnProgressMixin:
             kwargs["finalize"] = True
         if st._edit_accepts_metadata:
             kwargs["metadata"] = ctx._progress_metadata
-        return await st.adapter.edit_message(**kwargs)
+        return await self._capture_work_receipt(st.adapter.edit_message(**kwargs))
 
     @staticmethod
     def _progress_text(lines: list) -> str:
@@ -1018,7 +1031,7 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         if not automatic_notices_allowed(ctx.source):
             return
-        self._schedule(ctx._status_adapter.send(ctx._status_chat_id, text, metadata=metadata), log_message)
+        self._schedule(self._capture_work_receipt(ctx._status_adapter.send(ctx._status_chat_id, text, metadata=metadata)), log_message)
 
     def _attach_session_title_callback(self, agent, ctx) -> None:
         """Wire the platform thread-rename lane onto the agent as `_on_session_title`.
@@ -1095,7 +1108,7 @@ class GatewayTurnProgressMixin:
                                                           "text": prepared})
                 return
             fut = self._schedule(
-                _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, status_key, prepared, ctx._status_thread_metadata),
+                self._capture_work_receipt(_send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, status_key, prepared, ctx._status_thread_metadata)),
                 f"status_callback ({event_type}) scheduling error",
             )
             if fut is not None and ctx._cleanup_progress:

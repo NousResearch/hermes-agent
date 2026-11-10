@@ -1380,7 +1380,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 daemon=True,
             ).start()
         from gateway.session_runtime_workers import start_turn_worker
-        start_turn_worker(self, worker, agent_holder, _run_sync_with_timeout_lifecycle)
+        start_turn_worker(self, worker, agent_holder, _run_sync_with_timeout_lifecycle, source=turn_ctx.source)
         return worker
 
     @staticmethod

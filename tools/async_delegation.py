@@ -989,7 +989,8 @@ def _dispatch_admitted(
     # reservation too: the stall monitor may finalize its registry record before it really exits.
     retirement.acquire()
     try:
-        future = executor.submit(propagate_context_to_thread(_worker))
+        from agent.physical_work import submit_work
+        future = submit_work(executor, propagate_context_to_thread(_worker))
         future.add_done_callback(lambda _: retirement.release())
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         retirement.release()

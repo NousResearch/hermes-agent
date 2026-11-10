@@ -113,7 +113,8 @@ class _TerminalBatch:
         from agent.tool_executor import _resolve_sequential_tool_timeout
         for slot in self.slots:
             slot.check_cancelled()
-            slot.future = self.executor.submit(propagate_context_to_thread(slot.run))
+            from agent.physical_work import submit_work
+            slot.future = submit_work(self.executor, propagate_context_to_thread(slot.run))
             timeout = _resolve_sequential_tool_timeout()
             started = time.monotonic()
             baseline = self.authorization_gate.excluded_seconds()

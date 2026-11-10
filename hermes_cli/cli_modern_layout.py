@@ -34,6 +34,10 @@ def layout_from_config(display: dict) -> bool:
 
 def busy_input_mode_from_config(display: dict) -> str:
     """``display.busy_input_mode``; unset interrupts in both layouts (Tab still queues in this one)."""
+    if str((display or {}).get('busy_input_mode') or '').strip().lower() == 'parallel':
+        import logging
+        logging.getLogger(__name__).warning('Parallel mode supports Discord only; this CLI uses queue (configuration preserved).')
+        return 'queue'
     return str((display or {}).get("busy_input_mode") or "interrupt").strip().lower()
 
 

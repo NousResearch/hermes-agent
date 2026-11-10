@@ -64,6 +64,11 @@ async def admit_message(authority, event):
         messaging_admission.reset(ingress)
     if receipt.status == 'terminal':
         return None
+    from gateway.session_parallel import binding_of
+    if binding_of(event.source) is not None and receipt.admission_id in authority.native_waiters:
+        if accepted is not None and not accepted.done():
+            accepted.set_result(None)
+        return None  # replay validated above; the original waiter owns this native delivery
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
     authority.native_waiters.add(receipt.admission_id)
     waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())

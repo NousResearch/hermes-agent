@@ -470,6 +470,8 @@ class GatewayAuthorizationMixin:
             return None
         from gateway.session_identity import restore_identity
         restore_identity(source, runner=self, transport_profile=getattr(entry, "transport_profile", None))
+        from gateway.session_parallel import restore_entry
+        restore_entry(self, entry, source)
         return source
 
     def _adapter_flag(self, platform, name: str, profile) -> bool:

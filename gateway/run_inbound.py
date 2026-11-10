@@ -375,6 +375,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return None
         if _pending_clarify is None or self._refused_clarify(event, _pending_clarify.clarify_id):
             return None  # another member's message is their own message, not this clarify's answer
+        from gateway.session_parallel import prompt_target
+        target = prompt_target(event)
+        if target is not None and (target.kind != 'clarify' or target.request_id != _pending_clarify.clarify_id):
+            return None
         _clarify_has_audio = bool(self._pending_event_audio_paths(event))
         _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
 
@@ -806,6 +810,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         a demotion, or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         superseded = self._clarify_takeover(event, _quick_key)
+        from gateway.session_parallel import binding_of
+        if binding_of(source) is not None:
+            return False  # correlated input stays in this work's native FIFO
         mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
         state = self._peek_session_state(_quick_key)
         running_agent = state.turn.agent if state else None
@@ -1363,8 +1370,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if _paused_notice is not None:
             return _paused_notice
 
-        _quick_key = self._session_key_for_source(source)
-        _reply = None if is_internal else await self._hm_pending_reply_intercepts(event, source, _quick_key)
+        from gateway.session_parallel import prepare_inbound
+        _quick_key, _reply = await prepare_inbound(self, event, source, is_internal)
         if _reply is not None:
             return _reply
 

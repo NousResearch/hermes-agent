@@ -108,6 +108,8 @@ class SessionSource:
     # (gateway/session_detached.py). It replaces the chat's key, so nothing keyed by route reaches
     # the chat's current conversation, and delivery goes nowhere.
     detached_route: Optional[str] = field(default=None, repr=False, compare=False)
+    # Owner-only execution identity; public source dictionaries never carry it.
+    parallel_work: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.
@@ -711,6 +713,9 @@ def build_session_key(
     """
     if detached := detached_route_of(source):
         return detached
+    from gateway.session_parallel import binding_of
+    if work := binding_of(source):
+        return work.route
     is_dm = source.chat_type == "dm"
     chat_id = source.chat_id
     if is_dm and source.platform == Platform.WHATSAPP:

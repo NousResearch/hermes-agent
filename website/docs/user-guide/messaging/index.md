@@ -485,7 +485,7 @@ Send a message while the agent is working to correct the active turn:
 - **Running tools finish safely** — the correction is applied at the next tool-result boundary instead of killing the tool
 - **`/stop` remains a hard stop** — use it to cancel the active turn and foreground work
 
-### Queue vs interrupt vs steer (busy-input mode)
+### Queue vs interrupt vs steer vs parallel (busy-input mode)
 
 By default, messaging a busy agent redirects its active turn (a running foreground terminal command is moved to the background rather than killed, so your message is read immediately). Two other modes are available:
 
@@ -503,6 +503,53 @@ display:
 ```
 
 All four keys are read from each profile's own `config.yaml`, so multiplexed profiles keep independent busy policies; there is no process-environment override.
+
+#### Independent Discord work (`parallel`)
+
+Opt in with `/busy parallel` on Discord, or configure:
+
+```yaml
+display:
+  busy_input_mode: parallel
+  parallel_max_runs: 2
+```
+
+An ordinary message not replying to another message starts a fresh native work session.
+Independent messages overlap without sharing mutable transcripts or approval grants.
+Reply to the original request or a confirmed bot response (including a stream, progress,
+attachment or question) to continue that work. Follow-ups queue in that work's durable FIFO.
+Reply with `/stop`, `/approve` or `/deny` to address only that work; ambiguous bare controls
+ask for a reply target instead of broadcasting. Only the originating sender may control it.
+Question receipts retain the exact prompt and execution generation: a reply to a settled
+approval or clarify card cannot answer a newer question. Use the current card to answer,
+or the original request to continue the work after a question has ended.
+Other conversation-wide commands are refused on work replies rather than mutating a sibling.
+
+`parallel_max_runs` is an integer from 1 to 8, default 2 per conversation, with a fixed
+profile-wide ceiling of 8 active works. At capacity a new request is explicitly refused
+before admission; resend it after capacity becomes available. Replays retain the same
+admission. Queued, running, unknown and physically unfinished tool/delegation work retain
+capacity even after a cancelled waiter or parent turn exits. A lost owner is not proof
+that side effects completed: unknown work is never automatically replayed.
+
+Crash recovery is deliberately conservative. A gateway or container restart does
+not erase physical occupancy: an abandoned terminal child may still run. On Linux,
+restart Hermes after an operator-authorized **host kernel reboot** to reconcile
+leases stamped on the same machine's previous kernel boot. A reboot is disruptive;
+do not do it automatically or while unrelated work runs. Recovered unknown inputs
+still pause their FIFO. Inspect their side effects (including remote jobs), then
+reply to the original request with `/discard` to acknowledge the lost turn without
+replaying it. `/discard` never releases a live physical lease. Missing/foreign boot
+identity, and platforms without this proof, fail closed and need operator recovery
+from a pre-crash snapshot after all work has been verified stopped; do not delete
+lease rows or lower limits to make capacity appear free.
+
+This first implementation supports the native Discord messaging adapter only. Other gateway
+surfaces explicitly refuse parallel input; the classic CLI warns and uses queue without
+changing the saved configuration. Existing interrupt/queue/steer defaults remain unchanged.
+Changing mode does not abandon existing work: replies can still select it. Fresh work has
+no sibling-history clone; put required context in its request. Sessions are **not filesystem
+or credential sandboxes**: use separate working directories for concurrent editing tasks.
 
 The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
 

@@ -942,7 +942,8 @@ def _run_sequential_tool_execution_middleware(
         ref.trace = []
     if prepared is None:
         executor = DaemonThreadPoolExecutor(max_workers=1)
-        future = executor.submit(propagate_context_to_thread(_run))
+        from agent.physical_work import submit_work
+        future = submit_work(executor, propagate_context_to_thread(_run))
     deadline = time.monotonic() + timeout_s if timeout_s is not None else None
     started = time.monotonic()
     abandoned = False
@@ -1415,7 +1416,8 @@ class _ConcurrentBatch:
         future_to_index = {}
         for submit_index, i in enumerate(runnable):
             try:
-                f = executor.submit(propagate_context_to_thread(self.run_worker), i, submit_index)
+                from agent.physical_work import submit_work
+                f = submit_work(executor, propagate_context_to_thread(self.run_worker), i, submit_index)
             except RuntimeError as submit_error:
                 if not _is_interpreter_shutdown_submit_error(submit_error):
                     raise

@@ -1,6 +1,6 @@
 name: hermes-stage
 repo: https://github.com/davidpgil/hermes-stage
-sha: 7623d18acf62895213e2e673a1a7a0e0d6d8d671
+sha: 964c43b976124ea98b58a30cc8efbeb966d261fd
 description: >-
   A multi-profile terminal bot room for Hermes with one shared transcript,
   profile lens tabs, public @name/@everyone routing, and Stage-specific status,

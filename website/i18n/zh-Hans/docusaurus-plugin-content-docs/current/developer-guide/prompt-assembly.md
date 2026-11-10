@@ -240,7 +240,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 ### 优先使用这些入口
 
 - `~/.hermes/SOUL.md` — 用自定义 agent 角色和固定行为替换内置默认身份块。
-- `~/.hermes/MEMORY.md` 和 `~/.hermes/USER.md` — 提供应在新会话中快照的持久跨会话事实和用户配置文件数据。
+- `~/.hermes/memories/MEMORY.md` 和 `~/.hermes/memories/USER.md` — 提供应在新会话中快照的持久跨会话事实和用户配置文件数据。
 - 项目上下文文件，如 `.hermes.md`、`HERMES.md`、`AGENTS.md`、`CLAUDE.md` 或 `.cursorrules` — 注入仓库特定的工作规则。
 - Skills — 打包可复用的工作流和参考资料，无需编辑核心 prompt 代码。
 - 可选系统 prompt 配置 / API 覆盖 — 添加部署特定的指令文本，无需 fork Hermes。

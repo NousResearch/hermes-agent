@@ -1,0 +1,37 @@
+# DRAFT: not submitted. sha is the single commit staged in publication/public-repo
+# (built from snapshot 62a9f39bc4d4); it stays the same when pushed unchanged.
+name: inbox-sentinel
+repo: https://github.com/eddwithers/inbox-sentinel
+sha: 5cdc369cfde7b96e45ef763f776fc844f1385d5f
+version: "0.1.0"
+title: Inbox Sentinel
+description: >-
+  Watches a Gmail inbox (history polling over a read-only OAuth grant) or an
+  IMAP mailbox over TLS, filters routine mail locally, asks your configured model
+  whether the rest needs attention, and sends a notification through a configured
+  `hermes send` target, with an optional reply draft for review. Never sends,
+  labels, archives or deletes mail. Gate and drafts run in two plugin-owned
+  auxiliary model slots that follow the main model until pinned; daily attempt
+  caps bound model calls. Sends one "not watching your inbox" alert a day if
+  the mailbox can't be reached. Disclosure — runs a long-lived background poll after a
+  session event; calls gmail.googleapis.com through a Hermes-managed
+  gmail.readonly grant from the user's own Google Cloud Desktop client, or the
+  user's IMAP server with a profile-scoped password; message text goes to the
+  configured model provider; alerts run `hermes send` as a child process with
+  the text on argv and may be stored by the destination; sender rules and
+  counters are kept in profile plugin state; no telemetry.
+maintainer: eddwithers
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/eddwithers/inbox-sentinel/blob/5cdc369cfde7b96e45ef763f776fc844f1385d5f/README.md
+platforms: []
+known_issues:
+  - "Gmail needs the user's own Google Cloud Desktop OAuth client and a terminal sign-in (`hermes auth add inbox-sentinel:gmail`). In Testing mode Google expires the grant after seven days."
+  - "If the Gmail history cursor expires, the baseline is rebuilt and mail received in the gap can be missed."
+  - "Tested on macOS with Hermes v0.23.0 only. IMAP is tested against a scripted loopback TLS server, not an external provider."
+capabilities:
+  provides_tools: [inbox_sentinel_status, inbox_sentinel_test, inbox_sentinel_feedback]
+  provides_hooks: [on_session_start, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

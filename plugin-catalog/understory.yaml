@@ -1,0 +1,44 @@
+name: understory
+repo: https://github.com/projectmehari/understory
+sha: 284dc8dfa954959b0c994226f05428efaecfbdbd
+description: >-
+  Understory draws the family tree of music labels — parents, imprints,
+  sub-labels and same-founder lineages — as a time-scaled chronogram in its own
+  Desktop tab, and traces a release's provenance through it. Branches only
+  split, never merge or cross; branch length is proportional to years, oldest at
+  the bottom; a timeline scrubber replays the forest growing; asking the chat
+  where a release came from lights that path and dims the rest. Seven tools
+  (label_add, label_link, release_add, provenance, tree_get, whats_new,
+  follow_setup) over a plugin-local SQLite forest of labels, edges, releases and
+  follows; every edge must carry a source or be user-entered, and a seeded
+  12-label verified forest loads into an empty database. Optional read-only
+  CTX.fm integration. Disclosure — with CTX_API_KEY set the backend makes
+  read-only HTTPS requests to ctx.fm for new drops on followed labels (no
+  writes, no scraping, no background daemons, no telemetry); the key is saved
+  through Hermes' credential route and read through its secret scope, never from
+  a file; state lives only in plugin_db; no shell commands. The CTX settings
+  page writes the key via hermes_cli.credential_lifecycle, a private core import
+  (validate warns under rule 9), and falls back to Settings -> Keys if that
+  module is absent. Ships no logo images: nodes use serif initial tiles, with
+  CTX profile thumbnails when a logo_url is present.
+maintainer: projectmehari
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/projectmehari/understory#readme
+version: "0.1.0"
+platforms: []
+readme: true
+capabilities:
+  provides_tools:
+    - label_add
+    - label_link
+    - release_add
+    - provenance
+    - tree_get
+    - whats_new
+    - follow_setup
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CTX_API_KEY

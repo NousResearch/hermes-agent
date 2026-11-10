@@ -3,19 +3,7 @@ title: Stitch Slop
 repo: https://github.com/mojomast/hermes-stitchslop
 sha: 51c12d0fd957fb4f40f98253570eb33d791c314c
 subdir: ""
-description: >-
-  Work on the embroidery design open in Stitch Slop, watch it in a pane, and digitize
-  artwork into machine stitch files. Ships the bridge its tab dials into (loopback
-  WebSocket, protocol 1 of stitchslop.com/agent), a viewer page that streams a dedicated
-  Chrome window and forwards clicks and keys, four tools, an arc-typesetting and
-  art-prep script, and a bundled skill covering the digitizing workflow.
-  Disclosure — writes ~/.stitchslop (pairing, Chrome profile, exports, logs); starts a
-  loopback WebSocket server and a Chrome process on a private X display; binds the
-  viewer to loopback by default (optional STITCHSLOP_PANE_BIND for extra hosts such as
-  a Tailscale address); no outbound network beyond the site itself; no user credentials
-  are read from Hermes stores. First pairing is pane/hand only (Agent panel tok_… via
-  bridge --token-file); stitchslop_connect refuses model-supplied tokens. Reconnects use
-  the stored pairing. No self-update.
+description: "Work on the embroidery design open in Stitch Slop, watch it in a pane, and digitize artwork into machine stitch files. Ships the bridge its tab dials into (loopback WebSocket, protocol 1 of stitchslop.com/agent), a viewer page that streams a dedicated Chrome window and forwards clicks and keys, four tools, an arc-typesetting and art-prep script, and a bundled skill covering the digitizing workflow. Disclosure — writes ~/.stitchslop (pairing, Chrome profile, exports, logs), shared by every Hermes profile on the machine; starts a loopback WebSocket bridge, a token-gated viewer server and a dedicated Chrome (launched with --no-sandbox and Local Network Access checks off) on a private X display; the viewer binds to loopback only unless you set STITCHSLOP_PANE_BIND to a Tailscale address, which exposes the token-gated viewer (live view and click/key control of that Chrome, logged into your Stitch Slop account) to your tailnet; navigation is limited to https://stitchslop.com; first pairing needs you to paste the Agent-panel token by hand."
 maintainer: mojomast
 tier: community
 category: tools

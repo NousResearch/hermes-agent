@@ -132,6 +132,16 @@ const ANTI_THROTTLE_FLAGS = [
   '--disable-features=CalculateNativeWinOcclusion'
 ]
 
+// On a Linux Wayland session electron/entry.ts relaunches itself with
+// --ozone-platform=wayland unless argv already names a platform. The relaunched
+// child cannot bind the CDP port the parent already holds, so the harness would
+// attach to a browser with no page. Naming the platform up front keeps one process.
+function linuxPlatformFlags(env = process.env) {
+  const wayland = env.XDG_SESSION_TYPE === 'wayland' || Boolean(env.WAYLAND_DISPLAY)
+
+  return process.platform === 'linux' && wayland ? ['--ozone-platform=wayland'] : []
+}
+
 /**
  * Spawn an isolated instance and connect the perf driver. Two render modes:
  *   · dev (default): vite dev server + dev electron-main bundle.
@@ -232,7 +242,13 @@ export async function startIsolatedInstance({
     const spawnAt = Date.now()
     const electron = spawn(
       electronBin,
-      ['.', `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`, ...ANTI_THROTTLE_FLAGS],
+      [
+        '.',
+        `--user-data-dir=${userData}`,
+        `--remote-debugging-port=${port}`,
+        ...ANTI_THROTTLE_FLAGS,
+        ...linuxPlatformFlags()
+      ],
       { cwd: DESKTOP_DIR, stdio: ['ignore', 'inherit', 'inherit'], env }
     )
     children.push(electron)

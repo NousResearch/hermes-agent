@@ -110,6 +110,7 @@ class TestRichOrderedListAfterProse:
             "1. a\n   continued\n2. b",
             "```text\nLabel\n7. literal\n```",
             "Streaming draft\n```text\nLabel\n7. literal",
+            "`Label\n7. literal`\n\n- [x] done",
         ],
     )
     def test_lists_and_code_gain_no_blank_line(self, adapter, content):

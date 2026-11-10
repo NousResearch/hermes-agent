@@ -5,22 +5,28 @@ import re
 # An email-shaped token (incl. provider-prefixed ``openai:user@example.com``): Telegram's rich entity
 # detection can auto-link it into an invalid email entity and reject the whole message
 # (RICH_MESSAGE_EMAIL_INVALID), so the payload builder turns detection off when one is present.
+# The lookbehind starts a match only at a token boundary, so a long run with no valid ``@domain``
+# is scanned once instead of once per start offset (quadratic on a 40k-char draft).
 RICH_EMAIL_TOKEN_RE = re.compile(
-    r"[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9]"
+    r"(?<![A-Z0-9.!#$%&'*+/=?^_`{|}~-])[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9]"
     r"(?:[A-Z0-9-]{0,61}[A-Z0-9])?"
     r"(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+",
     re.IGNORECASE,
 )
 
 
-# Consume code/math before looking for block prefixes so their literal contents
-# survive unchanged, including an unfinished code fence in a streaming draft.
-_LITERAL_HASH_RE = re.compile(
-    r"(?P<fence>`{3,}|~{3,})[^\n]*\n.*?(?:(?P=fence)(?![`~])|\Z)"
+# Literal code/math regions: a block fence (opened only at a line start, after any quote/list
+# prefixes, and unfinished in a streaming draft), an inline code span (which also owns inline
+# ```x```), or display math. Both transforms below consume these first so their contents survive.
+_BLOCK_PREFIX = r"[ \t]*(?:(?:>[ \t]*|[-+*][ \t]+|\d+[.)][ \t]+))*"
+_RICH_LITERAL_REGION = (
+    r"^" + _BLOCK_PREFIX + r"(?P<fence>`{3,}(?=[^`\n]*\n)|~{3,})[^\n]*\n.*?(?:(?P=fence)(?![`~])|\Z)"
     r"|(?P<ticks>`+)(?!`).*?(?<!`)(?P=ticks)(?!`)"
     r"|\$\$.*?(?:\$\$|\Z)"
-    r"|(?P<prefix>^[ \t]*(?:(?:>[ \t]*|[-+*][ \t]+|\d+[.)][ \t]+))*)"
-    r"(?P<hashes>#+)(?=[^\s#])",
+)
+_RICH_LITERAL_REGION_RE = re.compile(_RICH_LITERAL_REGION, re.MULTILINE | re.DOTALL)
+_LITERAL_HASH_RE = re.compile(
+    _RICH_LITERAL_REGION + r"|(?P<prefix>^" + _BLOCK_PREFIX + r")(?P<hashes>#+)(?=[^\s#])",
     re.MULTILINE | re.DOTALL,
 )
 
@@ -68,10 +74,20 @@ def _rich_separate_ordered_lists(text: str) -> str:
     blockquote continuations, indented lines, fences (closed, or unclosed in a streaming draft)
     and lists starting at ``1`` are left untouched, and the pass is idempotent.
     """
+    # Inline code / display math spanning lines is literal text; block fences keep the line scan below.
+    # A backtick span cannot cross a blank line (CommonMark ends the paragraph first).
+    spans = [m.span() for m in _RICH_LITERAL_REGION_RE.finditer(text)
+             if not m.group("fence") and not (m.group("ticks") and "\n\n" in m.group(0))]
     out: list[str] = []
     state = None  # None, "paragraph", "container", or "fence" — the block the previous line built
+    offset = span_idx = 0
     for line in text.split("\n"):
-        if _RICH_FENCE_LINE_RE.match(line):
+        start, offset = offset, offset + len(line) + 1
+        while span_idx < len(spans) and spans[span_idx][1] <= start:
+            span_idx += 1
+        if span_idx < len(spans) and spans[span_idx][0] < start:
+            pass  # continuation inside a multiline code span or math block: never a list item
+        elif _RICH_FENCE_LINE_RE.match(line):
             state = None if state == "fence" else "fence"
         elif state == "fence":
             pass

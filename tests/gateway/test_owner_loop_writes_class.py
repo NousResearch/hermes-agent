@@ -171,9 +171,9 @@ CASES = [
     ('create-title-hidden', 'gateway.session_local_title', 'title_new_session', _create_titled_hidden),
     ('native-register', 'gateway.session.SessionStore', 'get_or_create_session', _native_register),
     ('initialize-epoch', 'gateway.session_authority', 'begin_runtime_epoch', _initialize),
-    ('initialize-compression-adoption', 'hermes_state_local_lineage', 'adopt_untracked_compression',
+    ('initialize-compression-adoption', 'hermes_agent.hermes_state_local_lineage', 'adopt_untracked_compression',
      _initialize_adoption),
-    ('first-read-compression-adoption', 'hermes_state_local_lineage', 'adopt_untracked_compression',
+    ('first-read-compression-adoption', 'hermes_agent.hermes_state_local_lineage', 'adopt_untracked_compression',
      _first_read_adoption),
 ]
 

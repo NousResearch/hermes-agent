@@ -48,7 +48,7 @@ import os, sys, time
 from pathlib import Path
 repo, db_path, session_id, base_url, point, sentinel = sys.argv[1:7]
 sys.path.insert(0, repo)
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 if point == "commit":
     # Park inside archive_and_compact's write transaction (after archive + inserts, before COMMIT).

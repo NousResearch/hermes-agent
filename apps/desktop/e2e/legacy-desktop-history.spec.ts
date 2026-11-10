@@ -37,7 +37,7 @@ test('pre-cutover Desktop conversations remain visible and open across profiles'
   const seed = spawnSync(python, ['-c', `
 import json, os, sys
 from pathlib import Path
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 def seed(db_path, rows, profile):
     with SessionDB(db_path=db_path) as db:

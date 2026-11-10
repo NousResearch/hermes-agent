@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Iterator, Optional
 if TYPE_CHECKING:  # pragma: no cover
     from hermes_agent.hermes_state import SessionDB
 
-# caplog tests pin the "hermes_state" logger name.
+# caplog tests pin the "hermes_agent.hermes_state" logger name.
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 # Ceiling on read-only connections ALIVE at once against one database FILE (idle

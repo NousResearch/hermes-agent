@@ -23,7 +23,7 @@ from tests.conformance.persistence._harness import (
 CLAIMANT = r"""
 import sys, time
 from pathlib import Path
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 db_path = Path({db_path!r})
 barrier = Path({barrier!r})

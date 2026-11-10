@@ -56,9 +56,9 @@ hermes-agent/
 ├── cli.py                    # HermesCLI — 交互式终端 UI（大文件）
 ├── model_tools.py            # 工具发现、schema 收集、分发
 ├── toolsets.py               # 工具分组与平台预设
-├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
 ├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
 ├── hermes_agent/             # Python 包
+│   ├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
 │   ├── batch_runner.py           # 批量轨迹生成
 │   │
 │   └── acp_adapter/              # ACP 服务器（VS Code / Zed / JetBrains）

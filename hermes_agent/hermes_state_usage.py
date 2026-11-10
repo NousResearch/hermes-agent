@@ -12,7 +12,7 @@ import time
 import weakref
 from typing import Any, Dict, List, Optional, Tuple
 
-# caplog tests pin the "hermes_state" logger name.
+# caplog tests pin the "hermes_agent.hermes_state" logger name.
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")

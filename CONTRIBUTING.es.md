@@ -124,8 +124,8 @@ hermes-agent/
 ├── cli.py                    # Clase HermesCLI — TUI interactiva, integración prompt_toolkit
 ├── model_tools.py            # Orquestación de herramientas (capa delgada sobre tools/registry.py)
 ├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-telegram, etc.)
-├── hermes_state.py           # Base de datos de sesiones SQLite con búsqueda de texto completo FTS5, títulos de sesión
 ├── hermes_agent/             # el paquete de Python
+│   ├── hermes_state.py           # Base de datos de sesiones SQLite con búsqueda de texto completo FTS5, títulos de sesión
 │   └── batch_runner.py           # Procesamiento en lote paralelo para generación de trayectorias
 │
 ├── agent/                    # Internos del agente (módulos extraídos)

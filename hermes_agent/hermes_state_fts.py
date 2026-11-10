@@ -10,7 +10,7 @@ from typing import Sequence
 from hermes_agent.hermes_state_common import FTS_SQL, FTS_STALE_KEY, FTS_TRIGRAM_SQL, _FTS_TRIGGERS
 from hermes_agent.hermes_state_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 
-# caplog tests pin the "hermes_state" logger name.
+# caplog tests pin the "hermes_agent.hermes_state" logger name.
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 _FTS_DDL_TABLES = ("messages_fts", "messages_fts_trigram")

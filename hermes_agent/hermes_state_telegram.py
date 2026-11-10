@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from hermes_agent.hermes_state_common import _sql_preview_raw, _sql_session_last_active
 from hermes_agent.hermes_state_errors import StateDbReplacedError
 
-# caplog tests pin the "hermes_state" logger name.
+# caplog tests pin the "hermes_agent.hermes_state" logger name.
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 

@@ -17,7 +17,7 @@ def test_resume_and_exit_read_without_writing(tmp_path, populated):
     env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(repo))
     code = '''
 from pathlib import Path
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 from hermes_cli.main import _resolve_last_session, _resolve_session_by_name_or_id
 from hermes_cli.main_tui_launch import _print_tui_exit_summary
 import os

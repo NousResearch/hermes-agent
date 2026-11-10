@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _CHILD_PROBE = """
 import sys
 sys.path.insert(0, {repo!r})
-import hermes_state
+from hermes_agent import hermes_state
 
 root = hermes_state._real_platform_state_root()
 if root is None:

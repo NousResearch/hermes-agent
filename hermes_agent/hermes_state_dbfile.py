@@ -30,7 +30,7 @@ from hermes_agent.hermes_state_common import (
 )
 from hermes_agent.hermes_state_lockguard import own_descriptors
 
-# Log-record parity with the origin module (caplog tests pin "hermes_state").
+# Log-record parity with the origin module (caplog tests pin "hermes_agent.hermes_state").
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 

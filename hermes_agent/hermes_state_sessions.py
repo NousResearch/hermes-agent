@@ -25,7 +25,7 @@ from hermes_agent.hermes_state_common import (
 )
 from hermes_agent.hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
 
-# caplog tests pin the "hermes_state" logger name.
+# caplog tests pin the "hermes_agent.hermes_state" logger name.
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 

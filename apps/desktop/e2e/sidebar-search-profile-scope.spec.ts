@@ -31,7 +31,7 @@ function seedSession(sandbox: Sandbox, home: string, sessionId: string, marker: 
   const script = [
     'import sys',
     'from pathlib import Path',
-    'from hermes_state import SessionDB',
+    'from hermes_agent.hermes_state import SessionDB',
     'home, sid, marker = sys.argv[1:4]',
     "db = SessionDB(db_path=Path(home) / 'state.db')",
     "db.create_session(sid, source='cli')",

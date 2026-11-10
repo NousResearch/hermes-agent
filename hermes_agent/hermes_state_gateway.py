@@ -17,7 +17,7 @@ from hermes_agent.hermes_state_common import (
     _sql_session_last_active)
 from hermes_agent.hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX, _receipt
 
-# Log-record parity with the origin module (caplog tests pin "hermes_state").
+# Log-record parity with the origin module (caplog tests pin "hermes_agent.hermes_state").
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 # Recursive CTE naming a session plus its compression ancestors (rows a

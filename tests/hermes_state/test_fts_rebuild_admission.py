@@ -245,7 +245,7 @@ class TestSchemaPathAdmission:
 _ORPHANING_HOLDER_SCRIPT = """
 import os, sys, time
 sys.path.insert(0, {repo!r})
-import hermes_state_common
+from hermes_agent import hermes_state_common
 
 admission = hermes_state_common.fts_rebuild_admission({db!r})
 admitted = admission.__enter__()
@@ -270,7 +270,7 @@ def _orphaned_fork_holder(db_path: Path):
     import signal
 
     script = _ORPHANING_HOLDER_SCRIPT.format(
-        repo=str(Path(hermes_state_common.__file__).parent), db=str(db_path)
+        repo=str(Path(hermes_state_common.__file__).parents[1]), db=str(db_path)
     )
     proc = subprocess.Popen(
         [sys.executable, "-c", script], stdout=subprocess.PIPE, text=True
@@ -336,7 +336,7 @@ class TestOrphanedHolderStalenessBreak:
 
         script = f"""
 import os, sys, time
-sys.path.insert(0, {str(Path(hermes_state_common.__file__).parent)!r})
+sys.path.insert(0, {str(Path(hermes_state_common.__file__).parents[1])!r})
 from pathlib import Path
 from hermes_agent import hermes_state_repair
 

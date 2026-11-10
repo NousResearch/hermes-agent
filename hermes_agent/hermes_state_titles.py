@@ -23,7 +23,7 @@ def bot_chat_title_released(archived: Any, auto_archived: Any, tip_end_reason: O
     "absent" never meets a name it cannot take."""
     return bool(archived) and not auto_archived and (tip_end_reason or "") not in _RECOVERABLE_END_REASONS
 
-# caplog tests pin the "hermes_state" logger name.
+# caplog tests pin the "hermes_agent.hermes_state" logger name.
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 # ASCII controls (keeping \t \n \r for the whitespace collapse), then zero-width,

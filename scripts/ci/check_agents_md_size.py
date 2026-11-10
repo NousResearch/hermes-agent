@@ -21,6 +21,9 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from hermes_agent.compat.paths import current_path
+
 ROOT_MAX_CHARS = 12_000
 CHAIN_MAX_CHARS = 30_000
 
@@ -39,7 +42,7 @@ def _chain(rel: str, sizes: dict[str, int]) -> list[str]:
 
 
 def main(repo: Path) -> int:
-    hint_cap = _int_constant(repo / "agent" / "subdirectory_hints.py", "_MAX_HINT_CHARS")
+    hint_cap = _int_constant(repo / current_path("agent/subdirectory_hints.py"), "_MAX_HINT_CHARS")
     tracked = subprocess.run(
         ["git", "ls-files", "-z", "--", "AGENTS.md", "*/AGENTS.md"], cwd=repo, capture_output=True,
         check=True, stdin=subprocess.DEVNULL, timeout=60,

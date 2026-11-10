@@ -1,0 +1,17 @@
+name: ballast
+repo: https://github.com/1momoh/ballast
+sha: c35e298eed1e39fbbc8a660514e418b6a9a245c5
+subdir: plugin/ballast
+description: "Free a target amount of disk space by clearing the developer and AI caches you'll miss least, with Hermes approval and rebuild recipes. Disclosure — after a Hermes approval prompt, `ballast_apply` permanently deletes (no Trash) the contents of cataloged cache directories under your home (npm, pnpm, Yarn, pip, uv, Cargo, Homebrew downloads, Xcode DerivedData/device support, CoreSimulator caches, HuggingFace hub, Gradle, CocoaPods, Go; Ollama and LM Studio model stores only on explicit opt-in). Runs your locally installed npm/yarn/pip/uv/go cache cleaners (argv, no shell, minimal offline environment) and read-only `docker system df`. No network, no credentials read; state in plugin-data/ballast/. Cron and unattended runs are refused."
+maintainer: 1momoh
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+platforms: [macos]
+title: Ballast
+capabilities:
+  provides_tools: [ballast_scan, ballast_plan, ballast_apply, ballast_ledger, ballast_status]
+  provides_hooks: [pre_tool_call, pre_approval_request, post_approval_response]
+  provides_middleware: []
+  requires_env: []

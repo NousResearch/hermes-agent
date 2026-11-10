@@ -55,6 +55,9 @@ class SSHEnvironment(BaseEnvironment):
     # they stay out of the remote snapshot under multiplex.
     _profile_scoped_passthrough = True
     _passwordless_sudo_probe_supported = True
+    # cleanup() only closes the ControlMaster sockets: a nohup'd background job keeps running on
+    # the host and the next execute() reconnects, so its poller still collects the real exit.
+    cleanup_stops_processes = False
 
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",

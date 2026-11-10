@@ -1,6 +1,6 @@
 name: comemo
 repo: https://github.com/andausman/comemo
-sha: b75fd7727bc1377c868411fb12c30926cb906749
+sha: 2fbacfd2c27a66d77041ab17bcd480f38e70c6f8
 version: "1.0.0"
 description: "Composite memory meta-provider for Hermes Agent. Comemo multiplexes
   Honcho, Mem0, and Supermemory simultaneously — write fan-out goes to all configured

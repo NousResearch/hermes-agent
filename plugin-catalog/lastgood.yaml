@@ -1,0 +1,36 @@
+name: lastgood
+title: LastGood
+repo: https://github.com/Dr-Enuf/lastgood
+sha: 8bef6542107582ea1a77d4cfdc1975ee2d2e6c93
+subdir: plugin/lastgood
+version: "0.4.1"
+requires_hermes: ">=0.22.7"
+description: >-
+  LastGood records which of your preset checks passed on which tested
+  state, and what restoring files will not undo. Checks you choose
+  (file opens, words present, files exist, page loads) run after
+  write_file or patch in an opted-in project, and on demand via
+  /lastgood and /blame. Results are PASS, FAIL, or UNKNOWN, with a
+  content fingerprint so changed files mark old results stale. Blame
+  shows the first failing step and bounded configured-string presence
+  deltas, not the cause. A ledger lists recognised tool calls a file
+  rollback will not undo, without storing their arguments. Disclosure:
+  the optional url_loads check fetches the http(s) address you
+  configure. No shell commands, credentials, or background processes.
+  Refuses a home folder, drive or filesystem root, or system folder as
+  the project, and explains invalid setups with the accepted check types.
+maintainer: Kenneth Ausmus (Dr-Enuf)
+tier: community
+category: tools
+capabilities:
+  provides_tools:
+    - lastgood_check
+    - lastgood_status
+    - lastgood_blame
+    - lastgood_report
+    - lastgood_setup
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

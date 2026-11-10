@@ -75,6 +75,7 @@ def media_group_wait_seconds(adapter: Any) -> float:
 
 async def queue_media_group_event(adapter: Any, media_group_id: str, event: MessageEvent) -> None:
     """Merge an album item into its pending event and (re)arm the album's flush."""
+    adapter._note_arrival(event)
     if adapter._should_drop_delayed_delivery():
         adapter._hold_inbound_event(event, where="media-group-enqueue")
         return

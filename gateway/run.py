@@ -1558,8 +1558,6 @@ def _planned_restart_notification_pending() -> bool:
 # Gateway marker so a lazily imported cli.py load_cli_config() doesn't clobber TERMINAL_CWD.
 os.environ["_HERMES_GATEWAY"] = "1"
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
 # The PROCESS's own home, never an import-time ContextVar: a multiplexed backend (``hermes serve``)
 # first imports this module lazily from a session's agent build, under that session's routed profile
@@ -2259,7 +2257,7 @@ _AGENT_PENDING_SENTINEL = object()
 # ``SessionState.conversation`` (cleared via ``ConversationState.clear()``); this list remains for
 # plain-dict stores not yet folded in (``_pending_model_notes``, popped per-key by
 # _clear_conversation_scope) and the public test contract. NOT listed (different lifecycles): turn-scoped
-# _running_agents*/_busy_ack_ts/turn.lease/turn.lease_tokens (_release_running_agent_state +
+# _running_agents/turn.started_ts/turn.busy_ack_ts/turn.lease/turn.lease_tokens (_release_running_agent_state +
 # dispatch finally); persistent.run_generation (monotonic; clearing breaks stale-run detection);
 # _agent_cache (_evict_cached_agent); approval/slash-confirm (_clear_session_boundary_security_state).
 # The state itself now lives in ``SessionState.conversation`` (see gateway/session_state.py) and boundaries
@@ -2270,7 +2268,6 @@ _AGENT_PENDING_SENTINEL = object()
 _CONVERSATION_SCOPED_STATE: tuple = (
     "_session_model_overrides",
     "_pending_model_notes",
-    "_queued_events",
     # Stall-watchdog "already notified" latch; cleared on /new so a fresh conversation can warn again.
     # See #72016.
     "_session_stall_notified",
@@ -3355,12 +3352,8 @@ class GatewayRunner(
 
     # Legacy per-session dict attrs as LIVE views over ``self._sessions``; new code: _session_state(key)
     _running_agents = legacy_dict_property("_running_agents")
-    _running_agents_ts = legacy_dict_property("_running_agents_ts")
-    _busy_ack_ts = legacy_dict_property("_busy_ack_ts")
     _session_model_overrides = legacy_dict_property("_session_model_overrides")
-    _queued_events = legacy_dict_property("_queued_events")
     _pending_messages = legacy_dict_property("_pending_messages")
-    _pending_approvals = legacy_dict_property("_pending_approvals")
 
     def _sessions_map(self) -> dict[str, SessionState]:
         """Per-session state map; lazily created so bare ``object.__new__`` test runners work."""
@@ -3953,7 +3946,7 @@ class GatewayRunner(
             user_id=str(source.user_id) if source.user_id else "",
             user_id_alt=str(source.user_id_alt) if source.user_id_alt else "",
             user_name=str(source.user_name) if source.user_name else "",
-            actor_id=str(context.actor_user_id or ""), actor_name=str(context.actor_user_name or ""),
+            actor_id=context.actor_user_id, actor_name=context.actor_user_name, turn_event=context.turn_event,  # None: route user
             scope_id=str(getattr(source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(source, "parent_chat_id", "") or ""),
             session_key=context.session_key,

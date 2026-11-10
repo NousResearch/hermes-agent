@@ -11,6 +11,7 @@ requires_hermes: ">=0.22.5"
 docs_url: https://github.com/percyhendrux123-prog/hermes-axioma/blob/442374c11b3f03598ea6ff9fb6263e13af505795/README.md
 readme: true
 platforms: []
+image: https://raw.githubusercontent.com/percyhendrux123-prog/hermes-axioma/52cd6aae42ede343180b74e88a75a1c5b25a6e8f/docs/media/banner.png
 screenshots:
   - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-axioma/442374c11b3f03598ea6ff9fb6263e13af505795/docs/evidence/desktop/desktop-night-inline-signal.png
   - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-axioma/442374c11b3f03598ea6ff9fb6263e13af505795/docs/evidence/desktop/terminal-app-cli-render.png

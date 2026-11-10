@@ -1,10 +1,9 @@
 name: sugar
 repo: https://github.com/roboticforce/sugar
-sha: eade16940789bc1f927af090f8a3b475e537eddd
+sha: 02b8addb5f16c9ee874dcc6dc834289c4c8289db
 subdir: hermes-plugin
-description: Local-first persistent memory for coding agents. SQLite on your disk -
-  decisions, preferences, error patterns, and guidelines with project and global
-  scopes and guideline-aware search. No cloud, no API key, nothing leaves the machine.
+version: "0.3.1"
+description: "Local-first persistent memory for coding agents. SQLite on your disk - decisions, preferences, error patterns, and guidelines with project and global scopes and guideline-aware search. No cloud, no API key, nothing leaves the machine. Disclosure — Sugar stores memories in local SQLite at the nearest project `.sugar/memory.db` and `~/.sugar/memory.db`; before context compression it archives a transcript checkpoint (first 4,000 characters) there, mirrors built-in memory-tool add/replace writes into it, and (only when `sync_turns` is enabled) records a compact note per turn."
 maintainer: Steven Leggett
 tier: community
 category: memory

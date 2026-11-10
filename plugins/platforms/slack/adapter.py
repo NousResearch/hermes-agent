@@ -32,13 +32,17 @@ except ImportError:
 import sys
 from pathlib import Path as _Path
 
-sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+_checkout_root = _Path(__file__).resolve().parents[3]
+# Append, never prepend: the checkout must not shadow same-named installed packages.
+if str(_checkout_root) not in sys.path:
+    sys.path.append(str(_checkout_root))
 
 from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
 from agent.i18n import t
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
+from gateway.approval_actor import approval_refusal, clarify_refusal, refusal_text, slash_confirm_refusal
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
@@ -5568,11 +5572,13 @@ class SlackAdapter(BasePlatformAdapter):
         started = await self._begin_interaction(ack, body, action, "slash-confirm")
         if started is None:
             return
-        team_id, action_id, value, message, msg_ts, channel_id, user_name, _user_id = started
+        team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id = started
         if "|" not in value:
             logger.warning("[Slack] Malformed slash-confirm value: %s", value)
             return
         session_key, confirm_id = value.split("|", 1)
+        if await self._refuse_other_requester(slash_confirm_refusal(session_key, confirm_id, user_id, extra=self.config.extra), body):
+            return
         choice = self._CONFIRM_CHOICES.get(action_id, "cancel")
         decision_text = t(self._CONFIRM_DECISION_KEYS[choice], user=user_name)
         await self._finalize_interactive_message(
@@ -5606,6 +5612,14 @@ class SlackAdapter(BasePlatformAdapter):
             "[Slack] Feedback button clicked: value=%s user=%s channel=%s ts=%s", value, user_id,
             channel_id, message.get("ts", ""))
 
+    async def _refuse_other_requester(self, requester: Optional[str], body: dict) -> bool:
+        """Tell only the clicker ``gateway.approval_actor`` refused them (the prompt stays pending)."""
+        if requester:
+            channel_id, user_id = (body.get("channel") or {}).get("id", ""), (body.get("user") or {}).get("id", "")
+            await self._get_client(channel_id, team_id=self._event_team_id({}, body) or None).chat_postEphemeral(
+                channel=channel_id, user=user_id, text=refusal_text(requester), thread_ts=(body.get("message") or {}).get("thread_ts"))
+        return bool(requester)
+
     async def _handle_approval_action(self, ack, body, action) -> None:
         """Handle an approval button click from Block Kit."""
         if (started := await self._begin_interaction(ack, body, action, "approval")) is None:
@@ -5614,10 +5628,9 @@ class SlackAdapter(BasePlatformAdapter):
         choice = self._APPROVAL_CHOICES.get(action_id, "deny")
         # The bare ts too: stored without a team id, clicked with one.
         approval_key = msg_ts if msg_ts in self._approval_resolved else self._workspace_message_marker(team_id, msg_ts)
-        from gateway.approval_actor import approval_refusal, refusal_text
-        if requester := approval_refusal(session_key, user_id, extra=self.config.extra, request_id=self._approval_request_ids.get(approval_key)):
-            return await self._get_client(channel_id, team_id=team_id or None).chat_postEphemeral(  # others: private note
-                channel=channel_id, user=user_id, text=refusal_text(requester), thread_ts=message.get("thread_ts"))
+        if await self._refuse_other_requester(approval_refusal(
+                session_key, user_id, extra=self.config.extra, request_id=self._approval_request_ids.get(approval_key)), body):
+            return
         if self._approval_resolved.pop(approval_key, True):  # double-click guard (atomic pop)
             return
         request_id = self._approval_request_ids.pop(approval_key, None)
@@ -5668,11 +5681,13 @@ class SlackAdapter(BasePlatformAdapter):
         started = await self._begin_interaction(ack, body, action, "clarify", team_scoped=False)
         if started is None:
             return
-        _team_id, action_id, value, message, msg_ts, channel_id, user_name, _user_id = started
+        _team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id = started
         if "|" not in value:  # value packs ``clarify_id|<idx|other>``
             logger.warning("[Slack] Malformed clarify value: %s", value)
             return
         clarify_id, token = value.split("|", 1)
+        if await self._refuse_other_requester(clarify_refusal(clarify_id, user_id, extra=self.config.extra), body):
+            return
         # Double-click guard — atomic pop (mirrors approval).
         if self._clarify_resolved.pop(msg_ts, True):
             return

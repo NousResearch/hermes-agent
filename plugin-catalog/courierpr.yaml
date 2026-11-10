@@ -1,0 +1,19 @@
+name: courierpr
+title: CourierPR
+repo: https://github.com/aitrainingdatabroker/courierpr-mcp-server
+sha: 51d00a0b1036325e84d8e813c523c77ae9f9af97
+subdir: hermes
+version: "1.0.0"
+description: "Read-only press release wire MCP server and skill: browse newsroom desks, list and search published company press releases, and read the opening of one with a link to the full release. Agent Plugins v1 package (plugin.json + mcp.json + one skill), configuration only. Disclosure — every tool call goes to the public read-only MCP server at courierpr.com (https://courierpr.com/api/mcp), which only reads published press releases (company-written announcements, not independent reporting); no sign-in, no key, nothing written, no local commands. The package marks the server untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: AI Training Data Broker
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/aitrainingdatabroker/courierpr-mcp-server/tree/main/hermes#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

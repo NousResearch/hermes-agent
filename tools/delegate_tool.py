@@ -705,22 +705,27 @@ def _build_top_level_description(*, independent_completions=None) -> str:
     delivery = _DELIVERY_INDEPENDENT if independent_completions else _DELIVERY_JOINED
     return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
 
-_DELIVERY_INDEPENDENT, _DELIVERY_JOINED = "each ungrouped task / `group` returns on its own", "one message per call"
+# The independent variant states the dispatch-time choice and its cost: a parent that meant to answer once but left
+# tasks ungrouped is woken per result and spends a filler turn on each.
+_DELIVERY_JOINED = " (one message per call)"
+_DELIVERY_INDEPENDENT = (
+    ", one message per `group`. Choose at dispatch: if you will respond only once ALL tasks are done, give every "
+    "task the same `group`; give a task its own `group` only when you will act on its result the moment it lands, "
+    "because each separate result re-enters alone and costs a turn"
+)
 
 _DESCRIPTION_DELIVERY = (
     "Sessions without a later-result consumer (including one-shot CLI and cron) join parallel children "
     "and return results in this tool call. "
     "Otherwise runs in the background: dispatch returns live transcript paths and results re-enter "
-    "as a new message when subagents finish ({delivery}). Background results are delivered only "
+    "as a new message when subagents finish{delivery}. Background results are delivered only "
     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
-    "wait or poll on transcripts, artifact files, or CI for a child. "
-    "While children run, `action` (list/steer/stop) controls them live.\n\n"
+    "wait or poll on transcripts, artifact files, or CI for a child.\n\n"
 )
 _ONESHOT_DESCRIPTION_DELIVERY = "Parallel children are joined and their results return in this tool call.\n\n"
 _DESCRIPTION_HEAD = (
-    "Spawn isolated subagents for parallel or context-heavy work. Each gets its own conversation, terminal "
-    "session, and toolset, and only its final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
-    "(limit in the tasks description).\n\n"
+    "Spawn isolated subagents. Each gets its own conversation, terminal session, and toolset, and only its final "
+    "summary returns to you.\n\n"
     + _DESCRIPTION_DELIVERY +
     "USE FOR: reasoning-heavy subtasks, work that would flood your context, or independent parallel workstreams.\n"
     "DO NOT USE FOR (use these instead):\n"
@@ -750,10 +755,8 @@ def _build_tasks_param_description() -> str:
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     return (
-        f"The task(s), up to {max_children} in parallel for this user (set "
-        "via delegation.max_concurrent_children). Each entry spawns one "
-        "subagent with isolated context and terminal session; a single task "
-        "is a one-entry array. Required when spawning."
+        f"One entry per subagent; several run in parallel, up to {max_children} for this user (set via "
+        "delegation.max_concurrent_children). Required when spawning."
     )
 
 def _build_dynamic_schema_overrides() -> dict:
@@ -767,8 +770,10 @@ def _build_dynamic_schema_overrides() -> dict:
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
 
-    if not independent_completions:
-        tasks = overrides_params["properties"]["tasks"]
+    tasks = overrides_params["properties"]["tasks"]
+    if independent_completions:
+        tasks["items"] = {**tasks["items"], "required": ["goal", "group"]}
+    else:
         tasks["items"] = {**tasks["items"], "properties": {
             k: v for k, v in tasks["items"]["properties"].items() if k != "group"
         }}
@@ -813,8 +818,7 @@ DELEGATE_TASK_SCHEMA = {
                     "properties": {
                         "goal": _p(
                             "string",
-                            "What this subagent should accomplish. Be specific and self-contained — it knows "
-                            "nothing about your conversation history.",
+                            "What this subagent should accomplish. Be specific and self-contained.",
                         ),
                         "context": _p(
                             "string",
@@ -823,14 +827,14 @@ DELEGATE_TASK_SCHEMA = {
                         ),
                         "output_schema": _p(
                             "object",
-                            "Optional JSON Schema this child's final answer must validate against (told to the "
+                            "JSON Schema this child's final answer must validate against (told to the "
                             "child up front; parent validates with one bounded correction retry; result gains "
                             "schema_valid, plus schema_errors on failure — the child's raw text is still returned "
                             "as summary, never discarded). Keep it forgiving — require only fields you will read.",
                         ),
                         "images": _p(
                             "array",
-                            "Optional images this child must SEE (max 8): local file paths or http(s) URLs — e.g. a "
+                            "Images this child must SEE (max 8): local file paths or http(s) URLs — e.g. a "
                             "screenshot the user sent, a design mock, a chart. Vision-capable children receive the "
                             "pixels on their first turn; non-vision children get path hints for vision_analyze. Text "
                             "files do NOT belong here — put paths in 'context' instead.",
@@ -838,10 +842,9 @@ DELEGATE_TASK_SCHEMA = {
                         ),
                         "group": _p(
                             "string",
-                            "Optional result-delivery bucket within this call (only when delegation.independent_completions "
-                            "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
-                            "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
-                            "order execution; if B needs A's output, dispatch B after A returns.",
+                            "Result-delivery bucket. Tasks sharing a group return together in ONE message once all of "
+                            "them finish; a task with its own group returns alone when it finishes. Does not order "
+                            "execution; if B needs A's output, dispatch B after A returns.",
                         ),
                     },
                     "required": ["goal"],
@@ -854,16 +857,15 @@ DELEGATE_TASK_SCHEMA = {
                 "string",
                 "Default 'spawn'. Live control of running children: "
                 "'list' = ids/goals/status/transcripts; 'steer' = queue "
-                "course-correction text into one child (subagent_id + "
-                "message) without stopping it; 'stop' = end one child "
-                "early (subagent_id; partial result still returns). "
-                "Control actions return immediately; goal/tasks are ignored unless spawning.",
+                "course-correction text into one child without stopping it; 'stop' = end one child "
+                "early (partial result still returns). "
+                "Control actions return immediately; tasks are ignored unless spawning.",
                 enum=["spawn", "list", "steer", "stop"],
             ),
-            "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
+            "subagent_id": _p("string", "Required for action='steer'/'stop' (ids from the spawn response or action='list')."),
             "message": _p(
                 "string",
-                "For action='steer': the course correction, appended to "
+                "Required for action='steer': the course correction, appended to "
                 "the child's next tool result mid-run. Be directive and specific.",
             ),
         },
@@ -876,14 +878,20 @@ _LIVE_CONTROL_PARAMS = frozenset({"action", "subagent_id", "message"})
 
 
 def oneshot_delegate_function(function: dict) -> dict:
-    """A built delegate_task definition minus live control, for a one-shot session (agent/oneshot_footprint.py):
-    its children are joined inside the call, so ``action`` list/steer/stop never has a running child to reach and
-    the background-delivery paragraph never applies. The handler still accepts those arguments."""
+    """A built delegate_task definition minus live control and ``group``, for a one-shot or inline-gateway session
+    (agent/oneshot_footprint.py): its children are joined inside the call, so ``action`` list/steer/stop never has a
+    running child to reach, ``group`` never changes delivery, and the background-delivery paragraph never applies.
+    The handler still accepts those arguments."""
     description = function.get("description") or ""
     for delivery in (_DELIVERY_INDEPENDENT, _DELIVERY_JOINED):
         description = description.replace(_DESCRIPTION_DELIVERY.format(delivery=delivery), _ONESHOT_DESCRIPTION_DELIVERY)
     params = function["parameters"]
     properties = {k: v for k, v in params["properties"].items() if k not in _LIVE_CONTROL_PARAMS}
+    items = properties["tasks"]["items"]
+    properties["tasks"] = {**properties["tasks"], "items": {
+        **items, "properties": {k: v for k, v in items["properties"].items() if k != "group"},
+        "required": [k for k in items["required"] if k != "group"],
+    }}
     return {**function, "description": description, "parameters": {**params, "properties": properties}}
 
 

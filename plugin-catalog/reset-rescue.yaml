@@ -9,6 +9,11 @@ requires_hermes: ">=0.22.6"
 docs_url: https://github.com/bwoliveira/hermes-reset-rescue#readme
 version: "0.1.0"
 readme: true
+image: https://raw.githubusercontent.com/bwoliveira/hermes-reset-rescue/196656be1b781fb7a9f3ce6e346b35f2f4e3cc23/docs/art/hero.jpg
+screenshots:
+  - https://raw.githubusercontent.com/bwoliveira/hermes-reset-rescue/196656be1b781fb7a9f3ce6e346b35f2f4e3cc23/docs/screenshots/accounts-en-dark.png
+  - https://raw.githubusercontent.com/bwoliveira/hermes-reset-rescue/196656be1b781fb7a9f3ce6e346b35f2f4e3cc23/docs/screenshots/per-account-en-dark.png
+  - https://raw.githubusercontent.com/bwoliveira/hermes-reset-rescue/196656be1b781fb7a9f3ce6e346b35f2f4e3cc23/docs/screenshots/settings-en-dark.png
 platforms: [linux, macos]
 title: Reset Rescue
 capabilities:

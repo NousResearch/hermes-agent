@@ -1,0 +1,43 @@
+# Catalog entry for NousResearch/hermes-agent plugin-catalog/siemless.yaml.
+# sha: pin to the release COMMIT (not the annotated tag object) when v0.1.0 is published.
+name: siemless
+repo: https://github.com/ASV-Labs/siemless
+sha: a74bd96f2fc232e808db6242a6be642fa700db5e
+description: "Agent security telemetry for SIEMs. Every tool call, file read, shell command, outbound request, approval, subagent, scheduled job and configuration change a Hermes agent makes becomes an OCSF 1.9 security event; 14 deterministic rules correlate them into findings (secret access then egress, prompt-injection chains, credential discovery, persistence, governance tampering, …) with MITRE ATT&CK 20.1 mapping and evidence labelled observed or inferred. Exports as JSON Lines (Wazuh), RFC 5424 syslog, CEF, Splunk HEC and Elastic ECS, with a pack and 22 Sigma rules. Desktop page with evidence chains and exporter health; /siemless and hermes siemless incl. replay of recorded sessions. Disclosure — observer hooks only (no pre_tool_call, no middleware, no tools; nothing is blocked or rewritten). Reads only the hook payloads Hermes passes, bounded and redacted before storage; prompt text, model output, tool results, file bodies and message text are never stored (hashes and lengths only; record_prompts adds a 200-char redacted preview). Writes its own SQLite database, JSONL files and spool under plugin-data/siemless/ (0600). Network: none by default; with remote_export true and a destination set, sends the configured event scope to that syslog (UDP/TCP/TLS), Splunk HEC, Elastic or JSON receiver endpoint over verified TLS (plain HTTP to 127.0.0.1 only behind a lab switch); tokens via agent.secret_scope.get_secret, never read from .env. Three daemon threads per process (pipeline, dispatch, settings watch). The dashboard half reads plugin settings through hermes_cli.config.load_config. `/siemless` works in any chat that can run plugin commands: it shows stored findings and events (tool names, targets, hosts, session ids across sessions), `ack` marks findings reviewed, and `replay <file>` reads a JSONL file the user names and runs it through the detections, labelled as a replay. No shell commands, no telemetry to the author, no self-updater. The install scanner reports caution because the detector lists the patterns it looks for (ssh paths, webhook hosts, curl|sh, cron, env dumps) in siemless_core/sensitive.py and in the tests."
+maintainer: ASV-Labs
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/ASV-Labs/siemless#readme
+version: "0.1.2"
+image: https://raw.githubusercontent.com/ASV-Labs/siemless/a74bd96f2fc232e808db6242a6be642fa700db5e/docs/banner.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - on_session_reset
+    - on_session_delete
+    - pre_llm_call
+    - post_llm_call
+    - post_api_request
+    - api_request_error
+    - post_auxiliary_call
+    - post_tool_call
+    - pre_approval_request
+    - post_approval_response
+    - on_human_input_request
+    - on_human_input_resolved
+    - subagent_start
+    - subagent_stop
+    - pre_command
+    - on_skill_lifecycle
+    - kanban_task_claimed
+    - kanban_task_completed
+    - kanban_task_blocked
+    - on_kanban_worker_spawned
+    - on_kanban_worker_exited
+  provides_middleware: []
+  requires_env: []

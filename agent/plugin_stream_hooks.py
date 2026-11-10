@@ -248,22 +248,22 @@ def _schedule_lazy_discovery(manager: Any, discover: Callable[[], Any]) -> None:
 
 def _registered_callbacks(
     hook_name: str, manager: Any = None, *, allow_discovery: bool = True
-) -> tuple[Callable[..., Any], ...]:
-    """Snapshot callbacks, discovering lazily unless a capability probe opts out."""
+) -> tuple[Callable[..., Any], ...] | None:
+    """Snapshot callbacks; capability probes return None when availability is unknown."""
     lock = None
     if manager is None:
         manager = _active_plugin_manager()
         if manager is not None:
             lock = getattr(manager, "_discovery_lock", None)
     if manager is None:
-        return ()
+        return () if allow_discovery else None
 
     if lock is not None and not lock.acquire(blocking=False):
-        return ()
+        return () if allow_discovery else None
     try:
         if not getattr(manager, "_discovered", True):
             if not allow_discovery:
-                return ()
+                return None
             discover = getattr(manager, "discover_and_load", None)
             if callable(discover):
                 _schedule_lazy_discovery(manager, discover)
@@ -271,7 +271,7 @@ def _registered_callbacks(
         return _manager_hook_callbacks(manager, hook_name)
     except Exception:
         logger.debug("plugin stream hook callback lookup failed: %s", hook_name, exc_info=True)
-        return ()
+        return () if allow_discovery else None
     finally:
         if lock is not None:
             lock.release()
@@ -372,7 +372,7 @@ def _registered_dispatch_scope(hook_name: str):
         yield manager, scope_key, (), False
         return
     try:
-        callbacks = _registered_callbacks(hook_name, manager)
+        callbacks = _registered_callbacks(hook_name, manager) or ()
         still_current = _active_manager_scope(manager) is scope_key
         if is_plugin_manager:
             current_hooks = getattr(manager, "_hooks", {})
@@ -702,15 +702,14 @@ def enqueue_plugin_stream_hook(hook_name: str, **payload: Any) -> bool:
 
 def has_stream_observer_hooks() -> bool:
     return any(
-        _registered_callbacks(name, allow_discovery=False)
+        (callbacks := _registered_callbacks(name, allow_discovery=False)) is None or bool(callbacks)
         for name in ("on_stream_start", "on_stream_delta", "on_stream_end")
     )
 
 
 def has_reasoning_stream_observer_hooks() -> bool:
-    return stream_reasoning_deltas_enabled() and bool(
-        _registered_callbacks("on_stream_delta", allow_discovery=False)
-    )
+    callbacks = _registered_callbacks("on_stream_delta", allow_discovery=False)
+    return stream_reasoning_deltas_enabled() and (callbacks is None or bool(callbacks))
 
 
 def stream_reasoning_deltas_enabled() -> bool:
@@ -728,10 +727,10 @@ def stream_reasoning_deltas_enabled() -> bool:
 
 
 def shutdown_plugin_observer_dispatcher(timeout: float = 1.0) -> None:
-    """Stop observer workers with a bounded drain, used by tests/shutdown.
+    """Stop observer workers with a bounded drain; used by tests.
 
     A stop sentinel is placed after pending events when possible, allowing a
-    short FIFO drain. The worker join is bounded by ``timeout``; a blocked
+    short FIFO drain. Each worker join is bounded by ``timeout``; a blocked
     callback remains on its daemon worker and is never allowed to hold process
     teardown indefinitely.
     """

@@ -1236,6 +1236,8 @@ The same launcher can offer `-w` the way `hermes --tui -w` does. It calls three 
 Do not make the tree yourself with `git worktree add`. Hermes regularly removes old idle trees under `.worktrees/`. It keeps a locked tree only when the lock reason is one Hermes wrote, so it can remove your tree while a stored session still runs in it.
 
 ```python
+import os
+
 from hermes_cli import session_worktree
 
 info = session_worktree.create() if args.worktree else None

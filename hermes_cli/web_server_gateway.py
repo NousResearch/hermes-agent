@@ -394,9 +394,13 @@ def _profile_action_environment(
         from hermes_cli.web_server_profiles import _resolve_profile_dir
         from hermes_constants import get_default_hermes_root
         from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+        from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
         target_home = _resolve_profile_dir(profile)
-        action_env = build_subprocess_env(scrub_secrets=True)
+        # Bind before the first factory: launch-profile HOME projection cannot be
+        # undone by target auto mode on a host once HOME names another profile.
+        with install_and_reset_profile_terminal_scope(target_home):
+            action_env = build_subprocess_env(scrub_secrets=True)
 
         profile_keys = set(_PROFILE_MANAGED_ENV_KEYS)
         try:
@@ -419,7 +423,6 @@ def _profile_action_environment(
         # and resolves to the same validated directory.
         action_env["HERMES_HOME"] = str(target_home)
         from tools.environments.local import _apply_profile_home
-        from tools.terminal_scope import install_and_reset_profile_terminal_scope
         # An action may target a different profile from the active dashboard turn.
         with install_and_reset_profile_terminal_scope(target_home):
             _apply_profile_home(action_env, explicit_home=str(target_home))

@@ -5,18 +5,21 @@ Scheduled Task registered, started a gateway every normal Hermes window then ref
 ``gateway_elevated``, until someone stopped it from an admin prompt. A registered task starts under
 its own principal, not the client's token, so that path stays open. The remedy names only a normal
 window: a task registered through the UAC hand-off can itself start the gateway elevated (#152218).
+An administrator with no split token (UAC off, the built-in Administrator) has no normal window to
+lock out, so that client still starts its gateway.
 """
 import time
 
 import pytest
 
 
-@pytest.fixture
-def elevated(monkeypatch):
+@pytest.fixture(params=[2, None], ids=["uac-full-token", "type-unreadable"])
+def elevated(request, monkeypatch):
     import hermes_dir_acl
     from hermes_cli import gateway_runtime_start as start
 
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
+    monkeypatch.setattr(hermes_dir_acl, "process_elevation_type", lambda: request.param)
     spawned = []
     monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: spawned.append(a) or pytest.fail("spawned"))
     return spawned
@@ -54,3 +57,16 @@ def test_an_elevated_client_still_starts_the_registered_task(tmp_path, monkeypat
 
     assert started == [task] and result.reason_code != "client_elevated"
     assert time.monotonic() - before < 10 and elevated == []
+
+
+def test_an_elevated_client_without_a_split_token_still_starts(tmp_path, monkeypatch):
+    import hermes_dir_acl
+    from hermes_cli import gateway_runtime_start as start
+
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
+    monkeypatch.setattr(hermes_dir_acl, "process_elevation_type", lambda: hermes_dir_acl.TOKEN_ELEVATION_TYPE_DEFAULT)
+    monkeypatch.setattr(start, "start_gateway_job", lambda *a, **k: None)  # macOS: the direct spawn, too
+    spawned = []
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: spawned.append(a) or object())
+    start.spawn_unmanaged_gateway(tmp_path / "profile", deadline=time.monotonic() + 5)
+    assert len(spawned) == 1

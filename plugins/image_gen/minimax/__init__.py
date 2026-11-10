@@ -141,6 +141,7 @@ class MiniMaxImageGenProvider(StaticImageGenProvider):
             try:
                 payload["images"] = [{"image_url": _image_url_field(ref)} for ref in sources]
             except Exception as exc:
+                logger.debug("Could not load MiniMax source image for editing", exc_info=True)
                 return fail(f"Could not load source image for editing: {exc}", "io_error")
             endpoint = f"{base_url}/images/edits"
         else:

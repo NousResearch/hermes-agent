@@ -30,6 +30,9 @@ def _fake_result(*, url="https://cdn.example/img.png", b64=None):
 @pytest.fixture(autouse=True)
 def _tmp_hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("MINIMAX_IMAGE_AREA", raising=False)
+    monkeypatch.delenv("MINIMAX_IMAGE_MODEL", raising=False)
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
     yield tmp_path
 
 

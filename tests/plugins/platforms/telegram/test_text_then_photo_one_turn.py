@@ -76,3 +76,18 @@ async def test_another_senders_photo_does_not_take_the_question():
     events = await _text_then_photo(adapter, photo_user=2)
     assert [e.text for e in events] == ["Is this a real study?", ""]
     assert [e.media_urls for e in events] == [[], ["/tmp/post.jpg"]]
+
+
+@pytest.mark.asyncio
+async def test_observed_group_question_then_photo_is_one_turn():
+    """An observed group moves the sender off ``source.user_id``; the photo still claims the question."""
+    adapter = _adapter()
+    adapter._is_group_chat = lambda _msg: True
+    adapter._gate_or_observe = lambda *_a, **_kw: True
+    adapter._should_process_message = lambda *_a, **_kw: True
+    adapter._telegram_observe_unmentioned_group_messages = lambda: True
+    adapter._telegram_observe_allowed_chats = lambda: {"100"}
+    events = await _text_then_photo(adapter, photo_user=1)
+    assert len(events) == 1
+    assert events[0].media_urls == ["/tmp/post.jpg"]
+    assert "Is this a real study?" in events[0].text

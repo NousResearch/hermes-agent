@@ -84,6 +84,7 @@ _lark_import_lock = threading.Lock()
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
+from gateway.approval_actor import approval_refusal, refusal_text, update_prompt_refusal
 from gateway.config import Platform, PlatformConfig
 from agent.i18n import t
 from gateway.platforms.base import (
@@ -2314,7 +2315,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
-        from gateway.approval_actor import approval_refusal, refusal_text
         # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
         if requester := approval_refusal(state["session_key"], user_id or open_id, extra=self.config.extra,
                                          request_id=state.get("request_id"), choice=choice):
@@ -2343,9 +2343,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
-        coro = self._resolve_update_prompt(
-            prompt_id, answer, user_name, open_id=open_id, chat_id=chat_id, user_id=user_id, union_id=union_id,
-        )
+        if requester := update_prompt_refusal(user_id or open_id, extra=self.config.extra):
+            return self._card_toast(refusal_text(requester))  # not the /update sender or an admin: card stays open
+        coro = self._resolve_update_prompt(prompt_id, answer, user_name, open_id=open_id, chat_id=chat_id, user_id=user_id, union_id=union_id)
         if not self._submit_on_loop(loop, coro):
             return self._card_response()
         return self._card_response(self._build_resolved_update_prompt_card(answer=answer, user_name=user_name))

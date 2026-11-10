@@ -193,7 +193,8 @@ from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, 
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
-from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note
+from gateway.approval_actor import picker_refusal, update_prompt_refusal
+from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note, refuse_tap
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, build_ptb_requests, discover_fallback_ips, parse_fallback_ip_env,
     proxy_target_hosts)
@@ -4390,13 +4391,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         data = query.data or ""
         cb = self._callback_ctx(query)
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
-        for prefixes, handler in (
-            (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),
-            (("cp:",), self._handle_choice_picker_callback)):
+        for prefixes, handler, states in (
+            (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback, "_model_picker_state"),
+            (("cp:",), self._handle_choice_picker_callback, "_choice_picker_state")):
             if data.startswith(prefixes):
                 chat_id = str(query.message.chat_id) if query.message else None
-                # One auth gate for every chat-id picker: strangers in a shared group must not drive the owner's picker.
-                if chat_id and await self._callback_authorized(query, cb, _unauthorized()):
+                state = getattr(self, states).get(chat_id) or {}  # one gate for every picker: admitted, then its opener or an admin
+                if chat_id and await self._callback_authorized(query, cb, _unauthorized()) and not await refuse_tap(query, picker_refusal(
+                        state.get("on_model_selected") or state.get("on_choice_selected"), query.from_user.id, extra=self.config.extra)):
                     await handler(query, data, chat_id)
                 return
         for prefix, handler in (
@@ -4585,7 +4587,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def _handle_update_prompt_callback(self, query, data: str, cb: dict[str, Any]) -> None:
         """``update_prompt:<y|n>`` — forward the answer to the update process."""
         answer = data.split(":", 1)[1]  # "y" or "n"
-        if not await self._callback_authorized(query, cb, _unauthorized()):
+        if not await self._callback_authorized(query, cb, _unauthorized()) or await refuse_tap(
+                query, update_prompt_refusal(query.from_user.id, extra=self.config.extra)):
             return
         await answer_callback(query, _toast("platform.telegram.prompt.update_sent", answer=answer))
         word = t("platform.telegram.prompt.affirm_word" if answer == "y" else "platform.telegram.prompt.negate_word")

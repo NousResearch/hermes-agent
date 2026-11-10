@@ -91,6 +91,8 @@ with a name allows that one name only.
 | `gateway.approval_actor` | `refusal_text` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `gateway.approval_actor` | `slash_confirm_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `gateway.approval_actor` | `clarify_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.approval_actor` | `picker_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.approval_actor` | `update_prompt_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.clarify_gateway` | `get_pending` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.clarify_gateway` | `resolve_gateway_clarify` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.clarify_gateway` | `mark_awaiting_text` | adding-platform-adapters.md § Public helpers for platform plugins |

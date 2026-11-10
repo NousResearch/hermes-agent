@@ -478,6 +478,8 @@ class GatewayModelCommandsMixin:
             providers = []
         if not providers:
             return False
+        from gateway.approval_actor import opener_authority
+        on_model_selected.prompt_authority = opener_authority(event)  # only its opener (or an admin) taps it
         result = await adapter.send_model_picker(
             chat_id=source.chat_id, providers=providers,
             current_model=listing_kwargs["current_model"],
@@ -945,6 +947,8 @@ class GatewayModelCommandsMixin:
         adapter = self._delivery_adapter_for(event.source)
         if adapter is None or getattr(type(adapter), "send_choice_picker", None) is None:
             return False
+        from gateway.approval_actor import opener_authority
+        on_choice_selected.prompt_authority = opener_authority(event)  # only its opener (or an admin) taps it
         try:
             result = await adapter.send_choice_picker(
                 chat_id=event.source.chat_id, title=title, choices=choices, session_key=session_key,

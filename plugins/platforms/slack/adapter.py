@@ -5212,25 +5212,15 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         user_name = body.get("user", {}).get("name", "unknown")
         user_id = body.get("user", {}).get("id", "")
 
-        if not self._is_interactive_user_authorized(
-            user_id,
-            channel_id=channel_id,
-            user_name=user_name,
-            team_id=team_id,
-        ):
-            logger.warning(
-                "[Slack] Unauthorized model picker click by %s (%s) - ignoring",
-                user_name, user_id,
-            )
+        if not self._is_interactive_user_authorized(user_id, channel_id=channel_id, user_name=user_name, team_id=team_id):
+            logger.warning("[Slack] Unauthorized model picker click by %s (%s) - ignoring", user_name, user_id)
             return
 
         # Look up the picker state. The send path may have stored it under a
         # bare ts (metadata-poor send, no team id) while this click event
         # carries a team id — that mismatch must not swallow a legitimate
         # interaction (mirrors _handle_approval_action's dual-key lookup).
-        marker = self._workspace_message_marker(team_id, msg_ts)
-        if msg_ts in self._model_picker_state:
-            marker = msg_ts
+        marker = msg_ts if msg_ts in self._model_picker_state else self._workspace_message_marker(team_id, msg_ts)
         state = self._model_picker_state.get(marker)
         if not state:
             logger.debug("[Slack] Model picker state not found for marker=%s", marker)
@@ -5246,6 +5236,10 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
 
         providers = state.get("providers", [])
         on_model_selected = state.get("on_model_selected")
+        from gateway.approval_actor import picker_refusal, refusal_text
+        if requester := picker_refusal(on_model_selected, user_id, extra=self.config.extra):  # someone else's card
+            return await self._get_client(channel_id, team_id=team_id or None).chat_postEphemeral(
+                channel=channel_id, user=user_id, text=refusal_text(requester), thread_ts=message.get("thread_ts"))
 
         # Cancel → dismiss.
         if action_id == _MODEL_PICKER_CANCEL_ACTION:

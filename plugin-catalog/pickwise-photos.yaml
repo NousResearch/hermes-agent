@@ -1,24 +1,27 @@
 name: pickwise-photos
 repo: https://github.com/ardianreffa/pickwise-photos
-sha: 7a5967de35d2d54baf04ff2d551109b02d89d722
+sha: b824b22bb920ee32aa51b1ee04b50a8fbd6fd3a0
 title: Pickwise Photos
 description: >-
   Pick your best photos, with reasons. Culls a folder of photos locally: flags blurry,
   too-dark and blown-out shots, groups bursts and keeps the best frame of each, and explains
   every decision in plain language. Follows a brief in your own words ("concert, dark is
-  fine, best 30") and learns gradually from your corrections. Reads JPEG, HEIC and camera or
+  fine, best 30") and learns gradually from your corrections. On request it makes local
+  previews so Hermes can take a visual second look for closed eyes or a blurred subject. Reads JPEG, HEIC and camera or
   iPhone RAW (DNG, CR3, NEF, ARW and more) through their embedded previews, using only Pillow
   and pillow-heif. Disclosure — reads only the folder you name; writes nothing until you
   confirm a dry run, then only a Pickwise/ subfolder (copy or reversible move) or .xmp rating
   sidecars that never replace existing ones; never deletes or edits photos; stores per-photo
-  measurements, reports and learned preferences in its plugin data folder; no network calls,
-  no model calls, no shell commands, no telemetry.
+  measurements, reports, learned preferences and (only when asked) downsized previews in its
+  plugin data folder; no network calls, no model calls, no shell commands, no telemetry. A
+  visual check sends the chosen previews to the model provider through Hermes' own vision
+  tool, only when the user asks.
 maintainer: ardianreffa
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/ardianreffa/pickwise-photos#readme
-version: "0.1.3"
+version: "0.1.5"
 platforms: []
 capabilities:
   provides_tools:
@@ -27,6 +30,7 @@ capabilities:
     - pickwise_feedback
     - pickwise_preferences
     - pickwise_undo
+    - pickwise_preview
   provides_hooks: []
   provides_middleware: []
   requires_env: []

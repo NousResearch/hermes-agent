@@ -65,8 +65,9 @@ def _cleanup_env(env: Any, *, force_remove: Optional[bool] = None) -> None:
 def _settle_env_processes(env: Any) -> None:
     """Settle background processes polled through *env* as lost once it is closed: their
     pollers can no longer reach them and would otherwise poll a closed environment forever.
-    Called only after a teardown that succeeded: a failed one (Modal's sync-back raising
-    before terminate) may leave the sandbox and its processes running and reachable."""
+    Called only after a teardown that succeeded or found the sandbox already gone: a failed
+    one (Modal's sync-back raising before terminate) may leave the sandbox and its processes
+    running and reachable."""
     from tools.process_registry import process_registry
     # WARNING, not _quiet's DEBUG: a failed settle leaves pollers spinning on a closed env.
     with _quiet("settling processes of a closed environment failed", level=logging.WARNING):

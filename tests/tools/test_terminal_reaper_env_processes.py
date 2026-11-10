@@ -63,11 +63,13 @@ def registry(monkeypatch):
 
 
 @pytest.fixture()
-def env(monkeypatch):
-    monkeypatch.setattr(tt, "_active_environments", {})
-    monkeypatch.setattr(tt, "_last_activity", {})
-    monkeypatch.setattr(tt, "_creation_locks", {})
-    monkeypatch.setattr(tt, "_calls_in_flight", {})
+def env_cache(monkeypatch):
+    for name in ("_active_environments", "_last_activity", "_creation_locks", "_calls_in_flight"):
+        monkeypatch.setattr(tt, name, {})
+
+
+@pytest.fixture()
+def env(env_cache):
     sandbox = _SandboxEnv()
     tt._active_environments[ENV_KEY] = sandbox
     tt._last_activity[ENV_KEY] = time.time() - 600
@@ -154,14 +156,15 @@ class _ReconnectingEnv(_SandboxEnv):
     """SSH-like: cleanup() drops the connection, the job keeps running, the next execute() reconnects."""
 
     cleanup_stops_processes = False
+    cleanups = 0
 
     def cleanup(self):
-        self.cleanups = getattr(self, "cleanups", 0) + 1
+        self.cleanups += 1
 
     def execute(self, command, **kwargs):
-        if command.startswith("kill -0") and getattr(self, "cleanups", 0):
+        if command.startswith("kill -0") and self.cleanups:
             return {"output": "1\n"}  # the job finished after the teardown
-        if command.startswith("cat ") and getattr(self, "cleanups", 0):
+        if command.startswith("cat ") and self.cleanups:
             return {"output": "7\n"}
         return super().execute(command, **kwargs)
 
@@ -175,12 +178,9 @@ def test_ssh_backend_declares_that_cleanup_leaves_its_processes_running():
 
 
 @pytest.mark.parametrize("teardown", [cleanup_vm, _evict_environment_for_task])
-def test_teardown_of_a_backend_whose_processes_survive_cleanup_keeps_polling(registry, monkeypatch, teardown):
+def test_teardown_of_a_backend_whose_processes_survive_cleanup_keeps_polling(registry, env_cache, teardown):
     """SSH cleanup only closes ControlMaster sockets: the remote job runs on and its poller must
     still collect the real exit code rather than a settled ``lost``."""
-    monkeypatch.setattr(tt, "_active_environments", {})
-    monkeypatch.setattr(tt, "_last_activity", {})
-    monkeypatch.setattr(tt, "_creation_locks", {})
     ssh_like = _ReconnectingEnv()
     tt._active_environments[ENV_KEY] = ssh_like
     session = _background(registry, ssh_like)
@@ -199,11 +199,8 @@ class _CleanupFails(_SandboxEnv):
 
 
 @pytest.mark.parametrize("teardown", [cleanup_vm, _evict_environment_for_task])
-def test_failed_teardown_does_not_settle_processes_of_a_sandbox_still_running(registry, monkeypatch, teardown):
+def test_failed_teardown_does_not_settle_processes_of_a_sandbox_still_running(registry, env_cache, teardown):
     """A cleanup that raised (Modal's sync-back before terminate) may leave the sandbox up."""
-    monkeypatch.setattr(tt, "_active_environments", {})
-    monkeypatch.setattr(tt, "_last_activity", {})
-    monkeypatch.setattr(tt, "_creation_locks", {})
     failing = _CleanupFails()
     tt._active_environments[ENV_KEY] = failing
     session = _background(registry, failing)
@@ -267,7 +264,7 @@ def test_poller_seeing_exit_after_teardown_settled_the_process_keeps_the_settled
     assert _receipt(session) == lost
 
 
-def test_settlement_keeps_a_success_published_after_its_snapshot(registry, env):
+def test_settlement_keeps_a_success_published_after_its_snapshot(registry, env, monkeypatch):
     """The process exits on its own between settlement's snapshot of running sessions and its
     finish call. The success is published and durable; settlement must not turn it into lost."""
     session = _background(registry, env)
@@ -280,7 +277,7 @@ def test_settlement_keeps_a_success_published_after_its_snapshot(registry, env):
             natural.append(s.id in registry._finished)
         return real_finish(s, *args, **kwargs)
 
-    registry._finish_exited = finish_after_natural_exit
+    monkeypatch.setattr(registry, "_finish_exited", finish_after_natural_exit)
     settled = registry.settle_env_closed(env)
 
     success = (0, "exited", "")

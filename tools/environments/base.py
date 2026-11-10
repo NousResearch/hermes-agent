@@ -346,7 +346,9 @@ class BaseEnvironment(ABC):
 
     @abstractmethod
     def cleanup(self):
-        """Release backend resources (container, instance, connection)."""
+        """Release backend resources (container, instance, connection). Raise only while the
+        sandbox may still be live: once it is destroyed, log later failures instead, since a
+        raise skips settling its background processes (see ``cleanup_stops_processes``)."""
         ...
 
     # --- File extraction (backend -> host) ---

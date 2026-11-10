@@ -2829,13 +2829,13 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
 
     An unresolved ``op://`` reference left in .env yields to the already-resolved value from the
     active secret scope (set by the 1Password secret source) — otherwise a provider auth attempt
-    would receive a URL instead of a key. Same carve-out as
-    ``agent.credential_pool.get_env_prefer_dotenv``."""
-    raw = load_env().get(key) or ""
-    if str(raw).lstrip().startswith("op://"):
-        scoped = _scoped_environ_get(key)
-        if scoped:
-            return scoped
+    would receive a URL instead of a key. When the scope holds the reference too (a routed profile
+    whose source could not authenticate), the result is empty: a ``op://`` literal is never a
+    credential. Same carve-out as ``agent.credential_pool.get_env_prefer_dotenv``."""
+    raw = (load_env().get(key) or "").strip()
+    if raw.startswith("op://"):
+        scoped = str(_scoped_environ_get(key) or "").strip()
+        return "" if scoped.startswith("op://") else scoped
     return raw or _scoped_environ_get(key)
 
 

@@ -2769,12 +2769,16 @@ def get_env_prefer_dotenv(key: str) -> str:
     An unresolved ``op://`` reference in .env yields to the already-resolved
     value from the active secret scope (set by apply_onepassword_secrets());
     otherwise every provider auth attempt would receive a URL instead of a key.
+    When the scope holds the reference too (a routed profile whose source could
+    not authenticate), the reference is returned as EMPTY: a ``op://`` literal
+    is never a credential, and handing it to a provider turns a resolvable
+    config problem into an opaque 401 plus a poisoned pool entry.
     """
     env_file = load_env()
     raw = env_file.get(key, "").strip()
     scoped_value = (_get_secret(key, "") or "").strip()
-    if raw.startswith("op://") and scoped_value:
-        return scoped_value
+    if raw.startswith("op://"):
+        return "" if scoped_value.startswith("op://") else scoped_value
     return raw or scoped_value
 
 

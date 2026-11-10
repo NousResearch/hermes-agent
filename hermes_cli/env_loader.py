@@ -222,6 +222,16 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         if op_env.exists():
             for _name, _value in load_env_file(op_env).items():
                 local_env.setdefault(_name, _value)
+        # The backend CLI's own auth material (OP_SERVICE_ACCOUNT_TOKEN, OP_SESSION_*, OP_ACCOUNT,
+        # OP_CONNECT_*) is deployment configuration, not a profile credential — ``_is_global_env``
+        # above drops it, and a gateway whose launch home supplies it in the process env (systemd,
+        # another profile's .env) then ran ``op`` unauthenticated: the source yielded nothing and
+        # the profile's scope fell back to the raw ``op://`` line in its .env, which was ingested
+        # into the credential pool and sent to the provider as an API key (401). Mirror it here,
+        # lowest precedence, exactly like ``.op.env``.
+        for _name, _value in os.environ.items():
+            if _name.startswith("OP_"):
+                local_env.setdefault(_name, _value)
         local_env["HERMES_HOME"] = str(home)
         env_before = dict(local_env)
         report = apply_all(cfg, home, environ=local_env)

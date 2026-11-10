@@ -104,3 +104,64 @@ def test_same_key_preserves_exhausted_status(tmp_path, monkeypatch):
     assert entries[0].last_status == "exhausted", (
         "last_status should not be cleared when the key is unchanged"
     )
+
+
+def test_env_row_rotation_clears_persisted_exhausted_status(tmp_path, monkeypatch):
+    """Env-backed rows keep only a fingerprint on disk; a rotation must still clear the 401.
+
+    ``_upsert_entry`` clears the in-memory status, but ``write_credential_pool`` merged the
+    on-disk cooldown back: such a row has no token pair, and its cleared ``last_status_at``
+    (None -> epoch 0) looked older than the disk's 401 stamp. The exhausted state of a 401
+    taken against the PREVIOUS key therefore survived the key fix on disk, and the next
+    process reloaded it as still-exhausted (CommandCode 401 on every non-default profile).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+
+    import time
+
+    from agent.credential_persistence import fingerprint_secret_value
+
+    old_fingerprint = fingerprint_secret_value("old-key")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "commandcode": [
+                    {
+                        "id": "cred-1",
+                        "label": "COMMANDCODE_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:COMMANDCODE_API_KEY",
+                        "last_status": "exhausted",
+                        # Still inside the exhaustion window: this is the 401 the user takes,
+                        # then fixes the key in 1Password a minute later.
+                        "last_status_at": time.time() - 5,
+                        "last_error_code": 401,
+                        "last_error_message": "Invalid 'Authorization' header or token.",
+                        "secret_fingerprint": old_fingerprint,
+                        "secret_source": "onepassword",
+                        "failure_reason": "auth",
+                    }
+                ]
+            },
+        },
+    )
+    monkeypatch.setenv("COMMANDCODE_API_KEY", "new-key")
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("commandcode")
+    entry = pool.entries()[0]
+    assert entry.access_token == "new-key"
+    assert entry.last_status is None
+
+    import json
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())[
+        "credential_pool"
+    ]["commandcode"][0]
+    assert persisted["last_status"] is None
+    assert persisted["secret_fingerprint"] == fingerprint_secret_value("new-key")

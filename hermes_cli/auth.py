@@ -1105,6 +1105,19 @@ def write_credential_pool(
         existing_by_id = _entry_ids(existing_list)
         new_ids = set(_entry_ids(sanitized))
         status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
+        # A rotated secret invalidates a cooldown observed on the old one. Env-backed rows carry no
+        # token on disk (only ``secret_fingerprint``), so the generation merge below cannot see the
+        # rotation and copies the stale ``exhausted`` straight back — a 401 marked against the old
+        # key stayed sticky on disk after the key was fixed. Same rule as ``_upsert_entry``.
+        for row in sanitized:
+            if not isinstance(row, dict):
+                continue
+            disk_row = existing_by_id.get(row.get("id"))
+            if not isinstance(disk_row, dict):
+                continue
+            fresh, stale = row.get("secret_fingerprint"), disk_row.get("secret_fingerprint")
+            if fresh and stale and fresh != stale:
+                status_cleared.add(row["id"])
         merged: list[dict[str, Any]] = [
             _merge_pool_row_generation(
                 e, existing_by_id.get(e.get("id")), provider_id,

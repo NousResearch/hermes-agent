@@ -758,3 +758,47 @@ def test_home_scoped_reset_preserves_sibling_snapshot(tmp_path, monkeypatch, _fr
     assert env_loader.get_secret_source_values(home) == {}
     assert env_loader.get_secret_source_values(sibling) == {"GLM_API_KEY": "vault-b"}
     assert str(sibling.resolve()) in env_loader._APPLIED_HOMES
+
+
+def test_routed_hydration_gives_the_op_cli_its_process_env_token(
+    tmp_path, monkeypatch, _fresh_registry
+):
+    """A routed profile's 1Password source authenticates with the deployment token.
+
+    ``OP_SERVICE_ACCOUNT_TOKEN`` is deployment auth for the ``op`` CLI, not a profile
+    secret, so ``_is_global_env`` keeps it out of the private mapping. Without mirroring
+    the process env the ``op`` child ran unauthenticated: hydration yielded nothing and
+    the profile's scope served the raw ``op://`` line from its ``.env``, which reached a
+    provider as its API key (401 CommandCode on every non-default profile).
+    """
+    import agent.secret_sources.onepassword as op_module
+    from agent.secret_sources.base import get_source_environment
+
+    home = tmp_path / "profiles" / "code"
+    home.mkdir(parents=True)
+    (home / ".env").write_text(
+        "COMMANDCODE_API_KEY=op://Vault/Item/credential\n", encoding="utf-8"
+    )
+    (home / "config.yaml").write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      COMMANDCODE_API_KEY: op://Vault/Item/credential\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch-home"))
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops-test-token")
+    monkeypatch.setattr(op_module, "find_op", lambda *_a, **_kw: Path("/fake/op"))
+    seen: dict = {}
+
+    def _fake_fetch(**_kwargs):
+        seen.update(get_source_environment())
+        return {"COMMANDCODE_API_KEY": "resolved-key"}, []
+
+    monkeypatch.setattr(op_module, "fetch_onepassword_secrets", _fake_fetch)
+
+    assert env_loader.hydrate_profile_secret_sources(home) == {
+        "COMMANDCODE_API_KEY": "resolved-key"
+    }
+    assert seen.get("OP_SERVICE_ACCOUNT_TOKEN") == "ops-test-token"

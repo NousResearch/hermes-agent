@@ -1,6 +1,6 @@
 import * as sdk from '@hermes/plugin-sdk'
 import { Codicon, Tip } from '@hermes/plugin-sdk'
-import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
@@ -39,6 +39,32 @@ interface CanonicalGroupHistoryProps {
   pause?: Pick<CanonicalGroupPausedRowProps, 'busy' | 'stopping' | 'onContinue' | 'onStop'> & { maxContinues?: number }
 }
 
+/** The labels bag every history row reads; identity-stable via `useCanonicalGroupLabels`. */
+type CanonicalGroupLabels = ReturnType<typeof useCanonicalGroupLabels>
+
+/** Notice copy for the fixed event kinds, cached per labels object: built once per locale instead of
+ *  once per row per render. `labels` identity is stable while the locale doesn't change. */
+const noticeCopies = new WeakMap<CanonicalGroupLabels, Map<string, string>>()
+
+function noticesOf(labels: CanonicalGroupLabels) {
+  let map = noticeCopies.get(labels)
+
+  if (!map) {
+    map = new Map([
+      ['turn.failed', labels.turnFailed],
+      ['turn.cancelled', labels.turnCancelled],
+      ['turn.deferred', labels.turnDeferred],
+      ['member.unavailable', labels.memberUnavailable],
+      ['room.stop_requested', labels.roomStopped],
+      ['room.disbanded', labels.roomDisbanded],
+      ['authority.lost', labels.authorityLost]
+    ])
+    noticeCopies.set(labels, map)
+  }
+
+  return map
+}
+
 /** The server stamps every `groups.send` from this Desktop as this principal, so it has no name of its own. */
 const isOwnDesktopMessage = (event: CanonicalGroupEvent) =>
   event.kind === 'message.user' && event.actor?.kind === 'user' && event.actor.id === 'desktop' && !event.actor.display_name
@@ -67,9 +93,10 @@ function eventTimeMs(timestamp?: number) {
   return Number.isFinite(new Date(at).getTime()) ? at : undefined
 }
 
-function EventBody({ event, labels, notice }: { event: CanonicalGroupEvent; labels: GroupReasonMessages & { turnNoAnswer: string }; notice?: string }) {
+const EventBody = memo(function EventBody({ event, labels, notice }: { event: CanonicalGroupEvent; labels: GroupReasonMessages & { turnNoAnswer: string }; notice?: string }) {
   if (notice) {
     const reason = event.payload.error || event.payload.reason || event.payload.reason_code
+
     const detail = reason === 'member_unavailable' ? labels.turnNoAnswer : groupReasonText(event.payload.error, labels) ||
       groupReasonText(event.payload.reason, labels) || groupReasonText(event.payload.reason_code, labels)
 
@@ -82,8 +109,14 @@ function EventBody({ event, labels, notice }: { event: CanonicalGroupEvent; labe
 
   // Remote room text cannot resolve local files, images, directives or rich fences.
   // The shared preview renderer permits only explicit public web links, opened on a click.
-  return MessageTextContent ? <MessageTextContent media={false} previewOnly text={text} /> : <>{text}</>
-}
+  return MessageTextContent && MessageBody ? <MessageBody media={false} previewOnly text={text} /> : <>{text}</>
+})
+
+/** The markdown leaf, isolated from `labels`/`notice`: memo'd on the plain props it actually reads, so
+ *  an unchanged message never re-parses its Streamdown tree. */
+const MessageBody = MessageTextContent ? memo(function MessageBody({ media, previewOnly, text }: { media: boolean; previewOnly?: boolean; text: string }) {
+  return <MessageTextContent media={media} previewOnly={previewOnly} text={text} />
+}) : null
 
 // Previews download the whole file over RPC; larger or unsized images keep only Download.
 const IMAGE_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
@@ -172,55 +205,53 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null
 }
 
-export function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, downloads = true, onReply, pause }: CanonicalGroupHistoryProps) {
+export const CanonicalGroupHistory = memo(function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, downloads = true, onReply, pause }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
-  const roster = new Map(members.map(member => [member.member_id, member]))
+  const roster = useMemo(() => new Map(members.map(member => [member.member_id, member])), [members])
   const maxContinues = pause?.maxContinues
   const pauses = useMemo(() => typeof maxContinues === 'number' ? pausedDiscussions(events, maxContinues) : undefined, [events, maxContinues])
-  const handoffsAfter = new Map<number, RoomHandoff[]>()
 
-  for (const handoff of roomHandoffs(events as RoomLogEvent[], members)) {
-    const after = handoffsAfter.get(handoff.afterSeq)
+  // Handoffs and their names are pure derived data: memo'd on [events, members] so a composer
+  // keystroke in the room view never recomputes or re-renders them.
+  const { handoffsAfter, nameOf } = useMemo(() => {
+    const handoffsAfter = new Map<number, RoomHandoff[]>()
 
-    if (after) {after.push(handoff)} else {handoffsAfter.set(handoff.afterSeq, [handoff])}
-  }
+    for (const handoff of roomHandoffs(events as RoomLogEvent[], members)) {
+      const after = handoffsAfter.get(handoff.afterSeq)
 
-  const nameOf = (id: string) => { const member = roster.get(id);
+      if (after) {after.push(handoff)} else {handoffsAfter.set(handoff.afterSeq, [handoff])}
+    }
+
+    const nameOf = (id: string) => { const member = roster.get(id);
 
  return member?.display_name || member?.handle || id }
 
-  const notices = new Map([
-    ['turn.failed', labels.turnFailed],
-    ['turn.cancelled', labels.turnCancelled],
-    ['turn.deferred', labels.turnDeferred],
-    ['member.unavailable', labels.memberUnavailable],
-    ['room.stop_requested', labels.roomStopped],
-    ['room.disbanded', labels.roomDisbanded],
-    ['authority.lost', labels.authorityLost]
-  ])
+    return { handoffsAfter, nameOf }
+  }, [events, members, roster])
 
+  // Handoff copy and derived data: memo'd on [events, members]; `labels` identity is stable while the
+  // locale doesn't change, so a composer keystroke never recomputes or re-renders these rows.
   return <>{events.map(event => <Fragment key={event.seq}>
     {event.kind === ASSIGNMENT_EVENT_KIND ? <CanonicalGroupAssignmentRow event={event} members={members} />
       : event.kind === ROUTED_EVENT_KIND ? <CanonicalGroupRoutedRow event={event} members={members} />
         : event.kind === CONTINUED_EVENT_KIND ? <CanonicalGroupContinuedRow />
           : pause && pauses && isBoundedActivity(event)
             ? <CanonicalGroupPausedRow busy={pause.busy} event={event} onContinue={pause.onContinue} onStop={pause.onStop} paused={pauses.get(event.seq) ?? { count: 0, actionable: false }} stopping={pause.stopping} />
-            : <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled || !downloads} event={event} notices={notices} onReply={onReply} roster={roster} />}
+            : <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled || !downloads} event={event} labels={labels} onReply={onReply} roster={roster} />}
     {handoffsAfter.get(event.seq)?.map(handoff =>
       <RoomActivityRow key={`handoff:${event.seq}:${handoff.to}`}>{fill(labels.handoff, { from: nameOf(handoff.from), to: nameOf(handoff.to) })}</RoomActivityRow>)}
   </Fragment>)}</>
-}
+})
 
 interface HistoryRowProps extends Pick<CanonicalGroupHistoryProps, 'avatarFor' | 'binding' | 'onReply'> {
   disabled: boolean
   event: CanonicalGroupEvent
-  notices: Map<string, string>
+  labels: CanonicalGroupLabels
   roster: Map<string, CanonicalRoomMember>
 }
 
-function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, roster }: HistoryRowProps) {
-  const labels = useCanonicalGroupLabels()
-  const notice = event.kind === 'room.activity' && event.payload.status === 'bounded' ? labels.workLimitReached : notices.get(event.kind)
+const HistoryRow = memo(function HistoryRow({ avatarFor, binding, disabled, event, labels, onReply, roster }: HistoryRowProps) {
+  const notice = event.kind === 'room.activity' && event.payload.status === 'bounded' ? labels.workLimitReached : noticesOf(labels).get(event.kind)
   const isMessage = MESSAGE_KINDS.has(event.kind)
 
   if (!notice && !isMessage) {return null}
@@ -235,15 +266,14 @@ function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, ros
     </RoomNoticeRow>
   }
 
-  return <MessageRow author={author} avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} member={member} memberId={memberId} onReply={onReply} />
-}
+  return <MessageRow author={author} avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} labels={labels} member={member} memberId={memberId} onReply={onReply} />
+})
 
 const MESSAGE_KINDS = new Set(['message', 'message.user', 'message.member'])
 
-function MessageRow({ author, avatarFor, binding, disabled, event, member, memberId, onReply }: Omit<HistoryRowProps, 'notices' | 'roster'> & {
+const MessageRow = memo(function MessageRow({ author, avatarFor, binding, disabled, event, labels, member, memberId, onReply }: Omit<HistoryRowProps, 'roster'> & {
   author?: string; member?: CanonicalRoomMember; memberId?: string
 }) {
-  const labels = useCanonicalGroupLabels()
   const isUser = event.actor?.kind !== 'member'
   const text = event.payload.text || event.payload.content || ''
   const canReply = !!onReply && !!text && (!!member || typeof event.payload.thread_id === 'string')
@@ -253,14 +283,14 @@ function MessageRow({ author, avatarFor, binding, disabled, event, member, membe
     ? <span className="shrink-0 rounded bg-(--ui-surface-2) px-1 text-[0.625rem] text-(--ui-text-secondary)">{labels.scheduledPost}</span>
     : undefined
 
-  return <RoomMessage actions={canReply ? <ReplyAction author={author ?? ''} event={event} member={isUser ? undefined : member} onReply={onReply!} text={text} /> : undefined}
+  return <RoomMessage actions={canReply ? <ReplyAction author={author ?? ''} event={event} labels={labels} member={isUser ? undefined : member} onReply={onReply!} text={text} /> : undefined}
     author={author} avatar={face} badge={badge} isUser={isUser} timestampMs={eventTimeMs(event.created_at)}>
     <EventBody event={event} labels={labels} />
     <EventFiles binding={binding} disabled={disabled} event={event} />
   </RoomMessage>
-}
+})
 
-function EventFiles({ binding, disabled, event }: { binding: CanonicalGroupBinding; disabled: boolean; event: CanonicalGroupEvent }) {
+const EventFiles = memo(function EventFiles({ binding, disabled, event }: { binding: CanonicalGroupBinding; disabled: boolean; event: CanonicalGroupEvent }) {
   const previewEventId = event.room_id === binding.roomId ? event.event_id : undefined
 
   return <>
@@ -270,14 +300,13 @@ function EventFiles({ binding, disabled, event }: { binding: CanonicalGroupBindi
       attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}
       binding={binding} disabled={disabled || !event.event_id || event.room_id !== binding.roomId} readOnly />}
   </>
-}
+})
 
 /** Hover Reply: continue this message's thread, addressed to its author. */
-function ReplyAction({ author, event, member, onReply, text }: {
-  author: string; event: CanonicalGroupEvent; member?: CanonicalRoomMember; text: string
+const ReplyAction = memo(function ReplyAction({ author, event, labels, member, onReply, text }: {
+  author: string; event: CanonicalGroupEvent; labels: CanonicalGroupLabels; member?: CanonicalRoomMember; text: string
   onReply: NonNullable<CanonicalGroupHistoryProps['onReply']>
 }) {
-  const labels = useCanonicalGroupLabels()
   const label = fill(labels.replyTo, { name: author })
   const thread = typeof event.payload.thread_id === 'string' ? event.payload.thread_id : undefined
 
@@ -286,4 +315,4 @@ function ReplyAction({ author, event, member, onReply, text }: {
       <Codicon name="reply" />
     </sdk.Button>
   </Tip>
-}
+})

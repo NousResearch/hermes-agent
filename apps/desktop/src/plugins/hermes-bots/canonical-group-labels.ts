@@ -1,13 +1,16 @@
 import { useI18n } from '@hermes/plugin-sdk'
+import { useMemo } from 'react'
 
 import { useBots } from './i18n'
 
-/** Hosted group copy stays plugin-owned; generic controls reuse the core catalog. */
+/** Hosted group copy stays plugin-owned; generic controls reuse the core catalog.
+ *  Memoized on its inputs: room views hand `labels` to memo'd transcript rows, and a fresh
+ *  object per render would defeat them. */
 export function useCanonicalGroupLabels() {
   const { t } = useI18n()
   const { canonical, group } = useBots()
 
-  return {
+  return useMemo(() => ({
     ...canonical,
     back: t.common.back,
     cancel: t.common.cancel,
@@ -29,5 +32,5 @@ export function useCanonicalGroupLabels() {
     disbandDescPrefix: group.disbandDescPrefix,
     disbandDescSuffix: group.disbandDescSuffix,
     disbandTitle: group.disbandTitle
-  }
+  }), [canonical, group, t])
 }

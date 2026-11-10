@@ -1,5 +1,5 @@
 import { host, useI18n, useValue } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { BotRow } from './bot-row'
 import {
@@ -424,7 +424,15 @@ export function BotsPane() {
         (gatewayUp ? '' : ' Waiting for the gateway to reconnect…')
       : null
 
-  const groupChatMembers = groupChatName ? groupChatMemberBots(groupChatName, roster, allMeta) : []
+  // Identity-stable while the seat set doesn't change: this pane re-renders on every room
+  // activity poll, and `GroupChatWorkspace` forwards `members` straight into the memo'd
+  // legacy rows — a fresh array per render defeats their bail. Recomputes exactly when
+  // `$lastRoster` / `$botMeta` move (both subscribed via useValue above), so seating stays
+  // as reactive as the previous call-time derivation.
+  const groupChatMembers = useMemo(
+    () => groupChatName ? groupChatMemberBots(groupChatName, roster, allMeta) : [],
+    [groupChatName, roster, allMeta]
+  )
 
   if (shouldRenderGroupChatInPane(groupChatName) && groupChatMembers.length) {
     return <GroupChatWorkspace group={groupChatName} members={groupChatMembers} origin={groupOpenOrigin(groupChatName)} />

@@ -899,7 +899,7 @@ export function MessageTextContent({
   )
 }
 
-export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
+export const MarkdownTextContent = memo(function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
   // No `smooth` on purpose — same as the assistant answer. `TextMessagePartProvider`
   // mints a fresh part object on every `text` change, and useSmooth resets its
   // reveal to empty whenever the part identity changes, so a smoothed reasoning
@@ -911,7 +911,7 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
       <MarkdownTextSurface defer {...surfaceProps} />
     </TextMessagePartProvider>
   )
-}
+})
 
 const MarkdownTextImpl = () => {
   const textDirection = useForcedTextDirection()

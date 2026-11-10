@@ -1,5 +1,5 @@
 import { Button, host, randomUuid } from '@hermes/plugin-sdk'
-import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
+import { type ClipboardEvent, type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
@@ -44,7 +44,92 @@ const sameGroupPayload = (payload: Record<string, unknown>, text: string, attach
 /** The durable log only grows: an unchanged length and last seq is the same log, so keep its identity
  *  and the derived history (handoffs, outcomes) is not recomputed on every poll. */
 const sameLog = (current: readonly { seq: number }[], next: readonly { seq: number }[]) =>
-  current.length === next.length && current.at(-1)?.seq === next.at(-1)?.seq
+  current.length === next.length && next.every((event, index) => event === current[index])
+
+type Comparable = unknown
+
+/** Structural equality of everything this view renders off a snapshot, compared field by field instead
+ *  of as bytes: two RPC answers may serialize the same values in a different key order (or gain a field),
+ *  and a byte compare would then re-render — and re-parse — the whole transcript for nothing. Unknown
+ *  fields are compared structurally so a new server field never silently skips a real change; anything
+ *  that cannot be compared (functions, cycles) counts as changed and takes the re-render. */
+const sameValue = (current: Comparable, next: Comparable): boolean => {
+  if (Object.is(current, next)) {return true}
+
+  if (Array.isArray(current) || Array.isArray(next)) {
+    if (!Array.isArray(current) || !Array.isArray(next) || current.length !== next.length) {return false}
+
+    return current.every((item, index) => sameValue(item, next[index]))
+  }
+
+  if (typeof current === 'object' && typeof next === 'object' && current !== null && next !== null) {
+    const keys = new Set([...Object.keys(current), ...Object.keys(next)])
+
+    return [...keys].every(key => sameValue((current as Record<string, unknown>)[key], (next as Record<string, unknown>)[key]))
+  }
+
+  return false
+}
+
+/** Authority and host fields that decide which room this snapshot describes. */
+const sameAuthority = (current: RoomState, next: RoomState) =>
+  sameValue(current.room.authority_gateway_id, next.room.authority_gateway_id) &&
+  current.room.authority_epoch === next.room.authority_epoch &&
+  current.room.latest_seq === next.room.latest_seq &&
+  current.room.disbanded_at === next.room.disbanded_at
+
+/** Everything the room log is read from: authority above, plus the cursor `refresh` derived it from. */
+const sameReadSource = (current: RoomState, next: RoomState, seen: { epoch?: number; seq: number }) =>
+  sameAuthority(current, next) && current.room.updated_at === next.room.updated_at &&
+  sameValue(current.context, next.context) &&
+  current.room.members.length === next.room.members.length &&
+  (current.room.members.at(-1)?.member_id ?? '') === (next.room.members.at(-1)?.member_id ?? '') &&
+  seen.epoch === next.room.authority_epoch &&
+  (typeof next.room.latest_seq !== 'number' || next.room.latest_seq >= seen.seq)
+
+/** The members whose identity the transcript, roster and mention list are built from. */
+const sameMembers = (current: CanonicalRoomMember[], next: CanonicalRoomMember[]) =>
+  current.length === next.length && current.every((member, index) => {
+    const other = next[index]
+
+    return member.member_id === other.member_id && member.profile === other.profile &&
+      member.handle === other.handle && member.display_name === other.display_name
+  })
+
+/** The driver scalars the cycle footer, pause controls and send gate read. `pending_actions` is compared
+ *  by id/count: its payload may carry volatile fields a byte compare would trip over, and the actions a
+ *  card shows are keyed on kind/task_id/execution_generation anyway. */
+const sameDriverScalars = (current?: RoomDriverStatus, next?: RoomDriverStatus) => {
+  if (current === undefined || next === undefined) {return current === next}
+
+  return sameValue(current.counts ?? {}, next.counts ?? {}) &&
+    sameValue(current.peer_routes ?? [], next.peer_routes ?? []) &&
+    sameValue(current.member_activity ?? [], next.member_activity ?? []) &&
+    (current.pending_actions?.length ?? 0) === (next.pending_actions?.length ?? 0) &&
+    (current.pending_actions ?? []).every((action, index) => {
+      const other = next.pending_actions?.[index]
+
+      return !!other && action.kind === other.kind && action.member_id === other.member_id &&
+        sameValue(action.task_id, other.task_id) && sameValue(action.execution_generation, other.execution_generation)
+    }) &&
+    ['working', 'blocked', 'max_rounds', 'max_continues'].every(key =>
+      (current as Record<string, unknown>)[key] === (next as Record<string, unknown>)[key]) &&
+    sameValue(current.routing_modes ?? [], next.routing_modes ?? [])
+}
+
+/** The 2s poll skips setState on an unchanged snapshot (the same idea `sameLog` applies to events): an
+ *  idle room would otherwise re-render — and re-parse — the whole transcript every poll. */
+const sameSnapshot = (current: RoomState | null, next: RoomState, seen: { epoch?: number; seq: number }) => {
+  if (!current) {return false}
+
+  try {
+    return sameReadSource(current, next, seen) && sameMembers(current.room.members, next.room.members) &&
+      sameDriverScalars(current.driver_status, next.driver_status)
+  } catch {
+    // Not comparable; keep the old behavior and take the re-render.
+    return false
+  }
+}
 
 const canSendNow = (gate: { restored: boolean; busy: boolean; stopping: boolean; uploading: boolean; pending: boolean; draft: string; attachments: number; driver: boolean }) =>
   gate.restored && !gate.busy && !gate.stopping && !gate.uploading && gate.driver && (gate.pending || !!gate.draft.trim() || gate.attachments > 0)
@@ -54,6 +139,17 @@ const canSendNow = (gate: { restored: boolean; busy: boolean; stopping: boolean;
 // the same `invalid_params` or 4111 can follow a committed event.
 const admittedNothing = (error: unknown) =>
   (error as { data?: { admitted?: unknown } } | null)?.data?.admitted === false
+
+/** A failed read in copy the room can show: a timeout (or a cursor the log no longer agrees with) says
+ *  so, anything else is the gateway being unreachable. `copy` is passed in rather than closed over so
+ *  this stays a plain function with no identity to keep stable. */
+const readFailureWith = (copy: { readTimedOut: string; invalidLogCursor: string; groupsUnreachable: string }) =>
+  (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+
+    return /timed out|timeout/i.test(message) ? copy.readTimedOut :
+      [copy.readTimedOut, copy.invalidLogCursor].includes(message) ? message : copy.groupsUnreachable
+  }
 
 interface HeldDraft { text: string; attachments: Attachment[]; reply: RoomReply | null }
 
@@ -94,6 +190,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const labels = useCanonicalGroupLabels()
   const methods = useGroupMethods(binding, visible)
   const [state, setState] = useState<RoomState | null>(null)
+  // Latest snapshot for deferred callbacks (Stop's replay check), so those callbacks keep identity.
+  const stateRef = useRef<RoomState | null>(null)
+
+  if (state !== stateRef.current) {stateRef.current = state}
   const [events, setEvents] = useState<RoomEvent[]>([])
   const [error, setError] = useState('')
   const [readError, setReadError] = useState('')
@@ -170,14 +270,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     return () => { cancelled = true }
   }, [binding, journalAttempt])
 
-  const readFailure = (error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error)
+  // A plain module function, so no callback or ref identity can enter any dep array below: each call
+  // site passes the labels it has, and a poll that outlived a language change reads the labels current
+  // when it fails via `labelsRef`, which is only written when the labels object itself changed.
+  const labelsRef = useRef(labels)
 
-    return /timed out|timeout/i.test(message) ? labels.readTimedOut :
-      [labels.readTimedOut, labels.invalidLogCursor].includes(message) ? message : labels.groupsUnreachable
-  }
+  if (labels !== labelsRef.current) {labelsRef.current = labels}
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
       const version = ++revision.current
       const snapshot = await canonicalGroupRequest<RoomState>(binding, 'groups.state', { room_id: binding.roomId })
@@ -195,13 +295,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         if (!page.has_more) {break}
         const next = page.events.at(-1)?.seq
 
-        if (!next || next <= cursor) {throw new Error(labels.invalidLogCursor)}
+        if (!next || next <= cursor) {throw new Error(labelsRef.current.invalidLogCursor)}
         cursor = next
       }
 
       if (alive.current && version === revision.current) {
         seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
-        setState(snapshot)
+        // A poll that changed nothing keeps the old snapshot identity; memo'd history rows bail on it.
+        setState(current => sameSnapshot(current, snapshot, seen.current) ? current : snapshot)
 
         // The stop notice tells people to use Retry or Discard on kept turns: it stays while any wait.
         if (snapshot.driver_status && !snapshot.driver_status.working && !snapshot.driver_status.counts?.stopping &&
@@ -216,8 +317,12 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         })
         setReadError('')
       }
-    } catch (error) {throw new Error(readFailure(error))}
-  }
+    } catch (error) {throw new Error(readFailureWith(labelsRef.current)(error))}
+  }, [binding])
+
+  // `reportReadFailure` is what the render hands to Retry/Refresh controls: it takes the labels this
+  // render has, so its identity changes exactly when the labels do and nothing else.
+  const reportReadFailure = useCallback((error: unknown) => setReadError(readFailureWith(labels)(error)), [labels])
 
   useEffect(() => {
     if (!visible) {return}
@@ -225,7 +330,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     let timer: ReturnType<typeof setTimeout>
 
     const poll = async () => {
-      try { await refresh() } catch (e) { if (!cancelled) {setReadError(readFailure(e))} }
+      try { await refresh() } catch (e) { if (!cancelled) {setReadError(readFailureWith(labelsRef.current)(e))} }
 
       if (!cancelled) {timer = setTimeout(() => void poll(), 2000)}
     }
@@ -233,11 +338,12 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     void poll()
 
     return () => { cancelled = true; revision.current++; clearTimeout(timer) }
-    // The keyed parent freezes the authority binding for this lifetime.
+    // The keyed parent freezes the authority binding for this lifetime; `refresh` and `labelsRef` are read
+    // through the closure this effect built at mount rather than being re-depended on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible])
 
-  const mutate = async (operation: () => Promise<unknown>, settle: () => unknown = refresh) => {
+  const mutate = useCallback(async (operation: () => Promise<unknown>, settle: () => unknown = refresh) => {
     if (busyRef.current) {return}
     busyRef.current = true
     setBusy(true)
@@ -252,7 +358,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 
       if (alive.current) {setBusy(false)}
     }
-  }
+  }, [refresh])
 
   // The room's intent is finished with: this window's own words come back, else nothing.
   const releaseComposer = () => {
@@ -386,23 +492,23 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     }))
   }
 
-  const requestStop = async (fresh = false) => {
+  const requestStop = useCallback(async (fresh = false) => {
     if (fresh) {stopIntent.current = null}
     const cancelId = stopIntent.current ??= randomUuid()
     const result = await canonicalGroupRequest<{ cancelled?: unknown } | undefined>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: cancelId })
     const cancelled = result?.cancelled
 
-    if (typeof cancelled !== 'number' || !Number.isSafeInteger(cancelled) || cancelled < 0) {throw new Error(labels.pendingActionUnconfirmed)}
+    if (typeof cancelled !== 'number' || !Number.isSafeInteger(cancelled) || cancelled < 0) {throw new Error(labelsRef.current.pendingActionUnconfirmed)}
 
     if (stopIntent.current === cancelId) {stopIntent.current = null}
 
     return cancelled
-  }
+  }, [binding])
 
   // Stop has its own busy state: it stays available while a Send is in flight, and covers it. A
   // Send not yet sent is held back; one on the wire may post after this fence, so once it settles
   // (unless it provably posted nothing) a fresh cancel_id fences again behind it.
-  const stop = async () => {
+  const stop = useCallback(async () => {
     if (stopPending.current) {return}
     stopPending.current = true
     const covered = sending.current
@@ -420,7 +526,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       const cancelled = covered && await covered.settled ? await first.catch(() => 0) + await requestStop(true) : await first
 
       // The replay stopped nothing while the room still works: that work came after its fence.
-      if (replay && !cancelled && state?.driver_status?.working) {await requestStop(true)}
+      if (replay && !cancelled && stateRef.current?.driver_status?.working) {await requestStop(true)}
 
       if (alive.current) {
         setNotice('stopped')
@@ -433,10 +539,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 
       if (alive.current) {setStopping(false)}
     }
-  }
+  }, [refresh, requestStop])
 
-  const continueDiscussion = (discussionEventId: string) =>
-    mutate(() => canonicalGroupRequest(binding, 'groups.continue', { room_id: binding.roomId, discussion_event_id: discussionEventId }))
+  const continueDiscussion = useCallback((discussionEventId: string) =>
+    mutate(() => canonicalGroupRequest(binding, 'groups.continue', { room_id: binding.roomId, discussion_event_id: discussionEventId })), [binding, mutate])
 
   const act = (action: CanonicalPendingAction, choice?: 'once' | 'deny') =>
     mutate(() => {
@@ -452,6 +558,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 
         const message = action.kind === 'discard' ? reasons.get(error?.data?.reason)
           : action.kind === 'retry' && error?.data?.reason === 'session_busy' ? labels.retryBusy : undefined
+
         const member = memberById.get(action.member_id)
 
         throw message ? new Error(message.replace('{name}', member ? canonicalMemberName(member) : action.member_id)) : error
@@ -481,7 +588,25 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members, reply?.thread)
   const mentionMembers = members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
   const memberById = new Map(members.map(member => [member.member_id, member]))
-  const avatarFor = (name: string, size: number) => <RoomBotAvatar name={name} size={size} />
+  // Stable identity: CanonicalGroupHistory is memo'd and takes this as its avatar factory. RoomBotAvatar
+  // reads $botMeta itself via useValue, so the factory captures nothing per-render.
+  const avatarFor = useCallback((name: string, size: number) => <RoomBotAvatar name={name} size={size} />, [])
+
+  // The history's pause control must keep identity across renders or its memo never bails; `pauseState`
+  // re-reads busy/stopping/driver when a control is clicked, so the object never serves stale disabled states.
+  const pauseState = useRef({ busy, stopping, driver })
+
+  if (pauseState.current.busy !== busy || pauseState.current.stopping !== stopping || pauseState.current.driver !== driver) {
+    pauseState.current = { busy, stopping, driver }
+  }
+
+  const historyPause = useMemo(() => ({
+    get busy() { return pauseState.current.busy },
+    get maxContinues() { return pauseState.current.driver?.max_continues },
+    get stopping() { return pauseState.current.stopping },
+    onContinue: continueDiscussion,
+    onStop: stop
+  }), [continueDiscussion, stop])
 
   // The Bots list row reads this room's live state while it is open, and forgets it once it closes.
   useEffect(() => holdCanonicalRoomLive(binding), [binding])
@@ -495,7 +620,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   })
 
   // Hover Reply: continue that message's thread, addressed to the member who wrote it.
-  const replyTo = (member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => {
+  const replyTo = useCallback((member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => {
     setReply({ member, name: member ? canonicalMemberName(member) : author, quote: text.split('\n').map(line => line.trim()).find(Boolean) ?? '', thread })
 
     if (member) {
@@ -504,7 +629,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     }
 
     focusComposerEnd(composerInput)
-  }
+  }, [])
 
   // Text pastes stay in the composer; only files go through the picker's upload.
   const attachTransfer = (event: ClipboardEvent | DragEvent, data: DataTransfer | null) => {
@@ -522,17 +647,17 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <CanonicalGroupHeader binding={binding} busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
         canStop={!!driver && offersGroupSafetyMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} methods={methods} onBack={onBack}
-        onChanged={() => void refresh().catch(e => setReadError(readFailure(e)))} onDetails={() => setDetailsOpen(open => !open)}
+        onChanged={() => void refresh().catch(reportReadFailure)} onDetails={() => setDetailsOpen(open => !open)}
         onDisband={end} onRename={rename} onReplaced={onReplaced} onStop={() => void stop()}
         room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={working || !!sending.current || stopping} />
       <CanonicalGroupNotices error={error} journalError={journalError} labels={labels}
-        notice={notice ? labels[notice] : ''} onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(readFailure(e)))}
+        notice={notice ? labels[notice] : ''} onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(reportReadFailure)}
         readError={readError} unavailable={Boolean(state && !driver)} />
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4" ref={scroller} role="log">
         {/* Anchored to the composer like a chat thread: a short room sits at the bottom, not the top. */}
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-0.5 py-4">
           <CanonicalGroupHistory avatarFor={avatarFor} binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events} members={members} onReply={replyTo}
-            pause={{ busy, maxContinues: driver?.max_continues, onContinue: continueDiscussion, onStop: stop, stopping }} />
+            pause={historyPause} />
           <CanonicalGroupTyping labels={labels} members={members} statuses={statuses} />
           {(driver?.pending_actions || []).map(action => {
             const member = memberById.get(action.member_id)
@@ -541,7 +666,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
             return <CanonicalPendingCard action={action} avatar={avatarFor(member?.profile || action.member_id, 24)} busy={busy}
               key={`${action.kind}:${action.task_id}:${action.execution_generation}`} labels={labels} methods={methods} name={name}
               onAct={act} onDiscard={() => setDiscard({ ...action })}
-              onRefresh={() => void refresh().catch(e => setReadError(readFailure(e)))} />
+              onRefresh={() => void refresh().catch(reportReadFailure)} />
           })}
           {discard && <div aria-label={labels.discardUnknown} className="mx-3 grid gap-2 rounded-xl bg-(--chrome-action-hover) px-3 py-2 text-xs" role="alertdialog">
             <p>{labels.discardWarning}</p>

@@ -13,6 +13,10 @@ Narrowing it (``[]``, or a list of chat user ids) is the opt-in: then only the r
 the listed ids and the platform's admins of the approval's chat scope (``allow_admin_from`` in a
 DM, ``group_allow_admin_from`` in a group, as for slash commands) answer. Host surfaces (CLI, TUI, Desktop, the API server and the session authority's
 ``session:approve`` principals) answer as the host and never come through here.
+
+The other prompts a chat member can answer for someone else follow the same rule through the same
+:func:`may_answer`: a slash-command confirmation (:func:`slash_confirm_refusal`) and the agent's
+clarify question (:func:`clarify_refusal`), each recording its authority when raised.
 """
 
 from __future__ import annotations
@@ -83,6 +87,32 @@ def approval_refusal(session_key: str, actor_id: Any, *, admin_ids: Iterable[str
     pending" exactly as before. Adapters pass their platform ``extra`` block instead of *admin_ids*."""
     return answerable_request_ids(session_key, actor_id, admin_ids=admin_ids,
                                   request_id=request_id, extra=extra)[1]
+
+
+def _authority_refusal(authority: Optional[dict], actor_id: Any, admin_ids: Iterable[str], extra: Any) -> Optional[str]:
+    if not authority or may_answer(authority, actor_id, admin_ids, extra):
+        return None
+    return str(authority.get("requester_name") or authority.get("requester_id") or _NO_REQUESTER)
+
+
+def slash_confirm_refusal(session_key: str, confirm_id: str, actor_id: Any, *, admin_ids: Iterable[str] = (),
+                          extra: Any = None) -> Optional[str]:
+    """:func:`approval_refusal` for the slash-command confirmation (``/reload-mcp``) a click or typed
+    reply would resolve: the same requester / approvers / admins rule, read from the pending confirm.
+    Nothing pending (or another confirm id) is never refused: the resolver reports it as before."""
+    from tools.slash_confirm import get_pending
+
+    pending = get_pending(session_key) or {}
+    return _authority_refusal(pending.get("authority") if pending.get("confirm_id") == confirm_id else None,
+                              actor_id, admin_ids, extra)
+
+
+def clarify_refusal(clarify_id: str, actor_id: Any, *, admin_ids: Iterable[str] = (),
+                    extra: Any = None) -> Optional[str]:
+    """:func:`approval_refusal` for the agent's clarify question a tap (choice or "Other") answers."""
+    from tools.clarify_gateway import get_pending
+
+    return _authority_refusal(getattr(get_pending(clarify_id), "authority", None), actor_id, admin_ids, extra)
 
 
 def refusal_text(requester: str) -> str:

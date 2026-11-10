@@ -33,16 +33,9 @@ class _ApprovalEntry:
         self.data.setdefault("request_id", uuid.uuid4().hex)
         # True: a card tap may only deny until a renderer proves its card shows the whole command (#62359).
         self.card_deny_only = False
-        # Who may answer (gateway.approval_actor): the turn's user, plus ``approvals.approvers`` read
-        # here in the turn's profile scope (the click callbacks that check it run off-turn). Kept off
+        # Who may answer (gateway.approval_actor): the turn's actor, approvers and admins. Kept off
         # ``data`` so the prompt and replay payloads sent to clients stay exactly what was raised.
-        approvers = _ctx._get_approval_config().get("approvers")
-        # ``chat_type`` picks the admin scope (DM or group) every surface checks against. The requester is
-        # the turn's ACTOR (who asked): USER_ID is the route, empty in a shared observed group.
-        self.authority = {"requester_id": _ctx._session_env("HERMES_SESSION_ACTOR_ID"),
-                          "requester_name": _ctx._session_env("HERMES_SESSION_ACTOR_NAME"),
-                          "chat_type": _ctx._session_env("HERMES_SESSION_CHAT_TYPE"),
-                          "approvers": ["*"] if approvers is None else approvers}
+        self.authority = _ctx.prompt_authority()
         self.acknowledged = False
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.

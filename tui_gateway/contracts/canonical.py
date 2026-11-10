@@ -542,6 +542,10 @@ canonical_method("worker.persist", params=WorkerPersistParams, result=WorkerPers
                  doc="Sequence-fenced typed persistence write from an adopted worker.")
 
 
+canonical_method("worker.receipt", params=WorkerPersistParams, result=WorkerPersistResult,
+                 doc="Read an exact committed worker receipt without replaying the mutation.")
+
+
 # ── hosted rooms ─────────────────────────────────────────────────────────────────────────────────
 
 

@@ -8,6 +8,7 @@ the live gateway writer and corrupt B-tree pages (#45383).
 
 import logging
 import sqlite3
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -203,11 +204,13 @@ class TestCheckpointFrequency:
     def test_checkpoint_triggers_at_interval(self, db):
         """_try_wal_checkpoint is called every _CHECKPOINT_EVERY_N_WRITES writes."""
         call_count = [0]
+        checkpoint_done = threading.Event()
         original = db._try_wal_checkpoint
 
         def counting_checkpoint():
             call_count[0] += 1
             original()
+            checkpoint_done.set()
 
         db._try_wal_checkpoint = counting_checkpoint
 
@@ -220,6 +223,7 @@ class TestCheckpointFrequency:
                 (f"sess_{_i}", "test", _time.time()),
             ))
 
+        assert checkpoint_done.wait(10)
         assert call_count[0] == 1, (
             f"Expected 1 checkpoint after {n} writes, got {call_count[0]}"
         )

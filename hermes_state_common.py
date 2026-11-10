@@ -640,6 +640,7 @@ CREATE TABLE IF NOT EXISTS worker_receipts (
     sequence INTEGER NOT NULL CHECK (sequence > 0),
     payload_digest TEXT NOT NULL,
     result_json TEXT NOT NULL,
+    created_at REAL,
     PRIMARY KEY (execution_id, sequence)
 );
 

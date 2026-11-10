@@ -1428,6 +1428,9 @@ class SessionSearchMixin:
         _positive_int("max_commands", max_commands)
         executed = 0
         with self._lock:
+            if self._conn is None or self._quarantine_reason() is not None:
+                return 0
+            self._raise_if_db_replaced()
             for tbl in self._present_fts_tables():
                 if not self._fts_usermerge_floor_applied:
                     self._conn.execute(f"INSERT INTO {tbl}({tbl}, rank) VALUES('usermerge', 2)")

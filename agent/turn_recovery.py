@@ -1160,7 +1160,7 @@ def nonretryable_client_error_result(
     )
     result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     result.update({
-        "failure_reason": classified.reason.value,
+        "failure_reason": classified.reason.value, "failure_status_code": classified.status_code,
         "failure_retryable": bool(classified.retryable),
     })
     if _keep_partial:
@@ -1297,7 +1297,7 @@ def max_retries_exhausted_result(
     result.update({
         # Classified reason so callers (kanban worker in cli.py) can tell a quota wall
         # (``rate_limit`` / ``billing``) from a task failure.
-        "failure_reason": classified.reason.value,
+        "failure_reason": classified.reason.value, "failure_status_code": classified.status_code,
         # The classifier's own retry verdict — UI surfaces use this, not the reason string.
         "failure_retryable": bool(classified.retryable),
         # True when the billing verdict rests on an ambiguous body.

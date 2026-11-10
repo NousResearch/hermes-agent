@@ -33,6 +33,15 @@ def turn_exit_code(
         return 0
     if kanban_worker:
         reason = result.get("failure_reason")
+        status = result.get("failure_status_code")
+        if type(status) is int and 400 <= status < 500:
+            # 429 quota windows are not permanent simply because retries ran out.
+            # Keep the classifier's retry verdict and the existing quota-hold policy.
+            if status == 429 or result.get("failure_retryable") is True or reason in transient_reasons:
+                from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+                return KANBAN_RATE_LIMIT_EXIT_CODE
+            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+            return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
         if reason in transient_reasons:
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE

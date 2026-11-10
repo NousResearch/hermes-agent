@@ -620,6 +620,8 @@ class SessionDB(
         # is transient EMFILE, and a permanent flag would demote every reader forever.
         self._read_open_failed_at = 0.0
         self._wal_active, self._write_count = False, 0
+        from hermes_state_write_maintenance import WriteMaintenance
+        self._write_maintenance = WriteMaintenance(self)
         # File identity of the opened state.db, compared on every write so an out-of-band
         # replace cannot limp through in-place surgery (inode: mv/new-file; application_id: cp).
         self._db_file_identity: Optional[tuple] = None
@@ -1008,6 +1010,10 @@ class SessionDB(
                 f"in flight (a session-teardown path called close() before "
                 f"this worker finished — #94736) and the automatic reopen failed: {exc}"
             ) from exc
+        # A legitimate late writer can reopen after close(); give that new lifecycle
+        # its own coalescer, never revive the drained thread from the retired one.
+        from hermes_state_write_maintenance import WriteMaintenance
+        self._write_maintenance = WriteMaintenance(self)
         if self._wal_active:  # a reopened writer is a live generation holder like the first open
             self._wal_lock_guard = _lockguard.hold(self.db_path)
 
@@ -1043,28 +1049,32 @@ class SessionDB(
             # later writes (#105567). Inside the lock the probe only ever sees the
             # stable post-close state (identity cleared → adopt / reopen path).
             fn_started = False
+            waiting = time.monotonic()
             try:
                 with self._lock:
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
                     self._conn.execute("BEGIN IMMEDIATE")
+                    logger.debug('state_write stage=lockwait duration_s=%.6f', time.monotonic() - waiting)
                     try:
                         fn_started = True
                         result = fn(self._conn)
+                        committing = time.monotonic()
                         self._conn.commit()
+                        logger.debug('state_write stage=commit duration_s=%.6f', time.monotonic() - committing)
+                        self._write_count += 1
+                        checkpoint = self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0
+                        merge = self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0
                     except BaseException:
                         try:
                             self._conn.rollback()
                         except Exception:
                             pass
                         raise
-                # Success — periodic best-effort checkpoint + FTS merge.
-                self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
-                    self._try_wal_checkpoint()
-                if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
-                    self._try_incremental_merge_fts()
+                # ACK depends only on commit, not checkpoint/FTS I/O. Coalesce work
+                # on the DB-owned worker; close drains it before retiring the connection.
+                self._write_maintenance.schedule(checkpoint=checkpoint, merge=merge)
                 return result
             except SessionCompressionInProgressError:
                 # Transient (see _COMPRESSION_BUSY_WAIT_S): a steer landing mid-compression must not abort.
@@ -1499,6 +1509,7 @@ class SessionDB(
             with self._lock:
                 if self._conn is None:
                     return  # closed underneath the timer: nothing to checkpoint, nothing to re-guard
+                self._raise_if_db_replaced()
                 if self._wal_lock_guard:
                     _lockguard.hold(self.db_path, self._wal_lock_guard)  # a -shm minted after open
                 result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
@@ -1542,6 +1553,7 @@ class SessionDB(
             release(self)
             return
         self._stop_token_writer()
+        self._write_maintenance.drain()
         hook, self._token_atexit_hook = self._token_atexit_hook, None
         if hook is not None:
             atexit.unregister(hook)

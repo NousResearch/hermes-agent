@@ -16,10 +16,15 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
 from hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)
 
+# The owner may spend 60s acquiring its transcript write lock. Leave 30s for
+# scheduling and delivery; reconciliation is separately bounded and never resends.
+WORKER_RECEIPT_TIMEOUT_S = 90
+WORKER_RECONCILE_TIMEOUT_S = 10
 _worker_process = False
 
 
@@ -45,6 +50,10 @@ def apply_row_annotations(messages, annotations):
 
 class WorkerPersistenceError(RuntimeError):
     pass
+
+
+class WorkerReceiptTimeout(TimeoutError):
+    """The sent mutation may have committed; only an owner receipt can settle it."""
 
 
 def _caller_summary(limit=8):
@@ -109,7 +118,7 @@ class _OwnerLink:
         try:
             reply = self.replies.get(timeout=timeout)
         except queue.Empty:
-            raise TimeoutError('worker_receipt_timeout') from None
+            raise WorkerReceiptTimeout('worker_receipt_timeout') from None
         if isinstance(reply, BaseException):
             raise reply
         return reply
@@ -194,7 +203,10 @@ class WorkerRPC:
                     self._drop()
                     link = self._connection()
                     link.send(request_id, message)
-                response = link.receive(20)
+                started = time.monotonic()
+                timeout = WORKER_RECONCILE_TIMEOUT_S if method == 'worker.receipt' else WORKER_RECEIPT_TIMEOUT_S
+                response = link.receive(timeout)
+                logger.debug('worker_receipt stage=receive duration_s=%.6f', time.monotonic() - started)
             except BaseException:
                 # Outcome unknown once sent: surface the error and never resend; the next call redials.
                 self._drop()
@@ -336,7 +348,12 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             try:
                 while self.journal['pending']:
                     entry = self.journal['pending'][0]
-                    result = self.rpc('worker.persist', **self.scope, **entry)
+                    try:
+                        result = self.rpc('worker.persist', **self.scope, **entry)
+                    except WorkerReceiptTimeout:
+                        # Outcome unknown: query the authenticated owner, never replay the write.
+                        # A missing/refused receipt leaves this exact entry pending and failure sticky.
+                        result = self.rpc('worker.receipt', **self.scope, **entry)
                     candidate = dict(self.journal, pending=self.journal['pending'][1:])
                     candidate = self._compression_receipt_journal(candidate, result)
                     self._save(candidate)

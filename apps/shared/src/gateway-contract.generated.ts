@@ -7149,6 +7149,8 @@ export interface CanonicalRpcMethods {
   'worker.adopt': { params: WorkerScopeParams; result: WorkerExecution }
   /** Sequence-fenced typed persistence write from an adopted worker. */
   'worker.persist': { params: WorkerPersistParams; result: WorkerPersistResult }
+  /** Read an exact committed worker receipt without replaying the mutation. */
+  'worker.receipt': { params: WorkerPersistParams; result: WorkerPersistResult }
   /** Register a compute worker execution on an idle session. */
   'worker.register': { params: WorkerRegisterParams; result: WorkerExecution }
 }
@@ -7206,6 +7208,7 @@ export const CANONICAL_RPC_METHODS = [
   'shell.exec',
   'worker.adopt',
   'worker.persist',
+  'worker.receipt',
   'worker.register'
 ] as const satisfies readonly CanonicalRpcMethod[]
 

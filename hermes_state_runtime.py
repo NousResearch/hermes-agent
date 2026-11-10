@@ -4,6 +4,7 @@ No execution, transport, or authority objects live here. Every mutation uses the
 SessionDB transaction owner, including its inode guard and SQLite retry policy.
 """
 import json
+import time
 import uuid
 from typing import NamedTuple, Optional
 
@@ -992,8 +993,8 @@ def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, seq
         # closes): a read-only receipt (context, history, lineage, lifecycle) must not make a
         # client's mutation built on the pre-read revision fail revision_conflict.
         changed = conn.total_changes != changes or operation == 'execution.finish'
-        conn.execute('INSERT INTO worker_receipts(execution_id,sequence,payload_digest,result_json) VALUES(?,?,?,?)',
-                     (execution_id, sequence, digest, json.dumps(result, ensure_ascii=True, allow_nan=False)))
+        conn.execute('INSERT INTO worker_receipts(execution_id,sequence,payload_digest,result_json,created_at) VALUES(?,?,?,?,?)',
+                     (execution_id, sequence, digest, json.dumps(result, ensure_ascii=True, allow_nan=False), time.time()))
         conn.execute("UPDATE worker_executions SET last_sequence=?,status=? WHERE execution_id=?",
                      (sequence, 'terminal' if operation == 'execution.finish' else 'running', execution_id))
         if changed:

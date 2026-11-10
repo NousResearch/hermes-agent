@@ -488,6 +488,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         # dispatch() may schedule long handlers on the pool; it returns None then and the worker
         # writes the response itself via transport.write (a separate thread, so that is the safe
         # path). Inline handlers return the response dict, written here from the loop.
+        receipt_timing = time.monotonic() if req_method in ('worker.persist', 'worker.receipt') else None
+        if receipt_timing is not None:
+            _log.debug('worker_receipt stage=receive')
         try:
             resp = await _dispatch_request(authority_connection, req, req_method, transport)
         # health: allow BLE001 -- dispatch boundary: logs the traceback (_log.exception) and answers -32603
@@ -500,6 +503,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         if resp is not None:
             await _reply(resp, "send_failed_after_response",
                          "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+            if receipt_timing is not None:
+                _log.debug('worker_receipt stage=ack duration_s=%.6f', time.monotonic() - receipt_timing)
 
     async def _dispatch_concurrent_read(req: Any) -> None:
         async with concurrent_read_slots:

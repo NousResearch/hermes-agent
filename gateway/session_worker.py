@@ -71,7 +71,8 @@ async def worker_request(connection, ref, params, *, operation):
     if operation == "persist" and params.get("operation") == "child.reserve":
         from gateway.session_worker_child import worker_child_request
         return await worker_child_request(connection, ref, params)
-    extra = {'register': {'kind'}, 'adopt': set(), 'persist': {'epoch', 'sequence', 'operation', 'payload'}}[operation]
+    extra = {'register': {'kind'}, 'adopt': set(), 'persist': {'epoch', 'sequence', 'operation', 'payload'},
+             'receipt': {'epoch', 'sequence', 'operation', 'payload'}}[operation]
     if set(params) != _SCOPE | extra:
         raise RuntimeStoreError('invalid_params')
     claim = _claim(connection, ref, params)
@@ -93,6 +94,10 @@ async def worker_request(connection, ref, params, *, operation):
     if operation == 'adopt':
         return await asyncio.to_thread(adopt_worker_execution, authority.db, epoch=authority.epoch,
                                        **scope, adoption_secret=claim)
+    if operation == 'receipt':
+        from hermes_state_worker_receipts import read_worker_receipt
+        return await asyncio.to_thread(read_worker_receipt, authority.db, epoch=params['epoch'],
+            **scope, sequence=params['sequence'], operation=params['operation'], payload=params['payload'])
     result = await asyncio.to_thread(mutate_worker_execution, authority.db, epoch=params['epoch'],
         **scope, sequence=params['sequence'], operation=params['operation'], payload=params['payload'])
     if params['operation'] == 'execution.finish':

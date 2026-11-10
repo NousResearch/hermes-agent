@@ -12,7 +12,7 @@ from hermes_cli import kanban_db_dispatch as dispatch
         (kb.KANBAN_RATE_LIMIT_EXIT_CODE, ("nonzero_exit", 1), None,
          "rate_limited", True, False),
         (kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE, ("unknown", None), None,
-         "crashed", False, True),
+         "provider_rejected", False, True),
         (3, ("unknown", None), None, "crashed", False, False),
         (None, ("nonzero_exit", 3), None, "crashed", False, False),
         (None, ("unknown", None), kb.KANBAN_RATE_LIMIT_EXIT_CODE,

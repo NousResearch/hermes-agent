@@ -1052,9 +1052,9 @@ class _DeadWorker:
 
     @property
     def run_outcome(self) -> str:
-        # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
+        # Neither a provider refusal nor a quota wall is a process crash.
+        return ("rate_limited" if self.rate_limited else
+                "provider_rejected" if self.terminal_provider else "crashed")
 
 
 def _classify_dead_worker(
@@ -1130,7 +1130,7 @@ def _classify_dead_worker_exit(
             kind, code,
             f"pid {pid} exited on a terminal provider error (exit {code}): the provider rejected "
             "this profile's credential or model — fix the configuration, then unblock.",
-            "crashed",
+            "provider_rejected",
             {"pid": pid, "claimer": claimer, "exit_kind": kind, "exit_code": code, "terminal_provider": True},
             terminal_provider=True,
         )
@@ -1293,7 +1293,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
-                outcome="crashed",
+                outcome=dead.run_outcome,
                 force_trip=True,
                 release_claim=False,
                 end_run=False,

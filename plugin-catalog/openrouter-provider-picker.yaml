@@ -1,0 +1,34 @@
+name: openrouter-provider-picker
+repo: https://github.com/PotatoWareGit/hermes-openrouter-provider
+sha: b300b0930cfad9fe79af63a21b648f15a3a9b5fe
+description: >-
+  Pick which upstream providers serve each OpenRouter model, per model, from a
+  desktop UI (Settings › Plugins › Provider Routing) or an agent tool. Writes
+  provider_routing and provider_routing.models.<id> into the active profile's
+  config.yaml — the keys Hermes already sends as OpenRouter's `provider` request
+  field, and which `hermes config set` cannot address because model ids contain
+  dots. The UI lists each model's real upstream providers with their context
+  window and input price per million tokens, and supports a whitelist, a
+  blacklist, and a per-model sort override. The agent tool exposes the same
+  thing as list / providers / set / clear. OpenRouter only: Nous Portal decides
+  routing centrally and ignores caller-supplied preferences.
+  Disclosure — network calls to the public, unauthenticated openrouter.ai API
+  (/api/v1/models and /api/v1/models/<id>/endpoints) to build the model and
+  provider lists, cached in-process; reads and rewrites the provider_routing
+  block of config.yaml in the active profile via the comment-preserving atomic
+  replace; no telemetry, no credentials, no self-update, no other third party.
+maintainer: PotatoWareGit
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/PotatoWareGit/hermes-openrouter-provider#readme
+version: "1.0.0"
+platforms: []
+title: "OpenRouter Provider Routing"
+readme: true
+capabilities:
+  provides_tools:
+    - openrouter_provider_routing
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

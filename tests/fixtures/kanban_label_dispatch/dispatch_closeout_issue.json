@@ -1,0 +1,11 @@
+{
+  "source_type": "issue",
+  "repo": "kiddhu/aion-governance",
+  "number": 503,
+  "title": "Close out completed dry-run route",
+  "body": "Prepare summary only after audit evidence exists.",
+  "labels": ["gm2:dispatch-closeout", "gm2:summary"],
+  "project_id": "aion-kanban",
+  "priority": "P2",
+  "formal_record": "https://github.com/kiddhu/aion-governance/issues/503"
+}

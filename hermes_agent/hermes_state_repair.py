@@ -30,7 +30,7 @@ from hermes_agent.hermes_state_common import (
     is_advisory_lock_contention,
 )
 
-# Log-record parity with the origin module (caplog tests pin "hermes_state").
+# Log-record parity with the origin module (caplog tests pin "hermes_agent.hermes_state").
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 _REPAIR_LOCK_POLL_SECONDS = 0.1

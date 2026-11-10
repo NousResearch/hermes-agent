@@ -444,7 +444,7 @@ time.sleep({hold})
 def _lock_held_by_other_process(db_path: Path, hold_seconds: float = 30.0):
     """Hold the repair flock for *db_path* in a real child process."""
     script = _HOLD_LOCK_SCRIPT.format(
-        root=str(Path(hermes_state.__file__).parent),
+        root=str(Path(hermes_state.__file__).parents[1]),
         lock=str(db_path.with_name(db_path.name + ".repair.lock")),
         hold=hold_seconds,
     )
@@ -501,7 +501,7 @@ def test_repair_reports_success_when_the_holder_already_healed_the_db(
 _REPAIR_SCRIPT = """
 import sys, json
 sys.path.insert(0, {root!r})
-from hermes_state_repair import repair_state_db_schema
+from hermes_agent.hermes_state_repair import repair_state_db_schema
 print(json.dumps(repair_state_db_schema({db!r})), flush=True)
 """
 
@@ -534,7 +534,7 @@ def test_two_processes_repairing_at_once_perform_surgery_once(tmp_path):
     _release_header_probe_fds()
 
     script = _REPAIR_SCRIPT.format(
-        root=str(Path(hermes_state.__file__).parent), db=str(db_path)
+        root=str(Path(hermes_state.__file__).parents[1]), db=str(db_path)
     )
     procs = [
         subprocess.Popen(

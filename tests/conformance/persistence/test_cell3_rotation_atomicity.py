@@ -36,7 +36,7 @@ from tests.conformance.persistence._harness import (
 ROTATOR = r"""
 import json, sys
 from pathlib import Path
-from hermes_state import SessionDB
+from hermes_agent.hermes_state import SessionDB
 
 db_path = Path({db_path!r})
 journal = Path({journal!r})

@@ -118,7 +118,7 @@ _UNUSABLE_CHILD = _DROP_PRIVILEGES + textwrap.dedent(r"""
     logging.getLogger().setLevel(logging.DEBUG)
 
     from gateway import run_api, run_runtime
-    from hermes_state import SessionDB
+    from hermes_agent.hermes_state import SessionDB
 
     async def api(_runner):
         return SimpleNamespace(api_origin="http://127.0.0.1:1")

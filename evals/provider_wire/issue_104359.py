@@ -186,7 +186,7 @@ print(
             "production_imports": {
                 name: sys.modules[name].__file__
                 for name in [
-                    "hermes_state",
+                    SessionDB.__module__,
                     "agent.moa_loop",
                     "agent.auxiliary_client",
                     "agent.turn_request_assembly",

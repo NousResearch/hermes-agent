@@ -26,8 +26,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _CHILD_PROBE = r"""
 import json, os, sys
 sys.path.insert(0, {repo!r})
-import hermes_state as hs
-import hermes_state_guard
+from hermes_agent import hermes_state as hs
+from hermes_agent import hermes_state_guard
 fired = False
 try:
     hs._ensure_test_isolation(hs._real_platform_state_root() / "state.db")

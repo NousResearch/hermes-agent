@@ -16,7 +16,7 @@ from hermes_agent.hermes_state_common import (
     _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract, _sql_session_last_active,
     is_automatic_end_reason)
 
-# Log-record parity with the origin module (caplog tests pin "hermes_state").
+# Log-record parity with the origin module (caplog tests pin "hermes_agent.hermes_state").
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 _COOLDOWN_ROW_SQL = (

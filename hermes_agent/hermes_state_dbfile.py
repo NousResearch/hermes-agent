@@ -29,7 +29,7 @@ from hermes_agent.hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
 )
 
-# Log-record parity with the origin module (caplog tests pin "hermes_state").
+# Log-record parity with the origin module (caplog tests pin "hermes_agent.hermes_state").
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 

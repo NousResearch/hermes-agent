@@ -13,7 +13,7 @@ from hermes_agent.hermes_state_common import (
 )
 from hermes_agent.hermes_startup_watchdog import report_startup_progress
 
-# caplog tests pin the "hermes_state" logger name.
+# caplog tests pin the "hermes_agent.hermes_state" logger name.
 logger = logging.getLogger("hermes_agent.hermes_state")
 
 _LAST_ACTIVE_SQL = _sql_session_last_active("s")

@@ -624,8 +624,10 @@ def extract_profiles_main(path: str, module_name: str) -> int:
 def main() -> int:
     reader, writer = _take_protocol_streams()
     import hermes_bootstrap
-    logging.basicConfig(stream=sys.stderr, level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"),
-                        format="%(levelname)s %(name)s: %(message)s")
+    from hermes_logging import DisplayNameFormatter
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setFormatter(DisplayNameFormatter("%(levelname)s %(name)s: %(message)s"))
+    logging.basicConfig(handlers=[stderr_handler], level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"))
     runtime = HostRuntime(reader, writer)
     from hermes_cli import plugin_events
     plugin_events._session_event_forwarder = runtime.session_event

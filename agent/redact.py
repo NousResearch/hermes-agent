@@ -1206,11 +1206,7 @@ def _redact_python_diagnostic_repr_fields(text: str) -> str:
         if match is None:
             match = _PYTHON_EXCEPTION_LINE_RE.match(body_line)
         if match is not None:
-            lines[index] = (
-                match.group("prefix")
-                + _redact_python_repr_fields(match.group("body"))
-                + ending
-            )
+            lines[index] = match.group("prefix") + _redact_python_repr_fields(match.group("body")) + ending
     return "".join(lines)
 
 
@@ -1998,3 +1994,7 @@ class RedactingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         return redact_sensitive_text(super().format(record))
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        from hermes_logging import display_record  # lazy: hermes_logging imports this module lazily
+        return super().formatMessage(display_record(record))

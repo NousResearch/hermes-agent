@@ -250,7 +250,8 @@ def refresh_in_child(repo_root: str, git_dir: str, log_file: str) -> None:
     side effects a git maintenance child has no business having in a profile mid-update.
     """
     handler = _LogDirOnFailureHandler(log_file, encoding="utf-8", delay=True)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    from hermes_logging import DisplayNameFormatter
+    handler.setFormatter(DisplayNameFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.getLogger().addHandler(handler)
     try:
         refresh_commit_graph(repo_root, Path(git_dir))

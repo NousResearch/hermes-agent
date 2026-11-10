@@ -190,6 +190,7 @@ def _check_and_apply_config_migration(
         return
 
     owed_error = None
+    partial_migration_step = None
     has_new_options = bool(missing_env or missing_config)
     version_bump_only = not has_new_options and current_ver < latest_ver
     needs_migration = has_new_options or current_ver < latest_ver
@@ -203,6 +204,8 @@ def _check_and_apply_config_migration(
             _mig_results = migrate_config(interactive=False, quiet=True)
             if _mig_results.get("failed_step") is None:
                 print("  ✓ Config format updated (no new settings to configure)")
+            else:
+                partial_migration_step = _mig_results["failed_step"]
             # quiet=True also mutes steps that RESET/REMOVE a setting; re-surface them so an
             # unattended update never silently changes config (config_added holds only mutations here).
             # In this branch missing_config is empty, so config_added can only contain migration-step
@@ -237,7 +240,9 @@ def _check_and_apply_config_migration(
             # non-interactive pass so defaults and version bumps land before the gateway restarts.
             unattended = gateway_mode or assume_yes or response == "auto"
             results = migrate_config(interactive=not unattended, quiet=False)
-            if results["env_added"] or results["config_added"]:
+            if results.get("failed_step") is not None:
+                partial_migration_step = results["failed_step"]
+            elif results["env_added"] or results["config_added"]:
                 print()
                 print("✓ Configuration updated!")
             if unattended and missing_env:
@@ -258,6 +263,12 @@ def _check_and_apply_config_migration(
                 print(f"      {_note}")
 
     _restore_snapshot_safety_nets(pre_update_snapshot_id)
+    if partial_migration_step is not None:
+        # A migration that stopped cleanly still owes the remaining steps. Raise only after the
+        # independent sibling sweep and snapshot recovery so the update receipt records a follow-up.
+        raise RuntimeError(
+            f"config migration stopped at v{partial_migration_step}; "
+            "run `hermes config migrate` to retry the remaining steps")
     if owed_error is not None:
         raise owed_error
 

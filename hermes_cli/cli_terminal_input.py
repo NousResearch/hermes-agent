@@ -142,6 +142,102 @@ def _file_drop_result(path: Path, remainder: str) -> dict:
     return {"path": path, "is_image": path.suffix.lower() in _IMAGE_EXTENSIONS, "remainder": remainder}
 
 
+# Quoted spans stay one token so paths with spaces ("My Shot.png") survive.
+_INLINE_IMAGE_TOKEN_RE = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+_INLINE_PATH_TRAILING_PUNCT = frozenset(".,?!;:)")
+
+
+def _split_inline_path_punct(token: str) -> tuple[str, str]:
+    """Peel sentence punctuation off a path token. Quotes stay intact so the closer isn't eaten."""
+    if not token or token[-1] in "\"'":
+        return token, ""
+    end = len(token)
+    while end and token[end - 1] in _INLINE_PATH_TRAILING_PUNCT:
+        end -= 1
+    return token[:end], token[end:]
+
+
+def _unquote_inline_token(token: str) -> str:
+    if len(token) >= 2 and token[0] in "\"'" and token[-1] == token[0]:
+        return token[1:-1]
+    return token
+
+
+def _inline_image_file(core: str, extensions: frozenset[str], resolve) -> Path | None:
+    """Resolve *core* only when the typed suffix and the real file are both images.
+
+    Checking the resolved suffix refuses a ``*.png`` name whose target is not an
+    image (symlink to a secret or source file). Non-images are never attached.
+    """
+    if os.path.splitext(_unquote_inline_token(core))[1].lower() not in extensions:
+        return None
+    resolved = resolve(core)
+    if resolved is None or resolved.suffix.lower() not in extensions:
+        return None
+    return resolved
+
+
+def _detect_inline_image_paths(user_input: str) -> dict | None:
+    """Image paths typed anywhere in *user_input*, not only a leading drag/paste.
+
+    Returns ``{"images": [Path, ...], "remainder": str}`` when at least one
+    existing image is found, else None. Matched path tokens are removed;
+    a repeated path attaches once and neither copy stays in the remainder.
+    Slash commands, prose, URLs, and non-image files are left untouched.
+    """
+    from cli import _IMAGE_EXTENSIONS, _looks_like_slash_command, _resolve_attachment_path
+
+    if not isinstance(user_input, str):
+        return None
+    stripped = user_input.strip()
+    if not stripped or _looks_like_slash_command(stripped):
+        return None
+
+    images: list[Path] = []
+    seen: set[str] = set()
+    kept: list[str] = []
+    for match in _INLINE_IMAGE_TOKEN_RE.finditer(stripped):
+        token = match.group(0)
+        core, trailing = _split_inline_path_punct(token)
+        resolved = _inline_image_file(core, _IMAGE_EXTENSIONS, _resolve_attachment_path)
+        if resolved is None:
+            kept.append(token)
+            continue
+        key = str(resolved)
+        if key not in seen:
+            seen.add(key)
+            images.append(resolved)
+        if trailing:
+            kept.append(trailing)
+
+    if not images:
+        return None
+    remainder = re.sub(r"\s+", " ", " ".join(kept)).strip()
+    return {"images": images, "remainder": remainder}
+
+
+def _apply_inline_image_paths(user_input, submit_images: list, file_drop, seeded: bool):
+    """Attach mid-prompt images. A leading drop or a seeded ``-q`` prompt is left as-is."""
+    from cli import _cprint, _detect_inline_image_paths, _looks_like_slash_command
+
+    if file_drop or seeded or not isinstance(user_input, str) or _looks_like_slash_command(user_input):
+        return user_input
+    found = _detect_inline_image_paths(user_input)
+    if not found:
+        return user_input
+    images = found["images"]
+    submit_images.extend(images)
+    for img in images:
+        # Filename only — the full path can embed home or profile names.
+        _cprint("  " + t("cli.tui.auto_attached_image", name=img.name))
+    remainder = found["remainder"]
+    if remainder:
+        return remainder
+    if len(images) == 1:
+        return f"[User attached image: {images[0].name}]"
+    return f"[User attached {len(images)} images]"
+
+
 def _detect_file_drop(user_input: str) -> dict | None:
     """Detect a dragged/pasted file path at the start of *user_input* -> ``{path, is_image, remainder}`` or None."""
     from cli import _file_drop_result, _resolve_attachment_path, _split_path_input

@@ -38,6 +38,7 @@ vi.mock('@/store/profile', () => ({
 
 import { $previewTabs, closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 
 import { $workspaceIsPage } from '../routes'
 
@@ -67,6 +68,7 @@ beforeEach(() => {
   $selectedStoredSessionId.set(null)
   $activeSessionId.set(null)
   $workspaceIsPage.set(false)
+  $workspaceMode.set('sessions')
   closeFocusedSessionTab.mockReturnValue(false)
   closeFocusedToolTab.mockReturnValue(false)
   nextSessionTileForWorkspace.mockReturnValue(null)
@@ -138,6 +140,14 @@ describe('closeWorkspaceTab', () => {
 
     expect(closeActiveTab(vi.fn())).toBe(true)
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not replace Bot Mode\'s canonical main chat with a fresh draft', () => {
+    loadedMainOnly()
+    $workspaceMode.set('bots')
+
+    expect(closeActiveTab(vi.fn())).toBe(false)
+    expect(requestFreshSession).not.toHaveBeenCalled()
   })
 
   it('a focused remote bot screen swallows ⌘W: no terminal tab, no session tab closes', async () => {

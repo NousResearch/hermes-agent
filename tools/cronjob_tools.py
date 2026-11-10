@@ -1133,6 +1133,14 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": "Required for update/pause/resume/remove/run/cancel."
             },
+            "model": {
+                "type": "string",
+                "description": "For create/update. ONLY set when the user explicitly names a model for this job (e.g. 'run it on Haiku'). Pins that model to the job; '' clears the pin. Never pick one on your own initiative: by default jobs follow the cron/main model."
+            },
+            "provider": {
+                "type": "string",
+                "description": "Inference provider paired with `model` (e.g. 'anthropic'). Only with a user-named model; '' clears."
+            },
             "pinned": {
                 "type": "boolean",
                 "description": "For create/update. ONLY set when the user explicitly asks to pin (or unpin) a job's model. pinned=true locks the CURRENT main agent model (and its provider) onto the job so later `hermes model` / `/model` changes never touch it; pinned=false releases the lock so the job follows the main agent model again. Never set it on your own initiative: by default jobs follow the main model."
@@ -1231,14 +1239,13 @@ def check_cronjob_requirements() -> bool:
     )
 
 
-# Agent-facing arguments forwarded verbatim to cronjob(). model / provider / base_url are
-# intentionally NOT here: per-job inference pins are user-owned (dashboard, `hermes cron
-# create/edit --model`, hand-edited jobs) — the agent must not point unattended spend at a
-# different model. Programmatic callers of cronjob() itself retain the parameters.
+# Agent-facing arguments forwarded verbatim to cronjob(). model / provider are forwarded only
+# because the user named them (see the schema); base_url stays user-owned (dashboard, `hermes
+# cron create/edit`, hand-edited jobs) so the agent cannot route unattended runs to a new endpoint.
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up")
+    "paused_reason", "pinned", "model", "provider", "timezone", "grace_minutes", "catch_up")
 
 
 def _cronjob_handler(args, **kw):

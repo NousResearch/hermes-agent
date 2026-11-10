@@ -7,11 +7,9 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
-from collections import Counter
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from gateway.session_stall import (
     format_session_stall_notification,

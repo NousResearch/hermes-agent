@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.secret_scope import get_secret
 from plugins.browser._common import CloudBrowserProvider

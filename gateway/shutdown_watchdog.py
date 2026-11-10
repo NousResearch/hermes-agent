@@ -20,7 +20,7 @@ import threading
 import time
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from hermes_constants import get_hermes_home, get_process_hermes_home

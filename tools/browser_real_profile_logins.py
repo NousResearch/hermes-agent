@@ -33,7 +33,7 @@ import logging
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 

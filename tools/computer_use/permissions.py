@@ -12,7 +12,7 @@ import os
 import subprocess
 import sys
 from contextlib import suppress
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 

@@ -26,7 +26,7 @@ import urllib.request
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 from utils import atomic_json_write, atomic_write_text
 

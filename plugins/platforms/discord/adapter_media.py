@@ -8,7 +8,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from agent.i18n import t
 from gateway.platforms.base import SendResult
@@ -480,7 +480,7 @@ class DiscordMediaMixin:
         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively as a Discord file attachment."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type
+        from plugins.platforms.discord.adapter import _image_ext_from_content_type
 
         return await self._send_url_media(
             chat_id, image_url, caption, kind="image",

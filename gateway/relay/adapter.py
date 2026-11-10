@@ -30,7 +30,6 @@ from agent.i18n import t
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
-    EGRESS_DECLINE_CODE,
     decline_error,
     is_egress_decline,
     log_decline,

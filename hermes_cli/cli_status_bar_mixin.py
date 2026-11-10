@@ -16,7 +16,7 @@ from agent.i18n import t
 from agent import terminal_image
 from agent.pet import render as pet_render
 from hermes_cli.banner import _format_context_length
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 _SB = "class:status-bar"
 _DIM = "class:status-bar-dim"

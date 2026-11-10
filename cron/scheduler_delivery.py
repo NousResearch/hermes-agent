@@ -16,7 +16,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 
 # Log-record parity with the origin module.

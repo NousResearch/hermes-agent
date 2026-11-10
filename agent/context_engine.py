@@ -11,7 +11,7 @@ should_compress() / compress() -> on_session_end() at real session boundaries on
 import copy
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.compression_marker import elide_middle
 from agent.redact import redact_sensitive_text

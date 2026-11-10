@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 _ID_KEYS = ("id", "guid", "message_id", "url", "link")
 _VIEW_KEYS = ("title", "subject", "summary", "text", "body", "from", "sender", "url")

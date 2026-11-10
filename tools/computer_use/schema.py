@@ -8,7 +8,7 @@ than pixel coordinates, which remain supported for models trained on them.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 # One consolidated tool with an `action` discriminator keeps the schema compact
 # and the per-turn token cost low. Property groups: capture (mode, app, pid,

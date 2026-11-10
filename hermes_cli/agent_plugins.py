@@ -9,7 +9,7 @@ import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Tuple
+from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from agent.skill_utils import yaml_load

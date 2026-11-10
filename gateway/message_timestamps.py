@@ -12,7 +12,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone, UTC
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 from hermes_time import safe_strftime
 

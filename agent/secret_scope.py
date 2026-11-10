@@ -18,7 +18,7 @@ import threading
 from collections import OrderedDict
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Callable, Dict, Mapping, NamedTuple, Optional, Tuple
+from typing import Callable, Mapping, NamedTuple, Optional
 
 
 # Process-global (describes the deployment mode, not a per-task value): set once

@@ -6,7 +6,7 @@ import json
 import logging
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from tools.skills_tool_setup import SkillReadinessStatus
 

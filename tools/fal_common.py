@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Optional
 from urllib.parse import urlencode
 
 # A 429 whose Retry-After is longer than this is reported, not waited out inside a tool call.

@@ -25,7 +25,7 @@ import base64
 import binascii
 import json
 import re
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional
 from urllib.parse import unquote
 
 from fastapi import Request

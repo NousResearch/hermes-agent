@@ -8,7 +8,7 @@ import shlex
 import subprocess
 from fastapi import HTTPException
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")

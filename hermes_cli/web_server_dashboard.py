@@ -16,7 +16,7 @@ from starlette import status
 from starlette._utils import get_route_path
 from starlette.requests import HTTPConnection
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from hermes_cli.config import cfg_get, get_process_hermes_home
 from utils import env_var_enabled

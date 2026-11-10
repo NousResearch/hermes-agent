@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 logger = logging.getLogger("cron.chronos")
 

@@ -23,7 +23,7 @@ must be false"), which the ladder still retries once but which say nothing about
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)

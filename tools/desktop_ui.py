@@ -13,7 +13,7 @@ the frame on the correct transcript transport (#80678).
 """
 
 import json
-from typing import Callable, FrozenSet, Optional
+from typing import Callable, Optional
 
 from gateway.session_context import get_session_env
 from tools.registry import tool_error

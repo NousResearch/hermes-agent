@@ -12,7 +12,7 @@ previous/current internal ids and lineage root without parsing status text.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 # Bound defensive walks; compression chains this deep are pathological.
 _MAX_WALK = 100

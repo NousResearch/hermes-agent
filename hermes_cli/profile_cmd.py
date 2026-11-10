@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import sys
-from typing import NoReturn, Optional
+from typing import NoReturn
 
 
 def _die(msg: str, code: int = 1, *, err: bool = False) -> NoReturn:

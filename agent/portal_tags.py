@@ -10,7 +10,7 @@ provenance never leaks into this compatibility tag.
 from __future__ import annotations
 
 from contextvars import ContextVar
-from typing import List, Optional
+from typing import Optional
 
 # Ambient conversation id (ATTRIBUTION value, sent as ``conversation=<id>``).
 # The agent loop publishes it at turn entry; auxiliary call sites funnelling

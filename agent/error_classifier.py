@@ -14,7 +14,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterator, Optional, Sequence
+from typing import Any, Callable, Iterator, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 

@@ -15,7 +15,7 @@ import time
 import zipfile
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse

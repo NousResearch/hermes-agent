@@ -9,7 +9,7 @@ import importlib
 import logging
 import os
 import re
-from typing import Any, List, Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 from tools.mcp_tool_common import _exc_str, _sanitize_error, _core
 from tools.mcp_tool_node_abi import NodeAbiMismatchError

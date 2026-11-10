@@ -7,7 +7,7 @@ raw stamp directly. ``_coerce_config_version`` stays module-private here.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional
 
 from hermes_cli.config_defaults import DEFAULT_CONFIG
 

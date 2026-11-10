@@ -7,7 +7,7 @@ import sqlite3
 import time
 from typing import Sequence
 
-from hermes_state_common import FTS_SQL, FTS_STALE_KEY, FTS_TRIGRAM_SQL, _FTS_TRIGGERS
+from hermes_state_common import FTS_SQL, FTS_STALE_KEY, _FTS_TRIGGERS
 from hermes_state_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 
 # caplog tests pin the "hermes_state" logger name.

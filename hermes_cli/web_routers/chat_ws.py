@@ -11,7 +11,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
@@ -474,7 +474,7 @@ async def _pty_channel_marker_state(
 
 @router.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
-    from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
+    from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE
     from pm.package import InstallError
     gate = await _ws_gate(ws, "pty")
     if gate is None:

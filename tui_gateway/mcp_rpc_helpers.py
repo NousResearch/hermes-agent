@@ -6,7 +6,7 @@ bodies in methods_tools resolve it.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping
+from typing import Any, Mapping
 
 
 def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[dict[str, dict], dict[str, str | None]]:

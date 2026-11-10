@@ -15,7 +15,7 @@ import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional
 
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget

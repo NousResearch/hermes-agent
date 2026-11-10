@@ -11,7 +11,7 @@ import posixpath
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Optional
 
 if TYPE_CHECKING:  # annotations only; the real import is per-call in apply_v4a_operations
     from tools.file_operations_common import PatchResult

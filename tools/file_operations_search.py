@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 from tools import interrupt as tool_interrupt

@@ -19,7 +19,7 @@ import stat
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_startup_watchdog import report_startup_progress

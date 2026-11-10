@@ -2,7 +2,7 @@
 
 import datetime
 import secrets
-from typing import Any, Dict, List
+from typing import Any
 from urllib.parse import quote
 
 from hermes_cli.timefmt import coerce_epoch

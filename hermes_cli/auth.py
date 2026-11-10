@@ -20,7 +20,6 @@ import shutil
 import shlex
 import threading
 import time
-import webbrowser
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field

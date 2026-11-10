@@ -8,7 +8,7 @@ conservative: originals are kept whenever a repair is not unambiguous.
 
 import json
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from tools.registry import registry
 from tools.schema_sanitizer import resolve_local_schema_ref

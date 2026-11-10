@@ -5,7 +5,7 @@ for the profile whose overlay dir and ``display.language`` the client is showing
 
 from __future__ import annotations
 
-from .base import Params, Result, WireEnum
+from .base import Result, WireEnum
 from .common import ProfileParams
 from .registry import method
 

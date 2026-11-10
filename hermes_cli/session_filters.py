@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime, timezone, UTC
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_cli.timefmt import coerce_epoch
 

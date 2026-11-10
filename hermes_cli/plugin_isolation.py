@@ -25,7 +25,7 @@ import logging
 import os
 import sys
 from types import ModuleType
-from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional
+from typing import Any, Iterator, Mapping, Optional
 
 logger = logging.getLogger("hermes_cli.plugins")
 

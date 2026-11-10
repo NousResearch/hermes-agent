@@ -4,7 +4,7 @@ Delegates format conversion to agent/bedrock_adapter.py. Bedrock uses its own
 boto3 client, so client construction and calls stay on AIAgent.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage

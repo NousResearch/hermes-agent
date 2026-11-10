@@ -15,7 +15,7 @@ import contextlib
 import json
 import logging
 import time
-from typing import List, Optional
+from typing import Optional
 
 from hermes_constants import get_hermes_home
 

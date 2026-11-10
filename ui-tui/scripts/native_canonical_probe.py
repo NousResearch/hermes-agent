@@ -1,7 +1,6 @@
 """Disposable ordinary-daemon + real Ink PTY probe (no renderer injection)."""
 import asyncio
 import fcntl
-import importlib.util
 import json
 import os
 from pathlib import Path

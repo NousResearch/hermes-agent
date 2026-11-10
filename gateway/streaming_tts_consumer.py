@@ -14,7 +14,7 @@ import contextlib
 import logging
 import queue
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from gateway.platforms.base import AudioFormat, StreamingTTSHandle
 

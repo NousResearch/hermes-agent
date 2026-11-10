@@ -11,7 +11,7 @@ ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, n
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from agent.codex_headers import is_official_codex_base_url

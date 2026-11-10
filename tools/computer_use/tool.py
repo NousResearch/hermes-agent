@@ -19,7 +19,7 @@ import uuid
 from collections import namedtuple
 from functools import partial
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Iterator, Optional
 from hermes_dir_acl import make_user_dir
 
 from agent.image_eviction_policy import image_dimensions_from_bytes

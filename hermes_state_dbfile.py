@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional
 
 from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
 from hermes_state_common import (

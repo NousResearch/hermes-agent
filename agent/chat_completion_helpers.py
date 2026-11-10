@@ -22,7 +22,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH

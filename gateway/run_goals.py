@@ -8,7 +8,6 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import time
 from contextlib import nullcontext, suppress

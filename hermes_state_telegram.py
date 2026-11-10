@@ -6,7 +6,7 @@ import contextlib
 import logging
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from hermes_state_common import _sql_preview_raw, _sql_session_last_active
 from hermes_state_errors import StateDbReplacedError

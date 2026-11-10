@@ -8,7 +8,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import tomllib
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone, UTC

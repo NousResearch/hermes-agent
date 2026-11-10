@@ -8,7 +8,7 @@ this module reports and never rewrites or drops the key.
 """
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 PLUGIN_NAME = "hermes-session-reset-policy"
 _TIMED_MODES = frozenset({"idle", "daily", "both"})

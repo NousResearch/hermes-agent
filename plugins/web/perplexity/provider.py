@@ -37,7 +37,7 @@ Use Firecrawl / Exa / Parallel when a verbatim full-page dump is required.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx

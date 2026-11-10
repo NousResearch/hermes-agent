@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Optional
 from urllib import error as urlerror
 from urllib import request as urlrequest
 

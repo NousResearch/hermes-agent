@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 APPROVAL_BUTTON_PREFIX = "approve:"
 UPDATE_PROMPT_PREFIX = "update_prompt:"

@@ -5,7 +5,7 @@ import logging
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Optional
 from urllib.parse import quote
 
 import httpx

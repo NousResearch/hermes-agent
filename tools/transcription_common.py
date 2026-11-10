@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
-from typing import Any, Dict
+from typing import Any
 
 from tools.tts_command_provider import _get_provider_section as _get_stt_section
 

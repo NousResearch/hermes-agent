@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from plugins.google_meet import process_manager as pm
 

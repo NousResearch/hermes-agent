@@ -12,7 +12,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home

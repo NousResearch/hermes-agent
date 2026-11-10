@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from contextlib import suppress
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context

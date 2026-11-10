@@ -46,7 +46,7 @@ from hermes_cli.plugins_discovery import (
 )
 from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
-    _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
+    _plugin_home_scope, in_plugin_load_worker,
 )
 from hermes_cli.plugins_dispatch import (
     DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,

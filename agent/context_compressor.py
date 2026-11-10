@@ -11,7 +11,7 @@ import sqlite3
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Optional, Sequence
 
 from agent.image_eviction_policy import images_all_within_many_image_limit, latched_retire_count, outbound_image_retire_count, outbound_retired_image_ids
 from agent.compression_marker import (

@@ -14,7 +14,7 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Dict, Any, Optional, Mapping
+from typing import Any, Optional, Mapping
 from urllib.parse import unquote, urlparse
 
 from agent.i18n import t

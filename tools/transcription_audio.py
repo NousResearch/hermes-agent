@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from utils import is_truthy_value

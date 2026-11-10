@@ -16,7 +16,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, extra_or_secret as _extra_or_wsecret,

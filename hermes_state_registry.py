@@ -35,7 +35,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
+from typing import TYPE_CHECKING, Iterator, Optional
 
 from hermes_state_common import stat_db_file_identity as _stat_db_file_identity
 

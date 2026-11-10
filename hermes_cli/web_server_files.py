@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from fastapi import HTTPException, Request
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 

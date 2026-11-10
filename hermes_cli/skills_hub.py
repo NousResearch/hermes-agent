@@ -8,7 +8,7 @@ import shutil
 import sys
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from rich.console import Console
 from rich.panel import Panel

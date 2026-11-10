@@ -16,7 +16,7 @@ import logging
 import os
 import signal
 import sys
-from typing import Optional, Tuple
+from typing import Optional
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent

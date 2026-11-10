@@ -7,7 +7,7 @@ native adapter's, so a fix there reaches this provider too.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient, gemini_http_error
 

@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from tools.computer_use import cua_backend_driver as _driver
 from tools.computer_use.permissions import CUA_DRIVER_BUNDLE_ID

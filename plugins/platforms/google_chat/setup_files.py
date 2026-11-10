@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 import io
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 from agent.i18n import t
 

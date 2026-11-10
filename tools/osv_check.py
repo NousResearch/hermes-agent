@@ -13,7 +13,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 logger = logging.getLogger(__name__)
 
 _OSV_ENDPOINT = os.getenv("OSV_ENDPOINT", "https://api.osv.dev/v1/query")

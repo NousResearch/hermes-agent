@@ -15,7 +15,7 @@ import json
 import logging
 import time
 from datetime import date, datetime, timezone, UTC
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 import requests
 

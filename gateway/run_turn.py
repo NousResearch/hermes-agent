@@ -27,13 +27,12 @@ from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, descr
 from gateway.platforms.event import MessageEvent
 from gateway.platforms.helpers import typing_metadata_for_turn
 from gateway.response_filters import (
-    display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, persisted_user_metadata_for_event,
+    display_kind_for_event, display_metadata_for_event, persisted_user_metadata_for_event,
     reply_expected_metadata,
 )
-from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
+from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted
 from gateway.session import (
-    SessionSource, _session_key_namespace, build_channel_continuity_note,
-    build_session_context,
+    SessionSource, _session_key_namespace,
 )
 from gateway.session_context import scoped_turn_actor
 from gateway.session_transcript import TranscriptReadError
@@ -41,7 +40,7 @@ from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)

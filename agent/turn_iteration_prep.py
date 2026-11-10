@@ -14,7 +14,7 @@ import random
 import sys
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from agent.display import KawaiiSpinner
 from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason

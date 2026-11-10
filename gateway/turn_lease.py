@@ -12,7 +12,7 @@ CLI-continuity processes are outside this lock; mid-turn rotation alias is close
 import asyncio
 import logging
 import time
-from typing import Dict, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 

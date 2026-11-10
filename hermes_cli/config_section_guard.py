@@ -6,7 +6,7 @@ Split out of :mod:`hermes_cli.config` (code-health size ratchet); ``set_config_v
 from __future__ import annotations
 
 import sys
-from typing import Any, Dict
+from typing import Any
 
 
 def _guard_section_overwrite(key: str, value: Any, user_config: dict[str, Any], force: bool) -> str:

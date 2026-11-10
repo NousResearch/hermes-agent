@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_time import safe_strftime

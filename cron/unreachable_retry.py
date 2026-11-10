@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from cron.constants import is_recurring
 from hermes_time import now as _hermes_now

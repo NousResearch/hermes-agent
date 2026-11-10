@@ -6,7 +6,7 @@ import sys
 import threading
 from contextlib import contextmanager, nullcontext
 from contextvars import copy_context
-from typing import Dict, Iterator, Optional, Set
+from typing import Iterator, Optional
 
 from hermes_constants import hermes_home_key
 

@@ -16,7 +16,7 @@ from contextvars import ContextVar
 import logging
 import threading
 import time
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, Optional
 
 from tools.registry import (
     CHECK_FN_CACHE_BYPASS, check_fn_cache_epoch, check_fn_cache_scope, check_fn_verdict_window, discover_builtin_tools,

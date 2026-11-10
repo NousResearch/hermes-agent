@@ -14,7 +14,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Iterable, Optional
 
 # Shed well under the limit: once cgroup ``memory.high`` throttling kicks in (swap full),
 # a SIGTERM flush cannot finish inside systemd's stop timeout.

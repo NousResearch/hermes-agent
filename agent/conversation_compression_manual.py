@@ -9,7 +9,7 @@ here so ``--preview`` / ``--aggressive`` and the lock-skip wording cannot drift 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 #: Every surface renders the same refusal; hard truncation has no persistence path outside the guarded
 #: ``_compress_context`` rotation, so ``--aggressive`` is refused rather than mis-parsed as a focus topic.

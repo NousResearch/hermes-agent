@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from utils import atomic_write_text
 from tools.threat_patterns import first_threat_message as _first_threat_message

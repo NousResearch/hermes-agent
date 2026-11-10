@@ -4,7 +4,7 @@
 and the routes need the index where this turn starts to build Responses ``output`` items,
 ``run.completed`` turn transcripts and the stored ``previous_response_id`` history.
 """
-from typing import Any, Dict, List
+from typing import Any
 
 _TRANSCRIPT_IDENTITY_KEYS = ("role", "content", "tool_calls", "tool_call_id")
 

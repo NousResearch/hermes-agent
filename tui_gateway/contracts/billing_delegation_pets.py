@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from .base import JsonValue, Params, Result, WireEnum
+from .base import JsonValue, Result, WireEnum
 from .common import MessageReaction, OpenModel, PlanUsage, ProfileParams, SessionParams
 from .registry import method
 

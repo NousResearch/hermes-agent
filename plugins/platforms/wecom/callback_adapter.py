@@ -7,7 +7,7 @@ import asyncio
 import logging
 import socket as _socket
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 # Untrusted pre-auth bodies are parsed with defusedxml (billion-laughs / XXE).
 try:

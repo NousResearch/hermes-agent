@@ -39,7 +39,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))

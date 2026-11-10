@@ -14,7 +14,7 @@ import os
 import threading
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Iterator, Optional
 
 from agent.i18n import t
 from agent.prompt_cache_scope import conversation_id, resolve_prompt_cache_scope_safe

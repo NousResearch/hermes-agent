@@ -28,7 +28,7 @@ _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _append_dropped_path_entries, _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _terminal_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, NamedTuple, Optional
+from typing import Any, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 

@@ -19,7 +19,7 @@ import time
 from contextlib import contextmanager, nullcontext, suppress
 from contextvars import Context
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 from agent.i18n import t
 from gateway.config import Platform

@@ -9,7 +9,7 @@ facade (siblings never form a module-level cycle) so the seam every test patches
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Callable, Dict
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from agent.auxiliary_client import _ResolveRequest, _ResolveResult

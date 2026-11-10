@@ -11,7 +11,7 @@ from hermes_cli import source_check
 # Historical updater import (tests/compat/old_updater_surface.json). In-tree callers use the owner.
 from hermes_cli.source_check import _github_compare_behind
 from hermes_constants import get_hermes_home
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 # rich and prompt_toolkit are imported lazily: this module sits on the TUI gateway's critical
 # startup path purely for the lightweight update-check helpers, and eager rich/prompt_toolkit

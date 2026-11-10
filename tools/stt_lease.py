@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("tools.stt_lease")
 

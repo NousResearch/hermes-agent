@@ -12,7 +12,7 @@ import logging
 import re
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 from plugins.web._common import (
     document as _page, exa_crawl_status, is_origin_http_error, keenable_origin_error, origin_http_error, page_error as _page_error, search_fail,

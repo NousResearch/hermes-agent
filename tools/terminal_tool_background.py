@@ -8,7 +8,7 @@ monkeypatch points authoritative.
 import json
 import logging
 import sys
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("tools.terminal_tool")
 

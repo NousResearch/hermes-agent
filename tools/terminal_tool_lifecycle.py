@@ -12,7 +12,7 @@ import inspect
 import threading
 import time
 from contextlib import contextmanager
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from tools.terminal_tool_backends import (
     _container_config_from_config,
     _local_config_from_config,

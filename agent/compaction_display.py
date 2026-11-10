@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.context_compressor import (
     _LEAN_RECOVERY_HEADING, _LEAN_USER_MESSAGES_HEADING, ContextCompressor, is_compaction_summary_message,

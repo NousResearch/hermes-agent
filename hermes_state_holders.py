@@ -14,7 +14,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Optional, Sequence
 
 from hermes_state_errors import is_sqlite_lock_error
 

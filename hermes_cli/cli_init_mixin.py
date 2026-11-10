@@ -15,7 +15,7 @@ from hermes_cli.fallback_config import get_fallback_chain
 from hermes_state_ids import new_session_id
 from pathlib import Path
 from rich.console import Console
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from utils import base_url_host_matches, base_url_hostname, is_truthy_value
 
 # Log-record parity with the origin module.

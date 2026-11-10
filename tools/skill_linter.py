@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Iterator, Optional
 
 from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, parse_frontmatter
 

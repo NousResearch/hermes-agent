@@ -30,7 +30,7 @@ import os
 import struct
 import sys
 import threading
-from typing import Dict, Optional, Set, Tuple
+from typing import Optional
 
 logger = logging.getLogger("hermes_state")
 

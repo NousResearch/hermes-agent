@@ -8,7 +8,7 @@ everywhere: Clarity redraws content (creativity 0.35) and degraded text/CJK/face
 default-on, so upscaling is strictly per-call opt-in. Pricing strings may drift.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 _PRESET_SIZES = {"landscape": "landscape_16_9", "square": "square_hd", "portrait": "portrait_16_9"}
 _ASPECT_SIZES = {"landscape": "16:9", "square": "1:1", "portrait": "9:16"}

@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.message_metadata import append_message
 

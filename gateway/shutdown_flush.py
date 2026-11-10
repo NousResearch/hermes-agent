@@ -21,7 +21,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)

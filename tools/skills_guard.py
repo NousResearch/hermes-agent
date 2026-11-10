@@ -15,7 +15,6 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import List, Tuple
 
 
 SCANNER_VERSION = "skills-guard-v10"

@@ -4,7 +4,7 @@ Split out of ``hermes_cli.config``; config names are read through the module at 
 (``_cfg.<name>``) so ``hermes_cli.config.<name>`` patch seams hold.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 from hermes_cli import config as _cfg
 from hermes_cli import managed_scope

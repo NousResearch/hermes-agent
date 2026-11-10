@@ -6,7 +6,6 @@ stays the single late-binding seam tests monkeypatch (``web_deps.late``).
 Usage: ``python -m hermes_cli.main web [--port 8080]``.
 """
 
-from contextlib import asynccontextmanager
 
 import asyncio
 from collections import deque
@@ -28,7 +27,7 @@ from hermes_cli.pty_session import run_reaper
 from hermes_cli import web_server_file_tickets as _file_tickets
 from hermes_cli.web_server_session_token import resolve_session_token
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 
 from hermes_cli._startup_fast import project_root_str
@@ -358,7 +357,6 @@ from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> s
     _dashboard_public_hosts,
     _dashboard_public_origins,
     _desktop_loopback_auth_exempt,
-    _host_header_hostname,
     _is_accepted_host,
     public_hosts_engage_gate,
     public_url_hosts,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List
+from typing import Any
 
 from agent.model_metadata import estimate_messages_tokens_rough
 

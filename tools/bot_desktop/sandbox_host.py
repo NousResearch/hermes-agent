@@ -21,7 +21,7 @@ import shlex
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.deadline import poll_until
 from hermes_constants import get_hermes_home

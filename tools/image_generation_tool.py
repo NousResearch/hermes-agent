@@ -12,7 +12,7 @@ import os
 import datetime
 import threading
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 # Imported lazily by _load_fal_client() (~64 ms on every CLI cold start); a test-monkeypatched
 # value short-circuits the loader.
@@ -31,7 +31,7 @@ def _load_fal_client() -> Any:
 from tools.debug_helpers import DebugSession
 from tools.fal_common import (
     _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error,
-    _normalize_fal_queue_url_format, submit_managed_fal_with_rate_limit_retry, wait_fal_queue_result,
+    submit_managed_fal_with_rate_limit_retry, wait_fal_queue_result,
 )
 from tools.image_generation_catalog import (
     DEFAULT_ASPECT_RATIO, DEFAULT_MODEL, FAL_MODELS, UPSCALER_CREATIVITY, UPSCALER_DEFAULT_PROMPT,

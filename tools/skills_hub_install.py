@@ -12,7 +12,7 @@ import logging
 import hashlib
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional
 from agent.skill_utils import is_excluded_skill_path
 from tools.skills_guard import ScanResult, content_hash
 from tools.skills_hub_github import GitHubAuth

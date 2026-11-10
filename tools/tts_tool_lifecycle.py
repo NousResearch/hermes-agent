@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 from agent.memory_provider import ctx_bound
 from tools import tts_command_provider

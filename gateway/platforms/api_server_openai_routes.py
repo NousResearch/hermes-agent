@@ -14,7 +14,7 @@ import re
 import time
 import uuid
 from contextlib import suppress
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.i18n import t
 

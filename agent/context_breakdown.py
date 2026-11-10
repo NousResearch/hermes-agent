@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence
 
 from agent.i18n import t
 

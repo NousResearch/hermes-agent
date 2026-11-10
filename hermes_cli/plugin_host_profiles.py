@@ -19,7 +19,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable
 
 from hermes_cli.plugin_host_wire import PluginHostUnavailable, decode, signature_from
 

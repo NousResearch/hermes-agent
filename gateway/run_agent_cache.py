@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import nullcontext, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform

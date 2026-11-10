@@ -11,7 +11,7 @@ built-in ``local_command`` path). :meth:`TranscriptionProvider.transcribe` envel
 from __future__ import annotations
 
 import abc
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.provider_base import CatalogProviderBase
 

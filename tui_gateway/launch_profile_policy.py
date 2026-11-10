@@ -22,7 +22,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Dict, Iterator, Optional
+from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 

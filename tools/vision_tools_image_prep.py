@@ -166,7 +166,7 @@ def rasterize_svg_data_url(url: str) -> Optional[str]:
         raw = base64.b64decode(payload) if ";base64" in header.lower() else unquote(payload).encode()
     except Exception:
         return None
-    from tools.vision_tools import _secure_cache_dir, _write_private_bytes
+    from tools.vision_tools import _secure_cache_dir
     out_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
     stem = out_dir / f"inline_{uuid.uuid4()}"
     svg_path, png_path = stem.with_suffix(".svg"), stem.with_suffix(".png")

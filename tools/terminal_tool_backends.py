@@ -7,7 +7,7 @@ import importlib.util
 import inspect
 import logging
 import subprocess
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment

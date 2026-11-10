@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Optional
 
 from agent.i18n_layers import CORE_SURFACE, flatten, non_text_leaves, scan_locale_dir
 

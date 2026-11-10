@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from importlib import import_module
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Optional
 
 from agent.prompt_cache_scope import conversation_id
 from tools.arg_coercion import coerce_tool_args

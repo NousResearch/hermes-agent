@@ -20,7 +20,7 @@ import secrets
 import time
 import unicodedata
 from abc import ABC, abstractmethod
-from typing import Optional, Dict
+from typing import Optional
 from pathlib import Path
 
 from tools.binary_extensions import has_binary_extension

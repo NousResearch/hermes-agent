@@ -11,7 +11,7 @@ import re
 import unicodedata
 import uuid
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
+from typing import Any, Callable, Iterator, NamedTuple, Optional, TypeGuard
 
 from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY

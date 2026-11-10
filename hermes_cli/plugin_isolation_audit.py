@@ -23,7 +23,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Set
+from typing import Any, Mapping, Optional
 
 VERDICT_HOST = "host"
 VERDICT_IN_PROCESS = "in_process"

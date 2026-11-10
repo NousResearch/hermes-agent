@@ -10,7 +10,7 @@ resolves a cheap backend.
 """
 
 import logging
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Optional
 
 from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 

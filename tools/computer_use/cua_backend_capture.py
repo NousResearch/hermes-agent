@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Iterator, Optional
 
 from tools.computer_use.backend import ActionResult, CaptureResult, UIElement
 from tools.computer_use.cua_backend_input import _BTF_UNSUPPORTED_MSG

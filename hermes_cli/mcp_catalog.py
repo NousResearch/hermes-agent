@@ -12,7 +12,7 @@ import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Iterator, Optional
 
 import hermes_yaml as yaml
 

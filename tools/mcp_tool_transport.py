@@ -8,7 +8,7 @@ import os
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
-from typing import Dict, Optional, Set
+from typing import Optional
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd

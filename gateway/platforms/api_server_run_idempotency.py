@@ -9,7 +9,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from gateway.hosted_room_peer import MAX_STATUS_GRANT_TTL_SECONDS
 from hermes_cli.sqlite_util import add_column_if_missing

@@ -9,7 +9,7 @@ the rejoined history keeps the user↔assistant alternation that providers valid
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 #: Recent exchanges preserved verbatim when ``/compress here`` has no explicit count.
 DEFAULT_KEEP_LAST = 2

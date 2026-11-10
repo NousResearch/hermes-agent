@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections import Counter
-from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from tools.ansi_strip import sanitize_display_text
 

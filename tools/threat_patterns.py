@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import List, Optional, Tuple
+from typing import Optional
 
 # Hard cap on scanned text: scanners are advisory, so bound worst-case runtime.
 MAX_SCAN_CHARS = 65_536

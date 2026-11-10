@@ -15,7 +15,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional
 
 from agent.secret_sources.base import run_cli, scrub_ansi
 from agent.vault_backends import unlock as _unlock

@@ -15,7 +15,7 @@ silently generated on FAL.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 

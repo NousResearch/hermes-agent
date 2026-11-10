@@ -1,7 +1,7 @@
 """Slash-command authorization verdict for the Discord adapter: the on_message gates, side-effect free."""
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional
 
 try:
     import discord

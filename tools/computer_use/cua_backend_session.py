@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use import cua_backend_driver as _driver

@@ -10,7 +10,7 @@ import logging
 import re
 import sqlite3
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import HTTPException
 
@@ -227,7 +227,7 @@ def corrupt_store_as_status(db_path):
     """Map a corrupt-image ``sqlite3.DatabaseError`` or ``StateDbReplacedError`` from a state.db read to a 503 status
     payload, warning once per store per :data:`_CORRUPT_STORE_WARN_INTERVAL_S`.
     Busy/locked and every other error propagate unchanged."""
-    from hermes_state_errors import StateDbReplacedError, classify_persistence_error, is_malformed_db_error
+    from hermes_state_errors import StateDbReplacedError, is_malformed_db_error
 
     try:
         yield

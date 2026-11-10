@@ -8,7 +8,7 @@ compressor actually held, the commit archives those and clones the rest.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence
 
 ABSORBED_ROW_IDS = "_absorbed_row_ids"
 # How many durable rows an alternation repair folded into one user dict. A reload without row ids

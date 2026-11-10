@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import suppress
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword

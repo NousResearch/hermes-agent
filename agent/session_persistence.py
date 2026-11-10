@@ -7,7 +7,7 @@ import logging
 import re
 from contextlib import nullcontext
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,

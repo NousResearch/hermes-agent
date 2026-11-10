@@ -27,7 +27,7 @@ import sys
 import threading
 import types
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 from hermes_cli.plugin_host_wire import (
     Channel, Opaque, PROTOCOL_VERSION, PluginHostUnsupported, bind_serving_request, declared_member, decode,

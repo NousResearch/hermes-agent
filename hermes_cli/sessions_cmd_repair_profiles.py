@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Dict, List
 
 from hermes_cli.sessions_repair_profiles import (
     Finding, default_snapshot, enumerate_stores, live_gateway_homes, scan_stores,

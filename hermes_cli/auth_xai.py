@@ -12,7 +12,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 from urllib.parse import urlparse
 from hermes_cli.auth_codex import _load_auth_store_maybe_locked, _refresh_payload_access_token
 from hermes_cli.auth_constants import (

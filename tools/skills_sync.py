@@ -15,7 +15,7 @@ import sys
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Set, Tuple
+from typing import Iterator, Optional
 
 # Force UTF-8 stdout/stderr: GBK-style Windows locales can't encode the glyphs
 # printed here (✓ ↑ →), and install.ps1 parses this script's stdout as UTF-8.

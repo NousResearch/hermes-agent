@@ -13,7 +13,7 @@ per-request cost and keeps the most recent turns (the ones the next answer depen
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 # Tail cap on the rendered history; ~8k tokens, resent by codex on every request of the thread.
 MAX_HISTORY_SEED_CHARS = 32_000

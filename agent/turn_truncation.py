@@ -13,7 +13,7 @@ import logging
 import re
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from agent.error_classifier import FailoverReason
 from agent.message_metadata import append_message
@@ -315,7 +315,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
     Never appends an interim assistant row with NO visible content — strict providers
     reject it with 400 — only the nudge."""
-    from agent.conversation_loop import _get_continuation_prompt, _join_truncated_parts
+    from agent.conversation_loop import _get_continuation_prompt
 
     agent = st.agent
     messages = st.messages

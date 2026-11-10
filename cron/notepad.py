@@ -13,7 +13,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Iterator, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now

@@ -25,7 +25,6 @@ from agent.display import (
     build_tool_preview as _build_tool_preview,
     build_tool_label as _build_tool_label,
     get_cute_tool_message as _get_cute_tool_message_impl,
-    get_tool_emoji as _get_tool_emoji,
     tool_row_emoji as _tool_row_emoji,
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,

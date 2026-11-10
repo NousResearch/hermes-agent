@@ -12,7 +12,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from agent.lazy_forward import forward_static as _forward_static
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary

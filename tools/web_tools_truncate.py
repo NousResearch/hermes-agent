@@ -8,7 +8,7 @@ origin (tools.web_tools) logger.
 
 import logging
 import re
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("tools.web_tools")
 

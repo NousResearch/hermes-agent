@@ -8,7 +8,7 @@ import logging
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from registration_lifecycle import replacement_coordinator
 from hermes_cli.plugins_loader import _plugin_home_scope

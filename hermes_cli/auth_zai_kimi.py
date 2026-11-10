@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import hashlib
 import time
-from typing import Dict, Optional
+from typing import Optional
 from hermes_cli.auth_constants import httpx
 
 logger = logging.getLogger("hermes_cli.auth")

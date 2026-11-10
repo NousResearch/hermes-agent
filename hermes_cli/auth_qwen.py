@@ -11,7 +11,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 from hermes_cli.auth_constants import (
     AuthError, DEFAULT_QWEN_BASE_URL, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_OAUTH_CLIENT_ID,
     QWEN_OAUTH_TOKEN_URL, _FORM_JSON_HEADERS, _qwen_err, httpx,

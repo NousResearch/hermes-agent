@@ -24,7 +24,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional
 
 _IDLE_TTL_S = 30 * 60
 

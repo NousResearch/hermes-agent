@@ -17,7 +17,7 @@ import shutil
 import subprocess  # tests monkeypatch ``op.subprocess.run``; production goes through run_cli
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 from agent.secret_sources._cache import CachedFetch, SecretCache, fingerprint as _fingerprint
 from agent.secret_sources.base import (

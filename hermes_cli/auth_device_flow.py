@@ -17,7 +17,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlparse
 from hermes_cli.auth_constants import (
     AuthError, DEFAULT_NOUS_PORTAL_URL, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS,

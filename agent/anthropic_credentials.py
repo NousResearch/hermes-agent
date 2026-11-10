@@ -24,7 +24,7 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, base_url_hostname

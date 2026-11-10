@@ -23,7 +23,7 @@ import signal as _signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource, coerce_float, source_child_env
 

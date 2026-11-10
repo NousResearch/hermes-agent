@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_state_common import (

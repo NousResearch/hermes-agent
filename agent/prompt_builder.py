@@ -13,7 +13,7 @@ import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_constants import (
     get_hermes_home, get_scratch_dir, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,

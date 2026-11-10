@@ -17,7 +17,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Deque, Dict, Hashable, Tuple
+from typing import Callable, Hashable
 
 __all__ = ["BotLoopGuard", "BotLoopGuardSettings", "configured_bot_user", "load_settings", "settings_from_config"]
 

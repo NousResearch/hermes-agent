@@ -8,7 +8,6 @@ keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 import logging
 import queue
@@ -17,7 +16,7 @@ import threading
 import time
 from contextlib import suppress
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword

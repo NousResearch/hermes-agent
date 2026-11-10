@@ -12,7 +12,7 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Optional
 
 from agent.compaction_display import project_compaction_message_for_display
 from agent.i18n import t

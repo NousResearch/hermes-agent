@@ -6,7 +6,7 @@ import signal
 import subprocess
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 

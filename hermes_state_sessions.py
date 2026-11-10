@@ -9,7 +9,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Optional, Sequence
 
 from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,

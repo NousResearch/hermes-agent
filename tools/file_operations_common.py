@@ -7,7 +7,7 @@ the model.
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Optional
 
 
 @dataclass

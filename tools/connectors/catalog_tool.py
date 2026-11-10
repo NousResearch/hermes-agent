@@ -10,7 +10,7 @@ nothing else: the pin, scan, target profile and activation are the host's.
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 from tools.registry import tool_error
 

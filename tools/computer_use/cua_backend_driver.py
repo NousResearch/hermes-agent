@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import PureWindowsPath
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
 

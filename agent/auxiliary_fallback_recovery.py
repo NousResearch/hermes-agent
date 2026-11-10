@@ -6,7 +6,7 @@ model that rejects ``temperature``, ``max_tokens`` or a reasoning field failed t
 though the same parameter rungs would have recovered it on the primary path (#78273, #72351).
 This module runs those rungs — and only those — around a candidate's request.
 """
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 
 def reapply_repairs(kwargs: dict[str, Any], repairs: tuple) -> dict[str, Any]:

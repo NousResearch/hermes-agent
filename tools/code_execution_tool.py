@@ -22,7 +22,7 @@ import tempfile
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from tools.thread_context import propagate_context_to_thread
 from tools.registry import registry, tool_error

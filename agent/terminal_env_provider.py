@@ -12,7 +12,7 @@ any ``BaseEnvironment`` duck type (``execute()``, ``cleanup()`` …); the factor
 from __future__ import annotations
 
 import abc
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from agent.provider_base import ProviderBase
 

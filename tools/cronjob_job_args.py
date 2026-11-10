@@ -4,7 +4,7 @@ tools/cronjob_tools.py)."""
 import contextlib
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional
 
 from cron.jobs import effective_job_state
 

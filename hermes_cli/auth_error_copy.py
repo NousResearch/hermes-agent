@@ -8,7 +8,7 @@ line by line.
 
 from __future__ import annotations
 
-from typing import Callable, Sequence, Tuple
+from typing import Callable, Sequence
 
 # httpx class names and stdlib bases that mean "the request never got a usable answer".
 _NETWORK_ERROR_TYPES = frozenset({

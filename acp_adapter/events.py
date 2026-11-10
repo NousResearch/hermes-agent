@@ -10,7 +10,7 @@ import asyncio
 import logging
 import uuid
 from collections import deque
-from typing import Any, Callable, Deque, Dict
+from typing import Any, Callable
 
 import acp
 from acp.schema import AgentPlanUpdate, PlanEntry

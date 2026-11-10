@@ -2,7 +2,7 @@
 
 No handler opens a connection or invokes a self-committing SessionDB method.
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 import json
 from functools import partial
 import math

@@ -8,7 +8,7 @@ appears together with ``browser_cdp``. Design: ``website/docs/developer-guide/br
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from tools.browser_supervisor import SUPERVISOR_REGISTRY
 from tools.registry import registry

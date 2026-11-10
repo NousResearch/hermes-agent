@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional
 
 # Logger-name parity with the origin module (records must look unchanged).
 logger = logging.getLogger("tools.browser_supervisor")

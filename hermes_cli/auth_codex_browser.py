@@ -20,7 +20,7 @@ import hmac
 import logging
 import secrets
 import webbrowser
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 from hermes_cli.auth_constants import AuthError, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL, _codex_err

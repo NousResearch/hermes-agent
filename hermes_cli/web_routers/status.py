@@ -31,7 +31,7 @@ from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()

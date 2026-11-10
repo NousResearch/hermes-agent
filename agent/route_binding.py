@@ -8,7 +8,7 @@ is the inverse that ``restore_primary_runtime`` runs once its gates pass.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 from utils import base_url_host_matches
 

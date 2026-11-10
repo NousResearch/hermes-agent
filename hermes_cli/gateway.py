@@ -4481,7 +4481,7 @@ def _absorb_windows_console_controls() -> None:
 def _make_exit_diag():
     """``_exit_diag(tag, **extra)`` recorder writing ``logs/gateway-exit-diag.log`` — captures every way
     ``asyncio.run()`` can return, for chasing silent Windows gateway deaths. HERMES_GATEWAY_EXIT_DIAG=0 opts out."""
-    from datetime import datetime as _dt, timezone as _tz
+    from datetime import datetime as _dt
 
     def _exit_diag(tag: str, **extra: object) -> None:
         if os.environ.get("HERMES_GATEWAY_EXIT_DIAG", "1") != "1":

@@ -1,6 +1,5 @@
 """Platform scope rules for configured toolsets."""
 
-from typing import Set
 
 
 # Toolsets without a restriction entry are available on every platform.

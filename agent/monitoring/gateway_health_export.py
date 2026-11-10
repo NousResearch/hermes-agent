@@ -13,7 +13,7 @@ import os
 import threading
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 from agent.monitoring import emitter, otlp_exporter
 from agent.monitoring.gateway_health import (

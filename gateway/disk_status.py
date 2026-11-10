@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from gateway.memory_status import _nonneg_int
 

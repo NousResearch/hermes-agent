@@ -4,7 +4,7 @@
 Disconnecting accounts remains a portal-only user decision.
 """
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 from tools.connectors.catalog_tool import MANAGE_CATALOG_SCHEMA, manage_catalog
 from tools.connectors.gateway import config as gateway_config

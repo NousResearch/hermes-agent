@@ -7,7 +7,7 @@ doesn't 400."""
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Optional
 
 _LM_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 

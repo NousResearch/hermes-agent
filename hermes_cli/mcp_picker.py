@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
 from hermes_cli.colors import Colors
 from hermes_cli.cli_output import prompt_yes_no

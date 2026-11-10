@@ -7,7 +7,7 @@ from pm import install_hint
 import logging
 import time
 from enum import IntEnum
-from typing import Optional, Tuple
+from typing import Optional
 from urllib.parse import quote
 
 from .constants import (

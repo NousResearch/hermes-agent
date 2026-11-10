@@ -14,7 +14,7 @@ import stat
 import time
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Callable, Iterator, Optional
 
 from hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_dir, get_hermes_home

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Mapping, Optional
 
 from hermes_cli.plugins_state import _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting
 

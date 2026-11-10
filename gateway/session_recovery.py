@@ -11,7 +11,7 @@ import threading
 from dataclasses import replace
 from datetime import datetime
 from gateway.config import Platform
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from gateway.session import SessionEntry, SessionSource

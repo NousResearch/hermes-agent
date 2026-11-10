@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Callable, List, Optional
 from utils import is_truthy_value
 from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, exact_mcp_identifier, mcp_field, _core
 from tools.mcp_tool_schema import _normalize_mcp_input_schema, strip_schema_annotations
-from tools.ansi_strip import strip_tool_metadata_text, strip_unicode_tags, strip_unicode_tags_deep
+from tools.ansi_strip import strip_tool_metadata_text, strip_unicode_tags
 
 
 logger = logging.getLogger("tools.mcp_tool")

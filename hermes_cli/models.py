@@ -623,7 +623,7 @@ _nous_caps_disk_checked = False
 _nous_caps_warm_started = False
 
 
-from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, clamp_effort as _clamp_effort, is_astra_model
+from agent.reasoning_effort import clamp_effort as _clamp_effort, is_astra_model
 
 
 def clamp_reasoning_effort_to_supported(

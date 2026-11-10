@@ -12,7 +12,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 import hermes_yaml as yaml

@@ -13,7 +13,7 @@ import base64
 import datetime
 import uuid
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Optional
 from urllib.parse import urljoin
 
 # Generated deliverables live in ``cache/generated/<media>/``, OUTSIDE the transient

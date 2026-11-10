@@ -35,7 +35,7 @@ from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
 from hermes_cli.observability.shared_metrics_gateway import record_platform_connect, record_platform_disconnect
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Set
+from typing import Iterable, Optional
 
 from hermes_cli.config import get_env_value, load_config
 from hermes_cli.nous_account import (

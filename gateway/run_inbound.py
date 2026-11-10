@@ -10,8 +10,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 import asyncio
-import concurrent.futures
-import dataclasses
 import json
 import os
 import re
@@ -33,13 +31,13 @@ from gateway.run_inbound_unauthorized import (
     unauthorized_owner_hint,
 )
 from gateway.session import (
-    SessionSource, build_session_context, is_shared_multi_user_session,
+    SessionSource, is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
 from hermes_cli.observability.shared_metrics_busy import (
     note_busy_admitting, note_busy_outcome, settle_busy_arrival, stamp_busy_arrival)
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner

@@ -22,7 +22,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict, deque
-from typing import Any, Deque, Dict
+from typing import Any
 from urllib.parse import quote, unquote, urlencode, urlparse, urlunparse
 
 from fastapi import APIRouter, HTTPException, Request

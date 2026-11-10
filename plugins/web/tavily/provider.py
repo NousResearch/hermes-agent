@@ -9,7 +9,7 @@ keyless ring — keyless access is opt-in by selecting Tavily in ``hermes tools`
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import httpx
 

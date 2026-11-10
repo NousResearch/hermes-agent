@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Dict, FrozenSet, Optional
+from typing import Any, Optional
 
 from hermes_cli.anon_challenge import background_caller
 from hermes_cli.auth import (

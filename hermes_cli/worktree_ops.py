@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.git_commit_graph import (

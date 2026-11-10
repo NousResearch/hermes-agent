@@ -21,7 +21,7 @@ from __future__ import annotations
 import ast
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Set, Tuple
+from typing import Iterable, Sequence
 
 _SKIP_DIRS = frozenset({"tests", "test", "node_modules", ".git", "__pycache__", ".venv", "venv", "site-packages"})
 

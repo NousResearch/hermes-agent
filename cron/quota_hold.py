@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from cron import extra_fire
 from hermes_time import now as _hermes_now, safe_strftime

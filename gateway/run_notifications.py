@@ -15,14 +15,14 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, cast
+from typing import Any, Optional, cast
 
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from gateway.session import SessionSource, SessionStore
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin

@@ -9,7 +9,7 @@ auth, billing and payment failures keep benching the whole credential with.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING
+from typing import Any, Iterable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential

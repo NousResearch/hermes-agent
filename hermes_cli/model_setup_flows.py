@@ -16,7 +16,7 @@ from hermes_cli.config import clear_model_endpoint_credentials
 from hermes_cli.model_setup_flows_common import (
     _HTTP, _activate_provider_model, _ask, _commit_model_config, _curses_choice,
     _ensure_dict_section, _ensure_flow_api_key, _finish_model,
-    _load_config_model_section, _models_dev_merged, _oauth_gate, _persist_model, _pick_model_or_prompt,
+    _load_config_model_section, _models_dev_merged, _oauth_gate, _pick_model_or_prompt,
     _print_numbered, _prompt_auth_credentials_choice,
     _note_setup_failure, _run_login, _say, _show_curated)
 from hermes_cli.model_setup_flows_custom import _model_flow_custom, _model_flow_named_custom

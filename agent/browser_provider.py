@@ -21,7 +21,6 @@ regardless of provider::
 from __future__ import annotations
 
 import abc
-from typing import Dict
 
 from agent.provider_base import ProviderBase
 

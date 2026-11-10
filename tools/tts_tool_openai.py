@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from urllib.parse import urljoin
 
 from tools.managed_tool_gateway import resolve_managed_tool_gateway

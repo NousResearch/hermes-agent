@@ -4,7 +4,7 @@ Profile-scoped paths and patchable helpers resolve through ``_ss()`` at call tim
 import os
 import shutil
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional
 
 from tools.skills_sync_optional import _ignore_runtime_cache, _skill_file_list, _ss
 

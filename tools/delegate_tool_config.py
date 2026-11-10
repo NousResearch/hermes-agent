@@ -6,7 +6,7 @@ import logging
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Dict, Iterator, List, NamedTuple, Optional
+from typing import Any, Iterator, NamedTuple, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 

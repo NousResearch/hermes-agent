@@ -25,7 +25,7 @@ import logging
 import re
 from functools import partial
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
 

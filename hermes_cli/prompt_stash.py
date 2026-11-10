@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence
 
 # Single-line preview length for the browse panel.
 PREVIEW_WIDTH = 60

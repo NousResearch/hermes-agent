@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_cli.config import load_config
 from plugins.video_gen.xai import has_xai_video_credentials, run_xai_video_edit, run_xai_video_extend

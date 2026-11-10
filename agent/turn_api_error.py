@@ -13,7 +13,7 @@ import json
 import logging
 import ssl
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error

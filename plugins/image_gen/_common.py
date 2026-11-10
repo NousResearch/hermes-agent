@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Iterable, Optional
 
 from agent.image_gen_provider import (
     ImageGenProvider, error_response, normalize_reference_images, save_b64_image, save_url_image)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import platform
 import sys
-from typing import Any, Dict, List
+from typing import Any
 
 from .constants import QQBOT_VERSION
 

@@ -57,7 +57,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Optional
 
 # The CI lane selector owns the platforms() spec resolver; share it so the
 # "skipped on this host" note and the lanes can never disagree.

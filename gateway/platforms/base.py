@@ -428,7 +428,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import TYPE_CHECKING, Optional, Any, Callable, Awaitable, Union
 
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages

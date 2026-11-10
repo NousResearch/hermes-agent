@@ -34,7 +34,7 @@ import threading
 import time
 import weakref
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 from hermes_cli.plugin_host_wire import (
     Channel, Opaque, PluginHostUnavailable, PluginHostUnsupported, declared_return, decode, encode, restore,

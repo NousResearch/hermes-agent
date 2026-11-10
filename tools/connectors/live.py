@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 from hermes_constants import get_process_hermes_home, hermes_home_key
 from tools.connectors.operation import ConnectionOperation

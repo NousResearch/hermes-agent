@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Optional
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from agent.custom_entry_pool import custom_entry_for_endpoint, entry_declares_credential, entry_scoped_pool

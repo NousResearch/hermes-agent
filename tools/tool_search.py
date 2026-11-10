@@ -14,7 +14,7 @@ import logging
 import math
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, Optional
 
 from hermes_cli.config_defaults import DEFAULT_CONFIG
 from tools.registry import tool_error

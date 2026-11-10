@@ -15,7 +15,7 @@ counted and no ``pre/post_api_request`` hook fires for a step.
 from __future__ import annotations
 
 import json
-from typing import Any, Generator, Optional, Tuple
+from typing import Any, Generator, Optional
 
 from agent.message_sanitization import deterministic_call_id
 from agent.transports.types import NormalizedResponse, build_tool_call

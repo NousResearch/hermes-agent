@@ -14,7 +14,7 @@ import threading
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path, is_external_skill_path

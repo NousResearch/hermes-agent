@@ -3,7 +3,7 @@ Schema, validation and a thin dispatcher; the UI lives in a platform-provided
 callback (cli.py, gateway/run.py, tui_gateway)."""
 
 import json
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Optional
 
 MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
 MAX_QUESTIONS = 5  # independent questions per call

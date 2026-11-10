@@ -22,7 +22,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel

@@ -4,7 +4,7 @@ from __future__ import annotations
 import io
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 
 MIGRATION_GUIDE_URL = "https://docs.x.ai/developers/migration/may-15-retirement"

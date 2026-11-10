@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional
 
 from tools.connectors.contract import Actor, SettleReason, TargetState, allowed
 from tools.connectors.gateway.config import ensure_guest_identity, operation_session_key

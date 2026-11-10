@@ -16,7 +16,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from contextvars import ContextVar
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 

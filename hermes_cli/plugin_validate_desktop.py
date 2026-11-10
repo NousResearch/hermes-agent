@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import List, Tuple
 
 # (rule, regex) applied to comment-stripped source; every hit fails the "desktop surface" check.
 # Prototype writes are not linted: bundled libraries (three.js) set fields on their own classes, and

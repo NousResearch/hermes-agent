@@ -11,7 +11,7 @@ URL that was not requested (redirect targets). Logs under the origin
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
 from tools.url_safety import normalize_url_for_request

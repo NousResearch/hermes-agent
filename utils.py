@@ -14,7 +14,7 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 from urllib.parse import urlparse
 
 import hermes_yaml as yaml

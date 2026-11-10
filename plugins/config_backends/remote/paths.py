@@ -6,7 +6,7 @@ segment-wise, never a string prefix (§3.4).
 """
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, Optional, Sequence
 
 Path = tuple[str, ...]
 

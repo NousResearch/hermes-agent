@@ -7,7 +7,7 @@ nothing goes on the wire.
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Iterator, Optional, Sequence
 
 from .paths import Path, covers, encode
 

@@ -8,7 +8,7 @@ for ``web_extract``.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from plugins.web._common import BaseWebSearchProvider, http_get_json, provider_env, search_fail, search_ok, setup_schema, titled_rows
 

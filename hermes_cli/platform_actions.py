@@ -7,7 +7,7 @@ Every verb returns a structured result dict — ``{"ok": True, ...}`` on success
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

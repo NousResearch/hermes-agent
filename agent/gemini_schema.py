@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 import logging
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from tools.schema_sanitizer import _normalize_type_array
 

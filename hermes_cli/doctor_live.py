@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
 from hermes_cli.browser_runtime import chromium_executable
 from hermes_cli.doctor import _section, check_info

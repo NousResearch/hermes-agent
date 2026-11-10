@@ -7,7 +7,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from agent.image_eviction_policy import image_dimensions_from_bytes
 from tools.computer_use.backend import ActionResult, UIElement

@@ -8,7 +8,7 @@ carries that snapshot so a gateway restart does not flip it (#125793).
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 PROMPT_PIN_VERSION = 1
 

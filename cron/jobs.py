@@ -39,7 +39,7 @@ from cron.jobs_model_pin import _main_model_pin
 from cron import jobs_time
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import extra_fire, store_health
-from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
+from typing import Optional, Any, Callable, Collection
 
 logger = logging.getLogger(__name__)
 

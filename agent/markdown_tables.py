@@ -12,7 +12,6 @@ sequences (``⚠️``); those clamp to 0 — a 1-cell drift beats widening every
 from __future__ import annotations
 
 import re
-from typing import List
 
 from wcwidth import wcswidth
 

@@ -11,7 +11,7 @@ import threading
 import time
 from tools.delegation_redaction import redact_child_result, redact_child_text
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from agent.compression_marker import elide
 from agent.interrupt_compat import request_hard_interrupt
 from dataclasses import dataclass, field

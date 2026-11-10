@@ -6,7 +6,7 @@ import asyncio
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 from hermes_state_common import _RESET_CHILD_SQL, _sql_json_extract
 

@@ -15,7 +15,7 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from agent.think_scrubber import THINK_TAG_NAMES
 from tools.tool_backend_helpers import resolve_openai_audio_api_key

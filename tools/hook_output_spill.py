@@ -14,7 +14,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from tools.tool_output_limits import _coerce_int, _coerce_positive_int
 

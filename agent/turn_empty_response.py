@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent import empty_response_guard as _empty_guard
 from agent.message_metadata import append_message

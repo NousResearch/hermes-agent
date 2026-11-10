@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, Optional
 
 from hermes_state_common import (
     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,

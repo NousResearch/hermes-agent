@@ -8,7 +8,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("plugins.platforms.wecom.adapter")
 

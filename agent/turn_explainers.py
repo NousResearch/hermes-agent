@@ -6,7 +6,7 @@ summarises why a turn ended without a final answer. Every method resolves throug
 import os
 import re
 from contextlib import suppress
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.i18n import t
 from agent.tool_dispatch_helpers import (

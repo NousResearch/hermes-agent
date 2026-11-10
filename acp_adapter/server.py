@@ -13,7 +13,7 @@ import threading
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable, Deque, Optional
+from typing import Any, Callable, Optional
 
 import acp
 from acp.schema import (

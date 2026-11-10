@@ -14,7 +14,7 @@ import os
 import subprocess
 import sys
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from plugins.web._common import BaseWebSearchProvider, search_fail, search_ok, setup_schema, title_hit
 

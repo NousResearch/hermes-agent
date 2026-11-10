@@ -13,7 +13,7 @@ never shadow the in-tree docker/modal/... implementations. Scope semantics mirro
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Optional
 
 from agent.provider_registry import ProviderRegistry, lower_key
 from agent.terminal_env_provider import TerminalEnvironmentProvider

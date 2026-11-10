@@ -11,7 +11,7 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)

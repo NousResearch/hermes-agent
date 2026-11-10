@@ -12,7 +12,7 @@ import re
 import shutil
 import subprocess
 from contextlib import suppress
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from utils import normalize_proxy_env_vars
 

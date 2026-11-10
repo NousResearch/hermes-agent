@@ -11,7 +11,7 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 from agent.monitoring import emitter
 from agent.monitoring.events import GatewayDiagnosticEvent, GatewayHealthEvent

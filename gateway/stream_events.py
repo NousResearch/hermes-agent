@@ -9,7 +9,7 @@ diverge from the agent-owned message history.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Union
+from typing import Any, Optional
 
 
 @dataclass(frozen=True)

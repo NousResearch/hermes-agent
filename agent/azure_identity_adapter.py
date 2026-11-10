@@ -18,7 +18,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 

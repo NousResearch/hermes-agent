@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, ClassVar, Dict, List, Optional
+from typing import Any, Callable, ClassVar, Optional
 
 from tools.connectors.contract import Actor, SettleReason, TargetState, allowed, resolves
 

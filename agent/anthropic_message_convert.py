@@ -8,7 +8,7 @@ import copy
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from agent.image_eviction_policy import images_all_within_many_image_limit, outbound_image_retire_count
 from agent.anthropic_thinking_policy import anthropic_thinking_route, route_replays_prior_thinking

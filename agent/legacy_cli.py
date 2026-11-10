@@ -23,7 +23,7 @@ if _early_recovery.restore_interrupted_pull():
     _early_recovery.relaunch_after_restore()
 
 import argparse
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
 
 def _build_parser() -> argparse.ArgumentParser:

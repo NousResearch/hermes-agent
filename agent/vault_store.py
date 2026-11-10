@@ -29,7 +29,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from urllib.parse import urlsplit
 from hermes_dir_acl import make_user_dir
 

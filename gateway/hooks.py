@@ -12,7 +12,7 @@ model, provider.  Forum follow-ups pass ``message_thread_id=int(thread_id)``.
 import asyncio
 import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 import hermes_yaml as yaml
 

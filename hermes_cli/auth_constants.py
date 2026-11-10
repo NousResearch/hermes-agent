@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 
 # httpx is imported lazily (~30ms) because hermes_cli.auth is on the interactive-CLI startup path

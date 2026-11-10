@@ -10,7 +10,7 @@ trailing "Provider said:" / "Details:" line.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, NamedTuple, Optional, Tuple
+from typing import Any, NamedTuple, Optional
 
 from agent.error_classifier import FailoverReason
 from agent.stream_max_lifetime import StreamLifetimeExceeded

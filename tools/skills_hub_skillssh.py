@@ -4,7 +4,7 @@ import hashlib
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _split_repo_id
 from tools.skills_hub_models import (

@@ -12,7 +12,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.error_classifier import FailoverReason
 from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row

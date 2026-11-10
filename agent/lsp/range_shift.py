@@ -10,7 +10,7 @@ Keeping range in the key preserves the "same error at a new line" signal.
 from __future__ import annotations
 
 import difflib
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 _Shift = Callable[[int], Optional[int]]
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import secrets
 import webbrowser
-from typing import Any, Dict
+from typing import Any
 from urllib.parse import urlencode
 
 from hermes_cli.auth_constants import (

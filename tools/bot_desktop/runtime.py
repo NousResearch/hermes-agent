@@ -26,7 +26,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Optional
 
 from agent.deadline import poll_until
 from hermes_constants import get_hermes_home

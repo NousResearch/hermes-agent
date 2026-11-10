@@ -19,7 +19,7 @@ import re
 from contextlib import suppress
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 

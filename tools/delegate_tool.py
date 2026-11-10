@@ -15,7 +15,7 @@ import logging
 import time
 import weakref
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import is_truthy_value

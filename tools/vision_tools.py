@@ -15,7 +15,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional
+from typing import Any, Awaitable, Callable, NamedTuple, Optional
 from urllib.parse import urlparse
 import httpx
 from hermes_dir_acl import make_user_dir

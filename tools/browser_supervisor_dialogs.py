@@ -16,7 +16,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
 # Logger-name parity with the origin module (records must look unchanged).

@@ -9,7 +9,7 @@ import os
 import threading
 import time
 from datetime import datetime, timezone, UTC
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")

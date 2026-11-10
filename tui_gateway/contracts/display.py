@@ -9,7 +9,7 @@ in-flight result was produced under a lease that has since changed.
 
 from __future__ import annotations
 
-from .base import Params, Payload, Result, WireEnum
+from .base import Payload, Result, WireEnum
 from .common import ProfileParams
 from .registry import event, method, server_request
 from .server_requests import ServerRequestParams, ValueResult

@@ -6,7 +6,7 @@ import logging
 import hashlib
 import fnmatch
 import re
-from typing import Any, List
+from typing import Any
 from tools.ansi_strip import strip_tool_metadata_text
 from tools.mcp_tool_common import mcp_field
 

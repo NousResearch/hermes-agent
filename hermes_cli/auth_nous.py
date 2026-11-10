@@ -16,7 +16,7 @@ import uuid
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 from urllib.parse import urlparse
 from hermes_cli.auth_codex import _pool_entries
 from hermes_cli.auth_constants import (

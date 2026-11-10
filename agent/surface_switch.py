@@ -12,7 +12,7 @@ converges at the next rebuild boundary (compaction).
 from __future__ import annotations
 
 import logging
-from typing import Any, List
+from typing import Any
 
 from agent.message_content import flatten_message_text
 from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING

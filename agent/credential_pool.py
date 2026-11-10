@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Iterable, Optional
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env

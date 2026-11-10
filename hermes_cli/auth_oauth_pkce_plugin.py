@@ -28,7 +28,7 @@ import time
 import uuid
 import webbrowser
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Mapping, Optional
 from urllib.parse import urlencode, urlparse
 
 logger = logging.getLogger(__name__)

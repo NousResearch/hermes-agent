@@ -15,7 +15,6 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ import json
 import os
 import socket
 import unicodedata
-from typing import Any, Dict, Mapping, MutableMapping, Optional
+from typing import Any, Mapping, MutableMapping, Optional
 
 TURN_AUTHOR_ENV = "HERMES_TURN_AUTHOR"
 

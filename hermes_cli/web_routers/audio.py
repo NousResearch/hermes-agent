@@ -32,7 +32,7 @@ from hermes_cli.web_models import (
     TTSLeaseRequest,
     VoiceLiveSessionRequest,
 )
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()

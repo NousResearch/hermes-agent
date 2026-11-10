@@ -11,7 +11,7 @@ import logging
 import math
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect

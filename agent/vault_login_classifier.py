@@ -22,7 +22,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 import itertools
 
 LOGIN_AUTOFILL_TOKENS = ("username", "email", "tel", "current-password")

@@ -4,7 +4,7 @@ import hashlib
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 from tools.skills_hub_models import (

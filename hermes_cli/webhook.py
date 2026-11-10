@@ -10,7 +10,7 @@ import time
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable
 
 from hermes_constants import display_hermes_home
 from utils import atomic_json_write

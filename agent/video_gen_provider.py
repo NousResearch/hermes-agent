@@ -19,7 +19,7 @@ import abc
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from agent import provider_media
 from agent.provider_base import CatalogProviderBase

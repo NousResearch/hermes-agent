@@ -21,7 +21,7 @@ import stat
 import sys
 from importlib.metadata import version as _distribution_version
 from pathlib import Path
-from typing import Any, List, NoReturn, Optional, Tuple
+from typing import Any, NoReturn, Optional
 
 from packaging.requirements import Requirement
 

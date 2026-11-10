@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import List, Optional, Tuple
+from typing import Optional
 
 # Dedicated logger name so the documented grep recipe survives any
 # ``logging.getLogger(__name__)`` rename of internal modules.

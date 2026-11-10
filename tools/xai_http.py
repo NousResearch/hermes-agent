@@ -6,7 +6,7 @@ import datetime
 import json
 import os
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"

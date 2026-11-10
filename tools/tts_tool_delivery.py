@@ -19,7 +19,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.tts_command_provider import (

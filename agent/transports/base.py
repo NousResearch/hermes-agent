@@ -4,7 +4,7 @@ A transport owns one api_mode's data path (convert_messages -> convert_tools -> 
 or retries — those stay on AIAgent."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.transports.types import NormalizedResponse
 

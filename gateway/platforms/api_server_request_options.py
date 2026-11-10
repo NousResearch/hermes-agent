@@ -7,7 +7,7 @@ are unaffected; the helpers those two read stay in the facade and are imported
 lazily (call time) to avoid an import cycle.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
 def _request_reasoning_config(model_options: Any) -> Optional[dict[str, Any]]:

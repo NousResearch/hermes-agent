@@ -20,7 +20,6 @@ from typing import NoReturn
 # Old updaters load _no_prompt_git_kwargs from here after the checkout swap (frozen surface).
 from hermes_cli._subprocess_compat import no_prompt_git_kwargs as _no_prompt_git_kwargs
 from hermes_cli.config import get_hermes_home
-from hermes_cli import update_handoff as _update_handoff
 from hermes_cli.update_cmd_common import _best_effort, _record_stop
 # Captured BEFORE a checkout swap: parent transport/lifecycle never imports new code.
 from hermes_cli.update_completion import run_completion

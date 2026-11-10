@@ -16,7 +16,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional
 
 from hermes_cli.plugin_catalog import (
     CATALOG_TIERS, PluginCatalogEntry, RemovedEntry, cached_removed_entries, entry_capability_summary, filter_entries,

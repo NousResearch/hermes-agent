@@ -10,7 +10,7 @@ import math
 import time
 from collections import Counter
 from datetime import datetime, timezone, UTC
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads

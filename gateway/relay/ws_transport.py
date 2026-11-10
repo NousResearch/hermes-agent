@@ -18,7 +18,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.session import SessionSource

@@ -9,7 +9,7 @@ import logging
 import json
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from utils import atomic_json_write
 
 if TYPE_CHECKING:

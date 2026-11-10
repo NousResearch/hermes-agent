@@ -14,7 +14,7 @@ import sqlite3
 import tempfile
 import time
 import uuid
-from typing import Dict, List, Optional, Sequence
+from typing import Optional, Sequence
 
 
 from hermes_constants import get_hermes_home
@@ -23,7 +23,7 @@ from hermes_startup_watchdog import report_startup_progress
 from utils import safe_json_loads
 from hermes_state_common import (
     DEFERRED_INDEX_SQL, FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, FTS_SQL,
-    FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
+    FTS_STORAGE_VERSION, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
 )

@@ -1922,7 +1922,7 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     config lock, once one exists, must wrap the same section."""
     from pathlib import Path
     from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
-    from hermes_cli.config_backend import supports_file_tooling, write_config_keys
+    from hermes_cli.config_backend import supports_file_tooling
     path = Path(config_path) if config_path else get_config_path()
     planned_from = read_user_config_raw(path).get("model")
     updates = model_selection_config_updates(result, planned_from)

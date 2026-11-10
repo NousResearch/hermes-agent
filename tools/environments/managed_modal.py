@@ -14,7 +14,7 @@ import requests
 import shlex
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from tools.environments.base import BaseEnvironment
 from tools.interrupt import is_interrupted

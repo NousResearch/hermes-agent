@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 from agent.credential_source import VERTEX_OAUTH, tag_credential_source
 from agent.secret_scope import get_secret as _get_secret, is_multiplex_active

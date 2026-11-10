@@ -4,7 +4,7 @@ import json as _json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, NoReturn, Optional, Set
+from typing import NoReturn, Optional
 
 from hermes_cli.cli_output import print_info as _print_info
 from hermes_cli.colors import Colors, color

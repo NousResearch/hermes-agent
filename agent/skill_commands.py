@@ -6,7 +6,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Mapping, Optional
 
 from hermes_constants import display_hermes_home
 from agent.prompt_cache_boundary import register_stable_prefix

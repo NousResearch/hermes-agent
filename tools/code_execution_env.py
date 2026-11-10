@@ -10,7 +10,6 @@ import os
 import platform
 import subprocess
 import sys
-from typing import Dict
 
 # Logger name kept as the origin module's so existing log expectations hold.
 logger = logging.getLogger("tools.code_execution_tool")

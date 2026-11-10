@@ -28,7 +28,7 @@ from hermes_cli.desktop_plugin_halves import (
     reconcile_desktop_halves,
     reconcile_desktop_halves_report,
 )
-from hermes_cli.desktop_plugin_install import DESKTOP_PLUGINS_DIR, desktop_plugins_root
+from hermes_cli.desktop_plugin_install import desktop_plugins_root
 from hermes_constants import get_default_hermes_root
 
 router = APIRouter()

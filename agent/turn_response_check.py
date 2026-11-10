@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.error_classifier import FailoverReason
 from agent.turn_api_call import stop_thinking_spinner

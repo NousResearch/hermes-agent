@@ -7,7 +7,7 @@ discord.py's sender thread while children change on the asyncio loop, hence the 
 
 import logging
 import threading
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Optional
 
 import discord
 

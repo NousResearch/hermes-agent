@@ -17,7 +17,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from agent.deadline import poll_until
 from agent.redact import redact_sensitive_text

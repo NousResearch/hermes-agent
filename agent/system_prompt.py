@@ -15,7 +15,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from agent.delegation_context import owned_kanban_task
 from agent.prompt_cache_scope import conversation_id

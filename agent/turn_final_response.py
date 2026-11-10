@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 from agent.message_metadata import append_message
 from agent.reasoning_promotion import answer_in_reasoning_capability

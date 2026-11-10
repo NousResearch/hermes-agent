@@ -1,7 +1,7 @@
 """Pure parsers for inbound DingTalk ``ChatbotMessage`` payloads (no I/O, no adapter state)."""
 
 import json
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional
 
 from gateway.platforms.event import MessageType
 

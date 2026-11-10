@@ -15,7 +15,7 @@ import logging
 import os
 import re
 from contextlib import suppress
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from agent.monitoring.gateway_health import _safe_instance_id
 from agent.monitoring.redaction import redact_bounded

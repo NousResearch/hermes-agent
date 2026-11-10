@@ -23,7 +23,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Optional
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner

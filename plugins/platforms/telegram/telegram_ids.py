@@ -4,7 +4,7 @@ string for public channels/groups; a bare ``int(chat_id)`` crashes on the userna
 from __future__ import annotations
 
 import re
-from typing import Any, Union
+from typing import Any
 
 from gateway.platforms.send_targets import parse_nonempty, regex_groups_parser
 

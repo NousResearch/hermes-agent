@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 import secrets
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from tools.browser_vault_context import plugin_errors_as_refusal, saved_origins, snapshot_refusal, write_backend_code
 

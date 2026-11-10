@@ -11,7 +11,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional
+from typing import Callable, Iterable, Optional
 
 from hermes_cli._subprocess_compat import (
     NO_LAZY_FETCH_ENV,

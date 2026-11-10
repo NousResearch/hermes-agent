@@ -6,7 +6,7 @@ normalizer, keeping its phase and completion gates.
 """
 
 from types import SimpleNamespace
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional
 
 
 def _parse_codex_final_response(

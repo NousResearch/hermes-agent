@@ -10,7 +10,7 @@ import logging
 import threading
 import time
 from agent.turn_context import extract_api_content_sidecar
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from gateway.session import SessionEntry

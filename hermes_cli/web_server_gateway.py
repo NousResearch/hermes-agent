@@ -12,7 +12,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_detach_flags_without_breakaway
 from hermes_cli.config import get_hermes_home
 

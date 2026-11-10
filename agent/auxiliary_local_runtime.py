@@ -9,7 +9,7 @@ local model slug to whatever cloud provider held a key (#119227) or to the prima
 
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 

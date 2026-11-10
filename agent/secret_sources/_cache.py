@@ -15,7 +15,7 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Generic, Optional, TypeVar
+from typing import Callable, Generic, Optional, TypeVar
 
 from hermes_constants import secure_parent_dir
 from utils import atomic_json_write

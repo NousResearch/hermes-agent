@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from typing import List, Optional
+from typing import Optional
 
 from tools import write_approval as wa
 

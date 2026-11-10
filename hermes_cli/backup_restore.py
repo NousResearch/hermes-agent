@@ -18,7 +18,7 @@ import tempfile
 import zipfile
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional
 
 from hermes_state_holders import read_only_db_uri
 from hermes_cli.backup_sqlite import _safe_copy_db

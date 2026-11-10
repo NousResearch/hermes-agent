@@ -7,7 +7,7 @@ tests and mock patch points remain valid; this module only aggregates them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Iterable, Optional
 
 from agent.models_dev import ModelInfo
 

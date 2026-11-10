@@ -28,7 +28,7 @@ security event laundered into an apparent success.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Set
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 

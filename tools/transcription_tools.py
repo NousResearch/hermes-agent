@@ -19,7 +19,7 @@ import importlib.util as _ilu
 from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Optional, Dict, Any
+from typing import Optional, Any
 
 from utils import is_truthy_value
 from tools.transcription_common import (

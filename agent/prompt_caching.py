@@ -7,7 +7,7 @@ breakpoint plus the last 3 messages). All markers share one TTL (5m or 1h).
 
 import copy
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
 
 from agent.prompt_cache_boundary import find_stable_prefix
 

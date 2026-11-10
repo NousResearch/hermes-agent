@@ -9,7 +9,7 @@ provider credential should route through :func:`save_provider_env_credential` /
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 __all__ = [
     "purge_env_credential_references",

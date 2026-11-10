@@ -18,7 +18,7 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Iterator, Optional
 from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
@@ -740,7 +740,7 @@ def _probe_codex_quota_restored(
     Probes are throttled per access token (module-local cache) so the hot selection path can fire
     this freely.
     """
-    from hermes_cli.auth import _codex_quota_probe_cache, _nonempty_str
+    from hermes_cli.auth import _codex_quota_probe_cache
     token = _stripped(access_token)
     # Real Codex access tokens are JWTs. Refusing to probe non-JWT tokens avoids pointless
     # network calls for corrupt/placeholder entries (and keeps hermetic test fixtures offline).

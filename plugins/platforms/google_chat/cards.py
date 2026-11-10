@@ -7,7 +7,7 @@ wire format and must stay byte-identical.
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Dict
+from typing import Any, Callable
 
 # Invisible Unicode codepoints that render as tofu (□) in Google Chat's
 # restricted font stack: ZWS/ZWNJ/ZWJ, bidi marks, word joiner, BOM and

@@ -27,7 +27,7 @@ import time
 import threading
 import atexit
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
+from typing import Optional, Any
 
 logger = logging.getLogger(__name__)
 

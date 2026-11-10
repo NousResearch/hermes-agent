@@ -22,7 +22,7 @@ the target holds at least as many messages). The reverse order would lose the ro
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Iterable, Optional
 
 from hermes_state_common import (
     _id_chunks,

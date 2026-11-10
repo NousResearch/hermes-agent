@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone, UTC
 from decimal import Decimal
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
 from utils import base_url_host_matches, base_url_hostname, base_url_origin

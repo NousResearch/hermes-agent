@@ -34,7 +34,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 from agent.retry_utils import parse_retry_after_seconds
 from hermes_cli.auth_constants import (

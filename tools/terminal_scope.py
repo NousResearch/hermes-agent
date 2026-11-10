@@ -15,7 +15,7 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 

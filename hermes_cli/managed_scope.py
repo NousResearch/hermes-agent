@@ -13,7 +13,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 
 # Stale-module bridge: this module binds ``utils`` names at import time, so a fresh

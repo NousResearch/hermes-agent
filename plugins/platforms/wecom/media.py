@@ -11,7 +11,7 @@ import mimetypes
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
 from agent.i18n import t

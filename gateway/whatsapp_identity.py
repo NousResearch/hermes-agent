@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Set
 
 from hermes_constants import get_hermes_dir
 

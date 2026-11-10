@@ -6,7 +6,7 @@ import base64
 import json
 import logging
 import mimetypes
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import exact_mcp_identifier, mcp_field
 from tools.mcp_tool_schema import mcp_prefixed_tool_name

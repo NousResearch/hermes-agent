@@ -8,7 +8,7 @@ import os
 import time
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.usage_pricing import normalize_usage
 

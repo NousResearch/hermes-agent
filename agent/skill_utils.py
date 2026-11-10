@@ -9,7 +9,7 @@ import re
 import sys
 import threading
 from pathlib import Path, PurePath
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Optional
 
 from hermes_constants import (
     get_config_path,

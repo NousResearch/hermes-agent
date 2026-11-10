@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Mapping, MutableMapping, Optional
 
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
 from agent.message_sanitization import coalesce_tool_call_id

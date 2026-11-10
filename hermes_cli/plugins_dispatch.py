@@ -17,7 +17,7 @@ import threading
 import time
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
+from typing import Any, Callable, Mapping, Optional
 
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
 

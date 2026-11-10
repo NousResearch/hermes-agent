@@ -14,7 +14,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing, open_db, write_txn
 from hermes_constants import get_hermes_home

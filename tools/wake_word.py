@@ -20,7 +20,7 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 # The engine classes are re-exported on purpose: _build_engine resolves the
 # _PROVIDERS names on THIS module so a test (or plugin) can swap one engine.

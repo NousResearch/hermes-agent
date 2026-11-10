@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 # Placeholder shapes for batch goal validation: bare 'TODO' / 'task N' labels, or unexpanded template markers. The
 # marker regex is deliberately NARROW — only snake_case / space-separated placeholder identifiers (`<feature_name>`,

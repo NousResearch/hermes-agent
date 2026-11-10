@@ -13,7 +13,7 @@ import json
 import time
 import uuid
 from datetime import datetime, timezone, UTC
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 from hermes_cli.auth_constants import (
     AuthError, MINIMAX_OAUTH_GRANT_TYPE, MINIMAX_OAUTH_REFRESH_SKEW_SECONDS, MINIMAX_OAUTH_SCOPE,
     _FORM_JSON_HEADERS, _minimax_err, httpx,

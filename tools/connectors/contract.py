@@ -6,7 +6,7 @@ A `str` enum so payloads serialise to the bare value and the TypeScript side see
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 
 class TargetState(str, Enum):

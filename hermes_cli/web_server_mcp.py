@@ -6,7 +6,7 @@ secrets are redacted on read.
 
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow

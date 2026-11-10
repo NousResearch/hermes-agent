@@ -7,7 +7,7 @@ import enum
 import os
 import threading
 from contextlib import contextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module

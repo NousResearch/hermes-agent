@@ -2,7 +2,6 @@
 Per-tool resolution: pinned > config overrides > registry > default."""
 
 from dataclasses import dataclass, field
-from typing import Dict
 
 from agent.model_metadata import CHARS_PER_TOKEN
 

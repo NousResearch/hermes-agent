@@ -195,7 +195,7 @@ from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, l
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note
 from plugins.platforms.telegram.telegram_network import (
-    SEED_FALLBACK_IPS, TelegramFallbackTransport, build_ptb_requests, discover_fallback_ips, parse_fallback_ip_env,
+    SEED_FALLBACK_IPS, build_ptb_requests, discover_fallback_ips, parse_fallback_ip_env,
     proxy_target_hosts)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered

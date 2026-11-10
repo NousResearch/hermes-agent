@@ -12,7 +12,7 @@ connector drops invalid entries, never the whole manifest).
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 # Discord option type 3 = STRING.
 _STR = 3

@@ -19,7 +19,7 @@ import re
 import sqlite3
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from gateway.dead_targets import classify_dead_error
 from hermes_cli.sqlite_util import add_column_if_missing

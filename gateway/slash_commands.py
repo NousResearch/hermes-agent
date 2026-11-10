@@ -6,7 +6,6 @@ the one-off commands.  run.py helpers are imported lazily."""
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import dataclasses
 import inspect
 import logging
@@ -17,7 +16,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel

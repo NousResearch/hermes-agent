@@ -21,7 +21,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Optional
 
 from hermes_cli.dashboard_auth.base import Session
 

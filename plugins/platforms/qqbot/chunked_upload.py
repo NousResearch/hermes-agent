@@ -14,7 +14,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable
 
 from .constants import FILE_UPLOAD_TIMEOUT
 

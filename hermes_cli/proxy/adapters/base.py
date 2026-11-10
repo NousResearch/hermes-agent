@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import FrozenSet, Optional
+from typing import Optional
 
 
 @dataclass(frozen=True)

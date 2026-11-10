@@ -10,7 +10,7 @@ import logging
 import threading
 import time
 import weakref
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")

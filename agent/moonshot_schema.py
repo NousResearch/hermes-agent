@@ -11,7 +11,7 @@ schema carries a ``required`` array, even an empty one. The ``#/definitions/`` â
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List
+from typing import Any
 
 # Values are maps of name â†’ schema: recurse into the values, but the map itself
 # is not a schema and gets no repairs.

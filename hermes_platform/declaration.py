@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from hermes_platform.resolver.app import LOCATION_KINDS, AppDef, AppLocation
 

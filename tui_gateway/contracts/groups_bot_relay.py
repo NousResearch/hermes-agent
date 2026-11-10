@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from .base import JsonValue, Params, Result, WireEnum
+from .base import JsonValue, Params, Result
 from .common import OkResult, OpenModel, ProfileParams
 from .registry import method
 from .server_requests import ApprovalChoice

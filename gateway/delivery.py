@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+from typing import Optional, Any
 
 from hermes_cli.config import get_hermes_home
 

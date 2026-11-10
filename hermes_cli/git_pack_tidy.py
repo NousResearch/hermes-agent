@@ -29,7 +29,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional
+from typing import Iterable, Iterator, Optional
 
 from hermes_cli._subprocess_compat import (
     NO_LAZY_FETCH_ENV,

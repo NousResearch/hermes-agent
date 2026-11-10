@@ -20,7 +20,7 @@ import types
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from registration_lifecycle import replacement_coordinator

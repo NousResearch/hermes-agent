@@ -32,7 +32,7 @@ import typing
 from collections import abc
 from concurrent.futures import Future
 from pathlib import PurePath
-from typing import Any, BinaryIO, Callable, Dict, Optional
+from typing import Any, BinaryIO, Callable, Optional
 
 logger = logging.getLogger("hermes_cli.plugins")
 

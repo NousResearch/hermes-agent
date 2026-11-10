@@ -10,7 +10,7 @@ until >=2 Class-1 platforms validate it. See website/docs/developer-guide/relay-
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable, Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, Optional, Protocol, runtime_checkable
 
 from gateway.platforms.event import MessageEvent
 from gateway.relay.descriptor import CapabilityDescriptor

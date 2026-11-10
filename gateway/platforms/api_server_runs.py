@@ -13,7 +13,7 @@ import uuid
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional
 
 try:
     from aiohttp import web

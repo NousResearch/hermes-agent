@@ -24,7 +24,7 @@ import asyncio
 import logging
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config_backend import ConfigBackendUnavailable

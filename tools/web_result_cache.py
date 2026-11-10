@@ -15,7 +15,7 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Optional
 from urllib.parse import urlparse
 from utils import atomic_json_write
 

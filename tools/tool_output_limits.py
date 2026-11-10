@@ -6,7 +6,7 @@ raises, so behaviour is unchanged when the section is absent or malformed."""
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from hermes_constants import hermes_home_key
 

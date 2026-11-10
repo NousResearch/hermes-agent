@@ -16,7 +16,7 @@ import os
 import re
 import subprocess
 from tempfile import TemporaryDirectory
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional
 
 from tools.transcription_audio import (
     _find_ffmpeg_binary, _probe_audio_duration, _run_quiet, _transcode_audio_for_stt)

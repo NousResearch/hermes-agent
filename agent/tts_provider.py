@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import abc
 import logging
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Iterator, Optional
 
 from agent.provider_base import CatalogProviderBase
 

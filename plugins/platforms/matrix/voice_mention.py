@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 CLAIM_WINDOW_SECONDS = 120.0
 # How long a bare mention waits for a voice from the same /sync batch that is still being gated.

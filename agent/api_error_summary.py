@@ -7,7 +7,7 @@ Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO
 import functools
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
 

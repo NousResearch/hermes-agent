@@ -4,7 +4,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 from hermes_cli.gitlock import clear_stale_tmp_packs
 from utils import rmtree_readonly

@@ -6,7 +6,6 @@ registered at a time (tool-schema bloat, conflicting backends).
 
 from __future__ import annotations
 
-import contextvars
 import inspect
 import json
 import logging
@@ -15,7 +14,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 from agent.redact import redact_for_egress
 
@@ -23,8 +22,7 @@ from agent.memory_caller_scope import bound_scope, caller_scope, claim_instance,
 # Moved to agent.memory_context / agent.memory_manager_tools; still importable here because agent.memory_manager is a public
 # module for plugins (hermes_cli/data/plugin_api.json).
 from agent.memory_context import StreamingContextScrubber, build_memory_context_block, sanitize_context
-from agent.memory_manager_tools import (inject_memory_provider_tools, memory_provider_tools_enabled,
-                                        memory_provider_tools_exposed, normalize_tool_schema)
+from agent.memory_manager_tools import (normalize_tool_schema)
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from hermes_constants import hermes_home_key

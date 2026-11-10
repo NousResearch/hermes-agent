@@ -272,7 +272,7 @@ def _open_regular(path):
 
 
 def capture_native_media(paths):
-    from gateway.platforms.base import get_inbound_media_max_bytes, validate_inbound_media_size
+    from gateway.platforms.base import get_inbound_media_max_bytes
     references = []
     limit = max(0, get_inbound_media_max_bytes())
     # ``gateway.max_inbound_media_bytes`` bounds the whole admission, not each file: with

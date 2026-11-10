@@ -5,7 +5,7 @@ Subcommands: ``list`` (default), ``add`` (same picker as `hermes model`), ``remo
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
 

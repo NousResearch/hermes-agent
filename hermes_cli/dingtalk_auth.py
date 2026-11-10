@@ -6,7 +6,7 @@ import contextlib
 import os
 import sys
 import time
-from typing import Optional, Tuple
+from typing import Optional
 
 import requests
 

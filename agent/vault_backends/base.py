@@ -13,7 +13,7 @@ import subprocess
 from contextlib import AbstractContextManager, nullcontext
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Optional, Sequence
 
 from agent.vault_store import VaultItemMeta
 

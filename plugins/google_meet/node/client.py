@@ -3,7 +3,7 @@ non-async tool handlers need no persistent connection. ``websockets`` is importe
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from plugins.google_meet.node import protocol as _proto
 

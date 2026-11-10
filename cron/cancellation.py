@@ -19,7 +19,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Optional, Protocol
 
 from hermes_constants import get_hermes_home
 

@@ -16,7 +16,7 @@ import time
 import traceback
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 import httpx

@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 #: Names that mean "no personality overlay".
 NEUTRAL_PERSONALITY_NAMES = frozenset({"", "none", "default", "neutral"})

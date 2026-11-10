@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import replace
-from typing import Any, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential

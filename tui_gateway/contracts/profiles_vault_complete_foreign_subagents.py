@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, ProfileParams, SessionParams, SubagentStatus
+from .common import ProfileParams, SessionParams, SubagentStatus
 from .config_free_tier_control import ModelOptionProvider
 from .registry import method
 

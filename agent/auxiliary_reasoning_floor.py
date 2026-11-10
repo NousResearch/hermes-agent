@@ -17,7 +17,7 @@ opposite of what a thinking-off caller asked for).
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)

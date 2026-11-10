@@ -11,7 +11,6 @@ boundary (stream start / after a newline / whitespace-only line so far), so pros
 from __future__ import annotations
 
 import re
-from typing import Tuple
 
 __all__ = ["THINK_CLOSE_TAGS", "THINK_OPEN_TAGS", "THINK_TAG_NAMES", "StreamingThinkScrubber"]
 

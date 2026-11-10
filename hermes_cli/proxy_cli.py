@@ -7,7 +7,7 @@ import os
 import shutil
 import sys
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel

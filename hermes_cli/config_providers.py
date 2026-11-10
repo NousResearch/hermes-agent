@@ -8,7 +8,7 @@ so tests patching that module still intercept the call.
 
 import logging
 import re
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Iterator, Optional
 from urllib.parse import urlparse
 
 from hermes_cli.route_identity import normalize_route_base_url

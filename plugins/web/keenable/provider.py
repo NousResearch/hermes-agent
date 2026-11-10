@@ -7,7 +7,7 @@ Config: ``web.provider_tier.keenable: free|paid`` pins the tier (unset = auto).
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 from agent.ssl_verify import requests_verify
 

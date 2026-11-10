@@ -102,7 +102,7 @@ def _(rid, _params):
 def _(rid, request):
     from tools.connectors.portal.client import PortalConnectorClient
     from tools.managed_tool_gateway import read_nous_access_token
-    from tui_gateway.contracts.connectors import ConnectorAccountRow, ConnectorAccountsResult
+    from tui_gateway.contracts.connectors import ConnectorAccountsResult
 
     accounts = PortalConnectorClient().list_accounts() if read_nous_access_token() else []
     rows = [account for account in accounts if request.connector is None or account["connector"] == request.connector]

@@ -14,7 +14,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.compression_marker import _COMPRESSION_MARKER_ARTIFACT_RE
 from agent.message_metadata import stamp_message_timestamp

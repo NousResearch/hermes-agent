@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import MutableMapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Iterator, NamedTuple, Optional
 
 # /fast stores "priority" or None (explicit normal), so key PRESENCE decides, not truthiness.
 _UNSET_TIER = object()

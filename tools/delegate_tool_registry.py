@@ -6,7 +6,7 @@ import logging
 import json
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from agent.interrupt_compat import request_hard_interrupt
 from tools.registry import tool_error
 

@@ -28,7 +28,7 @@ from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
 from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 _log = logging.getLogger("hermes_cli.web_server")
 config_router = APIRouter()

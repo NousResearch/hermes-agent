@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 from hermes_cli.process_identity import (
     own_process_groups, register_child, release_process_group_once_empty, spawn_env, spawned_by_this_process)

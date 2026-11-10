@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import json
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.provider_projection import splice_provider_projection
 from agent.think_scrubber import THINK_TAG_NAMES

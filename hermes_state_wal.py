@@ -13,7 +13,7 @@ import sqlite3
 import sys
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable
 from hermes_state_errors import is_sqlite_lock_error

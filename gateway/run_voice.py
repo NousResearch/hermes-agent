@@ -16,7 +16,7 @@ import weakref
 from contextlib import suppress
 from difflib import SequenceMatcher
 from types import SimpleNamespace
-from typing import Dict, List, Optional
+from typing import Optional
 
 from agent.i18n import t
 from gateway.config import Platform

@@ -11,7 +11,7 @@ from datetime import datetime, timezone, UTC
 from functools import partialmethod
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 

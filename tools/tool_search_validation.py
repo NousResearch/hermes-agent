@@ -6,7 +6,7 @@ import copy
 import json
 import logging
 import re
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, Optional
 
 from tools.registry import tool_error
 from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry

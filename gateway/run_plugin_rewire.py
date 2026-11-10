@@ -17,7 +17,7 @@ import contextlib
 import logging
 import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 

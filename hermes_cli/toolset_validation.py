@@ -2,7 +2,7 @@
 
 import ast
 from functools import cache
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
 from hermes_cli.platforms import PLATFORMS
 from hermes_cli.toolset_scope import toolset_allowed_for_platform

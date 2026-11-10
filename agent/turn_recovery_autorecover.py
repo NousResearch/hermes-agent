@@ -14,7 +14,7 @@ overload backoff path.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.error_classifier import TRANSIENT_REASONS
 

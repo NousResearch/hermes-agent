@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import coalesce_tool_call_id, normalize_provider_tool_call_ids

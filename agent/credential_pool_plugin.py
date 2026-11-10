@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import fields, replace
-from typing import TYPE_CHECKING, Any, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
 from hermes_cli.auth_constants import AuthError

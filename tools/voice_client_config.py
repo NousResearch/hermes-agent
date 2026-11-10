@@ -13,7 +13,7 @@ Config gate: ``voice.client_direct`` (default ``true``).
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import secrets
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 #: Long enough for ``getWsTicket()`` -> open WS, short enough that a leaked ticket is uninteresting.
 TTL_SECONDS = 30

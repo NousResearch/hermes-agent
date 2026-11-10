@@ -19,7 +19,7 @@ from contextvars import ContextVar
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Iterator, Optional
 from urllib.parse import urljoin
 
 import httpx

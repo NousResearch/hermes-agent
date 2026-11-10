@@ -13,7 +13,7 @@ import logging
 import re
 import string
 from dataclasses import fields
-from typing import Any, Iterable, List, Mapping
+from typing import Any, Iterable, Mapping
 
 from cron.blueprint_catalog import AutomationBlueprint, BlueprintSlot, fill_blueprint
 

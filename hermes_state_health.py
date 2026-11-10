@@ -25,7 +25,7 @@ import logging
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 from hermes_state_errors import (
     classify_persistence_error,

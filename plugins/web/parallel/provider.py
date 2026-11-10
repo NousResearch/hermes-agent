@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any
 
 from plugins.web._common import (
     SEARCH_LIMIT_CAP, BaseWebSearchProvider, cached_sdk_client, document, keyless_extract, keyless_search,

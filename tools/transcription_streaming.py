@@ -30,7 +30,7 @@ import queue
 import threading
 import time
 from array import array
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from agent.memory_provider import spawn_context_thread

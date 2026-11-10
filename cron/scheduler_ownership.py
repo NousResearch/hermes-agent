@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
 

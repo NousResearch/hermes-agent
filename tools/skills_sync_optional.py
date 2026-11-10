@@ -6,7 +6,7 @@ import logging
 from contextlib import suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path, PurePosixPath
-from typing import Dict, Iterator, List, Optional, Set, Tuple
+from typing import Iterator, Optional
 
 from agent.skill_utils import is_excluded_skill_path
 from utils import atomic_write_text

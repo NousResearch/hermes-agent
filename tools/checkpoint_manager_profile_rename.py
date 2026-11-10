@@ -12,7 +12,6 @@ import json
 import logging
 import shutil
 from pathlib import Path
-from typing import Dict
 
 from tools import checkpoint_manager as cm
 from tools import checkpoint_maintenance as maintenance

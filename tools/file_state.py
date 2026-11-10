@@ -15,7 +15,7 @@ import time
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Iterable, Optional
 
 # (mtime, read_ts, partial). partial=True when read_file returned a windowed
 # view (offset > 1 or limit < total_lines) — a later write should still warn

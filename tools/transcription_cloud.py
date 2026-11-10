@@ -13,7 +13,7 @@ import logging
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urljoin
 
 from utils import is_truthy_value

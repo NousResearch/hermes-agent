@@ -32,7 +32,7 @@ from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES, DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, loop_heartbeat_forever,
 )
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import (close_interrupted_tool_sequence, coalesce_tool_call_id,

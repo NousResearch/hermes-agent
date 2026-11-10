@@ -25,7 +25,7 @@ from collections import deque
 from datetime import datetime, timezone, UTC
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Optional
 
 try:
     from aiohttp import web

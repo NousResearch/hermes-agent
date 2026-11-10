@@ -17,7 +17,7 @@ clear "sign in" error from :meth:`search` rather than a silently different backe
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any
 
 from plugins.web._common import BaseWebSearchProvider, search_fail
 

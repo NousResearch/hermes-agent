@@ -8,7 +8,7 @@ import re
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Mapping
 
 from hermes_constants import get_hermes_home
 from hermes_cli.plugins_manifest import _portable_data_namespace

@@ -12,7 +12,7 @@ import re
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Callable, Mapping, Optional
 
 from utils import fast_safe_load
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities

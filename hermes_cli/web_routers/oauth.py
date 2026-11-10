@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone, UTC
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 

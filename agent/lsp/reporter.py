@@ -7,7 +7,7 @@ introduced by the latest edit.
 from __future__ import annotations
 
 import html
-from typing import Any, Dict, List
+from typing import Any
 
 from agent.compression_marker import elide
 

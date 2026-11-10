@@ -5,7 +5,7 @@ import sys
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, List, Optional, Sequence, Set, Tuple, Union
+from typing import Callable, Optional, Sequence
 
 from hermes_cli.colors import Colors, color
 

@@ -4,7 +4,7 @@ a monotonic revision so UI clients can reject stale updates. One ``todo_list`` t
 ``todos`` to write, omit to read; every call returns the full list. No system-prompt mutation."""
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 # The list is re-read after every compression (format_for_injection), so unbounded

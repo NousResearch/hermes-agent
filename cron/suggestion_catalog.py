@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 __all__ = ["CATALOG", "CatalogEntry", "classify_items_script_path", "seed_catalog_suggestions"]
 

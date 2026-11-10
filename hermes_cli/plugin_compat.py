@@ -7,7 +7,7 @@ an older checkout still lazy-imports these three names for its post-update notic
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 
 def compat_report(manifests: Any = None, *, force: bool = False) -> dict[str, list[Any]]:

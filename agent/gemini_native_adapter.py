@@ -15,7 +15,7 @@ import re
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Iterator, Optional
 
 import httpx
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from typing import Any, Callable, Dict, List, Mapping
+from typing import Any, Callable, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (

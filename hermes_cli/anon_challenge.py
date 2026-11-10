@@ -40,7 +40,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Dict, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 from urllib.parse import urlparse
 
 from hermes_cli.anon_auth import (

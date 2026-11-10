@@ -15,7 +15,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable

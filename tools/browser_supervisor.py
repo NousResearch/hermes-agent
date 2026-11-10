@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from tools.browser_supervisor_dialogs import (
     DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S, RECENT_DIALOGS_MAX, _VALID_POLICIES, DialogRecord,

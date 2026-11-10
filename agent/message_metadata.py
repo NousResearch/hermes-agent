@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from time import time as wall_time
 from uuid import uuid4
-from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
+from typing import Any, Mapping, MutableMapping, Optional, TypeVar
 
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 

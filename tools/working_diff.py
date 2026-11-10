@@ -13,7 +13,6 @@ import os
 import shutil
 import subprocess
 from contextlib import suppress
-from typing import Dict, List
 
 from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env, selected_git_env
 

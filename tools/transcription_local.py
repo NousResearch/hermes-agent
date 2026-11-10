@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 import importlib.util as _ilu
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from tools.transcription_audio import _find_whisper_binary, _prepare_local_audio, _run_quiet
 from tools.transcription_common import (

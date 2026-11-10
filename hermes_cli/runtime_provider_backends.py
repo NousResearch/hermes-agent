@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.azure_identity_adapter import is_token_provider
 from agent.secret_scope import get_secret_str

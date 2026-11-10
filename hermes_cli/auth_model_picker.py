@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from typing import Dict, List, Optional
+from typing import Optional
 from hermes_cli.auth_constants import DEFAULT_NOUS_PORTAL_URL
 
 logger = logging.getLogger("hermes_cli.auth")

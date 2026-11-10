@@ -17,7 +17,7 @@ import logging
 import threading
 import time
 from dataclasses import asdict, dataclass, field, replace
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("hermes_cli.auth")
 

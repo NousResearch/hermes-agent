@@ -3,7 +3,7 @@ value-setter methods (mixed into ``CuaDriverBackend``)."""
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Optional, Sequence
 
 from tools.computer_use.backend import ActionResult
 from tools.computer_use.cua_backend_parse import _parse_key_combo

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Optional
 
 from toolsets import TOOLSETS, resolve_toolset
 from tools.delegate_tool_config import _get_inherit_mcp_toolsets

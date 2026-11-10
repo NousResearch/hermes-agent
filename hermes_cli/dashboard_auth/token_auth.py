@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Awaitable, Callable, Optional, Tuple
+from typing import Awaitable, Callable, Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response

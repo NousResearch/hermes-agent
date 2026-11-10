@@ -58,7 +58,7 @@ class CLIChatTurnMixin:
         objects for attached images voice_input: True when the message came from voice transcription (gates
         the concise voice-response prefix, #65827)
         """
-        from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
+        from cli import ChatConsole, _ChatTurn, _accent_hex, _cprint, set_secret_capture_callback
         from tools.process_registry_notifications import TimelineNotification
         # Single-query and direct chat callers do not go through run().
         set_secret_capture_callback(self._secret_capture_callback)

@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 from utils import atomic_json_write
 

@@ -12,7 +12,7 @@ import threading
 import time
 from concurrent.futures import Executor
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Optional
 
 from fastapi import WebSocketDisconnect
 

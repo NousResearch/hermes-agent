@@ -6,7 +6,6 @@ import os
 import shlex
 import shutil
 import sys
-from typing import Set
 
 from hermes_cli.cli_output import (
     print_error as _print_error, print_info as _print_info, print_success as _print_success,

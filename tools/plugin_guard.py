@@ -15,7 +15,7 @@ import os
 import subprocess
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Iterator, Optional
 
 from tools.plugin_guard_context import (
     STEP_DOWN, catalog_cap, is_agent_facing, is_authorized_keys_prose, is_base64_archive_roundtrip,

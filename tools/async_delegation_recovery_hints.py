@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Dict, Optional
+from typing import Optional
 
 from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_repo_git_env
 

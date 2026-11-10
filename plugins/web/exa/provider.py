@@ -7,7 +7,7 @@ sync-only; the dispatcher threads extract when the caller is async.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 from plugins.web._common import (
     BaseWebSearchProvider, cached_sdk_client, document, exa_crawl_status, keyless_extract, keyless_search, keyless_variant_schema,

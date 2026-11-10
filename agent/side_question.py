@@ -9,7 +9,7 @@ the agent): a rendered transcript through :func:`agent.oneshot.run_oneshot`.
 """
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 from agent.background_review import _msg_text
 

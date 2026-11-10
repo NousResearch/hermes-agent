@@ -12,7 +12,7 @@ import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping
 from itertools import chain
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion

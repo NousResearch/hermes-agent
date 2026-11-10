@@ -7,7 +7,7 @@ so the two surfaces can never drift. Subcommands are listed in ``_USAGE``.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 

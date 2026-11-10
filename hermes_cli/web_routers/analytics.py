@@ -7,7 +7,7 @@ Extracted from ``hermes_cli.web_server``; app state and helpers are late-bound t
 import asyncio
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import hermes_yaml as yaml
 from fastapi import APIRouter, HTTPException, Query

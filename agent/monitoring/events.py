@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field, asdict
-from typing import Any, ClassVar, Dict, Optional
+from typing import Any, ClassVar, Optional
 
 
 class _MonitoringEvent:

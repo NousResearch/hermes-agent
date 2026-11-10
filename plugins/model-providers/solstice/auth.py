@@ -9,7 +9,7 @@ discovers and the token POSTs it brokers. Every NAS call carries the user's Nous
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping
+from typing import Any, Mapping
 
 DEFAULT_NAS_BASE_URL = "https://portal.nousresearch.com"
 _CONFIG_PATH = "/api/oauth/gemini-auth/config"

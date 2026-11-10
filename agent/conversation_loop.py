@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field, fields
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
 from agent.codex_responses_adapter import _summarize_user_message_for_log

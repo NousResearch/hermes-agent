@@ -12,7 +12,7 @@ import os
 import time
 import threading as _threading
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Optional
 from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
 from utils import base_url_host_matches

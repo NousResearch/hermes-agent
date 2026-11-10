@@ -2,7 +2,7 @@
 import os
 import re
 from urllib.parse import urlsplit
-from urllib.request import getproxies_environment, proxy_bypass_environment
+from urllib.request import proxy_bypass_environment
 
 _UNSAFE_URL_PLACEHOLDER = "<unparseable URL redacted>"
 _FILE_NAME = re.compile(r"[\w-]{1,40}\.[A-Za-z0-9]{1,5}")

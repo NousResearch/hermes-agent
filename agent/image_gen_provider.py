@@ -15,7 +15,7 @@ from __future__ import annotations
 import abc
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from agent import provider_media
 from agent.provider_base import CatalogProviderBase

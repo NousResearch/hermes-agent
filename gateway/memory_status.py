@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 # Thresholds on system MemAvailable.  ``critical`` doubles as the lifecycle
 # ledger's OOM-suspicion heuristic: a level that makes a later unclean death

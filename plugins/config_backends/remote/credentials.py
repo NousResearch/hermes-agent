@@ -16,7 +16,6 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Dict, Tuple
 
 IDP_ENV_PREFIX = "GATEWAY_RELAY_IDP_"
 _IDP_KEYS = ("token_url", "client_id", "client_secret", "scope")

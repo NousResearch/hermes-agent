@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any, Dict, Mapping
+from typing import Any, Mapping
 
 
 # Sources Hermes owns and may persist with secrets.  Any other non-empty,

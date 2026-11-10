@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, UTC
 from html import escape as html_escape
 import json
-from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Tuple
+from typing import Any, Iterable, Iterator, Literal, Optional
 
 from hermes_cli.timefmt import coerce_epoch
 

@@ -28,7 +28,7 @@ def test_config_import_and_provider_env_catalog_never_read_config(tmp_path):
         from threading import Thread
         import os, sqlite3
 
-        import providers
+        from hermes_agent import providers
         from hermes_agent import hermes_state_wal as wal
 
         listed = []

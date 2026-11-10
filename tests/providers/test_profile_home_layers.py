@@ -17,8 +17,8 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 
 _PLUGIN = textwrap.dedent(
     """
-    from providers import register_provider
-    from providers.base import ProviderProfile
+    from hermes_agent.providers import register_provider
+    from hermes_agent.providers.base import ProviderProfile
 
     register_provider(ProviderProfile(name="{name}", aliases=("{name}-alias",), auth_type="external_process",
                                       base_url="process://{name}", api_mode="chat_completions"))

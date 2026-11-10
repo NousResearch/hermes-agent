@@ -123,8 +123,8 @@ def _marker_plugin(root: Path, name: str, marker: Path, env_var: str) -> None:
     plugin.joinpath("__init__.py").write_text(textwrap.dedent(f"""
         from pathlib import Path
         Path({str(marker)!r}).write_text("imported")
-        from providers import register_provider
-        from providers.base import ProviderProfile
+        from hermes_agent.providers import register_provider
+        from hermes_agent.providers.base import ProviderProfile
         register_provider(ProviderProfile(name={name!r}, env_vars=({env_var!r},), auth_type="api_key"))
     """))
 
@@ -140,9 +140,9 @@ def test_cold_discovery_completion_reads_no_config_and_scans_no_home_plugins(tmp
         import json, sys
         import hermes_cli.config as cfg
         import hermes_cli.config_backend as cb
-        import providers
+        from hermes_agent import providers
         from hermes_cli.config_backend import ConfigBackendUnavailable
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         reads = []
         def refuse(*a, **k):
@@ -184,7 +184,7 @@ _SAFE_CATALOG = """
         _bind_safe_worker_policy(safe_mode=True, ignore_user_config=True, config={})
     else:
         _bind_worker_config({})
-    import providers
+    from hermes_agent import providers
     providers._BUNDLED_PLUGINS_DIR = Path(sys.argv[2])
     import hermes_cli.config as cfg
     present = "MARKPLUG_API_KEY" in cfg.OPTIONAL_ENV_VARS

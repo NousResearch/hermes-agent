@@ -11,8 +11,8 @@ from hermes_cli import plugins as plugins_mod
 
 SEEDING_PLUGIN = '''
 import os
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 class Seeds(ProviderProfile):
     def seed_pool_credentials(self, *, suppressed_sources, explicitly_configured):

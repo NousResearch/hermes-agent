@@ -161,6 +161,6 @@ Every former god file is a **facade** (public entry points + the names other pac
 | `pm/`, `pyproject.toml` | `pm/AGENTS.md` | pinning policy, PM-owned environments, release-age rule |
 | `hermes_platform/` | `hermes_platform/AGENTS.md` | host facts, resolvers |
 | `hermes_agent/acp_adapter/` | `website/docs/developer-guide/acp-internals.md` | ACP server for editors |
-| `providers/` | `hermes_agent/providers/README.md` | `ProviderProfile` registry and ABC |
+| `hermes_agent/providers/` | `hermes_agent/providers/README.md` | `ProviderProfile` registry and ABC |
 
 PR workflow: `CONTRIBUTING.md` (maintainers: the `hermes-agent-dev` skill, not shipped here).

@@ -68,8 +68,8 @@ def _value(proc) -> str:
 
 
 PROBE_INIT = (
-    "from providers import register_provider\n"
-    "from providers.base import ProviderProfile\n"
+    "from hermes_agent.providers import register_provider\n"
+    "from hermes_agent.providers.base import ProviderProfile\n"
     "register_provider(ProviderProfile(name='probe-provider', base_url='https://probe.test/v1'))\n")
 
 

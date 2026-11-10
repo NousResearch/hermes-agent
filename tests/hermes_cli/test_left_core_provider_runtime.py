@@ -265,8 +265,8 @@ def test_a_piped_cli_front_end_prints_the_outcome_and_what_another_process_kept(
 
 
 _INSTALLED_PROVIDER = """
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 register_provider(ProviderProfile(name="copilot", display_name="Stand-in", auth_type="api_key",
                                   env_vars=("COPILOT_GITHUB_TOKEN",), base_url="https://copilot.stand-in.test/v1"))

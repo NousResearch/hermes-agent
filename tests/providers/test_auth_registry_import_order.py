@@ -17,8 +17,8 @@ def test_tui_import_exposes_auth_registry_to_provider_plugins(tmp_path):
     plugin_dir = hermes_home / "plugins" / "model-providers" / "import-order-probe"
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "__init__.py").write_text(
-        "from providers import register_provider\n"
-        "from providers.base import ProviderProfile\n"
+        "from hermes_agent.providers import register_provider\n"
+        "from hermes_agent.providers.base import ProviderProfile\n"
         "\n"
         "profile = ProviderProfile(\n"
         "    name='import-order-probe',\n"

@@ -54,8 +54,8 @@ def test_user_provider_named_like_the_alias_still_wins(monkeypatch):
 
 
 _HOME_PLUGIN = '''
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 register_provider(ProviderProfile(name="my-meta", aliases=("meta",), auth_type="api_key",
                                   env_vars=("MY_META_KEY",), base_url="https://relay.invalid/v1"))

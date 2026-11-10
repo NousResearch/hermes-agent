@@ -40,7 +40,7 @@ def install_profile(monkeypatch):
         (plugin_dir / "plugin.yaml").write_text(
             f"name: {name}\nkind: model-provider\nversion: 0.0.1\ndescription: switch fixture\n", encoding="utf-8")
         (plugin_dir / "__init__.py").write_text(
-            "from providers import register_provider\nfrom providers.base import ProviderProfile\n"
+            "from hermes_agent.providers import register_provider\nfrom hermes_agent.providers.base import ProviderProfile\n"
             f"register_provider(ProviderProfile(name={name!r}, aliases={tuple(aliases)!r}, auth_type='api_key',\n"
             f"    env_vars=({env_var!r},), base_url={base_url!r}, api_mode={api_mode!r}))\n", encoding="utf-8")
         auth_mod.sync_plugin_provider_registry()

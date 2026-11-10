@@ -27,8 +27,8 @@ NAME = "acme-device"
 
 _PLUGIN_SOURCE = '''
 import json, os
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 def _log(event, **kw):
     with open(os.environ["ACME_DEVICE_LOG"], "a", encoding="utf-8") as fh:

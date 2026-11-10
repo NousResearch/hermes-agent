@@ -81,8 +81,8 @@ def test_discovered_process_provider_delivers_progress_before_completion(tmp_pat
     (plugin / "plugin.yaml").write_text(
         "name: streaming-fixture\nkind: model-provider\nversion: 0.1.0\ndescription: test fixture\n")
     (plugin / "__init__.py").write_text(
-        "from providers import register_provider\n"
-        "from providers.base import ProviderProfile\n"
+        "from hermes_agent.providers import register_provider\n"
+        "from hermes_agent.providers.base import ProviderProfile\n"
         "register_provider(ProviderProfile(name='streaming-fixture', "
         "auth_type='external_process', base_url='process://fixture', supports_streaming=True))\n")
     profile = get_provider_profile("streaming-fixture")

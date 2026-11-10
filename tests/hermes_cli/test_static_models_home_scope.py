@@ -20,8 +20,8 @@ SLUG = "acme-static"
 
 def _plugin(models: tuple) -> str:
     return textwrap.dedent(f"""
-        from providers import register_provider
-        from providers.base import ProviderProfile
+        from hermes_agent.providers import register_provider
+        from hermes_agent.providers.base import ProviderProfile
 
         register_provider(ProviderProfile(
             name="{SLUG}", display_name="Acme Static", auth_type="api_key", env_vars=("ACME_STATIC_KEY",),

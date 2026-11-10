@@ -1,6 +1,6 @@
 name: pdf-shrink
 repo: https://github.com/Hazem-Samak/hermes-pdf-shrink
-sha: c2d8a3f544bc9b0e704cd9e9cadbe5e34cd9c23d
+sha: 8f2207c640e217ebca25abfe21a76ebedc76d5dc
 description: >-
   Shrink a PDF to a size limit (2 MB, 500 KB, whatever the upload form says) with
   everything running locally — no upload, no API key, no third-party service. Two
@@ -30,19 +30,22 @@ description: >-
   existing output path is refused, never overwritten. Ladder rungs are built in a
   private system-temp directory, never beside the PDF; a read-only source folder
   still works, and the default output falls back to the current directory when
-  the source folder cannot be written. The only destructive option is
-  drop_attachments=true, off by default.
+  the source folder cannot be written. An explicit output_path must end in .pdf, and a location that
+  Hermes's own write denylist refuses is rejected before anything is written. The only destructive
+  option is drop_attachments=true, off by default.
 maintainer: Hazem-Samak
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/Hazem-Samak/hermes-pdf-shrink#readme
-version: "1.0.2"
+version: "1.0.3"
 title: PDF Shrink
-image: https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/c2d8a3f544bc9b0e704cd9e9cadbe5e34cd9c23d/assets/banner.png
+image: https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/8f2207c640e217ebca25abfe21a76ebedc76d5dc/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/c2d8a3f544bc9b0e704cd9e9cadbe5e34cd9c23d/assets/screenshot.jpg
+  - https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/8f2207c640e217ebca25abfe21a76ebedc76d5dc/assets/screenshot.jpg
 platforms: [linux, macos, windows]
+known_issues:
+  - '`hermes plugins validate` warns (catalog rule 9) about the one private core import in `engine.py`: `agent.file_safety.is_write_denied`. It is the confinement check the catalog review asked for, imported lazily and failing closed if the module is present but broken; there is no public equivalent, no core function is patched, and it exists in every Hermes >= 0.22.0.'
 capabilities:
   provides_tools:
     - pdf_shrink

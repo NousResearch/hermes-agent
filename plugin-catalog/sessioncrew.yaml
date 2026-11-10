@@ -1,7 +1,7 @@
-name: profile-rail
+name: sessioncrew
 title: SessionCrew
 repo: https://github.com/harukaxxxx/hermes-session-crew
-sha: "cb3b8717da867a3072754fbd6be6116d57206e70"
+sha: "6fa9883b1842ca0db01ca05aa4f3e662387b9c69"
 version: "0.1.0"
 description: >-
   Browse sessions and related projects across profiles in a Hermes Desktop side
@@ -19,9 +19,9 @@ tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 platforms: [linux, macos]
-docs_url: https://github.com/harukaxxxx/hermes-session-crew/blob/cb3b8717da867a3072754fbd6be6116d57206e70/README.md
+docs_url: https://github.com/harukaxxxx/hermes-session-crew/blob/6fa9883b1842ca0db01ca05aa4f3e662387b9c69/README.md
 screenshots:
-  - https://raw.githubusercontent.com/harukaxxxx/hermes-session-crew/cb3b8717da867a3072754fbd6be6116d57206e70/assets/sessioncrew-webapp.png
+  - https://raw.githubusercontent.com/harukaxxxx/hermes-session-crew/6fa9883b1842ca0db01ca05aa4f3e662387b9c69/assets/sessioncrew-webapp.png
 readme: true
 known_issues:
   - "Status and completion coverage is bounded; interrupted or incomplete sources may miss completions."

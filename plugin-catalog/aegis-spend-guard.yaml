@@ -27,7 +27,7 @@ tier: community
 category: tools
 docs_url: https://github.com/georgeonweb3/hermes-aegis-spend-guard#readme
 requires_hermes: ">=0.23.0"
-version: "1.0.0"
+version: "1.1.0"
 platforms: []
 capabilities:
   provides_tools:

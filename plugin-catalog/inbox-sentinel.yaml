@@ -1,5 +1,3 @@
-# DRAFT: not submitted. sha is the single commit staged in publication/public-repo
-# (built from snapshot 62a9f39bc4d4); it stays the same when pushed unchanged.
 name: inbox-sentinel
 repo: https://github.com/eddwithers/inbox-sentinel
 sha: 5cdc369cfde7b96e45ef763f776fc844f1385d5f

@@ -435,8 +435,12 @@ def get_current_board() -> str:
             return None
         # An archived board leaves a tombstone board.json; a stale `current`
         # file or HERMES_KANBAN_BOARD pointing at one falls through to
-        # default rather than resurrecting it (#43243).
-        if read_board_metadata(normed).get("archived"):
+        # default rather than resurrecting it (#43243). Under the #142435
+        # worker fence a cross-board slug reads back with db_path=None —
+        # treat it as stale too: a fenced execution must never adopt a
+        # foreign identity through a pointer file.
+        meta = read_board_metadata(normed)
+        if meta.get("db_path") is None or meta.get("archived"):
             return None
         return normed
 
@@ -453,12 +457,12 @@ def get_current_board() -> str:
             # utf-8-sig read fix (ours): tolerate BOM-persisted current-board files.
             val = f.read_text(encoding="utf-8-sig").strip()
             if val:
-                try:
-                    normed = _normalize_board_slug(val)
-                    if normed and board_exists(normed):
-                        return normed
-                except ValueError:
-                    pass
+                # Same staleness gate as the env candidates above (archived
+                # tombstone #43243, #142435 fence-foreign slug) — the inline
+                # path here used to skip the metadata check entirely.
+                found = _existing(val)
+                if found:
+                    return found
     except OSError:
         pass
     return DEFAULT_BOARD

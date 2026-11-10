@@ -326,3 +326,93 @@ def test_machine_flow_enumeration_stays_silent_under_worker_fence(monkeypatch, t
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
     with kb.pin_first_board_resolution():
         assert kb.kanban_db_path(board="other-board") == pinned
+
+
+# ---------------------------------------------------------------------------
+# #142435 addendum: the refusal must stay truthful at the CLI edge. The core
+# fix made cross-board intent raise inside _board_path; these pin the
+# surrounding contract a reviewer confirmed on the sibling vehicle:
+#   - boards metadata writes pre-resolve, so the refusal lands with nothing
+#     written ("nothing was read or written" stays true);
+#   - the boards CLI surfaces the refusal as `kanban: …` rc!=0, never a bare
+#     traceback;
+#   - board enumeration stays best-effort under the fence (db_path=None)
+#     instead of crashing `boards list`;
+#   - a stale `current` pointer naming a cross-board slug falls through to
+#     default instead of crashing the tombstone check.
+# ---------------------------------------------------------------------------
+
+def test_worker_boards_metadata_refusal_writes_nothing(monkeypatch, tmp_path):
+    """In a fenced worker, `boards rename <other> …` must refuse BEFORE
+    touching board.json — a write-then-raise order would strand the rename
+    while the error text claims nothing was written."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.create_board("other-board")
+    foreign_json = kb.board_metadata_path("other-board")
+    before = foreign_json.read_text(encoding="utf-8")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "worker-pinned.db"))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+    with pytest.raises(ValueError, match="other-board"):
+        kb.write_board_metadata("other-board", name="Hijacked")
+    assert foreign_json.read_text(encoding="utf-8") == before
+
+
+def test_worker_boards_cli_reports_error_not_traceback(monkeypatch, tmp_path):
+    """`hermes kanban boards rename <other> …` inside a fenced worker returns
+    rc!=0 with a `kanban: …` message on stderr — the boards dispatcher sits
+    outside kanban_command's handler try, so without the wrap the ValueError
+    escapes as a bare traceback."""
+    from tests.hermes_cli.test_kanban_boards import _cli
+
+    env = {
+        "HERMES_HOME": str(tmp_path),
+        "HERMES_KANBAN_DB": str(tmp_path / "worker-pinned.db"),
+        "HERMES_KANBAN_TASK": "t_deadbeef",
+    }
+    # The foreign board must exist before the fence applies: creating another
+    # board from inside the fenced worker is itself refused cross-board intent.
+    assert _cli(["boards", "create", "other-board"], env_extra={"HERMES_HOME": str(tmp_path)}).returncode == 0
+    r = _cli(["boards", "rename", "other-board", "Hijacked"], env_extra=env)
+    assert r.returncode != 0
+    assert "kanban:" in r.stderr
+    assert "Traceback" not in r.stderr
+    assert "Hijacked" not in (tmp_path / "kanban" / "boards" / "other-board" / "board.json").read_text(encoding="utf-8")
+
+
+def test_worker_board_enumeration_best_effort_db_path_none(monkeypatch, tmp_path):
+    """`boards list` inside a fenced worker must not crash on the fence:
+    cross-board metadata stays best-effort with db_path=None (the pinned
+    board's own row still resolves its real path)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.create_board("other-board")
+    own = tmp_path / "home" / "kanban.db"
+    own.write_bytes(b"")  # the pin itself points at the worker's own board DB
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(own))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+    boards = {b["slug"]: b for b in kb.list_boards()}
+    assert "other-board" in boards
+    assert boards["other-board"]["db_path"] is None
+    assert boards[kb.DEFAULT_BOARD]["db_path"] == str(own)
+
+
+def test_worker_stale_current_pointer_falls_through_to_default(monkeypatch, tmp_path):
+    """A fenced execution whose on-disk `current` pointer names a cross-board
+    slug must fall through to default: the fence refusal marks the pointer
+    stale, and get_current_board() must never adopt a foreign identity."""
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.create_board("other-board")
+    kb.set_current_board("other-board")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "child-pinned.db"))
+    monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, str(tmp_path))  # fenced root
+    assert kb.get_current_board() == kb.DEFAULT_BOARD

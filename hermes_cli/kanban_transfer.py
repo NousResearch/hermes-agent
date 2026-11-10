@@ -319,6 +319,14 @@ def import_board(
             )
         target = _available_slug(requested)
 
+        # #142435: refuse a fenced cross-board import BEFORE anything is
+        # staged — the transfer below moves the DB and attachments into
+        # boards/<target>/ first and only then hits the write path's
+        # refusal, which would strand half an imported board behind an
+        # error whose text claims nothing was written. Resolving the target
+        # db path here runs the same fence check before any move.
+        kb.kanban_db_path(board=target)
+
         staged_meta = _read_board_metadata(extracted / "board.json")
 
         board_root = kb.board_dir(target)

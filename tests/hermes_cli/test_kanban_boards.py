@@ -434,3 +434,34 @@ class TestBoardResurrection:
         assert meta["name"] == "My Board"
         assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
         assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+
+class TestWorkerFenceMetadata:
+    """#142435 addendum: a fenced worker's own board stays fully writable."""
+
+    def test_worker_can_write_own_board_metadata(self, fresh_home, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        kb.create_board("worker-own-board")
+        pinned = kb.kanban_db_path(board="worker-own-board")
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "worker-own-board")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+        meta = kb.write_board_metadata("worker-own-board", default_workdir=str(tmp_path / "wd"))
+        assert meta["default_workdir"] == str(tmp_path / "wd")
+        assert meta["db_path"] == str(pinned)
+
+    def test_worker_boards_show_own_board_reports_pinned_db_path(self, fresh_home, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        kb.create_board("worker-own-board")
+        pinned = kb.kanban_db_path(board="worker-own-board")
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "worker-own-board")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+        meta = kb.read_board_metadata("worker-own-board")
+        assert meta["db_path"] == str(pinned)

@@ -649,3 +649,39 @@ async def test_merged_replies_answer_a_clarify_with_typed_text_and_pass_native_a
     runner = object.__new__(GatewayRunner)
     runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
     assert await runner._prepare_clarify_reply_text(merged) == "\n".join(texts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("hook_result", "answer"), [
+    ({"action": "rewrite", "text": "3"}, "3"), ({"action": "rewrite", "text": None}, "2"), (None, "2")])
+async def test_plugin_rewrite_of_a_voice_note_reply_is_the_clarify_answer(hook_result, answer, monkeypatch):
+    """A typed reply to a voice note passes ``pre_gateway_dispatch`` before it answers a clarify: a
+    plugin's rewritten text is the answer, otherwise the typed text, never the replied-to speech."""
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway
+
+    adapter = _make_adapter()
+    cached = SimpleNamespace(path="cache/audio/voice.ogg", media_type="audio/ogg", kind="audio", display_name="voice.ogg")
+    adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+    event = _make_event("2")
+    reply_to = SimpleNamespace(voice=SimpleNamespace(file_name="voice.ogg"), from_user=SimpleNamespace(is_bot=False))
+    await adapter._cache_replied_media(SimpleNamespace(reply_to_message=reply_to), event)
+    if hook_result is not None and hook_result["text"] is None:
+        hook_result = {**hook_result, "text": event.text}  # a plugin returning the text unchanged
+    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", AsyncMock(return_value=[hook_result] if hook_result else []))
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True)})
+    runner._delivery_adapter_for = lambda _source: None
+    runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
+    event = await runner._hm_pre_gateway_dispatch_hook(event, event.source)
+    session = "agent:main:telegram:dm:12345"
+    entry = clarify_gateway.register("cl-rewrite", session, "Which one?", None, authority={})
+    try:
+        assert await runner._hm_clarify_reply(event, event.source, session) == ""
+        assert entry.response == answer
+    finally:
+        clarify_gateway.clear_session(session)

@@ -1205,6 +1205,34 @@ class TestEnvPollerIncrementalRead:
         assert session.output_buffer == "first\n7 0 exit:0\ntail \u00e9"
         assert session.exit_code == 3
 
+    @pytest.mark.parametrize("shell", [["dash", "-c"], ["busybox", "sh", "-c"], ["sh", "-c"]])
+    def test_status_is_taken_before_the_log_size(self, registry, tmp_path, shell):
+        """Output written while the liveness check runs must be in the final read.
+
+        A ``kill`` shell function stands in for the liveness check: it appends to
+        the log, then reports the process gone. The status is read first, so the
+        size snapshot taken after it covers the appended bytes; reading the size
+        first would drop them, since no poll follows an exit."""
+        if not shutil.which(shell[0]):
+            pytest.skip(f"needs {shell[0]}")
+        log, pid, exit_ = (tmp_path / f"bg.{ext}" for ext in ("log", "pid", "exit"))
+        log.write_text("first")
+        pid.write_text("1\n")
+        exit_.write_text("7\n")
+        q = shlex.quote
+        hook = f"kill() {{ printf tail >> {q(str(log))}; return 1; }}; "
+        env = self._shell_env(shell)
+        real_execute = env.execute
+        env.execute = lambda command, **kw: real_execute(hook + command, **kw)
+        session = _make_session(sid="proc_status_order")
+        session.exited = False
+        with patch("tools.process_registry.time.sleep"), \
+            patch.object(registry, "_move_to_finished"):
+            registry._env_poller_loop(session, env, str(log), str(pid), str(exit_))
+        assert len(env.commands) == 1
+        assert session.output_buffer == "firsttail"
+        assert session.exit_code == 7
+
     @pytest.mark.skipif(not shutil.which("sh"), reason="needs a POSIX sh")
     def test_exited_read_does_not_hold_back_a_truncated_utf8_tail(self, tmp_path):
         """Nothing more will be written after the exit, so a dangling lead byte is

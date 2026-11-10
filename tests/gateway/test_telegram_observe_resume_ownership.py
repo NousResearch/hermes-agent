@@ -16,7 +16,8 @@ import pytest
 from gateway.config import GatewayConfig
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-from hermes_state import AsyncSessionDB, SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.test_telegram_group_gating import _bot_command_entity, _group_message, _make_adapter
 
 
@@ -37,9 +38,12 @@ def _observed_command_source(from_user_id, text="/resume@hermes_bot abc"):
 
 
 def _runner(db=None):
-    runner = object.__new__(GatewayRunner)
+    class _Runner(GatewayRunner):
+        persistence = None  # the storage interface handle ``db``, set below
+
+    runner = object.__new__(_Runner)
     runner.config = GatewayConfig()
-    runner._session_db = AsyncSessionDB(db) if db is not None else None
+    runner.persistence = db
     runner._gateway_session_origin_for_id = lambda _sid: None
     runner._resume_caller_is_admin = lambda _source: False
     return runner
@@ -47,16 +51,14 @@ def _runner(db=None):
 
 @pytest.fixture
 def db(tmp_path):
-    database = SessionDB(db_path=tmp_path / "state.db")
-    yield database
-    database.close()
+    return storage_handle(tmp_path)
 
 
 def _alice_per_user_row(db):
     alice = SessionSource(platform=_observed_command_source(111).platform, chat_id="-100",
                           chat_type="group", user_id="111", user_name="Alice")
-    db.create_session("alice_row", "telegram", user_id="111", chat_id="-100", chat_type="group",
-                      session_key="agent:main:telegram:group:-100:111", origin_json=json.dumps(alice.to_dict()))
+    seed_session(db, "alice_row", "telegram", user_id="111", chat_id="-100", chat_type="group",
+                 session_key="agent:main:telegram:group:-100:111", origin_json=json.dumps(alice.to_dict()))
     return alice
 
 
@@ -79,8 +81,8 @@ def test_observed_command_cannot_resume_a_co_members_live_per_user_session(db):
 def test_observed_shared_group_session_still_resumes_for_every_member(db):
     shared = SessionSource(platform=_observed_command_source(111).platform, chat_id="-100",
                            chat_type="group", shared_session=True)
-    db.create_session("shared_row", "telegram", user_id=None, chat_id="-100", chat_type="group",
-                      session_key="agent:main:telegram:group:-100", origin_json=json.dumps(shared.to_dict()))
+    seed_session(db, "shared_row", "telegram", user_id=None, chat_id="-100", chat_type="group",
+                 session_key="agent:main:telegram:group:-100", origin_json=json.dumps(shared.to_dict()))
     runner = _runner(db)
     for member in (111, 222):
         assert asyncio.run(runner._resume_target_allowed(_observed_command_source(member), "shared_row")) is True
@@ -89,8 +91,8 @@ def test_observed_shared_group_session_still_resumes_for_every_member(db):
 
 
 def test_participant_less_row_still_fails_closed_for_a_per_user_caller(db):
-    db.create_session("legacy_row", "telegram", user_id=None, chat_id="-100", chat_type="group",
-                      session_key="agent:main:telegram:group:-100")
+    seed_session(db, "legacy_row", "telegram", user_id=None, chat_id="-100", chat_type="group",
+                 session_key="agent:main:telegram:group:-100")
     caller = SessionSource(platform=_observed_command_source(111).platform, chat_id="-100",
                            chat_type="group", user_id="222")
     assert asyncio.run(_runner(db)._resume_target_allowed(caller, "legacy_row")) is False
@@ -100,8 +102,8 @@ def test_live_observe_session_stored_before_the_shared_flag_still_resumes_for_me
     """An observe group's live session whose origin predates ``shared_session`` (no participant, no
     flag) stays the group's session for every observed member; a per-user caller is still refused."""
     legacy = SessionSource(platform=_observed_command_source(111).platform, chat_id="-100", chat_type="group")
-    db.create_session("legacy_live", "telegram", user_id=None, chat_id="-100", chat_type="group",
-                      session_key="agent:main:telegram:group:-100", origin_json=json.dumps(legacy.to_dict()))
+    seed_session(db, "legacy_live", "telegram", user_id=None, chat_id="-100", chat_type="group",
+                 session_key="agent:main:telegram:group:-100", origin_json=json.dumps(legacy.to_dict()))
     runner = _runner(db)
     runner._gateway_session_origin_for_id = lambda _sid: legacy
     for member in (111, 222):

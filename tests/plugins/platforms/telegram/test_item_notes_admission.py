@@ -16,6 +16,7 @@ from gateway.runtime_ownership import process_ownership
 from gateway.session_authorities import active_authority
 from gateway.session_ingress import admit_message
 from gateway.session_ingress_context import native_callback, register_transport_home
+from persistence_assembly import close_stores_under
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_documents import _make_document, _make_message
 from tests.waiting import async_wait_until
@@ -52,8 +53,6 @@ async def _admit(tmp_path, monkeypatch, event):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(root))
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     config = GatewayConfig()
     config._runtime_profile_homes = (("default", root),)
     runner = GatewayRunner(config)
@@ -69,7 +68,7 @@ async def _admit(tmp_path, monkeypatch, event):
             return await admit_message(active_authority(runner), event)
     finally:
         for authority in list(getattr(runner, "session_authorities", []) or []):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         process_ownership.release(root)
 
 

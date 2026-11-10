@@ -9,6 +9,7 @@ import asyncio
 
 import pytest
 
+from persistence_assembly import close_stores_under
 from tests.waiting import async_wait_until
 
 _WINDOW = 3.0  # the burst stays held well past the turn's end and the /new
@@ -80,4 +81,4 @@ async def test_idle_command_after_a_turn_settles_the_held_text(monkeypatch, comm
         await async_wait_until(lambda: 'B' in executed, timeout=_WINDOW + 10, what='B still ran')
     await async_wait_until(lambda: all(live.task is None or live.task.done() for live in authority.sessions.values()),
                            timeout=10, what='the drains to exit')
-    await asyncio.to_thread(authority.db.close)
+    await asyncio.to_thread(close_stores_under, authority.persistence.scope.profile_dir)

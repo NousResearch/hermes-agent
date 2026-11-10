@@ -4,7 +4,9 @@ Ink launcher (``main_tui_launch.py``) uses the same functions.
 """
 
 import json
+import os
 import sqlite3
+from pathlib import Path
 
 from agent.i18n import t
 
@@ -13,10 +15,18 @@ def hermes_command(args=()) -> list[str]:
     """The argv that runs this Hermes install with *args*, for a child process or a client that
     keeps it: the install's launcher file when it has one, else this interpreter with an inline
     bootstrap. It needs no extra environment (no ``PYTHONPATH``); the child serves the profile
-    named by the inherited ``HERMES_HOME``."""
-    from hermes_cli._launchers import installation_command
+    named by the inherited ``HERMES_HOME``. The first item is always a file a child process can
+    start without a shell."""
+    from hermes_cli._launchers import installation_command, runtime_command
     from hermes_cli.main import PROJECT_ROOT
-    return installation_command(PROJECT_ROOT, args)
+    command = installation_command(PROJECT_ROOT, args)
+    launcher = Path(command[0])
+    if os.name != "nt" or launcher.name != "hermes":
+        return command
+    # Windows publishes ``hermes.exe``, or ``hermes.cmd`` when it could not make one. Neither is
+    # the extensionless path, and a batch file is not startable without a shell.
+    exe = launcher.with_name("hermes.exe")
+    return [str(exe), *command[1:]] if exe.is_file() else runtime_command(PROJECT_ROOT, args)
 
 
 # A canonical local session is keyed ``local-`` + 64 hex; main's epilogue printed 22-char stored ids.

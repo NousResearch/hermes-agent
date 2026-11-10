@@ -770,7 +770,7 @@ class HostedRoomRuntime:
             self._recovered_leases = {k for k in self._recovered_leases if k[0] != binding.room_id}
         return lease
 
-    def _cache_lease(self, lease: state.DriverLease) -> state.DriverLease:
+    def _cache_lease(self, lease: DriverLease) -> DriverLease:
         """Cache ``lease`` unless the cache already holds a later expiry of the same generation.
 
         A LeaseKeeper thread and the turn's thread renew concurrently and commit in either order;
@@ -910,7 +910,9 @@ class HostedRoomRuntime:
         try:
             self._publish(
                 binding,
-                state.settle_task(self.store, attempt, placement=self.placement, **asdict(terminal), clock=self.clock))
+                state.settle_task(
+                    self.store, attempt, placement=self.placement, **asdict(terminal), clock=self.clock,
+                    allow_expired_lease=True))
         except (StaleLeaseError, StaleTaskError):
             # Cancellation, disband, or authority transfer can win the durable race, and then the
             # model result is discarded; an exact attempt in recovery still takes its reply.

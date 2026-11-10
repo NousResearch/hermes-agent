@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.gateway.test_telegram_group_gating import _group_location_message, _make_adapter
+from tests.gateway.test_telegram_group_gating import _FakeSessionStore, _group_location_message, _make_adapter
 
 
 def _dice_update(**msg_kw):
@@ -24,3 +24,16 @@ def test_dice_follows_group_gate(require_mention, delivered):
     assert adapter.handle_message.await_count == int(delivered)
     if delivered:
         assert "\U0001F3B2 rolled 4" in adapter.handle_message.call_args[0][0].text
+
+
+def test_observed_dice_keeps_its_roll_without_a_turn():
+    from plugins.platforms.telegram.telegram_dice import handle_dice_message
+
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-100"], group_allowed_chats=["-100"],
+                            observe_unmentioned_group_messages=True)
+    adapter._session_store = store = _FakeSessionStore()
+    adapter.handle_message = AsyncMock()
+    asyncio.run(handle_dice_message(adapter, _dice_update(), SimpleNamespace()))
+    adapter.handle_message.assert_not_awaited()
+    (_sid, message, _skip_db), = store.messages
+    assert message["observed"] is True and "\U0001F3B2 rolled 4" in message["content"]

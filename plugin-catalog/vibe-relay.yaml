@@ -1,6 +1,6 @@
 name: vibe-relay
 repo: https://github.com/trenthalden/vibe-relay
-sha: "43190b86e619befd7b098000c69a0f30c284bd5e"
+sha: "aac27eea07fea6fe7ffa9767b53be811559ffa04"
 title: Vibe Relay
 description: >-
   Vibecoding without burning your best model. Sets Hermes `delegation.backend` to a quota-aware
@@ -23,23 +23,25 @@ description: >-
   Vendors DEV Framework tools (`df_init`, `df_check`, `df_nav`); `df_check` returns the gate command
   for the agent to run via `terminal` (approvals apply). Disclosure — quota via public
   `fetch_account_usage(..., read_only=True)` at most once per 180s into
-  `$HERMES_HOME/plugin-data/vibe-relay/`; `df_init`/`df_nav` run the plugin's vendored scripts with
-  `python -I` and a scrubbed child env (PATH/HOME/LANG/LC_*/SYSTEMROOT/PYTHONDONTWRITEBYTECODE);
-  `df_nav` never executes the target's navigate.py; `df_init` refuses Hermes home and protected
-  $HOME dots; acceptance uses session terminal cwd when none is passed; template scripts may call
-  `git`/`gh` only when the user or agent runs them; cron via `cronjob_manage`; no credential-file
-  reads; no YOLO shells.
+  `$HERMES_HOME/plugin-data/vibe-relay/` (empty fetches: 15s negative TTL; no private usage-cache
+  import); checklist/handoff slugs confined to `[A-Za-z0-9._-]+` under `docs/`; park skips
+  resume-cron inside `HERMES_CRON_SESSION` unless `cron.allow_agent_scheduling`; `df_init`/`df_nav`
+  run the plugin's vendored scripts with `python -I` and a scrubbed child env; `df_nav` never
+  executes the target's navigate.py; `df_init` refuses Hermes home, `$HOME` itself, filesystem
+  root, and protected $HOME dots; acceptance uses session terminal cwd when none is passed;
+  template scripts may call `git`/`gh` only when the user or agent runs them; cron via
+  `cronjob_manage`; no credential-file reads; no YOLO shells.
 maintainer: trenthalden
 tier: community
 category: automation
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/trenthalden/vibe-relay#readme
-image: https://raw.githubusercontent.com/trenthalden/vibe-relay/43190b86e619befd7b098000c69a0f30c284bd5e/assets/banner.png
+image: https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/43190b86e619befd7b098000c69a0f30c284bd5e/assets/shot-1.png
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/43190b86e619befd7b098000c69a0f30c284bd5e/assets/shot-2.png
-  - https://raw.githubusercontent.com/trenthalden/vibe-relay/43190b86e619befd7b098000c69a0f30c284bd5e/assets/shot-3.png
-version: "0.3.1"
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/shot-1.png
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/shot-2.png
+  - https://raw.githubusercontent.com/trenthalden/vibe-relay/aac27eea07fea6fe7ffa9767b53be811559ffa04/assets/shot-3.png
+version: "0.3.2"
 platforms: [linux, macos]
 capabilities:
   provides_tools:

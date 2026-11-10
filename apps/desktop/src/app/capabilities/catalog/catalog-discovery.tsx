@@ -13,7 +13,7 @@ import { pluginTier, type PluginTier } from './catalog-curation'
 import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-data'
 import { CatalogDeveloper } from './catalog-developer'
 import { CatalogFeaturedSlider } from './catalog-featured-slider'
-import { catalogCategories } from './catalog-query'
+import { categorySections } from './catalog-query'
 
 /** Fewest cards a category needs for its own shelf; smaller ones share "More to explore". */
 const MIN_SHELF = 3
@@ -66,7 +66,7 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
   const sections: [string, string, CatalogEntry[]][] = (
     kind === 'plugins'
       ? groupCatalogPlugins(remaining).map(([key, items]) => [key, PLUGIN_CATEGORIES[key].label, items] as [string, string, CatalogEntry[]])
-      : catalogCategories(remaining).map(([key, meta]) => [key, meta.label, remaining.filter(entry => entry.category === key)] as [string, string, CatalogEntry[]])
+      : categorySections(remaining)
   ).sort((a, b) => topStars(b[2]) - topStars(a[2]))
 
   // A category too small to fill a row reads as a stray full-width strip; those

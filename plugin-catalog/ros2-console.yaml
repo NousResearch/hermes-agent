@@ -1,7 +1,7 @@
 name: ros2-console
 repo: https://github.com/vgenev/ros2-console
 sha: 6075de670b65985dc1f966c2f3ceebad97cc66ef
-description: "Read a live ROS 2 graph over SSH: topic health, measured rate, one message, camera frame, doc answers with commit provenance, and one gated publish that proves delivery."
+description: "Read a live ROS 2 graph over SSH: topic health, measured rate, one message, camera frame, doc answers with commit provenance, and one gated publish that proves delivery. Disclosure — runs fixed ros2 CLI scripts on the robot over SSH using your own SSH config and agent (or locally with bash when no host is set); the agent may choose any SSH host per call, and new host keys are accepted on first connect (StrictHostKeyChecking=accept-new); publishing is off until you set publish_allow topic globs, and actuation-style topics are always refused."
 maintainer: vgenev
 title: ROS 2 Console
 tier: community

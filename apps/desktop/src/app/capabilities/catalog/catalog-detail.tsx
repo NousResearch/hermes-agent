@@ -110,7 +110,7 @@ export function CatalogDetail({
       <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">
         {copy.description}
       </p>
-      {entry.overview && entry.overview !== copy.description && (
+      {entry.overview && entry.overview !== entry.description && entry.overview !== copy.description && (
         <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-tertiary)">
           {entry.overview}
         </p>

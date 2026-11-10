@@ -60,6 +60,8 @@ class AccountUsageSnapshot:
     # Codex JWT principal), when the provider supports one. Never a secret; ``None`` = the
     # fetcher cannot tell accounts apart, so the snapshot belongs to the provider's legacy slot.
     identity: Optional[str] = None
+    # Sign-in email of the account, when the provider reports one, so a reader can tell logins apart.
+    email: Optional[str] = None
     # Exact decoded provider response body (no headers/credentials) for integrations that need
     # fields Hermes does not normalize yet. Only populated by providers that fetch a JSON body.
     raw: Optional[dict] = None
@@ -130,7 +132,14 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
         return _render_usage_window_lines(snapshot)
     bold = "**" if markdown else ""
     plan = f" ({snapshot.plan})" if snapshot.plan else ""
-    lines = [f"📈 {bold}{snapshot.title}{bold}", f"Provider: {snapshot.provider}{plan}"]
+    return [f"📈 {bold}{snapshot.title}{bold}", f"Provider: {snapshot.provider}{plan}",
+            *render_account_usage_body(snapshot)]
+
+
+def render_account_usage_body(snapshot: AccountUsageSnapshot) -> list[str]:
+    """The window, detail and unavailable lines of :func:`render_account_usage_lines`, without its
+    title and provider header."""
+    lines: list[str] = []
     for window in snapshot.windows:
         if window.used_percent is None:
             base = f"{window.label}: unavailable"
@@ -703,7 +712,14 @@ def _fetch_codex_account_usage_impl(
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
     return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
-                     identity=_codex_snapshot_identity(token), raw=payload)
+                     identity=_codex_snapshot_identity(token), email=_codex_token_email(token), raw=payload)
+
+
+def _codex_token_email(token: str) -> Optional[str]:
+    """Email claim of a Codex access token (decoded, not verified: a display label only)."""
+    from hermes_cli.auth_constants import _decode_jwt_claims
+
+    return (_decode_jwt_claims(token).get("https://api.openai.com/profile") or {}).get("email") or None
 
 
 def _codex_snapshot_identity(token: str) -> Optional[str]:
@@ -858,6 +874,7 @@ def _fetch_anthropic_account_usage(
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json",
                "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
     payload = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=15.0)
+    plan, email = _anthropic_plan_and_email(headers)
     windows = _usage_windows(
         payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
                   ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
@@ -868,7 +885,20 @@ def _fetch_anthropic_account_usage(
     used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")
     if extra.get("is_enabled") and _is_num(used_credits) and _is_num(monthly_limit):
         details.append(f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {extra.get('currency') or 'USD'}")
-    return _snapshot("anthropic", "oauth_usage_api", windows, details)
+    return _snapshot("anthropic", "oauth_usage_api", windows, details, plan=plan, email=email)
+
+
+def _anthropic_plan_and_email(headers: dict[str, str]) -> tuple[Optional[str], Optional[str]]:
+    """Plan (``default_claude_max_5x`` -> ``Max 5x``) and email of the account behind *headers*.
+    Labels only: a failed profile read leaves them blank and never fails the usage read."""
+    try:
+        profile = _get_json("https://api.anthropic.com/api/oauth/profile", headers, timeout=15.0)
+    except Exception:
+        logger.debug("Anthropic profile read failed", exc_info=True)
+        return None, None
+    tier = str((profile.get("organization") or {}).get("rate_limit_tier") or "")
+    plan = tier.removeprefix("default_").removeprefix("claude_").replace("_", " ").capitalize() or None
+    return plan, (profile.get("account") or {}).get("email") or None
 
 
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:

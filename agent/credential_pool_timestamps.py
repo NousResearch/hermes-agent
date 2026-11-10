@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from agent.credential_pool import PooledCredential
 
 
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
@@ -29,3 +32,15 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
         except ValueError:
             return None
     return None
+
+
+def token_expires_at(entry: PooledCredential) -> Optional[float]:
+    """When a pool entry's access token expires (epoch seconds), from the row's own expiry fields
+    or, for a JWT (Codex), its ``exp`` claim; None when nothing says. No network, no refresh."""
+    for value in (entry.expires_at_ms, entry.expires_at):
+        expires = _parse_absolute_timestamp(value)
+        if expires is not None:
+            return expires
+    from hermes_cli.auth_constants import _decode_jwt_claims
+
+    return _parse_absolute_timestamp(_decode_jwt_claims(entry.access_token).get("exp"))

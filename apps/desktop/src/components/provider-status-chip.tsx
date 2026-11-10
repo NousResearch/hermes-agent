@@ -50,7 +50,8 @@ function poolChipState(provider: ModelOptionProvider, copy: ModelMenuTranslation
 }
 
 /** A scan-first account list: each row shows its tightest live window as a bar, with exact
- *  remaining/reset beside it. Unknown and signed-out rows stay empty rather than looking full. */
+ *  remaining beside it and every window (session and week) under it. Unknown and signed-out rows
+ *  stay empty rather than looking full; an idle one says its token lapsed. */
 function PoolUsageTip({ accounts, copy }: { accounts: PoolAccountView[]; copy: ModelMenuTranslations }) {
   return (
     <span className="grid w-60 gap-2 py-0.5">
@@ -65,7 +66,9 @@ function PoolUsageTip({ accounts, copy }: { accounts: PoolAccountView[]; copy: M
 
         const status = unavailable
           ? entry.state === 'unknown'
-            ? copy.poolUnknown
+            ? entry.tokenExpired
+              ? copy.poolIdle
+              : copy.poolUnknown
             : copy.poolUnavailable
           : limited
             ? accountReset
@@ -101,6 +104,13 @@ function PoolUsageTip({ accounts, copy }: { accounts: PoolAccountView[]; copy: M
                 style={{ width: `${width}%` }}
               />
             </span>
+            {!limited && !unavailable && entry.windows.length > 1 && (
+              <span className="grid text-[0.85em] leading-tight tabular-nums opacity-55">
+                {entry.windows.map(w => (
+                  <span key={w.label}>{copy.usageWindow(w.label, w.remaining, reset(w.resetMs))}</span>
+                ))}
+              </span>
+            )}
           </span>
         )
       })}

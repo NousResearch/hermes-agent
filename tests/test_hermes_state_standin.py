@@ -80,6 +80,15 @@ def test_session_reads_match_their_replacements(store, legacy):
     assert legacy.get_next_title_in_lineage("alpha plan") == store.sessions.next_title_in_lineage("alpha plan")
 
 
+def test_a_workspace_listing_matches_its_replacement(store, legacy):
+    seed_session(store, "w1", "cli", cwd="/work/alpha/sub", git_repo_root="/work/alpha")
+    seed_session(store, "w2", "cli", cwd="/work/alpha")
+    seed_session(store, "w3", "cli", cwd="/work/beta")
+    rows = legacy.list_sessions_rich(workspace_key="/work/alpha")
+    assert rows == [e.as_list_row() for e in store.sessions.list_sessions(SessionQuery(workspace_key="/work/alpha"))]
+    assert {row["id"] for row in rows} == {"w1", "w2"}
+
+
 def test_a_named_source_wins_over_a_source_list(store, legacy):
     assert legacy.session_count(source="cli", sources=["telegram"]) == 2
     assert {row["id"] for row in legacy.list_sessions_rich(source="cli", sources=["telegram"])} == {"s1", "s3"}

@@ -329,3 +329,103 @@ class TestNoTrailingNewlineTotalLines:
             "a\nb\nc\n", offset=1, end_line=2000, total_lines=2,
             file_size=5, file_ends_with_newline=None)
         assert unknown.total_lines == 2
+
+
+class TestZeroStatSizeNativeReads:
+    """Virtual files may contain data even when stat() reports st_size=0."""
+
+    @pytest.fixture()
+    def ops(self):
+        from tools.environments.local import LocalEnvironment
+        return ShellFileOperations(LocalEnvironment())
+
+    @pytest.fixture()
+    def virtual_file(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        target = tmp_path / "virtual_info"
+        real_stat = os.stat
+
+        def zero_size_stat(path, *args, **kwargs):
+            stat = real_stat(path, *args, **kwargs)
+            if os.fspath(path) != os.fspath(target):
+                return stat
+            return SimpleNamespace(
+                st_mode=stat.st_mode, st_size=0,
+                st_dev=stat.st_dev, st_ino=stat.st_ino,
+                st_mtime_ns=stat.st_mtime_ns, st_ctime_ns=stat.st_ctime_ns,
+            )
+
+        monkeypatch.setattr(os, "stat", zero_size_stat)
+        return target
+
+    def test_zero_stat_size_preserves_terminated_content(self, virtual_file, ops):
+        content = b"Linux version virtual-test\n"
+        virtual_file.write_bytes(content)
+
+        result = ops._read_file_native(str(virtual_file), 1, 2000)
+
+        assert result.error is None
+        assert result.content == "1|Linux version virtual-test"
+        assert result.total_lines == 1
+        assert result.file_size == len(content)
+        assert not result.hint
+
+    def test_zero_stat_size_preserves_unterminated_last_line(self, virtual_file, ops):
+        content = b"kernel version without newline"
+        virtual_file.write_bytes(content)
+
+        result = ops._read_file_native(str(virtual_file), 1, 2000)
+
+        assert result.content == "1|kernel version without newline"
+        assert result.total_lines == 1
+        assert result.file_size == len(content)
+        assert not result.hint
+
+    def test_zero_stat_size_pagination_and_past_eof(self, virtual_file, ops):
+        content = b"one\ntwo\nthree\nfour\n"
+        virtual_file.write_bytes(content)
+
+        page = ops._read_file_native(str(virtual_file), 2, 2)
+        past_eof = ops._read_file_native(str(virtual_file), 5, 2)
+
+        assert page.content == "2|two\n3|three"
+        assert page.total_lines == 4
+        assert page.truncated is True
+        assert page.file_size == len(content)
+        assert past_eof.content == ""
+        assert past_eof.total_lines == 4
+        assert "beyond the end" in (past_eof.hint or "")
+
+    def test_zero_stat_size_truly_empty_file_still_empty(self, virtual_file, ops):
+        virtual_file.write_bytes(b"")
+
+        result = ops._read_file_native(str(virtual_file), 1, 2000)
+
+        assert result.content == ""
+        assert result.total_lines == 0
+        assert result.file_size == 0
+        assert "empty" in (result.hint or "").lower()
+
+    def test_regular_file_size_and_content_unchanged(self, tmp_path, ops):
+        target = tmp_path / "regular.txt"
+        content = b"normal file\n"
+        target.write_bytes(content)
+
+        result = ops._read_file_native(str(target), 1, 2000)
+
+        assert result.content == "1|normal file"
+        assert result.total_lines == 1
+        assert result.file_size == len(content)
+
+    @pytest.mark.skipif(sys.platform != "linux" or not os.path.exists("/proc/version"),
+                        reason="Requires Linux procfs")
+    def test_live_linux_proc_version(self, ops):
+        # Exercise the public tool path, which selects native reads locally.
+        assert ops._native_read_enabled()
+        result = ops.read_file("/proc/version")
+
+        assert result.error is None
+        assert result.content.startswith("1|Linux version ")
+        assert result.total_lines == 1
+        assert result.file_size > 0

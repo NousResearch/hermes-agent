@@ -963,6 +963,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         kept = bytearray()      # first ``clamp`` bytes of that line
         have_partial = False    # that line has bytes but no newline yet
         last_byte = b""
+        bytes_read = 0
         digest = hashlib.sha256()
         try:
             with open(full, "rb") as fh:
@@ -976,6 +977,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     if not chunk:
                         break
                     digest.update(chunk)
+                    bytes_read += len(chunk)
                     last_byte = chunk[-1:]
                     if lineno > end_line:
                         # Past the window: only the line count and trailing byte
@@ -1008,10 +1010,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             page.append(bytes(kept) + b"\n")
 
         read_output = _strip_terminal_fence_leaks(b"".join(page).decode("utf-8", errors="replace"))
+        # procfs and similar virtual files may report st_size=0 despite
+        # yielding content. The streaming pass already counted the real bytes;
+        # use that count only when metadata claims the file is empty.
+        effective_size = file_size or bytes_read
         result = self._assemble_read_result(
             read_output, offset=offset, end_line=end_line, total_lines=total_lines,
-            file_size=file_size,
-            file_ends_with_newline=(last_byte == b"\n") if file_size else None)
+            file_size=effective_size,
+            file_ends_with_newline=(last_byte == b"\n") if bytes_read else None)
         result._snapshot = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, digest.digest())
         return result
 

@@ -116,9 +116,9 @@ def _store_open_failure(runner, home):
     failed open recorded; reopening here to learn it could create or migrate the store, and would skip
     the caches' backoff."""
     path = home / 'state.db'
-    caches = (getattr(getattr(runner, 'session_store', None), '_db_handle_cache', None),
-              getattr(runner, '_session_db_handle_cache', None))
-    error = next((e for e in (c.last_error(path) for c in caches if c is not None) if e), '')
+    caches = ((getattr(getattr(runner, 'session_store', None), '_db_handle_cache', None), path),
+              (getattr(runner, '_session_db_handle_cache', None), home))
+    error = next((e for e in (c.last_error(key) for c, key in caches if c is not None) if e), '')
     if error:
         return f'{path} did not open: {error}'
     return f'{path} is unavailable (its last open failed; retry pending)'

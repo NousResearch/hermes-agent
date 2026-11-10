@@ -3432,24 +3432,23 @@ class GatewayRunner(
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
         """Storage interface handle for the active profile scope, resolved per access (not in ``__init__``)
-        since the scope follows the context-local HERMES_HOME; one handle cached per path. Construction
+        since the scope follows the context-local HERMES_HOME; one handle cached per profile. Construction
         failure enters bounded backoff; ``raise_on_error=True`` (priming) propagates it.
 
-        Same per-path cache as ``SessionStore._open_persistence_for_active_scope`` (#88532): the scope
+        Same per-profile cache as ``SessionStore._open_persistence_for_active_scope`` (#88532): the scope
         resolves at call time through the context-local HERMES_HOME override installed by
         ``_profile_runtime_scope``, so resolving per access — instead of once in ``__init__`` — is what lets
         /resume, /title, /history and session search on a multiplexed gateway read the *serving profile's*
         store rather than the root one.
-        One handle is cached per resolved path, so its identity is stable per profile (callers compare and
+        One handle is cached per profile scope, so its identity is stable per profile (callers compare and
         stash it) and two profiles never share a handle. A construction failure enters bounded backoff; one
         caller retries after the deadline while concurrent callers continue to see the unavailable fallback.
         ``raise_on_error=True`` (construction-time priming) propagates the failure after recording that
         recoverable state so ``__init__`` can record ``_session_db_init_error`` for the #88235 broadcast.
         """
         from gateway.session_db_recovery import RecoverableHandleCache
-        from persistence_assembly import open_persistence, profile_scope, store_location
+        from persistence_assembly import open_persistence, profile_scope
         scope = profile_scope()
-        path = store_location(scope)
         cache = getattr(self, "_session_db_handle_cache", None)
         if cache is None:
             # Test runners built with object.__new__ skip __init__.
@@ -3478,7 +3477,7 @@ class GatewayRunner(
             self._session_db_init_error = None
             logger.info("SQLite session store recovered")
 
-        return cache.get(path, _open, raise_on_error=raise_on_error, on_recovered=_recovered)
+        return cache.get(scope.profile_dir, _open, raise_on_error=raise_on_error, on_recovered=_recovered)
 
     @property
     def _session_db(self) -> Any:

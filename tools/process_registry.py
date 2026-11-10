@@ -39,7 +39,8 @@ from tools.process_registry_output_log import ProcessOutputLogMixin, open_output
 from tools.process_registry_ownership import ProcessOwnershipMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
-from tools.process_registry_env_log import log_delta_command
+from tools.process_registry_env_log import (
+    exit_code_from_status, fallback_exit_status, log_delta_command, parse_log_delta_reply)
 from tools.process_registry_wsl import _is_wsl_launcher_command
 
 logger = logging.getLogger(__name__)
@@ -1433,21 +1434,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     self._log_delta_command(q(log_path), prev_output_bytes,
                                             quoted_pid_path=q(pid_path), quoted_exit_path=q(exit_path)),
                     timeout=10).get("output", "")
-                header, _, delta = raw.partition("\n")
-                status = None
-                try:
-                    size_str, offset_str, status = header.split()
-                    new_size = int(size_str)
-                    used_offset = int(offset_str)
-                    if status != "run" and not status.startswith("exit:"):
-                        raise ValueError(status)
-                except ValueError:
-                    # No usable header (command failed, shell missing a tool): skip this
-                    # poll rather than act on a half-read value.
-                    new_size = None
-                    used_offset = None
-                    status = None
-                    delta = ""
+                new_size, used_offset, status, delta = parse_log_delta_reply(raw)
                 if new_size is not None:
                     if used_offset < prev_output_bytes:
                         # Log rotated/truncated: what we hold no longer lines up. Restart.
@@ -1469,22 +1456,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     self._emit_output(session, delta)
 
                 if status is None:
-                    # Unreadable reply: fall back to separate liveness and exit-code reads
-                    # so a backend that mangles the combined reply still sees the exit.
-                    check = env.execute(
-                        f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
-                    check_output = check.get("output", "").strip()
-                    if not check_output or check_output.splitlines()[-1].strip() == "0":
+                    # Unreadable reply: separate liveness and exit-code reads (None = still running).
+                    status = fallback_exit_status(env, q(pid_path), q(exit_path))
+                    if status is None:
                         continue
-                    exit_str = env.execute(f"cat {q(exit_path)} 2>/dev/null", timeout=5).get("output", "").strip()
-                    status = "exit:" + (exit_str.splitlines()[-1].strip() if exit_str else "")
                 if status != "run":
-                    # Exited: the wrapper shell recorded the code; a missing one is -1.
-                    try:
-                        exit_code = int(status[len("exit:"):])
-                    except ValueError:
-                        exit_code = -1
-                    self._finish_exited(session, exit_code)
+                    self._finish_exited(session, exit_code_from_status(status))
                     return
             except Exception:
                 # Environment might be gone (sandbox reaped, etc.). A kill that already

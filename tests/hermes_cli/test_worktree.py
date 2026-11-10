@@ -6,6 +6,8 @@ Verifies worktree creation, cleanup, .worktreeinclude handling,
 
 import os
 import subprocess
+from pathlib import Path
+
 import pytest
 
 from hermes_cli import worktree_ops
@@ -142,6 +144,48 @@ def test_exit_cleanup_preserves_dirty_worktree(git_repo, tmp_path, monkeypatch, 
         assert not worktree.exists()
         assert "cleaned up" in out
         assert (git_repo / "node_modules" / "dep.js").exists()
+
+
+class TestWorktreeIgnoreRule:
+    """``.worktrees/`` is excluded LOCALLY, never by writing the tracked .gitignore (#103302)."""
+
+    def test_ignore_rule_lands_in_info_exclude(self, git_repo):
+        """The real helper ignores ``.worktrees/`` without touching a tracked file.
+
+        Previously it appended to the repo's ``.gitignore``, so every ``hermes -w``
+        session (and every delegated subagent worktree) left the user's checkout
+        dirty. ``$GIT_COMMON_DIR/info/exclude`` is untracked and local-only.
+        """
+        gitignore = git_repo / ".gitignore"
+        if gitignore.exists():
+            gitignore.unlink()
+
+        worktree_ops.ensure_worktrees_excluded(str(git_repo))
+
+        assert not gitignore.exists()
+        assert subprocess.run(
+            ["git", "check-ignore", "-q", ".worktrees/"],
+            cwd=str(git_repo), capture_output=True, check=False,
+        ).returncode == 0
+        assert subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(git_repo), capture_output=True, text=True, check=False,
+        ).stdout.strip() == ""
+
+    def test_second_call_does_not_duplicate_the_rule(self, git_repo):
+        """Idempotent: repeated sessions must not stack identical exclude lines."""
+        worktree_ops.ensure_worktrees_excluded(str(git_repo))
+        worktree_ops.ensure_worktrees_excluded(str(git_repo))
+
+        common = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=str(git_repo), capture_output=True, text=True, check=False,
+        ).stdout.strip()
+        exclude_lines = (Path(common) / "info" / "exclude").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        assert exclude_lines.count(".worktrees/") == 1
+
 
 
 class TestWorktreeLockReaping:

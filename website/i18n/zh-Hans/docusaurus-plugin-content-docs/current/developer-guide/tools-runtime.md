@@ -24,7 +24,7 @@ Hermes 工具是自注册函数，按 toolset（工具集）分组，并通过�
 
 ### `registry.register()` 的工作原理
 
-`tools/` 中的每个工具文件在模块级别调用 `registry.register()` 来声明自身。函数签名如下：
+`hermes_agent/tools/` 中的每个工具文件在模块级别调用 `registry.register()` 来声明自身。函数签名如下：
 
 ```python
 registry.register(
@@ -56,10 +56,10 @@ def discover_builtin_tools(tools_dir=None):
         if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
             continue
         if _module_registers_tools(path):  # AST 检查顶层 registry.register()
-            importlib.import_module(f"tools.{path.stem}")
+            importlib.import_module(f"hermes_agent.tools.{path.stem}")
 ```
 
-这种自动发现机制意味着新工具文件会被自动识别——无需手动维护列表。AST 检查只匹配顶层的 `registry.register()` 调用（不匹配函数内部的调用），因此 `tools/` 中的辅助模块不会被导入。
+这种自动发现机制意味着新工具文件会被自动识别——无需手动维护列表。AST 检查只匹配顶层的 `registry.register()` 调用（不匹配函数内部的调用），因此 `hermes_agent/tools/` 中的辅助模块不会被导入。
 
 每次导入都会触发模块的 `registry.register()` 调用。可选工具中的错误（例如图像生成工具缺少 `fal_client`）会被捕获并记录——不会阻止其他工具加载。
 

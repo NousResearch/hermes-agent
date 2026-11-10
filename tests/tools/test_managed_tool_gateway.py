@@ -9,7 +9,7 @@ from unittest.mock import patch
 from hermes_agent.tools import managed_gateway_auth
 
 
-MODULE_PATH = Path(__file__).resolve().parents[2] / "tools" / "managed_tool_gateway.py"
+MODULE_PATH = Path(__file__).resolve().parents[2] / "hermes_agent" / "tools" / "managed_tool_gateway.py"
 MODULE_SPEC = spec_from_file_location("managed_tool_gateway_test_module", MODULE_PATH)
 assert MODULE_SPEC and MODULE_SPEC.loader
 managed_tool_gateway = module_from_spec(MODULE_SPEC)

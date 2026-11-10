@@ -6,6 +6,7 @@ from pathlib import Path
 
 import hermes_yaml as yaml
 
+from hermes_agent.compat.paths import current_module
 from hermes_cli.plugin_validate import validate_plugin_dir
 
 
@@ -94,7 +95,7 @@ def test_platform_plugin_seams_are_public_and_exist(tmp_path):
     import importlib
 
     for module, name in _PLATFORM_PLUGIN_SEAMS:
-        assert hasattr(importlib.import_module(module), name), f"{module}.{name}"
+        assert hasattr(importlib.import_module(current_module(module)), name), f"{module}.{name}"
     imports = "".join(f"from {module} import {name}\n" for module, name in _PLATFORM_PLUGIN_SEAMS)
     plugin = _plugin(tmp_path / "chatplat", {"adapter.py": imports})
 
@@ -118,7 +119,7 @@ def test_skill_catalog_seams_are_public_and_drive_the_skills_tools(tmp_path, mon
     from hermes_agent.tools import skills_tool
 
     for module, name in _SKILL_CATALOG_SEAMS:
-        assert hasattr(importlib.import_module(module), name), f"{module}.{name}"
+        assert hasattr(importlib.import_module(current_module(module)), name), f"{module}.{name}"
     imports = "".join(f"from {module} import {name}\n" for module, name in _SKILL_CATALOG_SEAMS)
     assert _private_warnings(validate_plugin_dir(_plugin(tmp_path / "catalog", {"view.py": imports}))) == []
 

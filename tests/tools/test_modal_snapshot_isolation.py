@@ -9,7 +9,7 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TOOLS_DIR = REPO_ROOT / "tools"
+TOOLS_DIR = REPO_ROOT / "hermes_agent" / "tools"
 
 
 def _load_module(module_name: str, path: Path):
@@ -33,8 +33,8 @@ def _restore_tool_modules():
     original_modules = {
         name: module
         for name, module in sys.modules.items()
-        if name == "tools"
-        or name.startswith("tools.")
+        if name == "hermes_agent.tools"
+        or name.startswith("hermes_agent.tools.")
         or name == "hermes_cli"
         or name.startswith("hermes_cli.")
         or name == "modal"
@@ -47,7 +47,7 @@ def _restore_tool_modules():
             os.environ.pop("HERMES_HOME", None)
         else:
             os.environ["HERMES_HOME"] = original_hermes_home
-        _reset_modules(("tools", "hermes_cli", "modal"))
+        _reset_modules(("hermes_agent.tools", "hermes_cli", "modal"))
         sys.modules.update(original_modules)
 
 
@@ -57,7 +57,7 @@ def _install_modal_test_modules(
     fail_on_snapshot_ids: set[str] | None = None,
     snapshot_id: str = "im-fresh",
 ):
-    _reset_modules(("tools", "hermes_cli", "modal"))
+    _reset_modules(("hermes_agent.tools", "hermes_cli", "modal"))
 
     hermes_cli = types.ModuleType("hermes_cli")
     hermes_cli.__path__ = [str(REPO_ROOT / "hermes_cli")]  # type: ignore[attr-defined]

@@ -13,17 +13,17 @@ import importlib
 
 # name -> module owning it: the single source of truth for __all__ and __getattr__.
 _LAZY_EXPORTS: dict[str, str] = {
-    "CONNECTOR_BATCH_SENTINEL": "tools.connectors.gateway.names",
-    "MANAGE_CONNECTIONS_SCHEMA": "tools.connectors.tool",
-    "connector_describe": "tools.connectors.gateway.bridge",
-    "connector_search_hits": "tools.connectors.gateway.bridge",
-    "connectors_available": "tools.connectors.gateway.config",
-    "dispatch_connector_batch": "tools.connectors.dispatch",
-    "dispatch_connector_call": "tools.connectors.dispatch",
-    "ensure_guest_identity": "tools.connectors.gateway.config",
-    "guest_identity_pending": "tools.connectors.gateway.config",
-    "is_connector_name": "tools.connectors.gateway.names",
-    "manage_connections": "tools.connectors.tool",
+    "CONNECTOR_BATCH_SENTINEL": "hermes_agent.tools.connectors.gateway.names",
+    "MANAGE_CONNECTIONS_SCHEMA": "hermes_agent.tools.connectors.tool",
+    "connector_describe": "hermes_agent.tools.connectors.gateway.bridge",
+    "connector_search_hits": "hermes_agent.tools.connectors.gateway.bridge",
+    "connectors_available": "hermes_agent.tools.connectors.gateway.config",
+    "dispatch_connector_batch": "hermes_agent.tools.connectors.dispatch",
+    "dispatch_connector_call": "hermes_agent.tools.connectors.dispatch",
+    "ensure_guest_identity": "hermes_agent.tools.connectors.gateway.config",
+    "guest_identity_pending": "hermes_agent.tools.connectors.gateway.config",
+    "is_connector_name": "hermes_agent.tools.connectors.gateway.names",
+    "manage_connections": "hermes_agent.tools.connectors.tool",
 }
 
 __all__ = sorted(_LAZY_EXPORTS)

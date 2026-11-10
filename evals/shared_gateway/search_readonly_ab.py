@@ -61,10 +61,10 @@ def main():
     receipts = []
     for label, repo in [('baseline', args.baseline), ('fixed', args.fixed)]:
         sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True, timeout=30).strip()
-        diff = subprocess.check_output(['git', 'diff', 'HEAD', '--', 'tools/session_search_tool.py'], cwd=repo, text=True,
+        diff = subprocess.check_output(['git', 'diff', 'HEAD', '--', 'hermes_agent/tools/session_search_tool.py'], cwd=repo, text=True,
                                        timeout=30)
         import hashlib
-        source_hash = hashlib.sha256((repo / 'tools/session_search_tool.py').read_bytes()).hexdigest()
+        source_hash = hashlib.sha256((repo / 'hermes_agent/tools/session_search_tool.py').read_bytes()).hexdigest()
         for case in ['empty', 'foreign', 'existing']:
             with tempfile.TemporaryDirectory(prefix='hermes-reader-ab-') as tmp:
                 env = {'PATH': os.environ.get('PATH', ''), 'LANG': 'C.UTF-8', 'TZ': 'UTC',
@@ -76,7 +76,7 @@ def main():
                 if proc.returncode:
                     raise RuntimeError(f'{label}/{case} failed: {proc.stderr}')
                 row = json.loads(proc.stdout.strip().splitlines()[-1])
-                assert Path(row['module']).resolve() == (repo / 'tools/session_search_tool.py').resolve()
+                assert Path(row['module']).resolve() == (repo / 'hermes_agent/tools/session_search_tool.py').resolve()
                 row.update(label=label, head_sha=sha, source_sha256=source_hash, source_dirty=bool(diff))
                 receipts.append(row)
     args.output.write_text(json.dumps({'passed': False, 'receipts': receipts}, indent=2) + '\n')

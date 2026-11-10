@@ -6,6 +6,6 @@
     "shrinks: when a seam lands, rewrite the block onto it and delete the entry."
   ],
   "sites": [
-    "website/docs/developer-guide/terminal-environment-plugin.md tools.environments.local.LocalEnvironment"
+    "website/docs/developer-guide/terminal-environment-plugin.md hermes_agent.tools.environments.local.LocalEnvironment"
   ]
 }

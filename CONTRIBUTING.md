@@ -298,11 +298,29 @@ See [Package management](website/docs/reference/package-management.md) for PM co
 hermes-agent/
 ├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
 ├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
-├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
-├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
 ├── hermes_agent/             # the Python package
+│   ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
+│   ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
 │   ├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
 │   ├── batch_runner.py           # Parallel batch processing for trajectory generation
+│   │
+│   ├── tools/                    # Tool implementations (self-registering)
+│   │   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
+│   │   ├── approval.py               # Dangerous command detection + per-session approval
+│   │   ├── terminal_tool.py          # Terminal orchestration (sudo, env lifecycle, backends)
+│   │   ├── file_operations.py        # read_file, write_file, search, patch, etc.
+│   │   ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
+│   │   ├── vision_tools.py           # Image analysis via multimodal models
+│   │   ├── delegate_tool.py          # Subagent spawning and parallel task execution
+│   │   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access (env allowlists in code_execution_env.py)
+│   │   ├── mcp_tool.py               # MCP client (facade + mcp_tool_*.py siblings: config, discovery, transport, ...)
+│   │   ├── browser_use_cli.py        # browser_exec (Python over CDP); sessions in browser_session*.py, launcher in browser_launcher.py
+│   │   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
+│   │   ├── cronjob_tools.py          # Scheduled task management
+│   │   ├── skill_tools.py            # Skill search, load, manage
+│   │   └── environments/             # Terminal execution backends
+│   │       ├── base.py                   # BaseEnvironment ABC
+│   │       ├── local.py, docker.py, ssh.py, modal.py, daytona.py
 │   │
 │   └── gateway/                  # Messaging gateway
 │       ├── run.py                    # GatewayRunner facade (~5.5k LOC); phases in run_*.py (startup, inbound, turn, busy, ...)
@@ -338,24 +356,6 @@ hermes-agent/
 │   ├── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
 │   ├── web_server.py             # Dashboard server (facade + web_server_*.py siblings)
 │   └── web_routers/              # Dashboard FastAPI routers (one file per surface)
-│
-├── tools/                    # Tool implementations (self-registering)
-│   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
-│   ├── approval.py               # Dangerous command detection + per-session approval
-│   ├── terminal_tool.py          # Terminal orchestration (sudo, env lifecycle, backends)
-│   ├── file_operations.py        # read_file, write_file, search, patch, etc.
-│   ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
-│   ├── vision_tools.py           # Image analysis via multimodal models
-│   ├── delegate_tool.py          # Subagent spawning and parallel task execution
-│   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access (env allowlists in code_execution_env.py)
-│   ├── mcp_tool.py               # MCP client (facade + mcp_tool_*.py siblings: config, discovery, transport, ...)
-│   ├── browser_use_cli.py        # browser_exec (Python over CDP); sessions in browser_session*.py, launcher in browser_launcher.py
-│   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
-│   ├── cronjob_tools.py          # Scheduled task management
-│   ├── skill_tools.py            # Skill search, load, manage
-│   └── environments/             # Terminal execution backends
-│       ├── base.py                   # BaseEnvironment ABC
-│       ├── local.py, docker.py, ssh.py, modal.py, daytona.py
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer

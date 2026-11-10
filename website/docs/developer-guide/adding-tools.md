@@ -17,7 +17,7 @@ modifying Hermes core, use the plugin route instead:
 - [Build a Hermes Plugin](./plugins/index.md)
 
 Default to plugins for most custom tool creation. Only follow this page when
-you explicitly want to ship a new built-in tool in `tools/` and `hermes_agent/toolsets.py`.
+you explicitly want to ship a new built-in tool in `hermes_agent/tools/` and `hermes_agent/toolsets.py`.
 :::
 
 Make it a **Skill** when the capability can be expressed as instructions + shell commands + existing tools (arXiv search, git workflows, Docker management, PDF processing).
@@ -28,7 +28,7 @@ Make it a **Tool** when it requires end-to-end integration with API keys, custom
 
 Adding a tool touches **2 files**:
 
-1. **`tools/your_tool.py`** — handler, schema, check function, `registry.register()` call
+1. **`hermes_agent/tools/your_tool.py`** — handler, schema, check function, `registry.register()` call
 2. **`hermes_agent/toolsets.py`** — add tool name to `_HERMES_CORE_TOOLS` (or a specific toolset)
 
 Any `hermes_agent/tools/*.py` file with a top-level `registry.register()` call is auto-discovered at startup — no manual import list required.
@@ -38,7 +38,7 @@ Any `hermes_agent/tools/*.py` file with a top-level `registry.register()` call i
 Every tool file follows the same structure:
 
 ```python
-# tools/weather_tool.py
+# hermes_agent/tools/weather_tool.py
 """Weather Tool -- look up current weather for a location."""
 
 import json
@@ -139,7 +139,7 @@ _HERMES_CORE_TOOLS = [
 
 ## ~~Step 3: Add Discovery Import~~ (No longer needed)
 
-Tool modules with a top-level `registry.register()` call are auto-discovered by `discover_builtin_tools()` in `hermes_agent/tools/registry.py`. No manual import list to maintain — just create your file in `tools/` and it's picked up at startup.
+Tool modules with a top-level `registry.register()` call are auto-discovered by `discover_builtin_tools()` in `hermes_agent/tools/registry.py`. No manual import list to maintain — just create your file in `hermes_agent/tools/` and it's picked up at startup.
 
 ## Async Handlers
 

@@ -15,7 +15,7 @@ description: "如何向 Hermes Agent 添加新工具——schema、handler、注
 - [插件](../user-guide/features/plugins.md)
 - [构建 Hermes 插件](./plugins/index.md)
 
-大多数自定义工具创建场景默认使用插件。只有当你明确希望在 `tools/` 和 `hermes_agent/toolsets.py` 中发布新的内置工具时，才遵循本页面。
+大多数自定义工具创建场景默认使用插件。只有当你明确希望在 `hermes_agent/tools/` 和 `hermes_agent/toolsets.py` 中发布新的内置工具时，才遵循本页面。
 :::
 
 以下情况应创建 **Skill**：该能力可以通过指令 + shell 命令 + 现有工具来实现（如 arXiv 搜索、git 工作流、Docker 管理、PDF 处理）。
@@ -26,7 +26,7 @@ description: "如何向 Hermes Agent 添加新工具——schema、handler、注
 
 添加一个工具涉及 **2 个文件**：
 
-1. **`tools/your_tool.py`** — handler、schema、check 函数、`registry.register()` 调用
+1. **`hermes_agent/tools/your_tool.py`** — handler、schema、check 函数、`registry.register()` 调用
 2. **`hermes_agent/toolsets.py`** — 将工具名称添加到 `_HERMES_CORE_TOOLS`（或特定 toolset）
 
 任何包含顶层 `registry.register()` 调用的 `hermes_agent/tools/*.py` 文件都会在启动时被自动发现——无需手动维护导入列表。
@@ -36,7 +36,7 @@ description: "如何向 Hermes Agent 添加新工具——schema、handler、注
 每个工具文件遵循相同的结构：
 
 ```python
-# tools/weather_tool.py
+# hermes_agent/tools/weather_tool.py
 """Weather Tool -- look up current weather for a location."""
 
 import json
@@ -137,7 +137,7 @@ _HERMES_CORE_TOOLS = [
 
 ## ~~第三步：添加发现导入~~（不再需要）
 
-包含顶层 `registry.register()` 调用的工具模块会由 `hermes_agent/tools/registry.py` 中的 `discover_builtin_tools()` 自动发现。无需手动维护导入列表——只需在 `tools/` 中创建文件，启动时即可自动加载。
+包含顶层 `registry.register()` 调用的工具模块会由 `hermes_agent/tools/registry.py` 中的 `discover_builtin_tools()` 自动发现。无需手动维护导入列表——只需在 `hermes_agent/tools/` 中创建文件，启动时即可自动加载。
 
 ## 异步 Handler
 

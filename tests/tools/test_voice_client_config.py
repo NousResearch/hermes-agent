@@ -33,9 +33,9 @@ def voice_home(tmp_path, monkeypatch):
         for name in list(sys.modules):
             if name in {
                 "hermes_cli.config",
-                "tools.transcription_tools",
-                "tools.tts_tool",
-                "tools.voice_client_config",
+                "hermes_agent.tools.transcription_tools",
+                "hermes_agent.tools.tts_tool",
+                "hermes_agent.tools.voice_client_config",
             }:
                 importlib.reload(sys.modules[name])
 

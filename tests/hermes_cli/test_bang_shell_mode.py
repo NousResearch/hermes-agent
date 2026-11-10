@@ -127,7 +127,7 @@ class TestBangExecution:
         real_import = builtins.__import__
 
         def block_sanitizer(name, *args, **kwargs):
-            if name == "tools.environments.local":
+            if name == "hermes_agent.tools.environments.local":
                 raise ImportError("environment sanitizer unavailable")
             return real_import(name, *args, **kwargs)
 

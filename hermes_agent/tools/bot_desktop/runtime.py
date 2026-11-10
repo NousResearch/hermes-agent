@@ -819,7 +819,7 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             "HERMES_BD_ENV_FILE": str(env_file),
             "HERMES_BD_CONFIG_HOME": str(sd / "xdg"),
             "HERMES_BD_GEOMETRY": geometry(),
-            # The launcher's idle self-stop runs hermes_agent.tools.bot_desktop.idle_watch through the install's stable
+            # The launcher's idle self-stop runs tools.bot_desktop.idle_watch through the install's stable
             # command (the ``hermes --run-module`` launcher on a store install, which follows Python pin changes
             # and picks the current dependency generation at every run; this interpreter elsewhere), in this
             # home, first once the screen could be due (nothing is idle at start). The screen outlives updates,

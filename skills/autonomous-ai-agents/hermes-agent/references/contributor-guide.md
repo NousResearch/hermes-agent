@@ -7,11 +7,13 @@ For occasional contributors and PR authors. Full developer docs: https://hermes-
 ```
 hermes-agent/
 ├── run_agent.py          # AIAgent — core conversation loop
-├── model_tools.py        # Tool discovery and dispatch
-├── toolsets.py           # Toolset definitions
 ├── cli.py                # Interactive CLI (HermesCLI)
 ├── hermes_agent/         # the Python package
+│   ├── model_tools.py        # Tool discovery and dispatch
+│   ├── toolsets.py           # Toolset definitions
 │   ├── hermes_state.py       # SQLite session store
+│   ├── tools/                # One file per tool
+│   │   └── registry.py       # Central tool registry
 │   ├── gateway/              # Messaging gateway
 │   │   └── platforms/        # Platform adapters (telegram, discord, etc.)
 │   └── cron/                 # Job scheduler
@@ -20,8 +22,6 @@ hermes-agent/
 │   ├── commands.py       # Slash command registry (CommandDef)
 │   ├── config.py         # DEFAULT_CONFIG, env var definitions
 │   └── main.py           # CLI entry point and argparse
-├── tools/                # One file per tool
-│   └── registry.py       # Central tool registry
 ├── tests/                # Extensive pytest suite (run via scripts/run_tests.sh)
 └── website/              # Docusaurus docs site
 ```
@@ -34,7 +34,7 @@ Two files. Auto-discovery imports any `hermes_agent/tools/*.py` with a top-level
 `registry.register()` call, but a tool is only *exposed* to an agent once
 its name appears in a toolset.
 
-**1. Create `tools/your_tool.py`:**
+**1. Create `hermes_agent/tools/your_tool.py`:**
 ```python
 import json, os
 from hermes_agent.tools.registry import registry

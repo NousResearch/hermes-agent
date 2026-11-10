@@ -10,7 +10,7 @@ description: "通过插件系统为 Hermes 添加自定义工具、hook 和集�
 Hermes 提供了一套插件系统，可在不修改核心代码的情况下添加自定义工具、hook（钩子）和集成。
 
 如果你想为自己、团队或某个项目创建自定义工具，这通常是正确的路径。开发者指南中的
-[Adding Tools](../../developer-guide/adding-tools.md) 页面针对的是存放在 `tools/` 和 `hermes_agent/toolsets.py` 中的 Hermes 内置核心工具。
+[Adding Tools](../../developer-guide/adding-tools.md) 页面针对的是存放在 `hermes_agent/tools/` 和 `hermes_agent/toolsets.py` 中的 Hermes 内置核心工具。
 
 **→ [构建 Hermes Plugin](../../developer-guide/plugins/index.md)** — 包含完整可运行示例的分步指南。
 

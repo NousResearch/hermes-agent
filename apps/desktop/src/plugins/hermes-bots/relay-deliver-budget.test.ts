@@ -21,11 +21,11 @@ import {
 
 const repoRoot = join(process.cwd(), '..', '..')
 const configDefaults = readFileSync(join(repoRoot, 'hermes_cli/config_defaults.py'), 'utf8')
-const relayPlumbing = readFileSync(join(repoRoot, 'tools/bot_relay.py'), 'utf8')
+const relayPlumbing = readFileSync(join(repoRoot, 'hermes_agent/tools/bot_relay.py'), 'utf8')
 
 function pyConstant(name: string): number {
   const match = relayPlumbing.match(new RegExp(`^${name}\\s*=\\s*(\\d+)`, 'm'))
-  expect(match, `${name} must exist as a literal in tools/bot_relay.py`).toBeTruthy()
+  expect(match, `${name} must exist as a literal in hermes_agent/tools/bot_relay.py`).toBeTruthy()
 
   return Number(match![1])
 }

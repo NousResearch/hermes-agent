@@ -54,12 +54,28 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 hermes-agent/
 ├── run_agent.py              # AIAgent — 核心对话循环（大文件）
 ├── cli.py                    # HermesCLI — 交互式终端 UI（大文件）
-├── model_tools.py            # 工具发现、schema 收集、分发
-├── toolsets.py               # 工具分组与平台预设
 ├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
 ├── hermes_agent/             # Python 包
+│   ├── model_tools.py            # 工具发现、schema 收集、分发
+│   ├── toolsets.py               # 工具分组与平台预设
 │   ├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
 │   ├── batch_runner.py           # 批量轨迹生成
+│   │
+│   ├── tools/                    # 工具实现（每个工具一个文件）
+│   │   ├── registry.py           # 中央工具注册表
+│   │   ├── approval.py           # 危险命令检测
+│   │   ├── terminal_tool.py      # 终端编排
+│   │   ├── process_registry.py   # 后台进程管理
+│   │   ├── file_tools.py         # read_file、write_file、patch、search_files
+│   │   ├── web_tools.py          # web_search、web_extract
+│   │   ├── browser_tool.py       # 10 个浏览器自动化工具
+│   │   ├── code_execution_tool.py # execute_code 沙箱
+│   │   ├── delegate_tool.py      # 子 agent 委托
+│   │   ├── mcp_tool.py           # MCP 客户端（大文件）
+│   │   ├── credential_files.py   # 基于文件的凭据透传
+│   │   ├── env_passthrough.py    # 沙箱环境变量透传
+│   │   ├── ansi_strip.py         # ANSI 转义字符剥离
+│   │   └── environments/         # 终端后端（local、docker、ssh、modal、daytona、singularity）
 │   │
 │   ├── gateway/                  # 消息平台 gateway
 │   │   ├── run.py                # GatewayRunner——消息分发（大文件）
@@ -106,22 +122,6 @@ hermes-agent/
 │   ├── plugins.py            # PluginManager——发现、加载、hook
 │   ├── callbacks.py          # 终端回调（clarify、sudo、approval）
 │   └── gateway.py            # hermes gateway 启动/停止
-│
-├── tools/                    # 工具实现（每个工具一个文件）
-│   ├── registry.py           # 中央工具注册表
-│   ├── approval.py           # 危险命令检测
-│   ├── terminal_tool.py      # 终端编排
-│   ├── process_registry.py   # 后台进程管理
-│   ├── file_tools.py         # read_file、write_file、patch、search_files
-│   ├── web_tools.py          # web_search、web_extract
-│   ├── browser_tool.py       # 10 个浏览器自动化工具
-│   ├── code_execution_tool.py # execute_code 沙箱
-│   ├── delegate_tool.py      # 子 agent 委托
-│   ├── mcp_tool.py           # MCP 客户端（大文件）
-│   ├── credential_files.py   # 基于文件的凭据透传
-│   ├── env_passthrough.py    # 沙箱环境变量透传
-│   ├── ansi_strip.py         # ANSI 转义字符剥离
-│   └── environments/         # 终端后端（local、docker、ssh、modal、daytona、singularity）
 │
 ├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、whatsapp、
 │                             #   whatsapp_cloud、signal、weixin、bluebubbles、qqbot、

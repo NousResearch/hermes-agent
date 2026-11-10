@@ -35,8 +35,8 @@ docker exec -u pn "$NAME" bash -c '
   [ "$(id -u)" = 1000 ]'
 
 echo "== 2. launcher.sh publishes a display"
-docker cp "$HERE/tools/bot_desktop/launcher.sh" "$NAME:/tmp/launcher.sh"
-docker cp "$HERE/tools/bot_desktop/wallpaper.png" "$NAME:/tmp/wallpaper.png"
+docker cp "$HERE/hermes_agent/tools/bot_desktop/launcher.sh" "$NAME:/tmp/launcher.sh"
+docker cp "$HERE/hermes_agent/tools/bot_desktop/wallpaper.png" "$NAME:/tmp/wallpaper.png"
 docker exec -u pn -d "$NAME" bash -c '
   mkdir -p /tmp/bd && HERMES_BD_PROFILE=smoke HERMES_BD_DISPLAY_NUM=20 HERMES_BD_SOCKET=/tmp/bd/rfb.sock \
   HERMES_BD_XAUTH=/tmp/bd/Xauthority HERMES_BD_ENV_FILE=/tmp/bd/env HERMES_BD_CONFIG_HOME=/tmp/bd/xdg \

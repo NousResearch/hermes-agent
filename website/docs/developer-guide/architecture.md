@@ -54,12 +54,30 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 hermes-agent/
 ├── run_agent.py              # AIAgent facade — loop lives in agent/conversation_loop.py + agent/turn_*.py
 ├── cli.py                    # HermesCLI facade — mixins in hermes_cli/cli_*_mixin.py
-├── model_tools.py            # Tool discovery, schema collection, dispatch
-├── toolsets.py               # Tool groupings and platform presets
 ├── hermes_constants.py       # HERMES_HOME, profile-aware paths
 ├── hermes_agent/             # the Python package
+│   ├── model_tools.py            # Tool discovery, schema collection, dispatch
+│   ├── toolsets.py               # Tool groupings and platform presets
 │   ├── hermes_state.py           # SQLite session/state database facade (+ hermes_state_*.py siblings)
 │   ├── batch_runner.py           # Batch trajectory generation
+│   │
+│   ├── tools/                    # Tool implementations (one file per tool)
+│   │   ├── registry.py           # Central tool registry
+│   │   ├── approval.py           # Dangerous command detection
+│   │   ├── terminal_tool.py      # Terminal orchestration
+│   │   ├── process_registry.py   # Background process management
+│   │   ├── file_tools.py         # read_file, write_file, patch, search_files
+│   │   ├── web_tools.py          # web_search, web_extract
+│   │   ├── browser_use_cli.py    # browser_exec — Python over CDP (browser-harness)
+│   │   ├── browser_session.py    # Per-task browser sessions (+ browser_session_*.py siblings)
+│   │   ├── browser_launcher.py   # Local Chromium launch, reuse and orphan reaping
+│   │   ├── code_execution_tool.py # execute_code sandbox
+│   │   ├── delegate_tool.py      # Subagent delegation
+│   │   ├── mcp_tool.py           # MCP client facade (+ mcp_tool_*.py siblings)
+│   │   ├── credential_files.py   # File-based credential passthrough
+│   │   ├── env_passthrough.py    # Env var passthrough for sandboxes
+│   │   ├── ansi_strip.py         # ANSI escape stripping
+│   │   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, vercel_sandbox)
 │   │
 │   ├── gateway/                  # Messaging platform gateway
 │   │   ├── run.py                # GatewayRunner facade — message dispatch (+ run_*.py siblings)
@@ -106,24 +124,6 @@ hermes-agent/
 │   ├── plugins.py            # PluginManager — discovery, loading, hooks
 │   ├── callbacks.py          # Terminal callbacks (clarify, sudo, approval)
 │   └── gateway.py            # hermes gateway start/stop
-│
-├── tools/                    # Tool implementations (one file per tool)
-│   ├── registry.py           # Central tool registry
-│   ├── approval.py           # Dangerous command detection
-│   ├── terminal_tool.py      # Terminal orchestration
-│   ├── process_registry.py   # Background process management
-│   ├── file_tools.py         # read_file, write_file, patch, search_files
-│   ├── web_tools.py          # web_search, web_extract
-│   ├── browser_use_cli.py    # browser_exec — Python over CDP (browser-harness)
-│   ├── browser_session.py    # Per-task browser sessions (+ browser_session_*.py siblings)
-│   ├── browser_launcher.py   # Local Chromium launch, reuse and orphan reaping
-│   ├── code_execution_tool.py # execute_code sandbox
-│   ├── delegate_tool.py      # Subagent delegation
-│   ├── mcp_tool.py           # MCP client facade (+ mcp_tool_*.py siblings)
-│   ├── credential_files.py   # File-based credential passthrough
-│   ├── env_passthrough.py    # Env var passthrough for sandboxes
-│   ├── ansi_strip.py         # ANSI escape stripping
-│   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, vercel_sandbox)
 │
 ├── plugins/platforms/        # Bundled platform plugins: telegram, discord, slack,
 │                             #   whatsapp, matrix, mattermost, email, sms, dingtalk,

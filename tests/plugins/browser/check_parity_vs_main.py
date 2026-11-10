@@ -33,10 +33,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # checkout lives two levels up at ``~/.hermes/hermes-agent``.
 MAIN_DIR = REPO_ROOT.parent.parent  # ~/.hermes/hermes-agent
 PR_DIR = REPO_ROOT  # the worktree we're in
-assert (MAIN_DIR / "tools" / "browser_tool.py").exists(), (
+assert (MAIN_DIR / "hermes_agent" / "tools" / "browser_tool.py").exists(), (
     f"MAIN_DIR={MAIN_DIR} doesn't look like a hermes-agent checkout"
 )
-assert (PR_DIR / "tools" / "browser_tool.py").exists(), (
+assert (PR_DIR / "hermes_agent" / "tools" / "browser_tool.py").exists(), (
     f"PR_DIR={PR_DIR} doesn't look like a hermes-agent checkout"
 )
 

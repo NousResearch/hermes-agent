@@ -17,9 +17,9 @@ import sys
 import threading
 
 _PER_TURN_THREAD_LOCALS = (
-    ("tools.terminal_tool", "_callback_tls"),
-    ("tools.environments.base", "_activity_callback_local"),
-    ("tools.feishu_lark", "_local"),
+    ("hermes_agent.tools.terminal_tool", "_callback_tls"),
+    ("hermes_agent.tools.environments.base", "_activity_callback_local"),
+    ("hermes_agent.tools.feishu_lark", "_local"),
     ("agent.vault_backends.unlock", "_callback_tls"),
     ("agent.vault_backends.unlock", "_current_session_tls"),
     ("agent.auxiliary_client", "_aux_probe_state"),

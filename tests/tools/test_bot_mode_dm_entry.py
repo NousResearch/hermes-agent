@@ -25,7 +25,7 @@ from hermes_agent.tools import bot_relay
 from hermes_agent.tools.bot_mode_dm import _dm_delivery_id
 
 REPO = Path(__file__).resolve().parents[2]
-RUNNER = REPO / "tools" / "bot_mode_dm.py"
+RUNNER = REPO / "hermes_agent" / "tools" / "bot_mode_dm.py"
 # A bare interpreter: isolated (-I ignores PYTHONPATH/PYTHONHOME, user site) and no site
 # module (-S), so no third-party package is importable unless the entry activates one.
 BARE = [sys.executable, "-I", "-S"]

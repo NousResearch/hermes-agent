@@ -12,7 +12,7 @@ Hermes has a plugin system for adding custom tools, hooks, and integrations with
 If you want to create a custom tool for yourself, your team, or one project,
 this is usually the right path. The developer guide's
 [Adding Tools](../../developer-guide/adding-tools.md) page is for built-in Hermes
-core tools that live in `tools/` and `hermes_agent/toolsets.py`.
+core tools that live in `hermes_agent/tools/` and `hermes_agent/toolsets.py`.
 
 **→ [Build a Hermes Plugin](../../developer-guide/plugins/index.md)** — step-by-step guide with a complete working example.
 

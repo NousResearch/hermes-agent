@@ -350,7 +350,7 @@ def test_local_delivery_admits_canonically_and_acks(tmp_path, monkeypatch):
     assert call["_host_local"] is True
     # The completion notification IS the reply: sized like a message, not a build log's 2000-char tail.
     assert call["_completion_output_chars"] > bot_mode_dm.MESSAGE_MAX_CHARS
-    assert Path(call["workdir"]) == Path(bot_mode_dm.__file__).resolve().parent.parent
+    assert Path(call["workdir"]) == Path(bot_mode_dm.__file__).resolve().parents[2]
     command = call["command"]
     mode, dm_file, transport_argv, profile_home = _runner_parts(command)
     assert mode == "query-file"

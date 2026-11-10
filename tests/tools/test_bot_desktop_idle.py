@@ -248,7 +248,7 @@ def test_the_launcher_runs_its_idle_check_through_the_installs_stable_command(tm
     install the launcher gets the ``hermes --run-module`` launcher, which loads the current one at every run."""
     from hermes_cli import _launchers
 
-    root = runtime._LAUNCHER.resolve().parents[2]
+    root = runtime._LAUNCHER.resolve().parents[3]
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda repo_root, **_: tmp_path / "store/bin/python3")
 
     command = shlex.split(_spawn(monkeypatch, tmp_path)["HERMES_BD_IDLE_CMD"])

@@ -50,17 +50,17 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def _resolve_main_dir() -> Path:
     candidate = REPO_ROOT.parent.parent
-    if (candidate / "tools" / "tts_tool.py").exists() and candidate != REPO_ROOT:
+    if (candidate / "hermes_agent" / "tools" / "tts_tool.py").exists() and candidate != REPO_ROOT:
         return candidate
     sibling = REPO_ROOT.parent / "hermes-agent-main"
-    if (sibling / "tools" / "tts_tool.py").exists():
+    if (sibling / "hermes_agent" / "tools" / "tts_tool.py").exists():
         return sibling
     return REPO_ROOT
 
 
 MAIN_DIR = _resolve_main_dir()
 PR_DIR = REPO_ROOT
-assert (PR_DIR / "tools" / "tts_tool.py").exists(), (
+assert (PR_DIR / "hermes_agent" / "tools" / "tts_tool.py").exists(), (
     f"PR_DIR={PR_DIR} doesn't look like a hermes-agent checkout"
 )
 

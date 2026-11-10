@@ -355,8 +355,8 @@ class TestBuiltinDiscovery:
         with patch("hermes_agent.tools.registry.importlib.import_module") as mock_import:
             imported = discover_builtin_tools(tools_dir)
 
-        assert imported == ["tools.alpha"]
-        mock_import.assert_called_once_with("tools.alpha")
+        assert imported == ["hermes_agent.tools.alpha"]
+        mock_import.assert_called_once_with("hermes_agent.tools.alpha")
 
 
 _REGISTERING_SOURCE = (
@@ -366,7 +366,7 @@ _REGISTERING_SOURCE = (
 
 
 class TestPackageToolDiscovery:
-    """A package under tools/ registers its model tool from ``<pkg>/tool.py`` and nothing else."""
+    """A package under hermes_agent/tools/ registers its model tool from ``<pkg>/tool.py`` and nothing else."""
 
     @staticmethod
     def _make_pkg(tmp_path, *, init=True):
@@ -383,8 +383,8 @@ class TestPackageToolDiscovery:
         tools_dir, _ = self._make_pkg(tmp_path)
         with patch("hermes_agent.tools.registry.importlib.import_module") as mock_import:
             imported = discover_builtin_tools(tools_dir)
-        assert imported == ["tools.connectors.tool"]
-        mock_import.assert_called_once_with("tools.connectors.tool")
+        assert imported == ["hermes_agent.tools.connectors.tool"]
+        mock_import.assert_called_once_with("hermes_agent.tools.connectors.tool")
 
     def test_package_siblings_are_libraries_not_scanned(self, tmp_path):
         tools_dir, pkg = self._make_pkg(tmp_path)
@@ -392,8 +392,8 @@ class TestPackageToolDiscovery:
         (pkg / "operation.py").write_text(_REGISTERING_SOURCE, encoding="utf-8")
         with patch("hermes_agent.tools.registry.importlib.import_module") as mock_import:
             imported = discover_builtin_tools(tools_dir)
-        assert imported == ["tools.connectors.tool"]
-        assert {c.args[0] for c in mock_import.call_args_list} == {"tools.connectors.tool"}
+        assert imported == ["hermes_agent.tools.connectors.tool"]
+        assert {c.args[0] for c in mock_import.call_args_list} == {"hermes_agent.tools.connectors.tool"}
 
     def test_package_without_init_is_skipped_loudly(self, tmp_path, caplog):
         tools_dir, _ = self._make_pkg(tmp_path, init=False)
@@ -414,7 +414,7 @@ class TestPackageToolDiscovery:
                 side_effect=AssertionError("nested file was re-scanned despite a cache hit"),
             ):
                 imported = discover_builtin_tools(tools_dir)
-        assert imported == ["tools.connectors.tool"]
+        assert imported == ["hermes_agent.tools.connectors.tool"]
 
 
 

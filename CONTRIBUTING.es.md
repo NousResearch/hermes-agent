@@ -122,11 +122,27 @@ Para JavaScript, ejecuta `pnpm install --frozen-lockfile` en la raíz del reposi
 hermes-agent/
 ├── run_agent.py              # Clase AIAgent — bucle de conversación central, despacho de herramientas, persistencia de sesión
 ├── cli.py                    # Clase HermesCLI — TUI interactiva, integración prompt_toolkit
-├── model_tools.py            # Orquestación de herramientas (capa delgada sobre tools/registry.py)
-├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-telegram, etc.)
 ├── hermes_agent/             # el paquete de Python
+│   ├── model_tools.py            # Orquestación de herramientas (capa delgada sobre tools/registry.py)
+│   ├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-telegram, etc.)
 │   ├── hermes_state.py           # Base de datos de sesiones SQLite con búsqueda de texto completo FTS5, títulos de sesión
 │   ├── batch_runner.py           # Procesamiento en lote paralelo para generación de trayectorias
+│   │
+│   ├── tools/                    # Implementaciones de herramientas (auto-registradas)
+│   │   ├── registry.py               # Registro central de herramientas (esquemas, manejadores, despacho)
+│   │   ├── approval.py               # Detección de comandos peligrosos + aprobación por sesión
+│   │   ├── terminal_tool.py          # Orquestación del terminal (sudo, ciclo de vida del entorno, backends)
+│   │   ├── file_operations.py        # read_file, write_file, búsqueda, patch, etc.
+│   │   ├── web_tools.py              # web_search, web_extract (Paralelo/Firecrawl + resumición Gemini)
+│   │   ├── vision_tools.py           # Análisis de imágenes a través de modelos multimodales
+│   │   ├── delegate_tool.py          # Lanzamiento de subagentes y ejecución paralela de tareas
+│   │   ├── code_execution_tool.py    # Python sandboxado con acceso a herramientas vía RPC
+│   │   ├── session_search_tool.py    # Búsqueda en conversaciones pasadas con FTS5 + ventanas ancladas
+│   │   ├── cronjob_tools.py          # Gestión de tareas programadas
+│   │   ├── skill_tools.py            # Búsqueda, carga y gestión de habilidades
+│   │   └── environments/             # Backends de ejecución del terminal
+│   │       ├── base.py                   # ABC BaseEnvironment
+│   │       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
 │   │
 │   └── gateway/                  # Gateway de mensajería
 │       ├── run.py                    # GatewayRunner — ciclo de vida de plataformas, enrutamiento de mensajes, cron
@@ -155,22 +171,6 @@ hermes-agent/
 │   ├── doctor.py                 # Diagnósticos
 │   ├── skills_hub.py             # CLI del Skills Hub + comando de barra /skills
 │   └── skin_engine.py            # Motor de skins/temas — personalización visual de CLI basada en datos
-│
-├── tools/                    # Implementaciones de herramientas (auto-registradas)
-│   ├── registry.py               # Registro central de herramientas (esquemas, manejadores, despacho)
-│   ├── approval.py               # Detección de comandos peligrosos + aprobación por sesión
-│   ├── terminal_tool.py          # Orquestación del terminal (sudo, ciclo de vida del entorno, backends)
-│   ├── file_operations.py        # read_file, write_file, búsqueda, patch, etc.
-│   ├── web_tools.py              # web_search, web_extract (Paralelo/Firecrawl + resumición Gemini)
-│   ├── vision_tools.py           # Análisis de imágenes a través de modelos multimodales
-│   ├── delegate_tool.py          # Lanzamiento de subagentes y ejecución paralela de tareas
-│   ├── code_execution_tool.py    # Python sandboxado con acceso a herramientas vía RPC
-│   ├── session_search_tool.py    # Búsqueda en conversaciones pasadas con FTS5 + ventanas ancladas
-│   ├── cronjob_tools.py          # Gestión de tareas programadas
-│   ├── skill_tools.py            # Búsqueda, carga y gestión de habilidades
-│   └── environments/             # Backends de ejecución del terminal
-│       ├── base.py                   # ABC BaseEnvironment
-│       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
 │
 ├── scripts/                  # Scripts del instalador y puente
 │   ├── install.sh                # Instalador Linux/macOS

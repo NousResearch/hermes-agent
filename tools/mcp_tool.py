@@ -148,7 +148,7 @@ def _load_sdk_names(module: str, names: tuple) -> tuple[Optional[dict], Optional
     concurrent caller never observes a half-probed SDK. A racing import's ``_DeadlockError`` is
     retried briefly in place, since it clears as soon as the other thread finishes the module."""
     for attempt in range(_SDK_DEADLOCK_RETRIES + 1):
-        partial = False
+        partial = None  # stays None when the import itself raised
         try:
             mod = importlib.import_module(module)
             # Read before the lookups: a module still initializing may not have bound the name yet,
@@ -162,8 +162,8 @@ def _load_sdk_names(module: str, names: tuple) -> tuple[Optional[dict], Optional
         except ModuleNotFoundError as exc:
             missing = exc.name
             return None, exc, missing is not None and (module == missing or module.startswith(missing + "."))
-        except AttributeError as exc:
-            return None, exc, not partial
+        except AttributeError as exc:  # definitive only for a name missing from a finished module
+            return None, exc, partial is False
         except ImportError as exc:  # partially initialized module / broken dependency: transient
             return None, exc, False
     return None, None, False  # pragma: no cover — the loop always returns

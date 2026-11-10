@@ -303,3 +303,22 @@ def test_http_unavailable_error_names_the_import_failure(cold_probe):
     server = mcp_tool.MCPServerTask("remote")
     with pytest.raises(ImportError, match=r"No module named 'httpx2'"):
         asyncio.run(server._run_http({"url": "https://example.com/mcp"}))
+
+
+def test_attribute_error_raised_while_importing_is_retried(cold_probe):
+    """An AttributeError from the transport module's own body (a dependency mid-swap during an
+    update) is not "this SDK build lacks the name": the next probe imports it again."""
+    broken = {"on": True}
+
+    def hook(name, real):
+        if name == "mcp.client.streamable_http" and broken["on"]:
+            raise AttributeError("module 'httpx2' has no attribute 'AsyncClient'")
+        return real()
+
+    _patch_import(cold_probe, hook)
+    assert mcp_tool._ensure_mcp_sdk() is True
+    assert mcp_tool._MCP_SDK_IMPORT_ATTEMPTED is False
+
+    broken["on"] = False
+    assert mcp_tool._ensure_mcp_sdk() is True
+    assert mcp_tool._MCP_HTTP_AVAILABLE is True

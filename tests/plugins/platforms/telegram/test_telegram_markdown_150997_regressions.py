@@ -47,6 +47,10 @@ def test_a_lone_star_inside_bold_stays_a_visible_star(adapter, markdown, expecte
         # The closer pairs with the next run of the opener's width, not a shorter tail.
         ("x ``y` $5 z` w", "x ``y` $5 z` w"),
         ("$1\\text{ kg}$ and $x$", "$1\\text{ kg}$ and $x$"),
+        # A fence opens at a line start: a mid-line run nothing closes is literal prose.
+        ("Use ``` to open a fence. Cost is $5", "Use ``` to open a fence. Cost is \\$5"),
+        ("Use ``` to open a fence. Cost is $5\n```\nx\n```", "Use ``` to open a fence. Cost is \\$5\n```\nx\n```"),
+        ("Here is the code: ```bash\necho $5\n```\nthen $6", "Here is the code: ```bash\necho $5\n```\nthen \\$6"),
     ],
 )
 def test_rich_dollar_escape_leaves_every_code_region_verbatim(markdown, expected):

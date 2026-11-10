@@ -14,8 +14,11 @@ from bisect import bisect_left
 _BLOCK_PREFIX = r"[ \t]*(?:(?:>[ \t]*|[-+*][ \t]+|\d+[.)][ \t]+))*"
 _FENCE_OPEN_RE = re.compile(_BLOCK_PREFIX + r"(?P<fence>`{3,}(?![^`\n]*`)|~{3,})")
 # Models also open a fence after lead-in prose ("Here is the code: ```bash"); the MarkdownV2 path
-# reads that as a fence too, so its body must not be rewritten here either.
-_LEADIN_FENCE_RE = re.compile(r"(?:(?!```)[^\n])*(?P<fence>`{3,})[^`\n]*$")
+# reads that as a fence too, so its body must not be rewritten here either. Only that shape counts
+# (the run ends the line, at most an info word after it) and only when a fence line closes it: a
+# fence opens at a line start (CommonMark), so a mid-line run in prose ("Use ``` to open a fence.
+# Cost is $5") is literal text, not code to the end of the reply.
+_LEADIN_FENCE_RE = re.compile(r"(?:(?!```)[^\n])*(?P<fence>`{3,})[^`\s]*[ \t]*\r?$")
 _FENCE_CLOSE_RE = re.compile(_BLOCK_PREFIX + r"(?P<fence>`{3,}|~{3,})[ \t]*\r?$")
 _LIST_ITEM_RE = re.compile(r"[ \t]*(?:[-+*]|\d+[.)])[ \t]")
 _INDENTED_RE = re.compile(r"(?: {4}| {0,3}\t)")
@@ -34,14 +37,28 @@ def _line_spans(text: str):
     yield start, len(text)
 
 
+def _widest_backtick_closer_after(lines: list, text: str) -> list:
+    """For each line index, the widest ``` closing-fence line after it (0 when none)."""
+    widest, out = 0, [0] * len(lines)
+    for i in range(len(lines) - 1, -1, -1):
+        out[i] = widest
+        close = _FENCE_CLOSE_RE.match(text, lines[i][0], lines[i][1])
+        if close and close["fence"][0] == "`":
+            widest = max(widest, len(close["fence"]))
+    return out
+
+
 def _block_regions(text: str) -> list:
     """Fenced blocks (``` or ~~~, closed by a fence of the same char at least as long, or open to
-    the end of the text as in a streamed draft) and indented code blocks."""
+    the end of the text as in a streamed draft; a lead-in fence only when closed) and indented
+    code blocks."""
     regions: list = []
     fence = None  # (char, width, region start) of the open fence
     indented_start = None
     prev_blank, in_list = True, False
-    for start, end in _line_spans(text):
+    lines = list(_line_spans(text))
+    closer_after = None  # computed on the first lead-in fence only
+    for i, (start, end) in enumerate(lines):
         line = text[start:end]
         if fence is not None:
             close = _FENCE_CLOSE_RE.match(line)
@@ -53,7 +70,11 @@ def _block_regions(text: str) -> list:
         if indented_start is not None and not blank and not _INDENTED_RE.match(line):
             regions.append((indented_start, start - 1))
             indented_start = None
-        opened = _FENCE_OPEN_RE.match(line) or _LEADIN_FENCE_RE.match(line)
+        opened = _FENCE_OPEN_RE.match(line)
+        if not opened and (leadin := _LEADIN_FENCE_RE.match(line)):
+            if closer_after is None:
+                closer_after = _widest_backtick_closer_after(lines, text)
+            opened = leadin if closer_after[i] >= len(leadin["fence"]) else None
         if indented_start is None and opened:
             fence = (opened["fence"][0], len(opened["fence"]), start + opened.start("fence"))
             continue

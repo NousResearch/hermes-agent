@@ -17,6 +17,7 @@ import sys
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from typing import Callable
@@ -361,18 +362,62 @@ def _pid_alive(pid: Optional[int]) -> bool:
 UNVERIFIED_WORKER_FINGERPRINT = "unverified"
 
 
+@lru_cache(maxsize=1)
+def _darwin_boot_session_uuid() -> str:
+    """Darwin's per-boot session UUID (``kern.bootsessionuuid``), or ``""`` elsewhere / unreadable.
+
+    Cached for the life of this process: the value cannot change without a reboot, and a reboot ends
+    this process, so a cached value can never outlive the boot it names. Without the cache every
+    liveness check on macOS would fork a ``sysctl``.
+    """
+    if sys.platform != "darwin":
+        return ""
+    try:
+        proc = subprocess.run(
+            ["sysctl", "-n", "kern.bootsessionuuid"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace", timeout=2, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _boot_witness() -> str:
+    """This host's per-boot identity, or ``""`` when the host cannot name its boot.
+
+    ``gateway.drain_control.current_instantiation_epoch`` reads ``/proc``, so off Linux it returns
+    ``""`` -- and then the fingerprint's witness half was simply empty: a live spawn on macOS
+    recorded ``"|179009989536"``, a bare start time (M78, measured on a live worker). Darwin
+    publishes the boot session UUID, which is exactly the property the witness exists for: stable
+    for the life of a boot, different after a reboot.
+    """
+    from gateway.drain_control import current_instantiation_epoch
+
+    epoch = current_instantiation_epoch()
+    if epoch:
+        return epoch
+    uuid = _darwin_boot_session_uuid()
+    return f"bootsession:{uuid}" if uuid else ""
+
+
 def _process_fingerprint(pid: int) -> Optional[str]:
-    """Restart-stable identity of a live process: ``"<instantiation epoch>|<start time>"``. The start
+    """Restart-stable identity of a live process: ``"<boot witness>|<start time>"``. The start
     time alone (``/proc/<pid>/stat`` field 22 on Linux) is clock ticks since THIS boot, so a row that
     survives a reboot could match an unrelated process with the same PID and the same tick value;
-    ``gateway.drain_control.current_instantiation_epoch`` (``boot_id`` + PID-1 start) changes on every
-    reboot / container recreate, so the composed value never survives one. ``None`` when unreadable."""
-    from gateway.drain_control import current_instantiation_epoch
+    the witness from :func:`_boot_witness` changes on every reboot / container recreate, so the
+    composed value never survives one. ``None`` when unreadable, or when the host cannot name its
+    boot at all: a start time with no witness is the value this docstring calls unsafe, so it is
+    reported as unreadable and the caller routes it to ``UNVERIFIED_WORKER_FINGERPRINT`` -- which
+    holds the claim and never signals, the designed answer to missing process identity (#99558)."""
     from gateway.status import get_process_start_time
     start = get_process_start_time(int(pid))
     if start is None:
         return None
-    return f"{current_instantiation_epoch()}|{start}"
+    witness = _boot_witness()
+    if not witness:
+        return None
+    return f"{witness}|{start}"
 
 
 def _worker_alive(pid: Optional[int], started_at) -> bool:
@@ -400,7 +445,14 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
+        current = _process_fingerprint(int(pid))
+        if current is None:
+            # The fingerprint cannot be re-derived right now (the start time is unreadable, or this
+            # host cannot name its boot). Comparing would report a live worker as recycled and
+            # release its claim to a duplicate. Missing process identity is refusal, not permission
+            # (#99558): hold the claim, never signal.
+            return False
+        return current != started_at
     from gateway.status import _start_times_agree, get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:

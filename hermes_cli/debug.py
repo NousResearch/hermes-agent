@@ -564,7 +564,8 @@ def run_debug_share(args):
         result = build_debug_share(log_lines=log_lines, expiry=expiry, redact=redact)
     except RuntimeError as exc:
         print(f"\nUpload failed: {redact_debug_support_text(exc)}", file=sys.stderr)
-        print("\nRun `hermes debug share --local` to print the report instead.\n")
+        print("\nFor Nous support, run `hermes debug share --nous` to upload a private bundle.\n"
+              "Or run `hermes debug share --local` to view the report without uploading.\n")
         sys.exit(1)
     label_width = max(len(k) for k in result.urls)
     print("\nDebug report uploaded:")

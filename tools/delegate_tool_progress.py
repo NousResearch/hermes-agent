@@ -223,29 +223,36 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     """Best-effort local workspace hint for child prompts: only a concrete
     absolute directory is ever injected (never a fake container path).
 
-    On SSH, skip a directory the SSH cwd rewrite maps onto the remote ``~``
-    (the official image's ``/opt/data`` and its subprocess home): it exists
-    on the machine running Hermes, not on the target, and the child would be
-    told to use it as its workdir.
+    On SSH a candidate must name the target, not this host. Skip a relative or
+    ``~`` cwd (expanding it against this host's HOME or process cwd can land on
+    a same-named local directory), read the session cwd raw instead of the
+    subdirectory tracker's copy (resolved on this host, and the host process
+    cwd when unset), and skip a directory the SSH cwd rewrite changes (the
+    official image's ``/opt/data`` and its subprocess home exist only where
+    Hermes runs).
     """
     from agent.runtime_cwd import scope_terminal_cwd
     from tools.terminal_scope import terminal_env
     from tools.terminal_tool_config import coerce_ssh_remote_cwd
 
     env_type = terminal_env("TERMINAL_ENV", "local")
+    on_ssh = env_type.strip().lower() == "ssh"
+    session_dir = (
+        getattr(parent_agent, "session_cwd", None) if on_ssh
+        else getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None)
+    )
     candidates = [
-        scope_terminal_cwd(), getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
-        getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
+        scope_terminal_cwd(), session_dir, getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
     ]
     for candidate in filter(None, candidates):
         with _quiet(None):
-            # A relative or tilde cwd belongs to the SSH peer, not this host's HOME or process cwd.
-            if env_type.strip().lower() == "ssh" and not posixpath.isabs(str(candidate)):
+            raw = str(candidate)
+            if on_ssh and not posixpath.isabs(raw):
                 continue
-            text = os.path.abspath(os.path.expanduser(str(candidate)))
+            text = os.path.abspath(os.path.expanduser(raw))
             if coerce_ssh_remote_cwd(text, env_type) != text:
                 continue
-            if os.path.isabs(text) and os.path.isdir(text):
+            if os.path.isdir(text):
                 return text
     return None
 

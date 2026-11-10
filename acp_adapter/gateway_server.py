@@ -305,7 +305,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if isinstance(title, str) and title.strip():
             self._titles[session_id] = title
         models = await asyncio.to_thread(model_state, info)
-        meta = await asyncio.to_thread(provenance_meta, self._home / "state.db", editor_id, session_id)
+        meta = await asyncio.to_thread(provenance_meta, self._home, editor_id, session_id)
         mode = self._modes.setdefault(session_id, session_modes(info).current_mode_id)
         options = await session_config_options(self._gateway, session_id, models, info, mode)
         # ``_adopt`` seeded the mode from the snapshot: a change the pump projected since is what the reply shows.
@@ -349,7 +349,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         client = await self._client()
         from acp_adapter.catalog import logical_session_id
         from hermes_cli.gateway_client import GatewayRPCError
-        session_id = await asyncio.to_thread(logical_session_id, self._home / "state.db", held_id)
+        session_id = await asyncio.to_thread(logical_session_id, self._home, held_id)
         # The latest load names the id this editor addresses the conversation by.
         self._aliases = {held: sid for held, sid in self._aliases.items() if sid != session_id}
         if session_id != held_id:
@@ -645,7 +645,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def list_sessions(self, cursor=None, cwd=None, **kwargs):
         from acp.schema import ListSessionsResponse, SessionInfo
         from acp_adapter.catalog import catalog_sessions
-        rows = await asyncio.to_thread(catalog_sessions, self._home / "state.db", cwd)
+        rows = await asyncio.to_thread(catalog_sessions, self._home, cwd)
         if cursor:
             index = next((i for i, row in enumerate(rows) if row["session_id"] == cursor), None)
             rows = [] if index is None else rows[index + 1:]

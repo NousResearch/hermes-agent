@@ -67,6 +67,23 @@ def _in_flood_window(st) -> bool:
     return time.monotonic() < st.flood_until
 
 
+# Attempts a carried remainder (lines a content reset rolled out of a flood-held bubble, never
+# shown) gets against non-flood send failures before the roll gives the group up.
+_OWED_SEND_ATTEMPTS = 5
+
+
+def _owed_send_failed(st) -> bool:
+    """True when a failed send of a carried remainder should stay owed for a later tick: unlike a
+    fresh tool line, those lines exist nowhere else on screen, so a permission or network failure
+    is retried (bounded) instead of dropped. Arms ``flood_pending`` so the idle tick retries."""
+    st.owed_send_failures += 1
+    if st.owed_send_failures >= _OWED_SEND_ATTEMPTS:
+        st.owed_send_failures, st.owed_fresh = 0, False
+        return False
+    st.flood_pending = True
+    return True
+
+
 def _settle_progress_send(st, result) -> None:
     """A fresh progress send retires the owed update unless flood control refused it: a 429 is a
     confirmed non-delivery (the window reopens, the update stays owed), while any other failure
@@ -616,6 +633,7 @@ class GatewayTurnProgressMixin:
         # The buffer (no bubble id yet) holds a remainder a reset carried out of a flood-held
         # bubble: owed as a fresh bubble, so a further reset carries it on instead of clearing it.
         owed_fresh: bool = False
+        owed_send_failures: int = 0
 
     def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
@@ -702,8 +720,12 @@ class GatewayTurnProgressMixin:
                 # owed and go out as a fresh bubble rather than overwriting the last one.
                 st.progress_msg_id, st.progress_lines = None, [line for g in groups[i:] for line in g]
                 return True
+            if st.owed_fresh and not result.success and _owed_send_failed(st):
+                st.progress_msg_id, st.progress_lines = None, [line for g in groups[i:] for line in g]
+                return True
             if result.success and result.message_id:
                 st.progress_msg_id = result.message_id
+                st.owed_send_failures = 0
         st.flood_pending = st.owed_fresh = False
         # The newest continuation is the only mutable bubble: keep just its lines so later
         # edits update it instead of replaying the full transcript into new messages.
@@ -803,10 +825,12 @@ class GatewayTurnProgressMixin:
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
         result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        if st.owed_fresh and not result.success and not _note_flood(st, result) and _owed_send_failed(st):
+            return True
         _settle_progress_send(st, result)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
-            st.owed_fresh = False
+            st.owed_fresh, st.owed_send_failures = False, 0
         return True
 
     async def _deliver_flood_pending_progress(self, st) -> bool:

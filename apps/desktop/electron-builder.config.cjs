@@ -301,6 +301,45 @@ if (channelRequest) {
   })
 }
 
+// A checkout rebuilt locally has no channel request, so electron-builder would
+// stamp this workspace's placeholder package.json version (0.0.0) into
+// CFBundleShortVersionString. Everything that shows "the app version" reads
+// app.getVersion() — the macOS About window and Finder, the in-app version
+// panel, and the launch build identity — so a current release advertised
+// 0.0.0. Bake the same identity the CLI reports instead: the build driver
+// writes install-stamp.json (commit, plus baseVersion derived from the
+// checkout's git describe) before this config is required.
+const RELEASED_SEMVER = /^\d+\.\d+\.\d+$/
+
+function bakedLocalVersion() {
+  if (channelRequest || releaseBuild) {
+    return null
+  }
+  let stamp
+  try {
+    // Read-only and stamped only inside a build: importing this config for
+    // typecheck or tests must keep working with no stamp on disk.
+    stamp = JSON.parse(fs.readFileSync(path.join(__dirname, 'build', 'install-stamp.json'), 'utf8'))
+  } catch {
+    return null
+  }
+  // baseVersion is the released tag (0.23.1); displayVersion carries the
+  // distance and commit (0.23.1+279.g3b42157) when the checkout sits past it.
+  const candidates = [stamp?.baseVersion, String(stamp?.displayVersion ?? '').split('+')[0]]
+  return candidates.find(candidate => RELEASED_SEMVER.test(String(candidate ?? '').trim()))?.trim() ?? null
+}
+
+const localVersion = bakedLocalVersion()
+
+if (localVersion) {
+  Object.assign(module.exports, { buildVersion: localVersion })
+  Object.assign(module.exports.extraMetadata, { version: localVersion })
+  Object.assign(module.exports.mac, {
+    bundleVersion: localVersion,
+    bundleShortVersion: localVersion
+  })
+}
+
 // MSIX build-time staging (build/appx icons + build/msix-extensions.xml)
 // lives in scripts/before-build.mjs — an electron-builder lifecycle hook —
 // NOT here at require time, so importing this config for typecheck/tests

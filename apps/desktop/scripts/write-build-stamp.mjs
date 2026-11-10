@@ -21,6 +21,38 @@ const STAMP_SCHEMA_VERSION = 1
 export const FALLBACK_COMMIT = "0000000000000000000000000000000000000000"
 export const FALLBACK_BRANCH = "main"
 
+/**
+ * Released tag shape the CLI recognises — mirrored from
+ * `hermes_cli/update_channel.py::STABLE_TAG_RE` so a stamp written here names
+ * the same release the running agent reports.
+ */
+const STABLE_TAG_RE = /^v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/
+
+/**
+ * Nearest release tag reachable from HEAD plus how far HEAD sits past it.
+ * `git describe --tags --long` yields `<tag>-<distance>-g<sha>`, with distance
+ * 0 at the tag itself. A checkout with no reachable release tag keeps these
+ * empty rather than inventing a version, and a non-release tag (a canary or
+ * `rc` tag) contributes only its distance.
+ */
+function describeRelease(repoRoot, execFn) {
+  const described = execFn(["git", "describe", "--tags", "--long", "--abbrev=7"], { cwd: repoRoot })
+  const match = described && /^(.+)-(\d+)-g([0-9a-f]{7,})$/.exec(described)
+  if (!match) return { baseVersion: null, displayVersion: null, distance: null, tag: null }
+  const [, tag, distanceText, sha] = match
+  const distance = Number(distanceText)
+  if (!STABLE_TAG_RE.test(tag)) return { baseVersion: null, displayVersion: null, distance, tag }
+  const baseVersion = tag.slice(1)
+  return {
+    baseVersion,
+    // `<release>+<distance>.g<sha>` matches the CLI's derived identity, so a
+    // packaged build advertises the same version a source checkout reports.
+    displayVersion: distance === 0 ? baseVersion : `${baseVersion}+${distance}.g${sha}`,
+    distance,
+    tag
+  }
+}
+
 const DESKTOP_ROOT = resolve(import.meta.dirname, "..")
 const REPO_ROOT = resolve(DESKTOP_ROOT, "..", "..")
 const OUT_DIR = join(DESKTOP_ROOT, "build")
@@ -62,7 +94,10 @@ export function fromLocalGit(repoRoot = REPO_ROOT, execFn = tryExec) {
     commit: sha,
     branch: branch === "HEAD" ? null : branch, // detached HEAD -> null
     dirty: dirty,
-    source: "local"
+    source: "local",
+    // The packager bakes these into the bundle version, so a locally rebuilt
+    // app reports its release instead of the workspace placeholder 0.0.0.
+    ...describeRelease(repoRoot, execFn)
   }
 }
 

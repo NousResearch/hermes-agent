@@ -51,6 +51,26 @@ afterEach(async () => {
   container?.remove();
 });
 
+function memoryStorage(): Storage {
+  let store: Record<string, string> = {};
+  return {
+    get length() {
+      return Object.keys(store).length;
+    },
+    key: (i: number) => Object.keys(store)[i] ?? null,
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => {
+      store[key] = String(value);
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+  };
+}
+
 /** The fix pins each target's rendered class list, so assert on exact
  *  whitespace-delimited tokens (py-1 must not satisfy a py-1.5 check). */
 function hasClass(el: Element, token: string): boolean {
@@ -59,11 +79,10 @@ function hasClass(el: Element, token: string): boolean {
 
 describe("sidebar control target sizes (WCAG 2.5.8, issue #70983)", () => {
   beforeEach(() => {
-    // Node 25 ships its own `localStorage` global that vitest's jsdom
-    // environment does not always shadow; guard so CI's runtime can't
-    // turn a layout-class test into a storage TypeError.
-    window.sessionStorage?.clear?.();
-    window.localStorage?.clear?.();
+    // jsdom runs without an origin under this node-default config, so CI's
+    // runtime can leave localStorage undefined while ThemeProvider reads it
+    // on mount. Stub it, as ChatPage.test.tsx does.
+    vi.stubGlobal("localStorage", memoryStorage());
     Object.defineProperty(window, "__HERMES_AUTH_REQUIRED__", {
       configurable: true,
       value: true,

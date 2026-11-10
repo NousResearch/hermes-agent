@@ -236,8 +236,24 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
     return json.dumps(selected, ensure_ascii=False) if selected else None
 
 
+def _prose_as_answer() -> bool:
+    """Opt-in: typed prose at a choice prompt answers it the way an 'Other' reply would,
+    instead of cancelling the prompt (``clarify.prose_as_answer`` in config.yaml; default
+    false keeps the upstream cancel-and-route behaviour)."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("clarify", {}).get("prose_as_answer")
+    except Exception:
+        return False
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return bool(raw)
+
+
 def attempt_text_response_for_session(session_key: str, response: str) -> str:
-    """Try to resolve the oldest pending clarify from typed text; returns a TEXT_* outcome."""
+    """Try to resolve the oldest pending clarify from typed text; returns a TEXT_* outcome.
+    Free prose cancels the prompt by default (deadlock break); with ``clarify.prose_as_answer``
+    enabled it answers the prompt instead, so a typed reply never looks like a hung widget."""
     entry = get_pending_for_session(session_key, include_choice_prompts=True)
     return _attempt_text_response(entry, response)
 
@@ -252,6 +268,8 @@ def _attempt_text_response(entry: Optional[_ClarifyEntry], response: str) -> str
     if entry is None:
         return TEXT_NO_PENDING
     coerced, reason = _coerce_text_response_detailed(entry, response)
+    if coerced is None and reason == "prose" and _prose_as_answer():
+        coerced = str(response).strip()
     if coerced is None:
         return TEXT_REJECTED_SELECTION if reason == "invalid_selection" else TEXT_REJECTED_PROSE
     if resolve_gateway_clarify(entry.clarify_id, coerced):

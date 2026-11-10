@@ -448,3 +448,61 @@ class TestNativeRejectClassification:
         )
         assert value is None
         assert reason == "prose"
+
+
+class TestProseAsAnswer:
+    """``clarify.prose_as_answer``: typed prose answers a pending choice prompt
+    the way an 'Other' reply would, instead of cancelling it."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def test_knob_parsing(self, monkeypatch):
+        """Bool and truthy-string forms of the config value; absent key defaults to False."""
+        from tools import clarify_gateway as cm
+        import hermes_cli.config as cfg
+        monkeypatch.setattr(cfg, "load_config_readonly",
+                            lambda: {"clarify": {"prose_as_answer": "true"}})
+        assert cm._prose_as_answer() is True
+        monkeypatch.setattr(cfg, "load_config_readonly",
+                            lambda: {"clarify": {"prose_as_answer": False}})
+        assert cm._prose_as_answer() is False
+        monkeypatch.setattr(cfg, "load_config_readonly", lambda: {})
+        assert cm._prose_as_answer() is False
+
+    def test_prose_rejected_when_knob_off(self, monkeypatch):
+        """Default behaviour unchanged: prose cancels the prompt (deadlock break)."""
+        from tools import clarify_gateway as cm
+        monkeypatch.setattr(cm, "_prose_as_answer", lambda: False)
+        cm.register("pa-off", "sk-pa1", "Pick one", ["A", "B"])
+        assert cm.attempt_text_response_for_session("sk-pa1", "unrelated prose") == (
+            cm.TEXT_REJECTED_PROSE
+        )
+
+    def test_prose_answers_prompt_when_knob_on(self, monkeypatch):
+        """With the knob on, prose resolves the waiter with the typed text ('Other'-style)."""
+        from tools import clarify_gateway as cm
+        monkeypatch.setattr(cm, "_prose_as_answer", lambda: True)
+        cm.register("pa-on", "sk-pa2", "Pick one", ["A", "B"])
+        result_box = {}
+
+        def waiter():
+            result_box["r"] = cm.wait_for_response("pa-on", timeout=5)
+
+        t = threading.Thread(target=waiter)
+        t.start()
+        time.sleep(0.05)
+        assert cm.attempt_text_response_for_session(
+            "sk-pa2", "continue searching instead",
+        ) == cm.TEXT_RESOLVED
+        t.join(timeout=5)
+        assert result_box["r"] == "continue searching instead"
+
+    def test_invalid_selection_still_rejected_when_knob_on(self, monkeypatch):
+        """The knob only changes prose; out-of-range numbers keep the retry flow."""
+        from tools import clarify_gateway as cm
+        monkeypatch.setattr(cm, "_prose_as_answer", lambda: True)
+        cm.register("pa-num", "sk-pa3", "Pick one", ["A", "B"])
+        assert cm.attempt_text_response_for_session("sk-pa3", "9") == (
+            cm.TEXT_REJECTED_SELECTION
+        )

@@ -1,20 +1,20 @@
 name: hermes-jobs
 repo: https://github.com/CrowBe/hermes-jobs
-sha: db859cc81cc2bc59f743a4888f71315b0c975d99
+sha: 57ac3a76f17ea565dc4287c80756e0eff0a22eac
 description: "Google Calendar is the one supported backend today (scope calendar.events, one bound calendar). Bidirectional sync between Hermes cron (system of record) and that job board. discover/status are read-only; sync plans both directions and is dry-run unless --confirm on the CLI. Read-only /jobs slash command shows the 7-day agenda and pending changes; each job's last run time and status (ok/error) is written to its event as a colour and one description line, never the title."
 maintainer: "Benjamin Crow (CrowBe) / Hermes Plugin Builder"
 tier: community
 category: automation
 requires_hermes: ">=0.22.6"
-docs_url: https://github.com/CrowBe/hermes-jobs/blob/db859cc81cc2bc59f743a4888f71315b0c975d99/README.md
-version: "0.3.0"
-image: https://raw.githubusercontent.com/CrowBe/hermes-jobs/db859cc81cc2bc59f743a4888f71315b0c975d99/docs/banner.png
+docs_url: https://github.com/CrowBe/hermes-jobs/blob/57ac3a76f17ea565dc4287c80756e0eff0a22eac/README.md
+version: "0.3.1"
+image: https://raw.githubusercontent.com/CrowBe/hermes-jobs/57ac3a76f17ea565dc4287c80756e0eff0a22eac/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/db859cc81cc2bc59f743a4888f71315b0c975d99/docs/screenshots/week.png
-  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/db859cc81cc2bc59f743a4888f71315b0c975d99/docs/screenshots/drag-all-events.png
-  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/db859cc81cc2bc59f743a4888f71315b0c975d99/docs/screenshots/confirm-reschedule.png
-  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/db859cc81cc2bc59f743a4888f71315b0c975d99/docs/screenshots/run-outcome.png
-  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/db859cc81cc2bc59f743a4888f71315b0c975d99/docs/screenshots/jobs-agenda.png
+  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/57ac3a76f17ea565dc4287c80756e0eff0a22eac/docs/screenshots/week.png
+  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/57ac3a76f17ea565dc4287c80756e0eff0a22eac/docs/screenshots/drag-all-events.png
+  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/57ac3a76f17ea565dc4287c80756e0eff0a22eac/docs/screenshots/confirm-reschedule.png
+  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/57ac3a76f17ea565dc4287c80756e0eff0a22eac/docs/screenshots/run-outcome.png
+  - https://raw.githubusercontent.com/CrowBe/hermes-jobs/57ac3a76f17ea565dc4287c80756e0eff0a22eac/docs/screenshots/jobs-agenda.png
 platforms: []
 title: "hermes-jobs: Calendar sync for Hermes cron"
 capabilities:

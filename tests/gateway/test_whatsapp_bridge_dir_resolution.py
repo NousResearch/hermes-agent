@@ -30,8 +30,7 @@ def test_readonly_install_mirrors_to_hermes_home(tmp_path, monkeypatch):
     hermes_home.mkdir()
 
     monkeypatch.setattr(
-        whatsapp_common, "__file__",
-        str(install_root / "gateway" / "platforms" / "whatsapp_common.py"),
+        "hermes_cli._startup_fast.project_root_str", lambda: str(install_root)
     )
     monkeypatch.setattr(
         "hermes_constants.get_hermes_home", lambda: hermes_home

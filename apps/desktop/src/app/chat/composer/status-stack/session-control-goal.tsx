@@ -155,7 +155,7 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
         : 'active'
 
   const iconClass =
-    goal.last_verdict === 'blocked'
+    visibleState === 'paused' && goal.last_verdict === 'blocked'
       ? 'text-red-500'
       : visibleState === 'done'
         ? 'text-muted-foreground/70'
@@ -164,7 +164,7 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
           : 'text-amber-500'
 
   const stateLabel =
-    goal.last_verdict === 'blocked'
+    visibleState === 'paused' && goal.last_verdict === 'blocked'
       ? s.goalBlocked
       : visibleState === 'waiting'
         ? s.goalWaiting

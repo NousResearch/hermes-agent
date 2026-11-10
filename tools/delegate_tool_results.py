@@ -358,20 +358,25 @@ def _notify_memory_manager(results, task_list, child_by_index, parent_agent) -> 
         except Exception:
             pass
 
-def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
-    """Pop the model-hidden ``_child_role`` / ``_child_cost_usd`` fields from every
-    entry, fire ``subagent_stop`` per child, and return the summed child cost."""
+def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> tuple[float, list[str]]:
+    """Pop model-hidden child fields, fire stop hooks, and return cost plus provenance."""
     try:
         from hermes_cli.plugins import invoke_hook
     except Exception:
         invoke_hook = None
     children_cost_total = 0.0
+    children_cost_statuses = []
     for entry in results:
         child_role = entry.pop("_child_role", None)
         child_cost = entry.pop("_child_cost_usd", 0.0)
         try:
             if child_cost:
-                children_cost_total += float(child_cost)
+                numeric_cost = float(child_cost)
+                children_cost_total += numeric_cost
+                if numeric_cost > 0:
+                    status = entry.get("cost_status")
+                    # Legacy entries carried only an estimated USD total, without provenance.
+                    children_cost_statuses.append(status if isinstance(status, str) and status else "estimated")
         except (TypeError, ValueError):
             pass
         if invoke_hook is None:
@@ -389,11 +394,10 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
             )
         except Exception:
             logger.debug("subagent_stop hook invocation failed", exc_info=True)
-    return children_cost_total
+    return children_cost_total, children_cost_statuses
 
-def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
-    """Fold the children's spend into the parent's session cost (source/status
-    only set when the parent had none of its own)."""
+def _rollup_children_cost(parent_agent, children_cost_total: float, children_cost_statuses: list[str]) -> None:
+    """Fold children's spend into the parent without overstating cost provenance."""
     if children_cost_total <= 0.0:
         return
     try:
@@ -401,8 +405,18 @@ def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
         parent_agent.session_estimated_cost_usd = current + children_cost_total
         if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
             parent_agent.session_cost_source = "subagent"
-        if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:
+        parent_status = getattr(parent_agent, "session_cost_status", "unknown")
+        statuses = list(children_cost_statuses)
+        if parent_status not in {None, "", "unknown"}:
+            statuses.append(parent_status)
+        if not statuses or "unknown" in statuses:
+            parent_agent.session_cost_status = "unknown"
+        elif "estimated" in statuses:
             parent_agent.session_cost_status = "estimated"
+        elif "actual" in statuses:
+            parent_agent.session_cost_status = "actual"
+        else:
+            parent_agent.session_cost_status = "included"
     except Exception:
         logger.debug("Subagent cost rollup failed", exc_info=True)
 
@@ -425,7 +439,8 @@ def _finalize_child_results(
                 entry["summary"] = parent_copy(entry["summary"], forced)
         _apply_summary_budget(results, parent_agent)
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
-        _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
+        children_cost, children_statuses = _fire_subagent_stop_hooks(results, child_by_index, parent_agent)
+        _rollup_children_cost(parent_agent, children_cost, children_statuses)
 
 def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> dict[str, Any]:
     """Run one child and apply the same host lifecycle used by delegate_task."""

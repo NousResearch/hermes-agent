@@ -1644,7 +1644,7 @@ platform:
         🔧 L'envoi natif des pièces jointes n'est **pas configuré**.
         **Étape 1 (une seule fois, sur l'hôte) :** créez des identifiants de client OAuth sur https://console.cloud.google.com/apis/credentials → *Créer des identifiants* → *ID client OAuth* → *Application de bureau*. Téléchargez le JSON. Puis, sur l'hôte, exécutez :
         ```
-        python -m plugins.platforms.google_chat.oauth --client-secret /path/to/client_secret.json
+        python -m hermes_agent.plugins.platforms.google_chat.oauth --client-secret /path/to/client_secret.json
         ```
         **Étape 2 :** revenez ici et envoyez `/setup-files start`.
       start_instructions: |-

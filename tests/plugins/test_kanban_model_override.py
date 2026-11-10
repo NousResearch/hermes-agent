@@ -48,7 +48,7 @@ def conn(kanban_home):
 
 def _load_plugin_router():
     repo_root = Path(__file__).resolve().parents[2]
-    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    plugin_file = repo_root / "hermes_agent" / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
     spec = importlib.util.spec_from_file_location(
         "hermes_dashboard_plugin_kanban_model_override_test", plugin_file,

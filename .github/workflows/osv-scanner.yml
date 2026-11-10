@@ -45,7 +45,7 @@ jobs:
         --lockfile=uv.lock
         --lockfile=pnpm-lock.yaml
         --lockfile=website/package-lock.json
-        --lockfile=plugins/platforms/photon/sidecar/package-lock.json
+        --lockfile=hermes_agent/plugins/platforms/photon/sidecar/package-lock.json
         --lockfile=scripts/whatsapp-bridge/package-lock.json
       results-file-name: osv-results.sarif
       fail-on-vuln: false

@@ -32,7 +32,7 @@ _PLACEHOLDER = re.compile(r"(?<![\w.])(?:\.\.\.|…)(?![\w.])")
 def _plugin_docs() -> list[Path]:
     docs = _ROOT / "website" / "docs"
     return [*sorted((docs / "developer-guide").rglob("*.md*")),
-            *sorted((docs / "user-guide" / "features").glob("plugins*.md")), _ROOT / "plugins" / "AGENTS.md"]
+            *sorted((docs / "user-guide" / "features").glob("plugins*.md")), _ROOT / "hermes_agent" / "plugins" / "AGENTS.md"]
 
 
 def _fences(markdown: str, offset: int = 0):
@@ -79,7 +79,7 @@ def scan(markdown: str) -> tuple[set[str], list[int]]:
                 target = _private_target(module, name, _hermes_packages(), set())
                 if target and _core_module_exists(module):
                     found.add(target)
-                elif target and not module.startswith("plugins."):
+                elif target and not module.startswith(("plugins.", "hermes_agent.plugins.")):
                     found.add(f"{target} (core ships no {module})")
     return found, unparsable
 

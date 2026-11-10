@@ -128,7 +128,7 @@ def handle_tool_call(self, name, args, **kwargs):
 
 ### 通过目录（推荐）
 
-将引擎放置于 `plugins/context_engine/<name>/`。`__init__.py` 必须导出一个 `ContextEngine` 子类。发现系统会自动找到并实例化它。
+将引擎放置于 `hermes_agent/plugins/context_engine/<name>/`。`__init__.py` 必须导出一个 `ContextEngine` 子类。发现系统会自动找到并实例化它。
 
 ### 通过通用插件系统
 

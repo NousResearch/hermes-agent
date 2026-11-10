@@ -82,7 +82,7 @@ edges, conservative at the waist.
   one needs more, widen the generic plugin surface, never special-case it in core.
 - **Third-party products integrated into the core tree.** Observability backends, vendor
   SaaS connectors, analytics dashboards, and other "someone else's product" plugins do NOT
-  land under `plugins/` — every one becomes our burden against a fast-moving core for a
+  land under `hermes_agent/plugins/` — every one becomes our burden against a fast-moving core for a
   backend we don't own. Ship as a **standalone plugin repo** (`~/.hermes/plugins/` or pip
   entry point), promoted in the Nous Research Discord `#plugins-skills-and-skins`. This is a
   coupling decision, not a quality bar; such PRs are closed with a pointer to publish.

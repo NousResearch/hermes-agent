@@ -41,7 +41,7 @@ def _repo_root() -> Path:
 
 def _load_patterns():
     """Import patterns.py in isolation (no plugin glue)."""
-    pat_path = _repo_root() / "plugins" / "security-guidance" / "patterns.py"
+    pat_path = _repo_root() / "hermes_agent" / "plugins" / "security-guidance" / "patterns.py"
     spec = importlib.util.spec_from_file_location(
         "security_guidance_patterns_under_test", pat_path
     )
@@ -51,7 +51,7 @@ def _load_patterns():
 
 def _load_plugin_init():
     """Import the plugin __init__.py with patterns.py as a sibling."""
-    plugin_dir = _repo_root() / "plugins" / "security-guidance"
+    plugin_dir = _repo_root() / "hermes_agent" / "plugins" / "security-guidance"
     if "hermes_plugins" not in sys.modules:
         ns = types.ModuleType("hermes_plugins")
         ns.__path__ = []
@@ -252,7 +252,7 @@ class TestPluginDiscovery:
         """Manifest metadata must use the field consumed by plugin discovery."""
         import hermes_agent.hermes_yaml as yaml
 
-        plugin_dir = _repo_root() / "plugins" / "security-guidance"
+        plugin_dir = _repo_root() / "hermes_agent" / "plugins" / "security-guidance"
         manifest = yaml.safe_load(
             (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
         )

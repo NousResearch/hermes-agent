@@ -165,7 +165,7 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
     kb.init_db()
 
     repo_root = Path(__file__).resolve().parents[2]
-    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    plugin_file = repo_root / "hermes_agent" / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     spec = importlib.util.spec_from_file_location(
         "hermes_dashboard_plugin_kanban_m3_test", plugin_file,
     )

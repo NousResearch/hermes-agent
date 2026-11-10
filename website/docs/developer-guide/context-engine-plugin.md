@@ -25,7 +25,7 @@ Plugin engines are **never auto-activated** — the user must explicitly set `co
 
 ## Directory structure
 
-Each context engine lives in `plugins/context_engine/<name>/`:
+Each context engine lives in `hermes_agent/plugins/context_engine/<name>/`:
 
 ```
 plugins/context_engine/lcm/
@@ -273,7 +273,7 @@ Engine tools are injected into the agent's tool list at startup and dispatched a
 
 ### Via directory (recommended)
 
-Place your engine in `plugins/context_engine/<name>/` (bundled) or `~/.hermes/plugins/<name>/` (user-installed; `$HERMES_HOME/plugins/<name>/`). The `__init__.py` must export a `ContextEngine` subclass or a `register(ctx)` that calls `ctx.register_context_engine(...)`. Setting `context.engine: <name>` is the activation — a user-installed engine does not need a `plugins.enabled` entry. Bundled names win on collision.
+Place your engine in `hermes_agent/plugins/context_engine/<name>/` (bundled) or `~/.hermes/plugins/<name>/` (user-installed; `$HERMES_HOME/plugins/<name>/`). The `__init__.py` must export a `ContextEngine` subclass or a `register(ctx)` that calls `ctx.register_context_engine(...)`. Setting `context.engine: <name>` is the activation — a user-installed engine does not need a `plugins.enabled` entry. Bundled names win on collision.
 
 ### Via general plugin system
 

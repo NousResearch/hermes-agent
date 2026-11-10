@@ -53,7 +53,7 @@ The engine is responsible for:
 - Tracking token usage from API responses
 
 Selection is config-driven via `context.engine` in `config.yaml`. The resolution order:
-1. Check `plugins/context_engine/<name>/` directory
+1. Check `hermes_agent/plugins/context_engine/<name>/` directory
 2. Check general plugin system (`register_context_engine()`)
 3. Fall back to built-in `ContextCompressor`
 

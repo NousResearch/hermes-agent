@@ -110,7 +110,7 @@ def register(ctx):
 | 注册图像生成后端 | `ctx.register_image_gen_provider(provider)` — 参见 [Image Generation Provider Plugins](../../developer-guide/image-gen-provider-plugin.md) |
 | 注册视频生成后端 | `ctx.register_video_gen_provider(provider)` — 参见 [Video Generation Provider Plugins](../../developer-guide/video-gen-provider-plugin.md) |
 | 注册上下文压缩引擎 | `ctx.register_context_engine(engine)` — 参见 [Context Engine Plugins](../../developer-guide/context-engine-plugin.md) |
-| 注册 memory 后端 | 在 `plugins/memory/<name>/__init__.py` 中继承 `MemoryProvider` — 参见 [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md)（使用独立发现系统） |
+| 注册 memory 后端 | 在 `$HERMES_HOME/plugins/<name>/__init__.py` 中继承 `MemoryProvider`（内置的位于 `hermes_agent/plugins/memory/<name>/`） — 参见 [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md)（使用独立发现系统） |
 | 调用宿主 LLM | `ctx.llm.complete(...)` / `ctx.llm.complete_structured(...)` — 借用用户当前激活的模型和认证，进行一次性补全，支持可选 JSON schema 验证。参见 [Plugin LLM Access](../../developer-guide/plugin-llm-access.md) |
 | 注册推理后端（LLM provider） | 在 `plugins/model-providers/<name>/__init__.py` 中调用 `register_provider(ProviderProfile(...))` — 参见 [Model Provider Plugins](../../developer-guide/model-provider-plugin.md)（使用独立发现系统） |
 
@@ -118,7 +118,7 @@ def register(ctx):
 
 | 来源 | 路径 | 使用场景 |
 |--------|------|----------|
-| 内置 | `<repo>/plugins/` | 随 Hermes 附带 — 参见 [Built-in Plugins](./built-in-plugins.md) |
+| 内置 | `<repo>/hermes_agent/plugins/` | 随 Hermes 附带 — 参见 [Built-in Plugins](./built-in-plugins.md) |
 | 用户 | `~/.hermes/plugins/` | 个人插件 |
 | 项目 | `.hermes/plugins/` | 项目专属插件（需要 `HERMES_ENABLE_PROJECT_PLUGINS=true`） |
 | pip | `hermes_agent.plugins` entry_points | 分发包 |
@@ -226,7 +226,7 @@ Memory provider 和 context engine 是 **provider 插件** — 每种类型同�
 | 插件附带的**skill** | Python 插件 — `ctx.register_skill()` | [Creating Skills](../../developer-guide/creating-skills.md) |
 | **推理后端**（LLM provider：OpenAI 兼容、Codex、Anthropic-Messages、Bedrock） | Provider 插件 — 在 `plugins/model-providers/<name>/` 中调用 `register_provider(ProviderProfile(...))` | **[Model Provider Plugins](../../developer-guide/model-provider-plugin.md)** · [Adding Providers](../../developer-guide/adding-providers.md) |
 | **Gateway 频道**（Discord / Telegram / IRC / Teams 等） | 平台插件 — 在 `plugins/platforms/<name>/` 中调用 `ctx.register_platform()` | [Adding Platform Adapters](../../developer-guide/adding-platform-adapters.md) |
-| **Memory 后端**（Honcho、Mem0、Supermemory 等） | Memory 插件 — 在 `plugins/memory/<name>/` 中继承 `MemoryProvider` | [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md) |
+| **Memory 后端**（Honcho、Mem0、Supermemory 等） | Memory 插件 — 在 `$HERMES_HOME/plugins/<name>/` 中继承 `MemoryProvider`（内置的位于 `hermes_agent/plugins/memory/<name>/`） | [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md) |
 | **上下文压缩策略** | Context-engine 插件 — `ctx.register_context_engine()` | [Context Engine Plugins](../../developer-guide/context-engine-plugin.md) |
 | **图像生成后端**（DALL·E、SDXL 等） | 后端插件 — `ctx.register_image_gen_provider()` | [Image Generation Provider Plugins](../../developer-guide/image-gen-provider-plugin.md) |
 | **视频生成后端**（Veo、Kling、Pixverse、Grok-Imagine、Runway 等） | 后端插件 — `ctx.register_video_gen_provider()` | [Video Generation Provider Plugins](../../developer-guide/video-gen-provider-plugin.md) |

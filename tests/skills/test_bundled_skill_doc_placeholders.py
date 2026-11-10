@@ -23,7 +23,7 @@ def bundled_skill_texts() -> list[tuple[Path, str]]:
     # _read_skill_text (utf-8-sig, errors="replace"), so scan everything the same way.
     texts = [
         (path, path.read_text(encoding="utf-8-sig", errors="replace"))
-        for root in ("skills", "optional-skills", "plugins")
+        for root in ("skills", "optional-skills", "hermes_agent/plugins")
         for path in sorted((REPO_ROOT / root).rglob("*"))
         if path.is_file() and ".hub" not in path.parts
     ]

@@ -212,7 +212,7 @@ def _shipped_modules() -> tuple[list[dict], set[str]]:
             plugin_root = next((a for a in (pdir, *pdir.parents)
                                 if (a / "plugin.yaml").exists() or (a / "plugin.yml").exists()), None)
             if plugin_root is not None and (plugin_root / "__init__.py").exists():
-                slug = plugin_root.relative_to(WORKTREE / "plugins").as_posix().replace("/", "__").replace("-", "_")
+                slug = plugin_root.relative_to(WORKTREE / "hermes_agent" / "plugins").as_posix().replace("/", "__").replace("-", "_")
                 sub = None if f.stem == "__init__" else ".".join((*f.parent.relative_to(plugin_root).parts, f.stem))
                 entries.append({"id": rel, "kind": "plugin", "root": str(plugin_root), "slug": slug, "sub": sub})
             else:

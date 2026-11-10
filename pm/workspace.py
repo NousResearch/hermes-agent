@@ -283,7 +283,7 @@ def selected_plugin_dir(plugins_dir: Path, name: str, *, installing: Path | None
     if installing is not None and plugin_dir.resolve() == installing.resolve():
         return plugin_dir
     if not _is_directory(plugin_dir):
-        plugin_dir = paths.repo_root() / "plugins" / relative
+        plugin_dir = paths.repo_root() / "hermes_agent" / "plugins" / relative
     return plugin_dir if _is_directory(plugin_dir) else None
 
 

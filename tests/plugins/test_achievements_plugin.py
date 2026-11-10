@@ -28,6 +28,7 @@ import pytest
 
 PLUGIN_MODULE_PATH = (
     Path(__file__).resolve().parents[2]
+    / "hermes_agent"
     / "plugins"
     / "hermes-achievements"
     / "dashboard"

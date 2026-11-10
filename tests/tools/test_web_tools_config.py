@@ -923,11 +923,11 @@ class TestSiblingProvidersEnvResolution:
     providers that previously read only the process environment."""
 
     _CASES = [
-        ("plugins.web.exa.provider", "ExaWebSearchProvider", "EXA_API_KEY"),
-        ("plugins.web.parallel.provider", "ParallelWebSearchProvider", "PARALLEL_API_KEY"),
-        ("plugins.web.keenable.provider", "KeenableWebSearchProvider", "KEENABLE_API_KEY"),
-        ("plugins.web.tavily.provider", "TavilyWebSearchProvider", "TAVILY_API_KEY"),
-        ("plugins.web.brave_free.provider", "BraveFreeWebSearchProvider", "BRAVE_SEARCH_API_KEY"),
+        ("hermes_agent.plugins.web.exa.provider", "ExaWebSearchProvider", "EXA_API_KEY"),
+        ("hermes_agent.plugins.web.parallel.provider", "ParallelWebSearchProvider", "PARALLEL_API_KEY"),
+        ("hermes_agent.plugins.web.keenable.provider", "KeenableWebSearchProvider", "KEENABLE_API_KEY"),
+        ("hermes_agent.plugins.web.tavily.provider", "TavilyWebSearchProvider", "TAVILY_API_KEY"),
+        ("hermes_agent.plugins.web.brave_free.provider", "BraveFreeWebSearchProvider", "BRAVE_SEARCH_API_KEY"),
     ]
 
     @pytest.mark.parametrize("module_path,cls_name,env_key", _CASES)

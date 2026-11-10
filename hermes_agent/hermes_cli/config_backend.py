@@ -342,7 +342,7 @@ def get_config_backend() -> ConfigBackend:
 
 # A kind is one package name under hermes_agent/plugins/config_backends/: never a dotted or relative path.
 _KIND_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
-_BACKENDS_PACKAGE = "plugins.config_backends"
+_BACKENDS_PACKAGE = "hermes_agent.plugins.config_backends"
 
 
 def _backend_for(kind: str) -> ConfigBackend:

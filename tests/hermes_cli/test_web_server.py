@@ -624,7 +624,7 @@ class FlatProvMemoryProvider(MemoryProvider):
         path.write_text(json.dumps(existing))
 """
     _FLATPROV_SCHEMA = """
-from plugins.memory.config_schema import (
+from hermes_agent.plugins.memory.config_schema import (
     KIND_SECRET, KIND_SELECT, KIND_TEXT, ProviderConfigSchema, ProviderField, ProviderFieldOption,
 )
 

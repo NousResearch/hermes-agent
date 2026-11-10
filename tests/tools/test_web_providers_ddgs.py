@@ -286,3 +286,16 @@ class TestDDGSSearchOnlyErrors:
         assert result["success"] is False
         assert "search-only" in result["error"].lower()
         assert "duckduckgo" in result["error"].lower() or "ddgs" in result["error"].lower()
+
+
+@pytest.mark.parametrize("package_importable", [True, False])
+def test_worker_path_entry_is_the_dir_that_holds_hermes_agent(monkeypatch, package_importable):
+    """The worker's PYTHONPATH entry is the directory containing ``hermes_agent/``, whether it comes
+    from the live package or (import failed) from this file's own depth."""
+    from pathlib import Path
+
+    import hermes_agent.plugins.web.ddgs.provider as prov
+    if not package_importable:
+        monkeypatch.setitem(sys.modules, "hermes_agent.plugins", None)
+    entry = Path(prov._plugins_path_entry())
+    assert (entry / "hermes_agent" / "plugins" / "web" / "ddgs" / "provider.py").is_file(), entry

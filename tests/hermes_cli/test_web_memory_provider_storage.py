@@ -55,7 +55,7 @@ def register(ctx):
 """
 
 _SCHEMA = """
-from plugins.memory.config_schema import (
+from hermes_agent.plugins.memory.config_schema import (
     KIND_BOOL, KIND_SECRET, KIND_TEXT, STORAGE_PROVIDER, ProviderConfigSchema, ProviderField,
 )
 
@@ -200,7 +200,7 @@ def test_an_unknown_storage_kind_shows_no_panel_and_writes_no_stray_file(client)
 
 def test_a_schema_that_fails_to_load_logs_its_traceback_once(client, caplog):
     _install("oldschema", _INIT.replace('name = "ownprov"', 'name = "oldschema"'),
-             "from plugins.memory.config_schema import NO_SUCH_NAME\n")
+             "from hermes_agent.plugins.memory.config_schema import NO_SUCH_NAME\n")
     with caplog.at_level("ERROR", logger="hermes_agent.plugins.memory.config_schema"):
         for _ in range(3):
             assert client.get("/api/memory/providers/oldschema/config?surface=declared").status_code == 200

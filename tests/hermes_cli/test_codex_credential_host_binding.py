@@ -333,7 +333,7 @@ def test_aux_codex_client_singleton_positive_control(monkeypatch):
 
 def _load_image_plugin():
     spec = importlib.util.spec_from_file_location(
-        "codex_img_binding_test", _REPO / "plugins/image_gen/openai-codex/__init__.py")
+        "codex_img_binding_test", _REPO / "hermes_agent/plugins/image_gen/openai-codex/__init__.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

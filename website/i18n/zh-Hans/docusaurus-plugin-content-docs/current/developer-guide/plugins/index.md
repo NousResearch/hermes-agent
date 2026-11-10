@@ -789,7 +789,7 @@ def register(ctx):
 
 ## 专用插件类型
 
-Hermes 在通用接口之外还有五种专用插件类型。每种都以目录形式存放在 `plugins/<category>/<name>/`（内置）或 `~/.hermes/plugins/<category>/<name>/`（用户）下。各类别的约定不同——选择你需要的类型，然后阅读其完整指南。
+Hermes 在通用接口之外还有五种专用插件类型。每种都以目录形式存放在 `hermes_agent/plugins/<category>/<name>/`（内置）或 `~/.hermes/plugins/<category>/<name>/`（用户）下。各类别的约定不同——选择你需要的类型，然后阅读其完整指南。
 
 ### 模型提供商插件——添加 LLM 后端
 
@@ -886,10 +886,10 @@ optional_env:
 
 ### 记忆提供商插件——添加跨会话知识后端
 
-在 `plugins/memory/<name>/` 下实现 `MemoryProvider`：
+在 `$HERMES_HOME/plugins/<name>/` 下实现 `MemoryProvider`（内置的位于 `hermes_agent/plugins/memory/<name>/`）：
 
 ```python
-# plugins/memory/my-memory/__init__.py
+# $HERMES_HOME/plugins/my-memory/__init__.py
 from hermes_agent.agent.memory_provider import MemoryProvider
 
 class MyMemoryProvider(MemoryProvider):

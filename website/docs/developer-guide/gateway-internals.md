@@ -369,7 +369,7 @@ including top-level one-shot launches. It does not become a process-wide option.
 | `hermes_agent/gateway/mirror.py` | Cross-session message mirroring for `send_message` |
 | `hermes_agent/gateway/status.py` | Token lock management for profile-scoped gateway instances |
 | `hermes_agent/gateway/platform_registry.py` | Adapter registry, factories, and deferred (lazy) loaders for bundled platform plugins |
-| `plugins/platforms/<name>/` | Bundled messaging adapters (most platforms: `adapter.py` + `plugin.yaml`) |
+| `hermes_agent/plugins/platforms/<name>/` | Bundled messaging adapters (most platforms: `adapter.py` + `plugin.yaml`) |
 | `hermes_agent/gateway/platforms/` | Shared `base.py` plus legacy/direct adapters (Signal, API server, webhooks, …) |
 
 ## Optional service installation
@@ -751,7 +751,7 @@ Unlike the CLI (which uses `load_cli_config()` with hardcoded defaults), the gat
 
 ## Platform Adapters
 
-Every messaging platform ships as a plugin adapter under `plugins/platforms/<name>/`; `hermes_agent/gateway/platforms/` keeps the base class and the HTTP ingress adapters (`api_server`, `webhook`, `msgraph_webhook`). All extend `BasePlatformAdapter` from `hermes_agent/gateway/platforms/base.py`:
+Every messaging platform ships as a plugin adapter under `hermes_agent/plugins/platforms/<name>/`; `hermes_agent/gateway/platforms/` keeps the base class and the HTTP ingress adapters (`api_server`, `webhook`, `msgraph_webhook`). All extend `BasePlatformAdapter` from `hermes_agent/gateway/platforms/base.py`:
 
 ```text
 hermes_agent/plugins/platforms/                  # plugin-packaged adapters (one dir each)

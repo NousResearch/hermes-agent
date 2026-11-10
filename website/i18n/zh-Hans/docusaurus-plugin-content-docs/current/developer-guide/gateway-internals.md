@@ -21,7 +21,7 @@ description: "消息 gateway 如何启动、授权用户、路由会话以及投
 | `hermes_agent/gateway/mirror.py` | 为 `send_message` 提供跨会话消息镜像 |
 | `hermes_agent/gateway/status.py` | 面向 profile 范围的 gateway 实例的 token 锁管理 |
 | `hermes_agent/gateway/platform_registry.py` | 适配器注册表、工厂，以及对捆绑平台插件的延迟（惰性）加载 |
-| `plugins/platforms/<name>/` | 捆绑的消息适配器（多数平台：`adapter.py` + `plugin.yaml`） |
+| `hermes_agent/plugins/platforms/<name>/` | 捆绑的消息适配器（多数平台：`adapter.py` + `plugin.yaml`） |
 | `hermes_agent/gateway/platforms/` | 共享的 `base.py` 与遗留/直接适配器（Signal、API server、webhooks 等） |
 
 ## 架构概览
@@ -144,7 +144,7 @@ Gateway 从多个来源读取配置：
 
 ## 平台适配器
 
-所有消息平台都以插件适配器形式位于 `plugins/platforms/<name>/`；`hermes_agent/gateway/platforms/` 只保留基类和 HTTP 入站适配器（`api_server`、`webhook`、`msgraph_webhook`）。它们都继承 `hermes_agent/gateway/platforms/base.py` 中的 `BasePlatformAdapter`：
+所有消息平台都以插件适配器形式位于 `hermes_agent/plugins/platforms/<name>/`；`hermes_agent/gateway/platforms/` 只保留基类和 HTTP 入站适配器（`api_server`、`webhook`、`msgraph_webhook`）。它们都继承 `hermes_agent/gateway/platforms/base.py` 中的 `BasePlatformAdapter`：
 
 ```text
 hermes_agent/plugins/platforms/                  # 插件打包的适配器（每个一个目录）

@@ -3768,7 +3768,7 @@ def _platform_manifest_paths(home: Optional[Path] = None, source: PlatformManife
     the child-env scrub stamps these on every spawn."""
     roots = []
     if source in ("all", "bundled"):
-        roots.append((get_project_root() / "plugins" / "platforms", False))
+        roots.append((get_project_root() / "hermes_agent" / "plugins" / "platforms", False))
     if source in ("all", "user"):
         user_plugins = (home if home is not None else get_hermes_home()) / "plugins"
         roots += [(user_plugins / "platforms", False), (user_plugins, True)]

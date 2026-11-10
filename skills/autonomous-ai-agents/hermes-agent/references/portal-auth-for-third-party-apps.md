@@ -71,7 +71,7 @@ Where this could live in Hermes:
   loop (tool calls and all). The proxy variant is **pure inference
   pass-through**: no agent loop, no tools, just forward `/chat/completions`
   upstream with the user's stored Portal bearer.
-- ~150 lines as a new gateway adapter or a plugin under `plugins/`.
+- ~150 lines as a new gateway adapter or a plugin under `hermes_agent/plugins/`.
 - Token refresh: if the browser-OAuth flow produces a refreshable token, the
   credential pool's refresh logic already exists. If it's a long-lived static
   bearer, even simpler.

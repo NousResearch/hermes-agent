@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_buzz_module():
-    path = REPO_ROOT / "plugins" / "platforms" / "buzz" / "adapter.py"
+    path = REPO_ROOT / "hermes_agent" / "plugins" / "platforms" / "buzz" / "adapter.py"
     spec = importlib.util.spec_from_file_location("plugin_adapter_buzz_threads", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

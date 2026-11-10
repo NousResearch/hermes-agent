@@ -15,7 +15,7 @@ Hermes is a large repository, and most contributions touch exactly one subsystem
 | Built-in tools | `hermes_agent/tools/` | [Adding Tools](adding-tools.md), [Tools Runtime](tools-runtime.md) |
 | Messaging gateway | `gateway/`, `hermes_agent/plugins/platforms/` | [Gateway Internals](gateway-internals.md), [Adding Platform Adapters](adding-platform-adapters.md) |
 | CLI | `hermes_agent/hermes_cli/` | [Extending the CLI](extending-the-cli.md) |
-| Plugins system | `plugins/` | [Build a Hermes Plugin](plugins/index.md) |
+| Plugins system | `hermes_agent/plugins/` | [Build a Hermes Plugin](plugins/index.md) |
 | Skills (bundled & optional) | `skills/`, `optional-skills/` | [Creating Skills](creating-skills.md) |
 | Cron / scheduled jobs | `cron/` | [Cron Internals](cron-internals.md) |
 | Session storage | `hermes_agent/hermes_state.py`, `hermes_state_*.py` | [Session Storage](session-storage.md) |

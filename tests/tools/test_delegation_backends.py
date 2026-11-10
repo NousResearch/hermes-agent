@@ -15,7 +15,7 @@ from pathlib import Path
 from hermes_agent.hermes_cli import plugins as plugins_mod
 from hermes_agent.hermes_cli.plugins import PluginManager
 
-REPO_PLUGINS = Path(__file__).resolve().parents[2] / "plugins"
+REPO_PLUGINS = Path(__file__).resolve().parents[2] / "hermes_agent" / "plugins"
 
 PROBE_PLUGIN = '''
 from hermes_agent.agent.delegation_provider import DelegationProvider, DelegationRouteError

@@ -16,7 +16,7 @@ Image-gen is one of several **backend plugins** Hermes supports. The others (wit
 
 Hermes scans for image-gen backends in three places:
 
-1. **Bundled** — `<repo>/plugins/image_gen/<name>/` (auto-loaded with `kind: backend`, always available)
+1. **Bundled** — `<repo>/hermes_agent/plugins/image_gen/<name>/` (auto-loaded with `kind: backend`, always available)
 2. **User** — `~/.hermes/plugins/image_gen/<name>/` (opt-in via `plugins.enabled`)
 3. **Pip** — packages declaring a `hermes_agent.plugins` entry point
 

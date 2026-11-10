@@ -149,7 +149,7 @@ let
   # them out of the Python site-packages keeps import semantics identical
   # to a dev checkout — the loader reads them from HERMES_BUNDLED_PLUGINS.
   bundledPlugins = lib.cleanSourceWith {
-    src = ../plugins;
+    src = ../hermes_agent/plugins;
     filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
   };
 

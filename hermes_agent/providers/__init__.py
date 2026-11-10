@@ -655,12 +655,12 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
             _import_hosted_plugin_dir(plugin_dir, source, _user_module_name(plugin_dir, home_key))
             return
 
-    # Give bundled plugins a stable import path (``plugins.model_providers.<name>``)
+    # Give bundled plugins a stable import path (``hermes_agent.plugins.model_providers.<name>``)
     # so relative imports within the plugin work. User plugins load via
     # ``importlib.util.spec_from_file_location`` under a per-home module name so
     # multiple HERMES_HOME profiles don't alias each other.
     if source == "bundled":
-        module_name = f"plugins.model_providers.{plugin_dir.name.replace('-', '_')}"
+        module_name = f"hermes_agent.plugins.model_providers.{plugin_dir.name.replace('-', '_')}"
     else:
         module_name = _user_module_name(plugin_dir, home_key)
     _exec_plugin_module(plugin_dir, source, module_name)

@@ -789,8 +789,8 @@ Dashboard 扫描三个目录中的 `dashboard/manifest.json`：
 | 优先级 | 目录 | 来源标签 |
 |----------|-----------|--------------|
 | 1（冲突时优先） | `~/.hermes/plugins/<name>/dashboard/` | `user` |
-| 2 | `<repo>/plugins/memory/<name>/dashboard/` | `bundled` |
-| 2 | `<repo>/plugins/<name>/dashboard/` | `bundled` |
+| 2 | `<repo>/hermes_agent/plugins/memory/<name>/dashboard/` | `bundled` |
+| 2 | `<repo>/hermes_agent/plugins/<name>/dashboard/` | `bundled` |
 | 3 | `./.hermes/plugins/<name>/dashboard/` | `project`——仅在设置 `HERMES_ENABLE_PROJECT_PLUGINS` 时生效 |
 
 发现结果在每个 dashboard 进程中缓存。添加新插件后，可以：

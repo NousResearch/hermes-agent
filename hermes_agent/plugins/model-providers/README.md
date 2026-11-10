@@ -27,7 +27,7 @@ bundled plugins of the same name — last-writer-wins in
 
 ## Adding a new provider
 
-1. Create `plugins/model-providers/<your_provider>/__init__.py`:
+1. Create `hermes_agent/plugins/model-providers/<your_provider>/__init__.py`:
 
    ```python
    from hermes_agent.providers import register_provider
@@ -47,7 +47,7 @@ bundled plugins of the same name — last-writer-wins in
    register_provider(my_provider)
    ```
 
-2. Create `plugins/model-providers/<your_provider>/plugin.yaml`:
+2. Create `hermes_agent/plugins/model-providers/<your_provider>/plugin.yaml`:
 
    ```yaml
    name: your-provider-profile

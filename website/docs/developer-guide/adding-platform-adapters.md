@@ -616,14 +616,14 @@ ctx.register_platform(
 
 Why this hook is necessary: the live adapter is only reachable through `_gateway_runner_ref()`, which returns `None` outside the gateway process, so without `standalone_sender_fn` the cron-side send fails with `No live adapter for platform '<name>'`. The bundled platforms use this same hook: Telegram's out-of-process sender (`hermes send`, the `send_message` tool, standalone cron delivery) is `hermes_agent/plugins/platforms/telegram/standalone.py::standalone_send` and Signal's is `hermes_agent/plugins/platforms/signal/standalone.py`; core reaches them only through the platform registry.
 
-The function receives the same `pconfig` and `chat_id` that the live adapter would, plus optional `thread_id`, `media_files`, and `force_document` keyword arguments. Optional keywords added later are forwarded only to a sender that declares them (by name or through `**kwargs`), so a sender written to the signature above keeps working: `notify=True` (cron's `cron.delivery.notify`: this delivery should ring even under a quiet notification mode) is one; Telegram's sender takes it. Returning `{"success": True, "message_id": ...}` is treated as a successful delivery; returning `{"error": "..."}` surfaces the message in cron's `delivery_errors`. Exceptions raised inside the function are caught by the dispatcher and reported as `Plugin standalone send failed: <reason>`. Reference implementations live in `plugins/platforms/{irc,teams,google_chat}/adapter.py`.
+The function receives the same `pconfig` and `chat_id` that the live adapter would, plus optional `thread_id`, `media_files`, and `force_document` keyword arguments. Optional keywords added later are forwarded only to a sender that declares them (by name or through `**kwargs`), so a sender written to the signature above keeps working: `notify=True` (cron's `cron.delivery.notify`: this delivery should ring even under a quiet notification mode) is one; Telegram's sender takes it. Returning `{"success": True, "message_id": ...}` is treated as a successful delivery; returning `{"error": "..."}` surfaces the message in cron's `delivery_errors`. Exceptions raised inside the function are caught by the dispatcher and reported as `Plugin standalone send failed: <reason>`. Reference implementations live in `hermes_agent/plugins/platforms/{irc,teams,google_chat}/adapter.py`.
 
 ## Surfacing Env Vars in `hermes config`
 
-`hermes_agent/hermes_cli/config.py` scans `plugins/platforms/*/plugin.yaml` at import time and auto-populates `OPTIONAL_ENV_VARS` from `requires_env` and (optional) `optional_env` blocks. Use the rich-dict form to contribute proper descriptions, prompts, password flags, and URLs — the CLI setup UI picks them up for free.
+`hermes_agent/hermes_cli/config.py` scans `hermes_agent/plugins/platforms/*/plugin.yaml` at import time and auto-populates `OPTIONAL_ENV_VARS` from `requires_env` and (optional) `optional_env` blocks. Use the rich-dict form to contribute proper descriptions, prompts, password flags, and URLs — the CLI setup UI picks them up for free.
 
 ```yaml
-# plugins/platforms/my_platform/plugin.yaml
+# hermes_agent/plugins/platforms/my_platform/plugin.yaml
 name: my_platform-platform
 label: My Platform
 kind: platform
@@ -769,7 +769,7 @@ class Platform(Enum):
 
 ### 2. Adapter File
 
-Create `plugins/platforms/newplat/adapter.py`:
+Create `hermes_agent/plugins/platforms/newplat/adapter.py`:
 
 ```python
 from hermes_agent.gateway.config import Platform, PlatformConfig

@@ -16,7 +16,7 @@ Model provider plugins are the third kind of **provider plugin**. The others are
 
 `hermes_agent/providers/__init__.py._discover_providers()` runs lazily the first time any code calls `get_provider_profile()` or `list_providers()`. Discovery order:
 
-1. **Bundled plugins** — `<repo>/plugins/model-providers/<name>/` — ship with Hermes
+1. **Bundled plugins** — `<repo>/hermes_agent/plugins/model-providers/<name>/` — ship with Hermes
 2. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — drop in a directory; a running process picks it up on its next provider lookup (no restart)
 3. **Installed plugins** — `$HERMES_HOME/plugins/<name>/` (where `hermes plugins install owner/repo` clones) — imported only when `plugin.yaml` declares `kind: model-provider`; every other kind there belongs to the general PluginManager
 4. **Legacy single-file** — `<repo>/providers/<name>.py` — back-compat for out-of-tree editable installs

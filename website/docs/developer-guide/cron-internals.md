@@ -251,13 +251,13 @@ The active provider is chosen by the `cron.provider` config key:
   historical in-process loop calling `scheduler.tick()` every 60 seconds. This
   is byte-identical to the pre-provider behavior.
 - **a named provider** (e.g. `chronos`, a managed-cron provider for
-  scale-to-zero deployments) → discovered from `plugins/cron_providers/<name>/` or
+  scale-to-zero deployments) → discovered from `hermes_agent/plugins/cron_providers/<name>/` or
   `$HERMES_HOME/plugins/<name>/`.
 
 If a named provider is missing, fails to load, or reports `is_available() ==
 False`, the resolver falls back to the built-in with a warning — **cron is
 never left without a trigger.** The built-in provider lives in core
-(`hermes_agent/cron/scheduler_provider.py`), not in `plugins/`, so the fallback can't be
+(`hermes_agent/cron/scheduler_provider.py`), not in `hermes_agent/plugins/`, so the fallback can't be
 accidentally removed.
 
 What "firing" *means* (job execution + delivery) is unchanged and shared by all

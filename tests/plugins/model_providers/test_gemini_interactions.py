@@ -21,8 +21,8 @@ PNG = "data:image/png;base64,iVBORw0KGgo="
 @pytest.fixture()
 def gemini():
     providers.get_provider_profile("gemini")  # discovery imports the bundled plugin
-    return (importlib.import_module("plugins.model_providers.gemini.client"),
-            importlib.import_module("plugins.model_providers.gemini.interactions"))
+    return (importlib.import_module("hermes_agent.plugins.model_providers.gemini.client"),
+            importlib.import_module("hermes_agent.plugins.model_providers.gemini.interactions"))
 
 
 @pytest.fixture()

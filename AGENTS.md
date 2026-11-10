@@ -149,7 +149,7 @@ Every former god file is a **facade** (public entry points + the names other pac
 | `hermes_agent/gateway/` | `hermes_agent/gateway/AGENTS.md` | adapters, message guards, streaming, notifications, token locks, § Profile scope |
 | `hermes_agent/plugins/platforms/` new adapter | `hermes_agent/gateway/platforms/ADDING_A_PLATFORM.md` | step-by-step adapter guide |
 | `hermes_agent/tools/`, `hermes_agent/toolsets.py`, `hermes_agent/model_tools.py` | `hermes_agent/tools/AGENTS.md` | adding tools, registry, toolsets, delegation, session-scoped surface tools |
-| `plugins/`, `hermes_agent/hermes_cli/plugins*.py` | `hermes_agent/plugins/AGENTS.md` | plugin kinds, native compat contract, in-tree policy, boundary lint |
+| `hermes_agent/plugins/`, `hermes_agent/hermes_cli/plugins*.py` | `hermes_agent/plugins/AGENTS.md` | plugin kinds, native compat contract, in-tree policy, boundary lint |
 | `plugin-catalog/` | `plugin-catalog/README.md` | catalog admission rules (mirrored in the developer guide; keep identical) |
 | `hermes_agent/tui_gateway/`, `ui-tui/` | `hermes_agent/tui_gateway/AGENTS.md` | process model, JSON-RPC transport, slash flow |
 | `web/`, `hermes_agent/hermes_cli/web_routers/` | `web/AGENTS.md` | dashboard embeds the real TUI |

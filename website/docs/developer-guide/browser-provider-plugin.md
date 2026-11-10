@@ -6,7 +6,7 @@ description: "How to build a cloud browser backend plugin for Hermes Agent"
 
 # Building a Browser Provider Plugin
 
-Browser provider plugins register a **cloud browser backend**: when `browser.cloud_provider` selects it, `browser_exec` (and the CDP tools `browser_cdp`, `browser_dialog`, `browser_vault`) drive a remote browser session it creates instead of a local Chromium. Built-in providers — Browserbase, Browser Use, and Firecrawl — all ship as plugins under `plugins/browser/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
+Browser provider plugins register a **cloud browser backend**: when `browser.cloud_provider` selects it, `browser_exec` (and the CDP tools `browser_cdp`, `browser_dialog`, `browser_vault`) drive a remote browser session it creates instead of a local Chromium. Built-in providers — Browserbase, Browser Use, and Firecrawl — all ship as plugins under `hermes_agent/plugins/browser/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
 
 :::tip
 Browser backends are one of several **backend plugins** Hermes supports. The others (with their own ABCs) are [Web Search Provider Plugins](./web-search-provider-plugin.md) (which this ABC deliberately mirrors), [Image Generation](./image-gen-provider-plugin.md), [Video Generation](./video-gen-provider-plugin.md), [Memory Providers](./memory-provider-plugin.md), [Context Engines](./context-engine-plugin.md), [Secret Sources](./secret-source-plugin.md), and [Model Providers](./model-provider-plugin.md). General tool/hook/CLI plugins live in [Build a Hermes Plugin](./plugins/index.md).
@@ -22,7 +22,7 @@ The active provider is selected by `browser.cloud_provider` in `config.yaml`; th
 
 Hermes scans for browser backends in three places:
 
-1. **Bundled** — `<repo>/plugins/browser/<name>/` (auto-loaded with `kind: backend`)
+1. **Bundled** — `<repo>/hermes_agent/plugins/browser/<name>/` (auto-loaded with `kind: backend`)
 2. **User** — `~/.hermes/plugins/browser/<name>/` (opt-in via `plugins.enabled` or `hermes plugins enable <name>`)
 3. **Pip** — packages declaring a `hermes_agent.plugins` entry point
 

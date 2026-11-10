@@ -51,7 +51,6 @@ screenshots:
   - https://raw.githubusercontent.com/mojomast/EOH/6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4/docs/screenshots/pane-full-ui.jpg
   - https://raw.githubusercontent.com/mojomast/EOH/6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4/docs/screenshots/live-fly-to-tokyo.jpg
   - https://raw.githubusercontent.com/mojomast/EOH/6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4/docs/screenshots/hud-via-hermes.jpg
-  - https://raw.githubusercontent.com/mojomast/EOH/6e58b8e28bac0640ef0d4a629dc5a7eb457ce5a4/docs/screenshots/pane-globe-only.jpg
 platforms: []
 known_issues:
   - "Full UI in the pane and the in-app HUD via Hermes need two opt-in God's Eye View patches (shipped in patches/, upstream PRs #1571 and #1572); stock upstream gets the globe-only pane."

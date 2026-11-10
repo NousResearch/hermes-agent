@@ -12,6 +12,7 @@ The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 
 import asyncio
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -133,6 +134,23 @@ def test_literal_hash_normalization_preserves_markdown_regions(content):
     assert escape_literal_hash_prefixes(escaped) == escaped
     # Inline ```x``` is a code span, not an unclosed block fence swallowing the rest of the reply.
     assert escape_literal_hash_prefixes("Use ```x``` here.\n\n#89 open.") == "Use ```x``` here.\n\n\\#89 open."
+
+
+def test_rich_payload_is_linear_in_unclosed_backtick_runs():
+    """A full rich-cap reply of unclosed backtick runs of distinct lengths (`a``a```a...) builds its
+    payload well inside one second; a per-run rescan blocked the event loop for seconds."""
+    adapter = _make_adapter()
+    runs, k = [], 1
+    while sum(map(len, runs)) < adapter.RICH_MESSAGE_MAX_CHARS:
+        runs.append("`" * k + "a")
+        k += 1
+    content = "#89\n" + "".join(runs)[: adapter.RICH_MESSAGE_MAX_CHARS - 4]
+
+    started = time.perf_counter()
+    payload = adapter._rich_message_payload(content)
+
+    assert time.perf_counter() - started < 1.0
+    assert payload["markdown"].startswith("\\#89")
 
 
 @pytest.mark.asyncio

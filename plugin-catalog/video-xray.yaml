@@ -1,0 +1,63 @@
+# @format: yaml-en @entry:1
+# hermes plugin catalog — entry: video-xray
+# (generated draft for PR to NousResearch/hermes-agent plugin-catalog/)
+
+# --- identity ---
+name: video-xray
+slug: video-xray
+tagline: >-
+  Video analysis workbench in the composer: local R2T2/Whisper/cloud ASR dialogue
+  transcription, vision-model frame observation with a frame gallery, and Markdown
+  or MiniMax-H3 prompt export.
+
+# --- where to fetch (MUST be pinned) ---
+repo: https://github.com/LuuMoss/video-xray
+sha: 2da64e0784db15d00f929a71716d297717fe6691
+
+# --- human copy (plain block scalars; the security disclosure is REQUIRED) ---
+description: >-
+  Drop a video file into the chat composer and get a structured report: segment-wise
+  frame observation by whatever vision-capable chat model you already configured
+  (local llama.cpp/Strata or cloud), timestamped dialogue from R2T2, Whisper, or any
+  OpenAI-compatible cloud ASR, and a frame gallery of the key moments inside the job
+  detail. Exports the report as Markdown or as a MiniMax-H3 integrated multimodal
+  description prompt. Ships the R2T2 engine worker source plus an optional Whisper
+  worker; the heavy R2T2 runtime binaries are user-supplied, nothing else is
+  downloaded. Spawns ffmpeg/ffprobe and local ASR worker subprocesses; network calls
+  go only to the user's own configured inference and cloud-ASR endpoints, never to
+  third-party services; background analysis jobs run as worker threads tracked in a
+  local job ledger. The panel is pure @hermes/plugin-sdk React and user-visible text
+  goes through ctx.i18n.
+maintainer: LuuMoss
+tier: community              # community tier, third-party source below
+category: desktop            # drives the default platform/toolset behavior
+
+# --- discovery ---
+homepage: https://github.com/LuuMoss/video-xray
+docs_url: https://github.com/LuuMoss/video-xray/blob/2da64e0784db15d00f929a71716d297717fe6691/README.md
+version: 0.2.0               # the release pinned by the commit above (GitHub Release v0.2.0)
+requires_hermes: ">=0.22.1"  # composer contribution points (COMPOSER_AREAS)
+platforms: [windows]         # end-to-end verified on Windows only; the R2T2 runtime is Windows-first
+tags: [video, asr, transcription, vision, analysis, gallery, export, desktop-panel]
+
+# --- what it registers (MUST match register() in the plugin's __init__.py) ---
+capabilities:
+  provides_tools: [video_xray, video_xray_jobs]
+  provides_middleware: []
+  provides_hooks: []
+  requires_env: []
+
+# --- source + review provenance ---
+source: community            # third-party source repo (distinct from the Nous repo)
+trust: community             # community-maintained
+hidden: false
+
+# --- official site showcase (optional; pinned to the same commit) ---
+image: https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/01-analysis-panel.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/03-params-dialog.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/11-gallery-frames-strip.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/10-asr-settings-dialog.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/04-job-detail.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/2da64e0784db15d00f929a71716d297717fe6691/docs/screenshots/07-report-md.png

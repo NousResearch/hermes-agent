@@ -35,7 +35,7 @@ def profile(tmp_path, monkeypatch):
 
 def _hold(profile_dir):
     holder = subprocess.Popen([sys.executable, "-c", _HOLDER, str(profile_dir)], stdin=subprocess.PIPE,
-                              stdout=subprocess.PIPE, text=True, cwd=str(Path(profiles.__file__).parent.parent))
+                              stdout=subprocess.PIPE, text=True, cwd=str(Path(profiles.__file__).parents[2]))
     assert holder.stdout.readline().strip() == "held"
     return holder
 

@@ -13,10 +13,11 @@ import pytest
 def test_torn_custody_modules_cannot_authorize_uncontained_repair(tmp_path, live_owner):
     source = Path(__file__).resolve().parents[2]
     root = tmp_path / "checkout"
-    package = root / "hermes_cli"
+    package = root / "hermes_agent" / "hermes_cli"
     package.mkdir(parents=True)
+    shutil.copy2(source / "hermes_agent" / "__init__.py", root / "hermes_agent" / "__init__.py")
     for name in ("__init__.py", "_early_recovery.py", "update_lock.py", "update_custody.py"):
-        shutil.copy2(source / "hermes_cli" / name, package / name)
+        shutil.copy2(source / "hermes_agent" / "hermes_cli" / name, package / name)
     env = {**os.environ, "HOME": str(tmp_path / "home"), "HERMES_HOME": str(tmp_path / "state"),
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
            "PYTHONDONTWRITEBYTECODE": "1"}
@@ -44,13 +45,13 @@ def test_torn_custody_modules_cannot_authorize_uncontained_repair(tmp_path, live
     holder_script = tmp_path / "holder.py"
     holder_script.write_text(
         "import sys,time\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\n"
-        "from hermes_cli.update_lock import UpdateLock\n"
+        "from hermes_agent.hermes_cli.update_lock import UpdateLock\n"
         "lock=UpdateLock(path=Path(sys.argv[2])/'owner',install_root=Path(sys.argv[2]))\n"
         "assert lock.acquire()\nprint('HELD',flush=True)\ntime.sleep(60)\n", encoding="utf-8")
     recovery_script = tmp_path / "recover.py"
     recovery_script.write_text(
         "import sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\n"
-        "from hermes_cli._early_recovery import restore_interrupted_pull\n"
+        "from hermes_agent.hermes_cli._early_recovery import restore_interrupted_pull\n"
         "restore_interrupted_pull(Path(sys.argv[1]))\n", encoding="utf-8")
     owner = subprocess.Popen([sys.executable, "-I", str(holder_script), str(source), str(root)],
                              env=env, stdout=subprocess.PIPE, text=True, encoding="utf-8")

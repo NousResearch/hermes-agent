@@ -109,7 +109,7 @@ def _historical_context() -> tuple[dict, list[dict], Any]:
 
 def _run_child(request: dict) -> tuple[int, dict]:
     """One JSON exchange; the old process never imports the updated graph."""
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     home = os.environ.get("HERMES_HOME")
     constants = sys.modules.get("hermes_constants")
     override = vars(constants).get("_HERMES_HOME_OVERRIDE") if constants else None

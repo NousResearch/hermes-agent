@@ -330,7 +330,7 @@ def test_the_bare_bootstrap_interpreter_parks_and_the_next_start_applies_the_gat
         "argv": ["hermes", "update", "/home/alice/private"], "pre_update": {"sha": "a" * 40},
         "stages": [{"name": "apply", "outcome": "success", "mode": "git"}, {"name": "deps", "outcome": "failed"}],
     }
-    tree = Path(update_receipt.__file__).resolve().parents[1]
+    tree = Path(update_receipt.__file__).resolve().parents[2]
     script = ("import json, sys; sys.path.insert(0, sys.argv[1]); from hermes_agent.hermes_cli import update_receipt as r; "
               "assert 'ruamel' not in sys.modules; r._publish_shared_metrics(json.loads(sys.argv[2]))")
     subprocess.run([sys.executable, "-I", "-S", "-c", script, str(tree), json.dumps(receipt)], check=True,

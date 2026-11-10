@@ -367,7 +367,7 @@ class TestDefaultModelFromCache:
         from hermes_agent.hermes_cli import model_catalog
         from hermes_agent.hermes_cli.models import PREFERRED_SILENT_DEFAULT_MODEL
 
-        repo_root = Path(model_catalog.__file__).resolve().parent.parent
+        repo_root = Path(model_catalog.__file__).resolve().parents[2]
         manifest = json.loads(
             (repo_root / "website" / "static" / "api" / "model-catalog.json").read_text()
         )

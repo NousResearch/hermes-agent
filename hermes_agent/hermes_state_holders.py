@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
 _HERMES_EXECUTABLES = frozenset({"hermes", "hermes-agent", "hermes-acp"})
-_HERMES_PYTHON_MODULES = frozenset({"acp_adapter", "hermes_agent.acp_adapter", "hermes_cli.main"})
+_HERMES_PYTHON_MODULES = frozenset({
+    "acp_adapter", "hermes_agent.acp_adapter", "hermes_cli.main", "hermes_agent.hermes_cli.main",
+})
 _HERMES_PYTHON_SCRIPTS = frozenset({"hermes_cli/main.py", "run_agent.py"})
 _PYTHON_SHORT_OPTIONS_WITH_OPERANDS = frozenset({"Q", "W", "X"})
 _PYTHON_LONG_OPTIONS_WITH_OPERANDS = frozenset(

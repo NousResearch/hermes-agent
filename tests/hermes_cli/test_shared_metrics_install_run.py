@@ -27,7 +27,7 @@ from hermes_agent.hermes_cli.observability import shared_metrics_process as proc
 ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = ROOT / "scripts" / "install.sh"
 INSTALL_PS1 = ROOT / "scripts" / "install.ps1"
-SCHEMA = ROOT / "hermes_cli" / "observability" / "schemas" / "hermes.shared_metrics.v4.schema.json"
+SCHEMA = ROOT / "hermes_agent" / "hermes_cli" / "observability" / "schemas" / "hermes.shared_metrics.v4.schema.json"
 
 
 @pytest.fixture

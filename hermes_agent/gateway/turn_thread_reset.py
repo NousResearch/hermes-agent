@@ -29,8 +29,8 @@ _PER_TURN_THREAD_LOCALS = (
     ("hermes_agent.agent.auxiliary_client", "_aux_provider_response"),
     ("hermes_agent.agent.auxiliary_client", "_aux_stream_deadline"),
     ("hermes_agent.agent.local_prompt_progress", "_reading"),
-    ("hermes_cli.plugins", "_thread_tool_whitelist"),
-    ("hermes_cli.observability.shared_metrics_events", "_compression_attempt"),
+    ("hermes_agent.hermes_cli.plugins", "_thread_tool_whitelist"),
+    ("hermes_agent.hermes_cli.observability.shared_metrics_events", "_compression_attempt"),
     ("hermes_logging", "_session_context"),  # the log line's session tag + sanitizer-heal accounting key
 )
 

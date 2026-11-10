@@ -81,7 +81,7 @@ def test_reconcile_cont_init_leaves_root_scandir_root_owned(tmp_path: Path) -> N
     for args in _calls(log, "chown") + _calls(log, "chmod"):
         assert not any(_under_root_scandir(a) for a in args), args
     # The reconciler itself still runs, dropped to hermes.
-    assert any(args[:1] == ["hermes"] and "hermes_cli.container_boot" in args
+    assert any(args[:1] == ["hermes"] and "hermes_agent.hermes_cli.container_boot" in args
                for args in _calls(log, "s6-setuidgid"))
 
 

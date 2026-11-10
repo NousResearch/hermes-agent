@@ -514,26 +514,39 @@ def _settle_interrupted_update() -> None:
     moved aside: the journal-driven restore then runs from that moved-aside copy, the code that wrote
     the journal. Root files are never absent mid-swap (``update_cmd_zip._commit_staged_replacements``)."""
     try:
-        from hermes_cli import _early_recovery as recovery
+        from hermes_agent.hermes_cli import _early_recovery as recovery
     except ImportError:
-        moved_aside = _root / "hermes_cli.hermes-update-old" / "_early_recovery.py"
-        if not (_root / ".hermes-update-zip-swap").is_file() or not moved_aside.is_file():
+        new_aside = _root / "hermes_agent.hermes-update-old"
+        old_aside = _root / "hermes_cli.hermes-update-old"
+        if not (_root / ".hermes-update-zip-swap").is_file():
             return  # not a torn update: the imports below report the real damage
+        if (new_aside / "hermes_cli" / "_early_recovery.py").is_file():
+            module = "hermes_agent.hermes_cli._early_recovery"
+            stand_ins = {"hermes_agent": [str(new_aside), str(_root / "hermes_agent")],
+                         "hermes_agent.hermes_cli": [str(new_aside / "hermes_cli"), str(_root / "hermes_agent" / "hermes_cli")]}
+        elif (old_aside / "_early_recovery.py").is_file() or (_root / "hermes_cli" / "_early_recovery.py").is_file():
+            module = "hermes_cli._early_recovery"
+            stand_ins = {"hermes_cli": [str(old_aside), str(_root / "hermes_cli")]}
+        else:
+            return
+        import importlib
         import types
 
-        # The moved-aside directory stands in as ``hermes_cli`` (its ``__init__`` not run), so the
-        # repair's own ``from hermes_agent.hermes_cli import update_lock`` finds the custody code beside it:
-        # without that the restore refuses to repair unguarded. Dropped again unless it relaunches.
-        package = types.ModuleType("hermes_cli")
-        package.__path__ = [str(moved_aside.parent), str(_root / "hermes_cli")]
-        sys.modules["hermes_cli"] = package
+        # The moved-aside directory stands in for its package (its ``__init__`` not run), so the
+        # repair's own ``update_lock`` import finds the custody code beside it: without that the
+        # restore refuses to repair unguarded. Dropped again unless it relaunches.
+        for name, path in stand_ins.items():
+            package = types.ModuleType(name)
+            package.__path__ = path
+            sys.modules[name] = package
+        tops = {name.split(".")[0] for name in stand_ins}
         try:
-            from hermes_cli import _early_recovery as recovery
+            recovery = importlib.import_module(module)
 
             if recovery.restore_interrupted_pull(_root):
                 recovery.relaunch_after_restore()
         finally:
-            for name in [n for n in sys.modules if n == "hermes_cli" or n.startswith("hermes_cli.")]:
+            for name in [n for n in sys.modules if n.split(".")[0] in tops]:
                 del sys.modules[name]
         return
     if recovery.restore_interrupted_pull(_root):

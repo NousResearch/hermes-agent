@@ -215,7 +215,7 @@ def test_unmanaged_child_uses_explicit_home_and_survives_launcher_exit(tmp_path,
         f"home=Path({str(home)!r})\n"
         "real=start.subprocess.Popen\n"
         "def boundary(argv, **kw):\n"
-        " if 'hermes_cli.main' not in argv: return real(argv, **kw)  # e.g. git from the env builder\n"
+        " if 'hermes_agent.hermes_cli.main' not in argv: return real(argv, **kw)  # e.g. git from the env builder\n"
         " assert argv[-3:] == ['gateway','run','--quiet']\n"
         " assert '--replace' not in argv and '--force' not in argv\n"
         " assert kw['env']['HERMES_HOME'] == str(home)\n"
@@ -412,7 +412,7 @@ def test_unmanaged_root_home_child_ignores_sticky_active_profile(tmp_path, monke
     real = start.subprocess.Popen
 
     def boundary(argv, **kwargs):
-        assert argv[:3] == [sys.executable, "-m", "hermes_cli.main"]
+        assert argv[:3] == [sys.executable, "-m", "hermes_agent.hermes_cli.main"]
         # Same argv and env as the real child; the module-import bootstrap is what resolves the profile.
         code = ("import json, os, sys\nsys.argv = ['hermes', *sys.argv[1:]]\nimport hermes_agent.hermes_cli.main\n"
                 f"open({str(witness)!r}, 'w').write(json.dumps({{'home': os.environ['HERMES_HOME'], 'argv': sys.argv}}))")

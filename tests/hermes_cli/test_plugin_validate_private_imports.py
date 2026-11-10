@@ -201,7 +201,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 def _published_entries() -> list[str]:
     import json
 
-    data = json.loads((_ROOT / "hermes_cli" / "data" / "plugin_api.json").read_text(encoding="utf-8-sig"))
+    data = json.loads((_ROOT / "hermes_agent" / "hermes_cli" / "data" / "plugin_api.json").read_text(encoding="utf-8-sig"))
     return [entry for group in data["groups"] for entry in group["entries"]]
 
 

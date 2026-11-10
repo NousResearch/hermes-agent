@@ -59,7 +59,7 @@ def main():
     clients, receipt = [], {'mode': mode}
     original_popen = subprocess.Popen
     def spawn(*args, **kwargs):
-        if 'hermes_cli.kanban_worker_client' in args[0]:
+        if 'hermes_agent.hermes_cli.kanban_worker_client' in args[0]:
             # Trace only the transport client's tree, not the independently started owner.
             args = (['strace', '-f', '-e', 'trace=openat', '-o', str(home / 'client.strace'), *args[0]], *args[1:])
             child = original_popen(*args, **kwargs)

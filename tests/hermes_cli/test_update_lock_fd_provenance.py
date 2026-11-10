@@ -11,6 +11,7 @@ import threading
 import pytest
 
 from hermes_agent.hermes_cli import update_lock
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 @pytest.mark.platforms("posix")
@@ -63,7 +64,7 @@ def test_checkout_custody_never_borrows_a_local_readers_descriptor(tmp_path, des
             os.close(reader_fd)
             reader_fd = None
         result = subprocess.run(
-            [sys.executable, "-I", str(contender), str(Path(update_lock.__file__).parents[1]),
+            [sys.executable, "-I", str(contender), project_root_str(),
              str(tmp_path / "other-home-marker"), str(root)],
             capture_output=True, text=True, encoding="utf-8", timeout=20, check=True,
         )
@@ -96,7 +97,7 @@ def test_exec_child_reenters_the_lock_it_explicitly_inherited(tmp_path):
     contender = update_lock.UpdateLock(path=tmp_path / "contender-marker", install_root=root)
     assert owner.acquire()
     child = subprocess.Popen(
-        [sys.executable, "-I", str(child_script), str(Path(update_lock.__file__).parents[1]), str(root)],
+        [sys.executable, "-I", str(child_script), project_root_str(), str(root)],
         pass_fds=update_lock.checkout_lock_fds(root), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         text=True, encoding="utf-8",
     )

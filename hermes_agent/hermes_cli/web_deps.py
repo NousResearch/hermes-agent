@@ -14,7 +14,7 @@ import importlib
 import sys
 from typing import Any
 
-WEB_SERVER = "hermes_cli.web_server"
+WEB_SERVER = "hermes_agent.hermes_cli.web_server"
 
 
 def _server(module: str = WEB_SERVER):

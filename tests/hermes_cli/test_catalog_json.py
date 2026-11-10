@@ -34,7 +34,7 @@ def _doc_from(entries):
     """A fetchable catalog document built by mutating the packaged JSON."""
     from importlib.resources import files
 
-    doc = json.loads(files("hermes_cli.local_runtime")
+    doc = json.loads(files("hermes_agent.hermes_cli.local_runtime")
                      .joinpath("catalog.json").read_text(encoding="utf-8"))
     doc["models"] = entries(doc["models"])
     return doc
@@ -71,7 +71,7 @@ def test_refresh_swaps_in_memory_only(monkeypatch, tmp_path):
     disk is untouched (checkout stays clean)."""
     from importlib.resources import files
 
-    packaged_path = files("hermes_cli.local_runtime").joinpath("catalog.json")
+    packaged_path = files("hermes_agent.hermes_cli.local_runtime").joinpath("catalog.json")
     before = packaged_path.read_text(encoding="utf-8")
 
     def add_day0(models):

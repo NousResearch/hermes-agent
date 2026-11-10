@@ -100,7 +100,7 @@ def main():
     original_popen = subprocess.Popen
     def spawn(*args, **kwargs):
         child = original_popen(*args, **kwargs)
-        if 'hermes_cli.kanban_worker_client' in args[0]:
+        if 'hermes_agent.hermes_cli.kanban_worker_client' in args[0]:
             clients.append(child)
             if peer.mode == 'timeout':
                 assert peer.blocked.wait(55), 'managed worker did not reach loopback'

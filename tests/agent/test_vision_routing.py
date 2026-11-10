@@ -60,7 +60,7 @@ def _write_config(home: str, text: str) -> None:
 
 
 _RELOAD_PREFIXES = ("hermes_agent.agent.auxiliary_client", "hermes_agent.agent.image_routing",
-                    "hermes_agent.tools.vision_tools", "hermes_cli.config")
+                    "hermes_agent.tools.vision_tools", "hermes_agent.hermes_cli.config")
 
 
 def _drop_reload_targets():

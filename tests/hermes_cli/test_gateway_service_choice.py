@@ -133,7 +133,7 @@ def test_wizard_service_choice_controls_installation(supervisor, monkeypatch, st
     original_popen = gateway.subprocess.Popen
 
     def popen(argv, *args, **kwargs):
-        if "hermes_cli.main" in argv:
+        if "hermes_agent.hermes_cli.main" in argv:
             spawned.append((argv, kwargs))
             return None
         return original_popen(argv, *args, **kwargs)
@@ -178,7 +178,7 @@ def test_wizard_start_does_not_spawn_over_reserved_owner(supervisor, monkeypatch
     spawned = []
     original = gateway.subprocess.Popen
     def boundary(argv, *args, **kwargs):
-        if "hermes_cli.main" in argv:
+        if "hermes_agent.hermes_cli.main" in argv:
             spawned.append(argv)
             return None
         return original(argv, *args, **kwargs)

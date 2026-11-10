@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.hermes_cli import kanban_db_dispatch
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 from hermes_agent.tools.terminal_scope import get_terminal_scope
 
 
@@ -110,7 +111,7 @@ def test_worker_for_another_profile_can_still_import_hermes(profile_b, tmp_path,
     """The routed-profile scrub strips Hermes-owned PYTHONPATH entries, but the worker IS Hermes
     (`-m hermes_agent.hermes_cli.kanban_worker_client`): a PYTHONPATH-launched dispatcher must hand it a tree
     it can import, or it dies on `No module named 'hermes_cli'` before reaching the owner."""
-    repo_root = Path(kanban_db_dispatch.__file__).resolve().parent.parent
+    repo_root = Path(project_root_str())
     monkeypatch.setenv("PYTHONPATH", str(repo_root))
     env = _spawn_env_for_profile_b(monkeypatch, tmp_path)
     assert str(repo_root) in env.get("PYTHONPATH", "").split(os.pathsep)

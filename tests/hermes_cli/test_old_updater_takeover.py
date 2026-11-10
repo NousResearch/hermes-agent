@@ -11,6 +11,14 @@ import sys
 import pytest
 
 
+def _moved_package(root: Path) -> Path:
+    moved = root / "hermes_agent" / "hermes_cli"
+    moved.mkdir(parents=True)
+    (root / "hermes_agent" / "__init__.py").touch()
+    (moved / "__init__.py").touch()
+    return moved
+
+
 @pytest.mark.parametrize("desktop", [False, True])
 @pytest.mark.parametrize("resume", [None, {"resume_needed": True, "profiles": {"work": "old-pid"}}])
 def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, resume):
@@ -22,7 +30,8 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
     package.mkdir(parents=True)
-    shutil.copy2(source / "hermes_cli/_old_updater.py", package / "_old_updater.py")
+    moved = _moved_package(root)
+    shutil.copy2(source / "hermes_agent/hermes_cli/_old_updater.py", moved / "_old_updater.py")
     (package / "_update_takeover.py").write_text(
         "import json, os, sys\nfrom pathlib import Path\n"
         "request = json.loads(Path(sys.argv[1]).read_text())\n"
@@ -52,7 +61,7 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
         payload["windows_gateway_resume"] = resume
     # The retired updater reaches the takeover through the NEW tree's hand-off module; this
     # checkout is the whole tree the child sees (CI has no editable finder for the source).
-    shutil.copy2(source / "hermes_cli/update_handoff.py", package / "update_handoff.py")
+    shutil.copy2(source / "hermes_agent/hermes_cli/update_handoff.py", moved / "update_handoff.py")
     # write_handoff resolves the home through hermes_constants; the child tree is the whole
     # sys.path (CI has no editable finder), so give it the names the hand-off reads (the
     # payload lands beside the receipts in the ROOT home, which is HERMES_HOME here).
@@ -64,7 +73,7 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     program = root / "historical.py"
     program.write_text(
         "import os\n"
-        "from hermes_cli.update_handoff import continue_update_in_fresh_interpreter\n"
+        "from hermes_agent.hermes_cli.update_handoff import continue_update_in_fresh_interpreter\n"
         "code = continue_update_in_fresh_interpreter(\n"
         f"    {payload!r}, argv_tail=['update', '--yes', '--gateway', '--branch', 'main'])\n"
         "raise SystemExit(code)\n", encoding="utf-8",
@@ -92,14 +101,13 @@ def test_shipped_post_swap_argv_enters_takeover_before_current_cli(tmp_path):
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
     package.mkdir(parents=True)
-    (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "main.py").write_text(
+    for relative in ("hermes_bootstrap.py", "hermes_cli/__init__.py", "hermes_cli/main.py"):
+        shutil.copy2(source / relative, root / relative)
+    shutil.copytree(source / "hermes_agent", root / "hermes_agent", ignore=shutil.ignore_patterns("__pycache__"))
+    (root / "hermes_agent/hermes_cli/main.py").write_text(
         "import hermes_bootstrap\nraise AssertionError('current CLI parsed a legacy continuation')\n",
         encoding="utf-8",
     )
-    for relative in ("hermes_bootstrap.py", "hermes_cli/update_handoff.py", "hermes_cli/_old_updater.py"):
-        shutil.copy2(source / relative, root / relative)
-    shutil.copytree(source / "hermes_agent", root / "hermes_agent", ignore=shutil.ignore_patterns("__pycache__"))
     (package / "_update_takeover.py").write_text(
         "import json, sys\nfrom pathlib import Path\n"
         "request = json.loads(Path(sys.argv[1]).read_text())\n"
@@ -146,7 +154,8 @@ def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, 
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
     package.mkdir(parents=True)
-    shutil.copy2(source / "hermes_cli/_old_updater.py", package / "_old_updater.py")
+    moved = _moved_package(root)
+    shutil.copy2(source / "hermes_agent/hermes_cli/_old_updater.py", moved / "_old_updater.py")
     # This is the process seam, not a counterfeit installer. Actual PM and
     # product construction are exercised separately against local packages.
     (package / "_update_takeover.py").write_text(
@@ -171,7 +180,7 @@ def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, 
     program.write_text(
         "import atexit, json, os, sys, types\nfrom pathlib import Path\n"
         "sys.modules['old_only'] = types.ModuleType('old_only')\n"
-        "from hermes_cli._old_updater import stop_for_relaunch\n"
+        "from hermes_agent.hermes_cli._old_updater import stop_for_relaunch\n"
         "_windows_gateway_resume = {'resume_needed': True, 'profiles': {'work': 'old-pid'}}\n"
         # The June updater reaches the takeover before it declares this local.
         f"if {desktop!r} is not None:\n    had_desktop_app_before_update = {desktop!r}\n"
@@ -208,8 +217,9 @@ def test_only_known_early_updater_restarts_with_original_arguments(tmp_path, pos
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
     package.mkdir(parents=True)
+    moved = _moved_package(root)
     for name in ("_old_updater.py", "old_updater_deps.py"):
-        shutil.copy2(source / "hermes_cli" / name, package / name)
+        shutil.copy2(source / "hermes_agent/hermes_cli" / name, moved / name)
     (package / "_update_takeover.py").write_text(
         "import json, sys\nfrom pathlib import Path\n"
         "request = json.loads(Path(sys.argv[1]).read_text())\n"
@@ -220,7 +230,7 @@ def test_only_known_early_updater_restarts_with_original_arguments(tmp_path, pos
     # after pulling, the *same* frame reaches a dependency hook. The wrapper
     # must not make that post-pull invocation look like another early update.
     (package / f"{module_name}.py").write_text(
-        "from hermes_cli.old_updater_deps import _capture_active_lazy_features, _update_node_dependencies\n"
+        "from hermes_agent.hermes_cli.old_updater_deps import _capture_active_lazy_features, _update_node_dependencies\n"
         "def _cmd_update_impl(post_pull):\n"
         "    if not post_pull:\n        _capture_active_lazy_features()\n"
         "    pre_update_version = None\n"
@@ -254,8 +264,9 @@ def test_atexit_recovers_only_stopped_serves_after_cached_update(tmp_path, ackno
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
     package.mkdir(parents=True)
+    moved = _moved_package(root)
     for name in ("_old_updater.py", "old_updater_deps.py"):
-        shutil.copy2(source / "hermes_cli" / name, package / name)
+        shutil.copy2(source / "hermes_agent/hermes_cli" / name, moved / name)
     (package / "_update_takeover.py").write_text(
         "import json, sys\nfrom pathlib import Path\n"
         "request = json.loads(Path(sys.argv[1]).read_text())\n"
@@ -275,8 +286,8 @@ def test_atexit_recovers_only_stopped_serves_after_cached_update(tmp_path, ackno
     program = root / "historical.py"
     program.write_text(
         "import atexit, json, os\nfrom pathlib import Path\n"
-        "from hermes_cli._old_updater import stop_for_relaunch\n"
-        "from hermes_cli.old_updater_deps import _relaunch_stopped_serves\n"
+        "from hermes_agent.hermes_cli._old_updater import stop_for_relaunch\n"
+        "from hermes_agent.hermes_cli.old_updater_deps import _relaunch_stopped_serves\n"
         "token = {'pending': True, 'entries': [{'purpose': 'serve', 'profile': 'work profile',"
         " 'host': '127.0.0.1', 'port': 8119}]}\n"
         "def cleanup():\n"
@@ -341,7 +352,7 @@ def test_serve_resume_child_reuses_respawn_without_updater_or_supervisors(tmp_pa
         f"sys.argv = [{str(root / 'hermes_cli/update_serve_resume.py')!r}, {str(context)!r}, {str(result_path)!r}]\n"
         "try:\n    runpy.run_path(sys.argv[0], run_name='__main__')\n"
         "finally:\n"
-        "    assert not any(name in sys.modules for name in ('hermes_cli.update_cmd', 'hermes_cli.update_receipt', 'hermes_cli.main'))\n"
+        "    assert not any(name in sys.modules for name in ('hermes_agent.hermes_cli.update_cmd', 'hermes_agent.hermes_cli.update_receipt', 'hermes_agent.hermes_cli.main'))\n"
         "    Path(os.environ['HERMES_HOME'], 'commands.json').write_text(json.dumps(calls))\n",
         encoding="utf-8",
     )
@@ -393,7 +404,7 @@ def test_completed_serve_token_is_acknowledged_without_preparation(tmp_path, enc
     shutil.copytree(source / "hermes_agent", root / "hermes_agent", ignore=shutil.ignore_patterns("__pycache__"))
     # Only selection is supplied. The two real entrypoints must carry the
     # request without importing PM or launching any completed backend twice.
-    (package / "_launchers.py").write_text(
+    (root / "hermes_agent/hermes_cli/_launchers.py").write_text(
         "import sys\nresolve_store_python = lambda root: sys.executable\n", encoding="utf-8")
     pm_package = root / "pm"
     pm_package.mkdir()

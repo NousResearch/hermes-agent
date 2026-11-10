@@ -193,7 +193,7 @@ def test_orphan_marker_wrapper_expires_once_its_fix_is_in_the_tree():
     # The halves already on this branch must still carry their footprint: a renamed judge would
     # otherwise read as "not landed" forever and keep the excuse alive.
     landed = {rel for rel, _ in crash.ORPHAN_MARKER_FIX} - {m.split(":")[0] for m in missing}
-    assert "hermes_cli/update_lock.py" in landed, f"the Python delegate judge lost its footprint: {missing}"
+    assert "hermes_agent/hermes_cli/update_lock.py" in landed, f"the Python delegate judge lost its footprint: {missing}"
 
 
 def test_orphan_marker_fix_footprint_is_read_from_the_tree(tmp_path):

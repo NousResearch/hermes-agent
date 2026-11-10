@@ -100,6 +100,7 @@ def test_historical_payload_survives_bridge_and_cleanup_requires_ack(handled, fr
     receipt = SimpleNamespace(data={"update_id": "original-id", "steps": [{"name": "pull", "ok": True}]})
     slot = ContextVar("test_historical_receipt", default=receipt)
     monkeypatch.setattr(update_receipt, "_current", slot)
+    monkeypatch.setitem(sys.modules, "hermes_cli.update_receipt", update_receipt)
     argv = ["hermes", "--profile", "ops team", "update", "--gateway", "--yes"]
     monkeypatch.setattr(sys, "argv", argv)
     expected = deepcopy({

@@ -33,7 +33,7 @@ sys.meta_path.insert(0, _BlockPatchStdout())
 
 
 def _import_cli_without_patch_stdout():
-    code = _BLOCKER + "import cli\n"
+    code = _BLOCKER + "from hermes_agent import cli\n"
     return subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
@@ -51,7 +51,7 @@ def test_cli_imports_without_patch_stdout():
 
 def test_cli_patch_stdout_falls_back_to_nullcontext():
     code = _BLOCKER + (
-        "import cli, contextlib\n"
+        "import contextlib\nfrom hermes_agent import cli\n"
         "assert cli.patch_stdout is contextlib.nullcontext, cli.patch_stdout\n"
         "assert callable(cli.HermesCLI)\n"
     )

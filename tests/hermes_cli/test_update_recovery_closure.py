@@ -29,9 +29,11 @@ SOURCE = Path(__file__).resolve().parents[2]
 BOOT = ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
         "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py", "hermes_agent/compat/finder.py",
         "hermes_agent/compat/moves.py",
-        "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py", "hermes_cli/runtime_state.py",
-        "hermes_cli/venv_sync.py", "hermes_cli/steward.py", "hermes_cli/stderr_timestamp.py",
-        "hermes_cli/update_lock.py", "hermes_cli/update_custody.py", "pm/environments.py",
+        "hermes_agent/hermes_cli/__init__.py", "hermes_agent/hermes_cli/_launchers.py",
+        "hermes_agent/hermes_cli/_early_recovery.py", "hermes_agent/hermes_cli/_parser.py",
+        "hermes_agent/hermes_cli/runtime_state.py", "hermes_agent/hermes_cli/venv_sync.py",
+        "hermes_agent/hermes_cli/steward.py", "hermes_agent/hermes_cli/stderr_timestamp.py",
+        "hermes_agent/hermes_cli/update_lock.py", "hermes_agent/hermes_cli/update_custody.py", "pm/environments.py",
         "pm/filesystem.py", "pm/paths.py")
 _HOLDER = ("import sys, time\nfrom pathlib import Path\nsys.path.insert(0, sys.argv[1])\n"
            "from hermes_agent.hermes_cli.update_lock import UpdateLock\n"
@@ -39,17 +41,19 @@ _HOLDER = ("import sys, time\nfrom pathlib import Path\nsys.path.insert(0, sys.a
            "assert lock.acquire()\nprint('HELD', flush=True)\ntime.sleep(120)\n")
 
 
-def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None = None):
+def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None = None,
+                      tree: dict[str, str] | None = None):
     """A checkout whose update git was SIGKILLed after unlinking ``rel``, before writing it."""
     root, home = tmp_path / "checkout", tmp_path / "home"
     home.mkdir()
-    for f in BOOT:
+    for f in BOOT if tree is None else ():  # ``tree``: the checkout's whole content instead
         if (SOURCE / f).is_file():
             (root / f).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(SOURCE / f, root / f)
-    for f, text in (committed or {}).items():
+    for f, text in {**(tree or {}), **(committed or {})}.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
         (root / f).write_text(text, encoding="utf-8")
-    (root / "hermes_cli/main.py").write_text("def main():\n    print('APP_REACHED')\n    return 0\n", encoding="utf-8")
+    (root / ("hermes_cli" if tree else "hermes_agent/hermes_cli") / "main.py").write_text("def main():\n    print('APP_REACHED')\n    return 0\n", encoding="utf-8")
     env = {"HOME": str(home), "HERMES_HOME": str(home / ".hermes"), "PATH": os.environ.get("PATH", ""),
            "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
     git_exe = shutil.which("git") or "git"
@@ -109,9 +113,9 @@ def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize(("rel", "torn", "published"), [
     ("hermes_bootstrap.py", False, True),
-    ("hermes_cli/_early_recovery.py", True, True),
-    ("hermes_cli/__init__.py", True, True),
-    ("hermes_cli/update_lock.py", True, True),
+    ("hermes_agent/hermes_cli/_early_recovery.py", True, True),
+    ("hermes_agent/hermes_cli/__init__.py", True, True),
+    ("hermes_agent/hermes_cli/update_lock.py", True, True),
     # An updater that predates publication: the launcher reads the same files from git's objects.
     ("hermes_bootstrap.py", True, False),
 ])
@@ -121,6 +125,38 @@ def test_a_launch_repairs_a_move_killed_while_writing_the_repairs_own_code(tmp_p
         (root / rel).write_bytes(original[:12])
     if not published:
         shutil.rmtree(root / ".git/hermes-update-recovery")
+    launch = subprocess.run([str(launcher)], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=60, check=False)
+    assert launch.returncode == 0 and "APP_REACHED" in launch.stdout, launch.stderr
+    assert (root / rel).read_bytes() == original
+    assert not (root / ".git/hermes-update-pull").exists()
+
+
+def _pre_move_tree() -> dict[str, str]:
+    """A checkout from before ``hermes_cli/`` moved into ``hermes_agent/``: the repair at the old paths,
+    importing itself by the old name, and a bootstrap that runs it first."""
+    repair = {f"hermes_cli/{name}": (SOURCE / "hermes_agent/hermes_cli" / name).read_text(encoding="utf-8")
+              .replace("hermes_agent.hermes_cli", "hermes_cli")
+              for name in ("_early_recovery.py", "update_lock.py", "update_custody.py")}
+    return {**repair, "hermes_cli/__init__.py": "",
+            "hermes_bootstrap.py": "from pathlib import Path\nfrom hermes_cli import _early_recovery\n\n"
+                                   "if _early_recovery.restore_interrupted_pull(Path(__file__).resolve().parent):\n"
+                                   "    _early_recovery.relaunch_after_restore()\n"}
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("published", [True, False])
+def test_a_second_move_from_a_pre_move_commit_is_repaired_with_that_commits_layout(tmp_path, published):
+    """CP0 switched to a local branch from before the move, so CP1's ``pre`` has the old layout, and CP1
+    is killed while writing that tree's repair. The closure is ``pre``'s old-layout files, published by
+    this updater or rebuilt by the launcher from git's objects."""
+    rel = "hermes_cli/_early_recovery.py"
+    root, env, original, launcher = _killed_mid_write(tmp_path, rel, tree=_pre_move_tree())
+    closures = root / ".git/hermes-update-recovery"
+    if published:
+        assert closures.is_dir(), "the updater published no closure for a pre-move pre"
+    else:
+        shutil.rmtree(closures, ignore_errors=True)
     launch = subprocess.run([str(launcher)], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
                             errors="replace", timeout=60, check=False)
     assert launch.returncode == 0 and "APP_REACHED" in launch.stdout, launch.stderr
@@ -172,7 +208,7 @@ def test_a_damaged_published_closure_is_rebuilt_from_git_objects_not_trusted(tmp
     launch rebuilds the closure from ``pre``'s objects before repairing (M1)."""
     root, env, original, launcher = _killed_mid_write(tmp_path, "hermes_bootstrap.py")
     (closure,) = (root / ".git/hermes-update-recovery").iterdir()
-    module = closure / "hermes_cli/_early_recovery.py"
+    module = closure / "hermes_agent/hermes_cli/_early_recovery.py"
     module.write_bytes(b"" if damage == "truncated" else
                        module.read_bytes() + b"\nprint('NOT_PRE_CODE_RAN', file=__import__('sys').stderr)\n")
     launch = subprocess.run([str(launcher)], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
@@ -193,7 +229,7 @@ def test_git_object_bytes_that_do_not_hash_to_pres_blob_never_run(tmp_path, corr
     (closure,) = (root / ".git/hermes-update-recovery").iterdir()  # named for ``pre``
     shutil.rmtree(closure.parent)
     if corrupt:
-        oid = subprocess.check_output(["git", "-C", str(root), "rev-parse", f"{closure.name}:hermes_cli/_early_recovery.py"],
+        oid = subprocess.check_output(["git", "-C", str(root), "rev-parse", f"{closure.name}:hermes_agent/hermes_cli/_early_recovery.py"],
                                       env=env, text=True).strip()
         obj = root / ".git/objects" / oid[:2] / oid[2:]
         foreign = f"open({str(ran)!r}, 'w').close()\n".encode()

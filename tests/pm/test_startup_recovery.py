@@ -46,15 +46,16 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
     home.mkdir()
     for name in ("hermes_bootstrap.py", "hermes_constants.py"):
         shutil.copy2(repo / name, core / name)
-    for package in ("pm", "hermes_agent"):
-        shutil.copytree(repo / package, core / package, ignore=shutil.ignore_patterns("__pycache__"))
-    cli = core / "hermes_cli"
+    shutil.copytree(repo / "pm", core / "pm", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(repo / "hermes_agent", core / "hermes_agent",
+                    ignore=shutil.ignore_patterns("__pycache__", "hermes_cli"))
+    cli = core / "hermes_agent" / "hermes_cli"
     cli.mkdir()
     # Include the real preimport protocol, including its ownership check. Do
     # not stub prepare_launch: the same files are also saved in PM's workspace.
     for name in ("__init__.py", "runtime_state.py", "_early_recovery.py",
                  "_parser.py", "venv_sync.py", "steward.py"):
-        shutil.copy2(repo / "hermes_cli" / name, cli / name)
+        shutil.copy2(repo / "hermes_agent" / "hermes_cli" / name, cli / name)
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     _wheel(wheels, "startup_dep", "1.0")

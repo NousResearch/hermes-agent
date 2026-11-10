@@ -20,7 +20,7 @@ from pathlib import Path
 # The installers run this file directly under an isolated interpreter, which
 # leaves the checkout off sys.path. Same idiom as hermes_agent/hermes_cli/_launchers.py.
 if __name__ == "__main__":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 #: Second-phase marker: the re-executed interpreter, not the bootstrap one.
 _PREPARED = "--prepared"

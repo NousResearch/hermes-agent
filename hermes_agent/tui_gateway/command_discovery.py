@@ -139,7 +139,7 @@ class _Catalog:
 
 
 def _catalog_registry(cat: _Catalog, module_loader) -> None:
-    commands = module_loader("hermes_cli.commands")
+    commands = module_loader("hermes_agent.hermes_cli.commands")
     for cmd in commands.COMMAND_REGISTRY:
         meta = commands.command_desktop_meta(cmd)
         cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
@@ -169,7 +169,7 @@ def _catalog_quick_commands(cat: _Catalog, load_cfg) -> None:
 
 
 def _catalog_plugin_commands(cat: _Catalog, module_loader) -> None:
-    plugin_cmds = module_loader("hermes_cli.plugins").get_plugin_commands() or {}
+    plugin_cmds = module_loader("hermes_agent.hermes_cli.plugins").get_plugin_commands() or {}
     if plugin_cmds:
         cat.cat_map.setdefault("Plugin commands", [])
     for pname, info in sorted(plugin_cmds.items()):
@@ -242,7 +242,7 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
             logger.debug("skill discovery failed", exc_info=True)
             warning = f"skill discovery unavailable: {e}"
     return {
-        "pairs": cat.pairs, "sub": {k: v[:] for k, v in module_loader("hermes_cli.commands").SUBCOMMANDS.items()},
+        "pairs": cat.pairs, "sub": {k: v[:] for k, v in module_loader("hermes_agent.hermes_cli.commands").SUBCOMMANDS.items()},
         "canon": cat.canon,
         "commands": cat.commands,
         "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],

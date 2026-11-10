@@ -48,14 +48,16 @@ def _pm_source(project, home):
         "hermes", "hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py",
         "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py", "hermes_agent/compat/finder.py",
         "hermes_agent/compat/moves.py",
-        "pm/environments.py", "pm/filesystem.py", "hermes_cli/runtime_state.py",
-        "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py",
-        "hermes_cli/venv_sync.py", "hermes_cli/steward.py", "hermes_cli/stderr_timestamp.py",
+        "hermes_agent/hermes_cli/__init__.py", "hermes_agent/hermes_cli/_launchers.py",
+        "pm/environments.py", "pm/filesystem.py", "hermes_agent/hermes_cli/runtime_state.py",
+        "hermes_agent/hermes_cli/_early_recovery.py", "hermes_agent/hermes_cli/_parser.py",
+        "hermes_agent/hermes_cli/venv_sync.py", "hermes_agent/hermes_cli/steward.py",
+        "hermes_agent/hermes_cli/stderr_timestamp.py",
     ):
         target = project / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / relative, target)
-    (project / "hermes_cli/main.py").write_text(
+    (project / "hermes_agent/hermes_cli/main.py").write_text(
         "def main():\n    import selected_probe\n    print(selected_probe.VALUE)\n    return 0\n",
         encoding="utf-8",
     )

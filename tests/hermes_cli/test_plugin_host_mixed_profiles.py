@@ -48,7 +48,7 @@ def test_create_client_profile_loads_in_process_and_its_sibling_stays_hosted(tmp
         assert local.create_client()["pid"] == os.getpid()
         assert hosted.build_extra_body(session_id="s")["pid"] != os.getpid()
         # The in-process import registered ONLY the profile that needs it.
-        assert type(hosted).__module__ == "hermes_cli.plugin_host_profiles"
+        assert type(hosted).__module__ == "hermes_agent.hermes_cli.plugin_host_profiles"
         notices = [r.getMessage() for r in caplog.records if "mixlocal" in r.getMessage()]
         assert len(notices) == 1 and "create_client" in notices[0]
         assert not any("mixhosted" in r.getMessage() for r in caplog.records)

@@ -82,7 +82,7 @@ def _should_skip_external_secret_sources() -> bool:
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def _read_marker_attempts(marker_path: Path) -> int:
@@ -257,14 +257,25 @@ def interrupted_pull_marker(root: Path) -> Path:
 # objects first when no updater published them (``_launchers._CLOSURE_REPAIR``).
 # The modules import only the stdlib and each other; the package initializer is published empty.
 RECOVERY_CLOSURE_DIR = "hermes-update-recovery"
-RECOVERY_CLOSURE = ("hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_cli/update_custody.py")
+RECOVERY_CLOSURE = ("hermes_agent/__init__.py", "hermes_agent/hermes_cli/_early_recovery.py",
+                    "hermes_agent/hermes_cli/update_lock.py", "hermes_agent/hermes_cli/update_custody.py")
 
 
 # ``<blob id> <path>`` per published file (``RECOVERY_CLOSURE`` + the empty package initializer):
 # a closure is used only when every file hashes to its id (a power loss can leave the renamed dir
 # with files git's objects never had), else it is rebuilt from git's objects.
 RECOVERY_CLOSURE_MANIFEST = "MANIFEST"
-RECOVERY_CLOSURE_INIT = "hermes_cli/__init__.py"
+RECOVERY_CLOSURE_INIT = "hermes_agent/hermes_cli/__init__.py"
+
+# A second move in one run (CP0's branch switch, then CP1; a fork's origin pull, then the upstream
+# sync) can start from a ``pre`` committed before ``hermes_cli/`` moved into ``hermes_agent/``. That
+# tree's repair sits at the old paths and imports itself by the old name, so the closure takes the
+# layout ``pre`` has: (files, empty package initializer, package to import ``_early_recovery`` from).
+RECOVERY_CLOSURE_LAYOUTS = (
+    (RECOVERY_CLOSURE, RECOVERY_CLOSURE_INIT, "hermes_agent.hermes_cli"),
+    (("hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_cli/update_custody.py"),
+     "hermes_cli/__init__.py", "hermes_cli"),
+)
 
 
 def recovery_closure_dir(root: Path, pre: str) -> Path:
@@ -289,8 +300,8 @@ def recovery_closure_verified(closure: Path, pre: str) -> bool:
     try:
         listed = dict(line.split(" ", 1)[::-1] for line in
                       (closure / RECOVERY_CLOSURE_MANIFEST).read_text(encoding="utf-8-sig").splitlines())
-        return (set(listed) == {*RECOVERY_CLOSURE, RECOVERY_CLOSURE_INIT}
-                and listed[RECOVERY_CLOSURE_INIT] == blob_id(b"", pre)
+        return (any(set(listed) == {*files, init} and listed[init] == blob_id(b"", pre)
+                    for files, init, _ in RECOVERY_CLOSURE_LAYOUTS)
                 and all(blob_id((closure / rel).read_bytes(), pre) == oid for rel, oid in listed.items()))
     except (OSError, ValueError):
         return False
@@ -1355,7 +1366,7 @@ def _pytest_owns_live_checkout(root: Path) -> bool:
 
     Copied installations in tmp_path remain eligible for real recovery tests.
     """
-    return "PYTEST_CURRENT_TEST" in os.environ and root == Path(__file__).resolve().parent.parent
+    return "PYTEST_CURRENT_TEST" in os.environ and root == Path(__file__).resolve().parents[2]
 
 
 def _missing_environment(root: Path) -> bool:

@@ -558,7 +558,7 @@ class TestManualBackendRespawn:
              patch.object(live.time, "sleep"), \
              patch.object(_launchers, "resolve_store_python", return_value=None):
             failed = live._respawn_dashboard_processes([captured])
-            expected = runtime_command(Path(live.__file__).resolve().parents[1], captured[2:])
+            expected = runtime_command(Path(live.__file__).resolve().parents[2], captured[2:])
 
         assert failed == []
         assert spawned == [expected]

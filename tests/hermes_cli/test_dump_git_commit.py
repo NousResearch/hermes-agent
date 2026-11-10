@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_agent.hermes_cli.version_info import VersionInfo, _reset_version_info_cache
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 def setup_function():
@@ -94,7 +95,7 @@ def test_get_git_commit_authoritative_for_real_temp_repo(tmp_path):
 
     commit = dump._get_git_commit(repo_dir)
     assert commit == expected
-    assert commit != dump._get_git_commit(Path(dump.__file__).parent.parent)
+    assert commit != dump._get_git_commit(Path(project_root_str()))
 
 
 def test_get_git_commit_date_unknown_for_other_root_without_git(tmp_path):

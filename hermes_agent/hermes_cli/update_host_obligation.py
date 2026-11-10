@@ -60,7 +60,7 @@ def host_obligation_path() -> Path:
     # recovery module's stdlib copy of the rule is drift-tested against the gateway resolver.
     from hermes_agent.hermes_cli.update_restart_recovery import _host_state_dir
 
-    install = os.path.normcase(str(Path(__file__).resolve().parents[1]))
+    install = os.path.normcase(str(Path(__file__).resolve().parents[2]))
     key = hashlib.sha256(install.encode("utf-8")).hexdigest()[:16]
     return Path(_host_state_dir()) / f"{Path(HOST_OBLIGATION_NAME).stem}-{key}.json"
 

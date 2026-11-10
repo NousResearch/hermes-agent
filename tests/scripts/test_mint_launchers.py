@@ -42,7 +42,8 @@ def payload_tree(tmp_path: Path):
     py_dir = tmp_path / "stage" / "tools" / "py-1"
     repo = tmp_path / "stage" / "repo"
     site = tmp_path / "stage" / "venv" / "Lib" / "site-packages"
-    for d in (bin_dir, py_dir, repo / "hermes_cli", repo / "hermes_agent" / "compat", repo / "pm", site):
+    for d in (bin_dir, py_dir, repo / "hermes_cli", repo / "hermes_agent" / "compat",
+              repo / "hermes_agent" / "hermes_cli", repo / "pm", site):
         d.mkdir(parents=True, exist_ok=True)
 
     # A real interpreter at the shebang's target: the launcher will create
@@ -69,13 +70,14 @@ def payload_tree(tmp_path: Path):
     for relative in ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py",
                      "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py",
                      "hermes_agent/compat/finder.py", "hermes_agent/compat/moves.py",
-                     "pm/environments.py", "pm/filesystem.py", "hermes_cli/runtime_state.py",
-                     "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py",
+                     "hermes_agent/hermes_cli/__init__.py",
+                     "pm/environments.py", "pm/filesystem.py", "hermes_agent/hermes_cli/runtime_state.py",
+                     "hermes_agent/hermes_cli/_early_recovery.py", "hermes_agent/hermes_cli/_parser.py",
                      # prepare_launch returns early for a fixture repo (no .git), but the bootstrap
                      # imports these two before it can tell.
-                     "hermes_cli/venv_sync.py", "hermes_cli/steward.py"):
+                     "hermes_agent/hermes_cli/venv_sync.py", "hermes_agent/hermes_cli/steward.py"):
         shutil.copy2(_REPO / relative, repo / relative)
-    (repo / "hermes_cli" / "main.py").write_text(
+    (repo / "hermes_agent" / "hermes_cli" / "main.py").write_text(
         "import os, sys\n"
         "def main():\n"
         "    import hermes_cli, stubdep\n"
@@ -149,7 +151,7 @@ def test_minted_launcher_runs_relocated_and_forwards_exit_code(payload_tree, tmp
 
     # The default pycache prefix kept bytecode out of the (sealed) repo.
     assert (payload_tree["tmp"] / "lad" / "hermes" / "pycache").exists()
-    assert not (moved / "repo" / "hermes_cli" / "__pycache__").exists()
+    assert not (moved / "repo" / "hermes_agent" / "hermes_cli" / "__pycache__").exists()
 
 
 def test_mint_rejects_a_non_launcher_dir_shebang(tmp_path):

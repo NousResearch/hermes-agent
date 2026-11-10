@@ -31,11 +31,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Modules that must NEVER be imported by the fast path. Each one either
 # pulls yaml/argparse/logging config or is itself a god-module.
 _FORBIDDEN_MODULES = (
-    "hermes_cli.config",
-    "hermes_cli.main",
+    "hermes_agent.hermes_cli.config",
+    "hermes_agent.hermes_cli.main",
     "yaml",
     "argparse",
-    "cli",
+    "hermes_agent.cli",
     "hermes_agent.run_agent",
     "hermes_agent.model_tools",
     "httpx",
@@ -107,7 +107,7 @@ def test_project_root_is_the_folder_that_holds_hermes_agent(tmp_path, package):
     """The install-root owner gives the same answer before and after hermes_cli moves into the package."""
     (tmp_path / "hermes_agent" / "compat").mkdir(parents=True)
     (tmp_path / package).mkdir(parents=True, exist_ok=True)
-    shutil.copy2(REPO_ROOT / "hermes_cli" / "_startup_fast.py", tmp_path / package / "_startup_fast.py")
+    shutil.copy2(REPO_ROOT / "hermes_agent" / "hermes_cli" / "_startup_fast.py", tmp_path / package / "_startup_fast.py")
     owner = runpy.run_path(str(tmp_path / package / "_startup_fast.py"))["project_root_str"]
     assert owner() == os.path.realpath(tmp_path)
 

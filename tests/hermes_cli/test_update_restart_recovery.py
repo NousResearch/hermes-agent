@@ -85,7 +85,7 @@ def test_abort_recovery_hands_managed_profiles_to_a_fresh_process(monkeypatch):
     assert len(calls) == 1
     argv, kwargs = calls[0]
     assert argv[0] == sys.executable
-    assert argv[1:4] == ["-m", "hermes_cli.update_restart_recovery", "--stdin"]
+    assert argv[1:4] == ["-m", "hermes_agent.hermes_cli.update_restart_recovery", "--stdin"]
     payload = json.loads(kwargs["input"])
     assert payload["profiles"] == ["coder", "default"]
     assert payload["supervisors"] == {"coder": "launchd", "default": "systemd"}
@@ -277,8 +277,8 @@ def test_recovery_child_restarts_each_profile_with_a_fresh_main(monkeypatch):
         "covered": {},
     }
     assert [call[0] for call in calls] == [
-        [sys.executable, "-m", "hermes_cli.main", "-p", "coder", "gateway", "restart", "--interrupt", "--detach"],
-        [sys.executable, "-m", "hermes_cli.main", "-p", "default", "gateway", "restart", "--interrupt", "--detach"],
+        [sys.executable, "-m", "hermes_agent.hermes_cli.main", "-p", "coder", "gateway", "restart", "--interrupt", "--detach"],
+        [sys.executable, "-m", "hermes_agent.hermes_cli.main", "-p", "default", "gateway", "restart", "--interrupt", "--detach"],
     ]
     for _, kwargs in calls:
         assert kwargs["stdin"] is subprocess.DEVNULL
@@ -417,7 +417,7 @@ def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
 
         def _shim_run(argv, *args, **kwargs):
             argv_list = list(argv)
-            if "hermes_cli.main" in argv_list:
+            if "hermes_agent.hermes_cli.main" in argv_list:
                 with open(_LEDGER, "a", encoding="utf-8") as fh:
                     fh.write(json.dumps(argv_list) + "\\n")
                 return subprocess.CompletedProcess(argv_list, 0, "", "")

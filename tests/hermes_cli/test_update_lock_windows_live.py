@@ -552,6 +552,10 @@ def test_the_old_updater_runs_its_takeover_in_the_job(tmp_path, monkeypatch, cap
     """N11: the old updater's takeover child syncs and builds the checkout. With this updater
     holding the checkout lock it is bound before it runs; a refused bind is said out loud."""
     from hermes_agent.hermes_cli import _old_updater
+    from hermes_agent.hermes_cli import update_lock
+
+    # A shipped updater loaded update_lock under its old name; _run_in_custody reads that key.
+    monkeypatch.setitem(sys.modules, "hermes_cli.update_lock", update_lock)
 
     started = tmp_path / "started"
     lock = UpdateLock(path=tmp_path / "m", install_root=tmp_path)

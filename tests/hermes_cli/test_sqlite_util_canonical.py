@@ -69,7 +69,7 @@ _STORE_OPENERS = (
     ("hermes_agent.cron.delivery_queue", "_connect"),
     ("hermes_agent.gateway.delivery_ledger", "_connect"),
     ("hermes_agent.tools.async_delegation", "_connect"),
-    ("hermes_cli.projects_db", "connect"),
+    ("hermes_agent.hermes_cli.projects_db", "connect"),
     ("hermes_agent.gateway.hosted_rooms_common", "open_sqlite"),
 )
 
@@ -103,7 +103,7 @@ def test_every_store_opens_through_the_canonical_open_db(monkeypatch, tmp_path, 
         monkeypatch.setattr(module, "open_db", spy)
     opener = getattr(module, attr)
     args = (tmp_path / "opened.db",) if module_name == "hermes_agent.gateway.hosted_rooms_common" else ()
-    if module_name == "hermes_cli.projects_db":
+    if module_name == "hermes_agent.hermes_cli.projects_db":
         args = (tmp_path / "projects.db",)
     conn = opener(*args)
     try:

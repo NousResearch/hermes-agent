@@ -63,7 +63,7 @@ except ImportError:
             "Run hermes pm repair, then restart Hermes."
         )
 
-WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
+WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else PROJECT_ROOT / "hermes_cli" / "web_dist"  # health: allow HX005 -- unchanged import-time default; only its folder moved (D49)
 _log = logging.getLogger(__name__)
 
 

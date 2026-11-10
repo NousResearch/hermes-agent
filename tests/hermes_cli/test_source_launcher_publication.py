@@ -19,10 +19,11 @@ BOOT_FILES = (
     "hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
     "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py", "hermes_agent/compat/finder.py",
     "hermes_agent/compat/moves.py",
-    "pm/environments.py", "pm/filesystem.py", "pm/paths.py", "hermes_cli/runtime_state.py",
-    "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py",
-    "hermes_cli/venv_sync.py", "hermes_cli/steward.py",
-    "hermes_cli/stderr_timestamp.py",
+    "hermes_agent/hermes_cli/__init__.py", "hermes_agent/hermes_cli/_launchers.py",
+    "pm/environments.py", "pm/filesystem.py", "pm/paths.py", "hermes_agent/hermes_cli/runtime_state.py",
+    "hermes_agent/hermes_cli/_early_recovery.py", "hermes_agent/hermes_cli/_parser.py",
+    "hermes_agent/hermes_cli/venv_sync.py", "hermes_agent/hermes_cli/steward.py",
+    "hermes_agent/hermes_cli/stderr_timestamp.py",
     "scripts/hermes-gateway",
 )
 
@@ -44,7 +45,7 @@ def fixture_tree(tmp_path, monkeypatch):
         "    return 7\n"
         "if __name__ == '__main__':\n    sys.exit(main())\n"
     )
-    for path in (repo / "hermes_cli/main.py", repo / "hermes_agent/acp_adapter/entry.py"):
+    for path in (repo / "hermes_agent/hermes_cli/main.py", repo / "hermes_agent/acp_adapter/entry.py"):
         path.write_text(entry, encoding="utf-8")
     # Windows resolves its default under LOCALAPPDATA, not HOME.
     if os.name == "nt":
@@ -363,12 +364,12 @@ def test_running_source_launcher_can_republish_itself(tmp_path, monkeypatch, lau
         import distlib
 
         shutil.copytree(Path(distlib.__file__).parent, site_packages(selected) / "distlib")
-    entry = repo / "hermes_cli/main.py"
+    entry = repo / "hermes_agent/hermes_cli/main.py"
     entry.write_text(
         "from pathlib import Path\n"
         "from hermes_cli._launchers import ensure_install_launchers, ENTRY_POINTS\n"
         "def main():\n"
-        "    root = Path(__file__).resolve().parents[1]\n"
+        "    root = Path(__file__).resolve().parents[2]\n"
         "    written = ensure_install_launchers(root, root / '.hermes/bin')\n"
         "    print('published', len(written), len(ENTRY_POINTS), flush=True)\n"
         "    return 0 if len(written) == len(ENTRY_POINTS) else 1\n",
@@ -395,7 +396,7 @@ def test_running_source_launcher_can_republish_itself(tmp_path, monkeypatch, lau
                          ids=["idle", "running", "running-store-pip"])
 def test_repin_without_distlib_retires_stale_native_launcher(tmp_path, monkeypatch, running, store_pip):
     repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
-    (repo / "hermes_cli/main.py").write_text(
+    (repo / "hermes_agent/hermes_cli/main.py").write_text(
         "import sys\ndef main():\n    print('ready', flush=True)\n    sys.stdin.read()\n    return 0\n",
         encoding="utf-8")
     local = repo / ".hermes/bin"
@@ -557,7 +558,7 @@ def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monk
         original_import = builtins.__import__
 
         def without_config(name, *args, **kwargs):
-            assert name != "hermes_cli.config", "bootstrap publication imported application config"
+            assert name != "hermes_agent.hermes_cli.config", "bootstrap publication imported application config"
             return original_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", without_config)
@@ -592,7 +593,7 @@ def _torn_by_a_killed_merge(tmp_path, monkeypatch):
     interrupted-pull marker of a dead updater, ``.git/index.lock`` and no ``hermes_constants.py``.
     """
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
-    for relative in ("hermes_cli/update_lock.py", "hermes_cli/update_custody.py"):
+    for relative in ("hermes_agent/hermes_cli/update_lock.py", "hermes_agent/hermes_cli/update_custody.py"):
         shutil.copy2(ROOT / relative, repo / relative)
 
     def git(*args):

@@ -7,7 +7,7 @@ import { MessageChannel, MessagePort } from 'node:worker_threads'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-const source = readFileSync('../../hermes_cli/webapp_previews.py', 'utf8')
+const source = readFileSync('../../hermes_agent/hermes_cli/webapp_previews.py', 'utf8')
 const html = source.match(/PREVIEW_HTML = """([\s\S]*?)"""/)![1]
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
 

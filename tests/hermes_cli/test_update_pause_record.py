@@ -28,7 +28,7 @@ _PRIVATE_CHECKOUT_LOCK = """
 import os
 from pathlib import Path
 from hermes_cli import update_lock as _lock
-_repo, _real = Path(_lock.__file__).resolve().parents[1], _lock.checkout_lock_path
+_repo, _real = Path(_lock.__file__).resolve().parents[2], _lock.checkout_lock_path
 def checkout_lock_path(install_root=None):
     root = Path(install_root) if install_root else _repo
     return Path(os.environ["HERMES_TEST_CHECKOUT_LOCK"]) if root.resolve() == _repo else _real(install_root)
@@ -560,8 +560,8 @@ def test_a_request_on_disk_is_owed_even_before_it_is_recorded_sent(tmp_path):
 # --- R13: a checkout sharing the home never takes another checkout's paused set --------------
 def _checkout_copy(root: Path) -> Path:
     """A second checkout: the real module file under another install root."""
-    (root / "hermes_cli").mkdir(parents=True)
-    (root / "hermes_cli" / "update_pause_record.py").write_bytes(Path(pause_record.__file__).read_bytes())
+    (root / "hermes_agent" / "hermes_cli").mkdir(parents=True)
+    (root / "hermes_agent" / "hermes_cli" / "update_pause_record.py").write_bytes(Path(pause_record.__file__).read_bytes())
     _git(root, "init", "-q")
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "b")
@@ -579,7 +579,7 @@ def test_another_checkouts_writer_never_imports_or_relabels_this_checkouts_debt(
         b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
         b.write(b.stamp_tree({"resume_needed": True, "profiles": {"beta": 1}}), owner=b.UNOWNED)
         print(json.dumps([len(b.orphans()), b.read()]), flush=True)
-    """, str(other / "hermes_cli" / "update_pause_record.py"), env={"HERMES_HOME": str(tmp_path)})
+    """, str(other / "hermes_agent" / "hermes_cli" / "update_pause_record.py"), env={"HERMES_HOME": str(tmp_path)})
     out, _ = writer.communicate(timeout=60)
     seen, theirs = json.loads(out.strip().splitlines()[-1])
     assert seen == 1 and sorted(theirs["token"]["profiles"]) == ["beta"], f"imported this checkout's set: {theirs}"

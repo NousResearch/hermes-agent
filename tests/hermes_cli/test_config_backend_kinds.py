@@ -18,7 +18,7 @@ FAKE = "fakekind_p21"
 _FAKE_PACKAGE = '''
 import contextlib
 
-from hermes_cli.config_backend import FileBackend
+from hermes_agent.hermes_cli.config_backend import FileBackend
 
 EVENTS = []
 

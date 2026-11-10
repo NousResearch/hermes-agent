@@ -138,7 +138,9 @@ def _tui_need_rebuild(root: Path) -> bool:
 def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
     """Find a pre-built TUI entry.js bundled in the wheel."""
     if hermes_cli_dir is None:
-        hermes_cli_dir = Path(__file__).parent
+        from hermes_agent.hermes_cli._startup_fast import project_root_str
+
+        hermes_cli_dir = Path(project_root_str()) / "hermes_cli"
     bundled = hermes_cli_dir / "tui_dist" / "entry.js"
     return bundled if bundled.is_file() else None
 

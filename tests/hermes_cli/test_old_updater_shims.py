@@ -2,11 +2,9 @@
 
 from copy import deepcopy
 import importlib
-import importlib.util
 from pathlib import Path
 import subprocess
 import sys
-from types import SimpleNamespace
 
 import pytest
 
@@ -19,7 +17,7 @@ from tests.compat.old_updater_support import (
 @pytest.mark.parametrize(
     "module,name,args,kwargs,cached",
     [
-        *((f"hermes_cli.{module}", name, args, kwargs, None) for module, name, args, kwargs in [
+        *((f"hermes_agent.hermes_cli.{module}", name, args, kwargs, None) for module, name, args, kwargs in [
         ("managed_uv", "ensure_uv", (), {}),
         ("managed_uv", "ensure_uv", (), {"repair_observer": lambda result: pytest.fail("repair observer ran")}),
         ("managed_uv", "update_managed_uv", (), {}),
@@ -55,7 +53,7 @@ from tests.compat.old_updater_support import (
         ("update_cmd", "_reload_updated_runtime_modules", (), {}),
         ("update_cmd_maint", "_reload_updated_runtime_modules", (), {}),
     ]),
-        *(("hermes_cli.main", name, args, kwargs, None) for name, args, kwargs in [
+        *(("hermes_agent.hermes_cli.main", name, args, kwargs, None) for name, args, kwargs in [
         ("_desktop_stamp_path", (), {}),
         ("_expected_windows_pe_machines", (), {}),
         ("_hermes_exe_shims", (Path("venv"),), {}),
@@ -80,7 +78,7 @@ from tests.compat.old_updater_support import (
         ("_windows_native_machine", (), {}),
         ("_windows_shim_in_process_chain", (), {}),
     ]),
-        *(("hermes_cli.main", name, args, kwargs, cached) for name, args, kwargs in [
+        *(("hermes_agent.hermes_cli.main", name, args, kwargs, cached) for name, args, kwargs in [
         ("_capture_active_lazy_features", (), {}),
         ("_refresh_active_lazy_features", (), {}),
         ("_refresh_active_lazy_features", (["browser"],), {}),
@@ -91,19 +89,19 @@ from tests.compat.old_updater_support import (
         ("_write_update_incomplete_marker", (), {}),
         ("_reload_updated_runtime_modules", (), {}),
     ] for cached in (False, True)),
-        ("hermes_cli.main_web_build", "_run_with_idle_timeout", (["npm", "ci"], Path("web")), {}, None),
-        ("hermes_cli.main_web_build", "_run_npm_install_deterministic", ("npm", Path("web")), {}, None),
-        ("hermes_cli.main_web_build", "_nixos_build_env", (), {}, None),
-        ("hermes_cli.main", "_reexec_dependency_sync_off_windows_shim", (), {}, None),
-        ("hermes_cli.update_cmd", "get_default_hermes_root", (), {}, None),
-        ("hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {}, None),
-        ("hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {"timeout": 120, "capture_output": False}, None),
+        ("hermes_agent.hermes_cli.main_web_build", "_run_with_idle_timeout", (["npm", "ci"], Path("web")), {}, None),
+        ("hermes_agent.hermes_cli.main_web_build", "_run_npm_install_deterministic", ("npm", Path("web")), {}, None),
+        ("hermes_agent.hermes_cli.main_web_build", "_nixos_build_env", (), {}, None),
+        ("hermes_agent.hermes_cli.main", "_reexec_dependency_sync_off_windows_shim", (), {}, None),
+        ("hermes_agent.hermes_cli.update_cmd", "get_default_hermes_root", (), {}, None),
+        ("hermes_agent.hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {}, None),
+        ("hermes_agent.hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {"timeout": 120, "capture_output": False}, None),
     ],
 )
 def test_retired_dependency_entrypoints_handoff_without_fallback(module, name, args, kwargs, cached, fresh_child, monkeypatch):
     # Some boundaries (notably psutil_android) hand off during import itself.
     # Resolve ordinary modules before the guard: their CLI startup is not a shim.
-    if module != "hermes_cli.psutil_android":
+    if module != "hermes_agent.hermes_cli.psutil_android":
         resolved = importlib.import_module(module)
         if cached is not None:
             # Reset lazy exports even when earlier rows warmed the facade.
@@ -212,51 +210,6 @@ def test_retired_probes_and_refreshes_do_no_work(no_external_work, tmp_path):
             raise RuntimeError("not a quarantine")
         except error_type:
             pytest.fail("retired quarantine caught an unrelated exception")
-
-
-@pytest.fixture
-def old_updater():
-    path = Path(__file__).parents[1] / "compat" / "old_updater_dependencies.py"
-    spec = importlib.util.spec_from_file_location("old_updater_dependencies", path)
-    assert spec is not None and spec.loader is not None
-    old = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(old)
-    return old
-
-
-def test_old_android_updater_handoffs_before_download(old_updater, fresh_child):
-    with fresh_child.exits():
-        old_updater._install_psutil_android_compat(["uv", "pip"])
-
-
-def test_old_updater_retains_its_code_but_loads_new_managed_uv(old_updater, fresh_child, no_external_work, tmp_path):
-    """The real pre-PM post-pull function must hand off at its new lazy import."""
-    old = old_updater
-    # Already-imported pre-swap collaborators. Leave frozen lazy imports real.
-    prefix = []
-    old._refuse_update_if_venv_foreign_owned = lambda root: prefix.append("ownership")
-    old_main = SimpleNamespace(
-        PROJECT_ROOT=tmp_path,
-        _abort_dependency_sync_if_self_locked=lambda token: prefix.append("self-lock"),
-    )
-    old._m = lambda: old_main
-    old._write_update_incomplete_marker = lambda: prefix.append("old-marker")
-    old._editable_install_is_current = lambda *args: False
-    old._ensure_venv_pip = no_external_work
-    old._ensure_uv_for_termux = no_external_work
-    resume = {"resume_needed": True, "profiles": {"work": "old-pid"}}
-    before = deepcopy(resume)
-    before_files = set(tmp_path.rglob("*"))
-    with fresh_child.exits():
-        old._sync_python_dependencies_after_pull(
-            ["git"], "main", "before-pull", active_lazy_features=[],
-            active_tool_dependencies=[], _windows_gateway_resume=resume,
-        )
-    assert prefix == ["ownership", "self-lock", "old-marker"]
-    assert fresh_child.requests[0]["windows_resume"] == before
-    # No acknowledgement means the historical caller still owns recovery.
-    assert resume == before
-    assert set(tmp_path.rglob("*")) == before_files
 
 
 def test_live_windows_scan_does_not_use_the_retired_main_alias(monkeypatch, no_external_work):

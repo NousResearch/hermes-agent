@@ -68,7 +68,7 @@ def test_a_stopped_run_row_validates_against_the_package_schema(tmp_path):
     from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     jsonschema = pytest.importorskip("jsonschema")
-    schema = Path(__file__).resolve().parents[2] / "hermes_cli/observability/schemas/hermes.shared_metrics.v4.schema.json"
+    schema = Path(__file__).resolve().parents[2] / "hermes_agent/hermes_cli/observability/schemas/hermes.shared_metrics.v4.schema.json"
     resource = {"architecture": "x86_64", "hermes_version": "test", "install_method": "git", "os_family": "linux"}
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
     store.record_counter(

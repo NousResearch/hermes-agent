@@ -16,8 +16,9 @@ real git failure, and then judges the next real launch from the files the update
   launch must put the parked tree back.
 * ``kill_mid_zip_swap``: the ZIP swap is SIGKILLed between renames. The next launch must finish or
   roll back the swap, leaving no ``*.hermes-update-staging``/``-old`` sibling to wedge a retry.
-* ``kill_mid_zip_swap_with_hermes_cli_moved_aside``: the swap renamed ``hermes_agent/hermes_cli/`` (the recovery
-  code itself) aside and died before its replacement landed. The next launch must still restore.
+* ``kill_mid_zip_swap_with_package_moved_aside``: the swap renamed ``hermes_agent/`` (the recovery code
+  itself) or the old-path ``hermes_cli/`` aside and died before its replacement landed. The next launch
+  must still restore.
 * ``syntax_error_target``: a release whose startup module does not compile is refused BEFORE
   HEAD moves (no fast-forward in the reflog), not merely rolled back afterwards.
 * ``failed_upstream_sync_after_origin_pull``: a fork checkout whose origin pull already moved the
@@ -209,8 +210,8 @@ def killing(real):
         if kill_at.startswith("after:"):  # right after the named entry's replacement landed
             if os.path.basename(str(src)) == kill_at[6:] + ".hermes-update-staging":
                 os.kill(os.getpid(), signal.SIGKILL)
-        elif kill_at == "hermes_cli-moved-aside":  # the live package renamed away, its replacement not yet in
-            if os.path.basename(str(src)) == "hermes_cli" and str(dst).endswith(".hermes-update-old"):
+        elif kill_at.endswith("-moved-aside"):  # the live package renamed away, its replacement not yet in
+            if os.path.basename(str(src)) == kill_at[:-len("-moved-aside")] and str(dst).endswith(".hermes-update-old"):
                 os.kill(os.getpid(), signal.SIGKILL)
         elif str(src).endswith(".hermes-update-staging"):  # one entry swapped in
             swaps[0] += 1
@@ -255,18 +256,20 @@ def test_kill_mid_zip_swap_is_settled_by_the_next_launch(world):
         "the interrupted ZIP swap left a mixed tree:\n" + _tracked_dirty(sb) + "\n" + I.describe(launch))
 
 
-def test_kill_mid_zip_swap_with_hermes_cli_moved_aside_reaches_recovery(world):
-    """The one window where the recovery code itself is gone: the swap renamed ``hermes_agent/hermes_cli/`` aside
-    and died before the replacement landed. The next launch must still reach the journal-driven
-    restore (from the moved-aside copy) and run, not die on ``No module named 'hermes_cli'``."""
+@pytest.mark.parametrize("package", ["hermes_agent", "hermes_cli"])
+def test_kill_mid_zip_swap_with_package_moved_aside_reaches_recovery(world, package):
+    """The window where the recovery code itself is gone: the swap renamed ``hermes_agent/`` (it holds
+    ``hermes_cli/_early_recovery.py``) or the old-path ``hermes_cli/`` aside and died before the replacement
+    landed. The next launch must still reach the journal-driven restore (from the moved-aside copy) and run,
+    not die on ``No module named 'hermes_agent'``."""
     sb = world["sb"]
     pre = _head(sb)
-    killed = _zip_killed_at(world, "hermes_cli-moved-aside")
-    assert not (sb.checkout / "hermes_cli").exists() and (sb.checkout / "hermes_cli.hermes-update-old").is_dir(), (
-        "harness: the ZIP swap was not killed with hermes_cli/ moved aside\n" + I.describe(killed))
-    launch = _launch(sb, "first launch after a kill with hermes_cli moved aside")
-    assert launch.returncode == 0 and (sb.checkout / "hermes_cli" / "main.py").is_file(), (
-        "the launch after a kill with hermes_cli/ moved aside could not reach recovery\n" + I.describe(launch))
+    killed = _zip_killed_at(world, f"{package}-moved-aside")
+    assert not (sb.checkout / package).exists() and (sb.checkout / f"{package}.hermes-update-old").is_dir(), (
+        f"harness: the ZIP swap was not killed with {package}/ moved aside\n" + I.describe(killed))
+    launch = _launch(sb, f"first launch after a kill with {package} moved aside")
+    assert launch.returncode == 0 and (sb.checkout / "hermes_agent" / "hermes_cli" / "main.py").is_file(), (
+        f"the launch after a kill with {package}/ moved aside could not reach recovery\n" + I.describe(launch))
     assert not _artifacts(sb) and _head(sb) == pre and not _tracked_dirty(sb), (
         f"left {_artifacts(sb)[:5]} / tracked changes {_tracked_dirty(sb)!r}\n" + I.describe(launch))
     P.ok(_update(sb), "the update after the restored swap failed")

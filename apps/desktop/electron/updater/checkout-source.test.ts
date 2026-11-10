@@ -283,6 +283,7 @@ it('carries each install channel from Python publication checks into the source 
     const address: AddressInfo = server.address() as AddressInfo
     // Redirect only network transport. Selection, config, tag validation and Git are real.
     fs.cpSync(path.join(repository, 'hermes_cli'), path.join(root, 'hermes_cli'), { recursive: true })
+    fs.cpSync(path.join(repository, 'hermes_agent'), path.join(root, 'hermes_agent'), { recursive: true })
     fs.writeFileSync(
       path.join(root, 'transport.py'),
       `import sys, os
@@ -346,7 +347,7 @@ if not getattr(urllib.request, '_hermes_loopback', False):
       )
     }
 
-    const checkerPath: string = path.join(root, 'hermes_cli', 'source_check.py')
+    const checkerPath: string = path.join(root, 'hermes_agent', 'hermes_cli', 'source_check.py')
     fs.writeFileSync(
       checkerPath,
       fs

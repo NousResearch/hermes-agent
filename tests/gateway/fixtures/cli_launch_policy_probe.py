@@ -106,7 +106,7 @@ def probe(tmp_path):
             args.update(provider='custom', model='gpt-5-' + side, api_key=keys[side],
                         base_url=origin + '/' + side + '/v1', reasoning='high' if side == 'left' else 'low',
                         max_turns=1 if side == 'left' else 3, ignore_rules=side == 'left', toolsets='terminal')
-        result = subprocess.run([sys.executable, '-c', 'import cli; cli.main(**' + repr(args) + ')'],
+        result = subprocess.run([sys.executable, '-c', 'from hermes_agent import cli; cli.main(**' + repr(args) + ')'],
             cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=70, check=False)
         # A budget run stops at --max-turns with the work unfinished: `chat -Q` exits 1 (documented
         # contract, same as the in-process CLI), never 0.

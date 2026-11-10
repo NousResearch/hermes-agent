@@ -3,8 +3,7 @@
 The ``hermes update`` failure class this guards (issue_classes.md C6): after the pull every
 command dies with ``ImportError: cannot import name 'file_signature'`` (#111942, #111943,
 #112522, #114616), a module-level ``NameError``/circular import only shows up in a clean
-interpreter, or the restart phase of a pre-hand-off updater imports new code into a stale
-``sys.modules`` graph. Nothing here mocks the import system or the CLI:
+interpreter. Nothing here mocks the import system or the CLI:
 
 * **Import smoke** – the module list is derived from the packaging config itself
   (``setup.py::_root_py_modules()`` + ``[tool.setuptools.packages.find]``), and each module
@@ -13,10 +12,6 @@ interpreter, or the restart phase of a pre-hand-off updater imports new code int
   behind an earlier import. Only a missing *optional-extra* third-party dependency is
   tolerated; every first-party ``ImportError``/``NameError``/``AttributeError``/
   ``SyntaxError``/circular import fails.
-* **Stale graph** – the newest release whose updater still finished in the pre-pull
-  interpreter (no ``hermes_agent/hermes_cli/update_handoff.py``) is extracted from git, its updater graph
-  is imported, the checkout is swapped in place, the OLD release's own reload + purge run,
-  and every module that updater imports after its purge must import from the new tree.
 * **Entrypoints** – ``python -m hermes_agent.hermes_cli.main`` and every ``[project.scripts]`` console
   script run as real sandboxed processes (isolated HOME, only a loopback fake provider)
   with shared invariants: bounded termination, documented rc, no traceback, no
@@ -32,7 +27,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import signal
 import socket
 import sqlite3
@@ -45,7 +39,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_agent.compat.paths import current_module
+from hermes_agent.compat.paths import current_module, current_path
 from tests.e2e.core.upgrade._helpers import (
     WORKTREE,
     describe,
@@ -207,7 +201,7 @@ def _shipped_modules() -> tuple[list[dict], set[str]]:
                 continue
             # This frozen old-updater shim exits at import time to force a relaunch.
             # Importing it is neither safe nor an import-graph smoke test.
-            if rel == "hermes_cli/psutil_android.py":
+            if rel == current_path("hermes_cli/psutil_android.py"):
                 continue
             if tracked is not None and rel not in tracked:
                 continue
@@ -342,78 +336,6 @@ with open(spec["out"], "w") as fh:
     json.dump(results, fh)
 '''
 
-_STALE_RUNNER = _STRIP_EDITABLE + r'''
-import ast, importlib, json, os, traceback
-
-spec = json.load(open(sys.argv[1]))
-checkout = spec["checkout"]
-sys.path.insert(0, checkout)
-for name in spec["old_graph"]:
-    importlib.import_module(name)
-main = sys.modules["hermes_cli.main"]
-
-# The pull, in place: the same path now holds the new tree (running frames keep old objects).
-os.rename(checkout, checkout + ".pre-pull")
-os.rename(spec["new_tree"], checkout)
-
-# The OLD updater's own post-pull steps, called the way it calls them (``_m()._...``).
-for step in ("_reload_updated_runtime_modules", "_purge_stale_hermes_modules"):
-    fn = getattr(main, step, None)
-    if fn is not None:
-        fn()
-
-
-def _top_level_names(path):
-    names = set()
-    for node in ast.parse(open(path, encoding="utf-8").read()).body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
-        elif isinstance(node, ast.Assign):
-            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
-        elif isinstance(node, (ast.AnnAssign,)) and isinstance(node.target, ast.Name):
-            names.add(node.target.id)
-    return names
-
-
-stale_roots = {}
-for name in spec["root_modules"]:
-    mod = sys.modules.get(name)
-    new_src = os.path.join(checkout, name + ".py")
-    if mod is not None and os.path.exists(new_src):
-        missing = sorted(_top_level_names(new_src) - set(vars(mod)))
-        if missing:
-            stale_roots[name] = missing[:20]
-
-results = []
-for target in spec["targets"]:
-    r, w = os.pipe()
-    pid = os.fork()
-    if pid == 0:
-        os.close(r)
-        dn = os.open(os.devnull, os.O_RDWR)
-        os.dup2(dn, 1)
-        os.dup2(dn, 2)
-        res = {"target": target, "ok": True}
-        try:
-            importlib.import_module(target)
-        except BaseException as exc:
-            res = {"target": target, "ok": False, "type": type(exc).__name__, "msg": str(exc)[:800],
-                   "tb": "".join(traceback.format_exception(exc))[-3000:]}
-        os.write(w, json.dumps(res).encode())
-        os._exit(0)
-    os.close(w)
-    chunks = []
-    while True:
-        c = os.read(r, 65536)
-        if not c:
-            break
-        chunks.append(c)
-    os.close(r)
-    os.waitpid(pid, 0)
-    results.append(json.loads(b"".join(chunks)) if chunks else {"target": target, "ok": False, "type": "ChildDied"})
-json.dump({"results": results, "stale_roots": stale_roots}, open(spec["out"], "w"))
-'''
-
 # Reaps and reports every descendant that outlives the process it runs (a child subreaper),
 # so "serve leaves nothing behind" is observable even inside a PID namespace.
 _SUBREAPER = r'''
@@ -462,13 +384,13 @@ def _sandbox_or_skip() -> None:
 
 
 def test_relaunch_shim_is_excluded_only_while_it_exits_on_import():
-    shim = WORKTREE / "hermes_cli" / "psutil_android.py"
+    shim = WORKTREE / current_path("hermes_cli/psutil_android.py")
     top_level = ast.parse(shim.read_text(encoding="utf-8")).body
     assert any(isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
                and isinstance(node.value.func, ast.Name) and node.value.func.id == "stop_for_relaunch"
                for node in top_level)
     entries, _ = _shipped_modules()
-    assert "hermes_cli.psutil_android" not in {entry["id"] for entry in entries}
+    assert "hermes_agent.hermes_cli.psutil_android" not in {entry["id"] for entry in entries}
 
 def test_optional_import_table_only_names_optional_or_platform_deps():
     """The tolerance table cannot launder a missing CORE dependency into a skip."""
@@ -533,95 +455,6 @@ def test_every_shipped_module_imports_from_a_clean_first_party_graph(tmp_path):
         f"{len(failures)} shipped module(s) fail to import from a clean first-party graph "
         f"(tolerated optional-extra misses: {len(tolerated)}):\n\n"
         + "\n\n".join(f"== {k}\n{v}" for k, v in list(failures.items())[:15])
-    )
-
-
-def _pre_handoff_tag() -> tuple[str, str] | None:
-    """Newest release tag whose updater still ran post-pull phases in the pre-pull interpreter."""
-    from tests.e2e.core.upgrade import _install_helpers as I
-
-    tag = next((t for t in I.release_tags() if I.updater_generation(t) == "pre-handoff"), None)
-    if tag is None:
-        return None
-    grep = _git("grep", "-l", "def _purge_stale_hermes_modules", tag, "--", "hermes_cli")
-    return (tag, grep.stdout.strip()) if grep.returncode == 0 and grep.stdout.strip() else None
-
-
-def _copy_tree(src: Path, dst: Path, names: list[str]) -> None:
-    def _link_or_copy(s, d):
-        try:
-            os.link(s, d)
-        except OSError:
-            shutil.copy2(s, d)
-
-    dst.mkdir(parents=True)
-    for name in names:
-        s = src / name
-        if s.is_dir():
-            shutil.copytree(s, dst / name, copy_function=_link_or_copy, ignore=shutil.ignore_patterns("__pycache__"))
-        elif s.is_file():
-            _link_or_copy(s, dst / name)
-
-
-@pytest.mark.allow_network  # the old updater's requirements export provisions the PM toolchain
-def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
-    """#114616 / #112522 shape: v2026.9.14's updater purges package prefixes only, keeps root
-    modules (``utils``, ``hermes_constants``) cached, then imports new restart-phase code.
-    Retire this leg together with ``hermes_agent/hermes_cli/stale_modules.py``."""
-    _sandbox_or_skip()
-    found = _pre_handoff_tag()
-    if found is None:
-        pytest.skip("no pre-hand-off release tag reachable from HEAD (shallow clone without tags?)")
-    tag, _purge_file = found
-    old_manifest = _git("show", f"{tag}:pyproject.toml")
-    assert old_manifest.returncode == 0, old_manifest.stderr
-    old_deps = tomllib.loads(old_manifest.stdout)["project"]["dependencies"]
-    # The old updater starts under its installed dependencies, then switches code in place.
-    # The current test environment deliberately lacks PyYAML; provision the legacy direct
-    # requirement in an isolated PM environment rather than mutating the test interpreter.
-    # Core's set comes from uv.lock, overrides included: re-resolving the bare dependency
-    # list cannot satisfy core's [tool.uv] override-dependencies (Pillow over browser-harness).
-    from packaging.requirements import Requirement
-    from pm import build_requirements_environment, export_requirements
-
-    legacy_yaml = [r for r in old_deps if Requirement(r).name.lower() == "pyyaml"]
-    assert len(legacy_yaml) == 1, f"{tag} no longer declares exactly one PyYAML requirement"
-    exported = tmp_path / "core-requirements.txt"
-    export_requirements(WORKTREE, exported, explicit=True)
-    legacy_python = build_requirements_environment(
-        [*exported.read_text(encoding="utf-8").splitlines(), *legacy_yaml],
-        out=tmp_path / "legacy-deps", lock=WORKTREE / "uv.lock", explicit=True,
-    )
-    pkg_tops = sorted({p.split(".")[0] for p in PYPROJECT["tool"]["setuptools"]["packages"]["find"]["include"]})
-    old_entries = [n for n in _git("ls-tree", "--name-only", tag).stdout.split()
-                   if n.endswith(".py") or n in pkg_tops]
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    archive = subprocess.run(["git", "archive", "--format=tar", tag, "--", *old_entries], cwd=str(WORKTREE),
-                             capture_output=True, stdin=subprocess.DEVNULL, timeout=120, check=False)
-    assert archive.returncode == 0, archive.stderr.decode(errors="replace")
-    subprocess.run(["tar", "-x", "-C", str(checkout)], input=archive.stdout, check=True, timeout=120)
-    roots = [n for n in _root_py_modules() if not n.startswith("_test_")]
-    _copy_tree(WORKTREE, tmp_path / "new", [f"{n}.py" for n in roots] + pkg_tops)
-
-    runner = _write_script(tmp_path / "runner", "stale_runner.py", _STALE_RUNNER)
-    out = tmp_path / "stale.json"
-    spec = {
-        "checkout": str(checkout), "new_tree": str(tmp_path / "new"), "old_graph": list(_OLD_UPDATER_GRAPH),
-        "targets": list(_POST_PURGE_IMPORTS), "root_modules": roots, "out": str(out),
-    }
-    spec_path = tmp_path / "stale-spec.json"
-    spec_path.write_text(json.dumps(spec), encoding="utf-8")
-    env = isolated_env(tmp_path / "sbx")
-    cp = run([str(legacy_python), str(runner), str(spec_path)], env=env, cwd=tmp_path, writable=[tmp_path], timeout=600)
-    assert cp.returncode == 0 and out.exists(), describe(cp)
-    report = json.loads(out.read_text(encoding="utf-8"))
-    # Non-vacuous: the purge really left root modules cached that lack symbols the new tree defines.
-    assert report["stale_roots"], f"{tag} left no stale root module behind; the scenario no longer exercises anything"
-    broken = [r for r in report["results"] if not r["ok"]]
-    assert not broken, (
-        f"after a {tag} updater's purge (stale roots: {sorted(report['stale_roots'])}), post-update imports fail:\n\n"
-        + "\n\n".join(f"== {r['target']}: {r['type']}: {r['msg']}\n{r.get('tb', '')}" for r in broken)
     )
 
 

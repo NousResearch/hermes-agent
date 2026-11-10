@@ -64,7 +64,7 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
                  "scripts/_activation.sh"):
         (core / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / name, core / name)
-    for name in ("pm", "hermes_cli"):
+    for name in ("pm", "hermes_cli", "hermes_agent"):
         shutil.copytree(REPO / name, core / name, ignore=shutil.ignore_patterns("__pycache__"))
     # Plugin selection imports the real CLI config reader even with no plugins.
     # Supply its installed YAML dependency, not a stub parser or config module.

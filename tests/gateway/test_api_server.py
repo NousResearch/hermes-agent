@@ -2874,7 +2874,7 @@ class TestApiKeyStartupGuardFailsClosed:
         real_import = __import__
 
         def _blocked(name, *args, **kwargs):
-            if name == "hermes_cli.auth":
+            if name == "hermes_agent.hermes_cli.auth":
                 raise ImportError("simulated: hermes_cli.auth unavailable")
             return real_import(name, *args, **kwargs)
 

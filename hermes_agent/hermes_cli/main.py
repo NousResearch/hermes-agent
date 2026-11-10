@@ -41,7 +41,7 @@ import sys
 
 # Inline path math so ``python hermes_agent/hermes_cli/main.py`` (script mode: sys.path[0]
 # is hermes_agent/hermes_cli/, not the repo root) can import hermes_agent.hermes_cli._startup_fast.
-_bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+_bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 from hermes_agent.hermes_cli import _startup_fast
@@ -602,7 +602,7 @@ if sys.argv[1:2] == ["pm"]:
 # --include-untracked``) once swept ``<checkout>\bin`` copies off disk, the desktop updater's
 # ``--keep-stash`` never restored them, and ``hermes`` stopped resolving (venv\Scripts must stay off
 # PATH: it shadows the user's ``python``, #83797). Re-staging at process start reaches already-broken
-# installs via the desktop app's ``python -m hermes_agent.hermes_cli.main`` spawn. Sits AFTER the profile override
+# installs via the desktop app's ``python -m hermes_cli.main`` spawn. Sits AFTER the profile override
 # on purpose (no hermes module may import before profiles resolve); the helper anchors on the DEFAULT
 # root, so profile sessions heal the same shared dir. A few stat calls when healthy; gates fail toward
 # inaction so source checkouts are untouched.
@@ -2004,7 +2004,7 @@ def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None) -> li
 # invocation ~50-100ms, so they resolve on first read. Nothing else may be
 # added here — internal import paths are not a stable API.
 _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
-    "hermes_cli.update_cmd": (
+    "hermes_agent.hermes_cli.update_cmd": (
         "_assess_parked_branch_switch",
         "_cold_start_windows_gateway_after_update", "_discard_stashed_changes",
         "_filter_non_gateway_concurrent_instances", "_fleet_probe_expected_runtimes",
@@ -2018,7 +2018,7 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
         "_venv_launcher_ancestors",
         "_wait_for_windows_update_gateway_exit", "_warn_orphaned_update_autostashes",
     ),
-    "hermes_cli.old_updater_deps": (
+    "hermes_agent.hermes_cli.old_updater_deps": (
         "_capture_active_lazy_features", "_handoff_reapable_backend_pids",
         "_ledger_manual_serve_holders", "_ledger_reapable_backend_pids",
         "_leftover_pausable_gateway_pids", "_npm_lockfile_changed",
@@ -2026,10 +2026,10 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
         "_refresh_active_memory_provider_dependencies", "_relaunch_stopped_serves",
         "_stop_process_trees",
     ),
-    "hermes_cli.update_cmd_maint": (
+    "hermes_agent.hermes_cli.update_cmd_maint": (
         "_purge_stale_hermes_modules", "_reload_updated_runtime_modules",
     ),
-    "hermes_cli.dashboard_procs": (
+    "hermes_agent.hermes_cli.dashboard_procs": (
         "_detect_concurrent_hermes_instances", "_kill_stale_dashboard_processes",
     ),
 }

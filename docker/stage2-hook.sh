@@ -649,7 +649,7 @@ fi
 _config_backend=$(s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '
 import sys
 from pathlib import Path
-from hermes_cli.env_loader import selected_config_backend_name
+from hermes_agent.hermes_cli.env_loader import selected_config_backend_name
 print(selected_config_backend_name(Path(sys.argv[1])))
 ' "$HERMES_HOME" 2>/dev/null) || _config_backend=""
 if [ "$_config_backend" = "remote" ]; then
@@ -672,7 +672,7 @@ fi
 # collect_generations keeps anything younger than a day.
 s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '
 from pathlib import Path
-from hermes_cli.runtime_state import collect_generations
+from hermes_agent.hermes_cli.runtime_state import collect_generations
 from pm.environments import install_state_dir
 from pm.recovery import refresh_dependencies
 from pm.runtime import collect_runtime_generations

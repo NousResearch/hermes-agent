@@ -19,8 +19,8 @@ def transition(tmp_path):
     root.mkdir()
     home = tmp_path / "home"
     home.mkdir()
-    package = root / "hermes_cli"
-    package.mkdir()
+    package = root / "hermes_agent" / "hermes_cli"
+    package.mkdir(parents=True)
     (package / "__init__.py").write_text("")
     pm_package = root / "pm"
     pm_package.mkdir()
@@ -37,7 +37,7 @@ def transition(tmp_path):
     old = git("rev-parse", "HEAD")
     # Deliberately incompatible: a cached OLD_API-only PM cannot prepare this tree.
     (root / "pm/__init__.py").write_text(
-        "from hermes_cli.probe import event\n"
+        "from hermes_agent.hermes_cli.probe import event\n"
         "def sync_venv(extras, *, explicit, project_root, evict_incompatible_plugins):\n"
         "    assert explicit and evict_incompatible_plugins\n"
         "    event('prepare')\n"
@@ -50,7 +50,7 @@ def transition(tmp_path):
         "    assert data['update_id'] == update_id\n"
     )
     (root / "pm/client.py").write_text(
-        "from hermes_cli.probe import event\n"
+        "from hermes_agent.hermes_cli.probe import event\n"
         "ensure_tools_for_sync = lambda: event('tools')\n"
     )
     # A tree that already has PM facts: nothing to carry from a pre-PM venv.
@@ -71,7 +71,7 @@ def transition(tmp_path):
         f"project_python = lambda root: Path({str(selected_python)!r})\n"
         "activation_environment = lambda root: {**os.environ, 'PYTHONPATH': str(root)}\n"
         "def activate_dependencies(root):\n"
-        "    from hermes_cli.probe import event\n"
+        "    from hermes_agent.hermes_cli.probe import event\n"
         "    event('activate')\n"
     )
     (root / "hermes_constants.py").write_text(
@@ -83,7 +83,7 @@ def transition(tmp_path):
         "    return Path(os.environ['HERMES_HOME'])\n"
     )
     (package / "venv_sync.py").write_text(
-        "from hermes_cli.probe import event\n"
+        "from hermes_agent.hermes_cli.probe import event\n"
         "publish_launchers = lambda root: event('launchers')\n"
         "collect_superseded_generations = lambda root: event('collect')\n"
         "refuse_foreign_owned_venv = lambda root: None\n"
@@ -97,17 +97,17 @@ def transition(tmp_path):
         "    (Path(os.environ['HERMES_HOME']) / 'completion-pending').unlink()\n"
     )
     (package / "source_build.py").write_text(
-        "from hermes_cli.probe import event\n"
+        "from hermes_agent.hermes_cli.probe import event\n"
         "def build_update_products(root, *, desktop, after_dependencies=None):\n"
         "    after_dependencies()\n"
         "    event('build', desktop=desktop)\n"
     )
     (package / "update_launch_files.py").write_text(
-        "from hermes_cli.probe import event\n"
+        "from hermes_agent.hermes_cli.probe import event\n"
         "def refresh_launch_files(): event('launch_files')\n"
     )
     (package / "source_stamp.py").write_text(
-        "from hermes_cli.probe import event\n"
+        "from hermes_agent.hermes_cli.probe import event\n"
         "write_source_stamp = lambda root: event('stamp')\n"
     )
     # The shared completion tail is part of the NEW tree the child runs from, and so are the
@@ -121,10 +121,13 @@ def transition(tmp_path):
     shutil.copy2(Path(update_completion.__file__).with_name("_startup_fast.py"), package / "_startup_fast.py")
     shutil.copy2(Path(update_completion.__file__).with_name("_subprocess_compat.py"),
                  package / "_subprocess_compat.py")
-    shutil.copytree(Path(update_completion.__file__).parents[1] / "hermes_agent", root / "hermes_agent",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+    repo = Path(update_completion.__file__).parents[2]
+    shutil.copytree(repo / "hermes_agent", root / "hermes_agent", dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("__pycache__", "hermes_cli", "cli.py"))
+    (root / "hermes_cli").mkdir()
+    shutil.copy2(repo / "hermes_cli/update_completion.py", root / "hermes_cli/update_completion.py")
     (package / "gitlock.py").write_text(
-        "from hermes_cli.probe import event\n"
+        "from hermes_agent.hermes_cli.probe import event\n"
         "convert_treeless_checkout_first = lambda root: event('convert')\n"
     )
     (package / "main.py").write_text("")
@@ -133,14 +136,14 @@ def transition(tmp_path):
         "from types import SimpleNamespace\nRuntimeRecord = UpdatePlan = SimpleNamespace\n"
     )
     (package / "update_cmd_maint.py").write_text(
-        "from hermes_cli.probe import event\n"
+        "from hermes_agent.hermes_cli.probe import event\n"
         "def _run_post_update_maintenance(**kwargs):\n"
-        "    from hermes_cli.update_cmd_config import _LAST_SIBLING_SNAPSHOTS\n"
+        "    from hermes_agent.hermes_cli.update_cmd_config import _LAST_SIBLING_SNAPSHOTS\n"
         "    event('maintenance', snapshots=_LAST_SIBLING_SNAPSHOTS, **kwargs)\n"
         "    return True\n"
     )
     (package / "update_cmd.py").write_text(
-        "from hermes_cli.probe import event\n"
+        "from hermes_agent.hermes_cli.probe import event\n"
         "_invalidate_update_cache = lambda: event('cache')\n"
         "_sweep_bytecode_after_update = lambda branch: event('bytecode')\n"
         "_write_fleet_restart_pending_marker = lambda **kw: event('pending')\n"
@@ -157,7 +160,7 @@ def transition(tmp_path):
         "        token['resume_needed'] = False\n"
         "        event('emergency_resume')\n"
         "def _verify_fleet_after_update(out, **kw):\n"
-        "    from hermes_cli.update_receipt import finalize_pending_update_receipt\n"
+        "    from hermes_agent.hermes_cli.update_receipt import finalize_pending_update_receipt\n"
         "    event('verify')\n"
         "    finalize_pending_update_receipt(0, 'verified')\n"
     )
@@ -217,7 +220,7 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
     if bom_boundary == "receipt":
         request["receipt"]["encoding"] = "utf-8-sig"
     # Copy executable code, not its text shape: the process exercises the real transport.
-    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
+    shutil.copy2(update_completion.__file__, root / "hermes_agent/hermes_cli/update_completion.py")
     git("add", ".")
     git("-c", "commit.gpgsign=false", "commit", "-m", "completion entrypoint")
     new = git("rev-parse", "HEAD")
@@ -358,22 +361,22 @@ def test_desktop_build_that_never_ran_is_named_for_the_handoff(transition, capsy
     """Review P4 (F6): the hand-off scripts read ``Desktop app build owed:`` to tell the user the app is
     stale. The builder prints it only when the build fails; a run whose build never ran (dependency
     sync failed, the tail refused by the update lock, the prepared child died) must print it too."""
-    scripts = Path(update_completion.__file__).parents[1] / "scripts/desktop-update"
+    scripts = Path(update_completion.__file__).parents[2] / "scripts/desktop-update"
     for script in ("posix.sh", "windows.ps1"):  # the exact prefix the hand-off scripts match
         assert "Desktop app build owed: " in (scripts / script).read_text(encoding="utf-8-sig")
     assert update_completion.DESKTOP_BUILD_OWED == "Desktop app build owed:"
     root, _git, _old, _new, request = transition
     request["desktop"] = desktop
-    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
+    shutil.copy2(update_completion.__file__, root / "hermes_agent/hermes_cli/update_completion.py")
     if never_built == "dependencies":
         (root / "pm/__init__.py").write_text("def sync_venv(*a, **kw): raise RuntimeError('dependency refused')\n",
                                             encoding="utf-8")
     elif never_built == "refused":
-        (root / "hermes_cli/source_completion.py").write_text(
+        (root / "hermes_agent/hermes_cli/source_completion.py").write_text(
             "def complete_source_checkout(*args, **kwargs):\n"
             "    raise RuntimeError('an update is still running (pid 1); wait for it to exit')\n", encoding="utf-8")
     else:
-        (root / "hermes_cli/source_completion.py").write_text(
+        (root / "hermes_agent/hermes_cli/source_completion.py").write_text(
             "import os\n"
             "def complete_source_checkout(*args, **kwargs): os.kill(os.getpid(), 9)  # posix-only test\n",
             encoding="utf-8")
@@ -502,8 +505,8 @@ def test_killed_selected_python_returns_signal_exit_status(transition):
     from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
-    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
-    (root / "hermes_cli/source_build.py").write_text(
+    shutil.copy2(update_completion.__file__, root / "hermes_agent/hermes_cli/update_completion.py")
+    (root / "hermes_agent/hermes_cli/source_build.py").write_text(
         "import os, signal\n"
         "def build_update_products(*a, **kw): os.kill(os.getpid(), signal.SIGKILL)\n"
     )
@@ -522,8 +525,8 @@ def test_failed_build_after_commit_is_a_followup_and_later_steps_still_run(trans
     from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
-    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
-    (root / "hermes_cli/source_build.py").write_text(
+    shutil.copy2(update_completion.__file__, root / "hermes_agent/hermes_cli/update_completion.py")
+    (root / "hermes_agent/hermes_cli/source_build.py").write_text(
         "import subprocess\n"
         "def build_update_products(*a, **kw): raise subprocess.CalledProcessError(23, ['builder'])\n"
     )
@@ -552,7 +555,7 @@ def test_prepare_failure_preserves_correlated_pm_receipt(transition):
     from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
-    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
+    shutil.copy2(update_completion.__file__, root / "hermes_agent/hermes_cli/update_completion.py")
     (root / "pm/__init__.py").write_text(
         "def sync_venv(*a, **kw): raise RuntimeError('dependency refused')\n"
     )
@@ -575,7 +578,7 @@ def test_bootstrap_does_not_initialize_old_site_packages(transition, tmp_path, m
     from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
-    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
+    shutil.copy2(update_completion.__file__, root / "hermes_agent/hermes_cli/update_completion.py")
     obsolete = tmp_path / "obsolete-python"
     venv.EnvBuilder(with_pip=False).create(obsolete)
     site = obsolete / ("Lib/site-packages" if os.name == "nt" else
@@ -595,7 +598,7 @@ def test_progress_is_forwarded_before_held_stage_is_released(transition, monkeyp
     from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
-    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
+    shutil.copy2(update_completion.__file__, root / "hermes_agent/hermes_cli/update_completion.py")
     release = root / "release"
     released = root / "released"
     held_body = (
@@ -608,7 +611,7 @@ def test_progress_is_forwarded_before_held_stage_is_released(transition, monkeyp
     )
     module, definition = (
         ("pm/__init__.py", "def sync_venv(*a, **kw):\n") if stage == "prepare" else
-        ("hermes_cli/source_build.py", "def build_update_products(*a, **kw):\n")
+        ("hermes_agent/hermes_cli/source_build.py", "def build_update_products(*a, **kw):\n")
     )
     (root / module).write_text("import time\nfrom pathlib import Path\n" + definition + held_body)
     observed = threading.Event()
@@ -654,9 +657,9 @@ def test_interactive_configuration_keeps_terminal_input(transition):
     from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
-    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
-    (root / "hermes_cli/update_cmd_maint.py").write_text(
-        "import sys\nfrom hermes_cli.probe import event\n"
+    shutil.copy2(update_completion.__file__, root / "hermes_agent/hermes_cli/update_completion.py")
+    (root / "hermes_agent/hermes_cli/update_cmd_maint.py").write_text(
+        "import sys\nfrom hermes_agent.hermes_cli.probe import event\n"
         "def _run_post_update_maintenance(**kw):\n"
         "    assert sys.stdin.isatty() and sys.stdout.isatty()\n"
         "    event('answer', value=input('CONFIG? '))\n"

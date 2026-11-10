@@ -93,7 +93,7 @@ def test_config_failure_warns_without_exposing_values_and_preserves_defaults(
             def import_with_failure(name, globals=None, locals=None, fromlist=(), level=0):
                 caller = sys._getframe(1).f_code.co_name
                 if (
-                    name == "hermes_cli.config"
+                    name == "hermes_agent.hermes_cli.config"
                     and "load_config_readonly" in fromlist
                     and (globals or {}).get("__name__")
                     in {"hermes_agent.agent.agent_init", "hermes_agent.agent.reasoning_params"}

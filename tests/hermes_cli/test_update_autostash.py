@@ -256,7 +256,7 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
     if shutil.which("git") is None:
         pytest.skip("git not available")
 
-    repo_gitignore = Path(hermes_main.__file__).resolve().parents[1] / ".gitignore"
+    repo_gitignore = Path(hermes_main.__file__).resolve().parents[2] / ".gitignore"
 
     def git(*args):
         return subprocess.run(

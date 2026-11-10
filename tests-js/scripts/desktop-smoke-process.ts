@@ -406,7 +406,7 @@ export function assertBackendOrigin(backend: BackendProcess, root: string, origi
 
   // A Python -m entry has no source path in argv. Its live import root is
   // either the captured editable root (Nix) or the process's working directory.
-  const moduleLaunch = /(?:^|\s)"?-m"?\s+"?hermes_cli\.main"?(?:\s|$)/.test(command)
+  const moduleLaunch = /(?:^|\s)"?-m"?\s+"?(?:hermes_agent\.)?hermes_cli\.main"?(?:\s|$)/.test(command)
     && /^python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?$/i.test(path.basename(backend.executable))
 
   if (moduleLaunch) {

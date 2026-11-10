@@ -138,9 +138,9 @@ def _sync_auth_registry() -> None:
     because of the auth mirror.
     """
     for module, attr in (
-        ("hermes_cli.auth", "sync_plugin_provider_registry"),
-        ("hermes_cli.models_catalog_static", "sync_plugin_provider_catalog"),
-        ("hermes_cli.config_provider_env", "sync_registered_providers"),
+        ("hermes_agent.hermes_cli.auth", "sync_plugin_provider_registry"),
+        ("hermes_agent.hermes_cli.models_catalog_static", "sync_plugin_provider_catalog"),
+        ("hermes_agent.hermes_cli.config_provider_env", "sync_registered_providers"),
     ):
         sync = getattr(sys.modules.get(module), attr, None)
         if sync is None:

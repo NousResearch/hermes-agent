@@ -582,7 +582,10 @@ printf 'clean source runtime settled\\n'
   }
 })
 
-test('Windows source settle bypasses the current cmd launcher beside a stale historical exe', (): void => {
+test.each([
+  ['package layout', ['hermes_agent', 'hermes_cli'], 'hermes_agent.hermes_cli.venv_sync'],
+  ['older release layout', ['hermes_cli'], 'hermes_cli.venv_sync'],
+])('Windows source settle bypasses the current cmd launcher beside a stale historical exe (%s)', (_layout, segments, moduleName): void => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-windows-settle-'))
 
   try {
@@ -592,7 +595,7 @@ test('Windows source settle bypasses the current cmd launcher beside a stale his
     const python = path.join(root, 'managed python', 'python.exe')
     fs.mkdirSync(path.dirname(python), { recursive: true })
     fs.writeFileSync(python, '')
-    const prepareLaunch = path.join(root, 'hermes_cli', 'venv_sync.py')
+    const prepareLaunch = path.join(root, ...segments, 'venv_sync.py')
     fs.mkdirSync(path.dirname(prepareLaunch), { recursive: true })
     fs.writeFileSync(prepareLaunch, '')
     fs.writeFileSync(current, `@"${python}" -I -c "import base64; exec(base64.b64decode('eA=='))" %*\r\n`)
@@ -601,13 +604,16 @@ test('Windows source settle bypasses the current cmd launcher beside a stale his
     expect(invocation).toEqual({
       launcher: current,
       command: python,
-      args: ['-I', '-B', '-c', `import pathlib, sys; sys.path.insert(0, ${JSON.stringify(root)}); from hermes_cli.venv_sync import prepare_launch; prepare_launch(pathlib.Path(${JSON.stringify(root)}), ['status'])`],
+      args: ['-I', '-B', '-c', `import pathlib, sys; sys.path.insert(0, ${JSON.stringify(root)}); from ${moduleName} import prepare_launch; prepare_launch(pathlib.Path(${JSON.stringify(root)}), ['status'])`],
       windowsVerbatimArguments: false,
     })
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
-test('Windows source settle bypasses the generated cmd command line', (): void => {
+test.each([
+  ['package layout', ['hermes_agent', 'hermes_cli']],
+  ['older release layout', ['hermes_cli']],
+])('Windows source settle bypasses the generated cmd command line (%s)', (_layout, segments): void => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-windows-settle-live-'))
   const root = path.join(workspace, 'source with spaces')
 
@@ -619,7 +625,7 @@ test('Windows source settle bypasses the generated cmd command line', (): void =
     expect(pythonProbe.status, pythonProbe.stderr || String(pythonProbe.error)).toBe(0)
     const python = pythonProbe.stdout.trim()
     fs.writeFileSync(path.join(bin, 'hermes.cmd'), `@"${python}" -I -c "import base64; exec(base64.b64decode('eA=='))" %*\r\n`)
-    const prepareLaunch = path.join(root, 'hermes_cli', 'venv_sync.py')
+    const prepareLaunch = path.join(root, ...segments, 'venv_sync.py')
     fs.mkdirSync(path.dirname(prepareLaunch), { recursive: true })
     fs.writeFileSync(prepareLaunch, `from pathlib import Path\ndef prepare_launch(root, args):\n    Path(${JSON.stringify(witness)}).write_text(str(root) + '\\n' + '\\n'.join(args))\n`)
     fs.writeFileSync(path.join(bin, 'hermes.exe'), 'locked historical launcher')

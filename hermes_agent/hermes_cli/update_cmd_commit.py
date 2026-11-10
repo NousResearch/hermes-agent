@@ -24,8 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_agent.hermes_cli._early_recovery import (
-    RECOVERY_CLOSURE,
-    RECOVERY_CLOSURE_INIT,
+    RECOVERY_CLOSURE_LAYOUTS,
     RECOVERY_CLOSURE_MANIFEST,
     blob_id,
     _lock_identity,
@@ -90,13 +89,13 @@ POST_MOVE_MODULES = (
     "hermes_agent.gateway.session_context",
     "hermes_agent.gateway.shutdown_forensics",
     "hermes_agent.gateway.status",
-    "hermes_cli.gateway",
-    "hermes_cli.gateway_windows",
-    "hermes_cli.github_api",
-    "hermes_cli.plugins_session_env",
-    "hermes_cli.source_check",
-    "hermes_cli.update_cmd_fleet_unit_budget",
-    "hermes_cli.update_serve_obligations",
+    "hermes_agent.hermes_cli.gateway",
+    "hermes_agent.hermes_cli.gateway_windows",
+    "hermes_agent.hermes_cli.github_api",
+    "hermes_agent.hermes_cli.plugins_session_env",
+    "hermes_agent.hermes_cli.source_check",
+    "hermes_agent.hermes_cli.update_cmd_fleet_unit_budget",
+    "hermes_agent.hermes_cli.update_serve_obligations",
     "pm.lock",
     "hermes_agent.tools.environments.local",
 )
@@ -292,16 +291,20 @@ def publish_recovery_closure(git_cmd, root: Path, pre: str) -> Path:
     if recovery_closure_verified(dest, pre):
         return dest
     git_cmd = [*([git_cmd] if isinstance(git_cmd, str) else git_cmd), "--no-replace-objects"]
-    listed = run_git(git_cmd, ["ls-tree", "-z", "--full-tree", pre, "--", *RECOVERY_CLOSURE], cwd=str(root),
+    listed = run_git(git_cmd, ["ls-tree", "-z", "--full-tree", pre, "--",
+                                *(rel for files, _, _ in RECOVERY_CLOSURE_LAYOUTS for rel in files)], cwd=str(root),
                      capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
     ids = {}
     for entry in (listed.stdout or b"").split(b"\0") if listed.returncode == 0 else ():
         meta, _, rel = entry.decode("utf-8", "replace").partition("\t")
         if meta.split()[1:2] == ["blob"]:
             ids[rel] = meta.split()[2]
-    blobs = {RECOVERY_CLOSURE_INIT: b""}
-    shown = read_target_files(git_cmd, root, pre, RECOVERY_CLOSURE)  # one spawn, not a cat-file per file
-    for rel in RECOVERY_CLOSURE:
+    # ``pre``'s own layout (a second move in one run can start from a commit before the move).
+    files, init, _ = next((layout for layout in RECOVERY_CLOSURE_LAYOUTS if all(rel in ids for rel in layout[0])),
+                          RECOVERY_CLOSURE_LAYOUTS[0])
+    blobs = {init: b""}
+    shown = read_target_files(git_cmd, root, pre, files)  # one spawn, not a cat-file per file
+    for rel in files:
         if rel not in ids or shown[rel] is None or blob_id(shown[rel], pre) != ids[rel]:
             raise OSError(f"{rel} is not in {pre[:10]}")
         blobs[rel] = shown[rel]
@@ -315,7 +318,8 @@ def publish_recovery_closure(git_cmd, root: Path, pre: str) -> Path:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-        for directory in (staging / "hermes_cli", staging):
+        for directory in (*sorted({(staging / rel).parent for rel in blobs}, key=lambda d: len(d.parts), reverse=True),
+                          staging):
             _fsync_dir(directory)
         shutil.rmtree(dest, ignore_errors=True)
         os.replace(staging, dest)

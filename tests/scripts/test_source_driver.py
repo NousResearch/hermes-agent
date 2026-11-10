@@ -174,7 +174,7 @@ def test_pm_observer_accepts_ready_fixture_and_leaves_failed_fixture_untouched(t
     # stamps / compiler receipts. It never resolves or acquires a package.
     repo = ASSETS.parents[2]
     root = tmp_path / "source"
-    for directory in ("pm", "hermes_cli"):
+    for directory in ("pm", "hermes_cli", "hermes_agent"):
         shutil.copytree(repo / directory, root / directory, ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy2(repo / "hermes_constants.py", root / "hermes_constants.py")
     (root / "hermes_bootstrap.py").write_text("raise RuntimeError('bootstrap must not run')", encoding="utf-8")

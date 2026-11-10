@@ -722,7 +722,7 @@ let
           ''
             HOME=$TMPDIR ${(effectivePackage cfg).hermesVenv}/bin/python3 - "$settingsPath" > $out <<'PY'
             import json, sys
-            from hermes_cli.config_defaults import DEFAULT_CONFIG
+            from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
             with open(sys.argv[1]) as f:
                 settings = json.load(f)
             settings.setdefault("_config_version", DEFAULT_CONFIG["_config_version"])

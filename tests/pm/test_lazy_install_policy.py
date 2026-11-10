@@ -43,10 +43,10 @@ class _Missing:
             raise ModuleNotFoundError(f"No module named {self.name!r}", name=self.name)
 
 
-@pytest.mark.parametrize("missing,allowed", [("hermes_cli", True), ("hermes_cli.config", True), ("yaml", False)])
+@pytest.mark.parametrize("missing,allowed", [("hermes_agent.hermes_cli", True), ("hermes_agent.hermes_cli.config", True), ("yaml", False)])
 def test_policy_without_the_config_package_allows_only_when_it_is_absent(missing, allowed, monkeypatch):
     """A bootstrap without hermes_cli may install; a hermes_agent.hermes_cli.config that fails on a dependency may not."""
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
     monkeypatch.delitem(sys.modules, "hermes_agent.hermes_cli.config", raising=False)
-    monkeypatch.setattr(sys, "meta_path", [_Missing("hermes_cli.config", missing), *sys.meta_path])
+    monkeypatch.setattr(sys, "meta_path", [_Missing("hermes_agent.hermes_cli.config", missing), *sys.meta_path])
     assert pm.install.lazy_installs_allowed() is allowed

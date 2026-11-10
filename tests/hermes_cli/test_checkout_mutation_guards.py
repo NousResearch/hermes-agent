@@ -20,7 +20,7 @@ from pathlib import Path
 import hermes_agent.hermes_cli.main as main_mod
 from hermes_agent.hermes_cli import _early_recovery as er
 
-CHECKOUT_ROOT = Path(er.__file__).resolve().parent.parent
+CHECKOUT_ROOT = Path(er.__file__).resolve().parents[2]
 
 
 class TestPredicate:

@@ -63,7 +63,7 @@ def test_default_root_is_the_imported_checkout_not_cwd(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match='executable is missing'):
         verify.verify_windows_desktop_update()
     assert seen['desktop'] == verify.checkout_root() / 'apps' / 'desktop'
-    assert (verify.checkout_root() / 'hermes_cli' / 'desktop_update_verify.py').is_file()
+    assert (verify.checkout_root() / 'hermes_agent' / 'hermes_cli' / 'desktop_update_verify.py').is_file()
     assert verify.checkout_root() != tmp_path
 
 

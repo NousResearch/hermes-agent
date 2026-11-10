@@ -122,7 +122,11 @@ export function LocalModelsRuntimeSection({ status, jobs, lastError }: LocalMode
               {copy.updateAction}
             </Button>
           }
-          description={copy.updateDetail(status.configured_tag, status.tag)}
+          description={
+            status.tag === status.configured_tag
+              ? copy.updateSameBuildDetail(status.tag)
+              : copy.updateDetail(status.configured_tag, status.tag)
+          }
           title={copy.updateTitle}
         />
       )}

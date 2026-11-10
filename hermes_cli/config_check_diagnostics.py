@@ -20,6 +20,13 @@ def config_check_diagnostics(config: dict[str, Any], get_env_value: Callable[[st
 
     diagnostics = validate_platform_toolsets(config.get("platform_toolsets"), saved_toolset_resolver(config))
 
+    # #142839: a redundant provider prefix on the model id is sent upstream verbatim and reads as
+    # an upstream outage once the turn falls back. `hermes config check` is where a user looks
+    # after that, so it must name the key and the fix.
+    from hermes_cli.config import redundant_provider_prefix_notice
+    if notice := redundant_provider_prefix_notice(config):
+        diagnostics.append(notice)
+
     disabled = _get_disabled_plugins()
     for name, manifest in _platform_plugin_manifests(source="bundled"):
         key = f"platforms/{name}"

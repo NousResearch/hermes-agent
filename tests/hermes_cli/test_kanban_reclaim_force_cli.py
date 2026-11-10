@@ -45,9 +45,10 @@ def test_force_flags_are_parsed(kanban_home):
 def test_cli_reclaim_passes_force_through(kanban_home, monkeypatch):
     seen = {}
 
-    def fake_reclaim(conn, task_id, *, reason=None, force=False, signal_fn=None):
+    def fake_reclaim(conn, task_id, *, reason=None, force=False, signal_fn=None,
+                     with_reason=False):
         seen["force"] = force
-        return True
+        return (True, None) if with_reason else True
 
     monkeypatch.setattr(kb, "reclaim_task", fake_reclaim)
     kc._cmd_reclaim(_parse(["reclaim", "t_x"]))

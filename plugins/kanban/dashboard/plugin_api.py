@@ -561,6 +561,9 @@ class BulkTaskBody(BaseModel):
     summary: Optional[str] = None
     metadata: Optional[dict] = None
     reclaim_first: bool = False
+    # With reclaim_first: release the claim even if the worker survived
+    # termination (the deferral is otherwise reported, not silently applied).
+    force: bool = False
     # Same semantics as UpdateTaskBody.
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
@@ -590,14 +593,15 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
 
 # Status verb dispatch shared by PATCH /tasks/{id} and POST /tasks/bulk: (conn, task_id,
 # payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
-# detection) and ``done``/``blocked`` pass ``force=True``: a dashboard action is a human override
-# of a live worker claim.
+# detection) and ``done``/``blocked``/``scheduled`` pass ``force=True``: a dashboard action is a
+# human override of a live worker claim.
 _STATUS_HANDLERS: dict[str, Any] = {
     "done": lambda conn, tid, p: kanban_db.complete_task(
         conn, tid, result=p.result, summary=p.summary, metadata=p.metadata, force=True),
     "blocked": lambda conn, tid, p: kanban_db.block_task(
         conn, tid, reason=getattr(p, "block_reason", None), force=True),
-    "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
+    "scheduled": lambda conn, tid, p: kanban_db.schedule_task(
+        conn, tid, reason=getattr(p, "block_reason", None), force=True),
     "review": lambda conn, tid, p: kanban_db.request_review(
         conn, tid, summary=p.summary, metadata=p.metadata, reviewer=(p.assignee or None), force=True),
     "ready": lambda conn, tid, p: _drag_to(conn, tid, "ready"),
@@ -840,10 +844,16 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
             entry.update(ok=False, error=_open_parent_refusal(conn, tid, s) or f"transition to {s!r} refused")
     if payload.assignee is not None:
         try:
-            ok = (kanban_db.reassign_task(conn, tid, payload.assignee or None, reclaim_first=True) if payload.reclaim_first
-                  else kanban_db.assign_task(conn, tid, payload.assignee or None))
+            if payload.reclaim_first:
+                ok, code = kanban_db.reassign_task(
+                    conn, tid, payload.assignee or None, reclaim_first=True,
+                    force=bool(payload.force), with_reason=True)
+            else:
+                ok, code = kanban_db.assign_task(conn, tid, payload.assignee or None), None
             if not ok:
-                entry.update(ok=False, error="assign refused")
+                entry.update(ok=False, error=(
+                    f"reassign refused: {_RECLAIM_ALIVE_DETAIL}"
+                    if code == kanban_db.RECLAIM_WORKER_ALIVE else "assign refused"))
         except RuntimeError as e:
             entry.update(ok=False, error=str(e))
     if payload.priority is not None:
@@ -982,12 +992,29 @@ def inspect_run_endpoint(run_id: int, board: Optional[str] = _BOARD_Q):
 
 class TerminateRunBody(BaseModel):
     reason: Optional[str] = None
+    force: bool = False
+
+
+# A reclaim deferred because the worker survived termination is a different
+# failure from "not running, or unknown id", and needs the opposite advice:
+# the card IS running and IS known, the claim is deliberately still held, and
+# the way out is force (or waiting for the next kill retry). Saying "not
+# running, or unknown id" there points the operator at a card that does not
+# exist (t_1f3b0108).
+_RECLAIM_ALIVE_DETAIL = (
+    "its worker survived termination, so the claim is deliberately still held "
+    "(see the reclaim_deferred event). The next tick retries the kill; retry "
+    "with force=true to release the claim anyway."
+)
 
 
 @router.post("/runs/{run_id}/terminate")
 def terminate_run_endpoint(run_id: int, payload: TerminateRunBody, board: Optional[str] = _BOARD_Q):
     """Terminate an in-flight run via ``reclaim_task`` (same SIGTERM->SIGKILL flow, bookkeeping
     and events as ``POST /tasks/{id}/reclaim``); 409 if already ended / not reclaimable.
+
+    ``force`` is the same human override as ``hermes kanban reclaim --force``:
+    release the claim even though the worker survived termination.
 
     Closes the gap left by PR #28432, which shipped the read-only sibling endpoints (``/workers/active``,
     ``/runs/{run_id}``, ``/runs/{run_id}/inspect``) but no termination control surface.
@@ -996,7 +1023,12 @@ def terminate_run_endpoint(run_id: int, payload: TerminateRunBody, board: Option
         r = _require_run(conn, run_id)
         if r.ended_at is not None:
             raise _conflict(f"run {run_id} already ended")
-        if not kanban_db.reclaim_task(conn, r.task_id, reason=payload.reason):
+        ok, code = kanban_db.reclaim_task(
+            conn, r.task_id, reason=payload.reason, force=bool(payload.force), with_reason=True)
+        if not ok:
+            if code == kanban_db.RECLAIM_WORKER_ALIVE:
+                raise _conflict(
+                    f"cannot terminate run {run_id}: {_RECLAIM_ALIVE_DETAIL}")
             raise _conflict(f"cannot terminate run {run_id}: task {r.task_id} is no longer in a reclaimable state")
         return {"ok": True, "run_id": run_id, "task_id": r.task_id}
 
@@ -1005,14 +1037,19 @@ def terminate_run_endpoint(run_id: int, payload: TerminateRunBody, board: Option
 
 class ReclaimBody(BaseModel):
     reason: Optional[str] = None
+    force: bool = False
 
 
 @router.post("/tasks/{task_id}/reclaim")
 def reclaim_task_endpoint(task_id: str, payload: ReclaimBody, board: Optional[str] = Query(None)):
     """Release an active worker claim without waiting for the claim TTL
-    (``hermes kanban reclaim <task_id> --reason ...``)."""
+    (``hermes kanban reclaim <task_id> --reason ... [--force]``)."""
     with _board_conn(board) as (board, conn):
-        if not kanban_db.reclaim_task(conn, task_id, reason=payload.reason):
+        ok, code = kanban_db.reclaim_task(
+            conn, task_id, reason=payload.reason, force=bool(payload.force), with_reason=True)
+        if not ok:
+            if code == kanban_db.RECLAIM_WORKER_ALIVE:
+                raise _conflict(f"cannot reclaim {task_id}: {_RECLAIM_ALIVE_DETAIL}")
             raise _conflict(f"cannot reclaim {task_id}: not in a claimable state (not running, or unknown id)")
         return {"ok": True, "task_id": task_id}
 
@@ -1036,16 +1073,20 @@ class ReassignBody(BaseModel):
     profile: Optional[str] = None  # "" or None = unassign
     reclaim_first: bool = False
     reason: Optional[str] = None
+    force: bool = False
 
 
 @router.post("/tasks/{task_id}/reassign")
 def reassign_task_endpoint(task_id: str, payload: ReassignBody, board: Optional[str] = Query(None)):
     """Reassign to another profile, optionally reclaiming first
-    (``hermes kanban reassign <task_id> <profile> [--reclaim]``)."""
+    (``hermes kanban reassign <task_id> <profile> [--reclaim] [--force]``)."""
     with _board_conn(board) as (board, conn):
-        ok = kanban_db.reassign_task(
-            conn, task_id, payload.profile or None, reclaim_first=bool(payload.reclaim_first), reason=payload.reason)
+        ok, code = kanban_db.reassign_task(
+            conn, task_id, payload.profile or None, reclaim_first=bool(payload.reclaim_first),
+            reason=payload.reason, force=bool(payload.force), with_reason=True)
         if not ok:
+            if code == kanban_db.RECLAIM_WORKER_ALIVE:
+                raise _conflict(f"cannot reassign {task_id}: {_RECLAIM_ALIVE_DETAIL}")
             raise _conflict(
                 f"cannot reassign {task_id}: unknown id, or still "
                 "running (pass reclaim_first=true to release the claim first)")

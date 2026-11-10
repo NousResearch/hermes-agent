@@ -258,12 +258,18 @@ def test_block_task_unaffected_without_a_live_worker(conn):
 
 
 def test_block_task_refuses_a_superseded_run_id(conn, live_worker):
-    """A revoked worker passing its OWN (stale) run id is still refused."""
+    """A revoked worker passing its OWN (stale) run id is still refused.
+
+    Regression cover for the CAS on ``current_run_id``, which already held
+    before this change: the setup deliberately uses a claim with no worker
+    process, so it needs no ``force`` and runs unchanged against main.
+    """
     host = kb._claimer_id().split(":", 1)[0]
     tid = kb.create_task(conn, title="t", assignee="w")
     kb.claim_task(conn, tid, claimer=f"{host}:A")
     stale_run = kb.get_task(conn, tid).current_run_id
-    kb.reclaim_task(conn, tid, reason="test", force=True)
+    # No worker pid on A's claim, so this reclaim has nothing to terminate.
+    kb.reclaim_task(conn, tid, reason="test")
     _claim_with_live_worker(conn, tid, f"{host}:B", live_worker())
 
     assert kb.block_task(
@@ -280,11 +286,17 @@ def test_block_task_refuses_a_superseded_run_id(conn, live_worker):
 
 
 def test_revoked_worker_cannot_complete_the_successors_run(conn, live_worker):
+    """Both refusals on the completion path, with a force-free setup.
+
+    The CAS half already held before this change; the ``LiveClaimError`` half
+    is the fence. Keeping the setup force-free means this file runs against
+    main unchanged, so its RED/GREEN state is about behaviour, not kwargs.
+    """
     host = kb._claimer_id().split(":", 1)[0]
     tid = kb.create_task(conn, title="t", assignee="w")
     kb.claim_task(conn, tid, claimer=f"{host}:A")
     stale_run = kb.get_task(conn, tid).current_run_id
-    kb.reclaim_task(conn, tid, reason="test", force=True)
+    kb.reclaim_task(conn, tid, reason="test")
     _claim_with_live_worker(conn, tid, f"{host}:B", live_worker())
 
     # With its own stale run id: refused by the CAS on current_run_id.

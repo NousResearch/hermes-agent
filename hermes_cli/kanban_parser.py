@@ -269,6 +269,9 @@ _SPECS = [
         _arg("profile", help="New profile name (or 'none' to unassign)"),
         _arg("--reclaim", action="store_true",
              help="Release any active claim before reassigning (required if task is running)"),
+        _arg("--force", action="store_true",
+             help="With --reclaim: release the claim even if the worker survived "
+                  "termination (otherwise the reclaim is deferred and the reassign fails)."),
         _RECLAIM_REASON,
     ], help="Reassign a task to a different profile, optionally reclaiming first"),
     _cmd("diagnostics", [
@@ -336,6 +339,9 @@ _SPECS = [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason/timing note (also appended as a comment)"),
         _bulk_ids("schedule"),
+        _arg("--force", action="store_true",
+             help="Override the live-claim guard: park a running, claimed task "
+                  "even without owning its run (closes the worker's run)."),
     ], help="Park one or more tasks in Scheduled (waiting on time, not human input)"),
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
@@ -350,8 +356,13 @@ _SPECS = [
              help="Override the live-claim guard: move a running, claimed "
                   "task to review even without owning its run (clears the worker's claim)."),
     ], help="Move a task to 'review' (implementation done, awaiting review) — NOT a block"),
-    _cmd("request-changes", [_TASK_ID, _arg("reason", nargs="+", help="Concrete changes required before re-review")],
-         help="Reviewer verdict: return the active review run to its implementer"),
+    _cmd("request-changes", [
+        _TASK_ID,
+        _arg("reason", nargs="+", help="Concrete changes required before re-review"),
+        _arg("--force", action="store_true",
+             help="Override the live-claim guard: close a running, claimed "
+                  "review run even without owning it."),
+    ], help="Reviewer verdict: return the active review run to its implementer"),
     _cmd("reopen-review", [
         _TASK_IDS,
         _reason("Optional reason/note — recorded as a comment before reopening. Quote multi-word reasons."),

@@ -598,25 +598,47 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
     return 0
 
 
+_RECLAIM_ALIVE_HINT = (
+    "its worker survived termination, so the claim is deliberately still held "
+    "(see the reclaim_deferred event). The next tick retries the kill; re-run "
+    "with --force to release the claim anyway."
+)
+
+# Every run-closing verb (block / schedule / request-changes) refuses a live
+# worker's run without ownership; they all offer the operator the same way out.
+_LIVE_CLAIM_HINT = (
+    "a live worker is running it. Wait for the worker, "
+    "`hermes kanban reclaim {tid}` to release it, or re-run with --force to "
+    "close its run anyway."
+)
+
+
 def _cmd_reclaim(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        ok = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None),
-                             force=bool(getattr(args, "force", False)))
-    return _ok_or_err(ok,
-                      f"cannot reclaim {args.task_id} (not running, unknown id, or its worker is "
-                      f"still alive: see the reclaim_deferred event; re-run with --force to "
-                      f"release the claim anyway)",
-                      f"Reclaimed {args.task_id}")
+        ok, code = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None),
+                                   force=bool(getattr(args, "force", False)), with_reason=True)
+    if code == kb.RECLAIM_WORKER_ALIVE:
+        fail = f"cannot reclaim {args.task_id}: {_RECLAIM_ALIVE_HINT}"
+    else:
+        fail = f"cannot reclaim {args.task_id} (not running or unknown id)"
+    return _ok_or_err(ok, fail, f"Reclaimed {args.task_id}")
 
 
 def _cmd_reassign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
     reclaim = bool(getattr(args, "reclaim", False))
+    force = bool(getattr(args, "force", False))
     with kbc.connect_closing() as conn:
-        ok = kb.reassign_task(conn, args.task_id, profile, reclaim_first=reclaim, reason=getattr(args, "reason", None))
+        ok, code = kb.reassign_task(conn, args.task_id, profile, reclaim_first=reclaim,
+                                    reason=getattr(args, "reason", None), force=force,
+                                    with_reason=True)
+    if code == kb.RECLAIM_WORKER_ALIVE:
+        fail = f"cannot reassign {args.task_id}: {_RECLAIM_ALIVE_HINT}"
+    else:
+        fail = f"cannot reassign {args.task_id} (unknown id, or still running — pass --reclaim to release first)"
     return _ok_or_err(
         ok,
-        f"cannot reassign {args.task_id} (unknown id, or still running — pass --reclaim to release first)",
+        fail,
         f"Reassigned {args.task_id} to {profile or '(unassigned)'}" + (" (claim reclaimed)" if reclaim else ""),
     )
 
@@ -1012,9 +1034,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                                      expected_run_id=_worker_run_id_for(tid),
                                      force=bool(getattr(args, "force", False)))
             except kb.LiveClaimError:
-                fail_msg[tid] = (f"cannot block {tid}: a live worker is running it. Wait for the "
-                                 f"worker, `hermes kanban reclaim {tid}` to release it, or re-run "
-                                 f"with --force to close its run and block anyway.")
+                fail_msg[tid] = f"cannot block {tid}: " + _LIVE_CLAIM_HINT.format(tid=tid)
                 return False
 
         op = _commented(conn, reason, author, "BLOCKED", _block_one)
@@ -1027,10 +1047,20 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     author = _profile_author()
     ids = _bulk_ids(args)
     suffix = f": {reason}" if reason else ""
+    fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "SCHEDULED", lambda tid: kb.schedule_task(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid)))
-        return _bulk_apply(ids, op, lambda tid: f"Scheduled {tid}{suffix}", lambda tid: f"cannot schedule {tid}")
+        def _schedule_one(tid):
+            try:
+                return kb.schedule_task(
+                    conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid),
+                    force=bool(getattr(args, "force", False)))
+            except kb.LiveClaimError:
+                fail_msg[tid] = f"cannot schedule {tid}: " + _LIVE_CLAIM_HINT.format(tid=tid)
+                return False
+
+        op = _commented(conn, reason, author, "SCHEDULED", _schedule_one)
+        return _bulk_apply(ids, op, lambda tid: f"Scheduled {tid}{suffix}",
+                           lambda tid: fail_msg.get(tid, f"cannot schedule {tid}"))
 
 
 def _cmd_unblock(args: argparse.Namespace) -> int:
@@ -1076,7 +1106,9 @@ def _cmd_request_changes(args: argparse.Namespace) -> int:
     tid = args.task_id
     reason = " ".join(args.reason).strip()
     with kbc.connect_closing() as conn:
-        ok, detail = kb.request_changes(conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid))
+        ok, detail = kb.request_changes(conn, tid, reason=reason,
+                                        expected_run_id=_worker_run_id_for(tid),
+                                        force=bool(getattr(args, "force", False)))
         if not ok:
             return _err(f"cannot request changes for {tid}: {detail or 'invalid review state'}")
         print(f"Requested changes for {tid}" + (f"; routed to {detail}" if detail else ""))

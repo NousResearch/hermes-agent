@@ -871,8 +871,15 @@ def _handle_schedule(args: dict, **kw) -> str:
                "goal_mode tasks cannot be scheduled: use kanban_block with kind "
                f"in {sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} for a genuine external "
                "blocker, or kanban_complete so the completion judge can evaluate it.")
-        ok = kb.schedule_task(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
+        try:
+            ok = kb.schedule_task(
+                conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
+        except kb.LiveClaimError as claim_err:
+            # Env-less caller (orchestrator, another session) on a card a dispatcher
+            # worker is executing: refusing here is what keeps that worker's run open.
+            return tool_error(
+                f"kanban_schedule refused: {claim_err}. Nothing changed. Wait for the worker "
+                f"to finish, or an operator can run `hermes kanban schedule --force {tid}`.")
         _check(ok, f"could not schedule {tid} (unknown id or not in todo/ready/running/blocked)")
         return _ok_landed(kb, conn, tid, "scheduled", reason=reason)
 
@@ -932,7 +939,11 @@ def _handle_request_changes(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         ok, detail = kb.request_changes(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")
+        # A live-claim refusal arrives as detail, not an exception: say what the
+        # operator override is rather than leaving the model to guess.
+        _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}"
+                   + (f". Nothing changed; an operator can run `hermes kanban request-changes "
+                      f"--force {tid}`." if detail and "live claim" in detail else ""))
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)
 
 

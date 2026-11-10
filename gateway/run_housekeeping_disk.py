@@ -17,6 +17,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _housekeeping_checkpoint_prune() -> None:
+    """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
+    ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Off the startup path because its
+    ``git gc`` can block for tens of seconds on a large store."""
+    from tools.checkpoint_maintenance import auto_prune_from_config
+    auto_prune_from_config()
+
+
 def housekeeping_media_caches() -> None:
     """Hourly media-cache prune (24h max age); spillover (None) keeps the session retention window."""
     from gateway.platforms.base import (

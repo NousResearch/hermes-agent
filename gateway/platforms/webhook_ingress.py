@@ -192,6 +192,8 @@ async def _admit_once(authority, event, webhook, hooks, live, committed):
         if consumed:
             await _release_preparation(authority, committed[0])
             return None
+    if getattr(event.source, '_webhook_target_pin', None) is not None:
+        admitted.source._webhook_target_pin = event.source._webhook_target_pin
     return await _admit_native(authority, admitted)
 
 
@@ -268,6 +270,12 @@ async def _webhook_retry(authority, event, payload, rows):
         return None
     row = get_session_admission(authority.db, admission_id=rows[0]['admission_id'])
     retained = row['payload']['native_text_v1']
+    # A duplicate is the SAME admission and its original pin, not an opportunity to
+    # recapture today's incarnation (including first-store creation while queued).
+    if 'webhook_target' in retained:
+        payload['native_text_v1']['webhook_target'] = retained['webhook_target']
+    else:
+        payload['native_text_v1'].pop('webhook_target', None)
     if 'ingress_sha256' in retained:
         # Committed rewritten: the provider resends the delivery as received.
         same = retained['ingress_sha256'] == ingress_fingerprint(payload, event.raw_message)
@@ -340,4 +348,11 @@ async def recover_webhook_finalizations(authority):
                 authority, authority._receipt(row)) else 'unchanged'
         except (KeyError, RuntimeStoreError):
             results[sid] = 'unavailable'
+    await recover_bot_chat_finals(authority)
     return results
+
+
+async def recover_bot_chat_finals(authority):
+    """Boot/hot-serve and active housekeeping use the same bounded reconciliation."""
+    from gateway.webhook_reconcile import reconcile_finals
+    await reconcile_finals(authority)

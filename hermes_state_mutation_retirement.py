@@ -105,6 +105,7 @@ def retire_terminal_receipts(conn, session_ids):
         states = {r['status'] for r in [*admissions, *workers]} - {'terminal'}
         if states:
             raise RuntimeStoreError('unknown_execution' if 'unknown' in states else 'session_busy')
+        retired_admissions = []
         for raw in admissions:
             row = dict(raw)
             from hermes_state_media import retire_media
@@ -113,11 +114,14 @@ def retire_terminal_receipts(conn, session_ids):
             row['payload_json'] = '{}'
             row['lineage_json'] = '[]'
             row['retired_at'] = time.time()
+            retired_admissions.append(row)
             _compact_result(conn, row['admission_id'])
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                          (ADMISSION_PREFIX + row['admission_id'], _json(row)))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                          (identity_key(row['principal_id'], sid, row['request_id']), json.dumps(row['admission_id'])))
+        from hermes_state_webhook_retirement import retire_webhook_sources
+        retire_webhook_sources(conn, retired_admissions)
         for raw in workers:
             row = dict(raw)
             receipts = [dict(r) for r in conn.execute(
@@ -423,11 +427,15 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
         conn.execute("UPDATE state_meta SET value=json_set(value, '$.retired_at', ?) WHERE key GLOB ? "
                      "AND json_valid(value) AND json_extract(value, '$.retired_at') IS NULL", (now, prefix + '*'))
     cutoff = now - older_than
+    expired_admissions = []
     for key, raw in conn.execute(f'SELECT key,value FROM state_meta WHERE key GLOB ? AND {_EXPIRED}',
                                  (ADMISSION_PREFIX + '*', cutoff)).fetchall():
         row = json.loads(raw)
+        expired_admissions.append(row)
         conn.execute('DELETE FROM state_meta WHERE key IN (?,?,?)', (key, RESULT_PREFIX + row['admission_id'],
                      identity_key(row['principal_id'], row['target_session_id'], row['request_id'])))
+    from hermes_state_webhook_retirement import expire_webhook_payloads
+    expire_webhook_payloads(conn, expired_admissions, now=now, cutoff=cutoff)
     conn.execute(f'DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED}', (WORKER_PREFIX + '*', cutoff))
     for prefix in (RETIRED_PREFIX, ROUTE_FENCE_PREFIX):
         _reclaim_expired(conn, prefix, cutoff)

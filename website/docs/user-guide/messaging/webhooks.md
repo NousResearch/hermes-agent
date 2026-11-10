@@ -88,7 +88,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `toolsets` | No | List of toolset keys (e.g. `["terminal", "file", "web"]`) that **replaces** the platform-level webhook toolset for runs triggered by this route only. Manual config edit only — not settable via `hermes webhook subscribe`, so agent-created subscriptions cannot self-grant elevated tools. Names are validated the same way as `platform_toolsets` entries (unknown or platform-restricted names are dropped). See [Per-route toolsets](#per-route-toolsets). |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant` (plugin), `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
-| `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
+| `deliver_only` | No | If `true`, I skip the webhook-side agent and deliver the rendered `prompt` template. A receiving Bot Chat may still run its model and incur cost. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
 | `cron_job` | No | Fire an existing cron job (by ID or name) on each event instead of starting a fresh webhook agent session. The rendered `prompt` becomes transient per-run context; the job's own prompt, skills, model, and delivery settings apply. Mutually exclusive with `deliver_only`. See [Event-Triggered Cron Jobs](#event-triggered-cron-jobs). |
 | `coalesce` | No | Debounce rapid distinct events on the same logical entity into one agent run. Block with a required `key` (payload field or template identifying the entity, e.g. `pull_request.number`), optional `window_seconds` (quiet window, default 30) and `max_wait_seconds` (dispatch cap, default 300). See [Event Coalescing](#event-coalescing). Mutually exclusive with `deliver_only` and `cron_job`. |
 | `mirror_to_session` | No | Default `false`. When `true`, after a successful delivery to a chat platform the delivered message is also written into that chat's session transcript (as a labelled user turn, the same way continuable cron briefs are), so when you reply in that chat the agent knows what it just sent you. See [Replying to a delivery](#replying-to-a-delivery). |
@@ -341,6 +341,7 @@ The `deliver` field controls where the agent's response goes after processing th
 | Deliver Type | Description |
 |-------------|-------------|
 | `log` | Logs the response to the gateway log output. This is the default and is useful for testing. |
+| `bot-chat` | Sends the completed text final to the same effective profile's canonical Bot Chat as an automation turn. See [Bot Chat delivery](#bot-chat-delivery). |
 | `github_comment` | Posts the response as a PR/issue comment via the `gh` CLI. Requires `deliver_extra.repo` and `deliver_extra.pr_number`. The `gh` CLI must be installed and authenticated on the gateway host (`gh auth login`). |
 | `telegram` | Routes the response to Telegram. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
 | `discord` | Routes the response to Discord. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
@@ -360,7 +361,121 @@ The `deliver` field controls where the agent's response goes after processing th
 
 For cross-platform delivery, the target platform must also be enabled and connected in the gateway. If no `chat_id` is provided in `deliver_extra`, the response is sent to that platform's configured home channel.
 
+### Bot Chat delivery {#bot-chat-delivery}
+
+```bash
+hermes webhook subscribe build-review --route-profile coder \
+  --deliver bot-chat:reviewer --prompt 'Review this build: {payload}'
+```
+
+I use `bot-chat` for the executing profile's canonical Bot Chat, or
+`bot-chat:<existing-local-profile>` for another local profile. I choose only from
+existing local profiles, not a path, session, thread, remote machine, or list.
+`--route-profile coder` binds ingress and execution to `coder`; it does not choose
+the destination. I POST to the reported `/p/coder/webhooks/build-review` URL.
+Without an explicit route profile, the effective executing home owns bare
+`bot-chat`, including standalone and profile-routed events.
+
+I can select Bot Chat and its target profile in both the dashboard and Desktop.
+YAML, dynamic CLI subscriptions, authenticated HTTP creators and MCP event
+subscriptions use the same Bot Chat destination validator. MCP consent shows the
+complete target. HTTP creation accepts `route_profile` separately from `deliver`;
+the optional HTTP `profile` query scopes the subscription store, not the target.
+List/readback preserves the route execution profile, complete destination and
+canonical profile-prefixed URL. Changing an explicit execution profile requires a
+new HMAC secret; omitting it on update preserves the existing binding.
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      secret: "my-hmac-secret"
+      routes:
+        notify:
+          profile: coder
+          deliver: bot-chat:reviewer
+          deliver_only: true
+          prompt: "Build result: {status}"
+          mirror_to_session: true
+```
+
+I can use agent mode, the existing agent-only coalescer, direct rendered-template
+delivery, and actual consumed-hook replies. Deliver only avoids the webhook-side
+agent, not all inference: the receiving Bot Chat may run its model and incur cost.
+Bot Chat already owns its canonical history; `mirror_to_session` is an accepted
+no-op and never appends a duplicate. `deliver_extra` and arbitrary chat IDs remain
+rejected. A cron-trigger route still fires the existing job, whose own destination
+wins; the route's otherwise ignored `deliver` does not override the job. General
+`deliver_only`/cron and coalescing mode conflicts remain rejected.
+
+I receive webhook automation, not a forged human message. Forced secret redaction
+applies before durable output is stored or handed off. Blank, whitespace and silent
+results remain suppressed, including recovery. Source task outcome stays separate
+from transport state. Selected attributable process/delegation completion finals
+retain the original verified destination and pin; progress, running updates,
+heartbeats and busy-turn summaries do not create new Bot Chat turns.
+
+I retain complete textual Markdown, URLs, media and file references in the redacted
+report. This is not binary attachment transfer or a promise that the receiving
+profile can read a referenced file. I do not copy files across profile boundaries.
+
+An HTTP `202` is acceptance, not completion. Direct and consumed-hook acknowledgements
+include real durable origin/delivery IDs and their observed state. Agent results
+retain the original admission-derived delivery ID. `queued` and `claimed` mean
+native admission, while `settled` means the receiving turn completed. Neither is
+proof that an external business action succeeded.
+
+I persist delivery obligations and reconcile their same native IDs at startup,
+hot-serve and bounded housekeeping passes while the producer remains running.
+An offline owner can remain pending within the payload lifetime below. Retries revalidate
+source authority, the current route and the pinned destination incarnation. They
+never rerun source inference or a direct script just to retry transport. An
+interrupted preparation can become `origin_unknown`, not permission to rerun an
+unknown side effect. A changed/deleted target or revoked source is refused rather
+than redirected. The pre-admission coalescing buffer remains in memory.
+
+I distinguish an ended one-shot source from a deleted source. Deleting the source
+removes its delivery authority: the next reconciliation refuses an outstanding
+intent without sending or reconstructing history. A previously observed `settled`
+outcome stays settled; a last observed queued/claimed receipt is not upgraded to
+success after deletion. The source task's own outcome is not rewritten.
+
+I compact producer message copies in the existing result-retirement maintenance
+pass. Original/completion finals and their linked preparation/process copies share
+the source result's existing seven-day horizon after deletion or pruning. A true
+standalone direct/hook origin has no source result: its payload uses the same
+seven-day horizon from preparation. At the first maintenance pass beyond that
+horizon I discard the message and retained source snapshot, and refuse any still
+outstanding delivery. Older standalone records without a creation timestamp age
+from their first maintenance pass. IDs, digests, destination pins, observed receipt
+identities, source outcomes and deduplication guards remain, so compaction never
+permits another script/hook execution or transport replay. Secret redaction alone
+does not remove ordinary private report content. This producer compaction neither
+changes the recipient's native mailbox/history lifetime nor adds a retention daemon.
+
+#### Inspect delivery states
+
+```bash
+hermes -p coder webhook deliveries
+hermes -p coder webhook deliveries --cursor '<next_cursor>'
+```
+
+I can also read authenticated `GET /api/webhooks/deliveries?profile=coder` and
+continue with its opaque `cursor`. Each read is a bounded page of at most 50
+entries from `webhook.final.intent.v1` and `webhook.origin.v1` in that profile.
+I see IDs, origin kind, source outcome, target profile, producer state, last
+observed native status/admission ID and an allowlisted reason code. This is a
+read-only ledger projection, not a fresh recipient probe or a delivery retry.
+No raw message, home path, payload, credential or exception is exposed. Invalid
+cursors fail without reading another profile. No unauthenticated diagnostics are
+added. The existing MCP `list_event_types` result includes the same bounded
+projection restricted to that server's local subscription routes; CLI/HTTP can
+continue a returned cursor. I keep authorization on the existing operator surfaces.
+
 ### Replying to a delivery {#replying-to-a-delivery}
+
+For Bot Chat, I already have canonical history and `mirror_to_session` does not append another copy. The following mirror behavior applies to other delivery targets.
 
 By default a delivery is fire-and-forget: each webhook event runs in its own session, so if you reply to the delivered message in that chat, the agent there has no record of what was sent. Set `mirror_to_session: true` on the route (or pass `--mirror-to-session` to `hermes webhook subscribe`) and the delivered text is also appended to the target chat's session as `[Webhook delivery: <route>]` followed by the message, so a follow-up ("so he's out?") has the context.
 
@@ -385,10 +500,10 @@ For use cases where you just want to **push a plain notification** — no reason
 
 Benefits:
 
-- **Zero LLM tokens** — the agent is never invoked
-- **Sub-second delivery** — a single adapter call, no reasoning loop
+- **No webhook-side model tokens**: I skip the producer agent; a receiving Bot Chat may still run its model
+- **No producer reasoning loop**: I render the template before transport; recipient processing may remain queued
 - **Same security as agent mode** — HMAC auth, rate limits, idempotency, and body-size limits all still apply
-- **Synchronous response** — the POST returns `200 OK` once delivery succeeds, or `502` if the target rejects it, so your upstream service can retry intelligently
+- **Target-specific acknowledgement**: other targets retain their `200`/`502` transport contract. For Bot Chat I receive `202` with durable origin/delivery IDs, not a completion claim.
 
 ### Example: Telegram push from Supabase
 
@@ -426,7 +541,8 @@ hermes webhook subscribe antenna-matches \
 
 | Status | Meaning |
 |--------|---------|
-| `200 OK` | Delivered successfully. Body: `{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
+| `202 Accepted` (Bot Chat) | I receive durable `origin_id`, `origin_kind`, `delivery_id` and observed `status`. I inspect delivery states for later recipient settlement. |
+| `200 OK` (other targets) | Delivered successfully. Body: `{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
 | `200 OK` (status=duplicate) | Duplicate `X-GitHub-Delivery` ID within the idempotency TTL (1 hour). Not re-delivered. |
 | `401 Unauthorized` | HMAC signature invalid or missing. |
 | `400 Bad Request` | Malformed JSON body. |

@@ -3179,6 +3179,11 @@ export const deOverrides = {
     platformIntro: {}
   },
   webhooks: {
+    targetProfile: 'Zielprofil',
+    executingProfile: 'Ausführendes Profil',
+    executionProfile: 'Ausführungsprofil',
+    botChatHint: 'Ich stelle im kanonischen lokalen Bot Chat zu. Der empfangende Bot Chat kann sein Modell ausführen und Kosten verursachen, auch bei reiner Zustellung.',
+
     search: 'Webhooks suchen …',
     loading: 'Webhooks werden geladen …',
     loadFailed: 'Webhooks konnten nicht geladen werden',
@@ -3237,6 +3242,7 @@ export const deOverrides = {
     createFailed: (detail: string) => `Erstellen fehlgeschlagen: ${detail}`,
     copy: 'Kopieren',
     deliverOptions: {
+      'bot-chat': 'Bot Chat',
       log: 'Log',
       telegram: 'Telegram',
       discord: 'Discord',

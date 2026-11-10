@@ -138,8 +138,12 @@ async def clear_pending_pairing(profile: Optional[str] = None):
 
 
 def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> dict[str, Any]:
+    from hermes_cli.webhook import _execution_profile, _route_url
     return {
         "name": name,
+        "profile": _execution_profile(route),
+        "route_profile": route.get("profile", "default"),
+        "mirror_to_session": route.get("mirror_to_session") is True,
         "description": route.get("description", ""),
         "events": list(route.get("events") or []),
         "deliver": route.get("deliver", "log"),
@@ -148,7 +152,7 @@ def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> d
         "script": route.get("script", ""),
         "skills": list(route.get("skills") or []),
         "created_at": route.get("created_at"),
-        "url": f"{base_url}/webhooks/{name}",
+        "url": _route_url(name, route, base_url),
         "secret_set": bool(route.get("secret")),
         # Default-enabled; only an explicit enabled:false turns a route off.
         "enabled": route.get("enabled", True) is not False,
@@ -170,6 +174,20 @@ async def list_webhooks(profile: Optional[str] = None):
             ],
         }
 
+    return await config_scoped_to_thread(profile, _run)
+
+
+@router.get("/api/webhooks/deliveries")
+async def inspect_webhook_deliveries(profile: Optional[str] = None, cursor: str = ''):
+    def _run():
+        import sqlite3
+        from hermes_cli.webhook_inspection import delivery_states
+        try:
+            return delivery_states(cursor=cursor)
+        except ValueError:
+            raise HTTPException(status_code=400, detail='Invalid webhook delivery cursor') from None
+        except sqlite3.Error:
+            raise HTTPException(status_code=503, detail='Webhook delivery states unavailable') from None
     return await config_scoped_to_thread(profile, _run)
 
 
@@ -213,10 +231,22 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         )
 
     def _snapshot():
-        subscriptions = wh._load_subscriptions()
-        return subscriptions.get(name, wh._MISSING_SUBSCRIPTION)
+        from gateway.platforms.webhook_delivery import validate_bot_chat_route
+        try:
+            validate_bot_chat_route({'deliver': body.deliver, 'deliver_only': body.deliver_only,
+                'deliver_extra': body.deliver_extra or ({'chat_id': body.deliver_chat_id} if body.deliver_chat_id else {})})
+            expected = wh._load_subscriptions().get(name, wh._MISSING_SUBSCRIPTION)
+            previous = expected if isinstance(expected, dict) else {}
+            execution_profile = (wh.validated_route_profile(body.route_profile) if body.route_profile is not None
+                                 else previous.get('profile', 'default'))
+            if (execution_profile != previous.get('profile', 'default') and body.secret
+                    and body.secret == previous.get('secret')):
+                raise ValueError('Rebinding a webhook route requires a new HMAC secret')
+            return expected, execution_profile
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    expected = await config_scoped_to_thread(profile, _snapshot)
+    expected, execution_profile = await config_scoped_to_thread(profile, _snapshot)
 
     secret = body.secret or secrets.token_urlsafe(32)
     route: dict[str, Any] = {
@@ -226,14 +256,17 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         "prompt": body.prompt or "",
         "skills": [s.strip() for s in body.skills if s.strip()],
         "deliver": body.deliver or "log",
+        "profile": execution_profile,
+        "mirror_to_session": body.mirror_to_session,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     if body.script and body.script.strip():
         route["script"] = body.script.strip()
     if body.deliver_only:
         route["deliver_only"] = True
-    if body.deliver_chat_id:
-        route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
+    if body.deliver_extra or body.deliver_chat_id:
+        route["deliver_extra"] = {**body.deliver_extra,
+                                  **({"chat_id": body.deliver_chat_id} if body.deliver_chat_id else {})}
 
     def _save():
         try:

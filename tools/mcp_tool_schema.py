@@ -254,7 +254,7 @@ _UTILITY_TOOL_SPECS = (
              "additionalProperties": True},
      }, ["name"]),
     ("list_event_types", "List the event types MCP server '{server}' can notify about, and your active "
-     "subscriptions to them", {}, None),
+     "subscriptions to them, including bounded payload-free webhook delivery states in this profile", {}, None),
     ("subscribe_event", "Subscribe to an event from MCP server '{server}': each occurrence starts a new "
      "agent run with your instructions and delivers its result to the chosen target",
      {
@@ -267,8 +267,9 @@ _UTILITY_TOOL_SPECS = (
          "instructions": {"type": "string",
                           "description": "What to do each time the event arrives (up to 2000 characters)"},
          "deliver": {"type": "string",
-                     "description": "Where each run's result goes: log, telegram, discord, slack, ..."},
-         "deliver_chat_id": {"type": "string", "description": "Optional chat id on the deliver platform"},
+                     "description": "Where each run's result goes: log, telegram, discord, slack, bot-chat (executing profile), "
+                     "or bot-chat:<existing-local-profile>. The receiving Bot Chat may run its model and incur cost."},
+         "deliver_chat_id": {"type": "string", "description": "Optional chat id on the deliver platform. Not supported for Bot Chat."},
      }, ["name"]),
     ("unsubscribe_event", "Cancel a subscription to an event from MCP server '{server}'",
      {

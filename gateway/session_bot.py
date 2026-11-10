@@ -806,7 +806,7 @@ def _delivery_params(authority, actor, params):
     """``(home, key, message, author, category)`` of one ``deliver``/``settle`` request: the
     delivery's full identity, validated the same way for both verbs."""
     home = _home(authority, actor, params.get('profile'))
-    if set(params) - {'id', 'profile', 'message', 'session_id', 'author', 'notification_category'}:
+    if set(params) - {'id', 'profile', 'message', 'session_id', 'author', 'notification_category', 'expected_incarnation'}:
         raise RuntimeStoreError('invalid_params')
     from gateway.session_automation import automation_notification_metadata
     notification = automation_notification_metadata(params)
@@ -854,6 +854,9 @@ async def _deliver(connection, params):
     identity = (message, author, category)
     authority._require_admission_open()
     async with mailbox_lock(authority):
+        from gateway.webhook_target import require_incarnation
+        expected = params.get('expected_incarnation')
+        await asyncio.to_thread(require_incarnation, authority, expected)
         root, record = await read_receipt(home, key)
         path = root / f'{key}.json'
         answer = await _receipt_answer(authority, actor, home, record, identity, retry_path=path)
@@ -873,7 +876,7 @@ async def _deliver(connection, params):
             if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned):
                 raise RuntimeStoreError('admission_conflict')
             return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
-                                notification_category=category)
+                                notification_category=category, expected_incarnation=expected)
         except RuntimeStoreError as exc:
             raise await _held_by_another_writer(home, key, exc) or exc
 
@@ -953,7 +956,7 @@ async def _held_by_another_writer(home, key, exc):
 
 
 async def _admit(authority, actor, home, root, key, message, ref, live, entry, author=None, legacy=None,
-                 notification_category='result'):
+                 notification_category='result', expected_incarnation=None):
     from gateway.session_automation import automation_notification_metadata
     notification = automation_notification_metadata({'notification_category': notification_category})
     path = root / f'{key}.json'
@@ -978,7 +981,11 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
             return None
         raise RuntimeStoreError('admission_conflict')
     try:
-        receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
+        from gateway.webhook_target import require_incarnation
+        guard = {} if expected_incarnation is None else {'_authorize_write':
+            partial(require_incarnation, authority, expected_incarnation)}
+        receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key,
+                                                 **guard)
     except RuntimeStoreError as exc:
         if _admission_at(authority, ref.session_id, 'bot:' + key) is not None:
             raise  # committed after all: the pin stays the explicit unknown record

@@ -2037,6 +2037,11 @@ export const ruOverrides = {
     platformIntro: {}
   },
   webhooks: {
+    targetProfile: 'Целевой профиль',
+    executingProfile: 'Выполняющий профиль',
+    executionProfile: 'Профиль выполнения',
+    botChatHint: 'Я доставляю в канонический локальный Bot Chat. Получатель может запустить свою модель и вызвать расходы даже в режиме прямой доставки.',
+
     search: 'Поиск вебхуков...',
     loading: 'Загрузка вебхуков...',
     loadFailed: 'Не удалось загрузить вебхуки',
@@ -2093,6 +2098,7 @@ export const ruOverrides = {
     createFailed: detail => `Не удалось создать: ${detail}`,
     copy: 'Копировать',
     deliverOptions: {
+      'bot-chat': 'Bot Chat',
       log: 'Журнал',
       telegram: 'Telegram',
       discord: 'Discord',

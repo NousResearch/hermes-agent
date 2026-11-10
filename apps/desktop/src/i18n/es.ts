@@ -3169,6 +3169,11 @@ export const esOverrides = {
     platformIntro: {}
   },
   webhooks: {
+    targetProfile: 'Perfil de destino',
+    executingProfile: 'Perfil ejecutor',
+    executionProfile: 'Perfil de ejecución',
+    botChatHint: 'Entrego al Bot Chat local canónico. El Bot Chat receptor puede ejecutar su modelo y generar costes, incluso con entrega directa.',
+
     search: 'Buscar webhooks…',
     loading: 'Cargando webhooks…',
     loadFailed: 'No se pudieron cargar los webhooks',
@@ -3226,6 +3231,7 @@ export const esOverrides = {
     createFailed: detail => `No se pudo crear: ${detail}`,
     copy: 'Copiar',
     deliverOptions: {
+      'bot-chat': 'Bot Chat',
       log: 'Registro',
       telegram: 'Telegram',
       discord: 'Discord',

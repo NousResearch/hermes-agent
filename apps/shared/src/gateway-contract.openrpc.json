@@ -7576,6 +7576,68 @@
         "title": "BotRelayRosterSyncResult",
         "type": "object"
       },
+      "BotStoreIncarnation": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "File",
+            "type": "array"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Instance"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "BotStoreIncarnation",
+        "type": "object"
+      },
+      "BotTargetIncarnation": {
+        "additionalProperties": false,
+        "properties": {
+          "home": {
+            "title": "Home",
+            "type": "string"
+          },
+          "directory": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Directory",
+            "type": "array"
+          },
+          "store": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BotStoreIncarnation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "home",
+          "directory"
+        ],
+        "title": "BotTargetIncarnation",
+        "type": "object"
+      },
       "BrowserAction": {
         "enum": [
           "status",
@@ -8019,6 +8081,17 @@
             ],
             "default": null,
             "title": "Notification Category"
+          },
+          "expected_incarnation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BotTargetIncarnation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

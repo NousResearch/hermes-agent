@@ -13,6 +13,38 @@ from tests.gateway.fixtures.webhook_route_authority import mount_authority
 
 
 @pytest.mark.asyncio
+async def test_bot_chat_destination_is_owned_and_reauthorized():
+    from gateway.platforms.webhook_delivery import retained_destination
+    from gateway.platforms.webhook import _WebhookDeliveryIdentity
+    from hermes_state_runtime import RuntimeStoreError
+    config = PlatformConfig(enabled=True, extra={'secret': 'owned-secret', 'routes': {
+        'fixture': {'prompt': '{text}', 'deliver': 'bot-chat'}}})
+    adapter = WebhookAdapter(config)
+    app = web.Application()
+    mount_authority(app, adapter)
+    app.router.add_post('/webhooks/{route_name}', adapter._handle_webhook)
+    async with TestClient(TestServer(app)) as client:
+        body = json.dumps({'text': 'hello', 'profile': 'forged', 'home': '/forged'}).encode()
+        headers = {'X-GitHub-Delivery': 'bot-final', 'X-Hub-Signature-256':
+                   'sha256=' + hmac.new(b'owned-secret', body, hashlib.sha256).hexdigest()}
+        assert (await client.post('/webhooks/fixture', data=body, headers=headers)).status == 202
+        runner = adapter._message_handler.__self__
+        row = runner.session_authority.db._read_one('SELECT payload_json FROM session_admissions')
+        snapshot = json.loads(row['payload_json'])['native_text_v1']['webhook_delivery']
+        assert snapshot == {'deliver': 'bot-chat', 'deliver_extra': {}, 'route': 'fixture'}
+        replacement = WebhookAdapter(config)
+        runner.adapters[adapter.platform] = replacement
+        runner._wire_adapter_handlers(replacement)
+        replacement.gateway_runner = runner
+        chat = _WebhookDeliveryIdentity.from_parts(None, 'fixture', 'bot-final').session_chat_id
+        assert retained_destination(replacement, chat) == snapshot
+        assert not (await replacement.send(chat, 'uncommitted direct reply')).success
+        replacement._global_secret = 'rotated-secret'
+        with pytest.raises(RuntimeStoreError):
+            retained_destination(replacement, chat)
+
+
+@pytest.mark.asyncio
 async def test_destination_commits_with_input_and_survives_adapter_restart():
     config = PlatformConfig(enabled=True, extra={'secret': 'owned-secret', 'routes': {
         'fixture': {'prompt': '{text}', 'deliver': 'github_comment',

@@ -33,7 +33,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle, Globe, Plus, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { runGatewayRestart } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -53,7 +53,7 @@ import {
 } from '../overlays/panel'
 import { ListRow } from '../settings/primitives'
 
-const DELIVER_OPTIONS: readonly string[] = ['log', 'telegram', 'discord', 'slack', 'email', 'github_comment']
+const DELIVER_OPTIONS: readonly string[] = ['log', 'bot-chat', 'telegram', 'discord', 'slack', 'email', 'github_comment']
 
 interface CreatedWebhook {
   secret: string
@@ -125,6 +125,8 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
   const [description, setDescription] = useState('')
   const [events, setEvents] = useState('')
   const [deliver, setDeliver] = useState('log')
+  const [targetProfile, setTargetProfile] = useState('__executing__')
+  const profiles = useStore($profiles)
   const [deliverOnly, setDeliverOnly] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [skills, setSkills] = useState('')
@@ -241,6 +243,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
     setDescription('')
     setEvents('')
     setDeliver('log')
+    setTargetProfile('__executing__')
     setDeliverOnly(false)
     setPrompt('')
     setSkills('')
@@ -277,7 +280,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
 
       const res = await createWebhook(
         {
-          deliver,
+          deliver: deliver === 'bot-chat' && targetProfile !== '__executing__' ? `bot-chat:${targetProfile}` : deliver,
           deliver_only: deliverOnly,
           description: description.trim() || undefined,
           events: eventsList.length ? eventsList : undefined,
@@ -305,7 +308,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
         setCreating(false)
       }
     }
-  }, [backendProfile, deliver, deliverOnly, description, events, name, prompt, reload, resetForm, skills, w])
+  }, [backendProfile, deliver, deliverOnly, description, events, name, prompt, reload, resetForm, skills, targetProfile, w])
 
   const handleToggle = useCallback(
     async (subName: string, nextEnabled: boolean) => {
@@ -588,6 +591,19 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
                 </Field>
               </div>
 
+              {deliver === 'bot-chat' && (
+                <Field htmlFor="webhook-target-profile" label={w.targetProfile}>
+                  <Select onValueChange={setTargetProfile} value={targetProfile}>
+                    <SelectTrigger className="h-9 rounded-md" id="webhook-target-profile"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__executing__">{w.executingProfile}</SelectItem>
+                      {profiles.map(profile => <SelectItem key={profile.name} value={profile.name}>{profile.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">{w.botChatHint}</p>
+                </Field>
+              )}
+
               <DialogFooter>
                 <Button disabled={creating} size="sm" type="submit">
                   {creating ? w.creating : w.create}
@@ -636,6 +652,7 @@ function WebhookDetail({ sub }: { sub: WebhookRoute }) {
         <PanelMeta
           rows={[
             { label: w.fieldDeliver, value: w.deliverOptions[sub.deliver] ?? sub.deliver },
+            { label: w.executionProfile, value: sub.profile ?? 'default' },
             {
               label: w.fieldEvents,
               value:

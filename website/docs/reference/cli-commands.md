@@ -972,6 +972,7 @@ Manage dynamic webhook subscriptions for event-driven agent activation. Requires
 |------------|-------------|
 | `subscribe` / `add` | Create a webhook route. Returns the URL and HMAC secret to configure on your service. |
 | `list` / `ls` | Show all agent-created subscriptions. |
+| `deliveries` | I inspect at most 50 payload-free delivery-state records in this profile. I pass `--cursor` to continue. |
 | `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
 | `test` | Send a test POST to verify a subscription is working. |
 
@@ -987,11 +988,11 @@ hermes webhook subscribe <name> [options]
 | `--events` | Comma-separated event types to accept (e.g. `issues,pull_request`). Empty = all. |
 | `--description` | Human-readable description. |
 | `--skills` | Comma-separated skill names to load for the agent run. |
-| `--deliver` | Delivery target: `log` (default), `telegram`, `discord`, `slack`, `github_comment`. |
+| `--deliver` | I select `log` (default), a messaging platform, `github_comment`, `bot-chat` (executing profile), or `bot-chat:<existing-local-profile>`. The receiving Bot Chat may run its model. |
 | `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
 | `--secret` | Custom HMAC secret. Auto-generated if omitted. |
-| `--deliver-only` | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
-| `--mirror-to-session` | Also write each delivered message into the target chat's session, so replying to it in that chat has context. Off by default; only enable it for sources whose content you trust in your conversation. |
+| `--deliver-only` | I skip the webhook-side agent and deliver the rendered `--prompt` as the literal message. The receiving Bot Chat may still run its model and incur cost. Requires `--deliver` to be a real target (not `log`). |
+| `--mirror-to-session` | Also write each delivered message into the target chat's session, so replying to it in that chat has context. Bot Chat history is inherent, so this is a no-op for Bot Chat. Off by default for other targets; I enable it only for trusted sources. |
 | `--script` | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin; JSON stdout replaces the payload, and empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. See [Script Filters and Transforms](../user-guide/messaging/webhooks.md#script-filters-and-transforms). |
 | `--route-profile` | Bind the route to a multiplexed profile: it is then reachable only at `/p/<profile>/webhooks/<name>` and the agent runs as that profile. Validated against existing profiles; kept on update when omitted. Not the same as the global `-p/--profile`, which selects the gateway whose subscriptions file is written. See [Multi-profile gateways](../user-guide/multi-profile-gateways.md). |
 

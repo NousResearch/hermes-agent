@@ -22,7 +22,9 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
     wh_sub.add_argument("--description", default="", help="What this subscription does")
     wh_sub.add_argument("--skills", default="", help="Comma-separated skill names to load")
     wh_sub.add_argument(
-        "--deliver", default="log", help="Delivery target: log, telegram, discord, slack, etc.")
+        "--deliver", default="log", help="Delivery target: log, telegram, discord, slack, bot-chat, etc. "
+        "bot-chat selects the executing profile, bot-chat:<local-profile> selects another local Bot Chat. "
+        "The receiving Bot Chat may run its model. No arbitrary chat IDs or fan-out.")
     wh_sub.add_argument(
         "--deliver-chat-id", default="", help="Target chat ID for cross-platform delivery")
     wh_sub.add_argument("--secret", default="", help="HMAC secret (auto-generated if omitted)")
@@ -35,13 +37,14 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "file is written.")
     wh_sub.add_argument(
         "--deliver-only", action="store_true",
-        help="Skip the agent — deliver the rendered prompt directly as the "
-        "message. Zero LLM cost. Requires --deliver to be a real target "
+        help="Skip the webhook-side agent and deliver the rendered prompt directly as the "
+        "message. The receiving Bot Chat may still run its model. Requires --deliver to be a real target "
         "(not 'log').")
     wh_sub.add_argument(
         "--mirror-to-session", action="store_true",
         help="Also write each delivered message into the target chat's session, so replying to it "
-        "in that chat has context. Only for sources whose content you trust in your conversation.")
+        "in that chat has context. Bot Chat history is inherent, so this is a no-op for Bot Chat. "
+        "Only for sources whose content you trust in your conversation.")
     wh_sub.add_argument(
         "--script", default="",
         help="Filter/transform script under ~/.hermes/scripts/. The route "
@@ -55,6 +58,9 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "with --deliver-only.")
 
     webhook_subparsers.add_parser("list", aliases=["ls"], help="List all dynamic subscriptions")
+
+    wh_states = webhook_subparsers.add_parser("deliveries", help="Inspect payload-free delivery states for this profile")
+    wh_states.add_argument("--cursor", default="", help="Opaque next_cursor from the previous bounded page")
 
     wh_rm = webhook_subparsers.add_parser("remove", aliases=["rm"], help="Remove a subscription")
     wh_rm.add_argument("name", help="Subscription name to remove")

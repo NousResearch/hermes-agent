@@ -129,10 +129,16 @@ def _get_webhook_base_url() -> str:
     return f"http://{display_host}:{wh.get('port', 8644)}"
 
 
-def _route_url(name: str, route: dict) -> str:
+def _execution_profile(route: dict) -> str:
+    from hermes_constants import get_hermes_home, profile_name_for_home
+    selected = route.get('profile', 'default')
+    return selected if selected != 'default' else (profile_name_for_home(get_hermes_home()) or 'default')
+
+
+def _route_url(name: str, route: dict, base_url: str | None = None) -> str:
     profile = route.get("profile", "default")
     prefix = f"/p/{profile}" if profile != "default" else ""
-    return f"{_get_webhook_base_url()}{prefix}/webhooks/{name}"
+    return f"{base_url or _get_webhook_base_url()}{prefix}/webhooks/{name}"
 
 
 def _setup_hint() -> str:
@@ -164,9 +170,11 @@ def webhook_command(args):
     """Entry point for 'hermes webhook' subcommand."""
     sub = getattr(args, "webhook_action", None)
     if not sub:
-        print("Usage: hermes webhook {subscribe|list|remove|test}")
+        print("Usage: hermes webhook {subscribe|list|deliveries|remove|test}")
         print("Run 'hermes webhook --help' for details.")
         return
+    if sub == "deliveries":
+        return _cmd_deliveries(args)
     if not _is_webhook_enabled():
         print(_setup_hint())
         return 1
@@ -176,10 +184,41 @@ def webhook_command(args):
         return handler(args)
 
 
+def validated_route_profile(value):
+    from hermes_cli.profiles import normalize_profile_name, profile_exists, validate_profile_name
+    profile = normalize_profile_name(value)
+    validate_profile_name(profile)
+    if not profile_exists(profile):
+        raise ValueError('Route execution profile unavailable')
+    return profile
+
+
+def _bot_chat_route_options(args):
+    return {
+        'deliver': args.deliver or 'log',
+        'deliver_only': getattr(args, 'deliver_only', False),
+        'cron_job': getattr(args, 'cron_job', ''),
+        'mirror_to_session': getattr(args, 'mirror_to_session', False),
+        'deliver_extra': {'chat_id': args.deliver_chat_id} if args.deliver_chat_id else {},
+    }
+
+
+def _set_route_mirror(route, args):
+    if getattr(args, "mirror_to_session", False):
+        route["mirror_to_session"] = True
+
+
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
+        return 1
+
+    from gateway.platforms.webhook_delivery import validate_bot_chat_route
+    try:
+        validate_bot_chat_route(_bot_chat_route_options(args))
+    except ValueError as exc:
+        print(f"Error: {exc}")
         return 1
 
     subs = _load_subscriptions()
@@ -190,15 +229,10 @@ def _cmd_subscribe(args):
     if profile_arg is None:
         profile = existing.get("profile", "default")
     else:
-        from hermes_cli.profiles import normalize_profile_name, profile_exists, validate_profile_name
         try:
-            profile = normalize_profile_name(profile_arg)
-            validate_profile_name(profile)
+            profile = validated_route_profile(profile_arg)
         except ValueError as exc:
             print(f"Error: {exc}")
-            return 1
-        if not profile_exists(profile):
-            print(f"Error: Profile '{profile}' does not exist.")
             return 1
     existing_profile = existing.get("profile", "default")
     profile_changed = is_update and profile != existing_profile
@@ -235,8 +269,7 @@ def _cmd_subscribe(args):
                 "(telegram, discord, slack, github_comment, etc.) — not 'log'.")
             return 1
         route["deliver_only"] = True
-    if getattr(args, "mirror_to_session", False):
-        route["mirror_to_session"] = True
+    _set_route_mirror(route, args)
     cron_job = (getattr(args, "cron_job", "") or "").strip()
     if cron_job:
         # Validate the reference up-front so a typo surfaces here, not on the first inbound event.
@@ -263,16 +296,18 @@ def _cmd_subscribe(args):
 
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
     print(f"  URL:    {_route_url(name, route)}")
-    print(f"  Profile: {profile}")
+    print(f"  Profile: {_execution_profile(route)}")
     print(f"  Secret: {secret}")
     print(f"  Events: {', '.join(events) or '(all)'}")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
-        print("  Mode: direct delivery (no agent, zero LLM cost)")
+        print("  Mode: direct delivery (no webhook-side agent; receiving Bot Chat may run its model)")
     if route.get("mirror_to_session"):
-        print("  Replies: each delivery is mirrored into the target chat's session")
+        from gateway.webhook_target import is_bot_chat
+        print("  Replies: Bot Chat history is inherent; no duplicate mirror" if is_bot_chat(route["deliver"])
+              else "  Replies: each delivery is mirrored into the target chat's session")
     if route.get("cron_job"):
-        print(f"  Mode: cron-job trigger — fires job '{route['cron_job']}' on each event")
+        print(f"  Mode: cron-job trigger - fires job '{route['cron_job']}' on each event")
     if route.get("prompt"):
         prompt_preview = route["prompt"][:80] + ("..." if len(route["prompt"]) > 80 else "")
         print(f"  {'Message' if route.get('deliver_only') else 'Prompt'}: {prompt_preview}")
@@ -307,21 +342,30 @@ def _cmd_list(args):
         events = ", ".join(route.get("events", [])) or "(all)"
         deliver = route.get("deliver", "log")
         if route.get("deliver_only"):
-            deliver = f"{deliver} (direct — no agent)"
+            deliver = f"{deliver} (direct, no webhook-side agent)"
         if route.get("cron_job"):
             deliver = f"cron job '{route['cron_job']}'"
         desc = route.get("description", "")
         print(f"  ◆ {name}")
         if desc:
             print(f"    {desc}")
-        profile = route.get("profile", "default")
         print(f"    URL:     {_route_url(name, route)}")
-        print(f"    Profile: {profile}")
+        print(f"    Profile: {_execution_profile(route)}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
         if route.get("script"):
             print(f"    Script:  {route['script']}")
         print()
+
+
+def _cmd_deliveries(args):
+    import sqlite3
+    from hermes_cli.webhook_inspection import delivery_states
+    try:
+        print(json.dumps(delivery_states(cursor=args.cursor), ensure_ascii=False))
+    except (ValueError, sqlite3.Error):
+        print("Error: I could not read webhook delivery states or the cursor is invalid.")
+        return 1
 
 
 def _cmd_remove(args):

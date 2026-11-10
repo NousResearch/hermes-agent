@@ -6,6 +6,25 @@ import json
 from hermes_state_runtime import RuntimeStoreError
 
 
+def validate_bot_chat_route(route):
+    """Bot Chat is canonical local addressing; mode conflicts stay with their owners."""
+    from gateway.webhook_target import is_bot_chat, target_home, target_profile
+    validate_bot_chat_address(route)
+    target = route.get('deliver')
+    if is_bot_chat(target) and target_profile(target) is not None:
+        target_home(target, None)
+
+
+def validate_bot_chat_address(route):
+    """Validate trusted address syntax without acquiring a new recipient incarnation."""
+    from gateway.webhook_target import is_bot_chat, target_profile
+    if not is_bot_chat(route.get('deliver')):
+        return
+    target_profile(route['deliver'])
+    if route.get('deliver_extra'):
+        raise ValueError('bot-chat does not support deliver_extra')
+
+
 def route_digest(adapter, chat_id):
     from gateway.platforms.webhook import _WebhookDeliveryIdentity
     adapter._reload_dynamic_routes()
@@ -16,6 +35,12 @@ def route_digest(adapter, chat_id):
     route = adapter._routes.get(route_name)
     if route is None:
         raise RuntimeStoreError('not_found')
+    try:
+        # Current route authorization must not depend on a recipient still existing.
+        # New preparations acquire a pin separately; retries enforce their retained pin.
+        validate_bot_chat_address(route)
+    except ValueError:
+        raise RuntimeStoreError('invalid_params') from None
     return hashlib.sha256(json.dumps(route, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -31,6 +56,16 @@ def validate_destination(delivery):
     target, extra = delivery['deliver'], delivery['deliver_extra']
     if not isinstance(target, str) or not isinstance(extra, dict):
         raise RuntimeStoreError('invalid_params')
+    from gateway.webhook_target import is_bot_chat, target_profile
+    if is_bot_chat(target):
+        try:
+            target_profile(target)
+        except ValueError:
+            raise RuntimeStoreError('invalid_params') from None
+        if extra or not delivery.get('route'):
+            raise RuntimeStoreError('invalid_params')
+        return {key: deepcopy(delivery[key]) for key in ('deliver', 'deliver_extra', 'profile', 'route')
+                if key in delivery and delivery[key] is not None}
     if target == 'github_comment':
         repo, number = extra.get('repo'), extra.get('pr_number')
         if not isinstance(repo, str) or not _REPO_RE.fullmatch(repo) or not str(number).isdigit() or int(number) <= 0:
@@ -58,7 +93,8 @@ def snapshot_destination(adapter, delivery):
     from gateway.config import Platform
 
     result = validate_destination(delivery)
-    if result['deliver'] not in {'log', 'github_comment'} and not result['deliver_extra'].get('chat_id'):
+    from gateway.webhook_target import is_bot_chat
+    if result['deliver'] not in {'log', 'github_comment'} and not is_bot_chat(result['deliver']) and not result['deliver_extra'].get('chat_id'):
         profile = result.get('profile')
         with adapter._profile_scope(profile):
             home = adapter._delivery_config(profile).get_home_channel(Platform(result['deliver']))

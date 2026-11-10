@@ -12,27 +12,17 @@ the fixed budgets.
 
 from __future__ import annotations
 
-import os
 from typing import Any, Iterable, Mapping
+
+from gateway.platforms.helpers import (
+    MEDIA_UPLOAD_DEADLINE_MAX as DEADLINE_MAX, MIN_MEDIA_UPLOAD_RATE as MIN_UPLOAD_RATE, media_upload_seconds,
+    scaled_upload_deadline)
 
 # sendVideo transcodes before answering, outlasting the 20s general read timeout.
 MEDIA_READ_TIMEOUT = 60.0
 MEDIA_WRITE_TIMEOUT = 60.0  # matches telegram_network.ptb_request_kwargs()["media_write_timeout"]
-MIN_UPLOAD_RATE = 128 * 1024  # B/s: the slowest uplink the budgets still cover
-DEADLINE_MAX = 3600.0
 _MEDIA_KEYS = ("animation", "audio", "document", "photo", "sticker", "video", "video_note", "voice", "thumbnail")
-
-
-def _size_of(value: Any) -> int:
-    if isinstance(value, (str, os.PathLike)):
-        try:
-            return os.stat(value).st_size
-        except (OSError, ValueError):
-            return 0  # a URL or file id
-    try:  # an open file handle (the adapter and the standalone sender stream open files)
-        return os.fstat(value.fileno()).st_size
-    except (AttributeError, OSError, ValueError):
-        return 0
+__all__ = ["DEADLINE_MAX", "MIN_UPLOAD_RATE", "media_sources", "scaled_budgets"]
 
 
 def media_sources(media_kwargs: Mapping[str, Any]) -> list:
@@ -43,8 +33,8 @@ def media_sources(media_kwargs: Mapping[str, Any]) -> list:
 def scaled_budgets(sources: Iterable[Any], deadline: float, read_timeout: float = MEDIA_READ_TIMEOUT) -> tuple[dict, float]:
     """``(per-request timeout kwargs, wall-clock deadline)`` for one upload of ``sources`` (paths,
     open files, URLs, file ids, bytes): the on-disk total at ``MIN_UPLOAD_RATE`` widens both."""
-    extra = sum(_size_of(source) for source in sources) / MIN_UPLOAD_RATE
+    extra = media_upload_seconds(sources)
     if extra <= 0:
         return {"read_timeout": read_timeout}, deadline
     return ({"read_timeout": read_timeout + extra, "write_timeout": MEDIA_WRITE_TIMEOUT + extra},
-            max(deadline, min(DEADLINE_MAX, deadline + 1.5 * extra)))
+            scaled_upload_deadline(deadline, extra))

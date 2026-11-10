@@ -514,9 +514,10 @@ class GatewayTurnPrepareMixin:
             # re-create the row and the topic silently re-adopts an old transcript (#139283).
             # A binding naming a delegate subagent's row (written while the route was captured by it,
             # #138210) is not the topic's conversation either: following it hands the user to the worker.
-            bound_row = await self._session_db.get_session(bound_session_id) if self._session_db is not None else None
+            store = self.persistence
+            bound_row = await store.aio.sessions.get(bound_session_id) if store is not None else None
             from gateway.session_lifecycle import is_delegate_child_row
-            if self._session_db is not None and (not bound_row or is_delegate_child_row(bound_row)):
+            if store is not None and (not bound_row or is_delegate_child_row(bound_row.as_session_row())):
                 logger.warning("Telegram topic binding for %s points at session %s with %s; keeping the "
                                "current session and rebinding", session_key, bound_session_id,
                                "a delegate subagent's row" if bound_row else "no sessions row")
@@ -617,7 +618,8 @@ class GatewayTurnPrepareMixin:
         """Prepend topic/channel-bound skill payload(s) to ``event.text`` on a new session."""
         _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
         try:
-            from agent.skill_commands import _load_skill_payload, _build_skill_message, register_auto_load_scaffold
+            from agent.skill_commands import _load_skill_payload, _build_skill_message
+            from session_rules.turns import register_auto_load_scaffold
             _combined_parts: list[str] = []
             _loaded_names: list[str] = []
             for _sname in _skill_names:

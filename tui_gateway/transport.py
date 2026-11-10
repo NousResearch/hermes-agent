@@ -210,9 +210,6 @@ class FanoutTransport:
         with self._lock:
             return [peer.transport for peer in self._peers if peer.attached]
 
-    def has_transports(self, *, excluding: Transport | None = None) -> bool:
-        return any(peer is not excluding for peer in self.transports())
-
     def _is_current(self, peer: _FanoutPeer, generation: int) -> bool:
         # Overflow notices may send while detached, but only for their own generation.
         with self._lock:

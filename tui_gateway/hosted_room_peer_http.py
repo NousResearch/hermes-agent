@@ -38,9 +38,9 @@ _PEER_RESPONSE_CHUNK_BYTES = 64 * 1024
 _RECEIPT_SCOPE_FIELDS = (
     "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
     "member_id", "target_install_id", "target_profile")
-_TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
+TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
-_KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
+_KNOWN_RUN_STATES = TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
 _RUN_STATUS_KEYS = (
     "run_id", "status", "output", "error", "approval", "last_event", "tool", "progress_at",
     "execution_generation")
@@ -543,7 +543,7 @@ class PeerRunsHTTPClient:
         cached = self._status_cache.get(run_id)
         if cached is not None:
             status = cached["status"]
-            if status.get("status") in _TERMINAL_RUN_STATES:
+            if status.get("status") in TERMINAL_RUN_STATES:
                 return status
             if now < float(cached["next_poll_at"]):
                 error = cached.get("error")
@@ -572,7 +572,7 @@ class PeerRunsHTTPClient:
                 "request_id": approval["request_id"],
                 **{key: status[key] for key in ("execution_generation",) if key in status}})
         self._status_cache = {run_id: {"status": status, **entry}}
-        if status.get("status") in _TERMINAL_RUN_STATES:
+        if status.get("status") in TERMINAL_RUN_STATES:
             self._terminal_receipts.add(
                 (str(record["task_id"]), int(record["execution_generation"])))
         return status
@@ -711,7 +711,7 @@ class PeerRunsHTTPClient:
             # Stop needs fresh confirmation, even while observation is backing off.
             self._status_cache.pop(str(record["run_id"]), None)
             return self._poll_receipt(record, grant=grant)
-        if result.get("status") in _TERMINAL_RUN_STATES:
+        if result.get("status") in TERMINAL_RUN_STATES:
             self._terminal_receipts.add((str(task_id), int(execution_generation)))
         return result
 

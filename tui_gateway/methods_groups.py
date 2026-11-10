@@ -115,22 +115,6 @@ def _requested_profile(params: dict) -> str:
     return str(_bound_server._response_profile_name(requested) or requested)
 
 
-def _api_server_key(profile: str | None = None) -> str:
-    # Published onto the server by methods_bot_relay.register (an explicit routed profile is
-    # authoritative: never borrow the process profile's key on a multiplexed gateway).
-    if profile and _bound_server is not None and profile != _current_profile():
-        from agent.secret_scope import build_profile_secret_scope
-        home = _bound_server._profile_home(profile)
-        if home is None:
-            return ""
-        return str(build_profile_secret_scope(home).get("API_SERVER_KEY") or "").strip()
-    scoped = ""
-    with contextlib.suppress(Exception):
-        from agent.secret_scope import get_secret
-        scoped = (get_secret("API_SERVER_KEY", "") or "").strip()
-    return scoped or (os.getenv("API_SERVER_KEY") or "").strip()
-
-
 def _profile_execution_policy(profile: str) -> dict:
     """Resolve execution policy under the exact multiplexed profile's FULL runtime scope: the policy
     reads provider credentials (``_xai_credentials_present`` -> ``get_env_value``), which under a

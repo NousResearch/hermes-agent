@@ -32,7 +32,7 @@ from tui_gateway.hosted_room_member_activity import (
     forget_task_progress, record_task_progress, task_is_active, task_progress)
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_peer_http import (
-    PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
+    PeerRunsHTTPClient, PeerRunsHTTPError, TERMINAL_RUN_STATES, digest_reauthorization_error)
 from tui_gateway.hosted_room_peer_transport import (
     HostedRoomPeerClient, PeerHostedRoomTransport, PeerMemberRoute, build_member_dispatch)
 
@@ -47,7 +47,6 @@ _RETRYABLE_STATUSES = ("indeterminate", "deferred")
 # Continue and the router answer re-read the log when an event lands between their read and their write.
 _FENCED_APPEND_ATTEMPTS = 3
 _APPROVABLE_STATUSES = ("running", "indeterminate", "deferred")
-_PEER_RUN_ENDED = frozenset({"completed", "failed", "interrupted", "cancelled"})
 # Owed grant revokes run on the room supervisor's cycle, so one short attempt per cycle, then backoff
 # up to an hour: a member gateway that accepts and never answers holds the supervisor only briefly.
 _OWED_REVOKES_PER_CYCLE = 1
@@ -1045,7 +1044,7 @@ class HostedRoomService:
                 return True
             self.runtime._record_error(f"stop of deferred task {task['identity'].task_id} is unconfirmed: {exc}")
             return False
-        return result is not None and str(result.get("status") or "") in _PEER_RUN_ENDED
+        return result is not None and str(result.get("status") or "") in TERMINAL_RUN_STATES
 
     def _close_missing_peer_run(self, room_id: str, task: Mapping[str, Any], client: Any) -> bool:
         """The member gateway holds no run under this home's receipt: its admission was refused

@@ -119,7 +119,8 @@ def event(name: str, payload: type[Payload] | None = None, *, doc: str = "") -> 
 #
 # Params are validated on every call: an unknown or mistyped key is the CLIENT's bug and answers
 # JSON-RPC ``4000`` with the field path, never a silent ignore. Results and payloads are OUR bug when
-# raises, which is what makes the suite the gate.
+# they drift, so they never break a user's turn: outside the test suite a mismatch is logged at error;
+# under ``HERMES_TEST_ISOLATION`` (set by ``tests/conftest.py``) it raises, which is what makes the suite the gate.
 
 STRICT = bool(os.environ.get("HERMES_TEST_ISOLATION"))
 

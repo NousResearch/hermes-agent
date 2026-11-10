@@ -1,6 +1,6 @@
 name: herd
 repo: https://github.com/welliv/hermes-herd
-sha: eddb1fbe40f42b867f2e75b8002691915e45bb80
+sha: 2e6ea9359b8207116d9fb18839e976e5aae720a6
 requires_hermes: ">=0.23"
 description: >-
   Keep one Hermes across every machine. Settings, skills and memory follow the

@@ -7,6 +7,7 @@ its deadline with no gateway.
 """
 import shutil
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -83,6 +84,25 @@ def test_an_unreadable_cmd_helper_blocks_neither_discovery_nor_the_vbs(store_upd
 
     assert found is not None and found.start_argv[-1] == store_update.name
     assert _interpreter(store_update.vbs) == str(store_update.new)
+
+
+def test_an_unstattable_interpreter_does_not_stop_discovery(store_update, monkeypatch):
+    """Python < 3.13 ``Path.exists()`` raises on access denied instead of answering False."""
+    _fake_schtasks(monkeypatch, task=store_update)
+    before = store_update.vbs.read_bytes()
+    real_exists = Path.exists
+
+    def exists(path, *args, **kwargs):
+        if str(path) == str(store_update.old):
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_exists(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", exists)
+
+    found = service._windows(store_update.home, time.monotonic() + 5)
+
+    assert found is not None and found.start_argv[-1] == store_update.name
+    assert store_update.vbs.read_bytes() == before
 
 
 def test_a_named_profile_client_renders_the_root_launcher_for_the_root(store_update, monkeypatch):

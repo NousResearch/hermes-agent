@@ -511,8 +511,11 @@ def refresh_dead_launcher(home: Path, task_name: str) -> bool:
     except (OSError, ValueError):
         return False
     interpreter = Path(argv[0]) if argv else None
-    if (interpreter is None or not interpreter.is_absolute() or interpreter.exists()
-            or os.path.normcase(str(Path(configured).resolve())) != os.path.normcase(str(home.resolve()))):
+    try:
+        if (interpreter is None or not interpreter.is_absolute() or interpreter.exists()
+                or os.path.normcase(str(Path(configured).resolve())) != os.path.normcase(str(home.resolve()))):
+            return False
+    except OSError:  # Path.exists() raises on access denied before Python 3.13: not provably dead
         return False
     rewritten = False
     # One file at a time: the task and the Startup entry run the .vbs, so a broken .cmd helper must not

@@ -6,7 +6,7 @@ description: "Yuanbao moved out of Hermes core into the yuanbao Hermes Labs plug
 
 # Yuanbao
 
-:::warning Hermes Labs plugin
+:::warning[Hermes Labs plugin]
 Yuanbao is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not maintained going forward. Fixes from the community are welcome.
 :::
 
@@ -22,6 +22,6 @@ Plugins are installed per profile; use `hermes -p <profile> plugins install yuan
 
 Every name stays the same: the `YUANBAO_*` environment variables (`YUANBAO_APP_ID` or the legacy `YUANBAO_APP_KEY`, `YUANBAO_APP_SECRET`, `YUANBAO_HOME_CHANNEL`, ...), the `platforms.yuanbao` block (and the legacy `gateway.yuanbao` block) in `config.yaml`, the `yuanbao` toolset and the tool names.
 
-:::info Upgrading from a release that bundled Yuanbao
+:::info[Upgrading from a release that bundled Yuanbao]
 Nothing to do. Every profile that was already using Yuanbao (`YUANBAO_APP_ID` or `YUANBAO_APP_KEY` plus `YUANBAO_APP_SECRET` in its `.env`, `platforms.yuanbao` enabled in `config.yaml`, or the `yuanbao` / `hermes-yuanbao` toolset listed for another platform) gets the plugin installed automatically from the catalog by `hermes update`, or the first time the profile starts (agent or gateway start; this honours `security.allow_lazy_installs`). A failed attempt is retried with a backoff; `hermes update` always retries. This happens once per profile: if you later remove the plugin (`hermes plugins remove yuanbao`), it stays removed.
 :::

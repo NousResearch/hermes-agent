@@ -47,11 +47,33 @@ def test_isolated_auth_copies_auth_once(launch):
 
 
 def test_no_credentials_copies_nothing_from_the_launch_profile(launch):
-    # share_auth left at its default: --no-credentials alone must not report shared logins.
     result = provision_profile(ProfileCreateRequest(name="work", mirror_credentials=False))
     assert "OPENROUTER_API_KEY" not in (result.path / ".env").read_text()
     assert not (result.path / "auth.json").exists()
-    assert result.mirrored == {"env": False, "auth": False, "model_inherited": False, "voice": False}
+    # No auth.json of its own: it still reads the root's logins, and says so.
+    assert result.mirrored == {"env": False, "auth": "shared", "model_inherited": False, "voice": False}
+
+
+def test_clone_all_brings_its_own_auth_so_it_is_not_reported_shared(launch):
+    result = provision_profile(ProfileCreateRequest(name="work", clone_all=True))
+    assert (result.path / "auth.json").exists()
+    assert result.mirrored["auth"] is False
+
+
+def test_a_named_launch_profile_copies_its_logins_instead_of_sharing_the_roots(launch, monkeypatch):
+    """Sharing means reading the root's auth.json; from launch profile ``b`` that would pair b's keys
+    with the root's logins, so b's auth.json is copied."""
+    b = launch / "profiles" / "b"
+    b.mkdir(parents=True)
+    (b / "config.yaml").write_text("model:\n  default: m\n  provider: openrouter\n")
+    (b / ".env").write_text("OPENROUTER_API_KEY=sk-or-b\n")
+    (b / "auth.json").write_text('{"version": 1, "providers": {"b-only": {}}, "credential_pool": {}}')
+    monkeypatch.setenv("HERMES_HOME", str(b))
+    result = provision_profile(ProfileCreateRequest(name="child"))
+    assert result.path == launch / "profiles" / "child"
+    assert "OPENROUTER_API_KEY=sk-or-b" in (result.path / ".env").read_text()
+    assert result.mirrored["auth"] is True
+    assert "b-only" in (result.path / "auth.json").read_text()
 
 
 def test_clone_skips_bundled_skills_unless_asked(launch):
@@ -109,11 +131,21 @@ def test_every_surface_creates_through_provision_profile(launch, monkeypatch):
     assert [(r.mirror_credentials, r.share_auth) for r in seen] == [(True, True)] * 3
 
 
-def test_every_surface_has_both_opt_outs(launch):
+def _cli_args(*argv):
+    """Parse ``hermes profile create ...`` with the real parser, so a misnamed flag dest fails here."""
+    import argparse
+    from hermes_cli.subcommands.profile import build_profile_parser
+    parser = argparse.ArgumentParser()
+    build_profile_parser(parser.add_subparsers(), cmd_profile=lambda args: None)
+    return parser.parse_args(["profile", "create", *argv])
+
+
+def test_every_surface_has_both_opt_outs(launch, monkeypatch):
     """CLI flags, dashboard fields and RPC params map onto the same two request fields."""
-    from argparse import Namespace
+    import asyncio
     from hermes_cli import profile_cmd
     from hermes_cli.web_models import ProfileCreate
+    from hermes_cli.web_routers.profiles import create_profile_endpoint
     from tui_gateway import server
     seen = []
     real = profile_provision.provision_profile
@@ -122,21 +154,13 @@ def test_every_surface_has_both_opt_outs(launch):
         seen.append(request)
         return real(request)
 
-    import asyncio
-    from hermes_cli.web_routers.profiles import create_profile_endpoint
-    mp = pytest.MonkeyPatch()
-    mp.setattr(profile_provision, "provision_profile", spy)
-    try:
-        base = dict(clone=False, clone_all=False, no_alias=True, no_skills=False, clone_from=None,
-                    clone_channels=False, sync_imports=False, description=None)
-        profile_cmd._profile_create(Namespace(profile_name="c1", isolated_auth=True, no_credentials=False, **base))
-        profile_cmd._profile_create(Namespace(profile_name="c2", isolated_auth=False, no_credentials=True, **base))
-        asyncio.run(create_profile_endpoint(ProfileCreate(name="r1", share_auth=False)))
-        asyncio.run(create_profile_endpoint(ProfileCreate(name="r2", mirror_credentials=False)))
-        server._methods["profiles.create"](1, {"name": "t1", "no_alias": True, "share_auth": False})
-        server._methods["profiles.create"](1, {"name": "t2", "no_alias": True, "mirror_credentials": False})
-    finally:
-        mp.undo()
+    monkeypatch.setattr(profile_provision, "provision_profile", spy)
+    profile_cmd._profile_create(_cli_args("c1", "--no-alias", "--isolated-auth"))
+    profile_cmd._profile_create(_cli_args("c2", "--no-alias", "--no-credentials"))
+    asyncio.run(create_profile_endpoint(ProfileCreate(name="r1", share_auth=False)))
+    asyncio.run(create_profile_endpoint(ProfileCreate(name="r2", mirror_credentials=False)))
+    server._methods["profiles.create"](1, {"name": "t1", "no_alias": True, "share_auth": False})
+    server._methods["profiles.create"](1, {"name": "t2", "no_alias": True, "mirror_credentials": False})
     assert [(r.name, r.mirror_credentials, r.share_auth) for r in seen] == [
         ("c1", True, False), ("c2", False, True), ("r1", True, False), ("r2", False, True),
         ("t1", True, False), ("t2", False, True)]
@@ -173,14 +197,15 @@ def test_a_clone_reaches_the_selected_memory_providers_create_hook_once(launch, 
 
 
 def test_the_cli_does_not_say_no_keys_when_it_copied_them(launch, capsys):
-    from argparse import Namespace
     from hermes_cli import profile_cmd
-    base = dict(clone=False, clone_all=False, no_alias=True, no_skills=False, clone_from=None,
-                clone_channels=False, sync_imports=False, description=None)
-    profile_cmd._profile_create(Namespace(profile_name="keys", **base))
+    profile_cmd._profile_create(_cli_args("keys", "--no-alias"))
     out = capsys.readouterr().out
-    assert "Copied API keys from the main profile" in out
+    assert "Copied API keys from 'default'" in out
+    assert "shared with the default profile" in out
     assert "no API keys yet" not in out
-    profile_cmd._profile_create(Namespace(profile_name="bare", no_credentials=True, **base))
+    profile_cmd._profile_create(_cli_args("bare", "--no-alias", "--no-credentials"))
     assert "no API keys yet" in capsys.readouterr().out
+    # --clone-from without --clone clones the source's .env, so it has keys too.
+    profile_cmd._profile_create(_cli_args("cf", "--no-alias", "--clone-from", "keys"))
+    assert "no API keys yet" not in capsys.readouterr().out
 

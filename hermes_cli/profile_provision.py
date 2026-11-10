@@ -5,10 +5,13 @@ after it in a fixed order. Post-create steps are best-effort: a failing step is 
 ``warnings`` (credential mirroring reports per item in ``mirrored``) and never undoes the create.
 
 Defaults are the Desktop bot page's "Share keys & accounts with the main profile" (ticked): the
-launch profile's provider/tool keys (bot tokens and allowlists stripped), a shared ``auth.json``, and
-its model unless one is picked, so a profile made on any surface answers its first chat. Opt-outs:
-``share_auth=False`` (auth copied once, single-use OAuth grants dropped) and
-``mirror_credentials=False`` (nothing from the launch profile). Clones keep their own ``.env``.
+launch profile's provider/tool keys (bot tokens and allowlists stripped) and its model unless one is
+picked, so a profile made on any surface answers its first chat. Logins are shared by NOT copying
+``auth.json``: a profile without one reads the default root's (``hermes_cli.auth`` fallback). That only
+shares the launch profile's logins when the launch profile IS the root, so a named launch profile's
+``auth.json`` is copied instead. Opt-outs: ``share_auth=False`` (auth copied once, single-use OAuth
+grants dropped) and ``mirror_credentials=False`` (no keys, logins or model copied; the root's logins
+stay readable through the same fallback). Clones keep their own ``.env``.
 """
 from __future__ import annotations
 
@@ -40,7 +43,7 @@ class ProfileCreateRequest:
     quiet: bool = True                 # bundled-skill seeding prints its own failures when False
     # Bot-page defaults (see module docstring); every surface exposes both opt-outs.
     mirror_credentials: bool = True    # launch .env keys / voice / model (and auth.json unless shared)
-    share_auth: bool = True            # keep one auth pool with the launch profile, do not copy auth.json
+    share_auth: bool = True            # read the root's auth.json instead of copying one (root launch only)
     model: str = ""                    # explicit model pin (with provider)
     provider: str = ""
     model_validate_in: Optional[Path] = None  # home whose catalog vouches for the pick (default: the profile)
@@ -91,8 +94,6 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
         sync_imports=request.sync_imports, soul=request.soul,
     )
     result = ProvisionResult(path=path)
-    # "shared" only describes a mirrored profile; with no launch credentials nothing is shared on purpose.
-    result.mirrored["auth"] = "shared" if request.share_auth and request.mirror_credentials else False
 
     def step(label: str, fn: Callable[[], Any], default: Any = None) -> Any:
         try:
@@ -119,6 +120,10 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     if request.keep_skills:
         result.skills_disabled = step("skill selection", lambda: disable_unselected_skills(path, request.keep_skills),
                                       default=0)
+    if result.mirrored["auth"] is not True:
+        # From the outcome, not the flags: a profile with no auth.json of its own reads the root's
+        # (``--clone-all`` brings its own copy; ``mirror_credentials=False`` still reads the root's).
+        result.mirrored["auth"] = "shared" if not (path / "auth.json").exists() else False
     return result
 
 
@@ -311,9 +316,12 @@ def inherit_launch_model(path: Path) -> bool:
 def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_auth: bool = False,
                               clone_channels: bool = False) -> None:
     """Copy the launch profile's .env / auth.json / voice sections into a new profile, recording each
-    item in ``mirrored`` (best-effort per item). ``share_auth`` skips the auth copy."""
-    from hermes_constants import get_hermes_home
+    item in ``mirrored`` (best-effort per item). ``share_auth`` skips the auth copy when the launch
+    profile is the root: the new profile then reads the root's auth.json, i.e. the launch logins. From a
+    named launch profile that fallback would pair its keys with the root's logins, so its auth is copied."""
+    from hermes_constants import get_default_hermes_root, get_hermes_home
     launch_home = get_hermes_home()
+    share_auth = share_auth and launch_home.resolve() == get_default_hermes_root().resolve()
     mirrored["env"] = _try(lambda: _mirror_secret(path, launch_home, ".env", _env_over_stub), False)
     if mirrored["env"] and not clone_channels:
         # Keep provider/tool keys; the launch bot's tokens would make the new bot collide with it.

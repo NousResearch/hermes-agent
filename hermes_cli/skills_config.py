@@ -41,16 +41,32 @@ def get_disabled_skills(config: dict, platform: Optional[str] = None) -> set[str
 
 
 def save_disabled_skills(config: dict, disabled: set[str], platform: Optional[str] = None):
-    """Persist disabled skill names to config; essential skills (e.g. ``hermes-agent``) are
-    silently dropped — they cannot be disabled from any surface."""
+    """Persist disabled skill names to config.
+
+    Essential skills (e.g. ``hermes-agent``) are silently dropped — they cannot
+    be disabled from any surface.
+
+    ``platform_disabled[platform]`` is unioned with the global ``disabled`` list
+    on read (see :func:`get_disabled_skills`), so it stores only the
+    platform-specific delta. Callers such as ``skills_command`` pass the
+    effective union; globally disabled names are subtracted before writing so a
+    later global re-enable is not pinned on that platform. Names the user
+    disabled only for this platform stay disabled.
+    """
     from agent.skill_utils import ESSENTIAL_SKILLS
     disabled = set(disabled) - ESSENTIAL_SKILLS
     config.setdefault("skills", {})
     if platform is None:
         config["skills"]["disabled"] = sorted(disabled)
     else:
+        skills_cfg = config.get("skills") if isinstance(config.get("skills"), dict) else {}
+        global_disabled = _normalize_skill_names(skills_cfg.get("disabled"))
         config["skills"].setdefault("platform_disabled", {})
-        config["skills"]["platform_disabled"][platform] = sorted(disabled)
+        # Delta only. Do not copy the global list into this platform, and do
+        # not drop names that are disabled here but not globally.
+        config["skills"]["platform_disabled"][platform] = sorted(
+            disabled - global_disabled
+        )
     save_config(config)
 
 

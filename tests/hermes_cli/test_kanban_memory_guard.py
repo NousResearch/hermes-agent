@@ -83,6 +83,34 @@ def test_resolve_max_in_progress_unset_and_unknown_memory_is_uncapped(monkeypatc
     assert kbd.resolve_max_in_progress(None) is None
 
 
+def test_derived_cap_prefers_cgroup_budget_over_memtotal():
+    # Measured 2026-11-10 on a cgroup-capped host: MemTotal 12 GiB but the
+    # dispatcher's unit holds only MemoryHigh 3584 MiB.  The cap must follow the
+    # cgroup boundary: 3584 * 0.65 = 2329 usable MB -> 2329 // 600 = 3 workers,
+    # not 12288 * 0.65 // 600 = 13 -> ceiling 8.
+    sample = {"mem_total_kib": 12 * GIB, "cgroup_budget_kib": 3584 * 1024}
+    assert kbd.derive_default_max_in_progress(sample) == 3
+
+
+def test_derived_cap_keeps_memtotal_when_cgroup_budget_is_larger():
+    # Uncapped/root cgroup reporting a figure above host RAM must not raise the cap.
+    sample = {"mem_total_kib": 1 * GIB, "cgroup_budget_kib": 8 * GIB}
+    assert kbd.derive_default_max_in_progress(sample) == 2
+
+
+def test_derived_cap_ignores_invalid_cgroup_budget():
+    # 4 GiB -> 4096 * 0.65 = 2662 usable MB -> 2662 // 600 = 4, whatever the
+    # bogus cgroup key says (bool is an int subclass; strings/0/negative are junk).
+    for bad in (True, 0, -5, "3584"):
+        sample = {"mem_total_kib": 4 * GIB, "cgroup_budget_kib": bad}
+        assert kbd.derive_default_max_in_progress(sample) == 4
+
+
+def test_derived_cap_ceiling_still_eight_on_large_hosts():
+    # 12 GiB uncapped -> 7987 usable MB -> 13 -> clamped to the ceiling.
+    assert kbd.derive_default_max_in_progress({"mem_total_kib": 12 * GIB}) == 8
+
+
 # ---------------------------------------------------------------------------
 # _memory_pressure_level
 # ---------------------------------------------------------------------------

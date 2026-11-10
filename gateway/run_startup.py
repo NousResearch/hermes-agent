@@ -1958,7 +1958,7 @@ class GatewayStartupMixin:
         """Execute one handoff row; raises on failure (caller marks failed). ``profile_name`` (None =
         root) is the profile whose store queued it — load-bearing under multiplex: secondaries live in
         ``_profile_adapters`` and the key must be namespaced ``agent:<profile>:...`` or nobody reads it."""
-        cli_session_id = row["id"]
+        cli_session_id = await self._handoff_source_session_id(row, profile_name)  # before any topic opens
         dest = await self._handoff_resolve_destination(row, profile_name)
         session_key = self._handoff_session_key(dest, profile_name)
         await self._handoff_repoint_with_topic_binding(dest, session_key, cli_session_id)

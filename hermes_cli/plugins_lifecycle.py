@@ -28,18 +28,25 @@ def _dispose_manager(plugins, manager) -> None:
                 timeout=max(0.0, deadline - time.monotonic()),
                 discard_pending=True,
             )
-        plugins._clear_plugin_submodules(manager)
     finally:
         try:
+            # Unload callbacks may import their own module; retain the loaded entries
+            # until callbacks finish, even though unload clears the manager's mapping.
+            from types import SimpleNamespace
+            modules = SimpleNamespace(_plugins=dict(getattr(manager, "_plugins", {})),
+                                      scope_key=getattr(manager, "scope_key", None))
             try:
                 manager.unload()
             finally:
-                # Unlike a force reload, a retired manager has no later discovery to
-                # reconcile parked process-global registrations.
-                if isinstance(manager, plugins.PluginManager):
-                    pending = manager._persistent_carryover + manager._active_persistent()
-                    manager._dispose_registrations(pending)
-                    manager._persistent_carryover.clear()
+                try:
+                    plugins._clear_plugin_submodules(modules)
+                finally:
+                    # Unlike a force reload, retirement has no later discovery to
+                    # reconcile parked process-global registrations.
+                    if isinstance(manager, plugins.PluginManager):
+                        pending = manager._persistent_carryover + manager._active_persistent()
+                        manager._dispose_registrations(pending)
+                        manager._persistent_carryover.clear()
         finally:
             if host is not None:
                 host.shutdown()

@@ -358,7 +358,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" in xml_seen["text"]
     assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in xml_seen["text"]
     assert "<RestartOnFailure>" in xml_seen["text"]
-    assert "<Count>999</Count>" in xml_seen["text"]
+    assert "<Count>3</Count>" in xml_seen["text"]
     # Scheduled Task launches the console-less .vbs via wscript.exe, never cmd.exe
     # (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A).
     assert "<Command>wscript.exe</Command>" in xml_seen["text"]
@@ -386,11 +386,52 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "pythonw.exe" in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert ", 0, True" in content  # hidden window, synchronous wait for exit code
+    assert "If rc <> 75 Then Exit Do" in content
+    assert "attempts >= 3" in content
+    assert "WScript.Sleep delay" in content
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content
     assert content.endswith("\r\n")
+
+
+def test_scheduled_task_bounds_its_own_restart_policy():
+    """The Scheduled Task is the SECOND, independent brake on a respawn storm.
+
+    The VBS caps its own retry loop, and the gateway's app-level breaker caps
+    the boot chain -- but the task can also relaunch the launcher itself, so
+    its restart policy must be bounded too. An unbounded ``Count`` (the old
+    999) let the task relaunch forever, and the VBS's own cap never got a
+    chance to matter.
+    """
+    xml = gateway_windows._build_scheduled_task_xml(
+        "Hermes_Gateway_alice",
+        Path(r"C:\Hermes\gateway-service\Hermes_Gateway_alice.vbs"),
+        r"DOMAIN\alice",
+    )
+    assert "<RestartOnFailure>" in xml
+    assert f"<Count>{gateway_windows._TASK_RESTART_COUNT}</Count>" in xml
+    assert "<Count>999</Count>" not in xml
+    assert gateway_windows._TASK_RESTART_COUNT <= 3
+    assert gateway_windows._TASK_RESTART_INTERVAL == "PT1M"
+
+
+def test_scheduled_task_ignores_a_new_instance_while_one_is_running():
+    """A second launcher must not race a draining predecessor.
+
+    ``IgnoreNew`` is what makes the launcher's synchronous wait meaningful:
+    with the old detached VBS the task finished in under a second, so the
+    policy no longer covered the gateway's lifetime and a second generation
+    could hard-kill the first (the 2026-10-26 pattern).
+    """
+    xml = gateway_windows._build_scheduled_task_xml(
+        "Hermes_Gateway_alice",
+        Path(r"C:\Hermes\gateway-service\Hermes_Gateway_alice.vbs"),
+        r"DOMAIN\alice",
+    )
+    assert "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" in xml
+    assert "<MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>" not in xml
 
 
 def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_path):
@@ -885,3 +926,77 @@ def test_decode_schtasks_output_honours_a_utf16_bom():
     text = "Herm\u00e9s"
     assert gateway_windows._decode_schtasks_output(text.encode("utf-16")) == text
     assert gateway_windows._decode_schtasks_output(b"\xff\xfe<\x00?")
+
+
+# The respawn-storm brake bounds the Scheduled Task's relaunch count. A task registered by a build
+# BEFORE the brake carries the unbounded count, and the count is the ONLY leaf the hardened template
+# changed -- so watching only the (unchanged) interval left that unbounded loop invisible to the
+# drift check, and ``reconcile_scheduled_task`` never re-registered the install.
+def _registration_with_unbounded_restart_count(template: str) -> str:
+    """The template as a build BEFORE the brake wrote it: identical but for the relaunch count.
+
+    Derived from the template so the count is the ONLY difference -- a hand-written copy would
+    drift on some other leaf too and hide the very defect under test.
+    """
+    return template.replace(
+        f"<Count>{gateway_windows._TASK_RESTART_COUNT}</Count>",
+        "<Count>999</Count>",
+    )
+
+
+def test_scheduled_task_drift_reports_an_unbounded_restart_count():
+    """A registration carrying the pre-brake relaunch count is drift, and the report names the count.
+
+    Without this the brake reached only fresh installs: the count is the sole leaf the hardened
+    template changed, so an existing install stayed on the unbounded relaunch loop and the drift
+    check (the only thing that re-registers an existing task) reported it as aligned.
+    """
+    launcher = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    pre_brake = _registration_with_unbounded_restart_count(template)
+    # The count is the only leaf that differs, so the drift report is about the count alone.
+    assert gateway_windows.compare_scheduled_task_drift(pre_brake, template) == [
+        "RestartOnFailure count differs",
+    ]
+
+
+def test_reconcile_scheduled_task_bounds_an_existing_installs_restart_count(monkeypatch, tmp_path):
+    """An existing install's unbounded relaunch count is re-registered from the current template.
+
+    This is the whole point of the reconcile path: the brake is a template change, and a template
+    change only reaches an already-installed task when the drift check notices it.
+    """
+    script_path = tmp_path / "gateway.cmd"
+    launcher = script_path.with_suffix(".vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    calls: list[list[str]] = []
+    registered = {"xml": _registration_with_unbounded_restart_count(template)}
+
+    def fake_schtasks(args):
+        calls.append(list(args))
+        if "/XML" in args and "/Query" in args:
+            return (0, registered["xml"], "")
+        if "/Create" in args:
+            registered["xml"] = Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16")
+        return (0, "", "")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
+
+    assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is True
+    assert [c[0] for c in calls if c[0] in ("/Delete", "/Create")] == ["/Delete", "/Create"]
+    # The re-registered task carries the BOUNDED count, so the unbounded loop is gone.
+    assert f"<Count>{gateway_windows._TASK_RESTART_COUNT}</Count>" in registered["xml"]
+    assert gateway_windows.compare_scheduled_task_drift(registered["xml"], template) == []
+
+
+def test_scheduled_task_drift_is_silent_for_a_bounded_registration():
+    """A task registered by the current template is aligned: the added leaf must not make every
+    healthy install look stale, or ``hermes gateway status`` would nag a correct registration."""
+    launcher = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    exported = template.replace(r"<UserId>PC\me</UserId>", "<UserId>S-1-5-21-1-2-3-1001</UserId>")
+    assert gateway_windows.compare_scheduled_task_drift(exported, template) == []

@@ -1,6 +1,6 @@
 name: theta-edge-node
 repo: https://github.com/bonesnasty/hermes-theta-edge-node
-sha: "48f4b054493e5404d7ce2558e14f8024c8bc0315"
+sha: "2f1e976752a49f69340056c1bcd216b8dde54a08"
 version: "0.2.0"
 description: "Run and monitor a Theta Edge Node from Hermes Desktop: install, launch, stop, track TFUEL rewards and node-wallet value, and export the node wallet locally."
 maintainer: bonesnasty

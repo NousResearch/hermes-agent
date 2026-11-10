@@ -69,7 +69,7 @@ def test_fallback_activation_keeps_external_process_provider_on_chat_completions
     """GPT-5 fallback activation re-derives api_mode through ``_provider_model_requires_responses_api``;
     an external-process (ACP) facade has no ``responses`` surface, so the predicate must decline for
     any such profile — the bundled copilot-acp and an out-of-tree one alike (#65842, #107754)."""
-    from agent.chat_completion_helpers import _fallback_api_mode_resolved
+    from agent.route_binding import _fallback_api_mode_resolved
     from providers.base import ProviderProfile
     from run_agent import AIAgent
 

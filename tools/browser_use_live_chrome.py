@@ -69,6 +69,51 @@ DESCRIPTION = (
 )
 
 
+# Live Chrome's own-tab step FAILS CLOSED: the attached page may be one of the user's signed-in tabs, so a
+# call that can't prove it is in a tab this daemon opened stops before the model's code runs. The marker is
+# written only after that proof, so a failure is retried on the next call instead of pinning the session to
+# the user's tab. (The shared-browser preamble in browser_use_cli stays best-effort.)
+LIVE_OWN_TAB_PREAMBLE = """\
+# hermes: live Chrome -- work only in a tab this daemon opened; stop if that can't be confirmed
+def _hermes_live_own_tab():
+    import os as _os, tempfile as _tf
+    _name = _os.environ.get("BU_NAME", "default")
+    try:
+        from browser_harness import _ipc as _bipc
+        _dpid = _bipc.pid_path(_name).read_text().strip() or "0"
+    except Exception:
+        _dpid = "0"
+    _uid = _os.getuid() if hasattr(_os, "getuid") else 0
+    _marker = _os.path.join(_tf.gettempdir(), "hermes-bu-owntab-%s-%s-%s" % (_uid, _name, _dpid))
+    if _os.path.exists(_marker):
+        return
+    try:
+        _tid = (cdp("Target.createTarget", url="about:blank") or {}).get("targetId")
+        if not _tid:
+            raise RuntimeError("Chrome returned no id for the new tab")
+        switch_tab(_tid)
+        _now = (current_tab() or {}).get("targetId")
+        if _now != _tid:
+            raise RuntimeError("still attached to another tab after switching")
+    except Exception as _exc:
+        raise RuntimeError(
+            "LIVE CHROME STOPPED: Hermes could not open and attach to its own tab (%s), so nothing ran, "
+            "to keep the user's own tabs untouched. Tell the user; do not retry until they say so." % (_exc,)
+        ) from None
+    try:
+        open(_marker, "w").close()
+    except OSError:
+        pass  # no marker: the next call opens and checks a fresh tab again
+_hermes_live_own_tab()
+del _hermes_live_own_tab
+"""
+
+
+def own_tab_preamble(live: bool, shared_preamble: str) -> str:
+    """The preamble that keeps a call in its own tab: the fail-closed one on the user's live Chrome."""
+    return LIVE_OWN_TAB_PREAMBLE if live else shared_preamble
+
+
 def live_chrome_enabled() -> bool:
     """``browser.live_chrome``. Read on EVERY call: it is a consent switch and each served profile decides."""
     return browser_cfg("live_chrome", False, lambda v: is_truthy_value(v, default=False))

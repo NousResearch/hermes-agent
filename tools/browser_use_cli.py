@@ -29,7 +29,7 @@ from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import (daemon_env, daemon_identity, fit_default_socket_dir, harness_pid_file,
                                         namespace_harness_dirs)
 from tools.browser_use_live_chrome import (DESCRIPTION, LIVE_CHROME_SENTINEL, approval_attempt,
-                                           live_chrome_enabled, live_chrome_timeout_hint)
+                                           live_chrome_enabled, live_chrome_timeout_hint, own_tab_preamble)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -895,7 +895,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
     if _shares_browser_tabs(session, live_chrome, private_browser):
-        code = _OWN_TAB_PREAMBLE + code
+        code = own_tab_preamble(live_chrome, _OWN_TAB_PREAMBLE) + code  # live Chrome: fails closed
     # Every backend: capture_screenshot() falls back to jpeg instead of hanging on a png a hidden tab never
     # renders; only on a cloud browser does it (and new_tab) bring the tab to the front (tools/browser_use_shot.py).
     from tools.browser_use_shot import ACTIVATE_NEVER, harness_command

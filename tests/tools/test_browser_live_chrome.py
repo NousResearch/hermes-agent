@@ -195,8 +195,9 @@ class TestOn:
         first = result["output"].splitlines()[0]
         assert "ws:unset url:unset" in first
         assert "marker:0" in first and "live:unset" in first
-        assert "_hermes_ensure_own_tab" in result["output"]
-        assert result["output"].index("_hermes_ensure_own_tab") < result["output"].index("print('payload')")
+        assert "_hermes_live_own_tab" in result["output"]  # the fail-closed preamble, not the shared one
+        assert "_hermes_ensure_own_tab" not in result["output"]
+        assert result["output"].index("_hermes_live_own_tab") < result["output"].index("print('payload')")
 
     def test_no_cloud_autospawn_fallback(self, tmp_path, monkeypatch, chrome_running):
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")

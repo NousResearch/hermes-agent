@@ -163,8 +163,12 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
     @patch("agent.auxiliary_client.call_llm")
     def test_ambiguous_response_escalates(self, mock_call_llm):
         """Unrecognizable LLM output must default to escalate (fail safe)."""
-        mock_call_llm.return_value = self._make_response("I think this is probably fine")
+        mock_call_llm.side_effect = [
+            self._make_response("I think this is probably fine"),
+            self._make_response("APPROVE"),
+        ]
         assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
+        assert mock_call_llm.call_count == 1
 
     @patch("agent.auxiliary_client.call_llm")
     def test_empty_answer_escalates_with_warning(self, mock_call_llm):
@@ -174,11 +178,15 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         indistinguishable from a genuine ESCALATE verdict."""
         response = self._make_response("")
         response.choices[0].finish_reason = "length"
-        mock_call_llm.return_value = response
+        retry_response = self._make_response("")
+        retry_response.choices[0].finish_reason = "length"
+        mock_call_llm.side_effect = [response, retry_response]
         with self.assertLogs("tools.approval", level="WARNING") as logs:
             assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
-        assert any("empty answer" in message and "length" in message
-                   for message in logs.output), logs.output
+        assert mock_call_llm.call_count == 2
+        assert "empty answer" in logs.output[-1]
+        assert "finish_reason=length" in logs.output[-1]
+        assert "escalating" in logs.output[-1]
 
     @patch("agent.auxiliary_client.call_llm")
     def test_empty_answer_without_finish_reason_still_warns(self, mock_call_llm):
@@ -186,10 +194,13 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         populated unevenly across OpenAI-compatible providers."""
         response = self._make_response(None)
         response.choices[0].finish_reason = None
-        mock_call_llm.return_value = response
+        mock_call_llm.side_effect = [response, self._make_response("APPROVE")]
         with self.assertLogs("tools.approval", level="WARNING") as logs:
             assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
-        assert any("finish_reason=None" in message for message in logs.output), logs.output
+        assert mock_call_llm.call_count == 1
+        assert "empty answer" in logs.output[-1]
+        assert "finish_reason=None" in logs.output[-1]
+        assert "escalating" in logs.output[-1]
 
     @patch("agent.auxiliary_client.call_llm")
     def test_recognized_verdict_does_not_warn(self, mock_call_llm):

@@ -335,6 +335,15 @@ async def ensure_hosted_service(runner):
 
 
 async def _ensure_hosted_service(runner, authority):
+    service = getattr(authority, 'hosted_room_service', None)
+    if service is not None and getattr(service, '_transport_installed', False):
+        # Steady state: the 1 Hz ``_hosted_room_worker_watcher`` re-enters this for every served
+        # authority, and nothing below is needed once the service and its transport exist. Taking
+        # the fast path here is what keeps ``owner_scope`` off the loop: entering it reads that
+        # profile's ``.env``, config and terminal policy, and a slow read there stalled the loop
+        # past the liveness watchdog's three strikes, which hard-kills the gateway (exit 75).
+        # Every stall dump in logs/gateway-shutdown-watchdog.log was such a read or a path resolve.
+        return
     with owner_scope(authority):
         service = getattr(authority, 'hosted_room_service', None)
         if service is None:

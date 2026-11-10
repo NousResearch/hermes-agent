@@ -9,6 +9,7 @@ Verifies the opt-in behaviour contract:
 
 from unittest.mock import AsyncMock, MagicMock, call
 
+import inspect
 import pytest
 
 from gateway.config import PlatformConfig
@@ -40,6 +41,20 @@ class SlackRejectedBlocks(Exception):
     def __init__(self, error="invalid_blocks"):
         super().__init__(f"Slack API rejected blocks: {error}")
         self.response = {"error": error}
+
+
+def test_async_app_is_constructed_with_an_explicit_name():
+    """``slack_bolt`` derives ``AsyncApp``'s name with ``inspect.stack()[1]`` (async_app.py:221),
+    which walks every frame and reads source files. That ran on the gateway loop on every
+    (re)connect, and a stall dump in ``logs/gateway-shutdown-watchdog.log`` caught it there — one of
+    the stalls the liveness watchdog hard-killed the gateway over (exit 75). Passing ``name=``
+    short-circuits the derivation, so this pins the call shape."""
+    from plugins.platforms.slack import adapter as slack_adapter
+
+    source = inspect.getsource(slack_adapter)
+    call = source[source.index('AsyncApp('):source.index('AsyncApp(') + 800]
+
+    assert 'name=' in call, 'AsyncApp must be constructed with an explicit name'
 
 
 def _slack_connection_key():

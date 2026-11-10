@@ -315,11 +315,11 @@ class GatewayTopicThreadsMixin:
         """Refusal text when ``target_session_id`` is bound to ANOTHER topic: a session links to one
         topic only, so after the route moved the binding write would fail and the next message's heal
         would snap the topic back. Checked before the switch; None = this lane may take it."""
-        if self._session_db is None or not await asyncio.to_thread(self._is_telegram_topic_lane, source):
+        if (store := self.persistence) is None or not await asyncio.to_thread(self._is_telegram_topic_lane, source):
             return None
-        bound = await self._session_db.get_telegram_topic_binding_by_session(session_id=target_session_id)
+        bound = await store.aio.routing.get_topic_binding_for_session(session_id=target_session_id)
         here = (self._telegram_topic_profile_name(source), str(source.chat_id), str(source.thread_id))
-        if bound and (str(bound.get("profile_name")), str(bound.get("chat_id")), str(bound.get("thread_id"))) != here:
+        if bound and (str(bound.profile_name), str(bound.chat_id), str(bound.thread_id)) != here:
             return t("gateway.topic.already_linked")
         return None
 

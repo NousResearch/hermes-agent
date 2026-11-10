@@ -735,10 +735,33 @@ export function overlayRepoLanes(
     return { ...g, sessions: kept }
   })
 
+  const evictFromLanes = (session: SessionInfo, except?: SidebarSessionGroup): void => {
+    const isSame = sameConversationAs(session)
+
+    for (const g of lanes) {
+      if (g !== except) {
+        const idx = g.sessions.findIndex(isSame)
+
+        if (idx >= 0) {
+          g.sessions = [...g.sessions.slice(0, idx), ...g.sessions.slice(idx + 1)]
+          changed = true
+        }
+      }
+    }
+  }
+
   for (const session of live) {
     const sessionPath = livePathForRepo(repo.path ?? '', session)
 
-    if (removed.has(session.id) || !sessionPath || deeperRepoPaths.some(p => isPathUnder(p, sessionPath))) {
+    if (removed.has(session.id) || !sessionPath) {
+      continue
+    }
+
+    // A deeper folder owns this session; a snapshot row left here from before
+    // its cwd moved in must go too, or it lists in both folders.
+    if (deeperRepoPaths.some(p => isPathUnder(p, sessionPath))) {
+      evictFromLanes(session)
+
       continue
     }
 
@@ -808,18 +831,7 @@ export function overlayRepoLanes(
     // new worktree — the overlay places it into the worktree lane, but without
     // this eviction the stale main-lane entry persists and the session appears
     // under both groups until the next backend tree refresh).
-    const isSame = sameConversationAs(session)
-
-    for (const g of lanes) {
-      if (g !== lane) {
-        const idx = g.sessions.findIndex(isSame)
-
-        if (idx >= 0) {
-          g.sessions = [...g.sessions.slice(0, idx), ...g.sessions.slice(idx + 1)]
-          changed = true
-        }
-      }
-    }
+    evictFromLanes(session, lane)
 
     lane.sessions = upsertSession(lane.sessions, session)
     changed = true

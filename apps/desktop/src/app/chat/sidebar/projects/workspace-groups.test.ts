@@ -741,6 +741,36 @@ describe('overlayLiveLanes', () => {
     ])
   })
 
+  it('moves a live session out of a stale parent-folder snapshot when its cwd enters a nested folder', () => {
+    const stale = makeCwdSession('/work', { id: 'moved-chat', git_repo_root: null, git_branch: null })
+    const moved = makeCwdSession('/work/app/src', { id: 'moved-chat', git_repo_root: null, git_branch: null })
+
+    const project = projectNode({
+      id: 'p_app',
+      path: '/work/app',
+      repos: [
+        { id: '/work/app', label: 'app', path: '/work/app', groups: [], sessionCount: 0 },
+        {
+          id: '/work',
+          label: 'work',
+          path: '/work',
+          sessionCount: 1,
+          groups: [lane({ id: '/work::branch::main', label: 'main', isMain: true, path: '/work', sessions: [stale] })]
+        }
+      ],
+      sessionCount: 1
+    })
+
+    const overlaid = overlayLiveLanes(project, [moved])
+
+    const placements = overlaid.repos.flatMap(repo =>
+      repo.groups.filter(g => g.sessions.some(s => s.id === 'moved-chat')).map(() => repo.label)
+    )
+
+    expect(placements).toEqual(['app'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
   it('keeps an overview preview visible when the hydrated drill-in is stale', () => {
     const staleHistory = makeCwdSession('/www/app', {
       id: 'stale-history',

@@ -189,6 +189,7 @@ from plugins.platforms.telegram.telegram_intake import effective_update_message
 from plugins.platforms.telegram.telegram_media_group import add_item_note, flush_media_group_event, queue_media_group_event, tracking_album_items
 from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
 from plugins.platforms.telegram import telegram_flood_window as _flood_window
+from plugins.platforms.telegram.telegram_observed_images import TelegramObservedImagesMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
@@ -461,7 +462,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramReplacementMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, TelegramSendPathRecoveryMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramObservedImagesMixin, TelegramContactMixin, TelegramHeldInboundMixin, TelegramReplacementMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, TelegramSendPathRecoveryMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -5848,30 +5849,6 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 f"[The user attempted to send a {kind}{named} but it could not be downloaded ({exc.__class__.__name__}); they have been asked to retry.]"
                 if notice else f"[The user attempted to send a {kind}{named} but it could not be downloaded.]",
             )
-
-    def _observe_unmentioned_group_message(
-        self, message: Message, msg_type: MessageType, update_id: Optional[int] = None, event: Optional[MessageEvent] = None) -> None:
-        """Append skipped group chatter to the target session without dispatching."""
-        store = getattr(self, "_session_store", None)
-        if not store:
-            return
-        adapter_name = getattr(self, "name", "telegram")
-        try:
-            event = event or self._build_message_event(message, msg_type, update_id=update_id)
-            session_entry = store.get_or_create_session(self._telegram_group_observe_shared_source(event.source))
-            entry = {
-                "role": "user", "content": self._telegram_group_observe_attributed_text(event),
-                "timestamp": time.time(), "observed": True}
-            if event.message_id:
-                entry["message_id"] = str(event.message_id)
-            self._accept_update()
-            store.append_to_transcript(session_entry.session_id, entry)
-            logger.info(
-                "[%s] Telegram group message observed (no bot trigger): chat=%s from=%s", adapter_name,
-                getattr(getattr(message, "chat", None), "id", "unknown"), event.source.user_id or "unknown")
-        except Exception as exc:
-            self._fail_update_preparation()
-            logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
 
     def _is_own_message(self, message: Message) -> bool:
         """True when sent by this bot itself (echoed getUpdates must not count as incoming unread)."""

@@ -241,7 +241,7 @@ _SILENT_CACHE_DIRS = frozenset({"scratch", "terminal", "pnpm"})
 
 
 def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN_BYTES) -> list[tuple[str, int]]:
-    """``(name, bytes)`` for ``cache/`` entries doctor stays quiet about that exceed *min_bytes*.
+    """``(name, bytes)`` for ``cache/`` entries outside the silent dirs that exceed *min_bytes*.
 
     Finished campaign trees parked at the cache root sat for weeks (95 GB on one host)
     because only ``scratch/`` and ``terminal/`` are reaped; doctor is where that shows."""

@@ -1,0 +1,41 @@
+name: pocketbook
+repo: https://github.com/MaanavD/pocketbook
+sha: 06250c2c1f0f85d3f382b01368a53c5b3a326995
+title: Pocketbook
+description: 'Personal finance in Hermes: a Finance tab, bank/account controls, spending, budgets, net worth, investments, goals, transaction categories, CSV imports and 15 money tools. Disclosure: contacts Plaid with your own keys when connecting or syncing; reads user-selected CSV files up to 20 MB; stores financial data locally and access tokens through Hermes secret routes; offers optional scheduled alert blueprints and user-requested Amazon order collection through Hermes browser tools. No telemetry, money movement or shell subprocesses.'
+maintainer: MaanavD
+tier: community
+category: desktop
+requires_hermes: '>=0.23.0'
+version: "0.2.0"
+readme: true
+platforms:
+- linux
+- macos
+screenshots:
+- https://raw.githubusercontent.com/MaanavD/pocketbook/06250c2c1f0f85d3f382b01368a53c5b3a326995/docs/screenshots/finance-overview.png
+- https://raw.githubusercontent.com/MaanavD/pocketbook/06250c2c1f0f85d3f382b01368a53c5b3a326995/docs/screenshots/finance-accounts.png
+known_issues:
+- Real banks require Plaid Production access; Sandbox accounts are simulated. USD totals only.
+- CLI subcommands may be skipped under plugin isolation; use Finance or the money tools.
+- Overlapping CSV and connected-bank histories may duplicate transactions. Failed scheduled alert delivery may not be retried automatically.
+capabilities:
+  provides_tools:
+  - money_overview
+  - money_transactions
+  - money_spending
+  - money_budgets
+  - money_recurring
+  - money_alerts
+  - money_chart
+  - money_accounts
+  - money_networth
+  - money_investments
+  - money_goals
+  - money_rules
+  - money_categorize
+  - money_import
+  - money_purchases
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

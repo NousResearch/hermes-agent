@@ -1,0 +1,19 @@
+name: hermes-vault-broker
+version: "0.1.0"
+repo: https://github.com/Karasumikura/hermes-vault-broker
+sha: 9693106ebda0876d97f70c7755fda1457670a0a0
+description: "Fill saved logins from an out-of-process credential broker. The broker runs as its own system user with ProtectHome=yes, derives its data key from a passphrase with scrypt and holds it in mlock'd memory, and writes the password into the page itself over CDP. The agent sends only (handle, origin) over a unix socket and gets a fill count back, so the plaintext never enters the agent process and the key never sits next to its ciphertext. Exact-origin binding is re-asserted inside the tab immediately before the write; the socket answers only the gateway uid and the broker's own. Follows the two-security-domains shape Muse (Meta) uses with hatch-authd and Sentinel, and the Provider-store shape SECURITY.md already recommends via NVIDIA OpenShell. Linux; stdlib unittest suite; deps cryptography + websockets."
+maintainer: Karasumikura
+tier: community
+category: security
+docs_url: https://github.com/Karasumikura/hermes-vault-broker#readme
+platforms:
+  - linux
+capabilities:
+  provides_tools:
+    - vault_broker_status
+    - vault_broker_list
+    - vault_broker_fill
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

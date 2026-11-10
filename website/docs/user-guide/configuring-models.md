@@ -312,8 +312,10 @@ Like `answer_in_reasoning`, the flag can sit in a provider-level `capabilities:`
 block, and it is re-read on the active route every turn. Only the provider you
 selected decides: another provider entry on the same endpoint does not lend it
 its flag, and an explicit `false` wins. A fallback provider keeps the default
-stripping. Leave it off for servers that put reasoning inline in `content`:
-their reasoning would show up as the reply.
+stripping. Unlike `answer_in_reasoning`, no route is refused (OpenRouter
+included): the flag is your statement about what that server returns, so set it
+only where it holds. Leave it off for servers that put reasoning inline in
+`content`: their reasoning would show up as the reply.
 
 :::note Legacy format
 Older configs used a top-level `custom_providers:` list (with `base_url` instead of `api`). It still works and is auto-migrated to the `providers:` dict on `hermes update` (config v12).

@@ -85,7 +85,7 @@ async def _run_browser_flow(tmp_path, monkeypatch, *, issuer, authorization_serv
         metadata.scope = scope
     provider = _HERMES_PROVIDER_CLS(
         server_name="srv", server_url=RESOURCE, storage=HermesTokenStorage("srv"), client_metadata=metadata,
-        redirect_handler=redirect, callback_handler=callback)
+        redirect_handler=redirect, callback_handler=callback, configured_scope=scope)
     async with httpx.AsyncClient(auth=provider, transport=httpx.MockTransport(_standin(
             httpx, issuer=issuer, authorization_servers=authorization_servers))) as client:
         response = await client.get(RESOURCE)
@@ -94,15 +94,17 @@ async def _run_browser_flow(tmp_path, monkeypatch, *, issuer, authorization_serv
 
 
 @pytest.mark.asyncio
-async def test_google_authorization_url_asks_for_offline_access(tmp_path, monkeypatch):
+async def test_google_authorization_url_accepts_root_slash_and_keeps_configured_scope(tmp_path, monkeypatch):
+    configured_scope = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose"
     response, seen = await _run_browser_flow(
-        tmp_path, monkeypatch, issuer=GOOGLE, authorization_servers=[GOOGLE], scope="email offline_access")
+        tmp_path, monkeypatch, issuer=GOOGLE, authorization_servers=[f"{GOOGLE}/"], scope=configured_scope)
 
     assert response.status_code == 200
     pairs = parse_qsl(urlsplit(seen["authorize_url"]).query)
     # Exactly once each, even with an offline_access scope already requested.
     assert [value for key, value in pairs if key == "access_type"] == ["offline"]
     assert [value for key, value in pairs if key == "prompt"] == ["consent"]
+    assert dict(pairs)["scope"] == configured_scope
     assert (tmp_path / "mcp-tokens" / "srv.json").exists()
     # Wraps once: a re-authorization must not nest another wrapper around the redirect handler.
     provider = seen["provider"]

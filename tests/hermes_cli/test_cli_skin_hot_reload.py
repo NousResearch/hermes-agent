@@ -213,6 +213,20 @@ class TestSkinHotReload:
             obj._handle_skin_command(cmd)
         return activate, accent, save, repaint
 
+    def test_skin_window_pin_does_not_reload_on_next_idle_tick(self, tmp_path, capsys):
+        """An explicit window pin must not be activated a second time by the watcher."""
+        _write_skin(tmp_path, SKIN)
+        _write_skin(tmp_path, OTHER)
+        obj, cfg_file = _make_cli(tmp_path, skin=SKIN)
+
+        self._run_skin_command(obj, tmp_path, f"/skin {OTHER} --window")
+        capsys.readouterr()  # discard the command's intentional confirmation
+        activate, _, repaint = _run_check(obj, cfg_file, tmp_path)
+
+        activate.assert_not_called()
+        repaint.assert_not_called()
+        assert capsys.readouterr().out == ""
+
     def test_skin_window_flag_pins_override(self, tmp_path, capsys):
         """/skin NAME --window pins this window without touching config."""
         _write_skin(tmp_path, SKIN)

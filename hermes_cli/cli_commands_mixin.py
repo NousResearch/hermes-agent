@@ -1817,6 +1817,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         else:
             self._session_skin_override = None
             saved = _t("skin.saved_suffix") if _save("display.skin", new_skin) else ""
+        # Explicit /skin already applied this palette. Keep the watcher in
+        # sync so its next event does not activate and announce it again.
+        from hermes_cli.skin_engine import user_skin_file_signature
+        self._skin_sig = (new_skin, user_skin_file_signature(new_skin))
         _pr(f"  {_t('skin.set_to', name=new_skin, saved=saved)}", f"  {_t('skin.banner_note')}")
         if self._apply_tui_skin_style():
             print(f"  {_t('skin.colors_updated')}")

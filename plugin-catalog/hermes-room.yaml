@@ -1,0 +1,39 @@
+name: hermes-room
+repo: https://github.com/adenijiridwan43/hermes-room
+sha: b2f7b250a6fbac84d67942f63a181c9d267e6303
+description: >-
+  Untrusted-content sanitizer for Hermes tool output. A stdlib-only
+  deterministic Layer 1 washes hidden zero-width/bidi/control characters,
+  ANSI escapes, hidden HTML elements/comments and script/style payloads,
+  and masks leaked secrets (AWS/GitHub/GitLab/Slack/OpenAI/Google keys,
+  JWTs, private-key blocks, generic password=/secret= assignments) before
+  anything reaches the model. A Layer 2 host-model reviewer
+  (ctx.llm.complete_structured, your active model, no provider/model
+  override, no extra key) runs only on suspicion — 20s timeout, 800
+  tokens, fails open to Layer 1. Cleaned output carries an [UNTRUSTED]
+  header; every change yields a local JSONL Trust Receipt (SHA-256, rule
+  IDs, counts, reviewer verdict — never raw content) via trust_receipt /
+  trust_report tools. Hook: transform_tool_result.
+  Disclosure — reads only tool-output text; no network beyond the user's
+  own provider call via ctx.llm (Mode 1); no shell, no background
+  processes, no telemetry; no credentials required or read (requires_env
+  is empty); writes solely to <HERMES_HOME>/hermes-room/receipts.jsonl
+  (hashes, rule IDs and counts, no raw content, local only); never throws
+  into the tool loop (fail-open); no auto-approval, no wallet/env access.
+  Any injection-pattern SUBSTRING it flags (e.g. "developer mode",
+  "exfiltrate") is data-washing, not instruction-following.
+maintainer: adenijiridwan43
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "0.2.0"
+docs_url: https://github.com/adenijiridwan43/hermes-room#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - trust_receipt
+    - trust_report
+  provides_hooks:
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

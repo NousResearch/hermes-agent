@@ -138,12 +138,8 @@ async def test_observe_only_photo_does_not_hold_the_question():
     assert adapter.handle_message.await_args_list[0].args[0].text == "Is this a real study?"
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("album", [False, True], ids=["single", "album"])
-async def test_recovered_question_keeps_its_topic_when_a_newer_topic_binds_during_debounce(tmp_path, album):
-    """Topic-mode DM: the threadless question is recovered into topic 10. The photo absorbs it, and
-    while the photo debounces another topic (20) becomes the newest binding. The merged turn must
-    still run in topic 10, where the question was routed, not re-derive topic 20 at dispatch."""
+def _topic_mode_rig(tmp_path):
+    """Topic-mode DM over a real SessionDB with real topic recovery; dispatch stops at the session seam."""
     from gateway.config import Platform
     from gateway.session import SessionSource, build_session_key
     from hermes_state import SessionDB
@@ -157,7 +153,6 @@ async def test_recovered_question_keeps_its_topic_when_a_newer_topic_binds_durin
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="100", user_id="1", chat_type="dm", thread_id=thread_id)
         db.bind_telegram_topic(chat_id="100", thread_id=thread_id, user_id="1",
                                session_key=build_session_key(source), session_id=f"s-{thread_id}")
-    bind("10")
     adapter = _adapter()
     del adapter.handle_message  # real Telegram + base ingress, up to the session-processing seam
     adapter.set_message_handler(AsyncMock())
@@ -165,6 +160,17 @@ async def test_recovered_question_keeps_its_topic_when_a_newer_topic_binds_durin
     adapter._get_dm_topic_info = lambda *_a: {}
     routed = []
     adapter._start_session_processing = lambda event, _key: routed.append((event.text, event.source.thread_id, event.media_urls)) or True
+    return adapter, db, bind, routed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("album", [False, True], ids=["single", "album"])
+async def test_recovered_question_keeps_its_topic_when_a_newer_topic_binds_during_debounce(tmp_path, album):
+    """Topic-mode DM: the threadless question is recovered into topic 10. The photo absorbs it, and
+    while the photo debounces another topic (20) becomes the newest binding. The merged turn must
+    still run in topic 10, where the question was routed, not re-derive topic 20 at dispatch."""
+    adapter, db, bind, routed = _topic_mode_rig(tmp_path)
+    bind("10")
     release = asyncio.Event()
     photo_msg = _slow_photo(release)
     photo_msg.media_group_id = "album-1" if album else None
@@ -180,3 +186,27 @@ async def test_recovered_question_keeps_its_topic_when_a_newer_topic_binds_durin
     finally:
         db.close()
     assert routed == [("Is this a real study?", "10", ["/tmp/post.jpg"])]
+
+
+@pytest.mark.asyncio
+async def test_two_question_photo_pairs_in_one_burst_keep_their_own_topics(tmp_path):
+    """A second question+photo pair inside the first pair's photo-burst window, with topic 20 bound
+    newest between them, runs in topic 20: two events already routed to different topics never merge."""
+    adapter, db, bind, routed = _topic_mode_rig(tmp_path)
+    adapter._media_batch_delay_seconds = 0.8  # production burst window
+    bind("10")
+    try:
+        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async", new=AsyncMock(return_value="/tmp/post.jpg")):
+            for question in ("first-q", "second-q"):
+                release = asyncio.Event()
+                await adapter._handle_text_message(_update(_text(question)), MagicMock())
+                photo = asyncio.create_task(adapter._handle_media_message(_update(_slow_photo(release)), MagicMock()))
+                await asyncio.sleep(0.3)  # health: allow HX013 -- a download outlasting the 0.18 s text delay IS the race
+                release.set()
+                await photo
+                if question == "first-q":
+                    bind("20")  # another topic's turn binds newest before the second pair
+            await async_wait_until(lambda: sum(len(media) for *_, media in routed) >= 2, timeout=5)  # both images dispatched
+    finally:
+        db.close()
+    assert sorted(routed) == [("first-q", "10", ["/tmp/post.jpg"]), ("second-q", "20", ["/tmp/post.jpg"])]

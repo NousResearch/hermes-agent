@@ -79,7 +79,7 @@ async def queue_media_group_event(adapter: Any, media_group_id: str, event: Mess
     if adapter._should_drop_delayed_delivery():
         adapter._hold_inbound_event(event, where="media-group-enqueue")
         return
-    adapter._merge_into_pending(adapter._media_group_events, media_group_id, event)
+    media_group_id = adapter._merge_into_pending(adapter._media_group_events, media_group_id, event)
     adapter._accept_update()
     prior_task = adapter._media_group_tasks.get(media_group_id)
     if prior_task:
@@ -95,7 +95,8 @@ async def flush_media_group_event(adapter: Any, media_group_id: str) -> None:
     await asyncio.sleep(media_group_wait_seconds(adapter))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + MEDIA_GROUP_MAX_WAIT_SECONDS
-    while _in_flight(adapter).get(media_group_id, 0) > 0 and loop.time() < deadline:
+    group = media_group_id.split("|", 1)[0]  # a lane split off by resolved routing still waits for its album's siblings
+    while _in_flight(adapter).get(group, 0) > 0 and loop.time() < deadline:
         await asyncio.sleep(_IN_FLIGHT_POLL_SECONDS)
     await adapter._flush_buffered(
         adapter._media_group_events, adapter._media_group_tasks, media_group_id, 0, "media-group")

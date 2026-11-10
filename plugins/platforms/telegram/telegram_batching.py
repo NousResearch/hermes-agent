@@ -26,12 +26,21 @@ def adopt_routing(event: MessageEvent, routed: MessageEvent) -> None:
     event._routing_pinned = True  # type: ignore[attr-defined]
 
 
-def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_caption) -> None:
-    """Retain each attachment's inlining semantics when combining album items."""
+def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_caption, route_key) -> str:
+    """Retain each attachment's inlining semantics when combining album items; return the lane used.
+
+    Two events whose routing is already resolved (pinned) to different sessions never merge: a second
+    question+photo pair recovered into topic 20 must not run in the first pair's topic 10 just because
+    both landed in one burst window. The later one takes its own lane keyed by its resolved session.
+    """
     existing = pending.get(key)
+    if (existing is not None and getattr(event, "_routing_pinned", False) and getattr(existing, "_routing_pinned", False)
+            and route_key(existing) != route_key(event)):
+        key = f"{key}|{route_key(event)}"
+        existing = pending.get(key)
     if existing is None:
         pending[key] = event
-        return
+        return key
     if getattr(event, "_routing_pinned", False) and not getattr(existing, "_routing_pinned", False):
         adopt_routing(existing, event)  # a later album item absorbed the question: the album joins its topic
     existing.absorb_reply_expected(event)
@@ -45,3 +54,4 @@ def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_c
         existing.text = merge_caption(existing.text, caption)
     for note in notes:
         existing.text = f"{existing.text}\n\n{note}" if existing.text else note
+    return key

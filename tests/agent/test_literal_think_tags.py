@@ -44,9 +44,14 @@ _LITERAL_REPLIES = [
 ]
 
 
-def _route(model=_MODEL, base_url=_ROUTE, custom_providers=_OPTED_IN, provider="custom"):
-    return SimpleNamespace(model=model, base_url=base_url, provider=provider, requested_provider="",
+def _route(model=_MODEL, base_url=_ROUTE, custom_providers=_OPTED_IN, provider="custom", requested=""):
+    return SimpleNamespace(model=model, base_url=base_url, provider=provider, requested_provider=requested,
                            _custom_providers=custom_providers)
+
+
+_A_ON = {"name": "a", "base_url": _ROUTE, "models": {_MODEL: {"literal_think_tags": True}}}
+_A_PLAIN = {"name": "a", "base_url": _ROUTE}
+_B_OFF = {"name": "b", "base_url": _ROUTE, "capabilities": {"literal_think_tags": False}}
 
 
 @pytest.mark.parametrize("agent, expected", [
@@ -59,6 +64,10 @@ def _route(model=_MODEL, base_url=_ROUTE, custom_providers=_OPTED_IN, provider="
     (_route(custom_providers=[{"name": "local-llm", "base_url": _ROUTE,
                                "models": {_MODEL: {"literal_think_tags": 1}}}]), False),  # not a bool
     (None, False),
+    (_route(custom_providers=[_A_ON, _B_OFF]), False),  # unnamed route: an explicit false wins
+    (_route(custom_providers=[_A_ON, _B_OFF], requested="custom:a"), True),  # the live entry decides
+    (_route(custom_providers=[_A_ON, _B_OFF], requested="custom:gone"), False),  # identity not here
+    (_route(custom_providers=[_A_ON, _A_PLAIN], requested="a"), False),  # ambiguous name: no consensus
 ])
 def test_capability_is_an_explicit_per_route_opt_in(agent, expected):
     assert literal_think_tags_capability(agent) is expected
@@ -192,3 +201,14 @@ def test_failover_to_another_route_restores_stripping_for_the_next_response(tmp_
 
     assert "".join(shown) == "Answer "
     assert agent._strip_think_blocks("</think>") == ""
+
+
+@pytest.mark.parametrize("opted_in, expected", [(True, ""), (False, "literal sample")])
+def test_reasoning_preview_never_presents_answer_tags_as_reasoning(tmp_path, monkeypatch, opted_in, expected):
+    """The ``reasoning.available`` preview falls back to inline tags only where they are reasoning."""
+    from agent.turn_response_intake import _reasoning_preview
+
+    agent = _build_agent(tmp_path, monkeypatch, opted_in=opted_in)
+    message = SimpleNamespace(content="Example: <think>literal sample</think>.", reasoning=None,
+                              reasoning_content=None, reasoning_details=None, tool_calls=None)
+    assert _reasoning_preview(agent, message.content, message) == expected

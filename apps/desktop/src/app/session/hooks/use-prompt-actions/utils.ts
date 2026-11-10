@@ -53,6 +53,14 @@ export function inlineErrorMessage(error: unknown, fallback: string): string {
 }
 
 export function isSessionNotFoundError(error: unknown): boolean {
+  if (
+    error instanceof JsonRpcGatewayError &&
+    error.code === 4001 &&
+    (error.data as { reason?: unknown } | undefined)?.reason === 'not_found'
+  ) {
+    return true
+  }
+
   const message = error instanceof Error ? error.message : String(error)
 
   return /session not found/i.test(message)

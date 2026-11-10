@@ -103,6 +103,7 @@ class SearchMatch:
     line_number: int
     content: str
     mtime: float = 0.0  # Modification time for sorting
+    is_context: bool = False  # Surrounding line from context=N, not itself a match
 
 
 @dataclass
@@ -128,7 +129,7 @@ class SearchResult:
 
     def _densify_matches(self) -> Optional[str]:
         """Lossless path-grouped text block: path once, then ``  <line>: <content>``
-        rows. Relies on rg/grep emitting a file's hits consecutively. None when
+        rows (``  <line>- <content>`` for context lines, as grep marks them). Relies on rg/grep emitting a file's hits consecutively. None when
         too few matches to be worth it."""
         if len(self.matches) < self._DENSIFY_MIN_MATCHES:
             return None
@@ -139,7 +140,8 @@ class SearchResult:
                 lines.append(m.path)
                 current_path = m.path
             # rstrip only: leading indentation is meaningful code and kept verbatim.
-            lines.append(f"  {m.line_number}: {m.content.rstrip()}")
+            separator = "-" if m.is_context else ":"
+            lines.append(f"  {m.line_number}{separator} {m.content.rstrip()}")
         return "\n".join(lines)
 
     def to_dict(self, densify: bool = False) -> dict:
@@ -152,10 +154,13 @@ class SearchResult:
                     "path-grouped: each file path on its own line, followed by "
                     "indented '<line>: <content>' rows for matches in that file"
                 )
+                if any(m.is_context for m in self.matches):
+                    result["matches_format"] += "; '<line>- <content>' rows are context lines, not matches"
                 result["matches_text"] = dense
             else:
                 result["matches"] = [
-                    {"path": m.path, "line": m.line_number, "content": m.content} for m in self.matches
+                    {"path": m.path, "line": m.line_number, "content": m.content, **({"is_context": True} if m.is_context else {})}
+                    for m in self.matches
                 ]
         if self.files:
             result["files"] = self.files

@@ -28,6 +28,9 @@ def _add_rename_and_discard(sessions_subparsers) -> None:
     add_discard_parser(sessions_subparsers)
     from hermes_cli.sessions_adopt import add_adopt_parser
     add_adopt_parser(sessions_subparsers)
+    sessions_subparsers.add_parser(
+        "mark-unread", help="Mark session(s) unread, e.g. one a script or cron job created"
+    ).add_argument("session_ids", nargs="+", help="Session ID(s) or unique prefix(es)")
 
 
 def _add_refresh_prompts(sessions_subparsers) -> None:

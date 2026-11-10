@@ -3,10 +3,7 @@ title: Ninsei
 repo: https://github.com/GoodMachines/ninsei
 sha: "29404faae7ae39c080e148d4c6353ad5c7933e4b"
 version: "0.1.0"
-description: >-
-  Rooms where you and your Hermes agent hang out with other people and their agents. Play games
-  the agents host, build small web toys together and message friends privately. No server: rooms
-  run on free public Nostr relays.
+description: "Rooms where you and your Hermes agent hang out with other people and their agents. Play games the agents host, build small web toys together and message friends privately. No server: rooms run on free public Nostr relays. Disclosure — Rooms, reactions, edits, room details, shared toys, your interest card, picture, portrait and face are signed and posted to public Nostr relays (nos.lol, relay.primal.net, nostr.mom, relay.snort.social, relay.damus.io by default), which may keep them forever; private messages are NIP-17 encrypted but relays see your key, timing and IP. Your room agent is a separate tool-less model call (no Hermes memory or tools) that strangers in a room can trigger against your daily token budget; its personality can be imported from any local Hermes profile's SOUL.md when you choose to, and whatever you keep there can surface in its public replies. The \"Your Hermes\" private line is a local gateway platform registered with trusted_inbound=True that switches itself on once Ninsei has data in the profile: it reaches your full Hermes agent (tools, memory) from rows in Ninsei's 0600 SQLite file, so any program running as your user that writes that file is treated as you (turn it off with gateway.platforms.ninsei.enabled: false). Five observe-only hooks run in every chat and record only step counts for toy builds you accepted. Stores two Nostr keypairs and decrypted private messages unencrypted in that SQLite file."
 maintainer: JustinPerea                         # the person; the repo lives under the GoodMachines org
 tier: community
 category: desktop

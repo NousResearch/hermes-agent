@@ -144,16 +144,18 @@ def model_state(info: dict) -> SessionModelState | None:
     return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
 
 
-def provenance_meta(db_path: Path, acp_session_id: str, session_id: str) -> dict | None:
+def provenance_meta(home: Path, acp_session_id: str, session_id: str) -> dict | None:
     """``_meta.hermes.sessionProvenance`` for the editor's id, the logical session's current
-    compression tip and its lineage (``acp_adapter/provenance.py``). Blocking."""
+    compression tip and its lineage (``acp_adapter/provenance.py``), read from the store of the
+    profile in ``home``. Blocking."""
     from acp_adapter.provenance import session_provenance_meta
     from persistence.core.errors import STORE_FAILURES
-    from persistence_assembly import open_persistence_reader
-    if not Path(db_path).exists():
+    from persistence_assembly import open_persistence_reader, profile_scope, store_exists
+    scope = profile_scope(home=Path(home))
+    if not store_exists(scope):
         return None
     try:
-        with open_persistence_reader(Path(db_path)) as persistence:
+        with open_persistence_reader(scope.profile_dir) as persistence:
             return session_provenance_meta(persistence, acp_session_id, persistence.lineage.tip(session_id))
     except STORE_FAILURES:
         # Best-effort, as main's ``_provenance_meta``: an unreadable store must not fail the attach.

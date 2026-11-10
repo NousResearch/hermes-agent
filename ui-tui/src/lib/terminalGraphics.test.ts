@@ -7,6 +7,8 @@ describe('detectTerminalGraphics', () => {
     expect(detectTerminalGraphics({ KITTY_WINDOW_ID: '1', TERM: 'xterm-kitty' })).toBe('kitty')
     expect(detectTerminalGraphics({ TERM: 'xterm-ghostty' })).toBe('kitty')
     expect(detectTerminalGraphics({ TERM_PROGRAM: 'ghostty' })).toBe('kitty')
+    // Rex is libghostty under its own TERM_PROGRAM and paints the same protocol.
+    expect(detectTerminalGraphics({ TERM: 'xterm-256color', TERM_PROGRAM: 'rex' })).toBe('kitty')
     expect(detectTerminalGraphics({ TERM: 'xterm-256color', TERM_PROGRAM: 'iTerm.app' })).toBe('unicode')
     expect(detectTerminalGraphics({ TERM_PROGRAM: 'WezTerm', TERM: 'xterm-kitty' })).toBe('unicode')
   })

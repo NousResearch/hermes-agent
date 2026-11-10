@@ -23,6 +23,7 @@ from gateway.config import load_gateway_config, GatewayConfig, Platform
 from gateway.session import SessionStore, SessionSource
 from gateway.run import GatewayRunner
 from gateway.agent_cache_pressure import AgentCacheBounds
+from tests.fixtures.storage_holder import raw_holder
 
 Path(os.environ["HERMES_HOME"]).mkdir(exist_ok=True)
 Path(os.environ["HERMES_HOME"], "config.yaml").write_text(yaml.safe_dump({"session_reset": {"mode": "both", "idle_minutes": 1}, "gateway": {"session_reset": {"mode": "daily", "at_hour": 0}}}), encoding="utf-8")
@@ -72,30 +73,31 @@ for strategy in ("ttl", "lru", "pressure"):
     resumed = store.get_or_create_session(source)
     assert resumed.session_id == entry.session_id
     assert store.load_transcript(resumed.session_id)[0]["content"] == messages[0]["content"]
-    assert store._db.get_session(resumed.session_id)["end_reason"] is None
+    assert store._scoped_persistence().sessions.get(resumed.session_id).end_reason is None
     results["cache"].append({"strategy": strategy, "order": trace, "same_transcript": True, "active_preserved": True})
 
-store._db.end_session(entry.session_id, "ws_orphan_reap")
+store._scoped_persistence().sessions.end(entry.session_id, "ws_orphan_reap")
 recovered = store.get_or_create_session(source)
 assert recovered.session_id == entry.session_id
-assert store._db.get_session(entry.session_id)["end_reason"] is None
+assert store._scoped_persistence().sessions.get(entry.session_id).end_reason is None
 results["ws_orphan_end_reopens_same_transcript"] = True
 
 store.suspend_session(entry.session_key)
 suspended = store.get_or_create_session(source)
 assert suspended.session_id != entry.session_id
-assert store._db.get_session(entry.session_id)["end_reason"] == "suspended"
+assert store._scoped_persistence().sessions.get(entry.session_id).end_reason == "suspended"
 results["explicit_suspension_rotates"] = True
 store.append_to_transcript(suspended.session_id, messages[0])
 # Historical finalization wrote both the flag and durable reset boundary.
-store._db.set_expiry_finalized(suspended.session_id)
-store._db.promote_to_session_reset(suspended.session_id)
-store._db.replace_gateway_routing_entries({}, scope=store._routing_scope())
+raw_holder(store._scoped_persistence())._execute_write(lambda conn: conn.execute(
+    "UPDATE sessions SET expiry_finalized = 1 WHERE id = ?", (suspended.session_id,)))
+store._scoped_persistence().sessions.promote_to_reset(suspended.session_id)
+store._routing_persistence.routing.replace_routing_entries({}, routing_scope=store._routing_scope())
 store._entries.clear()
 fenced = store.get_or_create_session(source)
 assert fenced.session_id != suspended.session_id
 results["historical_expiry_fence_preserved"] = True
-store._db.close()
+store.close_all_db_handles()
 
 from contextlib import redirect_stdout
 from io import StringIO

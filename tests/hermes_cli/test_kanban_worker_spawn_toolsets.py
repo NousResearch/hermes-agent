@@ -144,7 +144,8 @@ def test_default_spawn_hands_the_assignee_owner_only_its_own_values(monkeypatch,
     monkeypatch.setenv("HTTPS_PROXY", "http://user:pw@dispatcher-proxy:3128")
     # Host policy the cold-started gateway must share with the rest of the host.
     host = {"HERMES_GATEWAY_LOCK_DIR": str(tmp_path / "locks"), "XDG_STATE_HOME": str(tmp_path / "state"),
-            "HERMES_DISABLE_LAZY_INSTALLS": "1", "HTTP_PROXY": "http://host-proxy:3128"}
+            "HERMES_DISABLE_LAZY_INSTALLS": "1", "HTTP_PROXY": "http://host-proxy:3128",
+            "SSH_AUTH_SOCK": str(tmp_path / "ssh-agent.sock")}
     for name, value in host.items():
         monkeypatch.setenv(name, value)
 

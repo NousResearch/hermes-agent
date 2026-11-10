@@ -22,6 +22,8 @@ _HOST_NAMES = frozenset({
     "TMPDIR", "TMP", "TEMP", "PYTHONPATH", "PYTHONUTF8", "PYTHONIOENCODING", "VIRTUAL_ENV", "CONDA_PREFIX",
     # The user systemd manager (a gateway started from a system unit still scopes its children).
     "DBUS_SESSION_BUS_ADDRESS", "SUDO_USER",
+    # The login session's agent and display sockets (git over ssh, browser/computer-use tools).
+    "SSH_AUTH_SOCK", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY",
     # TLS trust and proxies are the host's network, which a cold-started gateway needs to reach a provider.
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",

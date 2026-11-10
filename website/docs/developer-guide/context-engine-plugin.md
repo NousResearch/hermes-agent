@@ -106,7 +106,7 @@ These have sensible defaults in the ABC. Override as needed:
 An engine that keeps per-session state reads the session store through two hooks:
 
 - `bind_session_state(session_db, session_id, persistence=None)`, when your engine defines it, runs each time an agent binds a session to the engine: at agent start, after `/new`, `/resume` or `/branch`, on a gateway hygiene pass, and when a cold `/compress` builds a one-off engine. The first two arguments can arrive by position.
-- `on_session_start(session_id, **kwargs)` after a compression continuation carries `session_db` and `persistence` in `kwargs`.
+- `on_session_start(session_id, **kwargs)` carries `session_db` and `persistence` in `kwargs` only when an agent adopts a continuation that another compression already created. The notice after the agent's own compression, and the calls at agent start and after `/new`, carry neither, so keep the handle `bind_session_state` received.
 
 `persistence` is the agent's storage interface handle (`persistence_assembly.Persistence`): `persistence.sessions.get(session_id)`, `persistence.messages.read_transcript(session_id)` and the other repositories in the [plugin guide's replacement table](./plugins/index.md#hermes_state-deprecated-use-the-storage-interface). Hermes passes it only to a hook whose signature names `persistence` or takes `**kwargs`, so an engine whose bind takes the two arguments alone keeps working. `session_db` is the deprecated `hermes_state.SessionDB` over the same store and is removed with `hermes_state` in v0.27.0; read through `persistence` instead. An engine with a session hook that cannot take `persistence` gets a `DeprecationWarning` naming its class, once per process.
 

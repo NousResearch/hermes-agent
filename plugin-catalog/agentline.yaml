@@ -1,0 +1,27 @@
+name: agentline
+title: AgentLine
+repo: https://github.com/prakhar-raj-031104/hermes-agentline
+sha: 6e4c34e61084e5db154a0159bc57440b6ffbceeb
+description: "A real phone number for Hermes: place calls that a hosted voice carries out and get the transcript back, send and read SMS, text your agent like any other chat, and let a live caller's question reach Hermes mid-call, with the answer spoken on the call or texted if it takes too long. Disclosure — talks only to api.agentline.cloud: HTTPS from the tools, plus one outbound WebSocket (wss://api.agentline.cloud/v1/events/ws) held open while the gateway runs, so no public URL or open port is needed; sends call briefs, text bodies, destination numbers, contacts and the agent's answers to live caller questions; AgentLine carries the call audio and produces transcripts, the plugin never handles audio; calls, texts and numbers are billed to your own AgentLine account; agentline_call, agentline_sms and agentline_buy_number go through Hermes's approval gate from a pre_tool_call hook and fail closed when nobody can approve; emergency, premium-rate and non-US/Canada numbers are always refused, in the hook and again in the tool; only numbers in AGENTLINE_ALLOWED_USERS can text or call the agent, everyone else is ignored without a reply; stores today's call and text counts in plugin data, no transcripts, messages or credentials; the API key is read through Hermes's secret scope; one Python dependency (websockets>=12,<16); no shell commands, child processes, telemetry or self-update."
+maintainer: prakhar-raj-031104
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+version: "1.0.0"
+docs_url: https://github.com/prakhar-raj-031104/hermes-agentline#readme
+capabilities:
+  provides_tools:
+  - agentline_status
+  - agentline_agent
+  - agentline_buy_number
+  - agentline_call
+  - agentline_call_result
+  - agentline_hangup
+  - agentline_sms
+  - agentline_messages
+  - agentline_contacts
+  provides_hooks:
+  - pre_tool_call
+  provides_middleware: []
+  requires_env:
+  - AGENTLINE_API_KEY

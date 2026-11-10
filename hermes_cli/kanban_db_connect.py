@@ -58,7 +58,12 @@ def _resolve_busy_timeout_ms() -> int:
 def _sqlite_connect(path: Path) -> sqlite3.Connection:
     """Open a Kanban SQLite connection via ``connect_tracked``: while registered,
     byte-level probes of the file are refused because an ``open()``/``close()``
-    would cancel this process's POSIX advisory locks (see ``sqlite_safe_read``)."""
+    would cancel this process's POSIX advisory locks (see ``sqlite_safe_read``).
+    The lowest read-write arm: refuses wherever the process serves hosted
+    tenants (see ``kanban_db._refuse_shared_board_if_hosted``), so every caller
+    — ``connect`` and whoever imports this arm directly — gets the refusal
+    before the board is opened."""
+    _kb._refuse_shared_board_if_hosted()
     from hermes_cli.sqlite_safe_read import connect_tracked
 
     busy_timeout_ms = _resolve_busy_timeout_ms()
@@ -86,8 +91,11 @@ def _open_readonly(path: Path) -> sqlite3.Connection:
     """Read-only open of a board database (``file:...?mode=ro``): no init, no
     migration, no directory or sidecar creation. ``connect`` uses it for
     callers that only read (``readonly=True``) and for descendants (a fenced
-    path), so the one hosted refusal covers reads too; a missing or unreadable
+    path); the lowest read-only arm refuses wherever the process serves hosted
+    tenants on its own (see ``kanban_db._refuse_shared_board_if_hosted``), so
+    direct callers are covered too; a missing or unreadable
     file raises ``sqlite3.OperationalError`` exactly as a plain read-only open."""
+    _kb._refuse_shared_board_if_hosted()
     conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     conn.text_factory = _kb._lossy_text

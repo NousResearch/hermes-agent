@@ -97,6 +97,18 @@ def _gc_retention_days() -> int:
         return 30
 
 
+def _serves_hosted_tenants() -> bool:
+    """Whether this process serves hosted tenants (the hosted boot profile's
+    answer — a checkout without that module is not hosted). The shared board
+    refuses to open in such a process, so the kanban loops disable themselves
+    here rather than crash at boot or retry a refused board open every tick."""
+    try:
+        from hermes_kanban_port import _hosted_process
+    except ImportError:
+        return False
+    return _hosted_process(None)
+
+
 def _kanban_dispatch_allowed() -> bool:
     """False while the global emergency stop (`hermes pause`) is engaged.
 

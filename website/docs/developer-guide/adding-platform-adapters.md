@@ -322,6 +322,111 @@ async def connect(self) -> bool:
 `get_pending()` returns `None` once the clarify was answered, timed out or cleared, so compare the
 result by identity with the entry your card was rendered for before acting on a click.
 
+### Read a conversation's model settings
+
+`BasePlatformAdapter.get_session_model_settings(source)` is a synchronous, read-only
+accessor for native settings sheets. The named consumer is the **Inline platform plugin**:
+its agent settings sheet currently reads the runner's private session-model override map
+and combines it with configured defaults. Together with `list_session_model_picker_providers`
+below, it supports migrating both the settings-sheet model/provider/session-key display and
+picker catalog off that private map read. The raw endpoint stays in core for catalog matching;
+the sanitized display URL is not an operational input. This does not migrate model switching:
+Inline still calls the private `GatewayRunner._handle_model_command` to apply settings-sheet
+model selections. No plugin source or installed copy is changed by these additive seams.
+
+```python
+# In a BasePlatformAdapter subclass, using the SessionSource built for this conversation:
+settings = self.get_session_model_settings(source)
+if settings is not None:
+    current_model = settings["model"]
+    current_provider = settings["provider"]
+    current_base_url = settings["base_url"]
+```
+
+The result is a fresh `SessionModelSettings` dictionary (type import:
+`from gateway.platforms.session_model import SessionModelSettings`) with exactly
+`session_key`, `model`, `provider`, and `base_url`, all strings. It is detached in both
+directions: editing it cannot change the conversation, and later model switches cannot
+change a previously returned result. An unattached adapter or rejected profile route
+returns `None`. An attached adapter with **no session** still returns configured defaults.
+
+For each setting, a nonempty in-memory session override (or, if absent, the persisted pick) wins over the channel default
+(model/provider), then the owning profile's configured model settings. Channel model and
+provider defaults apply independently, including provider-only overrides. The display `base_url`
+falls back independently to the global configured endpoint even when the selected provider changes;
+it can belong to a different provider. Do not present that provider/endpoint pair as routing information.
+Missing model and endpoint are `""`; missing provider is `"openrouter"`, as in Inline's existing display.
+Both a flat `model: name` and the mapping form (`default`, or legacy `model`) are supported.
+The source's existing routing identity, or the adapter's canonical routing resolver on a
+copy of the source, selects the profile; the caller's source is not modified.
+
+This is a **settings display snapshot**, not a credential or live-inference introspection API.
+It does not allocate a session or agent, load a persisted override into memory, resolve
+provider credentials, contact a provider, or change any settings. A persisted `/model` choice
+not yet loaded after a restart is read from the session store; a transient runtime fallback is not reported.
+Only the four named fields are returned: keys, tokens, credential pools and headers are
+never copied. Endpoint userinfo, query and fragment are omitted (unparseable URLs become
+`""`); the endpoint path is retained, so do not put credentials in endpoint paths. Do not
+use this display URL to construct provider requests. This is an in-process platform
+adapter API, not a hosted-plugin RPC. It adds no setters or reasoning API,
+and leaves the legacy override view and all existing model-switch behavior unchanged.
+
+### List a conversation's model picker providers
+
+`BasePlatformAdapter.list_session_model_picker_providers(source, *, max_models=100,
+include_moa=True)` is the synchronous catalog counterpart. It shares the display accessor's
+source canonicalization, owning-profile config scope, session > channel > config precedence,
+and persisted-pick fallback. It returns `None` without a runner or for a rejected route;
+an attached adapter with no session can still list configured providers. It does not create
+a session or agent, rehydrate an override, or change conversation settings.
+
+Core passes the **raw effective endpoint**, current model/provider, configured `providers`,
+custom providers (the same merged view the built-in `/model` picker uses), and
+`model_catalog.excluded_providers` to its picker catalog implementation.
+The owning profile scope remains bound throughout the catalog call, including when this
+method is invoked through `asyncio.to_thread`. Do not feed the display URL into discovery.
+Custom endpoint live probes are disabled: those probes can save discovered models to config.
+Configured and cached custom model lists still participate, including raw endpoint matching.
+Catalogs use the built-in `/model` picker's non-blocking path: remote catalogs come from the disk
+cache and stale ones refresh in the background under the owning profile. File reads and a short
+local LM Studio probe (1.5 s timeout) remain, so **run this method
+off the event loop**. `max_models` is the catalog's per-provider hint, not a hard total cap;
+curated/aggregator providers may be uncapped. `include_moa` includes the synthetic MoA row.
+
+The return value is a detached list of fresh `SessionModelPickerProvider` dictionaries
+(type import: `from gateway.platforms.session_model import SessionModelPickerProvider`),
+with exactly these allowlisted fields:
+
+| Field | Type | Inline use |
+| --- | --- | --- |
+| `slug` | `str` | Model selection identity and provider grouping |
+| `name` | `str` | Provider buttons and model-page heading |
+| `models` | `list[str]` | Model options; list copied independently |
+| `total_models` | `int` | Provider/group counts and pagination text |
+| `is_current` | `bool` | Current-provider marker |
+
+No endpoint fields, API keys, tokens, credential pools, headers, or unlisted future metadata
+are returned. Editing rows or model lists cannot change catalog/config/session objects, and
+later catalog changes cannot change an earlier result. This is presentation data, not runtime
+credentials or a setter. Catalog errors propagate for the adapter to handle.
+
+```python
+import asyncio
+
+# Feature-detect for older Hermes: leave model selection unavailable (or retain an
+# explicitly supported legacy implementation) when the seam is absent. Never replace
+# the raw endpoint with get_session_model_settings()["base_url"].
+list_providers = getattr(self, "list_session_model_picker_providers", None)
+providers = None
+if callable(list_providers):
+    providers = await asyncio.to_thread(list_providers, source, max_models=100, include_moa=True)
+```
+
+The seams enable an Inline migration; they do not deploy it. Updating a catalog entry does
+not upgrade an already-installed plugin. Inline must adopt the methods and users must
+separately update their installed plugin; its private model-switch command remains outside
+this read-only contract.
+
 ## Standalone send-path extensions
 
 A standalone platform can participate in host-driven outbound delivery through

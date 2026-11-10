@@ -107,6 +107,8 @@ with a name allows that one name only.
 | `hermes_cli.setup` | `prompt_choice` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.setup` | `prompt_yes_no` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.cli_output` | whole module | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.platforms.session_model` | `SessionModelPickerProvider` | adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter) |
+| `gateway.platforms.session_model` | `SessionModelSettings` | adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter) |
 | `tools.skills_tool` | `find_all_skills` | plugins/index.md § Read the skill catalog |
 | `tools.skills_tool` | `sort_skills` | plugins/index.md § Read the skill catalog |
 | `tools.skills_tool` | `skill_search_dirs` | plugins/index.md § Read the skill catalog |

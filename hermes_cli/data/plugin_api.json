@@ -117,6 +117,13 @@
       ]
     },
     {
+      "source": "adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter)",
+      "entries": [
+        "gateway.platforms.session_model:SessionModelPickerProvider",
+        "gateway.platforms.session_model:SessionModelSettings"
+      ]
+    },
+    {
       "source": "plugins/index.md § Read the skill catalog",
       "entries": [
         "tools.skills_tool:find_all_skills",

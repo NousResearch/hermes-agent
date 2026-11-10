@@ -11,7 +11,8 @@ from typing import Any, Dict, Iterable, List, Optional
 from hermes_cli._startup_fast import project_root_str
 
 PROJECT_ROOT = Path(project_root_str())
-sys.path.insert(0, str(PROJECT_ROOT))
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color
 

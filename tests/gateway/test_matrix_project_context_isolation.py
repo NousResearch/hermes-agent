@@ -258,7 +258,6 @@ def _make_runner(current_source: SessionSource, entries: list[SessionEntry]):
     runner.session_store.load_transcript.return_value = [{"role": "user", "content": "hello"}]
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._release_running_agent_state = MagicMock()
     runner._clear_session_boundary_security_state = MagicMock()
     runner._evict_cached_agent = MagicMock()

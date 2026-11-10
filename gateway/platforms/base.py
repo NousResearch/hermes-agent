@@ -430,8 +430,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
+if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
+    sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
@@ -1714,7 +1714,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-            existing.absorb_reply_expected(event)
+            existing.absorb_turn_input(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
             elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
@@ -1729,7 +1729,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
-            existing.absorb_reply_expected(event)
+            existing.absorb_turn_input(event)
             return
     pending_messages[session_key] = event
 
@@ -2480,7 +2480,7 @@ class BasePlatformAdapter(ABC):
             if event.media_urls:
                 existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
                 existing.extend_media(event)
-            existing.absorb_reply_expected(event)
+            existing.absorb_turn_input(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
@@ -3921,12 +3921,9 @@ class BasePlatformAdapter(ABC):
             # say so once per adapter (#102260).
             if not getattr(self, "_no_message_handler_logged", False):
                 self._no_message_handler_logged = True
-                logger.error(
-                    "[%s] Dropping inbound message: no gateway message handler "
-                    "is installed on this adapter. The adapter is connected and "
-                    "can send, but every inbound message is discarded.",
-                    self.name,
-                )
+                logger.error("[%s] Dropping inbound message: no gateway message handler is installed on this "
+                             "adapter. The adapter is connected and can send, but every inbound message is "
+                             "discarded.", self.name)
             return
 
         if event.allow_gateway_control:

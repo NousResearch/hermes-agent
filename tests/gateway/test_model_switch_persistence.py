@@ -54,7 +54,6 @@ def _make_runner():
     runner._background_tasks = set()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._agent_cache = {}
     runner._agent_cache_lock = None

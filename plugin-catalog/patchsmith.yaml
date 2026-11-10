@@ -1,6 +1,6 @@
 name: patchsmith
 repo: https://github.com/icporcincula/patchsmith
-sha: df7014d72c98e1934babba3077b56dc34a53aeaf
+sha: e7b8d09a613a5322bee089ea04c708ca2d8cc7c8
 title: Patchsmith
 description: >-
   Adds `implement_task` and `apply_patch`. The first hands a single well-specified coding task to a local
@@ -12,15 +12,15 @@ description: >-
   total token budgets shared across up to three fresh-context attempts. An optional local model is used only on the final allowed attempt; failures return a factual handback. Includes a path jail, read-only test files, an auto-finish when tests go
   green, a repeat-call guard, and revert of partial edits when a run is blocked. Your main
   model spends tokens only on the instruction and the returned diff. Disclosure — runs git
-  and the test command you or the user configured (the agent should pass only a command the
-  user authorized) as subprocesses in the working directory; writes implementation files inside the given
+  and the owner-configured test command (never chosen by the model) with a minimal child environment (the agent should not and cannot pass a command or endpoint)
+  as subprocesses in the working directory; writes implementation files inside the given
   `workdir` (never .git or node_modules) in direct mode, plus a run transcript under
   `<workdir>/.patchsmith/`; propose mode writes an isolated temporary checkout and retained
-  patch, provenance record and transcript under `~/.patchsmith/proposals/`; Git worktree
+  patch, provenance record and transcript under `<hermes home>/plugin-data/patchsmith/proposals/`; Git worktree
   bookkeeping is created and removed in the source repository metadata; network access only to the configured local model
   endpoint (non-local endpoints are refused); no telemetry, no self-update, no stored
   credentials. Includes a namespaced delegation skill, /patchsmith status, and local run summaries
-  under ~/.patchsmith/runs with estimated token totals. Optional process-local background
+  under <hermes home>/plugin-data/patchsmith/runs with estimated token totals. Optional process-local background
   runs return a job identifier for task_status; keep Hermes open until completion.
   inspect_hardware reads CPU/RAM/GPU metadata through operating-system probes and read-only local API
   model metadata. A hardware skill separates tested evidence from memory estimates; contributor
@@ -29,7 +29,7 @@ maintainer: Bart Porcincula
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.1.0"
+version: "0.1.1"
 docs_url: https://github.com/icporcincula/patchsmith#readme
 platforms: []
 capabilities:
@@ -45,4 +45,6 @@ capabilities:
     - PS_MODEL
     - PS_MAX_TURNS
     - PS_CTX_BUDGET
+    - PS_ENV_PASSTHROUGH
     - PS_TEST_COMMAND
+

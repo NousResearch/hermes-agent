@@ -412,6 +412,11 @@ def resolve_startup_model_route(
     if not prefix or not model:
         return None
 
+    # The prefix names a provider present in user config. When that is the SAME provider
+    # the process is already pinned to (no explicit --provider / -m choice), the prefix is
+    # the model's vendor namespace, not a route selector: keep the full id so
+    # _normalize_model_for_provider never re-adds it and warns every startup (#152498).
+
     if current_provider:
         try:
             from hermes_cli.providers import is_routing_aggregator, normalize_provider as _norm_prov
@@ -439,6 +444,16 @@ def resolve_startup_model_route(
         provider = canonical
     else:
         return None
+    try:
+        from hermes_cli.providers import is_routing_aggregator, normalize_provider as _norm_prov
+        current_canonical = _norm_prov(current_provider) if current_provider else ""
+    except Exception:
+        current_canonical = (current_provider or "").lower()
+    if (not explicit_provider and current_canonical
+            and current_canonical.lower() == canonical.lower()
+            and not is_aggregator(canonical)):
+        # Same provider as the pinned route: the raw id IS the config's model id.
+        return StartupModelRoute(model=raw, provider=provider)
     return None if is_aggregator(canonical) else StartupModelRoute(model=model, provider=provider)
 
 

@@ -40,8 +40,8 @@ just test tests/agent/test_foo.py -k test_x             # same runner; refuses t
   poll with `tests.waiting.wait_until` / `async_wait_until`.
 - **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
   `tests/agent/`, `tests/hermes_state/`, `tests/gateway/relay/`, ...); installer/updater script tests
-  under `tests/scripts/{install,desktop_update}/`. Only tests of root-level modules (`batch_runner`,
-  `utils`, `hermes_constants`, packaging) sit directly in `tests/`. No issue numbers in filenames —
+  under `tests/scripts/{install,desktop_update}/`. Only tests of single-file modules at the root or directly
+  in `hermes_agent/` (`batch_runner`, `utils`, `hermes_constants`, packaging) sit directly in `tests/`. No issue numbers in filenames —
   cite the issue in the module docstring (`test_89315_x.py` → `test_x.py`, "Regression for #89315").
 - **Placement (CI lanes):** `scripts/ci/classify_changes.py` picks jobs by changed files. A Python test
   asserting about `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, or `.ts/.tsx/.js/

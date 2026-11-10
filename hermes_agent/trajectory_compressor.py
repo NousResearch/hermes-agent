@@ -6,9 +6,9 @@ turns; from the middle, summarize only as many turns as needed (never splitting 
 <tool_call>/<tool_response> pair) and replace them with one human summary turn.
 
 Usage:
-    python hermes_agent/trajectory_compressor.py --input=data/my_run            # directory
-    python hermes_agent/trajectory_compressor.py --input=data/trajectories.jsonl --sample_percent=15
-    python hermes_agent/trajectory_compressor.py --input=data/trajectories.jsonl --output=out.jsonl --target_max_tokens=16000
+    python -m hermes_agent.trajectory_compressor --input=data/my_run            # directory
+    python -m hermes_agent.trajectory_compressor --input=data/trajectories.jsonl --sample_percent=15
+    python -m hermes_agent.trajectory_compressor --input=data/trajectories.jsonl --output=out.jsonl --target_max_tokens=16000
 """
 
 import json

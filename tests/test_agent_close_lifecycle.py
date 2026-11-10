@@ -72,7 +72,7 @@ class TestBatchRunnerClosesAgent:
 
     def test_agent_closed_after_successful_prompt(self, monkeypatch):
         from hermes_agent import batch_runner
-        RecordingAgent.use(monkeypatch, where="batch_runner.AIAgent")
+        RecordingAgent.use(monkeypatch, where="hermes_agent.batch_runner.AIAgent")
         monkeypatch.setattr(batch_runner, "sample_toolsets_from_distribution", lambda name: [])
 
         result = batch_runner._process_single_prompt(0, {"prompt": "hi"}, 0, self.CONFIG)

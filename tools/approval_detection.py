@@ -35,7 +35,7 @@ _HERMES_ENV_PATH = (
 _HERMES_CONFIG_PATH = (
     _HERMES_HOME_DIR + r'config\.yaml\b'
 )
-_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
+_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)?)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
 _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
@@ -945,6 +945,7 @@ _GREP_SHORT_OPTIONS_WITH_ARG = {"A", "B", "C", "D", "d", "e", "f", "m"}
 _BASH_OPTIONS_WITH_ARG = {"-O", "+O", "-o", "+o", "--init-file", "--rcfile"}
 _BASH_SHORT_OPTION_LETTERS = frozenset("ilrsDcabefhkmnptuvxBCEHPTOo")
 _MAX_DETECTION_COMMAND_CHARS, _MAX_SEPARATOR_FREE_COMMAND_CHARS, _MAX_DETECTION_SEGMENTS = 128_000, 4_096, 25_000
+_MAX_SUBSTITUTION_DEPTH = 32
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
@@ -959,7 +960,25 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     # Long separator-free input has no compound-command utility and makes every regex inspect one giant token.
     if len(command) > _MAX_SEPARATOR_FREE_COMMAND_CHARS and not any(char in command for char in ";&|\n"):
         return True
+    # Every nested `$(` level adds a command word whose literal-substitution pass rescans the rest of
+    # the nesting, so detection cost grows ~cubically with depth (306 chars at depth 100 took ~4 s,
+    # depth 240 ~50 s). No real command nests this deep; crossing the ceiling fails closed.
+    if _max_substitution_depth(command) > _MAX_SUBSTITUTION_DEPTH:
+        return True
     return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
+
+
+def _max_substitution_depth(command: str) -> int:
+    """Deepest `$(` nesting, in one linear pass. Quote-blind on purpose: over-counting only fails
+    closed. Sequential substitutions stay flat, so ordinary automation is unaffected."""
+    depth = deepest = 0
+    for index, char in enumerate(command):
+        if char == "(" and index and command[index - 1] == "$":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif char == ")" and depth:
+            depth -= 1
+    return deepest
 
 
 def _backtick_end_from(segment: str, i: int) -> int | None:

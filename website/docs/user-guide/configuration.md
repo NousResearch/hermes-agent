@@ -2519,6 +2519,8 @@ Signal is listed as a valid platform key because the setting can be saved per pl
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 
+Bot-triggered turns remain final-reply-only by default. `display.platforms.<platform>.interim_assistant_messages_for_bots: true` is a deliberately **platform-only** opt-in for visible assistant commentary on bot-peer turns; the top-level `display.interim_assistant_messages_for_bots` key is ignored. It does not enable `thinking_progress` or expose model reasoning, and `interim_assistant_messages: off` still wins. Enable it only for loop-safe bot collaborations: each interim message may be read as another inbound bot turn and consumes the existing bot-hop budget.
+
 `show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
 ## Privacy

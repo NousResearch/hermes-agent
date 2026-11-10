@@ -436,6 +436,9 @@ class StreamFallbackMixin:
             # with interim text and orphan the true final.
             _md = self._metadata_for_send(final=False) or {}
             _md["_interim_send"] = True
+            # Distinguish assistant prose from runtime notices and answer-tail
+            # flushes, which also use _interim_send but must not be ballooned.
+            _md["_assistant_commentary"] = True
             # reply_to only for reply-anchored threading; Discord/Telegram use
             # thread_id metadata and reply_to on every commentary is spam.
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)

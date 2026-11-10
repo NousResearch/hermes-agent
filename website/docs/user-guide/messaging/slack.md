@@ -428,6 +428,11 @@ platforms:
       # gracefully fall back to aligned monospace.
       rich_blocks: false
 
+      # Prefix visible assistant commentary with 💬.
+      # Presentation only; does not enable interim messages.
+      # Default: false.
+      interim_speech_balloon: false
+
       # Append Slack-native feedback controls to final Block Kit replies.
       # Requires rich_blocks: true. Default: false.
       feedback_buttons: false
@@ -472,6 +477,7 @@ platforms:
 | `platforms.slack.extra.unfurl_links` | Slack default | Set to `false` to suppress automatic previews for linked web pages while preserving clickable links. When either unfurl key is set, media captions are posted as a separate message *before* the file (Slack's upload API cannot carry unfurl controls), and native draft streaming falls back to edit-based delivery. |
 | `platforms.slack.extra.unfurl_media` | Slack default | Set to `false` to suppress automatic media previews while preserving clickable links. Same caption-ordering and streaming notes as `unfurl_links`. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). Markdown `[label](url)` links and Slack `<url\|label>` autolinks both become clickable links inside lists, quotes and table cells; mentions (`<@U…>`, `<#C…>`, `<!here>`) are left as-is. A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
+| `platforms.slack.extra.interim_speech_balloon` | `false` | When `true`, prefixes public interim assistant messages with 💬. This is presentation only: it does not enable interim messages or reasoning/thinking output. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
 | `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. Cards work with Slack's built-in default `tool_progress: off`; an explicitly configured `display.tool_progress: off` (global or `display.platforms.slack`; `/verbose` writes the same key) disables cards too. Cards need a thread: when the card lane is active and the chat has no thread to anchor on (a top-level DM with `reply_in_thread: false`), Hermes shows no tool progress instead of text bubbles, unless you explicitly set `tool_progress: new`/`all`, which falls back to editable text progress there. Recoverable native API failures fall back to one continuously edited text update. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
@@ -732,6 +738,17 @@ How `mentions` mode gates:
 - Hermes always ignores its own messages, in every mode, to prevent self-echo loops.
 
 `mentions` is the recommended mode for bot-to-bot collaboration: each agent must explicitly summon the other per turn. Avoid `all` unless every peer bot's own reply policy is loop-safe — two bots that answer everything will answer each other forever. Detection covers labeled bot messages (`bot_id`, `subtype: bot_message`), app-originated events, and unlabeled bot *users* (probed via `users.info`), so peer Hermes agents are filtered consistently across workspaces.
+
+Bot-triggered turns post only their final reply by default, which prevents interim status/acknowledgement messages from starting another bot-to-bot loop. To show the assistant's visible messages between tool calls on Slack, opt in explicitly:
+
+```yaml
+display:
+  platforms:
+    slack:
+      interim_assistant_messages_for_bots: true
+```
+
+This does **not** expose model reasoning or enable `thinking_progress`; that lane remains suppressed for bot-triggered turns. `interim_assistant_messages: off` still wins, and the existing bot-hop limit remains in force. Each visible interim message may be read as another inbound bot turn and consumes that hop budget. Leave the bot-peer opt-in disabled unless every participating bot's reply policy is loop-safe.
 
 For strict multi-bot deployments, pair with `require_mention: true` and `strict_mention: true` — see the smoke-check profile below.
 

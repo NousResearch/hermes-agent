@@ -402,3 +402,48 @@ def test_auto_never_joins_on_a_surface_that_is_not_a_chat(platform_key):
 
     assert gateway_delegation_inline(_interim(False), platform_key, interim_enabled=False) is False
     assert gateway_delegation_inline({"delegation": {"gateway_mode": "inline"}}, platform_key, interim_enabled=True)
+
+
+@pytest.mark.parametrize("is_bot, expected_interim", [(True, False), (False, True)])
+def test_bot_peer_interim_opt_in_does_not_switch_delegation_to_background(monkeypatch, is_bot, expected_interim):
+    """Bot chats keep inline delegation even when their commentary lane is on."""
+    from types import SimpleNamespace
+    from gateway.session_execution import GatewaySessionAgentMixin
+    import tools.delegate_tool_config as delegation_config
+
+    seen = []
+    real_resolve = delegation_config.gateway_delegation_inline
+
+    def spy(config, platform_key, *, interim_enabled):
+        seen.append(interim_enabled)
+        return real_resolve(config, platform_key, interim_enabled=interim_enabled)
+
+    monkeypatch.setattr(delegation_config, "gateway_delegation_inline", spy)
+    agent = object()
+    lookup = SimpleNamespace(agent=None, reused=False, evicted=None)
+    runner = SimpleNamespace(
+        _agent_config_signature=lambda *a, **k: "sig",
+        _extract_cache_busting_config=lambda _config: {},
+        _agent_cache_lock=None,
+        _agent_cache=None,
+    )
+    fake = SimpleNamespace(
+        _ctx=SimpleNamespace(
+            source=SimpleNamespace(is_bot=is_bot, user_id=None, user_id_alt=None),
+            user_config={"delegation": {"gateway_mode": "auto"}},
+            interim_assistant_messages_enabled=True,
+            enabled_toolsets=[], session_key="s", session_id="s",
+        ),
+        _runner=runner,
+        _skip_context_files=lambda _platform: False,
+        _cached_sid_is_dead=lambda _lock, _cache: (None, False),
+        _current_message_count=lambda: 0,
+        _lookup_cached_agent=lambda *a: lookup,
+        _build_fresh_agent=lambda *a, **k: agent,
+    )
+
+    resolved, reused = GatewaySessionAgentMixin._resolve_turn_agent(
+        fake, {"model": "m", "runtime": {}}, "slack", {}, 1, {}, None,
+    )
+    assert (resolved, reused) == (agent, False)
+    assert seen == [expected_interim]

@@ -1536,6 +1536,9 @@ platform_toolsets:
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false
 #       unfurl_media: false
+#       # Prefix public interim assistant commentary with 💬 (presentation only).
+#       # Leaves final answers and streamed text byte-for-byte canonical.
+#       interim_speech_balloon: false
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
@@ -1995,6 +1998,16 @@ display:
   #          that cannot edit messages)
   #   false: Only keep/send the final response
   # interim_assistant_messages: true
+
+  # Mid-turn assistant updates during bot-to-bot turns on specific platforms.
+  # Off by default on all platforms so bot-triggered runs remain final-only,
+  # avoiding message loops across peer bots. Ignored at the top level; configure
+  # under display.platforms.<platform> instead.
+  # Example:
+  #   display:
+  #     platforms:
+  #       slack:
+  #         interim_assistant_messages_for_bots: true
 
   # Opt-in: hide automatic warning/diagnostic notifications (compression, retry
   # and fallback notices, credit/subagent failure lines, inactivity and watchdog

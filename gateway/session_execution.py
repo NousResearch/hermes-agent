@@ -222,11 +222,15 @@ class GatewaySessionAgentMixin:
             self._release_evicted_agent(found.evicted)
         if agent is None:
             from tools.delegate_tool_config import gateway_delegation_inline, gateway_delegation_inline_scope
+            from gateway.bot_peer_notices import automatic_notices_allowed
             # delegation.gateway_mode from this turn's own (profile-scoped) config and the chat's resolved interim
             # setting (never muted for a heartbeat turn, which shares the user's session and its cached agent);
-            # read once, by the agent's first tool build, then carried by its delegate_task schema and pin.
+            # bot peers stay inline even when their platform opts into visible interim messages, so delegation
+            # cannot add background status/child-answer messages to the bot-to-bot lane.
             inline = gateway_delegation_inline(
-                ctx.user_config, platform_key, interim_enabled=ctx.interim_assistant_messages_enabled)
+                ctx.user_config, platform_key,
+                interim_enabled=ctx.interim_assistant_messages_enabled and automatic_notices_allowed(ctx.source),
+            )
             with gateway_delegation_inline_scope(inline):
                 agent = self._build_fresh_agent(
                     turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,

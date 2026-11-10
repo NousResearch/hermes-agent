@@ -124,6 +124,29 @@ def resolve_tool_progress(user_config: dict, platform_key: str, env_mode: str | 
     return resolve_display_setting(user_config, platform_key, "tool_progress"), False
 
 
+def interim_assistant_messages_allowed(
+    user_config: dict, platform_key, *, is_webhook: bool, bot_peer: bool, mode,
+) -> bool:
+    """Resolve whether visible interim assistant prose may be posted.
+
+    Bot-triggered turns default to final replies only to prevent bot-to-bot
+    loops. Operators can opt a platform back in without enabling private
+    ``thinking_progress`` / reasoning text, which remains independently gated.
+    """
+    if is_webhook or mode == "off":
+        return False
+    if not bot_peer:
+        return True
+    key = platform_key.value if hasattr(platform_key, "value") else str(platform_key)
+    display = user_config.get("display")
+    platforms = display.get("platforms") if isinstance(display, dict) else None
+    overrides = platforms.get(key) if isinstance(platforms, dict) else None
+    value = overrides.get("interim_assistant_messages_for_bots") if isinstance(overrides, dict) else None
+    # Deliberately platform-only: a top-level display key must not become a
+    # fleet-wide bot-loop override.
+    return _normalise("interim_assistant_messages_for_bots", value) if value is not None else False
+
+
 # --- Normalisation of YAML quirks (bare ``off`` → False in YAML 1.1, etc.) ---
 
 _TRUTHY = {"true", "1", "yes", "on"}
@@ -185,6 +208,7 @@ _NORMALISERS: dict[str, Any] = {
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
+    "interim_assistant_messages_for_bots": _norm_bool,
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,

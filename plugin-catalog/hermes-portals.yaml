@@ -2,7 +2,7 @@ name: hermes-portals
 title: Hermes Portals
 repo: https://github.com/ochikov/hermes-portals
 sha: e336ce862a3f5c4ef7ddffd2590ff7c79a3a246c
-description: Stateful interactive tools with laptop-to-phone camera handoff and optional local Mac gesture control.
+description: "Stateful interactive tools with laptop-to-phone camera handoff and optional local Mac gesture control. Disclosure — `/portals start` launches a background local web companion (its own venv, built by a manual `scripts/setup.sh` that downloads hash-pinned Python/npm packages and a checksum-verified MediaPipe model from storage.googleapis.com); with a LAN IP it listens on all interfaces on port 8766 over unencrypted HTTP with token pairing; the optional source-built macOS app uses Camera and Accessibility permissions to move the cursor, click, scroll and switch apps from hand gestures."
 maintainer: ochikov
 tier: community
 category: tools

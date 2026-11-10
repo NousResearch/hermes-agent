@@ -785,7 +785,7 @@ async def create_profile_endpoint(body: ProfileCreate):
     return {"ok": True, "name": body.name, "path": str(path), "model_set": result.model_set,
             "model_error": result.model_error, "mcp_written": result.mcp_written,
             "skills_disabled": result.skills_disabled, "hub_installs": hub_installs,
-            "soul_set": body.soul is not None}
+            "soul_set": body.soul is not None, "warnings": result.warnings}
 
 
 @router.get("/api/profiles/active")

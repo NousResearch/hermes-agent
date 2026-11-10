@@ -210,6 +210,10 @@ def _profile_create(args):
     sync_imports = getattr(args, "sync_imports", False)
     clone_config = clone or clone_from is not None
     cloned = clone_config or clone_all
+    if cloned and getattr(args, "no_credentials", False):
+        # A clone copies the source's .env/config (and --clone-all its auth.json) by request.
+        _die("Error: --no-credentials cannot be combined with --clone / --clone-from / --clone-all "
+             "(a clone copies the source's keys); create without cloning instead.", err=True)
     launch_label = get_active_profile_name()
     source_label = clone_from or launch_label
     request = ProfileCreateRequest(

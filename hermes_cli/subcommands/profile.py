@@ -47,7 +47,8 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
              "this way.")
     profile_create.add_argument(
         "--no-credentials", action="store_true",
-        help="Copy no API keys, logins or model from the launch profile (run `<name> setup` afterwards). "
+        help="Copy no API keys, logins or model from the launch profile (run `<name> setup` afterwards; "
+             "not with --clone*, which copies the source's keys). "
              "The default profile's logins stay readable for any provider the new profile has not signed in to.")
     profile_create.add_argument(
         "--no-skills", action="store_true",

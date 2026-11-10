@@ -135,3 +135,42 @@ def test_active_config_write_failure_still_migrates_siblings_and_restores_snapsh
     monkeypatch.setenv('HERMES_HOME', str(sibling))
     sibling_version, latest = config.check_config_version()
     assert sibling_version == latest > 48
+
+@pytest.mark.parametrize("new_options", [False, True], ids=("format-only", "configure-new-options"))
+def test_partial_config_migration_stays_owed_after_update(monkeypatch, capsys, new_options):
+    """A step failure returns failed_step rather than raising. Both update paths must retain a
+    config_migration follow-up and must not say the configuration was fully updated.
+    The post-commit caller catches the raise and records the owed step in the update receipt.
+    """
+    from hermes_cli import update_cmd_config
+
+    monkeypatch.setattr(config, "check_config_version", lambda **_: (20, 53))
+    monkeypatch.setattr(config, "get_missing_env_vars", lambda **_: [])
+    monkeypatch.setattr(config, "get_missing_config_fields",
+                        lambda: [{"key": "display.new_setting"}] if new_options else [])
+    migrate_calls = []
+
+    def stopped_migration(**kwargs):
+        migrate_calls.append(kwargs)
+        return {
+            "env_added": [], "config_added": ["v17: compression model moved"],
+            "warnings": ["config migration to v21 failed: malformed plugins.disabled"],
+            "failed_step": 21,
+            "failed_warning": "config migration to v21 failed: malformed plugins.disabled",
+        }
+
+    monkeypatch.setattr(config, "migrate_config", stopped_migration)
+    monkeypatch.setattr(update_cmd, "_migrate_sibling_profile_configs", lambda *_: [])
+    snapshots = []
+    monkeypatch.setattr(update_cmd_config, "_restore_snapshot_safety_nets",
+                        lambda snapshot: snapshots.append(snapshot))
+
+    with pytest.raises(RuntimeError, match="config migration stopped at v21"):
+        update_cmd._check_and_apply_config_migration(
+            assume_yes=True, pre_update_snapshot_id="pre-update-snapshot")
+
+    assert len(migrate_calls) == 1
+    assert snapshots == ["pre-update-snapshot"], "independent snapshot recovery must still run"
+    output = capsys.readouterr().out
+    assert "✓ Config format updated" not in output
+    assert "✓ Configuration updated!" not in output

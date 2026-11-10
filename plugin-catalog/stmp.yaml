@@ -1,0 +1,31 @@
+name: stmp
+repo: https://github.com/a7madgamal/hermes-stmp
+sha: 404188a3e5c79c0b4cd71efccdf921d5cd3f24db
+description: "Use a phone as the trust boundary: Gmail, Calendar, Drive, contacts, notifications, a credential vault and SSH over STMP — every gated call waits for a human on the device, and no credential is ever stored on the host. Disclosure — needs the STMP Android app (public repository, Apache-2.0, APK on its releases page) reachable from the Hermes host over LAN or tailnet, so it does nothing without a paired phone; acts on that phone's signed-in Google account (sends mail, writes calendar events, uploads and downloads Drive files — a download writes to an absolute host path you name) and runs SSH commands through private keys stored on the device, which never leave it; stores nothing at rest beyond the connected instance's capability snapshot (contract version, plugin and route counts, SSH connection names) in Hermes's own plugin state, rewritten only on change; two routes are gate-exempt by design and say so in their tool descriptions — POST /tts and POST /audio/{cue} play sound only; every other route goes through the phone's approval gate, whose per-route mode (SECURE, NOTIFY or DONT_DISTURB) is the device owner's policy, not the plugin's; declares and reads no credential (requires_env is empty, no oauth block), no telemetry, no self-updater, and talks to exactly one address: the configured base_url."
+maintainer: a7madgamal
+tier: community
+category: tools
+title: STMP Phone Bridge
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/a7madgamal/hermes-stmp#readme
+version: "0.1.0"
+platforms: []
+readme: true
+capabilities:
+  provides_tools:
+    - stmp_audio
+    - stmp_calendar
+    - stmp_contacts
+    - stmp_debug
+    - stmp_drive
+    - stmp_gmail
+    - stmp_help
+    - stmp_logs
+    - stmp_notifications
+    - stmp_probe
+    - stmp_secrets
+    - stmp_ssh
+    - stmp_tts
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

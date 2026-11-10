@@ -38,7 +38,7 @@ def test_reload_after_a_fallback_turn_restores_the_primary_route(tmp_path):
             "provider": "zai", "base_url": PRIMARY["base_url"], "api_mode": "chat_completions"}
 
         from hermes_cli.cli_model_switch_mixin import stored_session_route
-        from tui_gateway.agent_factory import _stored_session_runtime_overrides
+        from tui_gateway.server import _stored_session_runtime_overrides  # bound with the facade's globals
         route = stored_session_route(row, current_model="glm-5.3", current_provider="zai")
         assert route is None or route[0] == "glm-5.3"  # CLI --resume stays on (or returns to) the primary
         override = _stored_session_runtime_overrides(row).get("model_override") or {}
@@ -55,7 +55,7 @@ def test_an_explicit_model_pick_of_the_fallback_model_survives_reload(tmp_path):
         row = db.get_session("s1")
         assert FALLBACK_ROUTE_KEY not in json.loads(row["model_config"])
         assert fallback_restored_row(row) is row
-        from tui_gateway.agent_factory import _stored_session_runtime_overrides
+        from tui_gateway.server import _stored_session_runtime_overrides  # bound with the facade's globals
         override = _stored_session_runtime_overrides(row)["model_override"]
         assert (override["model"], override["provider"]) == ("deepseek-flash", "deepseek")
     finally:

@@ -1,0 +1,40 @@
+name: branchpoint
+repo: https://github.com/Sahil-SS9/hermes-branchpoint
+sha: "87ebeb0c06e622b4768b7e6d48c3704e372b3fba"
+title: Branchpoint
+version: "0.2.1"
+maintainer: Sahil-SS9
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Sahil-SS9/hermes-branchpoint#readme
+readme: true
+platforms: [linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-branchpoint/87ebeb0c06e622b4768b7e6d48c3704e372b3fba/docs/multiverse.png
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-branchpoint/87ebeb0c06e622b4768b7e6d48c3704e372b3fba/docs/decision.png
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-branchpoint/87ebeb0c06e622b4768b7e6d48c3704e372b3fba/docs/decision-log.png
+description: >-
+  Explore the same task with 2-8 independent agent plans (default 4), optionally on different models.
+  Build selected routes in isolated Git worktrees (default top 2), compare them with three blind reviewers
+  and an evidence-linked decision record, then adopt or converge their ideas into another candidate.
+  Includes a loopback live view, decision log, rewind anchors and reversible adoption. Disclosure:
+  writes worktree metadata, branches, snapshots and refs/branchpoint/ in the project; only adopt changes
+  the original working tree. Optional automatic prompt snapshots can be disabled. File-only child agents
+  have plugin-level worktree guards, not an OS sandbox; trusted project test/lint/type commands run as
+  subprocesses. Goal, rewind context, source excerpts and ledgers go to the user's configured Hermes
+  model with best-effort credential-pattern scrubbing; secret-looking files are excluded. Artifacts live
+  in the profile's plugin-data/branchpoint, or the standalone CLI's local state directory. The view binds
+  to 127.0.0.1 with a server token. Spawns Git and headless Hermes; standalone model chats expose only
+  session-local TODO bookkeeping. No telemetry, self-updater, stored credentials or direct external
+  network calls by the plugin; model transport is handled by Hermes.
+known_issues:
+  - "Real builds require matching Branchpoint hooks installed and enabled in the child's Hermes home; absent, disabled or stale hooks stop the build."
+  - "Child token caps are not a live cross-process budget. Missing usage is explicitly estimated; inherited failing checks and skipped evidence remain visible."
+  - "Replay produces a paste-ready prompt, not a programmatically forked Hermes session. Undo restores the entire pre-adopt tree, replacing later edits."
+  - "POSIX file locking is required: Linux/macOS; use WSL on Windows. Native Hermes integration is tested on Linux, with offline CI on Linux and macOS."
+capabilities:
+  provides_tools: [branchpoint_status, branchpoint_decision, branchpoint_fork]
+  provides_hooks: [pre_llm_call, pre_tool_call, post_tool_call, transform_tool_result, post_api_request]
+  provides_middleware: []
+  requires_env: []

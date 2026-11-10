@@ -20,6 +20,8 @@ def test_group_schema_tracks_delivery_policy_without_mutating_previous_definitio
         enabled = config.get("independent_completions", False)
         task = definition["function"]["parameters"]["properties"]["tasks"]["items"]
         assert ("group" in task["properties"]) == enabled
+        # Advertised as a per-task requirement, so the delivery choice is explicit in every call.
+        assert task["required"] == (["goal", "group"] if enabled else ["goal"])
         assert ("group" in definition["function"]["description"]) == enabled
         assert json.dumps(registry.get_definitions({"delegate_task"})[0]) == json.dumps(definition)
         for previous, serialized in snapshots:

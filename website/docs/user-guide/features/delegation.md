@@ -191,9 +191,10 @@ Set `delegation.independent_completions: true` to have results land **per comple
 
 When independent completions are enabled:
 
-- Omit `group` when each result is useful to act on separately. Each task reports as soon as it finishes.
-- Use the same `group` string when you want to review outputs together: comparison, synthesis, or one coordinated decision. The group returns **one** consolidated message after all its tasks finish. Even independently executable tasks can belong in one group when their results inform the same decision.
-- Different groups report independently; grouped and ungrouped tasks can share one call.
+- The schema marks `group` as required on every task, so the model states the delivery choice in each call instead of falling into per-task delivery by leaving a field out.
+- The same `group` string on every task is the choice when the parent will respond only once all of them are done: comparison, synthesis, or one coordinated decision. The group returns **one** consolidated message after all its tasks finish. Even independently executable tasks belong in one group when their results inform the same decision.
+- A task gets its own `group` only when the parent will act on that result as soon as it lands. Each such result re-enters alone and costs the parent a turn.
+- Different groups report independently and can share one call. A task that arrives without a `group` (an older transcript, a model that ignores `required`) is still accepted and reports alone, as before.
 
 This is off by default because every unit is a new turn for the orchestrator: a 15-task call becomes up to 15 wake-ups, which fragmented long campaigns. Grouping controls **result delivery, not execution order**: all tasks still run in parallel. If task B needs task A's output to do its work, dispatch A first, then dispatch B with that output after A returns.
 

@@ -123,6 +123,8 @@ card borders, 4% control rails, and 14% control borders. Selection uses a
 fill and stronger secondary copy for readability. Agent-management tiles
 use the translucent treatment; conversation-sidebar tiles remain solid.
 The global rail tracks the owning agent even inside its settings editor.
+Shared rail/sidebar geometry lives at the document root while the redesign is
+enabled, so sibling route overlays use the same widths without covering the rail.
 Checked switches use the brand-blue track and light thumb across settings
 and the capability catalog; unchecked tracks are neutral 10% fills.
 

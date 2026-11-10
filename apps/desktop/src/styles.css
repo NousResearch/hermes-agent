@@ -17,6 +17,10 @@
 [data-portal-redesign] {
   --terminal-panel-min-width: min(22rem, 40vw);
   --radius-scalar: 0.6;
+}
+
+/* Route pages render beside the shell, so their shared geometry lives above both. */
+:root:has([data-portal-redesign='true']) {
   --global-nav-width: 3.75rem;
   --page-nav-width: clamp(13rem, 25vw, 20rem);
   --page-nav-row-height: 2.5rem;

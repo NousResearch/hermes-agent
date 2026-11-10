@@ -69,6 +69,12 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     }
 
     await page.setViewportSize({ width: 1280, height: 860 })
+
+    if (!await page.locator('.portal-sidebar').isVisible()) {
+      await page.getByRole('button', { name: 'Show sidebar', exact: true }).tap()
+    }
+
+    const sidebarWidth = (await page.locator('.portal-sidebar').boundingBox())!.width
     await go('/settings?tab=config:appearance&page=window-layout')
     await page.getByRole('button', { name: 'Simple', exact: true }).tap()
     await go('/')
@@ -77,9 +83,24 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await page.locator('[id="setting-field-appearance.interface-mode"]').getByRole('button', { name: 'Advanced', exact: true }).tap()
     await go('/settings?tab=config:safety&page=approvals')
     await expect(page.getByRole('radio', { name: /^Smart/ })).toBeVisible()
+    const settings = page.locator('[data-page-surface]')
+    const rail = page.getByRole('navigation', { name: 'Hermes', exact: true })
+    const settingsNav = settings.locator('[data-tour="overlay-nav"]')
+    // Settings is a sibling of the shell: it must still clear the rail and
+    // share the redesigned sidebar's width rather than inherit classic sizes.
+    await expect.poll(async () => {
+      const railBounds = (await rail.boundingBox())!
+      return (await settings.boundingBox())!.x - (railBounds.x + railBounds.width)
+    }, { timeout: 5000 }).toBeCloseTo(0)
+    await expect.poll(async () => (await settingsNav.boundingBox())!.width, { timeout: 5000 }).toBe(sidebarWidth)
     await page.locator('[data-slot="portal-safety-settings"] summary').tap()
     await expect(page.locator('[data-slot="portal-safety-settings"] details')).toHaveAttribute('open', '')
     await page.screenshot({ path: test.info().outputPath('redesign-safety.png') })
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await expect(page.locator('html')).toHaveClass(/dark/)
+    await page.screenshot({ path: test.info().outputPath('redesign-safety-dark.png') })
+    await page.emulateMedia({ colorScheme: 'light' })
+    await expect(page.locator('html')).not.toHaveClass(/dark/)
     await go('/')
 
     if (!await page.locator('.portal-sidebar').isVisible()) {

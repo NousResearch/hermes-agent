@@ -1,6 +1,6 @@
 name: inbox-sentinel
 repo: https://github.com/eddwithers/inbox-sentinel
-sha: 5cdc369cfde7b96e45ef763f776fc844f1385d5f
+sha: bdee1cafd30e8f8bf578f773cafcb112749ff7af
 version: "0.1.0"
 title: Inbox Sentinel
 description: >-
@@ -22,7 +22,7 @@ maintainer: eddwithers
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/eddwithers/inbox-sentinel/blob/5cdc369cfde7b96e45ef763f776fc844f1385d5f/README.md
+docs_url: https://github.com/eddwithers/inbox-sentinel/blob/bdee1cafd30e8f8bf578f773cafcb112749ff7af/README.md
 platforms: []
 known_issues:
   - "Gmail needs the user's own Google Cloud Desktop OAuth client and a terminal sign-in (`hermes auth add inbox-sentinel:gmail`). In Testing mode Google expires the grant after seven days."

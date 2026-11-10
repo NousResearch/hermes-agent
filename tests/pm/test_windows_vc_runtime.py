@@ -105,6 +105,15 @@ def test_arm64_whisper_cpp_stages_the_vc_runtime_beside_whisper_cli(tmp_path):
     assert {"msvcp140.dll", "vcruntime140.dll", "whisper.dll"} <= {p.name for p in cli.parent.iterdir()}
 
 
+def test_arm64_whisper_cpp_pin_carries_the_vc_runtime_its_fetch_urls_name():
+    """`pm lock --bump whispercpp-cpu` rebuilds the row from fetch_urls; keep the two in step."""
+    lock = Lockfile(paths.lockfile_path())
+    urls = [artifact["url"] for artifact in lock.artifacts("whispercpp-cpu", "win32-arm64")]
+
+    assert urls == get_package("whispercpp-cpu").fetch_urls(lock.version("whispercpp-cpu"), "win32-arm64")
+    assert urls[-1].endswith(".vsix")
+
+
 def test_vc_runtime_unpack_stages_only_plain_dll_names(tmp_path):
     """A member name is zip text, not a path: on Windows `..\\x.dll` under the CRT folder would land
     outside the staged tree, which PM's own extract() refuses for every other archive."""

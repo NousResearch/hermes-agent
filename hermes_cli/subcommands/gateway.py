@@ -96,6 +96,17 @@ def build_gateway_parser(
         ),
     )
     gateway_run.add_argument(
+        "--hosted",
+        action="store_true",
+        help=(
+            "Mark this as a hosted deployment's gateway start: arms the process-wide code "
+            "fence (in-process code loads only from the deployment image) before any "
+            "application import. The boot confirms the flag against config — a hosted "
+            "deployment's start requires it, and a deployment whose config does not enable "
+            "hosted refuses it."
+        ),
+    )
+    gateway_run.add_argument(
         "--no-supervise",
         action="store_true",
         help=(

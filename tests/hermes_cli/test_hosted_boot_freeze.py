@@ -26,12 +26,26 @@ from tests.hermes_cli.test_hosted_mode import (
 
 
 @pytest.fixture
+def start_command_flag(monkeypatch):
+    """The hosted start command's ``--hosted`` flag, through the real seam that reads it at
+    process entry: the flag arms the process-wide code fence (idempotent — the first armed
+    test in this file's process installs it, and an armed fence cannot be disarmed), and the
+    boot's preflight confirms it against the config each test writes."""
+    import sys
+
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--hosted"])
+    from hermes_cli.hosted_code_fence import arm_from_start_argv
+
+    arm_from_start_argv()
+
+
+@pytest.fixture
 def verdict(monkeypatch):
     monkeypatch.setattr(hosted_mode, "_VERDICT", {"hosted": None})
 
 
 @pytest.fixture
-def clean_hosted(verdict, monkeypatch, tmp_path):
+def clean_hosted(verdict, monkeypatch, tmp_path, start_command_flag):
     """The deployment of the passing-boot test, with its own empty bundled tree: both stubs are
     baked into it (a hosted boot loads in-process only what the image ships; the storage stub
     installs in the session-storage kind's bundled dir)."""

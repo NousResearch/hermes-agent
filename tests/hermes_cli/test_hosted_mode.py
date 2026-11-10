@@ -161,6 +161,18 @@ def verdict(monkeypatch):
 
 
 @pytest.fixture
+def hosted_start(monkeypatch):
+    """The hosted start command's ``--hosted`` flag, through the real seam that reads it at
+    process entry: the flag arms the process-wide code fence (idempotent — the first armed
+    test in this file's process installs it, and an armed fence cannot be disarmed afterwards),
+    and the boot's preflight confirms the flag against the config each test writes."""
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--hosted"])
+    from hermes_cli.hosted_code_fence import arm_from_start_argv
+
+    arm_from_start_argv()
+
+
+@pytest.fixture
 def empty_bundled(monkeypatch, tmp_path):
     """No bundled plugins: the checks judge the home's own plugins, not the repo's tree. The
     session-storage kind's bundled directory moves beside it — a hosted boot resolves named
@@ -259,7 +271,7 @@ def _clean_boot(**kwargs):
 
 
 @pytest.fixture
-def clean_hosted(verdict, empty_bundled):
+def clean_hosted(verdict, empty_bundled, hosted_start):
     _clean_boot()
 
 
@@ -390,7 +402,7 @@ def register(ctx):
 '''
 
 
-def test_plugin_discovery_stays_off_until_the_boot_preflight_passes(verdict, empty_bundled):
+def test_plugin_discovery_stays_off_until_the_boot_preflight_passes(verdict, empty_bundled, hosted_start):
     """Hosted: a would-load user plugin's code must not run just because something read config —
     a config read discovers and imports plugins, so discovery stays suppressed until the
     import-free preflight passed, and the preflight refuses the uncurated plugin before its
@@ -408,7 +420,7 @@ def test_plugin_discovery_stays_off_until_the_boot_preflight_passes(verdict, emp
     assert not (plugin / "imported").exists()  # the refusal came before any import
 
 
-def test_discovery_runs_once_the_boot_preflight_passed(verdict, empty_bundled):
+def test_discovery_runs_once_the_boot_preflight_passed(verdict, empty_bundled, hosted_start):
     """A hosted boot that passes the preflight loads plugins exactly as before: the gate opens."""
     _write_config({"hosted": {"enabled": True}})
     hosted_mode.hosted_boot_preflight(env={"PATH": "/usr/bin"})

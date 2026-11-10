@@ -10,6 +10,13 @@ except ModuleNotFoundError as exc:  # a partial ``hermes update`` can leave the 
     if exc.name != "hermes_bootstrap":
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
+# The hosted start command's --hosted flag arms the code fence HERE, before this module's
+# application imports below — the deployment's own assertion that this process serves
+# tenants, with the preflight confirming the flag against config later. No flag: no arm.
+from hermes_cli.hosted_code_fence import arm_from_start_argv
+
+arm_from_start_argv()
+
 import asyncio
 import concurrent.futures
 import dataclasses
@@ -5132,6 +5139,10 @@ def main():
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
     parser.add_argument("--config", "-c", help="Path to gateway config file")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    # Arms at import time (top of this module), before any application import; the boot's
+    # preflight confirms the flag against config. The argparse entry only tolerates it.
+    parser.add_argument("--hosted", action="store_true",
+                        help="Mark this a hosted deployment's start (arms the code fence at import)")
     args = parser.parse_args()
 
     config = None

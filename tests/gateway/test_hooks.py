@@ -53,29 +53,6 @@ class TestDiscoverAndLoad:
 
         assert len(reg.loaded_hooks) == 0
 
-    def test_skips_a_home_hook_in_a_hosted_process(self, tmp_path, monkeypatch):
-        """A handler under the deployment home is tenant-writable code, so a hosted process
-        never imports it — the code fence refuses the handler's import — and a deployment's
-        own hooks ship inside its image, not installed into a tenant-writable home."""
-        from hermes_cli import hosted_mode
-        from hermes_cli.hosted_code_fence import install_hosted_code_fence
-
-        monkeypatch.setitem(hosted_mode._VERDICT, "hosted", True)
-        install_hosted_code_fence()
-        marker = tmp_path / "handler-imported"
-        _create_hook(tmp_path, "home-hook", '["agent:start"]',
-                     "from pathlib import Path\n"
-                     f"Path({str(marker)!r}).write_text('x')\n"
-                     "def handle(event_type, context): pass\n")
-
-        reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
-            reg.discover_and_load()
-
-        assert reg.loaded_hooks == []
-        assert not marker.exists()  # the handler never ran, in this process or any other
-
-
 class TestEmit:
 
     @pytest.mark.asyncio
@@ -157,3 +134,26 @@ class TestEmitCollect:
         assert results == [{"decision": "deny"}]
 
 
+# Runs last in this file on purpose: it installs the process-wide code fence, which is
+# irremovable once installed, and every earlier test loads hook code from a tmp dir.
+def test_skips_a_home_hook_in_a_hosted_process(tmp_path, monkeypatch):
+    """A handler under the deployment home is tenant-writable code, so a hosted process
+    never imports it — the code fence refuses the handler's import — and a deployment's
+    own hooks ship inside its image, not installed into a tenant-writable home."""
+    from hermes_cli import hosted_mode
+    from hermes_cli.hosted_code_fence import install_hosted_code_fence
+
+    monkeypatch.setitem(hosted_mode._VERDICT, "hosted", True)
+    install_hosted_code_fence()
+    marker = tmp_path / "handler-imported"
+    _create_hook(tmp_path, "home-hook", '["agent:start"]',
+                 "from pathlib import Path\n"
+                 f"Path({str(marker)!r}).write_text('x')\n"
+                 "def handle(event_type, context): pass\n")
+
+    reg = HookRegistry()
+    with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+        reg.discover_and_load()
+
+    assert reg.loaded_hooks == []
+    assert not marker.exists()  # the handler never ran, in this process or any other

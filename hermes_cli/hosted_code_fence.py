@@ -4,18 +4,31 @@ A shared process serves many tenants, and four review rounds of per-loader prove
 kept finding loaders that skipped them (a dotted entry point's parent package importing from
 the deployment home, a checked directory whose files inside it were not, discovery and warm-up
 paths, the model-provider entry-point scan, schema and declaration loaders). So enforcement
-moved here: :func:`install_hosted_code_fence` — called by the hosted boot preflight, before
-config resolution or any plugin import can load plugin code — installs a Python audit hook
-(``sys.addaudithook``; it cannot be removed afterwards) that refuses to load ANY code whose
-file realpath is outside the deployment image's allowed roots. One choke point answers every
-loader alike, including loaders this repository does not know about.
+moved here: an installed Python audit hook (``sys.addaudithook``; it cannot be removed
+afterwards) refuses to load ANY code whose file realpath is outside the deployment image's
+allowed roots. One choke point answers every loader alike, including loaders this repository
+does not know about.
+
+When the fence exists is itself enforced: the hosted start command carries the ``--hosted``
+flag, and :func:`arm_from_start_argv` — called as the FIRST statement of the gateway's entry
+modules, before their application imports — arms the fence from the flag alone (this module
+imports only the stdlib, so arming needs no config read and no Hermes import). The boot's
+preflight then confirms the flag against config and refuses a mismatch in either direction:
+a hosted boot that did not arm before its application imports refuses, and so does a flagged
+start on a deployment that is not hosted. :func:`install_hosted_code_fence` remains as the
+verdict-gated install for hosts that boot hosted in-process.
 
 The allowed roots are the interpreter's own stdlib and ``sysconfig`` purelib/platlib (where the
 image's packages are installed) and the Hermes package's own tree (resolved from Hermes's code,
 never from the deployment home, config or environment; the bundled plugins tree resolved the
-same way is inside it). ``sys.path`` entries outside those roots are pruned at preflight
-(:func:`prune_sys_path_outside_image`), so a ``.pth``-added home directory cannot even be
-searched afterwards.
+same way is inside it). ``sys.path`` entries outside those roots are pruned when the fence arms
+(:func:`prune_sys_path_outside_image` is the same pruning behind the frozen-verdict gate), so a
+``.pth``-added home directory cannot even be searched afterwards.
+
+Once installed the fence cannot be disarmed: the hook consults nothing mutable — no verdict
+re-read, no flag to flip — and an audit hook cannot be removed. A later change to the boot's
+recorded verdict (a config edit, a second ``record_boot_config``) leaves an armed fence armed;
+``record_boot_config`` itself refuses a config that contradicts the frozen verdict.
 
 Which audit events carry a code file's path was established empirically on this interpreter
 (CPython 3.14) and is asserted by the tests:
@@ -24,29 +37,43 @@ Which audit events carry a code file's path was established empirically on this 
   importlib, zipimport (the filename is ``<archive>/<member>``), ``runpy``, explicit
   ``spec_from_file_location`` loaders and plain ``compile()`` all raise it with the real path
   BEFORE the code object exists, so a refused module never executes.
-* ``exec`` (code object) — ``co_filename`` checked as defence in depth; it is the only signal
-  for a ``.pyc``-only import, where the header can forge ``co_filename``, and for bytecode read
-  through a plain ``open()``. Refusing there is still before execution.
+* ``exec`` (code object) — ``co_filename`` checked as defence in depth. It is forgeable (a
+  bytecode file's marshalled code names any path its builder chose), so it is never the only
+  line: the two read-side checks below refuse the loads that would reach ``exec`` with a lie.
+* ``open`` (path, mode, flags) — the read side of a sourceless load: ``io.open_code`` raises
+  only this generic event on this build, so every open of a ``.pyc``/``.pyo`` whose realpath
+  is outside the allowed roots is refused — a forged-bytecode file outside the image cannot
+  even be read, whatever its header claims (verified: a forged-``co_filename`` ``.pyc``
+  imported sourceless runs without this check). Data files are untouched.
+* ``marshal.loads`` (bytes) — bytecode becomes code objects here, and the bytes carry no path,
+  so the CALLER is what the fence judges: importlib's own frozen bootstrap readers
+  (``importlib._bootstrap``, ``importlib._bootstrap_external``, ``zipimport`` — the only
+  callers observed on this interpreter, and they only read bytecode files the ``open`` check
+  already judged) are allowed; every other caller refuses. Nothing in this tree calls
+  ``marshal.loads`` — untrusted bytes turning into code objects is exactly the deserialization
+  the security-guidance plugin warns about.
 * ``import`` — for dynamically loaded extension modules (``_imp.create_dynamic``) this event
   carries the ``.so`` file's path (verified empirically on this interpreter; the argument is
   ``None`` for ordinary imports, whose file the ``compile``/``exec`` pair already answers), so
   an extension module outside the image is refused before the dynamic library is opened.
   Loading through ``_imp.create_dynamic`` directly, like installing a custom meta-path finder,
   already requires trusted in-process code.
-* ``io.open_code`` (path) — handled for forward compatibility: on this CPython build
-  ``io.open_code`` raises only the generic ``open`` event (indistinguishable from a data read,
-  which a hosted process does constantly), so the compile/exec pair above are what enforces
-  here; on a build where the distinct event fires it becomes the authoritative read-side check.
+* ``io.open_code`` (path) — handled for forward compatibility: on a build where the distinct
+  event fires it becomes an authoritative read-side check for every code file, not only
+  bytecode.
 
 Known boundary (documented, tested, unchanged from the reviewed design): a custom meta-path
-finder can hand importlib an invented origin inside the allowed roots, and code objects can
-carry forged ``co_filename`` strings. Both require code ALREADY running in-process to build the
-lie; the fence refuses every file the import machinery actually reads, and is not a Python
-sandbox against trusted code. ``ctypes`` loading of image system libraries is likewise out of
-scope: those are image code, loaded by trusted callers.
+finder can hand importlib an invented origin inside the allowed roots, and in-process trusted
+code can build code objects with forged ``co_filename`` strings (from in-memory source, or
+bytes it marshalled itself — though the ``marshal.loads`` caller check refuses the unmarshal).
+Both require code ALREADY running in-process to build the lie; the fence refuses every file the
+import machinery actually reads, and is not a Python sandbox against trusted code. ``ctypes``
+loading of image system libraries is likewise out of scope: those are image code, loaded by
+trusted callers.
 
-Everything here is hosted-only: a local install never installs the hook (the install is gated
-on the frozen hosted verdict) and never prunes ``sys.path`` — local behaviour is byte-identical.
+Everything here is hosted-only: a local install never arms the fence (the start flag is absent,
+the install is gated on the frozen hosted verdict) and never prunes ``sys.path`` — local
+behaviour is byte-identical.
 """
 
 from __future__ import annotations
@@ -62,6 +89,8 @@ from typing import Any
 __all__ = [
     "HostedCodeRefused",
     "allowed_inprocess_roots",
+    "arm_from_start_argv",
+    "armed_by_start_flag",
     "hosted_code_refusal",
     "hosted_fence_installed",
     "install_hosted_code_fence",
@@ -95,9 +124,14 @@ _CODE_EVENT_PATH: dict[str, Any] = {
     "import": lambda args: args[1] if len(args) > 1 else None,  # the .so path for ext loads
 }
 
-_installed = False
-_frozen_verdict = None  # hosted_mode.hosted_verdict_frozen, bound at install time
-_roots_cache: tuple[tuple, tuple] = ((), ())  # (raw key, resolved roots)
+# The fence's own process-wide state. The scope-keyed/tenant_neutral declarations HX015 asks
+# for live in hermes_scope_cache, a Hermes import this module must never make: the arm at
+# process entry imports it before any Hermes code (the whole point — arming needs no Hermes
+# state). The state is the deployment's, identical for every tenant by construction, and
+# immutable in one direction: each flag flips once per process, at the first hosted arm.
+_installed = False  # health: allow HX015 -- the fence is the deployment's own enforcement, tenant-identical; stdlib-only arming cannot import the scope cache
+_armed_by_start_flag = False  # health: allow HX015 -- the start command's own flag, recorded once at process entry; tenant-identical deployment state
+_roots_cache: tuple[tuple, tuple] = ((), ())  # health: allow HX015 -- the image's allowed roots, identical for every tenant of the one deployment
 
 
 def _bundled_plugins_dir() -> Path | None:
@@ -221,53 +255,126 @@ def _refuse_outside_image(path) -> None:
         raise HostedCodeRefused(refusal)
 
 
+# Bytecode files the import machinery loads sourceless: no source compile ever fires for them,
+# so the read itself is the enforcement point. ``io.open_code`` raises only the generic ``open``
+# event on this build, and a bytecode file's marshalled code can forge any ``co_filename`` — the
+# file's own realpath is the one signal its builder cannot lie about.
+_BYTECODE_SUFFIXES = (".pyc", ".pyo")
+
+# The only callers allowed to unmarshal bytecode: importlib's own frozen bootstrap readers
+# (``importlib._bootstrap``, ``importlib._bootstrap_external``, ``zipimport``) — the only
+# callers observed on this interpreter (asserted by the tests), and they only read bytecode
+# files the ``open`` check above already judged by realpath. Every other ``marshal.loads`` in a
+# hosted process is bytes turning into code objects with no file the fence could judge — the
+# same untrusted deserialization the security-guidance plugin warns about — and refuses.
+_FROZEN_IMPORT_BOOTSTRAP = ("<frozen importlib._bootstrap", "<frozen zipimport")
+
+
+def _refuse_bytecode_read_outside_image(path) -> None:
+    """The read side of a sourceless load: a ``.pyc``/``.pyo`` whose realpath is outside the
+    image never opens, so no loader can unmarshal it — whatever path its header claims. Data
+    files are untouched: a hosted process reads its tenants' data constantly."""
+    try:
+        text = os.fspath(path)  # str and Path alike; anything else names no file
+    except TypeError:
+        return
+    if not text or not text.endswith(_BYTECODE_SUFFIXES):
+        return
+    _refuse_outside_image(text)
+
+
 def _hosted_audit_hook(event, args) -> None:
     """The fence itself: every code-loading audit event answers the one predicate before the
-    code exists or runs. Non-code events pass untouched; the hook is dormant unless the frozen
-    hosted verdict says this process is hosted (so it never acts on a local install, and a test
-    process that flips the verdict flips the fence with it)."""
+    code exists or runs. Non-code events pass untouched. The hook consults NOTHING mutable —
+    no verdict re-read, no flag — so once installed it enforces for the rest of the process
+    and nothing that later edits the boot's recorded state can disarm it."""
+    if event == "open":
+        _refuse_bytecode_read_outside_image(args[0] if args else None)
+        return
+    if event == "marshal.loads":
+        # Frame 0 is this hook; the C-level marshal.loads adds no Python frame, so the
+        # unmarshal's caller is exactly one frame up — inline, not in a helper, so the
+        # depth cannot drift.
+        try:
+            caller = sys._getframe(1).f_code.co_filename
+        except (ValueError, AttributeError):
+            caller = ""  # no Python caller at all (pure C): not importlib's bootstrap either
+        if not caller.startswith(_FROZEN_IMPORT_BOOTSTRAP):
+            raise HostedCodeRefused(
+                f"{_HOSTED_RULE}; marshal.loads would turn bytes no file answers for into "
+                "code objects outside importlib's own bytecode readers, so the load is refused")
+        return
     path_of = _CODE_EVENT_PATH.get(event)
-    if path_of is None or _frozen_verdict is None or _frozen_verdict() is not True:
+    if path_of is None:
         return
     _refuse_outside_image(path_of(args))
 
 
 def hosted_fence_installed() -> bool:
     """Whether this process already installed the fence (an audit hook cannot be removed, so
-    this flips once per process, at the first hosted preflight)."""
+    this flips once per process, at the first hosted arm or install)."""
     return _installed
 
 
-def install_hosted_code_fence() -> bool:
-    """Install the process-wide code fence: the one audit hook.
-    Called by the hosted boot preflight BEFORE any check that could import plugin code, so
-    nothing loads ahead of the fence. A no-op — with nothing installed — unless the boot
-    verdict is already frozen hosted: a local install never installs any hook. Idempotent."""
-    from hermes_cli.hosted_mode import hosted_verdict_frozen
+def armed_by_start_flag() -> bool:
+    """Whether the start command's ``--hosted`` flag armed the fence at process entry — the
+    confirmation the hosted boot preflight requires: a hosted boot whose start command did
+    not arm before its application imports refuses."""
+    return _armed_by_start_flag
 
-    global _installed, _frozen_verdict
-    if hosted_verdict_frozen() is not True or _installed:
-        return False
-    _frozen_verdict = hosted_verdict_frozen
-    _installed = True
-    # Warm sysconfig's lazy state and the roots cache BEFORE the hook exists: the first
-    # get_paths() importfully loads the interpreter's own build data, and a hook firing in
-    # the middle of that would re-enter it through a partially initialized module.
+
+def _install_hook() -> None:
+    """The one install: warm the roots cache BEFORE the hook exists (the first
+    ``sysconfig.get_paths()`` importfully loads the interpreter's own build data, and a hook
+    firing in the middle of that would re-enter it through a partially initialized module),
+    then add the audit hook. Called exactly once per process."""
+    global _installed
     allowed_inprocess_roots()
     sys.addaudithook(_hosted_audit_hook)
+    _installed = True
+
+
+def install_hosted_code_fence() -> bool:
+    """Install the process-wide code fence from a frozen hosted verdict: the in-process boot
+    path. A no-op — with nothing installed — unless the boot verdict is already frozen hosted:
+    a local install never installs any hook. Idempotent. The installed hook is immutable by
+    construction: it re-reads nothing, and a later change to the recorded verdict leaves the
+    fence enforcing."""
+    from hermes_cli.hosted_mode import hosted_verdict_frozen
+
+    if hosted_verdict_frozen() is not True or _installed:
+        return False
+    _install_hook()
     return True
 
 
-def prune_sys_path_outside_image() -> list[str]:
-    """Remove every ``sys.path`` entry whose realpath resolves outside the allowed roots and
-    return what was removed (the boot logs it): a ``.pth``-added home directory, an inherited
-    ``PYTHONPATH`` residue — nothing outside the image stays searchable, so the import system
-    cannot even find a tenant's module afterwards. Dormant unless the frozen hosted verdict is
-    hosted; a local install's ``sys.path`` is never touched."""
-    from hermes_cli.hosted_mode import hosted_verdict_frozen
+def arm_from_start_argv() -> bool:
+    """Arm the fence from the hosted start command's ``--hosted`` flag: the EARLIEST
+    enforcement a hosted boot has. Called as the first statement of the gateway's entry
+    modules, before their application imports — the flag is the deployment's own assertion
+    that this process serves tenants, decided from argv alone, with no config read (this
+    module imports only the stdlib; nothing in the arm consults Hermes). The boot's preflight
+    later confirms the flag against config and refuses a mismatch in either direction.
 
-    if hosted_verdict_frozen() is not True:
-        return []
+    Arming also prunes every ``sys.path`` entry outside the image, so nothing outside it
+    stays searchable once the application imports begin. Idempotent; a start command without
+    the flag arms nothing and prunes nothing (a local install is untouched)."""
+    if not any(arg == "--hosted" for arg in sys.argv[1:]):
+        return False
+    global _armed_by_start_flag
+    if _installed:  # an earlier arm (or an in-process install) already added the hook
+        _armed_by_start_flag = True  # the start command carried the flag either way
+        return False
+    _install_hook()
+    _armed_by_start_flag = True
+    _prune_sys_path_outside_image()
+    return True
+
+
+def _prune_sys_path_outside_image() -> list[str]:
+    """The pruning itself: drop every ``sys.path`` entry whose realpath resolves outside the
+    allowed roots and return what was removed. Called by the start-flag arm (an armed fence
+    implies hosted) and behind the frozen-verdict gate for later callers."""
     roots = allowed_inprocess_roots()
     kept: list[str] = []
     pruned: list[str] = []
@@ -280,3 +387,16 @@ def prune_sys_path_outside_image() -> list[str]:
     if pruned:
         sys.path[:] = kept
     return pruned
+
+
+def prune_sys_path_outside_image() -> list[str]:
+    """Remove every ``sys.path`` entry whose realpath resolves outside the allowed roots and
+    return what was removed (the boot logs it): a ``.pth``-added home directory, an inherited
+    ``PYTHONPATH`` residue — nothing outside the image stays searchable, so the import system
+    cannot even find a tenant's module afterwards. Dormant unless the frozen hosted verdict is
+    hosted; a local install's ``sys.path`` is never touched."""
+    from hermes_cli.hosted_mode import hosted_verdict_frozen
+
+    if hosted_verdict_frozen() is not True:
+        return []
+    return _prune_sys_path_outside_image()

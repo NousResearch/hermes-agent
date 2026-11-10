@@ -24,6 +24,7 @@ toward the slow path, which then does the authoritative parse).
 
 from __future__ import annotations
 
+import itertools
 import os
 import sys
 
@@ -33,6 +34,7 @@ __all__ = [
     "ensure_project_root_on_path",
     "is_container_startup_environment",
     "is_desktop_ssh_backend_argv",
+    "is_gateway_run_argv",
     "is_global_fast_version_argv",
     "normalize_hermes_home_env",
     "print_fast_version_info",
@@ -97,6 +99,14 @@ def ensure_project_root_on_path() -> None:
     sys.path[:] = [entry for entry in sys.path
                    if not entry or os.path.normcase(_realpath_or_self(entry)) != normalized_root]
     sys.path.insert(0, project_root)
+
+
+def is_gateway_run_argv(argv: list[str]) -> bool:
+    """Whether *argv* (the command's own arguments, ``sys.argv[1:]``) is a ``gateway run``
+    start: the adjacent pair ``gateway run``, wherever global flags like ``-p <profile>``
+    put it. The process-entry fast paths (the startup watchdog, the hosted start command's
+    code fence) gate on this so unrelated commands mentioning both words never arm."""
+    return any(a == "gateway" and b == "run" for a, b in itertools.pairwise(argv))
 
 
 def is_global_fast_version_argv(argv: list[str]) -> bool:

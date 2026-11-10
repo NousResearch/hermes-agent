@@ -492,7 +492,8 @@ def test_every_slow_lane_path_matches_a_tracked_file():
     """A renamed file silently stops starting its lane on pull requests.
 
     Every prefix in the slow-lane tables must still match something in the
-    tree, or the lane only ever runs on main.
+    tree, or the lane only ever runs on main. A package init listed above a routed
+    module counts when its directory does: it may be a namespace directory.
     """
     tracked = subprocess.run(
         ["git", "ls-files"], cwd=_REPO, capture_output=True, text=True, check=False,
@@ -506,7 +507,7 @@ def test_every_slow_lane_path_matches_a_tracked_file():
         (lane, prefix)
         for lane, prefixes in tables.items()
         for prefix in prefixes
-        if not any(f.startswith(prefix) for f in files)
+        if not any(f.startswith(prefix.removesuffix("__init__.py")) for f in files)
     }
     assert dead == set()
 
@@ -608,6 +609,7 @@ def test_classifier_runs_in_the_detect_jobs_sparse_checkout(tmp_path):
                          input="gateway/__init__.py\n", capture_output=True, text=True, timeout=60, check=False)
     assert run.returncode == 0, run.stderr
     assert "python=true" in run.stdout.splitlines()
+    assert "e2e_upgrade=true" in run.stdout.splitlines()
 
 
 def test_ci_jobs_only_gate_on_detect_outputs_that_detect_actually_declares():

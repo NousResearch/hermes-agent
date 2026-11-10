@@ -21,8 +21,15 @@ PNG = b"\x89PNG\r\n\x1a\n"
 
 class _ChunkedImage(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    served: dict[int, int] = {}  # requested size -> bytes the server managed to write
-    done = threading.Event()
+    served: dict[str, int] = {}  # request path -> bytes the server managed to write
+    finished: dict[str, threading.Event] = {}  # request path -> set once its handler returns
+
+    @classmethod
+    def expect(cls, path: str) -> threading.Event:
+        """Fresh completion event for ``path``; ``served[path]`` is final once it is set."""
+        cls.served.pop(path, None)
+        cls.finished[path] = threading.Event()
+        return cls.finished[path]
 
     def do_GET(self):
         size = int(parse_qs(urlparse(self.path).query)["size"][0])
@@ -40,8 +47,9 @@ class _ChunkedImage(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            self.served[size] = written
-            self.done.set()
+            self.served[self.path] = written
+            if (event := self.finished.get(self.path)) is not None:
+                event.set()
 
     def log_message(self, *_args):
         pass
@@ -182,8 +190,9 @@ async def test_reply_image_url_is_uploaded_whole_under_the_cap_and_refused_over_
 
         uploaded.clear()
         TEXTS.clear()
-        _ChunkedImage.done.clear()
-        await send(adapter, f"{image_host}/huge.png?size={HUGE}")
+        huge_path = f"/huge.png?size={HUGE}"
+        huge_done = _ChunkedImage.expect(huge_path)
+        await send(adapter, f"{image_host}{huge_path}")
         assert uploaded == [], f"an over-cap image reached the upload ({uploaded} bytes)"
         # The refused image already left the reply text, so its link survives as text.
         assert any("huge.png" in text for text in TEXTS), f"the refused image vanished: {TEXTS}"
@@ -193,5 +202,42 @@ async def test_reply_image_url_is_uploaded_whole_under_the_cap_and_refused_over_
                 await session.close()
     # The download stops near the cap: buffering the whole body and rejecting it after would let
     # the server finish writing every byte (an aiohttp session holds the socket until it closes).
-    assert _ChunkedImage.done.wait(10)
-    assert _ChunkedImage.served[HUGE] < HUGE // 2, "the over-cap body was read to the end"
+    assert huge_done.wait(10)
+    assert _ChunkedImage.served[huge_path] < HUGE // 2, "the over-cap body was read to the end"
+
+
+def _failing_batch(make):
+    """Adapter whose one-message batch post raises, forcing the per-image fallback."""
+    def factory(uploaded):
+        adapter = make(uploaded)
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("batch post failed")
+
+        if hasattr(adapter, "_post_message"):  # Mattermost
+            adapter._post_message = _boom
+        else:  # Slack
+            adapter._client_for = lambda *_a: SimpleNamespace(files_upload_v2=_boom)
+        return adapter
+    return factory
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("make", [_slack, _mattermost], ids=["slack", "mattermost"])
+async def test_batch_fallback_does_not_resend_links_already_sent_as_text(image_host, make):
+    """A refused image's link goes out as text once; when the batch post then fails, the
+    per-image fallback retries only the images that are still owed."""
+    uploaded: list[int] = []
+    adapter = _failing_batch(make)(uploaded)
+    TEXTS.clear()
+    try:
+        result = await adapter.send_multiple_images("C1", [
+            (f"{image_host}/huge.png?size={HUGE}", "too big"),
+            (f"{image_host}/ok.png?size={CAP // 2}", "fine"),
+        ])
+    finally:
+        if getattr(adapter, "_session", None) is not None:
+            await adapter._session.close()
+    assert result.success
+    assert sum("huge.png" in text for text in TEXTS) == 1, f"refused link sent more than once: {TEXTS}"
+    assert CAP // 2 in uploaded, "the remaining image was not retried"

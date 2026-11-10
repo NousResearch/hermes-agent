@@ -13,6 +13,9 @@ prefix in ``hermes_agent/compat/moves.py``), write a file at the old path:
 - a byte copy of the moved file (kind ``copy``), for a file a release runs without the application
   on the path.
 
+Nothing for kind ``hand``: that file is hand-written. Both modes report it while it is missing or
+carries the shim header; only ``--check`` fails on it, since a chunk adds it after this script writes.
+
 ``.gitattributes`` marks every written file as generated. A moved file listed in
 ``[tool.hermes] update-startup-files`` at a path the tree lacks is reported in both modes, because an
 updater refuses an update to a tree that lacks one; only ``--check`` fails on it, since the codemod
@@ -85,7 +88,7 @@ def generated() -> dict[str, bytes]:
     for name, kind in REQUIRED_NAMES.items():
         old = _old_module(name, kind)
         new = current_name(old, MOVES)
-        if new is None:
+        if new is None or kind == "hand":
             continue
         target = ROOT.joinpath(*new.split("."))
         if (target / "__init__.py").is_file():
@@ -147,6 +150,20 @@ def missing_startup_files(files: dict[str, bytes]) -> list[str]:
             and current_name(_old_module(rel, "by-path"), MOVES) is not None]
 
 
+def hand_written_problems() -> list[str]:
+    """Kind ``hand`` files of moved names that are missing or are generated shims."""
+    problems = []
+    for name, kind in REQUIRED_NAMES.items():
+        if kind != "hand" or current_name(name, MOVES) is None:
+            continue
+        rel = Path(*name.split(".")).with_suffix(".py").as_posix()
+        if not (ROOT / rel).is_file():
+            problems.append(f"{rel}: hand-written file (required_names kind 'hand') is missing")
+        elif _is_shim(ROOT / rel):
+            problems.append(f"{rel}: must be hand-written (required_names kind 'hand'), not a generated shim")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="change nothing; exit 1 when the tree differs")
@@ -154,17 +171,20 @@ def main(argv: list[str] | None = None) -> int:
     files = generated()
     stale = strays(files)
     missing = missing_startup_files(files)
+    hand = hand_written_problems()
     files[ATTRIBUTES] = attributes([p for p in files if p != ATTRIBUTES])
     changed = [rel for rel, data in files.items() if not (ROOT / rel).is_file() or (ROOT / rel).read_bytes() != data]
     for rel in missing:
         print(f"{rel}: listed in [tool.hermes] update-startup-files but not in the tree, so updaters refuse "
               f"the update; fix the list or add the old path to hermes_agent/compat/required_names.py")
+    for line in hand:
+        print(line)
     if args.check:
         for rel in changed:
             print(f"{rel}: differs from what scripts/move/generate_shims.py writes; run it")
         for rel in stale:
             print(f"{rel}: stray: has the shim header or sits in a moved folder, but is not generated")
-        return 1 if changed or stale or missing else 0
+        return 1 if changed or stale or missing or hand else 0
     for rel in changed:
         (ROOT / rel).parent.mkdir(parents=True, exist_ok=True)
         (ROOT / rel).write_bytes(files[rel])

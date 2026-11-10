@@ -12,6 +12,8 @@ their canaries. Kinds:
 - ``exists``: a release checks that the file exists.
 - ``copy``: a release runs the file without the application on the path (``python -I -S``, or the
   file copied out alone); the old path holds a byte copy of the moved file.
+- ``hand``: the old path holds hand-written code that must run before ``hermes_agent`` is
+  importable. The generator does not write it; ``--check`` fails while it is missing or is a shim.
 
 Comments: the releases that reach the name, and one caller. Plain literals, importable on Python 3.11.
 
@@ -111,7 +113,7 @@ REQUIRED_NAMES: dict[str, str] = {
     "hermes_cli.update_serve_obligations": "module",  # v0.21.6..v0.23.0: hermes_cli/update_receipt.py:660@v0.22.6
     "hermes_cli.update_stage": "module",  # v0.22.7..v0.23.0: hermes_cli/update_cmd_fleet.py:1695@v0.23.0
     "hermes_cli.version_info": "module",  # v0.22.7..v0.23.0: hermes_cli/update_cmd_fleet.py:144@v0.23.0
-    "hermes_bootstrap": "module",  # v0.21.6..v0.23.0: every launcher script and inline launch command, -I, no finder: hermes_cli/_launchers.py:68,499@v0.23.0
+    "hermes_bootstrap": "hand",  # v0.21.6..v0.23.0: every launcher script and inline launch command, -I, no finder: hermes_cli/_launchers.py:68,499@v0.23.0; it repairs a killed update that moved hermes_agent/ aside
     "hermes_constants": "module",  # v0.21.6..v0.23.0: launcher --print-runtime-command, before hermes_bootstrap: hermes_cli/_launchers.py:61,492,504@v0.23.0
     "hermes_state_common": "module",  # v0.22.7..v0.23.1: the updater reads its text, see REQUIRED_TEXT
     "model_tools": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10

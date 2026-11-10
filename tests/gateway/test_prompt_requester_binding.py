@@ -101,3 +101,36 @@ async def test_telegram_prompt_tap_bound_to_requester(kind, tapper, answered, mo
 
     await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
     assert was_answered() is answered
+
+
+@pytest.mark.asyncio
+async def test_voice_reply_settles_only_the_clarify_it_was_checked_against():
+    """Alice's question expires while her voice note transcribes and Bob's turn asks its own: her
+    transcript is her own message, never the answer to Bob's question."""
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import clarify_gateway
+
+    _raise_as_alice("clarify")
+    asked = []
+
+    async def transcribe(_event):
+        clarify_gateway.clear_session(SESSION)  # Alice's question timed out
+        tokens = set_session_vars(platform="telegram", user_id="bob", user_name="Bob", chat_type="group",
+                                  session_key=SESSION)
+        try:
+            asked.append(clarify_gateway.register("cl2", SESSION, "Bob's question?", None))
+        finally:
+            clear_session_vars(tokens)
+        return "alice says yes"
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True)})
+    runner._delivery_adapter_for = lambda _source: None
+    runner._pending_event_audio_paths = lambda _event: ["voice.ogg"]
+    runner._prepare_clarify_reply_text = transcribe
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group", user_id="alice")
+
+    assert await runner._hm_clarify_reply(MessageEvent(text="", source=source), source, SESSION) is None
+    assert not asked[0].event.is_set() and clarify_gateway.get_pending("cl2") is asked[0]

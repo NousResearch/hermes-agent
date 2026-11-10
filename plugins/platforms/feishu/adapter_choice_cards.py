@@ -225,8 +225,13 @@ class FeishuChoiceCardsMixin:
         action = getattr(getattr(data, "event", None), "action", None)
         if action is not None:
             action.value = ((payload.get("event") or {}).get("action") or {}).get("value")
-        card = getattr(self._on_card_action_trigger(data), "card", None)
-        return {"card": {"type": card.type, "data": card.data}} if card is not None else {}
+        response = self._on_card_action_trigger(data)
+        body: dict[str, Any] = {}
+        if (card := getattr(response, "card", None)) is not None:
+            body["card"] = {"type": card.type, "data": card.data}
+        if (toast := getattr(response, "toast", None)) is not None:  # a refusal only the clicker sees
+            body["toast"] = {"type": toast.type, "content": toast.content}
+        return body
 
     async def _apply_choice_picker_selection(self, state: dict[str, Any], value: str) -> None:
         """Run the picker's applier and send its confirmation to the chat."""

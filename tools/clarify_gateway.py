@@ -239,6 +239,16 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
 def attempt_text_response_for_session(session_key: str, response: str) -> str:
     """Try to resolve the oldest pending clarify from typed text; returns a TEXT_* outcome."""
     entry = get_pending_for_session(session_key, include_choice_prompts=True)
+    return _attempt_text_response(entry, response)
+
+
+def attempt_text_response(clarify_id: str, response: str) -> str:
+    """Like :func:`attempt_text_response_for_session`, but only for the entry ``clarify_id`` names:
+    a reply checked against one question (its requester) never settles another raised meanwhile."""
+    return _attempt_text_response(get_pending(clarify_id), response)
+
+
+def _attempt_text_response(entry: Optional[_ClarifyEntry], response: str) -> str:
     if entry is None:
         return TEXT_NO_PENDING
     coerced, reason = _coerce_text_response_detailed(entry, response)

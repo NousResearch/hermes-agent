@@ -1650,10 +1650,9 @@ class GatewayBusySessionMixin:
         # Register FIRST so a fast button click cannot race the send_slash_confirm return. The
         # command runs outside any turn: its sender is the requester, never a bound turn's actor.
         from tools.approval_context import prompt_authority
-        actor = event if getattr(event, "user_id", None) is not None else source  # as session_context binds it
+        actor = event if event.user_id is not None else source  # as session_context binds it
         _slash_confirm_mod.register(session_key, confirm_id, command, handler, authority=prompt_authority(
-            str(getattr(actor, "user_id", None) or ""), str(getattr(actor, "user_name", None) or ""),
-            str(getattr(source, "chat_type", None) or "")))
+            str(event.sender_id() or ""), str(actor.user_name or ""), str(getattr(source, "chat_type", None) or "")))
 
         adapter = self._delivery_adapter_for(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))

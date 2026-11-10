@@ -120,19 +120,19 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         return [name for name in names if name in nested_excluded or name.startswith(".")
                 or name in published or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
+    # ``locales`` rides the same one-pass directory sweep: translation catalogs are
+    # loaded relative to the source root, rather than as package data, and the
+    # directory is intentionally not a setuptools package. Naming it here keeps a
+    # single copy even when the include patterns (or their ["*"] default) already
+    # match it — a second pass would collide with the copied directory.
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
                 and (entry.name in where_roots
+                     or entry.name == "locales"
                      or any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots))):
             target = destination / entry.name
             shutil.copytree(entry, target, ignore=ignore)
-    # Translation catalogs are loaded relative to the source root, rather than
-    # as package data. Keep them in sealed PM environments even though the
-    # directory is intentionally not a setuptools package.
-    locales = source / "locales"
-    if locales.is_dir() and not locales.is_symlink():
-        shutil.copytree(locales, destination / "locales", ignore=ignore)
     for name in files:
         entry = source / name
         if not entry.is_file() or entry.is_symlink():

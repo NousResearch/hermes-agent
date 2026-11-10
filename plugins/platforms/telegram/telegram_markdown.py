@@ -454,8 +454,11 @@ def _escape_bare_bracket(m, seg: str) -> str:
 # and the currency $ it escapes: a lone $ before an
 # amount, or after a currency prefix (R$ 1.000, US$ 1,200). Telegram's rich Markdown pairs any two
 # bare $ as inline LaTeX, so "$395k vs $483k" otherwise renders as one garbled math span.
+# A $$ pair stays inside one stretch of prose: its body never holds a backtick (a code span
+# split the prose there, so a prose "Use $$ for the PID" would pair across it with the next
+# formula), a blank line, or a bare $ before a digit (an amount, never display math).
 _RICH_DOLLAR_RE = re.compile(
-    r'(?P<keep>\\\$|\$\$[\s\S]*?\$\$'
+    r'(?P<keep>\\\$|\$\$(?:[^$\n`]|(?<=\\)\$|(?<!\\)\$(?![\d$])|\n(?![ \t>]*(?:\n|$)))*?\$\$'
     r'|(?<![\w$])\$(?![\d\s$])(?:\\.|[^\\\n$])+?(?<!\s)\$(?![\d$])'
     r'|(?<![\w$\\])\$\d[\w.,]*(?:[-+*/^=<>]|\\[a-zA-Z]++)(?:[\w.,(){}^_+*/=<>-]|\\[a-zA-Z]+)*+(?<![-+*/^=<>])\$(?![\w$])'
     r'|(?<![\w$\\])\$\d[\w.,]*(?<![.,])\$(?![\w$])'

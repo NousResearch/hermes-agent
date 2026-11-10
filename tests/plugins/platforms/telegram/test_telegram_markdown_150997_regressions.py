@@ -51,6 +51,12 @@ def test_a_lone_star_inside_bold_stays_a_visible_star(adapter, markdown, expecte
         ("Use ``` to open a fence. Cost is $5", "Use ``` to open a fence. Cost is \\$5"),
         ("Use ``` to open a fence. Cost is $5\n```\nx\n```", "Use ``` to open a fence. Cost is \\$5\n```\nx\n```"),
         ("Here is the code: ```bash\necho $5\n```\nthen $6", "Here is the code: ```bash\necho $5\n```\nthen \\$6"),
+        # A prose $$ (the shell PID) never pairs across a code span with a later formula's $$.
+        (
+            "Use $$ for the PID.\n\nA `x` span. Use $$ again. Cost is $5 vs $10.\n\n$$\nE = mc^2\n$$",
+            "Use $$ for the PID.\n\nA `x` span. Use $$ again. Cost is \\$5 vs \\$10.\n\n$$\nE = mc^2\n$$",
+        ),
+        ("Use $$ for the PID. A `x` span. Cost is $5. Use $$ again.", "Use $$ for the PID. A `x` span. Cost is \\$5. Use $$ again."),
     ],
 )
 def test_rich_dollar_escape_leaves_every_code_region_verbatim(markdown, expected):

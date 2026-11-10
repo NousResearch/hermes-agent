@@ -1,5 +1,7 @@
-// Canonical local authority wire adapter. Remote legacy transports keep their
-// existing protocol; unsupported explicit semantics fail before network admission.
+// Canonical session authority wire adapter, for private native dials and remote owners
+// advertising session_authority in gateway.ready. Remote legacy servers keep their
+// existing protocol; wire negotiation never changes the transport's auth credentials.
+// Unsupported explicit semantics fail before network admission.
 
 import { randomUuid } from '@hermes/shared'
 
@@ -54,18 +56,25 @@ export const canonicalOwnerProfile = (value: object): string | undefined => cano
 export const recordCanonicalOwner = (value: object, profile: string): void => { canonicalOwners.set(value, profile) }
 
 // Mirrors hermes_cli/gateway_mutations.slash_mutation: the typed directives
-// that are canonical mutations, not gateway-executed slash commands. Model
-// flags (--global/--once/--refresh) have no canonical mutation and stay on the
-// exec path so the authority refuses them explicitly.
+// that are canonical mutations, not gateway-executed slash commands. `--provider`
+// (and `--session`) map onto the model mutation like the picker's value; other
+// model flags (--global/--once/--refresh) have no canonical mutation and stay on
+// the exec path so the authority refuses them explicitly.
 export function slashMutation(command: string): { operation: string; payload: Record<string, unknown> } | null {
   const [name, ...rest] = command.trim().replace(/^\/+/, '').split(/\s+/)
   const arg = rest.join(' ').trim()
 
   if (name === 'model') {
-    if (!arg || arg.startsWith('-') || /(^|\s)--/.test(arg)) { return null }
-    const [model, ...flags] = arg.split(/\s+/)
+    // The server parses flags in any order, and `--session` is a no-op on the always
+    // session-scoped mutation; one that is `--provider`'s value stays for the parser to refuse.
+    const [model, ...flags] = rest.filter((token, i) => token !== '--session' || rest[i - 1] === '--provider')
 
-    return flags.length ? null : { operation: 'model', payload: { model } }
+    if (!model || model.startsWith('-')) { return null }
+
+    if (!flags.length) { return { operation: 'model', payload: { model } } }
+    const pick = pickerModelMutation([model, ...flags].join(' '))
+
+    return pick ? { operation: 'model', payload: pick } : null
   }
 
   const field = ({ branch: 'title', compress: 'focus' } as Record<string, string>)[name]
@@ -188,7 +197,7 @@ const OWNER_CONNECTION_VERBS = new Set([
 // gateway/session_tui_config.py), with the keys that take a `scope` (`reasoning --global`, the
 // Shift+click global yolo zap).
 const CANONICAL_CONFIG_KEYS = new Set([
-  'busy', 'verbose', 'yolo', 'model', 'reasoning', 'fast', 'personality', 'approvals.mode', 'voice.voice_chat_mode',
+  'busy', 'verbose', 'yolo', 'model', 'reasoning', 'fast', 'daybreak', 'personality', 'approvals.mode', 'voice.voice_chat_mode',
   'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'
 ])
 
@@ -522,8 +531,13 @@ export class CanonicalDesktopProtocol {
   // pins priority, Normal pins normal over a profile tier, omitted inherits); `cwd_explicit` is the
   // provenance that lets a named profile's own workspace beat an inherited cwd.
   private prepareCreate(input: Record<string, unknown>): Record<string, unknown> {
-    const { reasoning_effort: effort, fast, service_tier: picked, ...params } = input
+    // `room_plumbing` is the serve socket's flag for a room member session: it only skips the stored
+    // runtime overrides (serve's agent_factory), which the owner calls `follow_profile_config`. It
+    // does not imply hidden there, so `hidden` stays whatever the caller sent.
+    const { reasoning_effort: effort, fast, service_tier: picked, room_plumbing: roomPlumbing, ...params } = input
     const tier = typeof picked === 'string' && picked ? picked : fast === true ? 'priority' : fast === false ? 'normal' : undefined
+
+    if (roomPlumbing === true) { params.follow_profile_config = true }
 
     if (typeof effort === 'string' && effort) { params.reasoning = effort }
 

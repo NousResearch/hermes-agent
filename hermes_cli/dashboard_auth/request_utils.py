@@ -55,7 +55,7 @@ def _http_origin(value: str) -> tuple[str, str, int] | None:
 def cookie_origin_is_allowed(request: Request) -> bool:
     """Cookie writes must come from the listener's own origin, not just its site. The gate asks
     only where the surface policy says so (``SurfacePolicy.own_origin_cookie_writes``: the
-    gateway's Webapp); the standalone dashboard keeps main's rule.
+    gateway's Webapp); elsewhere the gate refuses only writes the browser marks as another page's.
 
     ``SameSite=Lax`` keeps cross-site pages from sending the session cookies but
     still admits same-site siblings (another port or subdomain). A write without

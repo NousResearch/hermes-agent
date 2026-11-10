@@ -225,6 +225,22 @@ class TestCapabilityProbe:
         assert report.ok, report.failures
 
 
+    def test_probe_context_offers_the_real_service_properties(self, tmp_path):
+        """``ctx.llm`` / ``ctx.state`` are real PluginContext properties plugins capture in register();
+        the probe must hand back an object, not raise, or every such plugin fails admission."""
+        d = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "provides_tools": ["t"]},
+            init_py=(
+                "def register(ctx):\n"
+                "    llm, state = ctx.llm, ctx.state\n"
+                "    assert llm is not None and state is not None\n"
+                "    ctx.register_tool('t', schema={}, handler=lambda **kw: llm.complete('x'))\n"),
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+
+
 class TestModelProviderKind:
     def test_import_time_register_provider_is_the_entry_point(self, tmp_path):
         """``kind: model-provider`` plugins register at import via providers.register_provider and

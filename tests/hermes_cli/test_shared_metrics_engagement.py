@@ -14,6 +14,7 @@ from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_engagement as engagement
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from tests.hermes_cli.test_relay_shared_metrics_runtime import (
+    _join_export_workers,
     _stored_values,
     direct_runtime,
 )
@@ -23,9 +24,19 @@ OTHER = "openai/gpt-5"
 DAY1 = datetime(2026, 9, 27, 9, 0, tzinfo=UTC).timestamp()
 
 
-def _flush() -> None:
-    for runtime in list(relay_shared_metrics._RUNTIMES.values()):
+def _flush(*stores) -> None:
+    """Settle every write before the store is read. The fake Relay delivers events inline, but each
+    finished turn starts the background flush/export worker, and a user-path write that meets the
+    worker's write transaction past the short busy timeout is deferred in memory until the next
+    write. Without joining the worker and draining, an assertion can read the store before the
+    day-closing writes land (seen on a loaded CI runner as ``[] == [...]``)."""
+    _join_export_workers()
+    runtimes = list(relay_shared_metrics._RUNTIMES.values())
+    for runtime in runtimes:
         runtime.relay.subscribers.flush()
+    live = [r for r in runtimes if isinstance(r, relay_shared_metrics._Runtime)]
+    for store in (*stores, *(r.subscriber.store for r in live)):
+        store.drain_deferred()
 
 
 def _turn(session_id, task_id, *, platform="cli", model=PUBLIC, tools=0, clock=None, at=None, took=0.0):
@@ -74,7 +85,7 @@ def test_a_closed_day_reports_active_time_surfaces_and_primary_model_once(direct
     clock["now"] = DAY1 + 86_400
     engagement.record(other_process, resource, surface="cli", route=None)
     _turn("cli-2", "t3", clock=clock, at=DAY1 + 86_400 + 5)
-    _flush()
+    _flush(other_process)
 
     assert _rows(tmp_path, "hermes.engagement.surface_day.count") == sorted([
         (json.dumps({"active_minutes_bucket": "5m_to_30m", "surface": "cli"}, sort_keys=True), 1),

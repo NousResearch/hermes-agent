@@ -1,0 +1,63 @@
+name: agent-almanac-first-aid
+repo: https://github.com/pjt222/agent-almanac-first-aid
+sha: "4ddc7e7422ee21fc637323ba0acdba09212117e9"
+version: "0.2.1"
+title: First Aid
+description: >-
+  A first-aid kit for AI agents, built from agent-almanac's AI-welfare practices. Hermes core
+  already detects tool loops and warns; first aid adds the matching practice and a logbook. Eight
+  practices ship as skills (breathe, redirect, center, heal, attune, honesty-humility, meditate,
+  rest), each also a slash command such as /agent-almanac-first-aid:breathe. On the call where
+  core's loop guardrail first warns about a failing tool (the 2nd failure with identical
+  arguments, or the 3rd failure of one tool in a turn), first aid can add one note of at most 300
+  characters to the failed result, naming the matching practice, how to load it, and the
+  first_aid_log tool for recording the outcome. In unattended runs (every platform except the
+  CLI, TUI, Desktop, ACP, API server and subagents), for tools whose results Hermes wraps as
+  untrusted (web_search, browser_*, mcp_*), after a compaction that summarizes the context
+  (center), and after a 3rd identical successful result for one call of a read-only tool such
+  as read_file in a turn (heal), the note is added to the next user message instead, labelled
+  as the plugin's. At most once per streak, with a per-session cooldown
+  for each kind of note (300 s by default). A successful or rate-limited result is never changed,
+  and failures of the tools core treats as failure-tolerant (terminal, execute_code, process,
+  process_manage, browser_navigate, web_extract) draw no note. /first-aid shows the session's
+  notes and logbook entries, then the kit. Local and deterministic: no network calls, no LLM
+  calls, no credentials, no Python dependencies, no background processes. Disclosure — in
+  attended runs it rewrites failed tool results on a threshold crossing (a JSON object gains a
+  first_aid key and is re-serialized; text gains one line), and Hermes keeps the first string any
+  transform_tool_result plugin returns, so on that call it can override, or be overridden by,
+  another transforming plugin. A note in a result restarts core's identical-call and
+  identical-cycle counts: core's stall notice appears from the 5th call instead of the 3rd, and
+  its cycle notice three or more calls later. Hard stops are off in attended runs by default;
+  switched on there, core's halts come one model request later. In unattended runs, where hard
+  stops are on by default, no result is changed once the session's platform is known (from the
+  turn's start), so core's halts are unaffected. It reads every tool result
+  and its arguments in memory to classify the result and fingerprint the call, keeping only
+  hashes; its event log holds time, signal, tool name, count, practice, outcome and the agent's
+  short logbook note, in memory only, and resets on restart or plugin reload. The plugin writes
+  nothing to disk itself; the notes it adds become part of the transcript Hermes stores.
+  Following a note loads a 5.7-17.5 KB practice into the conversation. The failure classifier
+  and counting are copied from Hermes v0.22.7, not imported.
+maintainer: pjt222
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/pjt222/agent-almanac-first-aid/blob/4ddc7e7422ee21fc637323ba0acdba09212117e9/README.md
+platforms: [linux, macos, windows]
+known_issues:
+  - "The chat screen shows only Hermes's own failure line: the note goes to the agent, and /first-aid shows that it was offered."
+  - "Next-message notes need a next message: a single-message run (hermes chat -q, cron) or a delegated subagent never receives one. Failure notes in the tool result still reach hermes chat -q and subagents; a cron run gets no notes at all."
+  - "In a batch of parallel tool calls the hook sees results in completion order while core counts in call order, so a note can land on a different call than core's warning."
+  - "Background-review runs share the session id: their streaks use up the session's cooldown and show in /first-aid as the main agent's; in an unattended session their failure notes are queued for the user's next message."
+  - "If `dashboard.turn_isolation` runs turns in a compute-host child process (Desktop/TUI, off by default), /first-aid runs in another process and cannot see the events."
+  - "Failures that never reach transform_tool_result (timeouts, executor exceptions, tool-search bridge calls) are counted by core but not by first aid. If you change core's tool_loop_guardrails thresholds, set first aid's to match. If you switch core's hard stops on in an attended run, first aid cannot tell; if you switch them off in unattended runs, notes still stay out of results there."
+  - "first_aid_log is a plugin tool, so Hermes's tool search defers it. In a profile with no other deferred tool, installing the plugin switches tool search on (about 2,300 characters per request for the bridge and listing)."
+  - "Verified on Linux (WSL2) with Hermes v0.22.7. macOS and Windows run the same pure-Python code but were not exercised."
+capabilities:
+  provides_tools:
+    - first_aid_log
+  provides_hooks:
+    - transform_tool_result
+    - post_compaction
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

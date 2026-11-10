@@ -614,7 +614,7 @@ class TestFinalResponseDeliveryGuard:
         """A failed first send disables edits: a preview sent after it could never be updated and
         would stay on screen truncated next to the final. Only the complete reply reaches the chat."""
         delivered = []
-        results = iter([SimpleNamespace(success=False, error="timeout")])
+        results = iter([SimpleNamespace(success=False, error="timeout", retryable=True)])
 
         async def send(**kw):
             result = next(results, None) or SimpleNamespace(success=True, message_id=f"m{len(delivered) + 1}")

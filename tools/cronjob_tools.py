@@ -8,7 +8,6 @@ import sys
 import threading
 import time
 from concurrent.futures import Future
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import copy
@@ -28,8 +27,6 @@ _CRON_RUN_HEARTBEAT_INTERVAL = 10.0
 # wedged job, but with HERMES_CRON_TIMEOUT=0 (explicit "unlimited") a truly hung run_one_job would otherwise
 # mask the gateway watchdog forever — pre-#76502 the parent was at least reaped at ~1800s.
 _CRON_RUN_HEARTBEAT_CEILING = 6 * 3600.0
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
@@ -1142,7 +1139,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt (paired with any skills as the task instruction). For run: optional transient context for that single fire (never persisted)."
+                "description": "For create/update: the full self-contained prompt (when it runs goes in 'schedule'; data windows like 'since yesterday' stay here; paired with any skills as the task instruction). For run: optional transient context for that single fire (never persisted)."
             },
             "schedule": {
                 "type": "string",
@@ -1159,7 +1156,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "deliver": {
                 "type": "string",
-                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'. From a local chat (CLI, TUI or Desktop) the default writes the result into that chat's history as a note, seen when the chat is reopened and by its next turn, not as a live message."
+                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), 'room:<room_id>' (post into a Bot Mode Group Chat; it starts a round only for members the output @mentions), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'. From a local chat (CLI, TUI or Desktop) the default writes the result into that chat's history as a note, seen when the chat is reopened and by its next turn, not as a live message."
             },
             "failure_deliver": {
                 "type": "string",

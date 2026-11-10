@@ -554,8 +554,6 @@ gateway:
          /help, /usage. Les prompts normaux vont dans un topic.
       4. /new dans un topic réinitialise uniquement la session de ce topic.
       5. /topic <id> dans un topic y restaure une ancienne session.
-    system_topic_name: "Système"
-    system_topic_intro: "Topic système pour les commandes et l'état d'Hermes."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Impossible de déterminer l'ID du chat."
     mode_not_enabled: "Le mode topic multi-session n'est pas activé pour ce chat."
@@ -718,6 +716,8 @@ gateway:
     action_always: "Toujours autoriser"
     action_deny: "Refuser"
     deadline: "Sans réponse de votre part dans {window}, elle ne sera PAS exécutée."
+    not_requester: "Seul {requester} peut répondre à cette demande d'approbation."
+    not_requester_admins_only: "Seul un administrateur ou un approbateur listé peut répondre à cette demande d'approbation."
     text_choice_once: "Répondez `{prefix}approve` pour l'exécuter une fois"
     text_choice_session: "`{prefix}approve session` pour autoriser ce motif jusqu'à la fin de cette session"
     text_choice_always: "`{prefix}approve always` pour l'autoriser définitivement"
@@ -731,6 +731,9 @@ gateway:
       {command}
       ```
       {reason_label} : {reason}
+    truncated_full_above: "Aperçu raccourci : la commande complète ({total} caractères) se trouve dans le message ci-dessus."
+    truncated_deny_only: "Aperçu raccourci ({total} caractères) et la commande complète n'a pas pu être affichée ici : seul Refuser est proposé. Vérifie-la dans la CLI ou l'app Desktop."
+    text_prompt_deny_only: "La demande de validation complète est trop longue pour cette plateforme : seul Refuser est proposé. Vérifie-la dans la CLI ou l'app Desktop."
 
   notify:
     media_kind:
@@ -1165,9 +1168,6 @@ platform:
     approved: "✅ Approuvé."
     denied: "❌ Refusé."
     approval_expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà résolue ailleurs)."
-  yuanbao:
-    slow_response_notice: "Cette tâche est un peu complexe — je m'en occupe encore, merci de patienter..."
-    owner_command_denied: "⚠️ {command} n'est disponible que pour le créateur en mode discussion privée"
   shared:
     truncated_suffix: |2-
 
@@ -1592,6 +1592,12 @@ platform:
       unauthorized: "Seul un utilisateur Matrix autorisé peut utiliser ces contrôles."
       not_requester: "Seul l'utilisateur à l'origine de cette action peut utiliser ces contrôles."
   feishu:
+    clarify:
+      title: "Hermes a besoin de votre réponse"
+      other: "✏️ Autre (saisir)"
+      awaiting_typed: "En attente de la réponse saisie par {user}…"
+    picker:
+      apply_error: "Erreur lors de l'application de la sélection : {error}"
     approval:
       action_session: "Session"
       action_always: "Toujours"
@@ -1726,6 +1732,8 @@ platform:
     prompt_other: "✏️ Autre (saisir)"
     prompt_expired: ⌛ Cette invite n'attend plus de réponse. Envoyez votre réponse comme un message normal.
 slash:
+  rewind:
+    description: "Rembobiner jusqu'à un prompt précédent pour le modifier et le renvoyer, ou bifurquer à partir de là (Esc Esc)"
   approve:
     description: "Approuver une commande dangereuse en attente"
   bg:
@@ -1953,6 +1961,20 @@ slash:
   quit:
     description: "Quitter la CLI (--delete supprime aussi l'historique de session)"
 cli:
+  backtrack:
+    title: "↺ Transcription — choisir un prompt à modifier"
+    keys_hint: "Parcours de la transcription · ↑↓/jk défiler · ←→/hl prompts · ↵ modifier · f bifurquer · esc retour"
+    prime_hint: "esc à nouveau pour modifier le message précédent"
+    no_previous: "Aucun message précédent à modifier."
+    editing_hint: "↺ Modification du prompt {number} — Enter rembobine ici et envoie · Esc Esc annule"
+    edit_cancelled: "↺ Rembobinage annulé ; rien n'a été supprimé."
+    rewound: "↺ Rembobiné au prompt {number} ({count} message(s) archivé(s)) ; envoi de la modification."
+    forked: "⑂ Bifurcation avant le prompt {number} ; la session d'origine {parent} est inchangée. Modifiez le prompt ci-dessous et appuyez sur Enter pour l'envoyer."
+    nothing: "(._.) Aucun prompt précédent vers lequel rembobiner."
+    target_changed: "(x_x) La session a changé depuis que vous avez choisi le prompt {number} ; rien n'a été supprimé. Votre modification est de retour dans la zone de saisie."
+    invalid: "(._.) Aucun prompt {value} — choisissez entre 1 et {total}."
+    usage: "Utilisation : /rewind [N | fork N]"
+    rewind_failed: "(x_x) Échec du rembobinage ; l'historique n'a pas été modifié : {error}"
   modern:
     thought_for: "Réflexion pendant {seconds}s"
     thought: "Réflexion"
@@ -2428,6 +2450,7 @@ cli:
     images_attached_other: "📎 {count} images jointes"
     command_interrupted: "Commande interrompue."
     welcome: "Bienvenue dans Hermes Agent ! Tapez votre message ou /help pour les commandes."
+    vscode_images_hint: "VS Code peut afficher ici les images en pleine résolution : activez terminal.integrated.enableImages dans les paramètres."
     activated_skills_label: "Skills activées :"
     redaction_disabled_title: "⚠  La censure des secrets est DÉSACTIVÉE"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Les clés API et les tokens peuvent apparaître en clair dans la sortie du chat, les JSON de session et les logs. Définissez {setting} dans config.yaml pour la réactiver."
@@ -2896,6 +2919,7 @@ cli:
     goal_turns: "⊙ objectif {used}/{max}"
     goal: "⊙ objectif"
     ctx_pinned: " épinglé"
+    ctx_fallback: " par défaut"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Réserve ({count} élément)"
@@ -4282,3 +4306,8 @@ plan_usage:
   large_notice_limit: "Grand modèle : votre limite {name} est atteinte ({resets})."
   large_notice_limit_stops: "Grand modèle : votre limite {name} est atteinte ({resets}), il ne fonctionnera pas d'ici là."
   large_notice_percent: "Grand modèle : consomme davantage de votre forfait par message. Limite mensuelle des grands modèles : {percent} utilisé."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Fichiers modifiés dans les tours annulés : {files}. Lancez /rollback pour lister les checkpoints et en restaurer un."
+    more: "+{count} de plus"

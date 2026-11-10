@@ -451,8 +451,7 @@ class GatewayProfileReconcileMixin:
         claimed = self._primary_resource_claims(active)
         for profile_name, adapters in (getattr(self, "_profile_adapters", None) or {}).items():
             for platform, adapter in list(adapters.items()):
-                for claim in (self._adapter_credential_claim(platform, adapter),
-                              self._adapter_listener_claim(platform, adapter)):
+                for claim in self._adapter_claims(platform, adapter):
                     if claim is not None:
                         claimed[claim] = profile_name
         return claimed
@@ -493,14 +492,33 @@ class GatewayProfileReconcileMixin:
         retired = getattr(self, 'session_authorities', None) is None or await unserve_profile_runtime(self, home)
         pending = (getattr(self, "_profile_failed_platforms", None) or {}).pop(name, None) or {}
         tasks = [t for t in pending.values() if isinstance(t, asyncio.Task) and not t.done()]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.wait(tasks, timeout=self._adapter_disconnect_timeout_secs())
+        # Its adapters stay in the map (live owners of their bots) while the reconnects cancel; the retiring
+        # mark keeps anything finishing meanwhile (a fatal teardown, a startup handoff) from queuing another.
+        retiring = getattr(self, "_retiring_profiles", None)
+        if retiring is None:
+            retiring = self._retiring_profiles = set()
+        retiring.add(name)
+        try:
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.wait(tasks, timeout=self._adapter_disconnect_timeout_secs())
+        finally:
+            retiring.discard(name)
         with _profile_runtime_scope(Path(home), hydrate_secrets=False):
             adapters = (getattr(self, "_profile_adapters", None) or {}).pop(name, None) or {}
-            for platform, adapter in list(adapters.items()):
-                await self._bounded_adapter_teardown(adapter, platform, profile=name)
+            for platform, adapter in adapters.items():  # no await since the pop: each holds its bot until torn down
+                self._hold_secondary_claims(name, platform, adapter, self._adapter_claims(platform, adapter))
+            try:
+                for platform, adapter in list(adapters.items()):
+                    await self._bounded_adapter_teardown(adapter, platform, profile=name)
+                    self._release_secondary_claims(name, platform, adapter)  # its bot is free once it is down
+            finally:
+                # Every hold of the profile goes, a fatal teardown's still disconnecting included (the profile
+                # is gone, so its handler queues nothing): none may block a re-serve.
+                held = getattr(self, "_secondary_held_claims", None) or {}
+                for key in [key for key in held if key[0] == name]:
+                    del held[key]
             # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
             _write_runtime_status_quiet(drop_profile_platforms=name)
             for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",

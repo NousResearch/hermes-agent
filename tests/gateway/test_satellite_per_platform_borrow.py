@@ -246,3 +246,23 @@ def test_recovered_rows_and_saved_guesses_never_lend_the_primary_bot(rig, tmp_pa
 
     assert r._resolve_injection_adapter("discord", saved_guess("999")) is None
     assert r._resolve_injection_adapter("discord", saved_guess("123")) is rig.primary_discord
+
+
+def test_a_saved_guess_never_answers_through_the_primary_bot_after_a_restart(rig):
+    """Auto-resume, heartbeat restore and plugin turns answer a restored row through
+    ``_delivery_adapter_for``: an older gateway's primary guess is the receiving bot only where a
+    default-bot route sends the chat to that runtime. The API-server listener is pinned, never guessed."""
+    r = rig.runner
+    primary_api = _stub(Platform.API_SERVER, r, "PRIMARY_API")
+    r.adapters[Platform.API_SERVER] = primary_api
+
+    def restored(profile, platform, chat_id, transport_profile):
+        return r._restored_source(SimpleNamespace(
+            origin=_restored(profile, platform, chat_id), transport_profile=transport_profile))
+
+    assert r._delivery_adapter_for(restored("ops", Platform.DISCORD, "999", "default")) is None
+    assert r._delivery_adapter_for(restored("ops", Platform.TELEGRAM, "555", "default")) is rig.ops_tg
+    assert r._delivery_adapter_for(restored("ops", Platform.DISCORD, "123", "default")) is rig.primary_discord
+    assert r._delivery_adapter_for(restored("ops", Platform.TELEGRAM, "555", "ops")) is rig.ops_tg
+    assert r._delivery_adapter_for(restored(None, Platform.DISCORD, "999", "default")) is rig.primary_discord
+    assert r._delivery_adapter_for(restored("ops", Platform.API_SERVER, "api-1", "default")) is primary_api

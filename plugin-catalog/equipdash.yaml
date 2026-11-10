@@ -1,0 +1,18 @@
+name: equipdash
+title: EquipDash
+repo: https://github.com/equipdash/agent
+sha: 64becfb220719b1c207efeaa78d9b5f641d53fa4
+version: "1.0.0"
+description: "Run a rental or activity business on EquipDash through EquipDash's official MCP server (Streamable HTTP at https://app.equipdash.com/mcp/v1, OAuth sign-in, no keys in config): the day's pickups, returns and sessions, bookings, availability and prices, customers, items, payments, refunds and unsigned waivers. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only, with one skill that has the agent preview every change and wait for the person's yes. Disclosure — hosted-only MCP connector to app.equipdash.com (no local code): every tool call sends its arguments there and returns the signed-in business's bookings, customer names and contact details and payment records to Hermes and its model provider; tools can create, move and cancel bookings, send payment links, issue card refunds and email customers. The package marks the server `trust: untrusted`, so Hermes asks before each write-capable call and refuses them in unattended runs; the tool set is served by EquipDash at runtime and is not covered by the pinned sha. OAuth sign-in requires adding the server to `mcp_servers` in config.yaml (keep `trust: untrusted`) and running `hermes mcp login equipdash`."
+maintainer: EquipDash
+tier: community
+category: tools
+docs_url: https://github.com/equipdash/agent#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

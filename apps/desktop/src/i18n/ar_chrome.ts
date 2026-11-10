@@ -402,7 +402,9 @@ export const arChrome = {
       max: 'أقصى',
       sendsOnRoute: (level: string) => `يُرسل ${level} على هذا المسار`,
       updateFailed: 'فشل تحديث خيار النموذج',
-      fastFailed: 'فشل تحديث الوضع السريع'
+      fastFailed: 'فشل تحديث الوضع السريع',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'فشل تحديث Daybreak'
     },
     gatewayMenu: {
       gateway: 'البوابة',
@@ -460,6 +462,17 @@ export const arChrome = {
       turnRunning: 'الدور يعمل',
       contextUsage: 'استخدام السياق',
       compressions: count => `مرات الضغط: ${count}`,
+      contextUsagePanel: {
+        compact: {
+          action: 'ضغط المحادثة',
+          busyHint: 'أكمل الرد الحالي أو أوقفه أولًا',
+          confirm: 'ضغط',
+          hint: 'لخّص السياق القديم لإفساح المجال. تابع في هذه المحادثة نفسها.',
+          question: 'ضغط هذه المحادثة في ملخص؟',
+          questionNamed: title => `ضغط «${title}» في ملخص؟`,
+          working: 'جارٍ الضغط…'
+        }
+      },
       focusedSince: 'منذ التركيز',
       focusedSinceTitle: 'الوقت منذ تركيز هذه المحادثة — وليس مدة الدور',
       yoloOn: 'YOLO مفعل',

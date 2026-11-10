@@ -487,8 +487,6 @@ gateway:
     root_new: "Om 'n nuwe parallelle Hermes-klets te begin, open die All Messages-onderwerp bo-aan hierdie bot-koppelvlak en stuur enige boodskap daar. Telegram sal 'n nuwe onderwerp daarvoor skep.\n\nElke onderwerp is 'n onafhanklike Hermes-sessie. Gebruik /new binne 'n bestaande onderwerp slegs as jy daardie onderwerp se huidige sessie wil vervang."
     new_header: "'n Nuwe Hermes-sessie is in hierdie onderwerp begin.\n\nWenk: vir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n aparte onderwerp te skep in plaas van /new hier. /new vervang die sessie wat aan die huidige onderwerp gekoppel is."
     help: "/topic — aktiveer multi-sessie-privaatgesprekmodus (een bot, baie parallelle kletse)\n\nGebruik:\n  /topic             Aktiveer onderwerpmodus, of wys status as dit reeds aan is\n  /topic help        Wys hierdie boodskap\n  /topic off         Deaktiveer onderwerpmodus en verwyder onderwerpkoppelings\n  /topic <id>        Binne 'n onderwerp: herstel 'n vorige sessie volgens ID\n\nHoe dit werk:\n1. Voer /topic een keer in hierdie privaatgesprek uit — Hermes kontroleer dat BotFather\n   Threads Settings geaktiveer is en skakel multi-sessiemodus aan.\n2. Tik All Messages bo-aan die bot en stuur enige boodskap.\n   Telegram skep 'n nuwe onderwerp vir daardie boodskap; elke onderwerp is\n   'n onafhanklike Hermes-sessie (vars geskiedenis, vars konteks).\n3. Die hoof-privaatgesprek word 'n stelsel-voorportaal — stuur /topic, /status,\n   /help, /usage daar. Gewone prompts gaan in 'n onderwerp.\n4. /new binne 'n onderwerp herstel net daardie onderwerp se sessie.\n5. /topic <id> binne 'n onderwerp herstel 'n ou sessie daarin."
-    system_topic_name: "Stelsel"
-    system_topic_intro: "Stelselonderwerp vir Hermes-opdragte en status."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Kon nie klets-ID bepaal nie."
     mode_not_enabled: "Multi-sessie-onderwerpmodus is tans nie vir hierdie klets geaktiveer nie."
@@ -625,6 +623,8 @@ gateway:
     action_always: "Altyd toelaat"
     action_deny: "Weier"
     deadline: "As jy nie binne {window} antwoord nie, sal dit NIE uitgevoer word nie."
+    not_requester: "Slegs {requester} kan hierdie goedkeuring beantwoord."
+    not_requester_admins_only: "Slegs 'n admin of 'n gelyste goedkeurder kan hierdie goedkeuring beantwoord."
     text_choice_once: "Antwoord `{prefix}approve` om dit eenmalig uit te voer"
     text_choice_session: "`{prefix}approve session` om hierdie patroon vir die res van hierdie sessie toe te laat"
     text_choice_always: "`{prefix}approve always` om dit permanent toe te laat"
@@ -632,6 +632,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", of {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Voorskou verkort: die volledige opdrag ({total} karakters) is in die boodskap hierbo."
+    truncated_deny_only: "Voorskou verkort ({total} karakters) en die volledige opdrag kon nie hier gewys word nie, dus is slegs Weier beskikbaar. Hersien dit in die CLI of die Desktop-toep."
+    text_prompt_deny_only: "Die volledige goedkeuringsboodskap is te lank vir hierdie platform, dus is slegs Weier beskikbaar. Hersien dit in die CLI of die Desktop-toep."
   notify:
     media_kind:
       audio: "klank"
@@ -974,9 +977,6 @@ platform:
     approved: "✅ Goedgekeur."
     denied: "❌ Geweier."
     approval_expired: "⌛ Goedkeuring het verval — die opdrag is nie uitgevoer nie (reeds uitgetel of elders afgehandel)."
-  yuanbao:
-    slow_response_notice: "Hierdie taak is 'n bietjie omvattend — ek werk nog daaraan, hou asseblief aan..."
-    owner_command_denied: "⚠️ {command} is slegs vir die skepper beskikbaar in privaatgesprek-modus"
   shared:
     truncated_suffix: "\n...(afgekap)"
     unknown: "onbekend"
@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Slegs 'n gemagtigde Matrix-gebruiker kan hierdie kontroles gebruik."
       not_requester: "Slegs die gebruiker wat hierdie aksie aangevra het, kan hierdie kontroles gebruik."
   feishu:
+    clarify:
+      title: "Hermes het jou insette nodig"
+      other: "✏️ Ander (tik antwoord)"
+      awaiting_typed: "Wag vir getikte antwoord van {user}…"
+    picker:
+      apply_error: "Fout met toepassing van keuse: {error}"
     approval:
       action_session: "Sessie"
       action_always: "Altyd"
@@ -1474,6 +1480,8 @@ platform:
     prompt_other: "✏️ Ander (tik antwoord)"
     prompt_expired: ⌛ Daardie navraag wag nie meer op 'n antwoord nie. Stuur jou antwoord as 'n gewone boodskap.
 slash:
+  rewind:
+    description: "Spoel terug na 'n vroeëre opdrag om dit te wysig & weer te stuur, of vurk van daar af (Esc Esc)"
   approve:
     description: "Keur 'n hangende gevaarlike opdrag goed"
   bg:
@@ -1701,6 +1709,20 @@ slash:
   quit:
     description: "Verlaat die CLI (gebruik --delete om ook sessiegeskiedenis te verwyder)"
 cli:
+  backtrack:
+    title: "↺ Transkripsie — kies 'n opdrag om te wysig"
+    keys_hint: "Blaai deur transkripsie · ↑↓/jk rol · ←→/hl opdragte · ↵ wysig · f vurk · esc terug"
+    prime_hint: "esc weer om die vorige boodskap te wysig"
+    no_previous: "Geen vorige boodskap om te wysig nie."
+    editing_hint: "↺ Wysig opdrag {number} — Enter spoel hierheen terug en stuur · Esc Esc kanselleer"
+    edit_cancelled: "↺ Terugspoel gekanselleer; niks is verwyder nie."
+    rewound: "↺ Teruggespoel na opdrag {number} ({count} boodskap(pe) geargiveer); stuur die wysiging."
+    forked: "⑂ Gevurk voor opdrag {number}; die oorspronklike sessie {parent} is onveranderd. Wysig die opdrag hieronder en druk Enter om te stuur."
+    nothing: "(._.) Geen vroeëre opdragte om na terug te spoel nie."
+    target_changed: "(x_x) Die sessie het verander sedert jy opdrag {number} gekies het; niks is verwyder nie. Jou wysiging is terug in die opsteller."
+    invalid: "(._.) Geen opdrag {value} nie — kies 1 tot {total}."
+    usage: "Gebruik: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Terugspoel het misluk; geskiedenis is nie verander nie: {error}"
   modern:
     thought_for: "Het {seconds}s gedink"
     thought: "Het gedink"
@@ -2164,6 +2186,7 @@ cli:
     images_attached_other: "📎 {count} beelde aangeheg"
     command_interrupted: "Opdrag onderbreek."
     welcome: "Welkom by Hermes Agent! Tik jou boodskap of /help vir opdragte."
+    vscode_images_hint: "VS Code kan hier beelde in volle resolusie wys: skakel terminal.integrated.enableImages in die instellings aan."
     activated_skills_label: "Geaktiveerde vaardighede:"
     redaction_disabled_title: "⚠  Geheim-redigering is GEDEAKTIVEER"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). API-sleutels en tokens kan woordeliks in kletsuitvoer, sessie-JSON's en loglae verskyn. Stel {setting} in config.yaml om dit weer te aktiveer."
@@ -2618,6 +2641,7 @@ cli:
     goal_turns: "⊙ doelwit {used}/{max}"
     goal: "⊙ doelwit"
     ctx_pinned: " vasgepen"
+    ctx_fallback: " terugval"
     ctx_unknown: "ktx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Bergplek ({count} item)"
@@ -3957,3 +3981,8 @@ plan_usage:
   large_notice_limit: "Groot model: {name} bereik ({resets})."
   large_notice_limit_stops: "Groot model: {name} bereik ({resets}), dit sal nie tot dan loop nie."
   large_notice_percent: "Groot model: gebruik meer van jou plan per boodskap. Maandelikse limiet vir groot modelle: {percent} gebruik."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Lêers wat in die ongedane beurte verander is: {files}. Voer /rollback uit om kontrolepunte te lys en een te herstel."
+    more: "+{count} meer"

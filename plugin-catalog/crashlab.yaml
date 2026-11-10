@@ -1,20 +1,20 @@
 name: crashlab
 title: CrashLab
 repo: https://github.com/dolepee/crashlab
-sha: 4d85e4d7bf078290404e73496100024e208e1f26
+sha: 48f329171a8a34165d0e1cb4d3adefbf5a325dc7
 description: Test recovery before delivery, after commit and across restart; inspect saved records, verify the repair and keep a reusable regression.
 maintainer: dolepee
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 version: "0.5.10"
-docs_url: https://github.com/dolepee/crashlab/blob/4d85e4d7bf078290404e73496100024e208e1f26/README.md
+docs_url: https://github.com/dolepee/crashlab/blob/48f329171a8a34165d0e1cb4d3adefbf5a325dc7/README.md
 platforms:
   - linux
   - macos
 screenshots:
-  - https://raw.githubusercontent.com/dolepee/crashlab/4d85e4d7bf078290404e73496100024e208e1f26/docs/dashboard-desktop.png
-  - https://raw.githubusercontent.com/dolepee/crashlab/4d85e4d7bf078290404e73496100024e208e1f26/docs/dashboard-mobile.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/48f329171a8a34165d0e1cb4d3adefbf5a325dc7/docs/dashboard-desktop.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/48f329171a8a34165d0e1cb4d3adefbf5a325dc7/docs/dashboard-mobile.png
 known_issues:
   - "Reconciliation requires one selected original identity and one selected readback query value; missing or repeated selections are rejected."
   - "Execution needs human approval for the captured plan; trusted local cases and applications remain required."

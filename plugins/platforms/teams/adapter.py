@@ -55,7 +55,7 @@ HttpRequest = HttpResponse = HttpRouteHandler = AdaptiveCard = ExecuteAction = T
 HttpMethod = str  # type: ignore[assignment,misc]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
     describe_proxy_error, env_proxy_for_redaction)
@@ -83,6 +83,9 @@ _ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({"smba.trafficmanager.net", "smba.infra
 # Conservative conversation-ID charset (``thread.skype`` / ``thread.tacv2`` suffixes included) so a
 # hostile value cannot path-traverse out of ``/v3/conversations/<id>/activities``.
 _TEAMS_CONV_ID_RE = re.compile(r"^[A-Za-z0-9:@\-_.]+$")
+# A channel post and its replies share ``19:...@thread.tacv2;messageid=<root post id>``: the conversation
+# id IS the thread id, so it keys thread participation the way Discord keys it on the thread channel id.
+_CHANNEL_THREAD_MARKER = ";messageid="
 _BF_TOKEN_SCOPE = "https://api.botframework.com/.default"
 _TEAMS_SDK_URLS = (_DEFAULT_TEAMS_SERVICE_URL, _BF_TOKEN_SCOPE, "https://login.microsoftonline.com")  # NO_PROXY must bypass all
 
@@ -370,6 +373,11 @@ class TeamsAdapter(BasePlatformAdapter):
         # chat_id → ConversationReference so proactive cards use the right conversation type.
         self._conv_refs: dict[str, Any] = {}
         self._require_mention: bool = self._parse_require_mention(config)
+        # Channel threads the bot answered in skip the mention gate (Discord/Matrix parity), unless
+        # thread_require_mention gates them like the channel itself (several bots sharing a thread).
+        self._thread_require_mention: bool = self._parse_flag(
+            config, "thread_require_mention", "TEAMS_THREAD_REQUIRE_MENTION")
+        self._threads = ThreadParticipationTracker("teams")
         # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
         self._sent_ids: deque = deque(maxlen=500)
         # prompt id → (command preview, reason) for the resolved card; button data carries only the id,
@@ -382,7 +390,12 @@ class TeamsAdapter(BasePlatformAdapter):
         default as TELEGRAM_REQUIRE_MENTION). Without RSC Teams only delivers mention activities to a
         group bot anyway, so the gate changes nothing until the app gains ChannelMessage.Read.Group /
         ChatMessage.Read.Chat and starts receiving every conversation message."""
-        configured = _extra_or_secret(config.extra, "require_mention", "TEAMS_REQUIRE_MENTION", False)
+        return TeamsAdapter._parse_flag(config, "require_mention", "TEAMS_REQUIRE_MENTION")
+
+    @staticmethod
+    def _parse_flag(config, key: str, env: str) -> bool:
+        """Scoped ``env`` → ``config.extra[key]`` → false."""
+        configured = _extra_or_secret(config.extra, key, env, False)
         if isinstance(configured, bool):
             return configured
         return str(configured).strip().lower() not in {"false", "0", "no", "off"}
@@ -509,13 +522,19 @@ class TeamsAdapter(BasePlatformAdapter):
         if conv_id:  # cache the conversation reference for proactive sends (approval cards, etc.)
             self._conv_refs[conv_id] = ctx.conversation_ref
         text = activity.text if hasattr(activity, "text") and activity.text else ""
-        if self._require_mention and getattr(conv, "conversation_type", None) != "personal":
+        conv_type = getattr(conv, "conversation_type", None)
+        mentioned = self._activity_mentions_bot(activity, bot_ids, text)
+        if self._require_mention and conv_type != "personal":
             # RSC-delivered history: every channel/groupChat message arrives. Keep the ones that
-            # @mention the bot or reply to one of its own messages; drop the rest BEFORE the
-            # attachment loop so a gated post never downloads anything onto the host.
-            if not self._activity_mentions_bot(activity, bot_ids, text) and getattr(activity, "reply_to_id", None) not in self._sent_ids:
+            # @mention the bot, reply to one of its own messages or continue a channel thread it
+            # answered in; drop the rest BEFORE the attachment loop so a gated post never downloads
+            # anything onto the host.
+            if (not mentioned and getattr(activity, "reply_to_id", None) not in self._sent_ids
+                    and not self._in_bot_thread(conv_type, conv_id)):
                 logger.debug("[teams] Dropping non-personal message without a bot mention (chat=%s, msg=%s)", conv_id, msg_id)
                 return
+        if mentioned and self._is_channel_thread(conv_type, conv_id):
+            await self._threads.mark_async(conv_id)
         if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
         from_account = activity.from_
@@ -534,6 +553,16 @@ class TeamsAdapter(BasePlatformAdapter):
         await self.handle_message(MessageEvent(
             text=text, source=source, message_type=msg_type, message_id=msg_id,
             media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media]))
+
+    @staticmethod
+    def _is_channel_thread(conv_type: Optional[str], conv_id: Optional[str]) -> bool:
+        return conv_type == "channel" and isinstance(conv_id, str) and _CHANNEL_THREAD_MARKER in conv_id
+
+    def _in_bot_thread(self, conv_type: Optional[str], conv_id: Optional[str]) -> bool:
+        """A channel thread the bot already took part in skips the mention gate — unless
+        thread_require_mention (multi-bot threads) gates threads like channels."""
+        return (self._is_channel_thread(conv_type, conv_id) and conv_id in self._threads
+                and not self._thread_require_mention)
 
     @staticmethod
     def _activity_mentions_bot(activity: Any, bot_ids: set, text: str) -> bool:
@@ -745,6 +774,8 @@ class TeamsAdapter(BasePlatformAdapter):
                 self._remember_sent(result)
             except Exception as e:  # the SDK's httpx client reads HTTPS_PROXY: the text may echo it
                 return SendResult(success=False, error=describe_proxy_error(e, env_proxy_for_redaction(*_TEAMS_SDK_URLS)) or str(e), retryable=True)
+        if _CHANNEL_THREAD_MARKER in chat_id:  # only channel conversation ids carry the thread root
+            await self._threads.mark_async(chat_id)
         return SendResult(success=True, message_id=last_message_id)
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:

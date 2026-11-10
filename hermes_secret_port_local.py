@@ -123,7 +123,7 @@ class LocalSecretStore(SecretStore):
         just matched), with every check and validation behind it. Today's writer logs nothing
         with the live exception, so no failure it raises is ever retained by a log handler
         with the value in a frame of its traceback; the fresh error :meth:`set` raises in its
-        place names only the failing exception's class and errno."""
+        place names only the failure's fixed category and errno."""
         from hermes_cli.config import save_env_value
         save_env_value(name, value)
 

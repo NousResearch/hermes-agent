@@ -10,6 +10,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from hermes_agent.compat.paths import PathMoves, moves_from_source
+
 
 def git(repo: Path, *args: str, check: bool = True) -> str:
     proc = subprocess.run(
@@ -85,6 +87,40 @@ def _parse_name_status(out: str) -> list[Change]:
     return changes
 
 
+MOVES_FILE = "hermes_agent/compat/moves.py"
+
+
+def tree_moves(repo: Path, tree: str | None) -> dict[str, str]:
+    """The ``MOVES`` table as ``tree`` holds it (old module name -> current name)."""
+    return moves_from_source(read_file(repo, tree, MOVES_FILE))
+
+
+def _pair_moves(changes: list[Change], original, base_files: set[str]) -> list[Change]:
+    """Pair each new file with the base file the head's ``MOVES`` says it was.
+
+    A move leaves a generated file at the old path, so git sees an add plus a modify and never pairs
+    them. A file that existed on the base keeps its own path; the file left behind reads as new.
+    """
+    pairs = {c.new: original(c.new) for c in changes
+             if c.new is not None and c.status != "M" and original(c.new) != c.new
+             and original(c.new) in base_files and c.old != original(c.new)}
+    if not pairs:
+        return changes
+    claimed = set(pairs.values())
+    paired: list[Change] = []
+    for c in changes:
+        if c.new in pairs:
+            paired.append(Change("R", pairs[c.new], c.new))
+            if c.old is not None and c.old not in claimed:
+                paired.append(Change("D", c.old, None))
+        elif c.old in claimed:
+            if c.new is not None:
+                paired.append(Change("A", None, c.new))
+        else:
+            paired.append(c)
+    return paired
+
+
 def changed_files(repo: Path, base: str, head: str | None) -> list[Change]:
     args = ["diff", "--name-status", "-M", "-z", "--no-color", base]
     if head is not None:
@@ -93,7 +129,10 @@ def changed_files(repo: Path, base: str, head: str | None) -> list[Change]:
     if head is None:
         untracked = git(repo, "ls-files", "--others", "--exclude-standard", "-z")
         changes.extend(Change("A", None, p) for p in untracked.split("\0") if p)
-    return changes
+    moves = tree_moves(repo, head)
+    if not moves:
+        return changes
+    return _pair_moves(changes, PathMoves(moves).original, set(tracked_files(repo, base)))
 
 
 def read_file(repo: Path, tree: str | None, path: str) -> str | None:

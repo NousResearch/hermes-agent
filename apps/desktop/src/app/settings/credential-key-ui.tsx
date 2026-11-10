@@ -85,56 +85,37 @@ export function KeyField({
 
   const editType = info.is_password ? 'password' : 'text'
 
-  if (info.is_set && !editing) {
-    return (
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+      {info.is_set && !editing ? (
         <Input
           className={cn(CREDENTIAL_CONTROL_CLASS, bare && CRED_BARE, 'cursor-pointer text-muted-foreground')}
+          key="masked"
           onFocus={startEdit}
           readOnly
           value={masked}
         />
-        {expanded && (
-          <Button
-            aria-label={t.settings.credentials.remove}
-            className="text-muted-foreground hover:text-destructive"
-            disabled={busy}
-            onClick={e => {
-              e.stopPropagation()
-              void onClear(varKey)
-            }}
-            size="icon-xs"
-            title={t.settings.credentials.remove}
-            type="button"
-            variant="ghost"
-          >
-            <Trash2 />
-          </Button>
-        )}
-      </div>
-    )
-  }
-
-  return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-      <Input
-        autoFocus={editing}
-        className={cn(CREDENTIAL_CONTROL_CLASS, bare && CRED_BARE)}
-        onChange={update}
-        onFocus={() => {
-          if (!editing) {
-            startEdit()
-          }
-        }}
-        onKeyDown={keydown}
-        placeholder={placeholder ?? t.settings.credentials.pasteKey}
-        type={editType}
-        value={draft}
-      />
+      ) : (
+        <Input
+          autoFocus={editing}
+          className={cn(CREDENTIAL_CONTROL_CLASS, bare && CRED_BARE)}
+          key="draft"
+          onChange={update}
+          onFocus={() => {
+            if (!editing) {
+              startEdit()
+            }
+          }}
+          onKeyDown={keydown}
+          placeholder={placeholder ?? t.settings.credentials.pasteKey}
+          type={editType}
+          value={draft}
+        />
+      )}
       {/* Inline trailing controls — mirrors SearchField's inline clear button.
           No floating hint row that reflows the grid or overlaps the card body;
           Esc still cancels via keydown. */}
-      {editing && (info.is_set || dirty) && (
+      {(info.is_set || dirty) && (
         <div className="flex items-center gap-1">
           {info.is_set && (
             <Button

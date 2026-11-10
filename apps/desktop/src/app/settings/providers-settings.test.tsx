@@ -10,6 +10,7 @@ import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
 const getEnvVars = vi.fn()
+const deleteEnvVar = vi.fn()
 const revealEnvVar = vi.fn()
 const setEnvVar = vi.fn()
 const startManualProviderOAuth = vi.fn()
@@ -28,6 +29,7 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn(),
   getProfiles: async () => ({ profiles: (await import('@/store/profile')).$profiles.get() }),
   disconnectOAuthProvider: (...args: unknown[]) => disconnectOAuthProvider(...args),
+  deleteEnvVar: (...args: unknown[]) => deleteEnvVar(...args),
   getEnvVars: (...args: unknown[]) => getEnvVars(...args),
   listOAuthProviders: (...args: unknown[]) => listOAuthProviders(...args),
   revealEnvVar: (key: string, profile?: string) => revealEnvVar(key, profile),
@@ -83,6 +85,7 @@ function keyVar(patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
 beforeEach(() => {
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
+  deleteEnvVar.mockResolvedValue({ ok: true })
   disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'nous' })
   revealEnvVar.mockResolvedValue({ value: 'old-secret' })
   setEnvVar.mockResolvedValue({ ok: true })
@@ -115,6 +118,38 @@ async function renderProvidersSettings() {
 }
 
 describe('ProvidersSettings', () => {
+  it('removes an expanded provider key through confirmation without entering edit mode', async () => {
+    $activeGatewayProfile.set('default')
+    getEnvVars.mockResolvedValue({
+      WIDGET_API_KEY: keyVar({
+        provider: 'widget',
+        provider_label: 'Widget',
+        description: 'Widget provider key.',
+        is_set: true,
+        redacted_value: '••••1234'
+      })
+    })
+
+    render(
+      <>
+        <ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />
+        <ConfirmHost />
+      </>
+    )
+
+    fireEvent.click(await screen.findByText('Widget'))
+    expect(screen.getByDisplayValue('••••1234').hasAttribute('readonly')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(deleteEnvVar).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+
+    await waitFor(() => expect(deleteEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'default'))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull())
+    expect(screen.queryByDisplayValue('••••1234')).toBeNull()
+  })
+
   it('reads and saves API keys for the shared Settings target and reloads when it changes', async () => {
     $activeGatewayProfile.set('profile-a')
     $settingsScopeOverride.set('profile-b')

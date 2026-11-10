@@ -1,0 +1,23 @@
+name: wavegrain
+repo: https://github.com/wavegrain/wavegrain-mcp
+sha: 37ab25fcad0d19b2b6af64be029aa9b7e3c639a5
+description: >-
+  Curated TikTok slideshows and Instagram carousels for your brand on autopilot, through
+  the hosted Wavegrain Streamable HTTP MCP server plus one workflow skill. Portable Agent
+  Plugins v1 package (mcp.json + skills/), no plugin code. Requires a paid Wavegrain account
+  and browser OAuth consent (add the server with auth: oauth, then hermes mcp login
+  wavegrain); no API key or client secret is stored in the plugin. Disclosure: hosted-only
+  connector; your brand details, photos and slide texts go to wavegrain.com; paid tools
+  spend Wavegrain credits within the limit set per connection; posting needs the separate
+  post permission and Wavegrain's own approval setting.
+maintainer: wavegrain
+tier: community
+category: tools
+docs_url: https://wavegrain.com/mcp
+version: "0.4.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

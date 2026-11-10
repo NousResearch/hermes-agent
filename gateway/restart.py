@@ -368,9 +368,10 @@ def resolve_restart_exit_wait_budget(
     sized from (cron drain + cleanup reserve, supervisor headroom, floor; #94759) — then
     observer ``headroom``.
 
-    A non-finite drain means "wait indefinitely", not a crash in the integer envelope.
+    A non-finite drain or after-turn budget means "wait indefinitely", not a crash in the
+    integer envelope.
     """
-    if not all(math.isfinite(_seconds(value)) for value in (drain_timeout, cron_drain_timeout)):
+    if not all(math.isfinite(_seconds(value)) for value in (drain_timeout, after_turn_timeout, cron_drain_timeout)):
         return math.inf
     # A planned restart can spend the after-turn budget before ``stop()`` begins, and
     # ``effective_stop_drain_timeout()`` preserves that same budget during stop when it

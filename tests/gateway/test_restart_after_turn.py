@@ -36,6 +36,16 @@ def test_restart_exit_wait_budget_outlasts_deferral_plus_stop_envelope():
     assert resolve_restart_exit_wait_budget(0, 0, float("inf")) == math.inf
 
 
+def test_unbounded_after_turn_preserves_infinite_restart_exit_budget():
+    # The configured "inf" value is accepted by the restart timeout parser.
+    # It must not flow into the integer-valued systemd stop envelope (int(inf)
+    # raises OverflowError) — an unbounded after-turn budget means the observer
+    # waits indefinitely, matching the non-finite drain contract above.
+    after_turn = parse_restart_after_turn_timeout("inf")
+    assert after_turn == math.inf
+    assert resolve_restart_exit_wait_budget(180, after_turn, 30) == math.inf
+
+
 def test_cli_restart_wait_covers_configured_cron_drain(tmp_path, monkeypatch):
     import hermes_cli.gateway as gateway_cli
 

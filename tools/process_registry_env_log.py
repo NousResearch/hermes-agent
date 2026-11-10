@@ -1,6 +1,9 @@
 """Incremental sandbox log reads for ProcessRegistry's non-local poller."""
 
+import re
 from typing import Any, NamedTuple
+
+_HEADER = re.compile(r"([0-9]{1,20}) ([0-9]{1,20}) (?:(run)|exit:([0-9]{0,9}))")
 
 
 class LogDelta(NamedTuple):
@@ -68,17 +71,14 @@ def parse_log_delta_reply(raw: str) -> LogDelta | None:
     (command failed, shell missing a tool): the caller drops that reply rather
     than act on a half-read value."""
     header, _, delta = raw.partition("\n")
-    try:
-        size_str, offset_str, status = header.split()
-        size, offset = int(size_str), int(offset_str)
-    except ValueError:
+    # ASCII digits only (``\d`` and ``str.isdigit`` accept other scripts), bounded
+    # so ``int()`` cannot hit the interpreter's digit limit on a mangled reply.
+    match = _HEADER.fullmatch(header.strip())
+    if match is None:
         return None
-    if status == "run":
-        return LogDelta(size, offset, None, delta)
-    code = status.removeprefix("exit:")
-    if code == status or not (code == "" or code.isdigit()):
-        return None
-    return LogDelta(size, offset, int(code) if code else -1, delta)
+    size, offset, running, code = match.groups()
+    exit_code = None if running else int(code) if code else -1
+    return LogDelta(int(size), int(offset), exit_code, delta)
 
 
 def fallback_exit_code(env: Any, quoted_pid_path: str, quoted_exit_path: str) -> int | None:

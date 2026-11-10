@@ -205,7 +205,8 @@ class TestEnvPollerIncrementalRead:
         self._run_poller(registry, session, [{"output": "garbage"}, {"output": "1\n"}, {"output": ""}])
         assert session.exit_code == -1
 
-    @pytest.mark.parametrize("header", ["3 0 done", "3 0 exit:x1", "3 0", "3 0 run extra"])
+    @pytest.mark.parametrize("header", ["3 0 done", "3 0 exit:x1", "3 0", "3 0 run extra", "3 0 exit:\u00b2", "3 0 exit:\u0663",
+                                        "3 0 exit:" + "9" * 5000])
     def test_unknown_status_is_an_unreadable_reply(self, header):
         assert parse_log_delta_reply(f"{header}\nabc") is None
 
@@ -239,8 +240,8 @@ class TestEnvPollerIncrementalRead:
                 self.commands = []
 
             def execute(self, command, **kwargs):
-                self.commands.append(command)
                 out = subprocess.run(shell + [command], capture_output=True, timeout=30, check=False).stdout
+                self.commands.append(command)  # after the reply: counts finished polls
                 return {"output": out.decode("utf-8", "replace")}
 
         return ShellEnv()
@@ -269,18 +270,28 @@ class TestEnvPollerIncrementalRead:
         session.exited = False
         env = self._shell_env(shell)
 
+        release = []
+
         def tick(_seconds):
-            if len(env.commands) == 1:  # the first poll ran while the job was held
-                # Opening a FIFO for writing blocks until the job opens it to read.
-                with open(gate, "w") as release:
-                    release.write("\n")
+            # The patch replaces the global time.sleep, so subprocess.run's own wait
+            # loop calls this too: release once, after the first reply came back.
+            if len(env.commands) == 1 and not release:
+                # O_RDWR never blocks on a FIFO (Linux, macOS), and one byte fits the
+                # pipe buffer: the release cannot hang even if the job died. The fd
+                # stays open until the poll ends so the byte outlives a late reader.
+                release.append(os.open(gate, os.O_RDWR))
+                os.write(release[0], b"\n")
             # Each tick costs one real shell exec. A wrapper that is never reaped
             # (no init in a container) would read as running forever: fail, don't hang.
             assert len(env.commands) < 1000, "wrapper never read as exited"
 
-        with patch("tools.process_registry.time.sleep", tick), \
-            patch.object(registry, "_move_to_finished"):
-            registry._env_poller_loop(session, env, str(log), str(pid), str(exit_))
+        try:
+            with patch("tools.process_registry.time.sleep", tick), \
+                patch.object(registry, "_move_to_finished"):
+                registry._env_poller_loop(session, env, str(log), str(pid), str(exit_))
+        finally:
+            for fd in release:
+                os.close(fd)
         assert all("kill -0" in c and "wc -c" in c for c in env.commands)
         assert len(env.commands) >= 2
         assert session.output_buffer == "first\n7 0 exit:0\ntail \u00e9"

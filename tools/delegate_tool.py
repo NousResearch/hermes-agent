@@ -891,13 +891,14 @@ def session_joins_delegation(agent: Any) -> bool:
     """Whether *agent*'s top-level delegations join in the call because the ``delegate_task`` the model sees is the
     joined variant (a gateway session with ``delegation.gateway_mode`` inline). Dispatch follows the schema bytes,
     which ride the session's tools[] pin: a config change can never leave the model reading "results return in
-    this tool call" while children detach, or the reverse. One-shot sessions keep their own fallback (and note)."""
+    this tool call" while children detach, or the reverse. One-shot sessions keep their own fallback (and note).
+    The variant is told by its parameters (no live control), never its wording, which a same-version pin keeps."""
     if getattr(agent, "_oneshot_session", None) is True:
         return False
     for tool in getattr(agent, "tools", None) or ():
         function = tool.get("function") if isinstance(tool, dict) else None
         if isinstance(function, dict) and function.get("name") == "delegate_task":
-            return _ONESHOT_DESCRIPTION_DELIVERY in (function.get("description") or "")
+            return not _LIVE_CONTROL_PARAMS & set((function.get("parameters") or {}).get("properties") or ())
     return False
 
 

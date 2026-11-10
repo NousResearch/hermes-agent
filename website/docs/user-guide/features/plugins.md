@@ -1158,7 +1158,11 @@ In the classic CLI process itself (for example a plugin slash command), `ctx.ses
 
 ## A plugin with its own chat client
 
-A plugin can add a command (`hermes <name>`, through `ctx.register_cli_command`) that starts its own chat frontend. The frontend attaches to the profile's shared gateway with `hermes gateway attach --json` (see [Programmatic integration](../../developer-guide/programmatic-integration.md)). Three imports do what the Hermes terminal client's launcher does around its own client:
+A plugin can add a command (`hermes <name>`, through `ctx.register_cli_command`) that starts its own chat frontend. The frontend attaches to the profile's shared gateway with `hermes gateway attach --json` (see [Programmatic integration](../../developer-guide/programmatic-integration.md)).
+
+The command exists only when the plugin runs inside the Hermes process (`plugins.isolation: in_process`, the default). With `plugins.isolation: host`, Hermes skips `ctx.register_cli_command`, and `hermes <name>` is not a command.
+
+Three imports do what the Hermes terminal client's launcher does around its own client:
 
 - `hermes_cli.gateway_chat.shell_client_env()` returns the allowlisted variables of the shell that ran your command, as a dict. Call it in the launcher, before you change the environment, and send the dict as `client_env` on `session.create`. The session's commands then run with the user's `PATH`, virtual environment and toolchain variables. Names that look like credentials are left out, and the gateway filters the dict again by its own rules.
 - `hermes_cli.chat_launch.hermes_command(args)` returns the argv that runs this Hermes install with `args`. It needs no `PYTHONPATH`; the child serves the profile named by the inherited `HERMES_HOME`. Give it to your frontend for `hermes gateway attach`, instead of `hermes` from `PATH` (which may be another install) or `sys.executable` (which an update may replace).
@@ -1173,11 +1177,12 @@ import subprocess
 def _run_chat(args):
     from hermes_cli.chat_launch import hermes_command, print_exit_summary
     from hermes_cli.gateway_chat import shell_client_env
+    from hermes_constants import get_hermes_home
 
     env = dict(os.environ)
     env["MY_CLIENT_ENV"] = json.dumps(shell_client_env())
     env["MY_ATTACH_COMMAND"] = json.dumps(hermes_command(["gateway", "attach", "--json", "--start"]))
-    session_file = os.path.join(os.environ["HERMES_HOME"], "my-client-session.json")
+    session_file = str(get_hermes_home() / "my-client-session.json")
     env["MY_SESSION_FILE"] = session_file  # the frontend writes {"session_id": ...} here
     subprocess.run(["my-client"], env=env)
     with open(session_file, encoding="utf-8") as f:

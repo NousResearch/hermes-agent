@@ -3,10 +3,7 @@ title: Hermes Nostr Gateway
 repo: https://github.com/dadofsambonzuki/hermes-nostr-gateway
 sha: 2d6042395ad000ae7476858f52c6f395e2d602da
 subdir: integrations/hermes-plugin
-description: >-
-  Nostr platform adapter for Hermes, backed by the local Hermes Nostr Gateway daemon:
-  NIP-17 and NIP-04 DMs, kind-1 mentions and feeds, Concord channels and Marmot groups
-  arrive as one message stream, with reach and authority decided by the gateway's policy.
+description: "Nostr platform adapter for Hermes, backed by the local Hermes Nostr Gateway daemon: NIP-17 and NIP-04 DMs, kind-1 mentions and feeds, Concord channels and Marmot groups arrive as one message stream, with reach and authority decided by the gateway's policy. Disclosure — Needs the separately installed hermes-nostr-gateway daemon (not covered by this pin), which holds the Nostr keys, talks to relays and decides which senders are trusted; on load the adapter writes the Hermes command list to commands.json beside the daemon socket (default ~/.local/state/hermes-nostr-gateway/, or NOSTR_GATEWAY_COMMANDS), and with an npub home/control channel it runs the `nak` CLI to decode it."
 maintainer: dadofsambonzuki
 tier: community
 category: platform
@@ -22,3 +19,4 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+requires_hermes: ">=0.22.1"

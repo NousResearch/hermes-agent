@@ -63,20 +63,21 @@ def _cleanup_env(env: Any, *, force_remove: Optional[bool] = None) -> None:
 
 
 def _settle_env_processes(env: Any) -> None:
-    """Settle background processes polled through *env* as lost before it is closed: their
-    pollers can no longer reach them and would otherwise poll a closed environment forever."""
+    """Settle background processes polled through *env* as lost once it is closed: their
+    pollers can no longer reach them and would otherwise poll a closed environment forever.
+    Called only after a teardown that succeeded: a failed one (Modal's sync-back raising
+    before terminate) may leave the sandbox and its processes running and reachable."""
     from tools.process_registry import process_registry
     from tools.process_registry_env_scope import settle_env_closed
-    with _quiet("settling processes of a closing environment failed"):
+    with _quiet("settling processes of a closed environment failed"):
         settled = settle_env_closed(process_registry, env)
         if settled:
-            logger.info("Marked %d background process(es) lost: their environment is closing", settled)
+            logger.info("Marked %d background process(es) lost: their environment was closed", settled)
 
 
 def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s", stop_idle: bool = False) -> None:
     """``_cleanup_env`` (or, with *stop_idle*, the backend's ``stop_idle``) plus outcome logging.
     A 404/"not found" error means the sandbox is already gone — logged at info."""
-    _settle_env_processes(env)
     try:
         if stop_idle:
             env.stop_idle()
@@ -89,6 +90,8 @@ def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None
             logger.info("Environment for task %s already cleaned up", task_id)
         else:
             logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+            return
+    _settle_env_processes(env)
 
 
 def _clear_file_ops_cache(task_id: str) -> None:
@@ -340,6 +343,6 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
             if env is not None:
                 evicted.append(env)
     for env in evicted:
-        _settle_env_processes(env)
         with _quiet("cleanup of degraded environment failed"):
             env.cleanup()
+            _settle_env_processes(env)  # skipped when cleanup raised (see _settle_env_processes)

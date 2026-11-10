@@ -18,6 +18,7 @@ from typing import Callable, Optional
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_constants import get_hermes_home
+from hermes_platform.host.facts import os_family
 from utils import atomic_write_text
 
 
@@ -264,8 +265,10 @@ def _run_plugin_git(
     a network verb talks to; it runs anonymously first and a stored user credential for that host
     is attached only when the remote refuses anonymous access (private repos)."""
     from hermes_cli.git_credentials import run_git_with_credential_fallback
+    # Config isolation also hides the user's Windows long-path setting.
+    git_options = ["-c", "core.longpaths=true"] if os_family() == "win32" else []
     return run_git_with_credential_fallback(
-        [git_exe, *args], auth_url, env=noninteractive_git_env(), capture_output=True, text=True,
+        [git_exe, *git_options, *args], auth_url, env=noninteractive_git_env(), capture_output=True, text=True,
         encoding='utf-8', errors='replace', timeout=timeout, cwd=str(target))
 
 

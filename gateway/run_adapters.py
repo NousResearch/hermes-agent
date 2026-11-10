@@ -1676,9 +1676,9 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Authorize and publish one normalized adapter event to plugin hooks."""
         # Observer failures must never break the adapter's update loop.
         with _log_suppressed(logging.DEBUG, "gateway_platform_event hook dispatch failed", exc_info=True):
-            from hermes_cli.lifecycle import has_hook, invoke_hook
+            from hermes_cli.lifecycle import ainvoke_hook, has_hook
             if has_hook("gateway_platform_event") and self._is_user_authorized_for_source(source):
-                invoke_hook("gateway_platform_event", **event)
+                await ainvoke_hook("gateway_platform_event", **event)
 
     def _make_profile_platform_event_handler(self, profile_name: str):
         """Bind platform-event auth and hook dispatch to one multiplex profile."""

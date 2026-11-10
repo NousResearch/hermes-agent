@@ -3,19 +3,7 @@ title: SalesPilot
 repo: https://github.com/ranggaoscar/hermes-salespilot
 sha: d390d19ad901aa8e42636ac444d8adf108bec3dc
 version: "1.1.1"
-description: >-
-  An approval-gated sales desk inside Hermes: collect companies from quoted page
-  evidence, qualify them against your ICP, draft the first email, and send one
-  email only after you pick "send" in the host approval prompt — then keep a
-  customer timeline, hot prospects and follow-up dates. Sends nothing on its own,
-  and a refusal, bounce, do-not-contact or archive stops a draft that was written
-  before it. Eleven salespilot_* tools plus a Desktop workspace (Customers, Hot
-  Prospects, Settings, CSV import). Disclosure — network calls only to the SMTP
-  and IMAP server you configure; mailbox credentials come from Hermes secrets
-  (SALESPILOT_SMTP_USERNAME / SALESPILOT_SMTP_PASSWORD) and are never written to
-  the database, logs or the page; lead data lives in
-  $HERMES_HOME/plugin-data/hermes-salespilot/; no telemetry and no third-party
-  analytics.
+description: "An approval-gated sales desk inside Hermes: collect companies from quoted page evidence, qualify them against your ICP, draft the first email, and send one email only after you pick \"send\" in the host approval prompt — then keep a customer timeline, hot prospects and follow-up dates. Sends nothing on its own, and a refusal, bounce, do-not-contact or archive stops a draft that was written before it. Eleven salespilot_* tools plus a Desktop workspace (Customers, Hot Prospects, Settings, CSV import). Disclosure — fetches the public web pages you or the agent point it at (http/https only, private, loopback and cloud-metadata addresses refused); network mail traffic goes only to the SMTP and IMAP servers you configure, with mailbox credentials from Hermes secrets (SALESPILOT_SMTP_USERNAME / SALESPILOT_SMTP_PASSWORD); each email is sent only after you choose \"send\" in the Hermes prompt (daily cap 5); lead data lives in $HERMES_HOME/plugin-data/hermes-salespilot/; no telemetry."
 maintainer: ranggaoscar
 tier: community
 category: tools

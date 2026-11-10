@@ -161,6 +161,10 @@ export async function fetchJSON<T>(
       // server doesn't read cookies and the legacy session-token header is
       // already attached above.
       credentials: init?.credentials ?? "include",
+      // After ``...init`` so a caller cannot widen it: the browser then refuses a
+      // cross-origin redirect and any ``<base href>`` resolution off this origin,
+      // which the up-front URL check cannot see.
+      mode: "same-origin",
     });
   } catch (cause) {
     // fetch() only rejects when the request never got a response: the
@@ -313,6 +317,7 @@ export async function authedFetch(
     ...init,
     headers,
     credentials: init?.credentials ?? "include",
+    mode: "same-origin",
   });
 }
 

@@ -383,9 +383,9 @@ describe("session token stays on the dashboard origin", () => {
     vi.stubGlobal("fetch", fetchMock);
     const own = `${window.location.origin}/api/plugins/demo/blob`;
 
-    await authedFetch("/api/plugins/demo/blob");
+    await authedFetch("/api/plugins/demo/blob", { mode: "cors" });
     await authedFetch(own);
-    await fetchJSON("/api/plugins/demo/data");
+    await fetchJSON("/api/plugins/demo/data", { mode: "no-cors" });
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "/api/plugins/demo/blob",
@@ -395,6 +395,9 @@ describe("session token stays on the dashboard origin", () => {
     for (const [, init] of fetchMock.mock.calls) {
       expect((init?.headers as Headers).get(SESSION_HEADER)).toBe("live-token");
       expect(init?.credentials).toBe("include");
+      // Pinned after the caller's init: the browser then refuses cross-origin
+      // redirects and off-origin <base href> resolution the URL check can't see.
+      expect(init?.mode).toBe("same-origin");
     }
   });
 });

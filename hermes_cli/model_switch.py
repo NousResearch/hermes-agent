@@ -452,8 +452,11 @@ def resolve_startup_model_route(
     if (not explicit_provider and current_canonical
             and current_canonical.lower() == canonical.lower()
             and not is_aggregator(canonical)):
-        # Same provider as the pinned route: the raw id IS the config's model id.
-        return StartupModelRoute(model=raw, provider=provider)
+        # Keep the prefix only when the provider's own normalizer would restore
+        # it from the bare id; other providers intentionally strip it on the wire.
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        if normalize_model_for_provider(model, canonical) == raw:
+            return StartupModelRoute(model=raw, provider=provider)
     return None if is_aggregator(canonical) else StartupModelRoute(model=model, provider=provider)
 
 

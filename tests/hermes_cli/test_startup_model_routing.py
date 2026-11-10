@@ -201,3 +201,27 @@ def test_tui_qualified_model_never_reaches_default_provider(tmp_path, monkeypatc
         lambda *_a, **_k: pytest.fail("auto-detection ran on a provider-qualified model"))
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", "custom:jetson-vllm:nemotron-nano-30b")
     assert tui_server._resolve_startup_runtime() == ("nemotron-nano-30b", "custom:jetson-vllm")
+
+def test_same_provider_startup_route_keeps_only_native_prefixes(monkeypatch):
+    """Avoid model-normalization noise without changing a provider's wire model id.
+
+    NVIDIA repairs a known catalogue slug to its full vendor id; Z.AI and
+    OpenAI do not. This fails on the original main (NVIDIA) and on the PR
+    head before the guard (Z.AI/OpenAI).
+    """
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    cases = (
+        ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-ultra-550b-a55b"),
+        ("zai", "zai/glm-5.1", "glm-5.1"),
+        ("openai", "openai/gpt-4o", "gpt-4o"),
+    )
+    for provider, raw, expected in cases:
+        route = model_switch.resolve_startup_model_route(
+            raw,
+            current_provider=provider,
+            user_providers={provider: {"base_url": "https://api.example.test/v1"}},
+        )
+        assert route == model_switch.StartupModelRoute(expected, provider, ""), (
+            provider, raw, route
+        )
+

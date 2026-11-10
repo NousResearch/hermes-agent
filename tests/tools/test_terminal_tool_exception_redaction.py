@@ -8,7 +8,7 @@ the JSON result returned to the model previously carried raw ``str(e)`` and
 
 import json
 
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 
 SECRET = "sk-proj-AbCdEf1234567890SecretValue999"
 

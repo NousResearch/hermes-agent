@@ -16,9 +16,8 @@ import pytest
 import agent.secret_scope as ss
 from gateway.config import GatewayConfig
 from gateway.platforms.base import Platform, SessionSource
-from gateway.run import _recover_pending_flushes
 from gateway.session import SessionEntry, SessionStore
-from gateway.shutdown_flush import spool_dropped_transcript_message
+from gateway.shutdown_flush import recover_gateway_pending, spool_dropped_transcript_message
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
 
@@ -73,7 +72,7 @@ def test_boot_recovery_replays_a_routed_profiles_spooled_backlog(multiplex_homes
     _spool_under(root, default_sid, "default while locked")
     _spool_under(profile, work_sid, "work while locked")
 
-    recovered = _recover_pending_flushes(SimpleNamespace(config=store.config, session_store=store))
+    recovered = recover_gateway_pending(SimpleNamespace(config=store.config, session_store=store))
 
     assert recovered == 2
     assert [m["content"] for m in default_db.get_messages(default_sid)] == ["default while locked"]

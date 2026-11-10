@@ -45,6 +45,11 @@ const A = (n: number) => `A${n}-${nonce}`
 test('onboarding (custom endpoint) then first chat renders exactly once', async () => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('onboard')
+  // A fresh desktop install starts the first-run onboarding chat on the free trial, and once a
+  // provider is configured it starts it on that provider at the next launch (#137522, #137807). This
+  // spec covers the provider setup a user without the trial gets, then plain chats: no guest trial,
+  // onboarding recorded as done.
+  fs.writeFileSync(path.join(sandbox.hermesHome, 'config.yaml'), 'nous:\n  guest: false\nonboarding:\n  run: false\n')
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
   const ws = recordWebSockets(page)
 

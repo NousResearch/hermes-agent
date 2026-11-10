@@ -1,12 +1,12 @@
 // Build-time guard: refuse to start a build the installed tree cannot finish.
 //
-// The desktop workspace's dependencies are hoisted to the repo-root
-// `node_modules`, so a root install that only covers *part* of the workspace
+// The desktop workspace's dependencies are linked into its own `node_modules`
+// by the root install, so an install that only covers *part* of the workspace
 // graph leaves this app importable-looking but unbuildable. The guard exists to
-// turn that into one actionable line ("run npm ci from the repo root") instead
-// of a failure deep inside vite.
+// turn that into one actionable line ("run pnpm install --frozen-lockfile from
+// the repo root") instead of a failure deep inside vite.
 //
-// It runs from `prebuild`, ahead of `npm run clean`, so a tree that cannot
+// It runs from `prebuild`, ahead of `pnpm run clean`, so a tree that cannot
 // build is rejected before the build starts deleting its own outputs. `build`
 // re-runs it for anyone invoking the build steps directly; the check is pure
 // filesystem lookups, so paying for it twice costs nothing.
@@ -25,7 +25,7 @@ import { isMain } from "./utils.mjs"
 //                     the CSS transform fails before a single chunk is emitted.
 //   electron        — the runtime electron-builder packages; without it `pack`
 //                     cannot produce an unpacked app at all.
-//   electron-builder — the packager `npm run builder` shells out to.
+//   electron-builder — the packager `pnpm run builder` shells out to.
 //
 // Checking only `vite` (the original guard) passes a tree missing any of the
 // others, which is how an incomplete install reached `vite build` and died on
@@ -41,9 +41,17 @@ import { isMain } from "./utils.mjs"
 // lands, so `checkRootInstall` unions the floor with the manifest's declared
 // `dependencies` + `devDependencies` — a partial install is refused whichever
 // package it happened to drop. `optionalDependencies` are excluded by design:
-// npm legitimately skips them (platform-gated natives like `get-windows`).
+// pnpm legitimately skips them on platforms they do not support.
 const BUILD_CRITICAL_PACKAGES = ["vite", "katex", "electron", "electron-builder"]
 export { BUILD_CRITICAL_PACKAGES }
+
+// Declared packages the build degrades without instead of failing.
+// `get-windows` is a regular dependency only so pnpm does not skip it by name
+// (pnpm-workspace.yaml allowBuilds); an interrupted install can still leave it
+// half-extracted (#90829), and stage-native-deps then ships without
+// read_window_below and prints the repair hint. Requiring it here would fail
+// the source build on the case staging exists to survive.
+const SOFT_PACKAGES = new Set(["get-windows"])
 
 // Resolve the way Node's own lookup does — walk `node_modules` upward — rather
 // than through `require.resolve`. A package whose `exports` map does not expose
@@ -61,16 +69,16 @@ function packageIsInstalled(name, fromDir) {
 }
 
 // Every package the workspace manifest at `appDir` declares as required
-// (`dependencies` + `devDependencies`; never `optionalDependencies`). An
-// unreadable or malformed manifest yields [] — the floor still applies, and
-// the build's own manifest read fails loudly on its own.
+// (`dependencies` + `devDependencies`, minus SOFT_PACKAGES; never
+// `optionalDependencies`). An unreadable or malformed manifest yields [] — the
+// floor still applies, and the build's own manifest read fails loudly on its own.
 export function requiredPackages(appDir) {
   try {
     const manifest = JSON.parse(readFileSync(join(appDir, "package.json"), "utf8"))
     return [
       ...Object.keys(manifest.dependencies ?? {}),
       ...Object.keys(manifest.devDependencies ?? {}),
-    ]
+    ].filter(name => !SOFT_PACKAGES.has(name))
   } catch {
     return []
   }
@@ -88,15 +96,15 @@ export function checkRootInstall(appDir, rootDir) {
         `the desktop build needs ${missing.join(", ")}, which the current install ` +
         `does not provide. A partial root install leaves the workspace looking ` +
         `present while the build cannot complete. Reinstall from the repo root: ` +
-        `cd ${rootDir} && npm ci`
+        `cd ${rootDir} && pnpm install --frozen-lockfile`
     }
   }
 
   // `vite.config.ts` aliases react/react-dom to whatever this workspace resolves,
   // and React refuses to run when the two come from different installed copies
   // ("Minified React error #527" — it throws before the first paint, so the app
-  // window stays blank). npm stays silent about the split because the hoisted
-  // react still satisfies react-dom's caret peer range. Fail the build loudly
+  // window stays blank). npm stayed silent about the split because the hoisted
+  // react still satisfied react-dom's caret peer range. Fail the build loudly
   // instead of shipping a white screen.
   const requireFromApp = createRequire(join(appDir, "package.json"))
   const installedVersion = pkg =>
@@ -113,7 +121,7 @@ export function checkRootInstall(appDir, rootDir) {
     // rather than an absent one. Report it as such instead of throwing.
     return {
       ok: false,
-      error: `could not read the installed react/react-dom versions (${err.message}). Reinstall from the repo root: cd ${rootDir} && npm ci`
+      error: `could not read the installed react/react-dom versions (${err.message}). Reinstall from the repo root: cd ${rootDir} && pnpm install --frozen-lockfile`
     }
   }
 
@@ -123,7 +131,7 @@ export function checkRootInstall(appDir, rootDir) {
       error:
         `react@${react} / react-dom@${reactDom} version mismatch — React would fail ` +
         `with error #527 and render a blank window. Pin both to the same version ` +
-        `in ${join(appDir, "package.json")}, then reinstall: cd ${rootDir} && npm ci`
+        `in ${join(appDir, "package.json")}, then reinstall: cd ${rootDir} && pnpm install --frozen-lockfile`
     }
   }
 

@@ -45,7 +45,7 @@ FastAPI、Uvicorn 和平台 PTY 辅助库是 Hermes 核心依赖。`web` extra �
 标准 PM 安装通过 `all` 选择 `web`；消息和语音功能仍需单独请求。
 如依赖损坏，请运行 `hermes pm repair` 并重启 Hermes。
 
-在没有依赖项的情况下运行 `hermes dashboard` 时，它会告诉你需要安装什么。如果前端尚未构建且 `npm` 可用，则会在首次启动时自动构建。
+在没有依赖项的情况下运行 `hermes dashboard` 时，它会告诉你需要安装什么。如果前端尚未构建，首次启动时会使用 Hermes 提供的 Node 和 pnpm 自动构建。
 
 Chat 标签页是每次 `hermes dashboard` 启动的一部分——内嵌的浏览器聊天面板（通过 PTY/WebSocket 运行 TUI）始终可用，无需任何额外参数。
 
@@ -311,8 +311,8 @@ hermes dashboard --no-open
 
 # 终端 2：启动带 HMR 的 Vite 开发服务器
 cd web/
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 ```
 
 `http://localhost:5173` 上的 Vite 开发服务器会将 `/api` 请求代理到 `http://127.0.0.1:9119` 上的 FastAPI 后端。
@@ -321,7 +321,7 @@ npm run dev
 
 ## 更新时自动构建
 
-运行 `hermes update` 时，如果 `npm` 可用，Web 前端会自动重新构建。这使 Dashboard 与代码更新保持同步。如果未安装 `npm`，更新会跳过前端构建，`hermes dashboard` 将在首次启动时构建。
+运行 `hermes update` 时，Web 前端会使用 Hermes 提供的 Node 和 pnpm 自动重新构建。这使 Dashboard 与代码更新保持同步。如果更新无法提供它们（例如禁用了延迟安装），更新会跳过前端构建，`hermes dashboard` 将在首次启动时构建。
 
 ## 主题与插件
 

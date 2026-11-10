@@ -67,8 +67,6 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes setup --portal` (fresh) or `hermes auth add nous` (OAuth) |
 | OpenAI Codex | `openai-codex` | `hermes model` → **ChatGPT or Codex Subscription** (ChatGPT OAuth) |
-| GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` |
-| GitHub Copilot ACP | `copilot-acp` | External process (editor integration) |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` or Claude Code credentials |
 | z.ai / GLM | `zai` | `GLM_API_KEY` |
 | Kimi / Moonshot | `kimi-coding` | `KIMI_API_KEY` |
@@ -103,6 +101,7 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | Tencent TokenPlan | `tencent-tokenplan` | `TOKENPLAN_API_KEY` |
 | Microsoft Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
 | LM Studio (local) | `lmstudio` | `LM_API_KEY` (or none for local) + `LM_BASE_URL` |
+| Local llama.cpp (managed) | `llamacpp` (aliases `llama.cpp`, `llama-cpp`) | The local model server Hermes manages (Desktop **Settings → Providers → Local models**), no `base_url` needed. If it is not running the entry is skipped — Hermes never sends the local model name to another provider |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
 | Mixture of Agents preset | `moa` (`model` = preset name) | A configured MoA preset whose aggregator has credentials — the fallback runs the whole preset (references + aggregator), not the aggregator alone |
@@ -220,7 +219,6 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 |------|-------------|-----------|
 | Vision | Image analysis, browser screenshots | `auxiliary.vision` |
 | Compression | Context compression summaries | `auxiliary.compression` |
-| Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
 | Approval | Smart command-approval classification | `auxiliary.approval` |
 | Title Generation | Session title summaries | `auxiliary.title_generation` |
@@ -240,7 +238,7 @@ A billing or quota failure quarantines only the failed custom endpoint for the a
 
 The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well.
 
-**Built-in text discovery chain (compression, web extract, title generation, etc.):**
+**Built-in text discovery chain (compression, title generation, etc.):**
 
 ```text
 OpenRouter → Nous Portal → Custom endpoint → Codex OAuth →
@@ -274,10 +272,6 @@ auxiliary:
     fallback_chain:              # optional, task-specific fallback policy
       - provider: openrouter
         model: inclusionai/ring-2.6-1t:free
-
-  skills_hub:
-    provider: "auto"
-    model: ""
 
   mcp:
     provider: "auto"
@@ -319,6 +313,7 @@ These options apply to `auxiliary:`, `compression:`, and `fallback_providers:` e
 | `"codex"` | Force Codex OAuth | `hermes model` → ChatGPT or Codex Subscription |
 | `"main"` | Use whatever provider the main agent uses (auxiliary tasks only) | Active main provider configured |
 | `"anthropic"` | Force Anthropic native | `ANTHROPIC_API_KEY` or Claude Code credentials |
+| `"llamacpp"` | Force the managed local llama.cpp server | Local model server running; when it is off, the local model name is never sent to another provider |
 
 ### Direct Endpoint Override
 
@@ -452,7 +447,6 @@ To keep fallback for a job, leave it unpinned and choose its model with `cron.mo
 | Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors; auth errors (401) walk `fallback_chain` only | `auxiliary.<task>.fallback_chain` |
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |
 | Context compression | Layered (see above); degrades to no-summary if all layers unavailable | `auxiliary.compression` |
-| Skills hub | Layered (see above) | `auxiliary.skills_hub` |
 | MCP helpers | Layered (see above) | `auxiliary.mcp` |
 | Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |

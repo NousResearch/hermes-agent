@@ -60,7 +60,7 @@ metadata:
     requires_toolsets: [web]            # Optional — only show when these toolsets are active
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
-    fallback_for_tools: [browser_navigate]  # Optional — hide when these tools exist
+    fallback_for_tools: [browser_exec]  # Optional — hide when these tools exist
     config:                              # Optional — config.yaml settings the skill needs
       - key: my.setting
         description: "What this setting controls"
@@ -115,7 +115,7 @@ metadata:
     requires_toolsets: [web]           # 若 web toolset 未激活则隐藏
     requires_tools: [web_search]       # 若 web_search tool 不可用则隐藏
     fallback_for_toolsets: [browser]   # 若 browser toolset 已激活则隐藏
-    fallback_for_tools: [browser_navigate]  # 若 browser_navigate 可用则隐藏
+    fallback_for_tools: [browser_exec]  # 若 browser_exec 可用则隐藏
 ```
 
 | 字段 | 行为 |
@@ -125,7 +125,7 @@ metadata:
 | `fallback_for_toolsets` | 当列出的**任意** toolset **已**可用时，skill **隐藏** |
 | `fallback_for_tools` | 当列出的**任意** tool **已**可用时，skill **隐藏** |
 
-**`fallback_for_*` 使用场景：** 创建一个在主要 tool 不可用时作为替代方案的 skill。例如，带有 `fallback_for_tools: [web_search]` 的 `duckduckgo-search` skill 仅在未配置需要 API key 的 web search tool 时显示。
+**`fallback_for_*` 使用场景：** 创建一个在主要 tool 不可用时作为替代方案的 skill。例如，带有 `fallback_for_tools: [web_search]` 的基于 curl 的搜索 skill 仅在 `web_search` 工具被禁用时显示。
 
 **`requires_*` 使用场景：** 创建仅在特定 tool 存在时才有意义的 skill。例如，带有 `requires_toolsets: [web]` 的网页抓取工作流 skill 在 web tool 被禁用时不会出现在 prompt 中。
 

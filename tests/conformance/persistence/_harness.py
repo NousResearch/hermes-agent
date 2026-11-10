@@ -59,7 +59,7 @@ def wait_for(
     *,
     deadline: float = CHILD_DEADLINE,
     what: str = "condition",
-    child: "subprocess.Popen | None" = None,
+    child: subprocess.Popen | None = None,
 ) -> None:
     """Poll ``predicate`` until true or fail loudly at the deadline.
 

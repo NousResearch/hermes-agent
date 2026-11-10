@@ -51,7 +51,7 @@ class TestNamedCustomProviderCatalogs:
             catalogs = _named_custom_provider_catalogs()
 
         assert len(catalogs) == 1
-        slug, label, models = catalogs[0]
+        slug, _label, models = catalogs[0]
         assert slug == "custom:relay"
         assert [m for m, _ in models] == ["model-a", "model-b"]
 

@@ -1,0 +1,19 @@
+name: hermes-memory-pane
+title: Memory Pane
+repo: https://github.com/Adolanium/hermes-memory-pane
+sha: 4ba8ae3577249d3c9a0f3ad6f8336f43bda3bbf4
+description: "A Hermes Desktop pane for the built-in memory: see what the focused chat remembered, updated or forgot, and edit, delete or undo any entry without leaving the conversation. Works alongside the built-in memory; not a memory provider. Disclosure — a tool_execution middleware reads MEMORY.md and USER.md around each memory call and logs the entry-level changes to $HERMES_HOME/plugin-data/hermes-memory-pane/; the pane rewrites memory entries only when the user edits, deletes, adds or undoes one, through Hermes's own memory store; no network, credentials, shell commands or background processes."
+maintainer: Adolanium
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/Adolanium/hermes-memory-pane#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Adolanium/hermes-memory-pane/4ba8ae3577249d3c9a0f3ad6f8336f43bda3bbf4/assets/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Adolanium/hermes-memory-pane/4ba8ae3577249d3c9a0f3ad6f8336f43bda3bbf4/assets/memory-pane.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: [tool_execution]
+  requires_env: []

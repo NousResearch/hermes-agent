@@ -27,7 +27,7 @@ def test_cli_stamp_roundtrip(tmp_path, monkeypatch, variant, distribution, mecha
             "--update-mechanism", mechanism]
     if distribution:
         args += ["--distribution", distribution]
-    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     data = json.loads(out.read_text(encoding="utf-8-sig"))
     assert {key: data[key] for key in ("source", "distribution", "updateMechanism", "payload", "tag", "commit")} == {
@@ -57,6 +57,7 @@ def test_missing_or_invalid_mechanism_cannot_emit_stamp(tmp_path, arguments):
         [sys.executable, str(Path(__file__).resolve().parents[2] / "scripts/write_install_stamp.py"),
          "--output", str(out), "--commit", "a" * 40, *arguments],
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode != 0 and "--update-mechanism" in result.stderr
     assert not out.exists()
@@ -75,7 +76,7 @@ def test_invalid_variant_cannot_emit_stamp(tmp_path, variant, tag, error):
          "--output", str(out), "--commit", "d" * 40, "--base-version", "0.18.0",
          "--update-mechanism", "self"],
         env={**os.environ, "HERMES_DESKTOP_VARIANT": variant, "HERMES_PAYLOAD_TAG": tag, "HERMES_BUILD_COMMIT": ""},
-        capture_output=True, text=True, timeout=30)
+        capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode != 0 and error in result.stderr
     assert not out.exists()
 

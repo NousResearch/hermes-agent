@@ -30,7 +30,6 @@ def _runner():
     runner.hooks = MagicMock(loaded_hooks=[])
     runner.hooks.emit = AsyncMock(return_value=[])
     runner._running_agents = {}
-    runner._get_or_create_gateway_honcho = lambda _key: (None, None)
     runner._is_user_authorized = lambda _source: True
     runner.session_store = SimpleNamespace(get_or_create_session=lambda _source: None)
     return runner

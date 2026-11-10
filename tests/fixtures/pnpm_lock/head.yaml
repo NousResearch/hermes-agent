@@ -1,0 +1,60 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@types/ms':
+        specifier: 0.7.34
+        version: 0.7.34
+      escape-string-regexp:
+        specifier: 4.0.0
+        version: 4.0.0
+      is-number:
+        specifier: 7.0.0
+        version: 7.0.0
+      ms:
+        specifier: 2.1.3
+        version: 2.1.3
+
+  pkg:
+    dependencies:
+      is-number:
+        specifier: 5.0.0
+        version: 5.0.0
+
+packages:
+
+  '@types/ms@0.7.34':
+    resolution: {integrity: sha512-nG96G3Wp6acyAgJqGasjODb+acrI7KltPiRxzHPXnP3NgI28bpQDRv53olbqGXbfcgF5aiiHmO3xpwEpS5Ld9g==}
+
+  escape-string-regexp@4.0.0:
+    resolution: {integrity: sha512-TtpcNJ3XAzx3Gq8sWRzJaVajRs0uVxA2YAkdb1jm2YkPz4G6egUFAyA3n5vtEIZefPk5Wa4UXbKuS5fKkJWdgA==}
+    engines: {node: '>=10'}
+
+  is-number@5.0.0:
+    resolution: {integrity: sha512-LmVHHP5dTJwrwZg2Jjqp7K5jpvcnYvYD1LMpvGadMsMv5+WXoDSLBQ0+zmuBJmuZGh2J2K845ygj/YukxUnr4A==}
+    engines: {node: '>=0.10.0'}
+
+  is-number@7.0.0:
+    resolution: {integrity: sha512-41Cifkg6e8TylSpdtTpeLVMqvSBEVzTttHvERD741+pnZ8ANv0004MRL43QKPDlK9cGvNp6NZWZUBlbGXYxxng==}
+    engines: {node: '>=0.12.0'}
+
+  ms@2.1.3:
+    resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
+
+snapshots:
+
+  '@types/ms@0.7.34': {}
+
+  escape-string-regexp@4.0.0: {}
+
+  is-number@5.0.0: {}
+
+  is-number@7.0.0: {}
+
+  ms@2.1.3: {}

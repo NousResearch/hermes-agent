@@ -81,8 +81,10 @@ describe('gateway `error` event → error card + toast', () => {
     // agent init with no usable provider: the gateway stamps code=provider_not_configured
     // (tui_gateway/server.py). The fix for this chat is setup, so the user must land there and
     // not on a toast — even after the sentence is reworded again.
-    const { ctx } = errorContext('Hermes could not start the assistant. Details: something new we never matched.',
-      'provider_not_configured')
+    const { ctx } = errorContext(
+      'Hermes could not start the assistant. Details: something new we never matched.',
+      'provider_not_configured'
+    )
 
     handleStatusEvent(ctx)
 
@@ -109,5 +111,23 @@ describe('gateway `error` event → error card + toast', () => {
     const toast = $notifications.get()[0]
     expect(toast.message).toBe(serverCopy)
     expect(toast.detail).toBeUndefined()
+  })
+
+  it('raises no toast for the session on screen when its card explains the code (one event, one surface)', () => {
+    const { ctx, failAssistantMessage } = errorContext('[Errno 28] No space left on device')
+
+    handleStatusEvent({ ...ctx, isActiveEvent: true })
+
+    expect(failAssistantMessage).toHaveBeenCalledTimes(1)
+    expect($notifications.get()).toEqual([])
+  })
+
+  it("still toasts a bare error's server sentence on screen: the card copy is generic", () => {
+    const sentence = 'Another Hermes process holds the auth store lock. Wait for it to finish or close it, then retry.'
+    const { ctx } = errorContext(sentence)
+
+    handleStatusEvent({ ...ctx, isActiveEvent: true })
+
+    expect($notifications.get()).toEqual([expect.objectContaining({ message: sentence })])
   })
 })

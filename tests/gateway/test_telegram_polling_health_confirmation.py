@@ -10,8 +10,8 @@ reconnect is a reliable hung-poll signature.
 
 import asyncio
 import logging
-from gateway.config import Platform  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from gateway.config import Platform
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _bare_adapter():
@@ -26,7 +26,7 @@ def _bare_adapter():
     a._polling_progress_event = asyncio.Event()
     a._polling_network_error_count = 2
     a._polling_conflict_count = 3
-    a._polling_conflict_recovery_generation = None
+    a._polling_conflict_quiet_since = None
     a._send_path_degraded = True
     return a
 

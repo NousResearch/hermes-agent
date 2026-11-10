@@ -34,21 +34,24 @@ STALE_AFTER_S = 3600
 _NOT_A_PROVIDER = frozenset({"aux-config", "cancel", "reasoning", "remove-custom"})
 _AUTH_ERROR_TYPES = frozenset({"AuthError", "SignInCopyError"})
 _OAUTH_SESSION_KEY = "_metrics_setup_flow"
+_OAUTH_FAILURE_KEY = "_metrics_setup_failure"
+# Ends that are not failures: the user stopped it, or let the sign-in code run out.
+_NOT_FAILURES = frozenset({"cancelled", "expired"})
 # Tokens other tools read too (gh, the Hugging Face Hub): saving one is not connecting that provider.
 _SHARED_TOKENS = frozenset({"GH_TOKEN", "GITHUB_TOKEN", "HF_TOKEN"})
 # OAuth session status (+ reason) at its end -> (event, failure_class).
 _OAUTH_ENDINGS = {
     "approved": ("completed", "none"),
-    "cancelled": ("failed", "cancelled"),
+    "cancelled": ("abandoned", "none"),
     "denied": ("failed", "auth"),
     "expired": ("abandoned", "none"),
-    "error": ("failed", "other"),
 }
 _OAUTH_REASONS = {
-    "user_declined": ("failed", "cancelled"),
-    "superseded": ("failed", "cancelled"),
+    "user_declined": ("abandoned", "none"),
+    "superseded": ("abandoned", "none"),
     "timeout": ("abandoned", "none"),
     "account_retired": ("failed", "auth"),
+    "anon_unreachable": ("failed", "network"),
 }
 
 
@@ -98,20 +101,29 @@ def provider_setup_fields(*, surface: Any, provider: Any, event: Any, failure_cl
     if surface not in contract.PROVIDER_SETUP_SURFACES or event not in contract.PROVIDER_SETUP_EVENTS:
         return None
     failure = "none"
-    if event == "failed":
+    if event == "failed" and failure_class in _NOT_FAILURES:  # a cancel or a lapsed code is a walk-away
+        event = "abandoned"
+    elif event == "failed":
         failure = failure_class if failure_class in contract.PROVIDER_SETUP_FAILURE_CLASSES - {"none"} else "other"
     return {"event": event, "failure_class": failure, "provider": provider_metric_name(provider), "surface": surface}
 
 
 def setup_failure_class(exc: BaseException) -> str:
-    """Closed class for an exception that ended a setup flow; inert (type checks only)."""
-    from hermes_cli.auth_error_copy import is_cancelled, is_network_error
+    """Closed class for an exception that ended a setup flow; inert (type checks only). ``cancelled``
+    and ``expired`` (the sign-in code ran out before approval) are recorded ``abandoned``."""
+    from hermes_cli.auth_error_copy import is_cancelled, is_device_code_expired, is_network_error
 
     names = {cls.__name__ for cls in type(exc).__mro__}
-    if is_cancelled(exc) or "_SetupCancelled" in names:  # Esc in the setup menus
+    if isinstance(getattr(exc, "setup_failure_class", None), str):  # classified where it was raised
+        return exc.setup_failure_class
+    # Esc in the setup menus, or consent declined on the provider's page.
+    if is_cancelled(exc) or "_SetupCancelled" in names or getattr(exc, "oauth_error_code", "") == "access_denied":
         return "cancelled"
-    if is_network_error(exc):
+    # Before the expiry check: a code that ran out while the service kept failing is an outage.
+    if is_network_error(exc) or (exc.__cause__ is not None and is_network_error(exc.__cause__)):
         return "network"
+    if is_device_code_expired(exc):
+        return "expired"
     if names & _AUTH_ERROR_TYPES:
         return "auth"
     return "other"
@@ -342,10 +354,10 @@ def _is_go_back(exc: BaseException) -> bool:
 
 
 def _close_backed_out() -> None:
-    """The user went Back out of a provider flow and never resumed it: it ends as ``cancelled``."""
+    """The user went Back out of a provider flow and never resumed it: it ends ``abandoned``."""
     pending, _cli.backed_out = getattr(_cli, "backed_out", None), None
     if pending is not None:
-        finish_provider_setup(pending[0], "failed", "cancelled")
+        finish_provider_setup(pending[0], "abandoned")
 
 
 def _resumes(flow: SetupFlow, surface: Any, provider: Any) -> bool:
@@ -363,14 +375,14 @@ def cli_provider_setup(provider: Any) -> Iterator[None]:
     tests driving the picker directly) nothing is tracked.
 
     Completed when the flow saved a choice or changed the model route; a flow that returns without
-    either failed with the class it reported, else the user backed out (``cancelled``). Back (Left
+    either failed with the class it reported, else the user backed out (``abandoned``). Back (Left
     arrow) leaves the flow open: the replayed picker re-entering the same provider continues it (one
-    ``started``); picking another provider, or leaving the entry point, ends it ``cancelled``.
+    ``started``); picking another provider, or leaving the entry point, ends it ``abandoned``.
     """
     surface = getattr(_cli, "surface", None)
     pending, _cli.backed_out = getattr(_cli, "backed_out", None), None
     if pending is not None and not _resumes(pending[0], surface, provider):
-        finish_provider_setup(pending[0], "failed", "cancelled")
+        finish_provider_setup(pending[0], "abandoned")
         pending = None
     flow, before = pending or (begin_provider_setup(surface, provider) if surface else None, None)
     if flow is None:
@@ -397,8 +409,10 @@ def cli_provider_setup(provider: Any) -> Iterator[None]:
             landed = before is not None and _model_route() != before
     if landed:
         finish_provider_setup(flow, "completed")
+    elif hints["failure"]:
+        finish_provider_setup(flow, "failed", hints["failure"])
     else:
-        finish_provider_setup(flow, "failed", hints["failure"] or "cancelled")
+        finish_provider_setup(flow, "abandoned")
 
 
 # ---- dashboard / Desktop OAuth sessions ------------------------------------------------------
@@ -422,6 +436,14 @@ def attach_oauth_setup(sess: dict[str, Any] | None, flow: SetupFlow | None) -> N
         sess[_OAUTH_SESSION_KEY] = flow
 
 
+def note_oauth_failure(sess: dict[str, Any] | None, exc: BaseException) -> None:
+    """A sign-in poller died with ``exc``: keep its closed class for the settle (the status alone is
+    ``error`` for a lapsed code, a dropped network and a refusal alike)."""
+    with contextlib.suppress(Exception):
+        if isinstance(sess, dict):
+            sess[_OAUTH_FAILURE_KEY] = setup_failure_class(exc)
+
+
 def settle_oauth_setup(sess: dict[str, Any] | None, *, abandoned: bool = False) -> None:
     """End an OAuth session's flow from its status (no-op while pending, or when already ended)."""
     try:
@@ -430,6 +452,8 @@ def settle_oauth_setup(sess: dict[str, Any] | None, *, abandoned: bool = False) 
         status = "cancelled" if sess.get("cancelled") else str(sess.get("status") or "")
         ending = _OAUTH_REASONS.get(str(sess.get("reason") or "")) if status in {"denied", "error"} else None
         ending = ending or _OAUTH_ENDINGS.get(status)
+        if ending is None and status == "error":
+            ending = ("failed", sess.get(_OAUTH_FAILURE_KEY) or "other")
         if ending is None:
             if not abandoned:
                 return

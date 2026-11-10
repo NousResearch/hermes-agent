@@ -170,7 +170,7 @@ class TestListAuthenticatedProvidersBedrock:
 
         calls = {"has_aws_credentials": 0}
 
-        def _has_aws_credentials():
+        def _has_aws_credentials(*_a, **_kw):
             calls["has_aws_credentials"] += 1
             return False
 

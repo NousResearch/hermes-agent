@@ -3,11 +3,13 @@ import DOMPurify from 'dompurify'
 import { useEffect, useMemo, useState } from 'react'
 
 import { CopyButton } from '@/components/ui/copy-button'
+import { PreviewDocumentFrame } from '@/components/ui/preview-document-frame'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { artifactDownloadName, type ArtifactKind } from '@/lib/artifact-detect'
 import { downloadTextFile } from '@/lib/download-text'
 import { ChevronLeft, ChevronRight, Download, ExternalLink } from '@/lib/icons'
+import { pathToFileUrl } from '@/lib/local-preview'
 import { $artifactRegistry, $artifactVersionSelection, findArtifact, selectArtifactVersion } from '@/store/artifacts'
 import { notifyError } from '@/store/notifications'
 import type { PreviewTarget } from '@/store/preview'
@@ -60,7 +62,7 @@ async function openHtmlInBrowser(content: string): Promise<void> {
     throw new Error('Could not write artifact file')
   }
 
-  const fileUrl = `file://${path.startsWith('/') ? '' : '/'}${path.replace(/\\/g, '/')}`
+  const fileUrl = pathToFileUrl(path)
 
   if (bridge.openPreviewInBrowser) {
     await bridge.openPreviewInBrowser(fileUrl)
@@ -94,7 +96,7 @@ function ArtifactLiveView({ content, kind, title }: { content: string; kind: Art
   }
 
   return (
-    <iframe
+    <PreviewDocumentFrame
       className="block size-full border-0 bg-white"
       sandbox="allow-scripts"
       srcDoc={composeArtifactHtml(content)}

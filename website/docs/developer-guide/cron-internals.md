@@ -13,6 +13,7 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 | File | Purpose |
 |------|---------|
 | `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
+| `cron/jobs_time.py` | Per-job `timezone` / `grace_minutes` knobs: validation, tolerant reads, due-scan zone |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
 | `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
@@ -30,6 +31,28 @@ Four schedule formats are supported:
 | **ISO timestamp** | `2025-01-15T09:00:00` | One-shot, fires at the exact time |
 
 The model-facing surface is a single `cronjob_manage` tool with action-style operations: `create`, `list`, `update`, `pause`, `resume`, `run`, `remove`.
+
+## Per-job timezone
+
+`compute_next_run(schedule, last_run_at, *, timezone=...)` resolves the zone as *job pin → profile
+`timezone` → base offset*, and **every** caller that advances `next_run_at` passes the job's pin
+(the advance sites, the claim path, resume/re-arm, the recovery paths, and the quota/unreachable
+planners). One missed site shows up as a burst re-run or a skipped slot, because the stored instant
+and the expression would be interpreted in different zones.
+
+The dispatch path needs the pin just as much as the compute does. `_evaluate_due_job` builds its
+`_DueJob` with `_ensure_aware(raw, zone_for_job(job))`, which gives every downstream predicate the
+job's clock; a job with a pinned zone **skips `_repair_timezone_shifted_cron` entirely**. That
+repair exists for jobs that FOLLOW the profile zone across a zone change: for a pinned job its
+stored offset legitimately differs from the profile's, and the repair's wall-clock comparison
+(`_stored_wall_clock_is_future`) then reads a due occurrence as still-in-the-future and re-anchors
+to the next one — the job silently never fires. This is why a fix to `compute_next_run` alone is
+not enough.
+
+`timezone` and `grace_minutes` are top-level record fields (not inside `schedule`), validated by
+`jobs_time.normalize_*` at both the create and update door. A corrupt persisted value degrades to
+the profile zone with one warning per value — the 60s scan must not die on one bad record. No
+migration is needed: the keys simply do not exist in older stores, and every reader uses `.get()`.
 
 ## Job Storage
 
@@ -65,17 +88,47 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 
 ### `last_status` literals
 
-`last_status` is a closed set written only by `cron.jobs.mark_job_run`. Every
-renderer (`hermes cron list`/`doctor`, the `cronjob_manage` tool, the web dashboard
-badge, the Desktop routine inspector) maps each literal explicitly — a consumer
-must never test `== "ok"` for "the user got their result":
+`last_status` is written by `cron.jobs.mark_job_run` when a run finishes and, for a
+queued delivery, rewritten once by the delivery write-back below. Every renderer
+(`hermes cron list`/`doctor`, the `cronjob_manage` tool, the web dashboard badge, the
+Desktop routine inspector) maps each literal explicitly — a consumer must never test
+`== "ok"` for "the user got their result":
 
 | Literal | Meaning | Detail field |
 |---------|---------|--------------|
 | `ok` | Agent run succeeded and (if targeted) delivery was confirmed | — |
+| `delivery_queued` | Agent run succeeded; its send was handed to the durable delivery queue and has not settled yet (transitional) | `last_delivery_queued` |
 | `error` | Agent run failed | `last_error` |
 | `delivery_failed` | Agent run succeeded, but the output never reached its target | `last_delivery_error` (`last_error` is `null`) |
 | `blocked_config` | Pre-dispatch validation refused to burn a run | `last_error` |
+
+### Queued delivery lifecycle and write-back
+
+An agent run with a delivery target and an `execution_id` does not send inline: it
+hands the content to `cron/delivery_queue.py` (the profile's `cron/deliveries.db`,
+keyed by `execution_id`) and books `last_status = "delivery_queued"` with ledger
+`delivery_outcome = "queued"`. A gateway's housekeeping tick drains the queue through
+its live adapters (`scheduler.drain_delivery_queue`); each row is claimed at most once
+(`pending → delivering → delivered | failed | suppressed`). A row whose claiming gateway
+died mid-send is fenced `unknown` and never retried.
+
+`cron/delivery_outcome.py::settle_queued_delivery` then writes the terminal outcome
+back onto the run that queued it:
+
+| Queue row | Ledger `delivery_outcome` | Job `last_status` / `last_delivery_error` |
+|---|---|---|
+| `delivered` | `delivered` | `ok` / `null` |
+| `suppressed` | `suppressed` | `ok` / `null` |
+| `failed` | `failed` | `delivery_failed` / the send error |
+| `unknown` | `failed` | `delivery_failed` / "send outcome is unknown and was not retried" |
+
+Both sides call it: the drain right after it terminalizes a row, and the run right after
+its own bookkeeping, because a drain can finish before the run's `mark_job_run` lands.
+Every write is fenced on the `execution_id` (it must still be the job's latest ledger
+attempt and latest recorded completion), so the call is idempotent and never rewrites a
+later run's status; the ledger only ever moves `queued` to a terminal outcome. Until a
+gateway drains the row, `last_status` stays `delivery_queued` and `hermes cron list`
+shows "finished; delivery is still in progress".
 
 ### Job Lifecycle States
 
@@ -220,6 +273,11 @@ dispatching instead of yielding every tick to nobody.
 
 In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
 
+Upgrade notes for the gateway-owned runtime (the retired
+`cron.bot_chat_delivery_timeout_seconds` key, legacy `cron/bot_chat_pending/` records,
+and runs interrupted by the cutover restart) are in
+[Updating](../getting-started/updating.md#upgrading-to-the-gateway-owned-session-runtime).
+
 ### Managed cron (Chronos) for scale-to-zero
 
 Hosted gateways can run the **Chronos** provider (`cron.provider: chronos`)
@@ -306,7 +364,7 @@ The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` re
 3. **Config** — `cron.script_timeout_seconds` in `config.yaml` (read via `load_config()`)
 4. **Default** — 3600 seconds (1 hour)
 
-This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
+This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. On platforms where Python's monotonic clock excludes suspend (macOS and Linux), time the host spends asleep does not count toward that idle period; Windows behavior is unchanged. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 
 On timeout or ownership cancellation, `cron.scheduler_script` uses the shared
 `agent.deadline.kill_process_tree` hard-kill path. On POSIX it briefly stops and
@@ -350,7 +408,7 @@ Most platforms also accept an optional thread/topic as a third segment: `platfor
 | Email | `email`, `email:<address>` | `email:alerts@example.com` |
 | Weixin | `weixin`, `weixin:<wxid>` | `weixin:wxid_abc123` |
 | Mattermost | `mattermost` or `mattermost:<channel_id>` | Bare name delivers to Mattermost home |
-| Home Assistant | `homeassistant` or `homeassistant:<conversation>` | Bare name delivers to HA conversation |
+| Home Assistant (plugin) | `homeassistant` or `homeassistant:<notify target>` | Bare name delivers to `HASS_HOME_CHANNEL`; needs the `homeassistant` catalog plugin |
 | DingTalk | `dingtalk` or `dingtalk:<chat_id>` | Bare name delivers to DingTalk |
 | WeCom | `wecom` or `wecom:<chat_id>` | Bare name delivers to WeCom |
 | BlueBubbles | `bluebubbles` or `bluebubbles:<chat_guid>` | Bare name delivers to iMessage via BlueBubbles |
@@ -363,7 +421,7 @@ Platforms in the first group have explicit, validated target syntax — named ch
 
 For **Telegram topics**, use `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-1001234567890:17585`). For **Slack threads**, the third segment is the parent message's `thread_ts` (e.g., `slack:C0123ABCD45:1700000000.000100`), so it only applies when replying under an existing message.
 
-**Bot Chat** (`bot-chat`, `bot-chat:<profile>`) is a machine-local pseudo-platform, not a gateway adapter. A mailbox-capable canonical live owner receives durable admission immediately (idle or busy); only that owner executes the incoming turn. `scheduler_delivery._deliver_to_bot_chat` resolves the target with `get_profile_dir` or the job's current `get_hermes_home`, derives the receipt ID from the source home, job ID, durable `execution_id`, and target home, and checks the receipt before discovering an owner. An existing receipt never permits CLI fallback. Without a mailbox owner it retains `hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>` and normal ownership fencing. Both lanes deliver a real inbound turn, not a transcript mirror. Queued/claimed receipts populate `last_delivery_queued` with receipt IDs. The delivery aggregator excludes admission notices from genuine errors and records execution `delivery_outcome=queued`; successful jobs use `last_status=delivery_queued`. Genuine errors on mixed targets take precedence as failed while retaining queued receipt metadata. The target profile’s durable receipt is authoritative for terminal completion. Queued is the historical admission outcome, not proof of delivery. Historical cron status does not automatically track later receipt completion. Bot-chat targets are excluded from `all` and credential preflight. Bot-chat-only external workers bypass the gateway delivery queue; mixed external-worker targets retain gateway handoff. `cron.bot_chat_delivery_timeout_seconds` (default 600) bounds only the legacy subprocess lane.
+**Bot Chat** (`bot-chat`, `bot-chat:<profile>`) is a machine-local pseudo-platform, not a gateway adapter. A mailbox-capable canonical live owner receives durable admission immediately (idle or busy); only that owner executes the incoming turn. `scheduler_delivery._deliver_to_bot_chat` resolves the target with `get_profile_dir` or the job's current `get_hermes_home`, derives the receipt ID from the source home, job ID, durable `execution_id`, and target home, and checks the receipt before discovering an owner. A profile with no Bot Chat yet gets one created by the authority on first delivery (the `--create-if-missing` semantics of the retired CLI lane). There is no local CLI fallback: without a running authority the run is recorded `delivery_failed` with the reason in `last_delivery_error` and the output kept under `hermes cron runs`; it is not redelivered automatically, and the scheduler never becomes a second writer to the profile's store. Delivery is a real inbound turn, not a transcript mirror. Queued/claimed receipts populate `last_delivery_queued` with receipt IDs. The delivery aggregator excludes admission notices from genuine errors and records execution `delivery_outcome=queued`; successful jobs use `last_status=delivery_queued`. Genuine errors on mixed targets take precedence as failed while retaining queued receipt metadata. The target profile’s durable receipt is authoritative for terminal completion. Queued is the historical admission outcome, not proof of delivery. When the Bot Chat send went through the gateway delivery queue (an agent run), the write-back above settles the cron run once the drain's send returns: `ok`/`delivered` then means the target's authority **accepted** the turn, and `last_delivery_queued` keeps the receipt IDs whose Bot Chat turn may still be running. A Bot Chat delivery made inline (a `no_agent` job, or a Bot-Chat-only external worker) is not on the queue, so its run keeps `last_status=delivery_queued` / `delivery_outcome=queued`; nothing writes the later receipt completion back into cron history. Bot-chat targets are excluded from `all` and credential preflight. Bot-chat-only external workers bypass the gateway delivery queue; mixed external-worker targets retain gateway handoff.
 
 ### Response Wrapping
 

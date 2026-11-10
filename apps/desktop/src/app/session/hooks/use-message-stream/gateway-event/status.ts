@@ -29,6 +29,39 @@ export function isFallbackSwitchStatus(kind: string | undefined, text: string): 
   return /model fallback|provider fallback|switched to fallback|switching to fallback/i.test(text)
 }
 
+/** The toast for a gateway `error`, raised only when the card can't fully say it: a session off
+ *  screen, or a bare error (no recovered code) whose card copy is generic — the server's own
+ *  sentence is often the fix (e.g. which process holds a lock). On screen, a recovered code's
+ *  card already explains it (one event, one surface). The stable id collapses the same error
+ *  from multiple threads into one toast. For a recovered code the message is the card's glossed sentence with the raw gateway text as the
+ *  dimmed detail; otherwise the server copy is the message and there is no detail to repeat.
+ *  No Retry action: assistant-ui's reload is per-thread, and for the codes recovered here a
+ *  retry would fail identically anyway. */
+function toastGatewayError(
+  errorMessage: string,
+  surface: ErrorSurface | null,
+  toastMessage: string,
+  onScreen: boolean
+): void {
+  if (onScreen && surface) {
+    return
+  }
+
+  if (surface?.code === 'disk_full') {
+    notifyError(new Error(errorMessage), translateNow('notifications.errors.diskFull'))
+
+    return
+  }
+
+  notify({
+    detail: surface ? errorMessage : undefined,
+    id: `gateway-error:${errorMessage}`,
+    kind: 'error',
+    message: toastMessage,
+    title: translateNow('assistant.thread.errorToastTitle')
+  })
+}
+
 /** status.update / review.summary / notification.show / notification.clear /
  *  error — the status-and-notice tail of the dispatcher. */
 export function handleStatusEvent(ctx: GatewayEventContext): boolean {
@@ -283,8 +316,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
 
     // The gateway's own verdict when it sent one (agent init with no usable provider), else the
     // sentence: a blank install must reach onboarding, not a toast it cannot act on.
-    const looksLikeProviderSetup =
-      isProviderSetupErrorCode(payload?.code) || isProviderSetupErrorMessage(errorMessage)
+    const looksLikeProviderSetup = isProviderSetupErrorCode(payload?.code) || isProviderSetupErrorMessage(errorMessage)
 
     // The gateway's `error` event carries no error_surface (prompt_turn.py
     // emits it for pre-turn refusals). Recover the two codes it CAN mean from
@@ -332,25 +364,8 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
 
     if (looksLikeProviderSetup) {
       requestDesktopOnboarding(errorMessage)
-    } else if (surface?.code === 'disk_full') {
-      notifyError(new Error(errorMessage), translateNow('notifications.errors.diskFull'))
     } else {
-      // Toast globally, not just when the failing thread is focused: a
-      // turn-ending error (e.g. out of funds) blocks every thread, so the
-      // inline error alone is too easy to miss. The stable id collapses the
-      // same error from multiple blocked threads into one toast. For a
-      // recovered code the message is the card's glossed sentence with the raw
-      // gateway text as the dimmed detail; otherwise the server copy is the
-      // message and there is no separate detail to repeat.
-      // No Retry action: assistant-ui's reload is per-thread, and for the
-      // codes recovered above a retry would fail identically anyway.
-      notify({
-        detail: surface ? errorMessage : undefined,
-        id: `gateway-error:${errorMessage}`,
-        kind: 'error',
-        message: toastMessage,
-        title: translateNow('assistant.thread.errorToastTitle')
-      })
+      toastGatewayError(errorMessage, surface, toastMessage, isActiveEvent)
     }
 
     if (sessionId) {

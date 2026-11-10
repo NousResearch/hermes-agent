@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.auxiliary_client import (
+    _ClassifiedAttempt,
     _affordable_max_tokens_from_error,
     _build_call_kwargs,
     _create_with_progress,
@@ -101,13 +102,14 @@ class TestCreateWithProgressAffordableRetry:
     def test_already_affordable_cap_does_not_spin(self):
         """A 402 on a request already within budget re-raises immediately."""
         client = _FlakyClient(affordable=100)  # everything 402s
-        with pytest.raises(_Payment402):
+        with pytest.raises(_ClassifiedAttempt) as raised:
             _create_with_progress(
                 client,
                 {"model": "m", "max_tokens": 5000,
                  "messages": [{"role": "user", "content": "x"}]},
                 "compression",
             )
+        assert isinstance(raised.value.failure.error, _Payment402)
         # 5000 > 7053 is false → within stated budget → single attempt.
         assert len(client.calls) == 1
 

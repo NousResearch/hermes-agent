@@ -15,6 +15,7 @@ import pytest
 
 from hermes_cli import main as cli_main
 from hermes_cli import main_desktop
+from hermes_cli import main_desktop_tcc
 from hermes_cli import main_install_repair
 from hermes_cli import main_web_build
 
@@ -114,7 +115,7 @@ def _make_packaged_executable(root: Path, monkeypatch) -> Path:
 
 def _staging_dir_from(cmd) -> Path:
     """Extract the ``-c.directories.output=<dir>`` electron-builder override
-    ``cmd_gui`` appends to ``npm run pack`` (stage-and-swap, #86443)."""
+    ``cmd_gui`` appends to ``pnpm run pack`` (stage-and-swap, #86443)."""
     for arg in cmd:
         if isinstance(arg, str) and arg.startswith("-c.directories.output="):
             return Path(arg.split("=", 1)[1])
@@ -130,13 +131,21 @@ def _packaged_exe_rel() -> Path:
     return Path("linux-unpacked") / "hermes"
 
 
+def _pnpm_argv(cmd) -> list:
+    """The pnpm command line inside a build call. A direct ``hermes desktop`` build holds the
+    checkout lock (review C5), so on POSIX it runs under the custody launcher
+    (``python -I -S -c <reaper> <fds> pnpm ...``)."""
+    cmd = list(cmd)
+    return cmd[6:] if cmd[1:4] == ["-I", "-S", "-c"] else cmd
+
+
 def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
-    """``subprocess.run`` side effect mimicking a real ``npm run pack``: lays
+    """``subprocess.run`` side effect mimicking a real ``pnpm run pack``: lays
     the packaged app down inside the STAGING dir named on the command line
     (never in release/), then returns *returncode*. Non-pack commands (the
     launch) return success."""
     def _run(cmd, **kwargs):
-        if len(cmd) >= 3 and cmd[1:3] == ["run", "builder"]:
+        if _pnpm_argv(cmd)[1:3] == ["run", "builder"]:
             exe = _staging_dir_from(cmd) / _packaged_exe_rel()
             exe.parent.mkdir(parents=True, exist_ok=True)
             exe.write_text(content, encoding="utf-8")
@@ -153,7 +162,7 @@ def test_source_launch_reads_bom_electron_path_without_provisioning(tmp_path, mo
     desktop = root / "apps" / "desktop"
     (desktop / "dist").mkdir()
     (desktop / "dist" / "index.html").write_text("prepared renderer", encoding="utf-8")
-    electron = root / "node_modules" / "electron"
+    electron = root / "apps" / "desktop" / "node_modules" / "electron"
     (electron / "dist").mkdir(parents=True)
     (electron / "package.json").write_text("{}", encoding="utf-8")
     executable = electron / "dist" / "électron"
@@ -337,7 +346,7 @@ def test_launch_installed_macos_desktop_app_gates_on_bundle_and_platform(tmp_pat
     monkeypatch.setattr(main_desktop.Path, "is_file", lambda self: exists if self == exe else Path.is_file(self))
     calls = []
     if exists and platform == "darwin":
-        import hermes_cli.bundled_app as bundled_app
+        from hermes_cli import bundled_app
         monkeypatch.setattr(bundled_app, "launch_detached", lambda argv, **kw: calls.append(argv) or 4321)
 
     assert main_desktop._launch_installed_macos_desktop_app() is (exists and platform == "darwin")
@@ -485,7 +494,7 @@ def test_setup_tcc_identity_creates_cert_imports_trusts_and_configures(tmp_path,
     # Avoid writing the real user config.
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity(identity) is True
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity(identity) is True
 
     # openssl cert generation + pkcs12 export + security import + trust all ran.
     assert any(c[0] == "/usr/bin/openssl" and "req" in c for c in calls)
@@ -540,7 +549,7 @@ def test_setup_tcc_identity_retries_pkcs12_with_legacy_on_mac_verification_failu
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity(identity) is True
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity(identity) is True
 
     # Two pkcs12 exports (plain then -legacy) and two import attempts.
     pkcs12_calls = [c for c in calls if c[0] == "/usr/bin/openssl" and "pkcs12" in c]
@@ -569,7 +578,7 @@ def test_setup_tcc_identity_fails_when_trust_step_fails(tmp_path, monkeypatch, c
 
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
 
 
 @pytest.mark.platforms("macos")
@@ -591,7 +600,7 @@ def test_setup_tcc_identity_fails_when_identity_never_becomes_valid(tmp_path, mo
 
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
 
 
 @pytest.mark.platforms("macos")
@@ -617,7 +626,7 @@ def test_setup_tcc_identity_skips_generation_when_already_valid(tmp_path, monkey
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
 
     # No openssl generation, no security import — only find-identity + config.
     assert not any(c[0] == "/usr/bin/openssl" for c in calls)
@@ -657,7 +666,7 @@ def test_setup_tcc_identity_untrusted_existing_cert_is_repaired(tmp_path, monkey
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
+    assert main_desktop_tcc._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
     assert any(c[0] == "/usr/bin/security" and c[1] == "add-trusted-cert" for c in calls)
 
 
@@ -670,7 +679,7 @@ def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     _make_packaged_executable(root, monkeypatch)
 
-    with patch("hermes_cli.main_desktop._desktop_macos_setup_tcc_identity", return_value=True) as mock_setup, \
+    with patch("hermes_cli.main_desktop_tcc._desktop_macos_setup_tcc_identity", return_value=True) as mock_setup, \
          patch("hermes_cli.source_build.prepare_source_dependencies") as mock_install, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(setup_tcc_identity=True, identity="Hermes Local Signing"))
@@ -827,7 +836,6 @@ def test_promote_staged_desktop_app_refuses_an_unsigned_staging(tmp_path, monkey
 
     def fake_swap(dir_, st_):
         swapped.append(st_)
-        return None
 
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", fake_fixup)
     monkeypatch.setattr(main_desktop, "_swap_staged_desktop_app", fake_swap)
@@ -1290,7 +1298,7 @@ def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, mon
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"), \
          patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
@@ -1336,14 +1344,14 @@ def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monke
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
 
-    electron = root / "node_modules/electron"
+    electron = root / "apps/desktop/node_modules/electron"
     (electron / "dist").mkdir(parents=True)
     (electron / "path.txt").write_text("electron")
     (electron / "dist/electron").touch()
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"), \
          patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.config.load_config", return_value={}), \
@@ -1367,7 +1375,7 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"), \
          patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
@@ -1537,11 +1545,11 @@ def test_gui_foreground_launch_ctrl_c_exits_cleanly(tmp_path, monkeypatch, capsy
 
 def _gui_build_patches(root: Path, run_side_effect):
     return [
-        patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"),
+        patch("hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"),
         # Staging doubles are text; the PE-validation suite owns real binaries.
         patch("hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None),
         patch("hermes_cli.source_build.prepare_source_dependencies",
-              return_value=subprocess.CompletedProcess(["npm", "ci"], 0)),
+              return_value=subprocess.CompletedProcess(["pnpm", "install"], 0)),
         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True),
         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"),
         patch("hermes_cli.main_desktop._register_linux_desktop_entry"),
@@ -1755,7 +1763,7 @@ def test_windows_build_under_its_own_desktop_skips_instead_of_killing_it(tmp_pat
                         lambda *a, **k: pytest.fail("must not stop the Desktop running this build"))
     monkeypatch.setattr("pm.progress.run_contained", lambda *a, **k: pytest.fail("must not pack"))
 
-    assert main_desktop.build_prepared_desktop(desktop_dir, source_mode=False, npm="npm", env={}) is None
+    assert main_desktop.build_prepared_desktop(desktop_dir, source_mode=False, pnpm="pnpm", env={}) is None
     assert "pid 41" in capsys.readouterr().out
     assert not list(desktop_dir.glob(f"{main_desktop._DESKTOP_STAGING_PREFIX}*"))
 
@@ -1826,7 +1834,7 @@ def test_gui_zero_exit_pack_without_artifact_keeps_previous_app(tmp_path, monkey
     live_exe.write_text("good build", encoding="utf-8")
 
     def empty_pack(cmd, **kwargs):
-        if cmd[1:3] == ["run", "builder"]:
+        if _pnpm_argv(cmd)[1:3] == ["run", "builder"]:
             _staging_dir_from(cmd).mkdir(parents=True, exist_ok=True)
         return subprocess.CompletedProcess(cmd, 0)
 

@@ -290,7 +290,7 @@ def test_tts_ready_is_a_probe_never_an_installer(monkeypatch):
     )  # use the real implementation
     fake_tts = _types.SimpleNamespace(
         _get_provider=lambda cfg: "edge",
-        _load_tts_config=lambda: {},
+        _load_tts_config=dict,
         check_tts_requirements=lambda: (_ for _ in ()).throw(
             AssertionError("check_tts_requirements must not run when deps are missing")
         ),
@@ -337,7 +337,7 @@ def test_requirements_fresh_install_lazy_allowed(monkeypatch):
 @pytest.mark.parametrize("capture", ["local", "client"])
 @pytest.mark.parametrize("provider", ["openwakeword", "oww", "local"])
 def test_requirements_reject_unsupported_engine_without_attempting_install(monkeypatch, capture, provider):
-    import pm.extras as extras
+    from pm import extras
 
     _voice_loop_ready(monkeypatch)
     monkeypatch.setattr(extras, "_PLATFORM_GATES", {"wake-openwakeword": "python_version < '0'"})

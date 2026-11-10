@@ -28,9 +28,64 @@ def _disp_width(s: str) -> int:
     return max(wcswidth(s), 0)
 
 
-def split_table_row(row: str) -> List[str]:
-    """Split ``| a | b | c |`` into ``["a", "b", "c"]`` with trims."""
-    return [c.strip() for c in row.strip().removeprefix("|").removesuffix("|").split("|")]
+def _matching_code_span_end(row: str, start: int, delimiter_width: int) -> int | None:
+    """Return the end of the next exact-width backtick run, if one closes this span."""
+    i = start
+    while i < len(row):
+        if row[i] != "`":
+            i += 1
+            continue
+        end = i + 1
+        while end < len(row) and row[end] == "`":
+            end += 1
+        if end - i == delimiter_width:
+            return end
+        i = end
+    return None
+
+
+def split_table_row(row: str) -> list[str]:
+    """Split a GFM row on unescaped pipes outside matched inline-code spans."""
+    separators: list[int] = []
+    i = 0
+    while i < len(row):
+        if row[i] == "\\":
+            slash_start = i
+            while i < len(row) and row[i] == "\\":
+                i += 1
+            if (i - slash_start) % 2 and i < len(row):
+                i += 1  # the next character is escaped, including a pipe or backtick
+            continue
+        if row[i] == "`":
+            end = i + 1
+            while end < len(row) and row[end] == "`":
+                end += 1
+            closing_end = _matching_code_span_end(row, end, end - i)
+            if closing_end is not None:
+                i = closing_end
+                continue
+            i = end  # unmatched backticks are literal, so later cell pipes still count
+            continue
+        if row[i] == "|":
+            separators.append(i)
+        i += 1
+
+    start, end = 0, len(row)
+    if separators and not row[: separators[0]].strip():
+        start = separators[0] + 1
+    if separators and not row[separators[-1] + 1 :].strip():
+        end = separators[-1]
+    if start > end:
+        return [""]
+
+    cells: list[str] = []
+    cell_start = start
+    for separator in separators:
+        if start <= separator < end:
+            cells.append(row[cell_start:separator].strip())
+            cell_start = separator + 1
+    cells.append(row[cell_start:end].strip())
+    return cells
 
 
 def is_table_divider(row: str) -> bool:
@@ -51,7 +106,7 @@ def looks_like_table_row(row: str) -> bool:
     return bool(stripped) and (stripped.startswith("|") or stripped.count("|") >= 2)
 
 
-def _render_block(rows: List[List[str]], available_width: int | None = None) -> List[str]:
+def _render_block(rows: list[list[str]], available_width: int | None = None) -> list[str]:
     """Render ``rows`` (header + body, divider implied) at uniform widths.
 
     When the horizontal table would exceed ``available_width`` fall back to a
@@ -65,7 +120,7 @@ def _render_block(rows: List[List[str]], available_width: int | None = None) -> 
     if available_width is not None and sum(widths) + 3 * ncols + 1 > max(available_width, 20):
         return _render_vertical(rows, ncols, available_width)
 
-    def _row(cells: List[str]) -> str:
+    def _row(cells: list[str]) -> str:
         return "| " + " | ".join(c + " " * max(0, widths[k] - _disp_width(c)) for k, c in enumerate(cells)) + " |"
 
     out = [_row(rows[0]), "|" + "|".join("-" * (w + 2) for w in widths) + "|"]
@@ -73,9 +128,9 @@ def _render_block(rows: List[List[str]], available_width: int | None = None) -> 
     return out
 
 
-def _hard_break(word: str, w: int) -> List[str]:
+def _hard_break(word: str, w: int) -> list[str]:
     """Split a single over-wide word into display-width-``w`` chunks."""
-    out: List[str] = []
+    out: list[str] = []
     buf, bw = "", 0
     for ch in word:
         cw = _disp_width(ch) or 1
@@ -87,7 +142,7 @@ def _hard_break(word: str, w: int) -> List[str]:
     return out + [buf] if buf else out
 
 
-def _wrap_to_width(text: str, width: int) -> List[str]:
+def _wrap_to_width(text: str, width: int) -> list[str]:
     """Soft-wrap ``text`` at word boundaries to ``width`` display cells.
 
     Words wider than ``width`` are hard-broken. Empty input yields a single
@@ -98,7 +153,7 @@ def _wrap_to_width(text: str, width: int) -> List[str]:
     words = text.split()
     if not words:
         return [""]
-    lines: List[str] = []
+    lines: list[str] = []
     current, current_w = "", 0
 
     def _start(word: str, ww: int) -> None:
@@ -126,7 +181,7 @@ def _wrap_to_width(text: str, width: int) -> List[str]:
     return lines or [""]
 
 
-def _render_vertical(rows: List[List[str]], ncols: int, available_width: int) -> List[str]:
+def _render_vertical(rows: list[list[str]], ncols: int, available_width: int) -> list[str]:
     """Render a too-wide table as ``Header: value`` blocks (Claude Code's narrow fallback).
 
     Each body row becomes one block with continuation lines indented two spaces,
@@ -137,7 +192,7 @@ def _render_vertical(rows: List[List[str]], ncols: int, available_width: int) ->
     labels = [h or f"Column {i + 1}" for i, h in enumerate(rows[0] + [""] * (ncols - len(rows[0])))]
     separator = "─" * (max(20, min(40, available_width - 2)) if available_width else 30)
     cont_budget = max(10, available_width - 2)  # continuation lines are indented two spaces
-    out: List[str] = []
+    out: list[str] = []
     for ri, row in enumerate(rows[1:]):
         if ri > 0:
             out.append(separator)
@@ -165,14 +220,14 @@ def realign_markdown_tables(text: str, available_width: int | None = None) -> st
     if "|" not in text:
         return text
     lines = text.split("\n")
-    out: List[str] = []
+    out: list[str] = []
     i, n = 0, len(lines)
     while i < n:
         line = lines[i]
         # A table starts with a header row whose next line is a divider.
         if "|" in line and i + 1 < n and is_table_divider(lines[i + 1]):
             header = split_table_row(line)
-            body: List[List[str]] = []
+            body: list[list[str]] = []
             j = i + 2
             while j < n and "|" in lines[j] and lines[j].strip():
                 if not is_table_divider(lines[j]):

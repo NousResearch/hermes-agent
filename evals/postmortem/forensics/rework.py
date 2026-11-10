@@ -21,7 +21,7 @@ from pathlib import Path
 
 
 def _git(repo: str, *args: str) -> str:
-    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False).stdout
 
 
 def main(argv=None) -> int:
@@ -42,7 +42,7 @@ def main(argv=None) -> int:
         surface_line = "(scripts/ci/check_public_surface.py not found; merge #103541 or pass a checkout that has it)"
     else:
         surface = subprocess.run([sys.executable, str(checker), "--base", a.base, "--head", a.open, "--json", str(out / "surface_at_open.json")],
-                                 cwd=a.repo, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                                 cwd=a.repo, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         surface_line = (surface.stdout.splitlines() or [f"(check_public_surface failed: {surface.stderr.strip()[:120]})"])[0]
 
     log = _git(a.repo, "log", "--no-merges", "--format=%H%x00%s", f"{a.open}..{a.head}")

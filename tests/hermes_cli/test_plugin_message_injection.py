@@ -55,12 +55,37 @@ def test_cli_running_injection_keeps_existing_interrupt_behaviour():
     assert cli._pending_input.empty()
 
 
-def test_gateway_injection_requires_session_key(tmp_path, monkeypatch):
+def test_key_less_gateway_injection_lets_the_gateway_pick_the_chat(tmp_path, monkeypatch):
+    """No key and no origin: the live gateway picks the chat (gateway/plugin_keyless_inject.py) from
+    the session bound in the caller's own context, read here; none bound is passed as ``""``."""
+    from gateway.session_context import scoped_session_key
     _write_plugin_config(
         tmp_path,
         monkeypatch,
         {"allow_gateway_injection": True},
     )
+    context, manager = _context()
+    injector = MagicMock(return_value=False)
+    manager.set_gateway_message_injector(object(), injector)
+
+    assert context.inject_message("wake up") is False
+    with scoped_session_key("agent:main:local:dm:local-1"):
+        context.inject_message("for me")
+    calls = [c.kwargs for c in injector.call_args_list]
+    assert [(c["keyless"], c["calling_session_key"], c["content"]) for c in calls] == [
+        (True, "", "wake up"), (True, "agent:main:local:dm:local-1", "for me")]
+    assert all("session_key" not in c and c["plugin_home"] == manager.home_path for c in calls)
+
+
+def test_key_less_injection_without_a_gateway_is_refused(tmp_path, monkeypatch):
+    _write_plugin_config(tmp_path, monkeypatch, {"allow_gateway_injection": True})
+    context, _manager = _context()
+
+    assert context.inject_message("wake up") is False
+
+
+def test_key_less_gateway_injection_requires_explicit_permission(tmp_path, monkeypatch):
+    _write_plugin_config(tmp_path, monkeypatch, {})
     context, manager = _context()
     injector = MagicMock(return_value=True)
     manager.set_gateway_message_injector(object(), injector)
@@ -162,6 +187,7 @@ def test_gateway_injection_passes_host_owned_plugin_identity(tmp_path, monkeypat
     assert result is True
     injector.assert_called_once_with(
         session_key="agent:main:telegram:dm:42",
+        plugin_home=manager.home_path,
         content="[system] wake up",
         plugin_id="notify-plugin",
     )
@@ -238,8 +264,10 @@ def test_published_gateway_host_reaches_existing_and_future_profile_managers(tmp
         finally:
             reset_hermes_home_override(token)
 
+        # The calling manager's immutable home, not the launch home, rides with the key.
         injector.assert_called_once_with(
             session_key="agent:secondary:telegram:dm:42",
+            plugin_home=secondary_manager.home_path,
             content="continue",
             plugin_id="notify-plugin",
         )
@@ -252,3 +280,67 @@ def test_published_gateway_host_reaches_existing_and_future_profile_managers(tmp
         plugins_mod.clear_published_gateway_message_host(owner)
         plugins_mod._reset_plugin_managers_for_tests()
         secret_scope.set_multiplex_active(was_active)
+
+
+ORIGIN = {"platform": "discord", "chat_id": "42", "chat_type": "thread", "thread_id": "42", "user_id": "u1"}
+
+
+def test_origin_injection_targets_the_plugins_own_home(tmp_path, monkeypatch):
+    """``origin`` is forwarded with the manager's immutable home — never an ambient one — so the
+    gateway can only start the session in the profile that loaded the plugin."""
+    _write_plugin_config(tmp_path, monkeypatch, {"allow_gateway_injection": True})
+    context, manager = _context()
+    injector = MagicMock(return_value=True)
+    manager.set_gateway_message_injector(object(), injector)
+    other = tmp_path / "other"
+    other.mkdir()
+    token = set_hermes_home_override(other)
+    try:
+        assert context.inject_message("Kick off", origin=ORIGIN) is True
+    finally:
+        reset_hermes_home_override(token)
+    injector.assert_called_once_with(
+        origin=ORIGIN, plugin_home=manager.home_path, content="Kick off", plugin_id="notify-plugin",
+    )
+
+
+def test_origin_injection_permission_comes_from_the_plugins_own_profile(tmp_path, monkeypatch):
+    """The allow_gateway_injection gate reads the plugin's profile config even when the calling
+    thread's ambient home is another profile that grants it."""
+    _write_plugin_config(tmp_path, monkeypatch, {"allow_gateway_injection": False})
+    context, manager = _context()
+    injector = MagicMock(return_value=True)
+    manager.set_gateway_message_injector(object(), injector)
+    granting = tmp_path / "granting"
+    granting.mkdir()
+    (granting / "config.yaml").write_text(
+        yaml.safe_dump({"plugins": {"entries": {"notify-plugin": {"allow_gateway_injection": True}}}}),
+        encoding="utf-8",
+    )
+    token = set_hermes_home_override(granting)
+    try:
+        assert context.inject_message("x", origin=ORIGIN) is False
+    finally:
+        reset_hermes_home_override(token)
+    injector.assert_not_called()
+
+
+def test_origin_injection_rejects_ambiguous_or_malformed_targets(tmp_path, monkeypatch):
+    _write_plugin_config(tmp_path, monkeypatch, {"allow_gateway_injection": True})
+    context, manager = _context()
+    injector = MagicMock(return_value=True)
+    manager.set_gateway_message_injector(object(), injector)
+
+    assert context.inject_message("x", session_key="agent:main:discord:thread:42", origin=ORIGIN) is False
+    assert context.inject_message("x", origin="discord:42") is False
+    injector.assert_not_called()
+
+
+def test_origin_injection_never_lands_in_the_attached_cli():
+    """An origin names a messaging chat; a CLI-hosted plugin gets False, not a REPL queue entry."""
+    context, manager = _context()
+    cli = SimpleNamespace(_agent_running=False, _pending_input=SimpleQueue(), _interrupt_queue=SimpleQueue())
+    manager._cli_ref = cli
+
+    assert context.inject_message("x", origin=ORIGIN) is False
+    assert cli._pending_input.empty() and cli._interrupt_queue.empty()

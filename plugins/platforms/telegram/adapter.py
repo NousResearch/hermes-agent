@@ -190,7 +190,7 @@ from plugins.platforms.telegram.telegram_media_group import add_item_note, flush
 from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
 from plugins.platforms.telegram import telegram_flood_window as _flood_window
 from plugins.platforms.telegram.telegram_media_fetch import (
-    cache_replied_media, fetch_telegram_file, merged_replied_voice_typed_text)
+    cache_replied_media, fetch_telegram_file, merged_typed_text, record_typed_text)
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
@@ -6035,10 +6035,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             self._hold_inbound_event(event, where="text-enqueue")
             return
         existing = self._pending_text_batches.get(self._text_batch_key(event))
-        before, typed = getattr(existing, "text", None), merged_replied_voice_typed_text(existing, event)
+        before, merged = getattr(existing, "text", None), merged_typed_text(existing, event)
         super()._enqueue_text_event(event)
-        if typed is not None and existing.text != before:  # merged (not dropped): the answer is every chunk
-            existing.metadata["replied_voice_typed_text"] = typed
+        if merged is not None and existing.text != before:  # merged (not dropped)
+            record_typed_text(existing, merged)
         self._accept_update()
 
     async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None) -> None:

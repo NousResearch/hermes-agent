@@ -14,6 +14,13 @@ from typing import Any
 from gateway.hosted_rooms_common import identifier
 
 MAX_AUTHORITY_SPANS = 1024
+#: Committed authority transfers, each the first event of its span. ``authority.claimed`` is the new
+#: owner's record; ``authority.lost`` is the record the outgoing owner commits when it is fenced to
+#: a proven newer epoch (``hosted_room_replicas.demote_room``; the standalone -> gateway handoff in
+#: ``hosted_rooms_gateway_import``). Both carry the same previous/next/epoch payload and are
+#: checked alike, so a store whose log holds its own fence followed by a later claim (a handed-off
+#: room, a returning gateway that reclaims) reads as one unbroken chain.
+TRANSFER_KINDS = ("authority.claimed", "authority.lost")
 
 
 class AuthorityHistoryError(ValueError):
@@ -77,14 +84,14 @@ def origin_gateway_id(room: dict[str, Any]) -> str:
 
 
 def read_history_locked(conn, room_id: str, *, gateway_id: str, epoch: int) -> list[dict[str, Any]] | None:
-    """Read committed claims within the caller's room-state transaction.
+    """Read committed authority transfers within the caller's room-state transaction.
 
     Legacy adoption is left on its existing path; it is not retroactively
     certified as a history of physical-host transfers.
     """
     rows = conn.execute(
-        """SELECT seq,authority_epoch,actor_json,payload_json FROM hosted_room_events
-           WHERE room_id=? AND kind='authority.claimed' ORDER BY seq LIMIT ?""",
+        f"""SELECT seq,authority_epoch,actor_json,payload_json FROM hosted_room_events
+           WHERE room_id=? AND kind IN {TRANSFER_KINDS} ORDER BY seq LIMIT ?""",
         (room_id, MAX_AUTHORITY_SPANS),
     ).fetchall()
     if len(rows) >= MAX_AUTHORITY_SPANS:

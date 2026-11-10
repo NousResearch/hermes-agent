@@ -11,6 +11,7 @@ import logging
 import inspect
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any, Dict, Optional
 from tools.terminal_tool_backends import (
     _container_config_from_config,
@@ -61,6 +62,20 @@ def _cleanup_env(env: Any, *, force_remove: Optional[bool] = None) -> None:
         env.terminate()
 
 
+def _settle_env_processes(env: Any) -> None:
+    """Settle background processes polled through *env* as lost once it is closed: their
+    pollers can no longer reach them and would otherwise poll a closed environment forever.
+    Called only after a teardown that succeeded or found the sandbox already gone: a failed
+    one (Modal's sync-back raising before terminate) may leave the sandbox and its processes
+    running and reachable."""
+    from tools.process_registry import process_registry
+    # WARNING, not _quiet's DEBUG: a failed settle leaves pollers spinning on a closed env.
+    with _quiet("settling processes of a closed environment failed", level=logging.WARNING):
+        settled = process_registry.settle_env_closed(env)
+        if settled:
+            logger.info("Marked %d background process(es) lost: their environment was closed", settled)
+
+
 def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s", stop_idle: bool = False) -> None:
     """``_cleanup_env`` (or, with *stop_idle*, the backend's ``stop_idle``) plus outcome logging.
     A 404/"not found" error means the sandbox is already gone — logged at info."""
@@ -76,6 +91,8 @@ def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None
             logger.info("Environment for task %s already cleaned up", task_id)
         else:
             logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+            return
+    _settle_env_processes(env)
 
 
 def _clear_file_ops_cache(task_id: str) -> None:
@@ -104,23 +121,48 @@ def _unregister_env(task_id: str):
     return env
 
 
+@contextmanager
+def _call_in_flight(*keys: Optional[str]):
+    """Hold the env cached under *keys* against the idle reaper for the duration of a call.
+
+    Only background processes on workspace keys refresh ``_last_activity`` mid-run, so a
+    foreground command longer than ``lifetime_seconds`` had its sandbox reaped out from under
+    it. Refcounted (parallel calls share a key); exit restamps, so the idle countdown starts at
+    call end.
+    """
+    from tools.terminal_tool import _calls_in_flight, _env_lock, _last_activity
+    held = [k for k in dict.fromkeys(keys) if k]
+    with _env_lock:
+        for k in held:
+            _calls_in_flight[k] = _calls_in_flight.get(k, 0) + 1
+    try:
+        yield
+    finally:
+        with _env_lock:
+            now = time.time()
+            for k in held:
+                left = _calls_in_flight.pop(k) - 1
+                if left:
+                    _calls_in_flight[k] = left
+                if k in _last_activity:
+                    _last_activity[k] = now
+
+
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     """Clean up environments that have been inactive for longer than lifetime_seconds."""
     from tools.terminal_tool import (
-        _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
+        _active_environments, _calls_in_flight, _creation_locks, _creation_locks_lock, _env_lock,
         _last_activity,
     )
     current_time = time.time()
 
-    # Sandboxes with active background processes stay alive (refresh activity).
+    # Sandboxes with active background processes stay alive (refresh activity). Match the
+    # environment key or object, never the spawning owner id: the key is ``session:<id>``,
+    # a workspace digest or ``default``, while ``owner_task_id`` is the raw task id.
     try:
         from tools.process_registry import process_registry
         for task_id in list(_last_activity.keys()):
-            # A workspace container is keyed by its digest, not the spawning task id: also keep it
-            # while any process it hosts is still running (stopping it would kill that process).
-            if process_registry.has_active_processes(task_id) or (
-                    _is_workspace_key(task_id)
-                    and process_registry._any_running(lambda s, key=task_id: s.task_id == key)):
+            if process_registry.has_running_in_env(task_id, _active_environments.get(task_id)):
                 _last_activity[task_id] = current_time
     except ImportError:
         pass
@@ -128,7 +170,9 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # Phase 1: unregister stale entries atomically under the lock; phase 2:
     # stop them outside it (see _unregister_env for why).
     with _env_lock:
-        stale = [t for t, last in list(_last_activity.items()) if current_time - last > lifetime_seconds]
+        # A key with a foreground call in flight is busy, however old its stamp.
+        stale = [t for t, last in list(_last_activity.items())
+                 if current_time - last > lifetime_seconds and t not in _calls_in_flight]
         envs_to_stop = [(t, _active_environments.pop(t, None)) for t in stale]
         for t in stale:
             _last_activity.pop(t, None)
@@ -297,7 +341,6 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
             env = _active_environments.pop(key, None)
             _last_activity.pop(key, None)
             if env is not None:
-                evicted.append(env)
-    for env in evicted:
-        with _quiet("cleanup of degraded environment failed"):
-            env.cleanup()
+                evicted.append((key, env))
+    for key, env in evicted:
+        _teardown_env(env, key, done_msg="Evicted degraded environment for task: %s")

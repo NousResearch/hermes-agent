@@ -5,15 +5,15 @@ type ThreadCopy = Translations['assistant']['thread']
 // The error card's layer fallbacks (lib/error-surface-copy.ts): used when a failure code has no own entry.
 export const deErrorLayers: Pick<ThreadCopy, 'errorLayerBodies' | 'errorLayers'> = {
   errorLayers: {
-    auth: 'Authentifizierungsfehler',
-    billing: 'Keine Credits mehr',
+    auth: 'Problem bei der Anmeldung',
+    billing: 'Kein Guthaben mehr',
     disk: 'Festplatte voll',
-    endpoint: 'Benutzerdefinierter Endpunktfehler',
-    gateway: 'Gateway-Fehler',
-    generic: 'Turn fehlgeschlagen',
-    provider: 'Anbieterfehler',
-    runtime: 'Lokaler Laufzeitfehler',
-    streaming: 'Streaming-Verbindungsfehler'
+    endpoint: 'Modellserver nicht erreichbar',
+    gateway: 'Nachricht konnte nicht gesendet werden',
+    generic: 'Antwort konnte nicht fertiggestellt werden',
+    provider: 'KI-Dienst meldet einen Fehler',
+    runtime: 'Problem in Hermes aufgetreten',
+    streaming: 'Die Antwort wurde abgebrochen'
   },
   errorLayerBodies: {
     auth: 'Der KI-Dienst hat Ihre Anmeldung abgelehnt. Prüfen Sie die Zugangsdaten für diesen Anbieter und senden Sie Ihre Nachricht erneut.',

@@ -173,6 +173,8 @@ class TestPinnedLocksTheMainModel:
         from cron import jobs
         (tmp_path / "config.yaml").write_text(f"model:\n  default: {main_model}\n")
         monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path, raising=True)
+        from cron import jobs_model_pin  # the pin reads the main model's config where it lives
+        monkeypatch.setattr(jobs_model_pin, "get_hermes_home", lambda: tmp_path, raising=True)
         state = {"jobs": []}
         monkeypatch.setattr(jobs, "load_jobs", lambda: list(state["jobs"]), raising=True)
         monkeypatch.setattr(jobs, "save_jobs", lambda j: state.__setitem__("jobs", list(j)), raising=True)

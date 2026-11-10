@@ -78,7 +78,7 @@ def _base_note(cmd):
         return "per-session setting (gateway handler)"
     if cmd.name in NOT_A_LOCAL_READ:
         return NOT_A_LOCAL_READ[cmd.name]
-    if cmd.gateway_only:
+    if cmd.gateway_only and classic_cell(cmd).startswith("messaging-only"):
         return "messaging-only"
     if cmd.cli_only:
         return "client-local (cli_only)"

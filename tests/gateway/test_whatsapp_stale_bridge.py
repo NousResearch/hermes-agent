@@ -151,7 +151,7 @@ class TestStaleBridgeHandshake:
              patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
              patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
              patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
-             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc) as mock_popen, \
              patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
             await adapter.connect()
 
@@ -200,7 +200,7 @@ class TestStaleBridgeHandshake:
             patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", windows),
             patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port", return_value=[] if windows else [4242]),
             patch("plugins.platforms.whatsapp.adapter._windows_listener_pids", return_value=[4242] if windows else []),
-            patch("subprocess.Popen", return_value=MagicMock()) as mock_popen,
+            patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=MagicMock()) as mock_popen,
             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True),
         ):
             assert await adapter.connect() is (fatal is None)
@@ -237,7 +237,7 @@ class TestDepRefreshStamp:
              patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
              patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
              patch("subprocess.run") as mock_run, \
-             patch("subprocess.Popen", return_value=mock_proc), \
+             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc), \
              patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
             await adapter.connect()
 
@@ -263,7 +263,7 @@ class TestCacheDirEnvPassthrough:
              patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
              patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
              patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
-             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc) as mock_popen, \
              patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
             await adapter.connect()
 

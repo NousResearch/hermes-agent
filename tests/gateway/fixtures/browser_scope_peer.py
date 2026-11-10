@@ -27,7 +27,7 @@ async def probe():
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tests.gateway.fixtures.local_recovery_probe import rpc
-    import tools.browser_tool_lifecycle as lifecycle
+    import tools.browser_session_lifecycle as lifecycle
     from websockets.asyncio.client import connect
 
     home = Path(os.environ['HERMES_HOME'])
@@ -45,11 +45,11 @@ async def probe():
     (bee / 'config.yaml').write_text('browser:\n  cdp_url: ws://bee.invalid/devtools/browser/PROFILE-B\n')
     from gateway.run import _profile_runtime_scope
     from hermes_constants import hermes_home_key
-    from tools import browser_tool_cdp
+    from tools import browser_session_cdp
 
     def resolved(profile):
         with _profile_runtime_scope(profile, hydrate_secrets=False):
-            return browser_tool_cdp._get_cdp_override_raw()
+            return browser_session_cdp.get_cdp_override_raw()
     receipt = {'home_key': hermes_home_key(home)}
     cdp = ThreadingHTTPServer(('127.0.0.1', 0), _Cdp)
     threading.Thread(target=cdp.serve_forever, daemon=True).start()
@@ -66,7 +66,7 @@ async def probe():
                     runner.session_authorities = types.SimpleNamespace(
                         serving=lambda: [runner.session_authority, other], multiplexed=True)
                     with _profile_runtime_scope(bee, hydrate_secrets=False):
-                        browser_tool_cdp.set_live_cdp_override('http://127.0.0.1:9444')
+                        browser_session_cdp.set_live_cdp_override('http://127.0.0.1:9444')
                 reaps.clear()
                 for action, extra in [('connect', {'url': f'http://127.0.0.1:{cdp.server_port}'}),
                                       ('status', {}), ('disconnect', {}), (None, {})]:
@@ -75,7 +75,7 @@ async def probe():
                     receipt[f"{phase}:{action or 'missing'}"] = {
                         'code': reply.get('error', {}).get('code'), 'result': reply.get('result'),
                         'env': os.environ.get('BROWSER_CDP_URL'), 'reaps': list(reaps),
-                        'own': browser_tool_cdp._live_overrides.get(receipt['home_key']),
+                        'own': browser_session_cdp._live_overrides.get(receipt['home_key']),
                         'bee': resolved(bee), 'cdp_port': cdp.server_port}
             runner.session_authorities = real
     finally:

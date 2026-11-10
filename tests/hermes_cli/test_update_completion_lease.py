@@ -33,7 +33,7 @@ def _fake_windows_prepare(tmp_path, monkeypatch, acquire):
     for name in ("arm_completion", "collect_superseded_generations"):
         monkeypatch.setattr(venv_sync, name, lambda root, _name=name: events.append(_name))
     monkeypatch.setattr(pm.client, "ensure_tools_for_sync", lambda: events.append("tools"))
-    monkeypatch.setattr(pm, "sync_venv", lambda **kw: events.append("sync_venv"))
+    monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: events.append("sync_venv"))
     monkeypatch.setattr(pm.receipt, "worker_context", lambda update_id: nullcontext())
     monkeypatch.setattr(pm.receipt, "last_for_update", lambda update_id: None)
     monkeypatch.setattr(pm.environments, "project_python", lambda root: Path(sys.executable))

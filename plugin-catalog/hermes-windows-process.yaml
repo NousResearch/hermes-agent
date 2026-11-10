@@ -1,0 +1,38 @@
+name: hermes-windows-process
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: 5bad3fb2baf04ce6befecfefce6d14f4c9c98934
+subdir: windows-process
+description: >-
+  Answer "what is still running, and who started it" on Windows: win_process_table reads the
+  process table (PID, parent PID, image name) and adds each process's image path and creation
+  time, then marks every row with whether its recorded parent is still the process that spawned
+  it. Windows stores a parent PID rather than a handle, so a child that outlived its parent
+  points at a PID that is either unused or reused by a newer process; a parent that started
+  after its child cannot have spawned it, so both cases are reported as gone or reused instead
+  of a plausible but wrong parent name. Filters cover one PID, several PIDs, a name or path
+  substring, a parent PID, and an orphans-only view of what outlived its parent, with a result
+  cap and an option to leave out Windows session processes. Use it for leftover
+  gateway/backend/server children after a quit, for telling thirty python.exe rows apart by
+  start time, and for checking whether a process started before or after the thing being
+  debugged. Read-only: processes are opened with PROCESS_QUERY_LIMITED_INFORMATION for
+  QueryFullProcessImageName and GetProcessTimes only - no memory reads (command lines are
+  deliberately out of scope), no handle duplication, no writes, no child processes. Stdlib-only
+  (ctypes): no Python dependencies, no network calls, no file writes, no self-update. Windows
+  only. Disclosure - the tool reports image names, image paths and start times to the model,
+  and those routinely include the user and machine name (C:\Users\<name>\...) and reveal which
+  editor, shell or agent started which process; treat the output like a Task Manager
+  screenshot.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-process
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools:
+  - win_process_table
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

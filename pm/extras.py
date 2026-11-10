@@ -47,6 +47,7 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "dingtalk": "dingtalk_stream",
     "feishu": "lark_oapi",
     "wecom": "defusedxml",
+    "keychain": "keyring",
     "teams": "microsoft_teams.apps",
     "modal": "modal",
     "daytona": "daytona",
@@ -58,6 +59,8 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "acp": "acp",
     "web": "fastapi",
     "doc-extract": "anydoc",
+    "documents": ("docx", "openpyxl", "pptx", "reportlab", "pypdf"),
+    "documents-pdf": ("pdfplumber", "pypdfium2"),
     "computer-use": "mcp",
     "trace-upload": "huggingface_hub",
     # Pillow resize recovery for vision tools (the `vision` extra is a no-op
@@ -176,6 +179,36 @@ def _evaluate_in_runtime(marker: str, environment: dict[str, str]) -> bool:
     return result.stdout.strip() == "1"
 
 
+_INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS = 0
+
+
+def interactive_install_prompts_suppressed() -> bool:
+    """Whether this process is inside a non-interactive lazy-install scope."""
+    return _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS > 0
+
+
+def suppress_interactive_install_prompts():
+    """Process-wide scope that prevents lazy installs from reading stdin.
+
+    Gateway/dashboard runtimes may inherit a TTY from tmux or another supervisor,
+    but there is no operator waiting at stdin while adapters start. The counter is
+    process-wide (not a ContextVar) so worker threads obey the same daemon policy;
+    nesting remains safe and the interactive default is restored on exit.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _scope():
+        global _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS
+        _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS += 1
+        try:
+            yield
+        finally:
+            _INTERACTIVE_INSTALL_PROMPT_SUPPRESSIONS -= 1
+
+    return _scope()
+
+
 def install_hint(extra: str) -> str:
     """The one command users are told to run for a missing extra."""
     return f"hermes pm install --extra {extra}"
@@ -205,6 +238,11 @@ def ensure_import(extra: str) -> None:
         from prompt_toolkit.application.current import get_app_or_none
 
         app_running = bool(getattr(get_app_or_none(), "is_running", False))
+    # A daemon suppression scope means stdin is not an interaction surface even
+    # when a supervisor/tmux left it attached to a TTY. Fold that into the
+    # existing prompt-unavailable gate so policy checks can remain orthogonal.
+    if interactive_install_prompts_suppressed():
+        app_running = True
     if not app_running and sys.stdin.isatty() and sys.stdout.isatty():
         try:
             answer = input(f"\nThis needs Hermes' optional {extra!r} feature, which isn't installed yet.\n"
@@ -220,7 +258,7 @@ def ensure_import(extra: str) -> None:
     # already imported would change underneath it (adopt_selected); otherwise only
     # a restart can load it.
     from pm.environments import selected_venv, site_packages
-    from pm.environments_adopt import adopt_selected, restart_needed
+    from pm.environments_adopt import adopt_selected, note_restart_pending, restart_needed
     from pm.paths import repo_root, runtime_facts_path
     import sys
     from pathlib import Path
@@ -231,6 +269,7 @@ def ensure_import(extra: str) -> None:
         selected = site_packages(selected_venv(root)).resolve()
         if selected not in {Path(entry).resolve() for entry in sys.path}:
             reason = restart_needed(root) or "this process does not run from the install's dependency environment"
+            note_restart_pending(f"{extra} installed ({reason})")
             raise InstallError("venv", f"{extra} installed; restart Hermes to activate it ({reason})")
 
 
@@ -272,6 +311,155 @@ def _installed_in(site_packages: Path, anchor: str) -> bool:
                for entry in parent.glob(f"{leaf}.*"))
 
 
+DECLINED_EXTRAS_FILENAME = "declined-extras.json"
+
+
+def declined_extras_path(project_root: Path | None = None) -> Path:
+    from pm.environments import install_state_dir
+    from pm.paths import repo_root
+
+    return install_state_dir(repo_root() if project_root is None else Path(project_root)) / DECLINED_EXTRAS_FILENAME
+
+
+def declined_extras(project_root: Path | None = None) -> frozenset[str]:
+    """Extras the user dropped with ``hermes pm install --without NAME``.
+
+    Recorded beside the dependency facts, so a carried selection (legacy
+    migration, recorded extras, configured-feature auto-installs) never
+    re-adds one; only an explicit request (``--extra NAME``) opts back in.
+    """
+    import json
+
+    path = declined_extras_path(project_root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return frozenset()
+    except (OSError, ValueError) as exc:
+        # Reading a damaged record as "nothing declined" would re-add what the user removed.
+        from pm.package import InstallError
+
+        raise InstallError("venv", f"cannot read {path}: {exc}", "fix or delete the file, then retry") from exc
+    names = data.get("declined") if isinstance(data, dict) else None
+    return frozenset(_canonical(name) for name in names or () if isinstance(name, str))
+
+
+def record_declined_extras(*, add=(), remove=(), reasons: dict[str, str] | None = None,
+                           project_root: Path | None = None) -> frozenset[str]:
+    """Update the declined extras; returns the new set. Writes only on change.
+
+    *reasons* marks extras an update left out on its own (``pm.carried_extras``) with why,
+    so a later refusal names the cause instead of a ``--without`` the user never ran.
+    """
+    import json
+
+    from pm.filesystem import durable_write_bytes
+
+    current = declined_extras(project_root)
+    updated = (current | {_canonical(name) for name in add}) - {_canonical(name) for name in remove}
+    known = declined_reasons(project_root)
+    noted = {name: text for name, text in {**known, **{_canonical(name): " ".join(text.split())[:300]
+                                                          for name, text in (reasons or {}).items()}}.items()
+             if name in updated}
+    if updated != current or noted != known:
+        record: dict = {"schema": 1, "declined": sorted(updated)}
+        if noted:
+            record["left_out_by_update"] = dict(sorted(noted.items()))
+        durable_write_bytes(declined_extras_path(project_root), (json.dumps(record, indent=2) + "\n").encode("utf-8"))
+    return frozenset(updated)
+
+
+def declined_reasons(project_root: Path | None = None) -> dict[str, str]:
+    """Why an update left each automatically declined extra out (absent for a user's ``--without``)."""
+    import json
+
+    try:
+        data = json.loads(declined_extras_path(project_root).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}  # declined_extras() is the reader that refuses a damaged record
+    notes = data.get("left_out_by_update") if isinstance(data, dict) else None
+    return {name: text for name, text in (notes or {}).items() if isinstance(name, str) and isinstance(text, str)}
+
+
+def _canonical(name: str) -> str:
+    """The PEP 685 name uv matches an extra by (``foo_bar`` is ``foo-bar``)."""
+    import re
+
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def droppable_extras(project_root: Path) -> list[str]:
+    """Declared extras ``--without`` may drop: not ``all`` and nothing ``all`` pulls in.
+
+    The default sync selects ``[all]``, so dropping one of its members would be a no-op.
+    """
+    import re
+    import tomllib
+
+    with (Path(project_root) / "pyproject.toml").open("rb") as f:
+        project = tomllib.load(f).get("project", {})
+    table = project.get("optional-dependencies", {})
+    self_ref = re.compile(rf"^{re.escape(project.get('name', ''))}\[([^\]]+)\]", re.IGNORECASE)
+    kept, pending = {"all"}, ["all"]
+    while pending:
+        for requirement in table.get(pending.pop(), ()):
+            match = self_ref.match(requirement.replace(" ", ""))
+            for member in (match.group(1).split(",") if match else ()):
+                if member not in kept:
+                    kept.add(member)
+                    pending.append(member)
+    return sorted(extra for extra in table if extra not in kept)
+
+
+def _pre_pm_site_packages(root: Path) -> list[Path]:
+    """The site-packages of the checkout's own main-era ``venv/`` or ``.venv/`` (POSIX or Windows layout).
+
+    A venv counts when Hermes is installed in it and PM did not build it. What Hermes was installed
+    from says nothing: a pre-PM updater reinstalls the checkout into the old venv from the tree it
+    just pulled, PM included. A bare ``uv venv`` holds no Hermes, and an environment PM built
+    (``pm.build_env --out .venv``) is no install's old state: reading either would union its
+    contents into every sync of a data root with no recorded selection.
+    """
+    return [tree for venv in (root / "venv", root / ".venv") if not _built_by_pm(venv)
+            for tree in (*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages")
+            if tree.is_dir() and any(tree.glob("hermes_agent-*.dist-info"))]
+
+
+def _built_by_pm(venv: Path) -> bool:
+    """Did PM build ``venv``? No pre-PM installer used PM's environment builder.
+
+    PM marks every environment it creates in ``pyvenv.cfg`` (``pm.environment.PM_BUILT_KEY``), on
+    any interpreter, ``pm.build_env --python`` included. One built before that marker runs a Python
+    from PM's tool store: ``pyvenv.cfg``'s ``home`` is that interpreter's directory inside a store
+    entry (``bin/``, the entry itself on Windows), and the store's ``facts.json`` holds a ``python``
+    row. An older pin's entry still counts, so a test env survives the store moving to a newer Python.
+    """
+    import json
+
+    from pm.environment import PM_BUILT_KEY
+
+    try:
+        lines = (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, ValueError):  # unreadable or not UTF-8: no PM-built env writes that
+        return False
+    cfg = {key.strip(): value.strip() for key, _, value in (line.partition("=") for line in lines)}
+    if cfg.get(PM_BUILT_KEY) == "true":
+        return True
+    home = cfg.get("home", "")
+    if not home:
+        return False
+    for entry in (Path(home), *Path(home).parents):
+        if not entry.name.startswith("python-"):
+            continue
+        try:
+            packages = json.loads((entry.parent / "facts.json").read_text(encoding="utf-8-sig"))["packages"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if isinstance(packages, dict) and "python" in packages:
+            return True
+    return False
+
+
 def legacy_selection(project_root: Path) -> list[str]:
     """The extras PM's first generation selects when it replaces a main-era venv.
 
@@ -283,16 +471,58 @@ def legacy_selection(project_root: Path) -> list[str]:
     not run from it.
     """
     root = Path(project_root)
-    trees = [tree for venv in (root / "venv", root / ".venv")
-             for tree in (*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages")
-             if tree.is_dir()]
+    trees = _pre_pm_site_packages(root)
+    # The old venv is never deleted, so this scan repeats for any data root without facts.
+    refused = declined_extras(root)
     carried = sorted(
         # An umbrella extra shares its anchor with one member; carrying it
         # would install every sibling the user never chose.
-        extra for extra in ANCHORS if extra not in {"messaging", "voice", "wake"}
+        extra for extra in ANCHORS if extra not in {"messaging", "voice", "wake"} and extra not in refused
         # PM refuses a gated extra outside its platform even if a hand-synced venv carried it.
         # Installed first: judging a gate may cost a PM-runtime subprocess.
         if any(all(_installed_in(tree, anchor) for anchor in _anchors(extra)) for tree in trees)
         and extra_supported(extra, importable=lambda _anchor: False)
     )
     return ["all", *carried]
+
+
+def venv_selection_recorded(project_root: Path) -> bool:
+    """Has PM recorded this install's dependency selection (the ``venv`` row of its facts)?
+
+    That row, not the facts file, ends a pre-PM venv's carry: a facts file can exist without it. A
+    damaged install facts file raises instead of reading as "none recorded".
+    """
+    from pm.environments import runtime_facts_path, store_root
+    from pm.lock import Facts
+
+    root = Path(project_root)
+    # The same two rows a sync reads its recorded selection from (a payload's store records one).
+    return (Facts(runtime_facts_path(root), strict=True).get("venv") is not None
+            or Facts(store_root(root) / "facts.json").get("venv") is not None)
+
+
+def first_generation_selection(project_root: Path) -> list[str] | None:
+    """The extras a sync of the install's whole selection requests: ``None`` once PM recorded a
+    selection (that ledger owns the extras), else ``[all]``, as ``hermes pm install`` selects.
+
+    The update's completion bootstrap, the historical takeover, the launch migration and the
+    ``venv_sync`` entry pass this; without it a first sync would reach only the core. The old
+    venv's extras are not added here: ``sync_venv`` carries them under the dependency lock
+    (``pm.carried_extras.with_pre_pm_baseline``).
+    """
+    return None if venv_selection_recorded(project_root) else ["all"]
+
+
+def pre_pm_baseline(project_root: Path) -> list[str]:
+    """What a request on a pre-PM tree unions into: the old venv's selection, or ``[]``.
+
+    PM unions a request into the recorded selection. A tree with a main-era venv and no recorded
+    selection runs that venv, so its extras are the selection every sync extends (``hermes setup``
+    adding ``telegram``, ``hermes pm update``'s venv step); otherwise its first generation records
+    the request alone and the re-scan that would carry the rest never runs again. ``[]`` once a
+    selection is recorded, and on a tree with no old venv (nothing to keep).
+    """
+    root = Path(project_root)
+    if venv_selection_recorded(root) or not _pre_pm_site_packages(root):
+        return []
+    return legacy_selection(root)

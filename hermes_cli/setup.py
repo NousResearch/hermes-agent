@@ -30,7 +30,9 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from hermes_cli._startup_fast import project_root_str
+
+PROJECT_ROOT = Path(project_root_str())
 
 _DOCS_BASE = "https://hermes-agent.nousresearch.com/docs"
 _BRACKETED_PASTE_PATTERN = re.compile(r"\x1b\[\s*200~|\x1b\[\s*201~")
@@ -738,7 +740,10 @@ def _run_setup_wizard_impl(args):
         label, runner = _FIRST_TIME_MODES[setup_mode]
         if runner is not None:
             from hermes_cli import setup_quick
-            _run_setup_steps([(label, lambda: getattr(setup_quick, runner)(config, hermes_home, is_existing))])
+            # Quick Setup offers to keep a model the import brought (Full setup acknowledges it below).
+            run_args = (config, hermes_home, is_existing) + (
+                (imported_from,) if runner == "_run_first_time_quick_setup" else ())
+            _run_setup_steps([(label, lambda: getattr(setup_quick, runner)(*run_args))])
             _record_setup_completed(config)
             return
     _run_full_setup(config, hermes_home, is_existing=is_existing, imported_from=imported_from)

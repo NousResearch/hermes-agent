@@ -296,12 +296,26 @@ def test_profile_route_is_refused_under_a_managed_worker_config_snapshot(two_pro
 def test_profile_pinned_to_a_missing_acp_command_is_refused_at_routing(two_profiles, monkeypatch):
     """Same rule as ``delegation.provider`` (#80450): a profile whose provider is pinned to an ACP binary
     that is not on PATH refuses the spawn, naming the profile, instead of building a broken child."""
+    import providers
+    from hermes_cli import auth
+    from providers.base import ProviderProfile
+
     _, coder = two_profiles
-    _set_config(coder, model={"provider": "copilot-acp", "default": "coder-model"})
+    profile = ProviderProfile(name="acme-acp", auth_type="external_process", base_url="acp://acme",
+                              process_command="acme", process_args=("--acp", "--stdio"),
+                              process_command_env_vars=("HERMES_ACME_ACP_COMMAND",),
+                              base_url_env_var="ACME_ACP_BASE_URL")
+    monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    monkeypatch.setattr(auth, "PROVIDER_REGISTRY", dict(auth.PROVIDER_REGISTRY))
+    auth.PROVIDER_REGISTRY[profile.name] = auth.ProviderConfig(
+        profile.name, profile.name, profile.auth_type, inference_base_url=profile.base_url,
+        base_url_env_var=profile.base_url_env_var)
+    _set_config(coder, model={"provider": "acme-acp", "default": "coder-model"})
     # An acp+tcp endpoint keeps the configured command unresolved (the runtime resolver only refuses a missing
     # binary when it would spawn one); the delegation pin rule still refuses it.
-    monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", "hermes-test-missing-acp-binary")
-    monkeypatch.setenv("COPILOT_ACP_BASE_URL", "acp+tcp://127.0.0.1:9")
+    monkeypatch.setenv("HERMES_ACME_ACP_COMMAND", "hermes-test-missing-acp-binary")
+    monkeypatch.setenv("ACME_ACP_BASE_URL", "acp+tcp://127.0.0.1:9")
 
     (route,), error = _resolve_coder_task()
     assert error is None and route.creds == {}

@@ -57,6 +57,52 @@ def client(homes):
     return c
 
 
+def test_a_gateway_block_for_a_profile_plugin_stays_in_that_profile(client, homes):
+    """A ``gateway.<plugin id>`` block next to a token-free built-in must not register the profile's
+    plugin process-wide while the dashboard reads the built-in's status."""
+    from gateway.config import Platform
+
+    _, work = homes
+    (work / "config.yaml").write_text(yaml.safe_dump({
+        "plugins": {"enabled": ["workchat"]},
+        "gateway": {"workchat": {"enabled": True}},
+        "platforms": {"webhook": {"enabled": True}},
+    }), encoding="utf-8")
+    leaked_before = "workchat" in Platform._value2member_map_  # an earlier test may have registered it
+
+    scoped = client.get("/api/messaging/platforms", params={"profile": "work"}).json()["platforms"]
+    root_ids = {p["id"] for p in client.get("/api/messaging/platforms").json()["platforms"]}
+
+    assert next(p for p in scoped if p["id"] == "webhook")["configured"] is True
+    assert ("workchat" in Platform._value2member_map_) is leaked_before
+    assert "workchat" not in root_ids
+
+
+def test_a_managed_gateway_block_for_a_profile_plugin_stays_in_that_profile(client, homes, tmp_path, monkeypatch):
+    """The administrator's config goes through the same filtered steps: a managed ``gateway.<plugin id>``
+    block must not register the profile's plugin process-wide either."""
+    from gateway.config import Platform
+    from hermes_cli import managed_scope
+
+    _, work = homes
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(yaml.safe_dump({"gateway": {"workchat": {"enabled": True}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    managed_scope.invalidate_managed_cache()
+    (work / "config.yaml").write_text(yaml.safe_dump({
+        "plugins": {"enabled": ["workchat"]}, "platforms": {"webhook": {"enabled": True}},
+    }), encoding="utf-8")
+    leaked_before = "workchat" in Platform._value2member_map_  # an earlier test may have registered it
+    try:
+        scoped = client.get("/api/messaging/platforms", params={"profile": "work"}).json()["platforms"]
+    finally:
+        managed_scope.invalidate_managed_cache()
+
+    assert next(p for p in scoped if p["id"] == "webhook")["configured"] is True
+    assert ("workchat" in Platform._value2member_map_) is leaked_before
+
+
 def test_a_platform_installed_only_in_the_target_profile_is_editable_there(client, homes):
     root, work = homes
     listed = client.get("/api/messaging/platforms?profile=work").json()

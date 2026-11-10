@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import uuid
 import weakref
 
 from hermes_state_runtime import RuntimeStoreError
@@ -17,14 +18,19 @@ GROUP_METHODS = {
     'groups.log': 'session:read',
     'groups.create': 'session:control',
     'groups.rename': 'session:control',
+    'groups.context': 'session:control',
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
     'groups.attachment.upload': 'session:submit',
     'groups.attachment.download': 'session:read',
     'groups.stop': 'session:control',
+    'groups.continue': 'session:control',
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
+    'groups.peer.register': 'session:control',
+    'groups.peer.invite': 'session:operator',
+    'groups.peer.revoke': 'session:operator',
 }
 _FIELDS = {
     'groups.capabilities': set(),
@@ -33,15 +39,21 @@ _FIELDS = {
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
     'groups.create': {'room_id', 'name', 'members'},
     'groups.rename': {'room_id', 'event_id', 'name'},
+    'groups.context': {'room_id', 'event_id', 'purpose', 'notes', 'routing', 'lead_member_id'},
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
     'groups.attachment.upload': {'room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'},
     'groups.attachment.download': {'room_id', 'event_id', 'attachment_id'},
     'groups.stop': {'room_id', 'cancel_id'},
+    'groups.continue': {'room_id', 'discussion_event_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.approve': {'room_id', 'member_id', 'task_id', 'execution_generation',
                        'choice', 'request_id'},
+    'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog'},
+    'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
+                           'member_id', 'ttl_seconds', 'status_ttl_seconds'},
+    'groups.peer.revoke': {'grant'},
     'profiles.list': {'include_sessions'},
 }
 
@@ -71,22 +83,41 @@ async def dispatch_group_control(connection, method, params):
     def invoke():
         from gateway.run import _profile_runtime_scope
         from gateway.hosted_rooms import HostedRoomError
+        from gateway import session_group_peers as peers
         with _profile_runtime_scope(home):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied, siblings)
             try:
+                if method in peers.TARGET_METHODS:
+                    return peers.dispatch_target(authority, method, supplied)
                 return _group(authority, actor, method, supplied, host_scope=connection.host_scoped)
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
-                raise RuntimeStoreError(getattr(exc, 'reason', None) or 'invalid_params') from exc
+                refusal = _refusal(getattr(exc, 'reason', None) or 'invalid_params',
+                                   admitted=getattr(exc, 'admitted', None))
+                if getattr(exc, 'reason', None):
+                    refusal.wire_message = str(exc)
+                raise refusal from exc
             except (ValueError, TypeError) as exc:
-                raise RuntimeStoreError('invalid_params') from exc
+                raise _refusal('invalid_params', admitted=getattr(exc, 'admitted', None)) from exc
     return await asyncio.to_thread(invoke)
+
+
+def _refusal(reason, *, admitted=None):
+    """The wire refusal; ``admitted=False`` (a groups.send refused before its user event
+    committed: ``HostedRoomService.send``, or no driver to take it) rides along as error data."""
+    refusal = RuntimeStoreError(reason)
+    if admitted is False:
+        refusal.admitted = False
+    return refusal
 
 
 def _group(authority, actor, method, params, *, host_scope=False):
     from gateway import hosted_rooms as rooms
+    from gateway.hosted_room_context import room_context, set_room_context
+    if method == 'groups.disband':
+        params = {**params, 'room_id': rooms._room_id(params.get('room_id'))}
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
@@ -98,7 +129,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
         if not status.get('running') or status.get('stopping'):
             service = None
 
-    execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
+    execution_methods = {'groups.send', 'groups.stop', 'groups.continue', 'groups.retry', 'groups.discard',
+                         'groups.approve'}
     admit = None
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
@@ -118,20 +150,28 @@ def _group(authority, actor, method, params, *, host_scope=False):
         return handler(service, actor, params)
     if method in execution_methods:
         if service is None:
+            if method == 'groups.send':
+                raise _refusal('runtime_coordination_required', admitted=False)
             raise RuntimeStoreError('runtime_coordination_required')
         if not params.get('room_id'):
             raise RuntimeStoreError('invalid_params')
         return _execution_control(service, method, params)
+    if method == 'groups.peer.register':
+        if service is None:
+            raise RuntimeStoreError('runtime_coordination_required')
+        from gateway.session_group_peers import register
+        return register(service, params)
 
     def capabilities():
+        from gateway.session_group_peers import room_link
         from gateway.session_hosted_members import member_roster
         # The roster groups.create will accept from THIS caller, so a picker never offers a bot
         # (parked, retiring, a sibling a profile-bound socket cannot seat) that create refuses.
         homes, refused = member_roster(authority, siblings=host_scope)
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
-                'room_link': {'enabled': False, 'reason': 'canonical_driver_required'},
-                'features': ['room_identity', 'monotonic_log', 'replayable_disband'],
+                'room_link': room_link(authority),
+                'features': ['room_identity', 'monotonic_log', 'replayable_disband', 'peer_renewal_horizon'],
                 'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT,
                 'seatable_profiles': sorted(name for name in homes if name not in refused)}
 
@@ -194,26 +234,15 @@ def _group(authority, actor, method, params, *, host_scope=False):
                 admit=admit)}
 
     def disband():
-        from gateway.hosted_room_driver import list_tasks
-        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
-        if service is not None and state.get('disbanded_at') is None:
-            service.stop_room(params.get('room_id'),
-                              cancel_id=params.get('cancel_id') or 'room-disbanded',
-                              require_acknowledged=True)
-            service.revoke_room_routes(params.get('room_id'))
-        # Metadata control must not destroy an active execution or bypass Stop.
-        if service is None and any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
-               for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
-            raise RuntimeStoreError('runtime_coordination_required')
-        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
-        return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
-                expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}
+        return _disband(getattr(authority, 'hosted_room_service', None), service, db_path, gateway_id, params)
 
     def state():
         room = rooms.room_state(db_path, **params)
         result = {'room': room}
-        if service is not None and room.get('disbanded_at') is None:
-            result['driver_status'] = service.status(room['room_id'])
+        if room.get('disbanded_at') is None:
+            result['context'] = room_context(db_path, room_id=room['room_id'])
+            if service is not None:
+                result['driver_status'] = service.status(room['room_id'])
         return result
 
     handlers = {
@@ -223,9 +252,55 @@ def _group(authority, actor, method, params, *, host_scope=False):
         'groups.state': state,
         'groups.log': lambda: rooms.read_events(db_path, **params),
         'groups.rename': lambda: {'room': rooms.rename_room(db_path, **params)},
+        'groups.context': lambda: set_room_context(db_path, **params),
         'groups.disband': disband,
     }
     return handlers[method]()
+
+
+def _disband(attached, service, db_path, gateway_id, params):
+    """Stop the room's work (waiting for every member's acknowledged Stop), revoke each peer
+    route at its member gateway, then tombstone; any refusal leaves the room for a retry."""
+    from gateway import hosted_rooms as rooms
+    from gateway.hosted_room_driver import list_tasks
+    from tui_gateway.hosted_room_service import disband_fence, route_publication_lock
+    room_id = rooms._room_id(params.get('room_id'))
+    with disband_fence(attached, room_id):
+        state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
+        if (state.get('disbanded_at') is None and attached is None
+                and rooms.room_has_peer_obligations(db_path, room_id=room_id)):
+            raise RuntimeStoreError('runtime_coordination_required')
+        if service is not None and state.get('disbanded_at') is None:
+            service.stop_room(room_id, cancel_id=params.get('cancel_id') or 'room-disbanded',
+                              require_acknowledged=True)
+        with route_publication_lock(attached):
+            state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
+            # Metadata control must not destroy an active execution or bypass Stop.
+            if service is None and any(list_tasks(db_path, room_id=room_id, status=status)
+                   for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
+                raise RuntimeStoreError('runtime_coordination_required')
+        for attempt in range(3):
+            if state.get('disbanded_at') is None and attached is not None:
+                _revoke_routes_first(attached, room_id)
+            try:
+                with route_publication_lock(attached):
+                    state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
+                    return {'tombstone': rooms.disband_room(db_path, room_id=room_id,
+                            expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}
+            except rooms.RoomHeldGrantsPendingError:
+                if attached is None:
+                    raise RuntimeStoreError('runtime_coordination_required')
+                if attempt == 2:
+                    raise
+
+
+def _revoke_routes_first(service, room_id):
+    """Revoke each peer route at its member gateway; one that cannot be reached keeps the room."""
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    try:
+        service.revoke_room_routes(room_id)
+    except PeerRunsHTTPError as exc:
+        raise RuntimeStoreError('peer_unreachable') from exc
 
 
 def _execution_control(service, method, params):
@@ -257,12 +332,19 @@ def _execution_control(service, method, params):
                 or params.get('choice') not in {'once', 'deny'}
                 or not isinstance(params.get('request_id'), str) or not params['request_id']):
             raise RuntimeStoreError('invalid_params')
-        return {'approved': True, 'result': service.approve_room_task(**params)}
+        try:
+            return {'approved': True, 'result': service.approve_room_task(**params)}
+        except RuntimeError as exc:
+            if str(exc) == 'room approval is no longer pending':
+                raise RuntimeStoreError(str(exc)) from exc
+            raise
 
     handlers = {
         'groups.send': send,
         'groups.stop': lambda: {'cancelled': service.stop_room(
-            params.get('room_id'), cancel_id=params.get('cancel_id') or 'desktop-stop')},
+            params.get('room_id'), cancel_id=params.get('cancel_id') or uuid.uuid4().hex)},
+        'groups.continue': lambda: {'continued': True, 'event': service.continue_room(
+            params.get('room_id'), discussion_event_id=str(params.get('discussion_event_id') or ''))},
         'groups.retry': attempt_control,
         'groups.discard': attempt_control,
         'groups.approve': approve,
@@ -292,12 +374,12 @@ def _roster_siblings(connection, params):
     subject and capabilities, which is what the routed connection would carry; none is built, so
     no poll (routed or not) adds connections."""
     from gateway.session_authorities import local_bots
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     authority, actor = connection.authority, connection.actor
     if getattr(getattr(authority, 'runner', None), 'session_authorities', None) is None:
         return []
     readable = connection.host_scoped and params.get('include_sessions', True) is True
-    return [(bot, Principal(actor.subject, bot.authority.profile_id, actor.capabilities, actor.transport_id)
+    return [(bot, SessionActor(actor.subject, bot.authority.profile_id, actor.capabilities, actor.transport_id)
              if readable and bot.problem is None else None)
             for bot in local_bots(authority.runner) if bot.authority is not authority]
 
@@ -341,7 +423,8 @@ def _read_bot_sessions(db, subject, operator):
         # The named registry is not a recency window and canonical chats are hidden.
         canonical = conn.execute(f'SELECT * FROM sessions WHERE title=? AND {_LOCAL_CHAT}',
                                  ('Bot Chat', LEGACY_PREFIX)).fetchone()
-        if canonical and (canonical['user_id'] == subject or operator) and not canonical['archived']:
+        from gateway.owner_identity import same_owner
+        if canonical and (same_owner(canonical['user_id'], subject) or operator) and not canonical['archived']:
             fields['canonical_session'] = summary(canonical)
         # The newest conversation a picker shows: a hidden row (a Bot Chat, group member plumbing)
         # never wins, as in the pre-unified roster's listing.
@@ -405,12 +488,10 @@ def _profiles(authority, actor, home, params, siblings=()):
     path = home / 'profile.yaml'
     meta = yaml.safe_load(path.read_text(encoding='utf-8-sig')) if path.is_file() else {}
     meta = meta if isinstance(meta, dict) else {}
-    revisions = meta.get('_ui_meta_revisions')
-    row['ui_meta_revisions'] = {str(k): max(0, v) for k, v in revisions.items()
-                              if type(v) is int} if isinstance(revisions, dict) else {}
+    row['ui_meta_revisions'] = _ui_meta_revisions(meta)
     if isinstance(meta.get('ui_meta'), dict):
         row['ui_meta'] = meta['ui_meta']
-    row['has_avatar'] = any((home / 'assets' / f'avatar.{ext}').is_file() for ext in ('png', 'jpg', 'webp'))
+    row['has_avatar'] = _has_avatar(home)
     if include_sessions:
         row.update(_bot_sessions(authority, actor))
     profiles = [row]
@@ -423,13 +504,17 @@ def _profiles(authority, actor, home, params, siblings=()):
             return
         seen.add(target.resolve())
         entry = {'name': configured, 'path': str(target), 'is_default': configured == 'default',
-                 'model': '', 'provider': '', 'description': '', 'display_name': configured,
-                 'skill_count': 0}
+                 'model': '', 'provider': '', 'description': '', 'display_name': '',
+                 'skill_count': 0, 'has_avatar': _has_avatar(target), 'ui_meta_revisions': {}}
         if include_sessions and reach is not None:
             entry.update(_sibling_sessions(*reach))
         meta = _discovered_profile_meta(configured, target / 'profile.yaml')
         if isinstance(meta, dict):
-            entry['display_name'] = str(meta.get('display_name') or configured)
+            # The profile's own metadata, not a placeholder: Desktop seeds the Edit profile dialog
+            # from these fields and skips the avatar push when ``has_avatar`` is set.
+            entry['description'] = str(meta.get('description') or '').strip()
+            entry['display_name'] = str(meta.get('display_name') or '')
+            entry['ui_meta_revisions'] = _ui_meta_revisions(meta)
             if isinstance(meta.get('ui_meta'), dict):
                 entry['ui_meta'] = meta['ui_meta']
         profiles.append(entry)
@@ -517,6 +602,25 @@ def _named_profile_dirs():
     if signature is not None:
         _NAMED_DIRS_CACHE[str(profiles_root)] = (signature, targets)
     return targets
+
+
+_ASSET_EXTS = ('png', 'jpg', 'webp')
+
+
+def _has_avatar(home):
+    """Cheap existence flag so a roster paint skips a ``get_asset`` probe per profile."""
+    return any((home / 'assets' / f'avatar.{ext}').is_file() for ext in _ASSET_EXTS)
+
+
+def _ui_meta_revisions(meta):
+    """``_ui_meta_revisions`` from a parsed profile.yaml: str keys, non-bool ints, floor 0.
+
+    Always present (``{}`` when the profile never wrote one) so a client can feature-detect
+    gateway-owned CAS instead of reading a missing field as revision zero.
+    """
+    revisions = meta.get('_ui_meta_revisions') if isinstance(meta, dict) else None
+    return {str(k): max(0, v) for k, v in revisions.items()
+            if type(v) is int} if isinstance(revisions, dict) else {}
 
 
 def _discovered_profile_meta(name, meta_path):

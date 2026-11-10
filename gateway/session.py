@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
+from gateway.session_detached import detached_route_of
 from gateway.session_identity import transport_profile_of
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
@@ -96,10 +97,17 @@ class SessionSource:
     # Discord auto-thread continuity: the thread id a CHANNEL message WILL be delivered into, so
     # the initiating message and later in-thread follow-ups share ONE session.
     prospective_thread_id: Optional[str] = None
+    # The adapter declares this chat's session shared by every participant even though the
+    # sender id is kept (Telegram observe mode: commands keep user_id for slash access checks).
+    shared_session: bool = False
     # Wire-INVISIBLE trust signal (never in to_dict/from_dict, so a peer cannot forge it): came
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
     delivered_via_upstream_relay: bool = False
+    # Wire-INVISIBLE: the key of a conversation its chat moved past, still run from the apps
+    # (gateway/session_detached.py). It replaces the chat's key, so nothing keyed by route reaches
+    # the chat's current conversation, and delivery goes nowhere.
+    detached_route: Optional[str] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.
@@ -146,6 +154,8 @@ class SessionSource:
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         _optional(self._OPTIONAL_TAIL)
+        if self.shared_session:
+            d["shared_session"] = True
         return d
 
     @classmethod
@@ -159,7 +169,8 @@ class SessionSource:
             platform=Platform(data["platform"]), chat_id=str(data["chat_id"]),
             chat_type=data.get("chat_type", "dm"),
             scope_id=data.get("scope_id", data.get("guild_id")),
-            auto_thread_created=bool(data.get("auto_thread_created", False)), **plain,
+            auto_thread_created=bool(data.get("auto_thread_created", False)),
+            shared_session=bool(data.get("shared_session", False)), **plain,
         )
 
 
@@ -169,6 +180,12 @@ class SessionContext:
     source: SessionSource
     connected_platforms: list[Platform]
     home_channels: dict[Platform, HomeChannel]
+    # The current inbound actor may differ from the session route. Telegram observe mode, for
+    # example, deliberately removes a group sender from ``source`` to share the conversation.
+    # Keep that trusted event identity task-local; it must never alter the stored route.
+    actor_user_id: Optional[str] = None
+    actor_user_name: Optional[str] = None
+    turn_event: Any = None  # the MessageEvent the actor came from; a later fold may clear it (session_context)
     shared_multi_user_session: bool = False
     session_key: str = ""
     session_id: str = ""
@@ -359,11 +376,6 @@ _STATIC_PLATFORM_NOTES = {
         "will be delivered as its own iMessage bubble, so write accordingly: one idea per bubble, "
         "1–3 sentences each. If the user needs a detailed answer, give the short version first and "
         "offer to elaborate."
-    ),
-    Platform.YUANBAO: (
-        "**Platform notes:** You are running inside Yuanbao. To send a private (DM) message to a "
-        "user in the current group, use the yb_send_dm tool (look up the recipient by name or pass "
-        "their user_id). Your normal reply is delivered to the group you are responding in."
     ),
 }
 
@@ -659,6 +671,8 @@ def is_shared_multi_user_session(
     isolation rules in :func:`build_session_key`)."""
     if source.chat_type == "dm":
         return False
+    if getattr(source, "shared_session", False):
+        return True
     return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
 
 
@@ -695,6 +709,8 @@ def build_session_key(
     session per platform. Groups add the participant id only when ``group_sessions_per_user`` and
     not in a thread (threads are shared unless ``thread_sessions_per_user``).
     """
+    if detached := detached_route_of(source):
+        return detached
     is_dm = source.chat_type == "dm"
     chat_id = source.chat_id
     if is_dm and source.platform == Platform.WHATSAPP:
@@ -711,7 +727,10 @@ def build_session_key(
     else:
         # Threads are shared by default; per-user isolation only via thread_sessions_per_user or
         # outside a thread.
-        isolate_user = group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
+        isolate_user = (
+            group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
+            and not getattr(source, "shared_session", False)
+        )
     # Duck-typed sources may lack user_id_alt: read the participant only when it matters.
     participant_id = _canonical_participant(source) if (isolate_user or not is_dm) else None
 
@@ -805,6 +824,9 @@ class SessionStore(
         self._fast_persisted_entries: dict[str, tuple[int, str]] = {}
         self._inflight_lock = threading.Lock()
         self._inflight_sessions: dict[str, _SessionFlight] = {}
+        # Ids a route names before their state.db row is live: a route transition publishes under
+        # _lock and inserts/reopens the row after releasing it. Guarded by _lock.
+        self._rows_pending: set[str] = set()
         # An unscoped legacy Slack key is claimed once per process (two workspaces must not both
         # revive one session).
         self._legacy_slack_claim_lock = threading.Lock()
@@ -841,6 +863,9 @@ class SessionStore(
         # session_id -> owning key for ids proven but not yet published in ``_entries`` (a
         # compression child row is written before its reroute is published).
         self._session_owner_hints: dict[str, str] = {}
+        # Called with (key, session id, origin) once a route names another conversation; the owner
+        # wires it so a conversation its chat moved past detaches at once (gateway/session_detached.py).
+        self.route_named = None
         from gateway.session_db_recovery import RecoverableHandleCache
 
         self._db_handle_cache = RecoverableHandleCache(
@@ -898,6 +923,9 @@ class SessionStore(
         """Single-flight session lookup/create per routing key: overlapping calls for one key (even
         concurrent ``force_new``) share the owner's result so only one transition and SQLite row is
         created. ``touch_activity=False`` (internal events) preserves the user-activity clock."""
+        if detached_route_of(source):
+            from gateway.session_detached import detached_entry
+            return detached_entry(self, source)
         session_key = self._generate_session_key(source)
         inflight_lock = self._lazy("_inflight_lock", threading.Lock)
         self._lazy("_inflight_sessions", dict)
@@ -949,15 +977,16 @@ class SessionStore(
         checks = None
         if not force_new and observed is not None:
             sid = observed.session_id
-            # A local route the authority holds by receipt is never stale: a stamped row is
+            # A local or API route the authority holds by receipt is never stale: a stamped row is
             # reopened by its next admitted turn, never replaced (#140642).
             checks = _RouteChecks(
                 sid, self._compression_tip_for_session_id(sid),
-                self._is_session_ended_in_db(sid) and self._local_receipt_target(observed) is None,
+                self._is_session_ended_in_db(sid) and self._local_receipt_target(observed) is None
+                and not self._api_bound(observed),
                 self._route_reset_reason(observed),
             )
         # Phase 2 (lock): apply the decisions to _entries.
-        decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now)
+        decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now, source)
 
         # Phase 3 (no lock): recovery + create + save + DB ops.
         if decision.needs_recover and decision.prev_session_id is None:
@@ -967,22 +996,28 @@ class SessionStore(
             create_kwargs = self._route_create(
                 decision, session_key, source, now, force_new, observed
             )
-        if decision.needs_save:
-            if decision.metadata_only_save:
-                self._save_entry(session_key)
-            else:
-                self._save_entries()
+        try:
+            if decision.needs_save:
+                if decision.metadata_only_save:
+                    self._save_entry(session_key)
+                else:
+                    self._save_entries()
 
-        self._finish_route_transition(
-            session_key, end_session_id=decision.prev_session_id,
-            end_reason=decision.reset_reason or "session_reset", create_kwargs=create_kwargs,
-            origin=source, display_name=decision.entry.display_name,
-        )
+            self._finish_route_transition(
+                session_key, end_session_id=decision.prev_session_id,
+                end_reason=decision.reset_reason or "session_reset", create_kwargs=create_kwargs,
+                origin=source, display_name=decision.entry.display_name,
+            )
+        finally:
+            if create_kwargs:
+                self._row_settled(create_kwargs["session_id"])
+        if observed is None or decision.entry.session_id != observed.session_id:
+            self._announce_route(session_key, decision.entry)
         return decision.entry
 
     def _apply_route_checks(
         self, session_key: str, checks: Optional[_RouteChecks], force_new: bool,
-        touch_activity: bool, now: datetime,
+        touch_activity: bool, now: datetime, source: SessionSource,
     ) -> _RouteDecision:
         """Apply stale/reset decisions to ``_entries`` under ``_lock``. If another thread replaced
         the entry during the lock-free window the snapshot no longer applies: route is healthy."""
@@ -1022,9 +1057,19 @@ class SessionStore(
                 # Internal/system events preserve the user-activity clock.
                 if touch_activity:
                     entry.updated_at = now
+                # Creation is the only other writer of origin, so an entry persisted without one
+                # (#146696) stays unroutable for completions, recovery and lane naming until an
+                # inbound turn on this very route fills it.
+                if touch_activity and entry.origin is None:
+                    entry.origin = source
                 decision.entry = entry
                 decision.needs_save = touch_activity or healed
                 decision.metadata_only_save = touch_activity and not healed
+                # Only creation wrote the receiving bot, and /reset, /new and switches copy it, so a
+                # route saved before the column existed stays NULL and its completions stay pending
+                # after a restart. Its next inbound turn records the bot that verifiably received it.
+                if touch_activity and entry.transport_profile is None:
+                    entry.transport_profile = transport_profile_of(source)
         return decision
 
     def _route_recover(
@@ -1053,19 +1098,19 @@ class SessionStore(
             auto_reset_reason=decision.reset_reason, reset_had_activity=decision.reset_had_activity,
             prev_session_id=decision.prev_session_id, transport_profile=transport_profile_of(source),
         )
-        with self._lock:
-            current = self._entries.get(session_key)
-            if current is None or (force_new and current is observed):
-                self._entries[session_key] = current = candidate
-        decision.entry = current
-        decision.needs_save = True
-        if current is not candidate:
-            return None
-        return self._session_create_kwargs(
+        create_kwargs = self._session_create_kwargs(
             session_id=session_id, session_key=session_key, origin=source,
             source_value=source.platform.value, display_name=source.chat_name,
             parent_session_id=decision.prev_session_id,
         )
+        with self._lock:
+            current = self._entries.get(session_key)
+            if current is None or (force_new and current is observed):
+                self._entries[session_key] = current = candidate
+                self._rows_pending.add(session_id)  # the caller settles it once create_kwargs land
+        decision.entry = current
+        decision.needs_save = True
+        return create_kwargs if current is candidate else None
 
     def update_session(
         self, session_key: str, last_prompt_tokens: int | None = None, touch_activity: bool = True,
@@ -1147,21 +1192,25 @@ class SessionStore(
             if old_entry.origin and old_entry.origin.platform == Platform.LOCAL:
                 from gateway.session_local_recovery import reset_local_session
                 return reset_local_session(self, old_entry, session_id, now, display_name)
-            new_entry = self._replace_route_locked(
-                session_key, old_entry, session_id, now,
-                display_name=display_name if display_name is not None else old_entry.display_name,
-                is_fresh_reset=True,
-            )
             db_create_kwargs = self._session_create_kwargs(
                 session_id=session_id, session_key=session_key, origin=old_entry.origin,
                 source_value=old_entry.platform.value if old_entry.platform else "unknown",
                 display_name=old_entry.display_name, parent_session_id=old_entry.session_id,
             )
-        self._finish_route_transition(
-            session_key, end_session_id=old_entry.session_id, end_reason="session_reset",
-            create_kwargs=db_create_kwargs, origin=old_entry.origin,
-            display_name=new_entry.display_name, during=" during reset",
-        )
+            new_entry = self._replace_route_locked(
+                session_key, old_entry, session_id, now,
+                display_name=display_name if display_name is not None else old_entry.display_name,
+                is_fresh_reset=True,
+            )
+        try:
+            self._finish_route_transition(
+                session_key, end_session_id=old_entry.session_id, end_reason="session_reset",
+                create_kwargs=db_create_kwargs, origin=old_entry.origin,
+                display_name=new_entry.display_name, during=" during reset",
+            )
+        finally:
+            self._row_settled(session_id)
+        self._announce_route(session_key, new_entry)
         return new_entry
 
     def _replace_route_locked(self, session_key, old_entry, session_id, now, **fields) -> SessionEntry:
@@ -1173,6 +1222,7 @@ class SessionStore(
         )
         self._entries[session_key] = new_entry
         self._save()
+        self._rows_pending.add(session_id)  # after the save: a raising save leaves nothing pending
         return new_entry
 
     def rekey_profile_routing(self, old_name: str, new_name: str) -> int:
@@ -1286,23 +1336,27 @@ class SessionStore(
                 ),
             )
 
-        if self._db_for_key(session_key) and old_entry.session_id:
-            self._promote_session_reset(
-                session_key, old_entry.session_id, "session_switch",
-                log=lambda e: logger.debug("Session DB end_session failed: %s", e),
-            )
-        if self._db_for_key(session_key):
-            # An explicit /resume/handoff/branch repoint is real user activity: the row is
-            # reopened (a repoint onto a finalized row must resume it, not write into a dead row).
-            # Mount-time reads (TUI session.resume) no longer reopen (#85303) — only this path does.
-            self._reopen_session_row(
-                session_key, target_session_id, log_prefix="Session DB reopen_session failed"
-            )
-            self._record_gateway_session_peer(
-                target_session_id, session_key, new_entry.origin,
-                display_name=new_entry.display_name, include_compression_ancestors=True,
-                transport_profile=new_entry.transport_profile,
-            )
+        try:
+            if self._db_for_key(session_key) and old_entry.session_id:
+                self._promote_session_reset(
+                    session_key, old_entry.session_id, "session_switch",
+                    log=lambda e: logger.debug("Session DB end_session failed: %s", e),
+                )
+            if self._db_for_key(session_key):
+                # An explicit /resume/handoff/branch repoint is real user activity: the row is
+                # reopened (a repoint onto a finalized row must resume it, not write into a dead row).
+                # Mount-time reads (TUI session.resume) no longer reopen (#85303) — only this path does.
+                self._reopen_session_row(
+                    session_key, target_session_id, log_prefix="Session DB reopen_session failed"
+                )
+                self._record_gateway_session_peer(
+                    target_session_id, session_key, new_entry.origin,
+                    display_name=new_entry.display_name, include_compression_ancestors=True,
+                    transport_profile=new_entry.transport_profile,
+                )
+        finally:
+            self._row_settled(target_session_id)
+        self._announce_route(session_key, new_entry)
         return new_entry
 
     def list_sessions(self, active_minutes: Optional[int] = None) -> list[SessionEntry]:
@@ -1342,7 +1396,7 @@ class SessionStore(
 
 
 def build_session_context(
-    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None
+    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None, event: Any = None,
 ) -> SessionContext:
     """Build a full session context (for system prompt injection)."""
     connected = config.get_connected_platforms()
@@ -1350,9 +1404,11 @@ def build_session_context(
         source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
     )
+    actor = event if getattr(event, "user_id", None) is not None else source
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,
-        home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
+        actor_user_id=getattr(actor, "user_id", None), actor_user_name=getattr(actor, "user_name", None),
+        turn_event=event, home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
     )
     if session_entry:
         context.session_key = session_entry.session_key

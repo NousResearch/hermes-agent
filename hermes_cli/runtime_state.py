@@ -22,6 +22,7 @@ from pm.filesystem import (
     durable_write_bytes as _atomic_bytes,
     file_digest as _digest,
     lock_fd as _lock,
+    lock_path,
     read_bytes_or_none as _bytes,
 )
 
@@ -44,16 +45,13 @@ def runtime_lock(project: Path, *, timeout: float | None = INSTALL_LOCK_TIMEOUT_
     (``activate_dependencies`` still selects and leases the committed generation), writers that
     cannot be skipped pass ``timeout=None`` — an install the user asked for is theirs to wait on.
     """
-    state = install_state_dir(project)
-    state.mkdir(parents=True, exist_ok=True)
-    fd = os.open(state / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    lock = install_state_dir(project) / ".install.lock"
+    fd = lock_path(lock, timeout=timeout, create_dir=True)
+    if fd is None:
+        LOG.warning("dependency lock still held after %ss; continuing without it (%s)", timeout, lock)
+        yield False
+        return
     try:
-        if not _lock(fd, wait=True, timeout=timeout):
-            LOG.warning(
-                "dependency lock still held after %ss; continuing without it (%s)",
-                timeout, state / ".install.lock")
-            yield False
-            return
         yield True
     finally:
         os.close(fd)
@@ -213,6 +211,39 @@ def leases_held(generation: Path) -> bool:
     return _prune_unlocked_leases(generation / ".leases")
 
 
+def _open_lease_probe(lease: Path) -> int:
+    """Let a Windows pruner unlink while still holding its exclusion lock.
+
+    Creator handles deliberately keep their ordinary sharing: an open creator
+    between O_EXCL and locking must still prevent a peer from deleting its lease.
+    """
+    if os.name != "nt":
+        return os.open(lease, os.O_RDWR)
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | WRITE | DELETE, OPEN_EXISTING.
+    handle = kernel32.CreateFileW(str(lease), 0xC0000000, 0x7, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # The CRT owns the handle after conversion; os.close releases it and its lock.
+        return msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY | os.O_NOINHERIT)
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
+
+
 def _prune_unlocked_leases(leases: Path) -> bool:
     """Remove abandoned lease files and report whether any live lock remains.
 
@@ -220,13 +251,12 @@ def _prune_unlocked_leases(leases: Path) -> bool:
     ``atexit``. Cleaning those unlocked files whenever a reader arrives bounds leaks in
     the selected generation too, which generation GC intentionally never visits.
 
-    Fail closed: a lease this user cannot open (root-owned 0o600 from a ``sudo hermes`` on the
-    same checkout) is held, never a boot failure.
+    Fail closed: a lease this user cannot open or remove is held, never a boot failure.
     """
     held = False
     for lease in leases.glob("*"):
         try:
-            fd = os.open(lease, os.O_RDWR)
+            fd = _open_lease_probe(lease)
         except FileNotFoundError:
             continue
         except OSError:
@@ -236,8 +266,12 @@ def _prune_unlocked_leases(leases: Path) -> bool:
             if not _lock(fd, wait=False):
                 held = True
             else:
-                with suppress(OSError):
+                try:
                     lease.unlink()
+                except FileNotFoundError:
+                    pass  # A peer already removed it.
+                except OSError:
+                    held = True
         finally:
             os.close(fd)
     return held

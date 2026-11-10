@@ -1,0 +1,26 @@
+name: rehearse
+title: Rehearse
+repo: https://github.com/flamiinngo/rehearse
+sha: d30be9914ee3a94c66913d48d5d4f9ce724cd71c
+version: "0.1.0"
+description: "Practise any interview or talk out loud: job, technical, case, admission, visa, medical, media and podcast interviews, presentations, investor and sales pitches, product demos, thesis defences and speeches. Hermes asks realistic questions aloud in a natural voice (Hermes's own text-to-speech), you answer on camera on a Desktop page (or by microphone alone, or upload a recording), and you get a scored replay: filler words, pace, pauses, answer length and eye contact on a clickable timeline, plus content feedback with a stronger-answer outline built only from what you said; retries report the points gained. Full interview mode runs it live: the interviewer asks each question aloud, recording starts when it finishes, live nudges appear while you answer (facing, framing, distance, light), and the session ends with a hiring-panel debrief across every answer. /rehearse and three tools bring the same coaching to any chat, answering by text or voice note. Disclosure — uses the camera and microphone only while the practice screen is open (about once a second a small frame is checked locally for the live nudges); speech-to-text (faster-whisper) and eye-contact analysis (OpenCV YuNet face landmarks plus pupil position) run locally and no audio or video leaves the computer; each answer's transcript goes to the user's configured model through ctx.llm for questions and feedback; one-time downloads from official sources: the faster-whisper speech model from Hugging Face and the 230 KB YuNet model from opencv/opencv_zoo at a pinned commit, verified by SHA-256 before use; stores sessions, scores and recordings under HERMES_HOME/plugin-data/rehearse (deletable from the page; keep_recordings: false deletes each take after scoring; unused uploads are removed after a day); adds /api/plugins/rehearse/ routes (upload, page calls) behind the dashboard's authentication; no shell commands, no background process beyond analysing a take just recorded, no network service or telemetry of its own; never coaches anyone to misrepresent facts."
+maintainer: flamiinngo
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/flamiinngo/rehearse#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/flamiinngo/rehearse/d30be9914ee3a94c66913d48d5d4f9ce724cd71c/docs/scenarios.jpg
+  - https://raw.githubusercontent.com/flamiinngo/rehearse/d30be9914ee3a94c66913d48d5d4f9ce724cd71c/docs/practice-room.jpg
+platforms: [linux, macos, windows]
+known_issues:
+  - "Windows on ARM gets content feedback only: faster-whisper has no build there, as for Hermes's own local speech-to-text."
+capabilities:
+  provides_tools:
+    - rehearse_start
+    - rehearse_analyze
+    - rehearse_progress
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

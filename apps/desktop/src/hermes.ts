@@ -30,6 +30,7 @@ export * from './api/sessions'
 export * from './api/skills'
 export * from './api/system'
 export * from './api/toolsets'
+export * from './api/webapp-access'
 
 export type {
   ActionResponse,
@@ -100,6 +101,10 @@ export type {
   ProjectFolder,
   ProjectInfo,
   ProjectsPayload,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinkedAccount,
+  RelayLinksResponse,
   SessionCreateResponse,
   SessionInfo,
   SessionMessage,

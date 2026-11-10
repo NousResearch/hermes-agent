@@ -285,7 +285,7 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
             # Releases the claim on failure; the raise then records the tick as a no-op below.
             _notif_submit(rid, sid, session, payload["message"], "loop wakeup send failed")
             return
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- dispatch boundary: every failure is surfaced as loop status and recorded as a no-op
         _notif_loop_status(sid, f"! /loop slash tick: dispatch failed: {type(exc).__name__}: {exc}")
         noop = mgr.record_slash_noop(progressed=False)
         if noop.get("message"):

@@ -28,6 +28,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
+from hermes_agent.compat.paths import original_path
 PATTERNS = ROOT / "scripts" / "ci" / "profile_scope_patterns.json"
 SUFFIXES = (".py", ".ts", ".tsx")
 SKIP_PREFIXES = ("tests/", "website/", "skills/", "optional-skills/", "evals/", "scripts/", ".worktrees/")
@@ -66,7 +68,7 @@ def scan_text(rel: str, text: str, patterns: list[dict], lines: set[int] | None 
     src_lines = text.split("\n")
     for p in patterns:
         path_rx = p.get("_path_rx")
-        if path_rx is not None and not path_rx.search(rel):
+        if path_rx is not None and not path_rx.search(original_path(rel)):
             continue
         for m in p["_rx"].finditer(text):
             line_no = text.count("\n", 0, m.start()) + 1

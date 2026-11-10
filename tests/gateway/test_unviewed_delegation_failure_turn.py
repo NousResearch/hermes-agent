@@ -147,6 +147,27 @@ def _batch_event(status):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stall,turn", [({"stalled_after_quiet_seconds": 600.0}, True), ({}, False)],
+                         ids=["stall-monitor", "user-stop"])
+async def test_unit_the_stall_monitor_stopped_wakes_the_parent(tmp_path, monkeypatch, stall, turn):
+    """A stuck child that honours the stall monitor's stop reports ``interrupted``, as a user stop does:
+    the unit's stall context is what makes it a failure to recover from."""
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
+        evt = dict(_batch(route, "deleg_stall", "interrupted"), parent_session_id=target, **stall)
+        assert await runner._deliver_async_delegation_group([evt]) is True
+        seen = _turns(runner, authority, target, "deleg_stall")
+        await authority._drain(ref)
+        assert len(seen) == int(turn)
+        assert len(_notes(authority, target, "deleg_stall")) == int(not turn)
+        if turn:
+            assert "stall monitor stopped this unit after 600s" in seen[0][0]
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
 async def test_failed_manual_cron_run_stays_a_note(tmp_path, monkeypatch):
     """``cronjob(action='run')`` reports through the same event with ``role=cron_run``. Its outcome is
     finished text, as a scheduled run's is: a turn over it would only spend a model call."""

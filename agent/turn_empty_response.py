@@ -82,6 +82,8 @@ def _retry_empty(
         _empty_guard.empty_retry_budget(agent, response)
         if empty_candidate else _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET
     )
+    if empty_candidate and observed_generation:
+        budget = min(budget, _empty_guard.REASONING_ONLY_RETRY_BUDGET)
     deterministic = empty_candidate and _empty_guard.deterministic_empty(agent)
     if not (empty_candidate and agent._empty_content_retries < budget and not deterministic):
         return None, None, deterministic
@@ -113,6 +115,10 @@ def _retry_empty(
     )
     if _interrupted is not None:
         return "return", _interrupted, deterministic
+    if observed_generation:
+        # Reasoning-only streak past both reminders: without this the plain retry re-sends
+        # the original request byte for byte. Answer it without thinking (one-shot).
+        agent._ephemeral_reasoning_off = True
     return "continue", None, deterministic
 
 
@@ -194,7 +200,8 @@ def recover_empty_response(
 ) -> EmptyResponseVerdict:
     """Recover without storing failed reasoning or synthetic conversation turns."""
     from agent.conversation_loop import (
-        _CODEX_INCOMPLETE_NUDGE, _EMPTY_TOOL_RESPONSE_NUDGE, _sync_failover_system_message,
+        _CODEX_INCOMPLETE_NUDGE, _EMPTY_TOOL_RESPONSE_NUDGE, _THINKING_ONLY_FINAL_NUDGE,
+        _sync_failover_system_message,
     )
 
     _turn_exit_reason = turn_exit_reason
@@ -273,7 +280,15 @@ def recover_empty_response(
         agent._buffer_diagnostic_status(
             f"↻ Thinking-only response — requesting completion ({agent._thinking_prefill_retries}/2)"
         )
-        agent._empty_response_retry_hint = _CODEX_INCOMPLETE_NUDGE
+        if agent._thinking_prefill_retries >= 2:
+            # Escalate instead of re-sending the same reminder (a byte-identical retry makes
+            # the model re-derive the same reasoning), and answer this one request without
+            # thinking. The override is one-shot and degrades to the route default when the
+            # route rejects disabling reasoning.
+            agent._empty_response_retry_hint = _THINKING_ONLY_FINAL_NUDGE
+            agent._ephemeral_reasoning_off = True
+        else:
+            agent._empty_response_retry_hint = _CODEX_INCOMPLETE_NUDGE
         final_response = None
         return _verdict("continue")
 

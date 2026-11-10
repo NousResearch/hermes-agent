@@ -294,7 +294,7 @@ class _ChildProgressRelay:
 
     def __init__(
         self, task_index: int, goal: str, spinner: Any, parent_cb: Any, task_count: int,
-        subagent_id, parent_id, depth, model, toolsets, session_ref,
+        subagent_id, parent_id, depth, model, toolsets, session_ref, provider: Optional[str] = None,
     ) -> None:
         self.task_index, self.task_count, self.goal_label = task_index, task_count, (goal or "").strip()
         # session_ref is a SHARED dict filled in later by the caller — keep the identity.
@@ -302,6 +302,7 @@ class _ChildProgressRelay:
         self.subagent_id, self.parent_id, self.depth, self.model, self.toolsets = (
             subagent_id, parent_id, depth, model, toolsets
         )
+        self.provider = provider
         self.batch: list[str] = []
         self.parent_scope: Any = None  # owning parent agent; set by _build_child_progress_callback
         self.tool_count = 0  # per-subagent running counter
@@ -325,8 +326,37 @@ class _ChildProgressRelay:
         for src, dst in (("session_id", "child_session_id"), ("delegation_id", "delegation_id")):
             if self.session_ref.get(src):
                 kw[dst] = str(self.session_ref[src])
+        if self.session_ref.get("model"):
+            kw["model"] = str(self.session_ref["model"])
         kw["tool_count"] = self.tool_count
         return kw
+
+    def on_route_change(self, model: str | None = None, provider: str | None = None, **kwargs) -> None:
+        """Invoked when the child switches models/providers via fallback route binding.
+        Updates model and provider, syncs session_ref and active subagents record,
+        prints a tree line if spinner active, and immediately emits subagent.progress."""
+        if model is not None:
+            self.model = model
+        if provider is not None:
+            self.provider = provider
+        effective_model = self.model or ""
+        effective_provider = self.provider or ""
+        if self.session_ref is not None:
+            if model is not None:
+                self.session_ref["model"] = model
+            if provider is not None:
+                self.session_ref["provider"] = provider
+        if self.subagent_id is not None:
+            with _active_subagents_lock:
+                rec = _active_subagents.get(self.subagent_id)
+                if rec is not None:
+                    if model is not None:
+                        rec["model"] = model
+                    if provider is not None:
+                        rec["provider"] = provider
+        change_text = f"⚡ {effective_model}" + (f" ({effective_provider})" if effective_provider else "")
+        self._tree_line(change_text)
+        self._relay("subagent.progress", preview=f"{self._prefix()}{change_text}".strip())
 
     def _relay(self, event_type: str, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
         if self.parent_cb:
@@ -415,6 +445,11 @@ class _ChildProgressRelay:
                 self._flush()
 
     def __call__(self, event_type, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
+        if event_type == "route_change":
+            model = kwargs.get("model") or tool_name or preview or ""
+            provider = kwargs.get("provider")
+            self.on_route_change(model=model, provider=provider)
+            return
         key = _normalize_event(event_type)
         method = None if key is None else _EVENT_HANDLERS.get(key, "_on_tool_started")
         if method is not None:
@@ -424,6 +459,7 @@ def _build_child_progress_callback(
     task_index: int, goal: str, parent_agent, task_count: int = 1, *, subagent_id: Optional[str] = None,
     parent_id: Optional[str] = None, depth: Optional[int] = None, model: Optional[str] = None,
     toolsets: Optional[list[str]] = None, session_ref: Optional[dict[str, Any]] = None,
+    provider: Optional[str] = None,
 ) -> Optional[callable]:
     """Relay for one child's events (see ``_ChildProgressRelay``), or None when the parent has neither a spinner nor a
     progress callback — the child then runs with no progress callback at all (zero behavior change)."""
@@ -436,6 +472,7 @@ def _build_child_progress_callback(
         session_ref["_parent_scope"] = parent_agent
     relay = _ChildProgressRelay(
         task_index, goal, spinner, parent_cb, task_count, subagent_id, parent_id, depth, model, toolsets, session_ref,
+        provider=provider,
     )
     relay.parent_scope = parent_agent
     return relay

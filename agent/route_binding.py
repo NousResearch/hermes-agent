@@ -91,6 +91,14 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     _update_fallback_context_compressor(agent)
     _reresolve_fallback_reasoning_config(agent)
     _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+
+    route_cb = getattr(agent, "route_change_callback", None)
+    if callable(route_cb):
+        try:
+            route_cb(model=agent.model, provider=agent.provider)
+        except Exception:
+            logger.warning("Route change callback failed")
+
     return old_model, old_provider
 
 

@@ -200,6 +200,38 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
         cc._apply_threshold_tokens_cap()
 
 
+def _wire_child_route_callback(
+    child: Any,
+    child_progress_cb: Any = None,
+    child_session_ref: Optional[dict[str, Any]] = None,
+    subagent_id: Optional[str] = None,
+) -> None:
+    def _child_route_change(model: str, provider: str | None = None, **kwargs) -> None:
+        if child_progress_cb is not None and hasattr(child_progress_cb, "on_route_change"):
+            child_progress_cb.on_route_change(model=model, provider=provider, **kwargs)
+        else:
+            if child_progress_cb is not None:
+                if model and hasattr(child_progress_cb, "model"):
+                    child_progress_cb.model = model
+                if provider and hasattr(child_progress_cb, "provider"):
+                    child_progress_cb.provider = provider
+            if subagent_id:
+                with _active_subagents_lock:
+                    rec = _active_subagents.get(subagent_id)
+                    if rec is not None:
+                        if model:
+                            rec["model"] = model
+                        if provider:
+                            rec["provider"] = provider
+        if child_session_ref is not None:
+            if model:
+                child_session_ref["model"] = model
+            if provider:
+                child_session_ref["provider"] = provider
+
+    setattr(child, "route_change_callback", _child_route_change)
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -269,6 +301,7 @@ def _build_child_agent(
         task_index, goal, parent_agent, task_count, subagent_id=subagent_id, parent_id=parent_subagent_id,
         depth=max(0, child_depth - 1),  # 0 = first-level child for the UI
         model=model or getattr(parent_agent, "model", None), toolsets=child_toolsets, session_ref=child_session_ref,
+        provider=override_provider or getattr(parent_agent, "provider", None),
     )
     with delegated_profile_scope(profile_home):
         rt = _resolve_child_runtime(
@@ -335,7 +368,18 @@ def _build_child_agent(
     # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a
     # reference), and no parent teardown can close it out from under a background child (#81267).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
+    child_model = getattr(child, "model", None)
+    child_provider = getattr(child, "provider", None)
+    child_session_ref["model"] = child_model or ""
+    child_session_ref["provider"] = child_provider or ""
+    if child_progress_cb is not None:
+        if child_model:
+            child_progress_cb.model = child_model
+        if child_provider:
+            child_progress_cb.provider = child_provider
     child._progress_identity_ref = child_session_ref
+
+    _wire_child_route_callback(child, child_progress_cb, child_session_ref, subagent_id)
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     # Plugins see one conversation per delegation tree.
     from agent.prompt_cache_scope import conversation_id

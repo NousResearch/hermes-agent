@@ -322,6 +322,47 @@ async def connect(self) -> bool:
 `get_pending()` returns `None` once the clarify was answered, timed out or cleared, so compare the
 result by identity with the entry your card was rendered for before acting on a click.
 
+### Read a conversation's model settings
+
+`BasePlatformAdapter.get_session_model_settings(source)` is a synchronous, read-only
+accessor for native settings sheets. The named consumer is the **Inline platform plugin**:
+its agent settings sheet currently reads the runner's private session-model override map
+and combines it with configured defaults. Use this method instead of accessing that map.
+
+```python
+# In a BasePlatformAdapter subclass, using the SessionSource built for this conversation:
+settings = self.get_session_model_settings(source)
+if settings is not None:
+    current_model = settings["model"]
+    current_provider = settings["provider"]
+    current_base_url = settings["base_url"]
+```
+
+The result is a fresh `SessionModelSettings` dictionary (type import:
+`from gateway.platforms.session_model import SessionModelSettings`) with exactly
+`session_key`, `model`, `provider`, and `base_url`, all strings. It is detached in both
+directions: editing it cannot change the conversation, and later model switches cannot
+change a previously returned result. An unattached adapter or rejected profile route
+returns `None`. An attached adapter with **no session** still returns configured defaults.
+
+For each setting, a nonempty in-memory session override wins over the channel default
+(model/provider), then the owning profile's configured model settings. Missing model and
+endpoint are `""`; missing provider is `"openrouter"`, as in Inline's existing display.
+Both a flat `model: name` and the mapping form (`default`, or legacy `model`) are supported.
+The source's existing routing identity, or the adapter's canonical routing resolver on a
+copy of the source, selects the profile; the caller's source is not modified.
+
+This is a **settings display snapshot**, not a credential or live-inference introspection API.
+It does not allocate a session or agent, load a persisted override into memory, resolve
+provider credentials, contact a provider, or change any settings. A persisted choice not
+yet rehydrated and a transient runtime fallback are not reported as in-memory overrides.
+Only the four named fields are returned: keys, tokens, credential pools and headers are
+never copied. Endpoint userinfo, query and fragment are omitted (unparseable URLs become
+`""`); the endpoint path is retained, so do not put credentials in endpoint paths. Do not
+use this display URL to construct provider requests. This is an in-process platform
+adapter API, not a hosted-plugin RPC. It adds no setters or reasoning/model-catalog API,
+and leaves the legacy override view and all existing model-switch behavior unchanged.
+
 ## Standalone send-path extensions
 
 A standalone platform can participate in host-driven outbound delivery through

@@ -12,7 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -261,13 +261,18 @@ def _pinned_redirect_uri(cfg: dict) -> str:
     return f"http://{host}:{oauth['redirect_port']}/callback"
 
 
-def choose_callback_receiver(flow, cfg: dict, client_redirect_uri: Optional[str] = None):
+def choose_callback_receiver(
+    flow, cfg: dict, client_redirect_uri: Optional[str] = None, public_base: Optional[str] = None,
+):
     """Set the redirect consumed by the SDK and return the optional backend HTTP receiver."""
     if _pinned_loopback(cfg):
         flow.redirect_uri = _pinned_redirect_uri(cfg)
         return None
     if client_redirect_uri is not None:
         flow.redirect_uri = _validate_client_redirect_uri(client_redirect_uri)
+        return None
+    if public_base is not None and not (cfg.get("oauth") or {}).get("redirect_uri"):
+        flow.redirect_uri = f"{public_base}/api/mcp/oauth/callback/{quote(flow.server_name, safe='')}"
         return None
     httpd = _start_loopback_receiver(flow)
     flow.redirect_uri = f"http://127.0.0.1:{httpd.server_address[1]}/callback"
@@ -305,6 +310,7 @@ def start(
     server_name: str, *, url_timeout: float = URL_TIMEOUT_SECONDS,
     client_redirect_uri: Optional[str] = None, cfg: Optional[dict] = None,
     env: Optional[dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
+    public_base: Optional[str] = None,
 ) -> OAuthAttempt:
     """Start a card OAuth flow and wait until its authorization URL is published.
 
@@ -330,7 +336,7 @@ def start(
     if older is not None and not older.worker_done:
         flow.inherited_backup = getattr(older, "backup", None)
         cancel_attempt(older)
-    httpd = choose_callback_receiver(flow, cfg, client_redirect_uri)
+    httpd = choose_callback_receiver(flow, cfg, client_redirect_uri, public_base=public_base)
     mcp_oauth_sessions.register_flow(flow, httpd=httpd)
     threading.Thread(
         target=run_worker, args=(hermes_home, server_name, cfg, False),

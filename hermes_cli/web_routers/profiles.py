@@ -963,8 +963,9 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
     model = (body.model or "").strip()
     if not provider or not model:
         raise HTTPException(status_code=400, detail="provider and model are required")
+    from hermes_cli.model_assignment import ModelAssignmentRejected
     with _profile_errors("PUT /api/profiles/%s/model failed", name,
-                         not_found=(), bad_request=()):
+                         not_found=(), bad_request=(ModelAssignmentRejected,)):
         await run_in_threadpool(_write_profile_model, profile_dir, provider, model)
     return {"ok": True, "provider": provider, "model": model}
 

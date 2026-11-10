@@ -39,7 +39,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_cli.config import load_config
-from hermes_cli.web_server_profiles import _CONFIG_MUTATION_LOCK
 from hermes_cli.version_info import get_version_info
 
 try:

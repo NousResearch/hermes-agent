@@ -70,3 +70,26 @@ def test_an_elevated_client_without_a_split_token_still_starts(tmp_path, monkeyp
     monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: spawned.append(a) or object())
     start.spawn_unmanaged_gateway(tmp_path / "profile", deadline=time.monotonic() + 5)
     assert len(spawned) == 1
+
+
+@pytest.mark.platforms("windows")
+def test_the_gate_reads_this_hosts_real_token(tmp_path, monkeypatch):
+    """No pin: the real TokenElevation and TokenElevationType reads. The gate refuses exactly the
+    UAC-elevated box (Full); whichever box this runner's token is in, the two reads agree."""
+    import hermes_dir_acl
+    from hermes_cli import gateway_runtime_start as start
+    from hermes_cli.gateway_runtime_service import RuntimeStartError
+
+    elevation_type = hermes_dir_acl.process_elevation_type()
+    assert elevation_type in (1, 2, 3)  # Default, Full, Limited
+    if elevation_type != hermes_dir_acl.TOKEN_ELEVATION_TYPE_DEFAULT:
+        assert hermes_dir_acl.process_elevation() is (elevation_type == 2)
+    spawned = []
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: spawned.append(a) or object())
+    try:
+        start.spawn_unmanaged_gateway(tmp_path / "profile", deadline=time.monotonic() + 5)
+        refused = False
+    except RuntimeStartError as exc:
+        assert exc.reason == "client_elevated"
+        refused = True
+    assert refused is (elevation_type == 2) and len(spawned) == (0 if refused else 1)

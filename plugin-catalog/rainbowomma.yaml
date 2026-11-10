@@ -1,8 +1,8 @@
 # RainbowOMMA — one Mac, one human, many agents. Owner-submitted (hackathon entry).
-# 30 tools, a pre_tool_call guard, a browser provider (browser.cloud_provider: rainbowomma), /rainbow, a Desktop pane.
+# 31 tools, a pre_tool_call guard, a browser provider (browser.cloud_provider: rainbowomma), /rainbow, a Desktop pane.
 name: rainbowomma
 repo: https://github.com/aviv27-dev/RainbowOMMA
-sha: "9afa9831c23d99da0ff7f51e31be3e0f74df1c9a"
+sha: "94d9b41e00dfaeed16cb6275dc40f3ad251cba72"
 subdir: hermes-plugin/rainbowomma
 title: RainbowOMMA
 description: "One Mac, one human, many agents. Each Hermes profile gets a Chrome of its own with a coloured, named window frame, its own ports, processes, clipboard and document leases in Word / Excel / Acrobat / Preview. A pre_tool_call guard refuses what would hit the human or another agent before it runs (pkill Chrome, quitting Word through AppleScript, a port or a process that isn't the agent's, the human's clipboard and Chrome profile, typing while the human types) and names the tool that does it safely; a Messages/Mail send goes to Hermes's approval gate. Idle tabs, expired document leases, apps an agent launched and orphaned servers are cleaned up at session end and on a timer. With browser.cloud_provider: rainbowomma, Hermes's own browser tools drive that Chrome. /rainbow shows who holds what; /rainbow pause stops every agent at once. Disclosure — macOS only. Starts Google Chrome for the agent (own profile folder, a DevTools port on 127.0.0.1, an unpacked theme extension) and runs osascript, ps, pgrep, lsof, ioreg, open and xcrun simctl; stops only processes that are provably the agent's, its own idle Chrome, and an Office app an agent launched and left empty. Keeps one guard helper process per profile and a housekeeping timer thread while Hermes runs. Writes only under ~/.rainbowomma (registry, leases, a receipts log, Chrome profiles, temp copies for Word conversions). When one Hermes process serves several profiles it prefixes the agent's shell commands with `export RAINBOW_AGENT=…` (modify directive; setting mark_commands). Its only request goes to 127.0.0.1 (the agent's own Chrome). No updater, no credential access."
@@ -11,8 +11,8 @@ tier: community
 category: tools
 version: "0.1.0"
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/aviv27-dev/RainbowOMMA/blob/9afa9831c23d99da0ff7f51e31be3e0f74df1c9a/hermes-plugin/rainbowomma/README.md
-image: https://raw.githubusercontent.com/aviv27-dev/RainbowOMMA/9afa9831c23d99da0ff7f51e31be3e0f74df1c9a/hermes-plugin/assets/overview.jpg
+docs_url: https://github.com/aviv27-dev/RainbowOMMA/blob/94d9b41e00dfaeed16cb6275dc40f3ad251cba72/hermes-plugin/rainbowomma/README.md
+image: https://raw.githubusercontent.com/aviv27-dev/RainbowOMMA/94d9b41e00dfaeed16cb6275dc40f3ad251cba72/hermes-plugin/assets/overview.jpg
 readme: true
 platforms: [macos]
 capabilities:
@@ -37,6 +37,7 @@ capabilities:
     - rainbow_take_login
     - rainbow_release_login
     - rainbow_open_document
+    - rainbow_save_document
     - rainbow_close_document
     - rainbow_renew_document
     - rainbow_convert_to_pdf

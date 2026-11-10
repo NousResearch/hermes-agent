@@ -41,7 +41,7 @@ _SKIP_PARTS = {"tests", "__pycache__", "node_modules", "dist", ".venv", "venv"}
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hermes_agent.compat.paths import current_path, original_module, original_path
+from hermes_agent.compat.paths import original_module, original_path, tree_moves
 from hermes_cli.plugin_validate_private_imports import (
     _hermes_packages,
     _imported,
@@ -57,7 +57,7 @@ def _nothing_to_scan(what: str) -> NoReturn:
 
 def module_dirs(root: Path = ROOT) -> list[Path]:
     """Every bundled module directory under ``plugins/``."""
-    plugins = root / current_path("plugins")
+    plugins = root / tree_moves(root).current("plugins")
     if not plugins.is_dir():
         _nothing_to_scan(f"{plugins} does not exist")
     dirs = {p.parent for p in plugins.rglob("plugin.yaml") if not _SKIP_PARTS.intersection(p.relative_to(plugins).parts)}
@@ -70,15 +70,16 @@ def module_to_core(root: Path = ROOT) -> list[str]:
     An in-tree module's full-path import of itself (``plugins.web.exa.provider``) or of another module
     is not a core import, so it is left out."""
     modules = module_dirs(root)
-    return [f"{d.relative_to(root).as_posix()}/{hit}" for d in modules for hit in private_import_findings(d)
-            if not _in_module(hit.split(" ", 1)[1], root, modules)]
+    hits = [(d, *hit.split(" ", 1)) for d in modules for hit in private_import_findings(d)]
+    return [f"{d.relative_to(root).as_posix()}/{loc} {original_module(target)}" for d, loc, target in hits
+            if not _in_module(target, root, modules)]
 
 
 def _core_files(root: Path, modules: list[Path]):
     seen: set[Path] = set()
     for top in sorted(_hermes_packages()):
-        package = root / current_path(top)
-        paths = sorted(package.rglob("*.py")) if package.is_dir() else [root / current_path(f"{top}.py")]
+        package = root / tree_moves(root).current(top)
+        paths = sorted(package.rglob("*.py")) if package.is_dir() else [root / tree_moves(root).current(f"{top}.py")]
         for path in paths:
             rel = path.relative_to(root)
             if path in seen or not path.is_file():
@@ -114,7 +115,7 @@ def _in_module(target: str, root: Path, modules: list[Path]) -> bool:
     if parts[0] != "plugins":
         return False
     for end in range(len(parts), 1, -1):
-        path = root / current_path("/".join(parts[:end]))
+        path = root / tree_moves(root).current("/".join(parts[:end]))
         for candidate in (path, path.with_suffix(".py")):
             if candidate.exists():
                 return any(candidate.is_relative_to(d) for d in modules)
@@ -138,7 +139,7 @@ def core_to_module(root: Path = ROOT) -> list[str]:
                 # Collapse the spellings of one alias to one target; distinct aliases count separately.
                 if hits := [t for t in spellings if _in_module(t, root, modules)]:
                     found.add((rel.as_posix(), getattr(node, "lineno", 0), min(hits, key=len)))
-    return [f"{rel}:{line} {target}" for rel, line, target in sorted(found)]
+    return [f"{rel}:{line} {original_module(target)}" for rel, line, target in sorted(found)]
 
 
 def collect(root: Path = ROOT) -> dict[str, list[str]]:

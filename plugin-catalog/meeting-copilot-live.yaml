@@ -4,7 +4,7 @@ repo: https://github.com/adam4788/meeting-copilot
 sha: 867a3ae3996b865fc7f0b6ac990b6b1bd9239f45
 version: "0.1.0"
 requires_hermes: ">=0.22.7"
-description: "Read-only meeting answers with cited project evidence. Disclosure — explicit answers send bounded transcript/context to selected OpenAI/OpenRouter APIs; optional Meta ASR sends audio off-device; optional web queries leave the profile through host search; reads selected project files and opt-in session SQLite; consented capture launches native/worker children; separate macOS setup installs SHA-256-pinned PyPI wheels and compiles/signs native helpers; local transcription may download model weights; clipboard exports may contain confidential context."
+description: "Read-only meeting answers with cited project evidence. Disclosure — explicit answers send bounded transcript, selected project snippets and (when enabled, or in all-projects and web-fallback answers) prior-session snippets to the selected OpenAI, OpenRouter or Meta (api.meta.ai) API; optional Meta ASR streams meeting audio to api.meta.ai; optional web queries leave the profile through host search; reads selected project files, read-only session SQLite and, when attached, Meetily's own recording files; consented capture launches native/worker child processes with a minimal environment; separate macOS setup installs SHA-256-pinned PyPI wheels and compiles/signs native helpers; local transcription may download public Whisper weights; clipboard exports may contain confidential context."
 maintainer: adam4788
 tier: community
 category: desktop

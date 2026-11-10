@@ -115,3 +115,29 @@ def test_isolated_uv_timeout_advice_matches_child_environment(clean_index_env, m
     assert "UV_INDEX_URL" not in diagnostic
     assert "ignores package-index overrides" in diagnostic
     assert "UV_HTTP_TIMEOUT" in diagnostic
+
+def test_isolated_uv_default_index_timeout_advice(clean_index_env, monkeypatch):
+    """#152347: UV_DEFAULT_INDEX is stripped too; never recommend a mirror."""
+    seen = {}
+
+    def stall(command, **kwargs):
+        seen.update(kwargs["env"])
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", stall)
+    environment = PythonEnvironment(
+        uv=clean_index_env / "uv", python=clean_index_env / "python",
+        destination=clean_index_env / "venv", cache=clean_index_env / "cache",
+        env={"UV_DEFAULT_INDEX": "https://mirror.invalid/simple", "UV_HTTP_TIMEOUT": "90"},
+        no_config=True,
+    )
+    with pytest.raises(InstallError) as exc:
+        environment._run(["sync"], cwd=clean_index_env, timeout=7)
+
+    assert "UV_DEFAULT_INDEX" not in seen
+    assert seen["UV_HTTP_TIMEOUT"] == "90"
+    diagnostic = str(exc.value)
+    assert "timed out after 7s" in diagnostic
+    assert "UV_INDEX_URL" not in diagnostic
+    assert "ignores package-index overrides" in diagnostic
+    assert "UV_HTTP_TIMEOUT" in diagnostic

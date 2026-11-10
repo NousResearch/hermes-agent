@@ -15,19 +15,22 @@ import pytest
         "site_exists",
         "selection_mode",
         "stderr_mode",
+        "config_mode",
         "expected",
         "warns",
         "error",
     ),
     [
-        (-1, True, "facts", "open", ["False", "True", "True", "True"], True, None),
-        (0, True, "facts", "open", ["True", "False", "False", "False"], False, None),
-        (1, True, "facts", "open", ["False", "True", "True", "True"], True, None),
-        (1, False, "facts", "open", ["False", "True", "True", "True"], True, None),
-        (-1, True, "facts", "none", ["False", "True", "True", "True"], True, None),
-        (-1, True, "facts", "closed", ["False", "True", "True", "True"], False, None),
-        (0, False, "facts", "open", None, False, "has no site-packages"),
-        (0, False, "direct", "open", ["False", "True", "True", "True"], False, None),
+        (-1, True, "facts", "open", "valid", ["False", "True", "True", "True"], True, None),
+        (0, True, "facts", "open", "valid", ["True", "False", "False", "False"], False, None),
+        (1, True, "facts", "open", "valid", ["False", "True", "True", "True"], True, None),
+        (1, False, "facts", "open", "valid", ["False", "True", "True", "True"], True, None),
+        (-1, True, "facts", "none", "valid", ["False", "True", "True", "True"], True, None),
+        (-1, True, "facts", "closed", "valid", ["False", "True", "True", "True"], False, None),
+        (0, False, "facts", "open", "valid", None, False, "has no site-packages"),
+        (0, False, "direct", "open", "valid", ["False", "True", "True", "True"], False, None),
+        (-1, True, "facts", "open", "invalid", ["False", "True", "True", "True"], True, None),
+        (-1, True, "payload", "open", "valid", ["False", "True", "True", "True"], True, None),
     ],
 )
 def test_dependency_generation_activation_respects_the_running_interpreter(
@@ -37,6 +40,7 @@ def test_dependency_generation_activation_respects_the_running_interpreter(
     site_exists: bool,
     selection_mode: str,
     stderr_mode: str,
+    config_mode: str,
     expected: list[str] | None,
     warns: bool,
     error: str | None,
@@ -44,11 +48,27 @@ def test_dependency_generation_activation_respects_the_running_interpreter(
     """Only matching activates; every rejected selection releases its generation."""
     from pm import environments
 
-    root = tmp_path / "repo"
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    state = environments.install_state_dir(root)
-    generation = state / "environments" / "foreign"
+    if selection_mode == "payload":
+        generation = tmp_path / "payload"
+        root = generation / "hermes-agent"
+        root.mkdir(parents=True)
+        (generation / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "repo": root.name,
+                    "venv": "venv",
+                    "store": "tools",
+                    "runtime": {"commands": {}},
+                }
+            ),
+            encoding="utf-8",
+        )
+    else:
+        root = tmp_path / "repo"
+        state = environments.install_state_dir(root)
+        generation = state / "environments" / "foreign"
     venv = generation / "venv"
     foreign = (sys.version_info.major, sys.version_info.minor + minor_delta)
     site = venv / (
@@ -57,13 +77,19 @@ def test_dependency_generation_activation_respects_the_running_interpreter(
         else f"lib/python{foreign[0]}.{foreign[1]}/site-packages"
     )
     venv.mkdir(parents=True)
-    (venv / "pyvenv.cfg").write_text(
-        f"version_info = {foreign[0]}.{foreign[1]}.0\n", encoding="utf-8"
-    )
+    if config_mode == "invalid":
+        (venv / "pyvenv.cfg").write_bytes(
+            f"version_info = {foreign[0]}.{foreign[1]}.0\n".encode() + b"\xff\xfebad\n"
+        )
+    else:
+        (venv / "pyvenv.cfg").write_text(
+            f"version_info = {foreign[0]}.{foreign[1]}.0\n", encoding="utf-8"
+        )
     if site_exists:
         site.mkdir(parents=True)
         (site / "foreign_abi_only.py").write_text("ORIGIN = 'foreign'\n", encoding="utf-8")
-    (generation / ".lease-managed").touch()
+    if selection_mode != "payload":
+        (generation / ".lease-managed").touch()
     if selection_mode == "facts":
         (state / "facts.json").write_text(
             json.dumps({"schema": 1, "packages": {"venv": {"environment": str(venv)}}}),

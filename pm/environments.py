@@ -400,11 +400,11 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
             minor, _, _ = rest.partition(".")
             if major.isdigit() and minor.isdigit():
                 return int(major), int(minor)
-    except OSError:
+    except (OSError, ValueError):
         pass
     try:
         candidates = sorted((venv / "lib").glob("python3*"))
-    except OSError:
+    except (OSError, ValueError):
         return None
     for candidate in candidates:
         major, _, rest = candidate.name.removeprefix("python").partition(".")

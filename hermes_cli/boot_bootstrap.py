@@ -263,6 +263,11 @@ def _retry_owed_migration(project_root: Path):
         results = known["results"]
         retried = post_update.run_steps(
             [step for step in post_update.BOOT_HOME_STEPS if step[0] == "migrate_config"])
+        outcome = retried.get("migrate_config") or {}
+        if not outcome.get("ok") and not outcome.get("failed_step"):
+            # The retry raised (a full disk, a lock): the step is still owed, so the next start
+            # retries it too. Only a retry that succeeded clears it.
+            retried["migrate_config"] = {**outcome, "failed_step": results["migrate_config"]["failed_step"]}
         _write_record(record, known["identity"], {**results, **retried})
         return retried
     finally:

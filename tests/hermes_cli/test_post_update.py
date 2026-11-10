@@ -150,6 +150,50 @@ def test_boot_keeps_the_steps_before_a_failing_one_and_retries_it_each_start(
     assert boot() == "skipped"
 
 
+def test_a_retry_that_raises_still_owes_the_step(tmp_path, monkeypatch):
+    """A retry can raise before the ladder runs (a full disk while taking the backup). That says
+    nothing about the failing step, so the next start must retry it again: only a retry that
+    succeeded clears it."""
+    import json
+
+    import hermes_yaml as yaml
+    from hermes_cli import boot_bootstrap
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    home = tmp_path / "home"
+    home.mkdir()
+    root = tmp_path / "payload"
+    root.mkdir()
+    (root / "install-stamp.json").write_text(json.dumps({"commit": "abcdef012345", "payload": "full"}))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(root))
+    monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", (("migrate_config", step_migrate_config),))
+    config_path = home / "config.yaml"
+    config_path.write_text(yaml.safe_dump({"_config_version": 20, "plugins": {"disabled": [["x"]]}}),
+                           encoding="utf-8")
+
+    def boot():
+        return boot_bootstrap.run_boot_bootstrap(root)["home"]
+
+    assert boot()["migrate_config"]["failed_step"] == 21
+    real_backup = post_update._backup_existing
+
+    def full_disk(paths):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(post_update, "_backup_existing", full_disk)
+    assert boot()["migrate_config"]["ok"] is False
+    monkeypatch.setattr(post_update, "_backup_existing", real_backup)
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["plugins"]["disabled"] = []
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert boot()["migrate_config"] == {"ok": True, "migrated": f"20->{DEFAULT_CONFIG['_config_version']}"}, \
+        "the step is still owed after a retry that raised"
+    assert boot() == "skipped"
+
+
 # ── step_state_db_guard ──────────────────────────────────────────────
 
 

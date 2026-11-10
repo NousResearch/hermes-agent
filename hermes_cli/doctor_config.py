@@ -396,8 +396,7 @@ def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
         if results.get("failed_step") is not None:
             check_warn(f"Config migration stopped at v{results['failed_step']}",
                        f"(kept the steps before it, now v{check_config_version()[0]})")
-            f.manual_issues.append(next(
-                (w for w in results["warnings"] if f"v{results['failed_step']} failed" in w), results["warnings"][-1]))
+            f.manual_issues.append(results["failed_warning"])
             return
         check_ok("Config migrated to latest version")
         f.fixed += 1

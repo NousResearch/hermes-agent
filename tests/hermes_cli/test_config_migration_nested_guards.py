@@ -77,6 +77,8 @@ def test_failing_step_stops_the_ladder_and_is_retried(tmp_path, caplog):
 
     raw = _read_config(tmp_path)
     assert results["failed_step"] == 21
+    assert results["failed_warning"].startswith("config migration to v21 failed"), \
+        "boot and doctor show this one warning: they must not search the list for it"
     assert raw["_config_version"] == 20, "stamped at the last step that succeeded, not past v21"
     assert raw["auxiliary"]["compression"]["model"] == "m", "v17, before the failure, is kept"
     assert raw["agent"]["clarify_timeout"] == 3600, "v53 waits for v21"

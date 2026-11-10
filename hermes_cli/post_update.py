@@ -119,7 +119,7 @@ def step_migrate_config() -> dict:
         # stay (restoring would undo them). Boot retries the rest on every start
         # (boot_bootstrap); a retry that changed nothing leaves no backup behind.
         _drop_unchanged_backups(backups)
-        defer_startup_notice(next(w for w in results["warnings"] if f"v{failed} failed" in w), log=False)
+        defer_startup_notice(results["failed_warning"], log=False)
         return {"ok": False, "failed_step": failed, "migrated": f"{current_ver}->{post_ver}",
                 "error": f"config migration to v{failed} failed; kept v{current_ver}->v{post_ver}, "
                          "retried on the next start"}

@@ -7,7 +7,8 @@ and ``_handle_media_message`` handlers, real topic recovery over a real SessionD
 0.8 s burst / 1.5 s album windows. For every sequence:
 
 - each question and each image lands in the topic recovery gives it on arrival (what main gives it
-  when nothing rebinds before dispatch);
+  when nothing rebinds before dispatch); one sent before the user had any topic binding lands in the
+  first topic bound after it, together with the rest of its burst or album;
 - no image is dropped or duplicated, no question is delivered twice;
 - a question and the photos sent right after it are one turn when no binding changes between them.
 """
@@ -25,9 +26,9 @@ from tests.waiting import async_wait_until
 TOPICS = ("10", "20", "30")
 
 
-def _step(bind=None, question=True, bind_before_photo=None, thread=None, photos=2, album=None) -> dict:
+def _step(bind=None, question=True, bind_before_photo=None, thread=None, photos=2, album=None, bind_mid=None) -> dict:
     return {"bind": bind, "question": question, "bind_before_photo": bind_before_photo,
-            "thread": thread, "photos": photos, "album": album}
+            "thread": thread, "photos": photos, "album": album, "bind_mid": bind_mid}
 
 
 def _grid() -> list[list[dict]]:
@@ -53,7 +54,15 @@ def _random(seed: int) -> list[dict]:
     return steps
 
 
-CASES = _grid() + [_random(seed) for seed in range(8)]
+def _first_binding() -> list[list[dict]]:
+    """The user's first topic binding lands mid-burst or mid-album (after its first photo), with or
+    without a question before it, optionally followed by a pair in a newer topic (same lane)."""
+    return [[{**_step(question=question, album=album, bind_mid="10"), "unbound_start": True}, *tail]
+            for question in (False, True) for album in (None, "A")
+            for tail in ([], [_step(bind="20", album=album)])]
+
+
+CASES = _grid() + [_random(seed) for seed in range(8)] + _first_binding()
 
 
 def _photo(name: str, release: asyncio.Event, thread, album):
@@ -71,8 +80,7 @@ def _photo(name: str, release: asyncio.Event, thread, album):
 async def _run(tmp_path, steps):
     adapter, db, bind, routed = _topic_mode_rig(tmp_path)
     adapter._media_batch_delay_seconds = 0.8  # production burst window
-    bind("10")
-    newest = "10"
+    newest, unbound = None, []
     expect, pairs = {}, []
 
     def rebind(topic):
@@ -80,6 +88,17 @@ async def _run(tmp_path, steps):
         if topic:
             bind(topic)
             newest = topic
+            for key in unbound:  # sent before any binding: joins the first topic bound after it
+                expect[key] = topic
+            unbound.clear()
+
+    def expect_at(key, thread):
+        expect[key] = thread or newest
+        if expect[key] is None:
+            unbound.append(key)
+
+    if not steps[0].get("unbound_start"):
+        rebind("10")
 
     try:
         with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
@@ -91,7 +110,7 @@ async def _run(tmp_path, steps):
                     msg = _text(question)
                     msg.message_thread_id = int(step["thread"]) if step["thread"] else None
                     await adapter._handle_text_message(_update(msg), MagicMock())
-                    expect[question] = step["thread"] or newest
+                    expect_at(question, step["thread"])
                 rebind(step["bind_before_photo"])
                 names = [f"p{index}-{n}" for n in range(step["photos"])]
                 for n, name in enumerate(names):
@@ -102,7 +121,9 @@ async def _run(tmp_path, steps):
                         await asyncio.sleep(0.3)  # health: allow HX013 -- a download outlasting the text delay IS the race
                     release.set()
                     await task
-                    expect[f"/cache/{name}.jpg"] = step["thread"] or newest
+                    expect_at(f"/cache/{name}.jpg", step["thread"])
+                    if n == 0:
+                        rebind(step["bind_mid"])
                 if question and not step["bind_before_photo"]:
                     pairs.append((question, [f"/cache/{name}.jpg" for name in names]))
             images = [key for key in expect if key.startswith("/cache/")]
@@ -124,3 +145,6 @@ async def test_every_event_lands_in_its_own_topic_and_question_photos_stay_one_t
     for question, images in pairs:
         turn = next(media for text, _t, media in routed if question in (text or "").split())
         assert set(images) <= set(turn), (question, steps, routed)
+    if steps[0].get("unbound_start"):  # the burst or album straddling the first binding is one turn
+        first = {f"/cache/p0-{n}.jpg" for n in range(steps[0]["photos"])}
+        assert any(first <= set(media) for *_, media in routed), (steps, routed)

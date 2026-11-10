@@ -1156,6 +1156,38 @@ Hooks, tools and injected turns of every chat and every local session (CLI, TUI,
 
 In the classic CLI process itself (for example a plugin slash command), `ctx.session_cwd()` is the launch directory and `ctx.session_surface()` is `"cli"`.
 
+## A plugin with its own chat client
+
+A plugin can add a command (`hermes <name>`, through `ctx.register_cli_command`) that starts its own chat frontend. The frontend attaches to the profile's shared gateway with `hermes gateway attach --json` (see [Programmatic integration](../../developer-guide/programmatic-integration.md)). Three imports do what the Hermes terminal client's launcher does around its own client:
+
+- `hermes_cli.gateway_chat.shell_client_env()` returns the allowlisted variables of the shell that ran your command, as a dict. Call it in the launcher, before you change the environment, and send the dict as `client_env` on `session.create`. The session's commands then run with the user's `PATH`, virtual environment and toolchain variables. Names that look like credentials are left out, and the gateway filters the dict again by its own rules.
+- `hermes_cli.chat_launch.hermes_command(args)` returns the argv that runs this Hermes install with `args`. It needs no `PYTHONPATH`; the child serves the profile named by the inherited `HERMES_HOME`. Give it to your frontend for `hermes gateway attach`, instead of `hermes` from `PATH` (which may be another install) or `sys.executable` (which an update may replace).
+- `hermes_cli.chat_launch.print_exit_summary(session_id, command=...)` prints the lines Hermes shows when a chat ends: how to resume the session, its id, title, message count and tokens. Call it after your frontend exits, with your own command name. It prints nothing for a session with no messages.
+
+```python
+import json
+import os
+import subprocess
+
+
+def _run_chat(args):
+    from hermes_cli.chat_launch import hermes_command, print_exit_summary
+    from hermes_cli.gateway_chat import shell_client_env
+
+    env = dict(os.environ)
+    env["MY_CLIENT_ENV"] = json.dumps(shell_client_env())
+    env["MY_ATTACH_COMMAND"] = json.dumps(hermes_command(["gateway", "attach", "--json", "--start"]))
+    session_file = os.path.join(os.environ["HERMES_HOME"], "my-client-session.json")
+    env["MY_SESSION_FILE"] = session_file  # the frontend writes {"session_id": ...} here
+    subprocess.run(["my-client"], env=env)
+    with open(session_file, encoding="utf-8") as f:
+        print_exit_summary(json.load(f)["session_id"], command="hermes my-client")
+
+
+def register(ctx):
+    ctx.register_cli_command("my-client", "Chat in my client", lambda parser: None, _run_chat)
+```
+
 ## Calling MCP servers from plugins
 
 `ctx.call_mcp()` lets a plugin call a tool on one of the user's configured MCP servers — synchronously, from any hook or tool handler — routing through Hermes' existing native MCP client (same connections, trust-tier gates, circuit breaker, and reconnect logic as model-invoked MCP tools; never a parallel client).

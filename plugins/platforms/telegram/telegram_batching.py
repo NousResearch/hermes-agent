@@ -1,6 +1,6 @@
 """Telegram inbound album and photo-burst event merging."""
 
-from typing import Optional
+from typing import Any, Optional
 
 from gateway.platforms.event import MessageEvent
 from plugins.platforms.telegram.telegram_media_group import item_notes
@@ -26,23 +26,36 @@ def adopt_routing(event: MessageEvent, routed: MessageEvent) -> None:
     event._routing_pinned = True  # type: ignore[attr-defined]
 
 
+def resolve_routing(adapter: Any, event: MessageEvent) -> None:
+    """Route ``event`` against the topic bindings as they are when it arrives, and pin that route.
+
+    The recovery dispatch applies (``handle_message``), run before the event may join a batch, as the
+    text batcher already does: a batch flushes up to seconds later, after another topic may have become
+    the newest binding. An internally routed event names its session and is never recovered.
+    """
+    if event.source is None or getattr(event, "_routing_pinned", False):
+        return
+    if not str((event.metadata or {}).get("gateway_session_key") or "").strip():
+        adapter._apply_topic_recovery(event)
+    event._routing_pinned = True  # type: ignore[attr-defined]
+
+
 def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_caption, route_key) -> str:
     """Retain each attachment's inlining semantics when combining album items; return the lane used.
 
-    Two events whose routing is already resolved (pinned) to different sessions never merge: a second
-    question+photo pair recovered into topic 20 must not run in the first pair's topic 10 just because
-    both landed in one burst window. The later one takes its own lane keyed by its resolved session.
+    Invariant: every event in one batch has the same resolved session key (``route_key``; callers
+    route each event with ``resolve_routing`` first, so the key is fixed). An event whose base lane
+    holds another route joins (or opens) the ``<key>|<route>`` lane, never the base one: a second
+    question+photo pair, and the plain photos after it, stay in topic 20 when topic 10 opened the burst.
     """
-    existing = pending.get(key)
-    if (existing is not None and getattr(event, "_routing_pinned", False) and getattr(existing, "_routing_pinned", False)
-            and route_key(existing) != route_key(event)):
-        key = f"{key}|{route_key(event)}"
-        existing = pending.get(key)
+    route = route_key(event)
+    lane = f"{key}|{route}"
+    if lane not in pending and (key not in pending or route_key(pending[key]) == route):
+        lane = key
+    key, existing = lane, pending.get(lane)
     if existing is None:
         pending[key] = event
         return key
-    if getattr(event, "_routing_pinned", False) and not getattr(existing, "_routing_pinned", False):
-        adopt_routing(existing, event)  # a later album item absorbed the question: the album joins its topic
     existing.absorb_reply_expected(event)
     existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
     existing.extend_media(event)

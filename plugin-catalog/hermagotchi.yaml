@@ -1,7 +1,7 @@
 name: hermagotchi
 title: Hermagotchi
 repo: https://github.com/mojomast/hermagotchi
-sha: 7194166a4b652538c8e9e0eed4996e28da0c39ba
+sha: 0ed7793fbf238e32fb86506ad2b587ae4eb90963
 description: >-
   Co-op virtual pets for Hermes: raise a pet, fight deterministic async battles,
   earn Bits, unlock cosmetics up to mythic tier, climb a seasonal leaderboard,
@@ -33,13 +33,13 @@ tier: community
 category: general
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/mojomast/hermagotchi#readme
-version: "0.1.2"
+version: "0.1.3"
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hermagotchi/7194166a4b652538c8e9e0eed4996e28da0c39ba/docs/images/hero-hermes-habitat.png
-  - https://raw.githubusercontent.com/mojomast/hermagotchi/7194166a4b652538c8e9e0eed4996e28da0c39ba/docs/images/shop-don-piedro.png
-  - https://raw.githubusercontent.com/mojomast/hermagotchi/7194166a4b652538c8e9e0eed4996e28da0c39ba/docs/images/battle-teknium.png
-  - https://raw.githubusercontent.com/mojomast/hermagotchi/7194166a4b652538c8e9e0eed4996e28da0c39ba/docs/images/leaderboard-southpaw.png
-  - https://raw.githubusercontent.com/mojomast/hermagotchi/7194166a4b652538c8e9e0eed4996e28da0c39ba/docs/images/social-nous-girl.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/0ed7793fbf238e32fb86506ad2b587ae4eb90963/docs/images/hero-hermes-habitat.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/0ed7793fbf238e32fb86506ad2b587ae4eb90963/docs/images/shop-don-piedro.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/0ed7793fbf238e32fb86506ad2b587ae4eb90963/docs/images/battle-teknium.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/0ed7793fbf238e32fb86506ad2b587ae4eb90963/docs/images/leaderboard-southpaw.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/0ed7793fbf238e32fb86506ad2b587ae4eb90963/docs/images/social-nous-girl.png
 platforms: []
 known_issues:
   - "Agent tools default to an offline practice simulation; set network_enabled (plugin setting) to play the real shared game with the pane's paired account. pet rename/set_mode are sim-only. Online pair approve/revoke is pane-only (tool returns unsupported_online)."

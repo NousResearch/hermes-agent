@@ -1,7 +1,7 @@
 name: hermes-tape
 version: "1.0.0"
 repo: https://github.com/itsolaph/hermes-tape
-sha: be66de0cc92941d39e573017a7e0414ba365d2e1
+sha: 6bde9fc31b2c04f7a606f01bb44b9f1fe9b43733
 description: "Deterministic record and replay for Hermes sessions: every model response and every tool result is written to one JSONL tape, and a replay re-runs the same conversation through the llm_execution and tool_execution middleware with no network, no API key and no side effects. Adds the tape_list, tape_show and tape_diff tools, a /tape command and the hermes tape CLI (record | replay | off | status | list | show | diff). Disclosure — tapes are written to HERMES_HOME/plugin-data/hermes-tape/tapes/ with mode 0600 and contain the recorded session's full prompt, tool arguments and tool results, so sharing a tape shares its contents; replay is local-only and the plugin makes no network calls, sends no telemetry and runs no background work; rebuilding a recorded response imports a class only from anthropic.* or openai.* and refuses any other module named by a tape; when a tape runs out of recorded calls the remaining calls go live with a warning instead of failing the turn."
 maintainer: itsolaph
 tier: community

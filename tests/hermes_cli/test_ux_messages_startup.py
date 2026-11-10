@@ -6,8 +6,10 @@ profile name explains the rule; missing optional dependencies point at ``hermes 
 """
 
 import io
+import os
 import sys
 from contextlib import redirect_stderr
+from pathlib import Path
 
 import pytest
 
@@ -53,6 +55,20 @@ def test_pytest_style_dash_p_is_still_ignored(monkeypatch):
 
     monkeypatch.setattr(sys, "argv", ["pytest", "-p", "no:xdist", "tests/"])
     assert _main._scan_profile_flag(sys.argv[1:]) == (None, 0, None)
+
+def test_a_test_runners_plugin_flag_never_selects_or_demands_a_profile(monkeypatch, tmp_path):
+    from hermes_cli import main as _main
+
+    home = tmp_path / ".hermes"
+    (home / "profiles" / "coverage_plugin").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for plugin in ("coverage_plugin", "absent_plugin"):
+        argv = ["/venv/site-packages/pytest/__main__.py", "-p", plugin, "tests/"]
+        monkeypatch.setattr(sys, "argv", list(argv))
+        _main._apply_profile_override()
+        assert os.environ["HERMES_HOME"] == str(home)
+        assert sys.argv == argv
 
 def test_option_looking_dash_p_value_is_a_silent_skip_even_under_hermes(monkeypatch):
     from hermes_cli import main as _main

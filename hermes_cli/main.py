@@ -510,7 +510,7 @@ def _apply_profile_override() -> None:
     global _explicit_cli_profile
     _explicit_cli_profile = None
     argv = sys.argv[1:]
-    profile_name, consume, profile_index = _scan_profile_flag(argv)
+    profile_name, consume, profile_index = _scan_profile_flag(argv) if _looks_like_hermes_invocation() else (None, 0, None)
     from_sticky_profile = False
 
     # HERMES_HOME already set with no explicit flag: trust it only when it

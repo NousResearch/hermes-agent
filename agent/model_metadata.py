@@ -1232,9 +1232,9 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
         r'>\s*(\d{4,})\s*(?:max|limit|token)',  # "250000 tokens > 200000 maximum"
         r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"
-        # Gemini: "input token count is 32825 but model only supports up to
-        # 32768" — anchor on the phrase so the input count isn't captured.
-        r'supports?\s+(?:only\s+)?up\s+to\s+(\d{4,})',
+        # Google: "... only supports up to 32768" / "The input token count (35868) exceeds the maximum
+        # number of tokens allowed (32768)." — anchor on the phrase so the input count isn't captured.
+        r'(?:supports?\s+(?:only\s+)?up\s+to\s+|maximum number of tokens allowed\s*\(?\s*)(\d{4,})',
     )
     for match in filter(None, (re.search(pattern, error_lower) for pattern in patterns)):
         limit = int(match.group(1))

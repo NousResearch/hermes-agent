@@ -13,9 +13,11 @@ import importlib as _importlib
 import json as _json
 import logging as _logging
 import os as _os
+import queue as _queue
 import threading as _threading
 import typing as _typing
 import warnings as _warnings
+import weakref as _weakref
 from contextlib import ExitStack as _ExitStack
 from pathlib import Path as _Path
 
@@ -138,11 +140,45 @@ def _held(method: "Any") -> "Any":
     return call
 
 
+# The store handles of writable stand-ins collected unclosed. A finalizer runs on whatever thread the collector does,
+# which can hold a lock the release takes (the handle's, the shared-backend cache's, the registry's, a path's lifecycle
+# lock, the read budget's, the WAL guard's), so it only puts the handle's stack here (SimpleQueue.put is safe in a
+# finalizer) and the reaper thread closes it, holding no lock.
+_collected_stacks: "_queue.SimpleQueue[_ExitStack]" = _queue.SimpleQueue()
+_reaper: "Optional[_threading.Thread]" = None
+_reaper_lock = _threading.Lock()
+# Bound at import: a caller that later swaps threading.Thread for a synchronous stand-in (a test fixture) would
+# otherwise run the reaper's endless loop on its own thread at its first writable open.
+_ReaperThread = _threading.Thread
+
+
+def _reap_collected_stacks() -> None:
+    """The reaper: close each queued handle as it arrives, logging (never raising) a failed release."""
+    while True:
+        stack = _collected_stacks.get()
+        try:
+            stack.close()
+        except Exception:  # health: allow BLE001 -- a collected handle has no caller to raise to
+            _logger.debug("Releasing a collected hermes_state.SessionDB's store handle failed", exc_info=True)
+        del stack  # never pin a released handle while waiting for the next one
+
+
+def _ensure_reaper() -> None:
+    """Start the reaper at the first writable open, or again whenever it isn't running."""
+    global _reaper
+    with _reaper_lock:
+        if _reaper is None or not _reaper.is_alive():
+            # health: allow HX012 -- the reaper releases handles on every profile's store and reads no profile state
+            _reaper = _ReaperThread(target=_reap_collected_stacks, name="sessiondb-reaper", daemon=True)
+            _reaper.start()
+
+
 class _SessionDB:
     """``SessionDB`` over one store handle: ``open_persistence`` for a writable store (``db_path`` must name a
     ``state.db``), ``open_persistence_reader`` with ``read_only``. Each method forwards to the handle's repositories
     and returns the dict, list or scalar shapes the old class returned. ``close()`` releases the handle; a writable
-    ``SessionDB`` used afterwards opens the same store again with a warning, a read-only one raises."""
+    ``SessionDB`` used afterwards opens the same store again with a warning, a read-only one raises. A writable one
+    collected unclosed has its handle released on the reaper thread."""
 
     def __init__(self, db_path: "Optional[Path]" = None, read_only: "bool" = False) -> None:
         from persistence_assembly import profile_scope
@@ -163,6 +199,7 @@ class _SessionDB:
         self._lock = _threading.Lock()
         self._calls = 0
         self._closed = False
+        self._reference: Optional[_weakref.finalize] = None
         self._stack, self._store = self._open()
         self._identity = None if read_only else _file_identity(self._target)
 
@@ -179,6 +216,11 @@ class _SessionDB:
         except BaseException:
             stack.close()
             raise
+        if not self.read_only:
+            # This handle's release: at close(), or by the reaper when this SessionDB is collected unclosed.
+            _ensure_reaper()
+            self._reference = _weakref.finalize(self, _collected_stacks.put, stack)
+            self._reference.atexit = False
         return stack, store
 
     def _enter(self) -> None:
@@ -220,6 +262,9 @@ class _SessionDB:
         if not self._closed or self._calls or self._stack is None:
             return None
         released, self._stack, self._store = self._stack, None, None
+        if self._reference is not None:
+            self._reference.detach()
+            self._reference = None
         return released
 
     def __getattr__(self, name: "str") -> "Any":

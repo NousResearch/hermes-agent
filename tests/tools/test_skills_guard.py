@@ -508,7 +508,10 @@ class TestScanSkill:
             'e = os.getenv("TENOR_API_KEY", "OPENAI_API_KEY")\n'
             'f, label = os.environ.get("TENOR_API_KEY"), "ANTHROPIC_API_KEY"\n'
             # The child-env scrub passes this one through on purpose (#55878), so the skill does receive it.
-            'g = os.getenv("CLAUDE_CODE_OAUTH_TOKEN")\n', encoding="utf-8")
+            'g = os.getenv("CLAUDE_CODE_OAUTH_TOKEN")\n'
+            # A call-shaped provider read in a trailing comment or inside a string is not a read.
+            'h = os.getenv("TENOR_API_KEY")  # Unlike os.getenv("OPENAI_API_KEY")\n'
+            'i, doc = os.getenv("TENOR_API_KEY"), "see os.getenv(\'OPENAI_API_KEY\')"\n', encoding="utf-8")
         result = scan_skill(skill_dir, source="community")
         by_line = {fi.line: (fi.pattern_id, fi.severity) for fi in result.findings if fi.file == "run.py"}
         assert by_line[1] == ("provider_key_env_read", "high")
@@ -516,13 +519,13 @@ class TestScanSkill:
         assert by_line[3] == ("python_getenv_secret", "medium")
         assert by_line[4] == by_line[5] == ("python_getenv_secret", "medium")
         assert by_line[6] == ("python_environ_get_secret", "medium")
-        assert by_line[7] == ("python_getenv_secret", "medium")
+        assert by_line[7] == by_line[8] == by_line[9] == ("python_getenv_secret", "medium")
         assert result.verdict == "caution"
         # The rules are skill-only: a plain file scan (what plugin_guard uses) keeps the medium read.
         plain = {fi.line: fi.pattern_id for fi in scan_file(skill_dir / "run.py", "run.py")}
         assert plain == {1: "python_getenv_secret", 2: "python_environ_get_secret", 3: "python_getenv_secret",
                          4: "python_getenv_secret", 5: "python_getenv_secret", 6: "python_environ_get_secret",
-                         7: "python_getenv_secret"}
+                         7: "python_getenv_secret", 8: "python_getenv_secret", 9: "python_getenv_secret"}
 
 
 # ---------------------------------------------------------------------------

@@ -26,10 +26,31 @@ SKILL_ONLY_PATTERNS = [(re.compile(
     rf'\b(?:load_dotenv|dotenv_values)\s*\({_open_prefix(4)}'
     r'(?:HERMES_HOME|get_hermes_home|[~/\\"\']\.hermes(?:[/\\"\']|$))'),
     "hermes_env_dotenv", "high", "exfiltration", "loads the Hermes .env (every key of the profile) into the script")]
-ENV_READ_IDS = frozenset({"python_getenv_secret", "python_environ_get_secret"})
+_ENV_READ_IDS = frozenset({"python_getenv_secret", "python_environ_get_secret"})
 # The name a getenv / environ.get / environ[...] call reads: its first argument only, so a provider name in a
-# comment, a default argument or another literal on the line does not raise the read of the skill's own key.
+# default argument or another literal on the line does not raise the read of the skill's own key.
 _ENV_READ_NAME_RE = re.compile(r'(?:getenv|environ\s*\.\s*get|environ\s*\[)\s*\(?\s*["\']([A-Za-z_]\w*)["\']')
+
+
+def _in_code(line: str, pos: int) -> bool:
+    """True when *pos* is code: not inside a quoted string and not after a ``#`` comment on the line, so a
+    call-shaped read written in a comment or a string does not count. Single-line view: a string opened on an
+    earlier line is not tracked."""
+    quote, i = None, 0
+    while i < pos:
+        ch = line[i]
+        if quote:
+            if ch == "\\":
+                i += 1
+            elif line.startswith(quote, i):
+                i, quote = i + len(quote) - 1, None
+        elif ch == "#":
+            return False
+        elif ch in "\"'":
+            quote = ch * 3 if line.startswith(ch * 3, i) else ch
+            i += len(quote) - 1
+        i += 1
+    return quote is None
 
 
 def model_provider_key_names() -> frozenset:
@@ -49,12 +70,16 @@ def model_provider_key_names() -> frozenset:
 def raise_provider_key_reads(findings: list, lines: list) -> None:
     """A secret read that names a model-provider key becomes ``provider_key_env_read`` (high); a read of
     any other secret-shaped name stays medium (reading your own API key is normal, #60709)."""
-    reads = [f for f in findings if f.pattern_id in ENV_READ_IDS]
+    reads = [f for f in findings if f.pattern_id in _ENV_READ_IDS]
     if not reads:
         return
     provider_keys = model_provider_key_names()
     for f in reads:
-        named = [n for n in _ENV_READ_NAME_RE.findall(lines[f.line - 1]) if n.upper() in provider_keys]
+        line = lines[f.line - 1]
+        # Markdown keeps the whole line: ``#`` starts a heading and an apostrophe in prose is not a quote.
+        prose = f.file.lower().endswith(".md")
+        named = [m[1] for m in _ENV_READ_NAME_RE.finditer(line)
+                 if m[1].upper() in provider_keys and (prose or _in_code(line, m.start()))]
         if named:
             f.pattern_id, f.severity = "provider_key_env_read", "high"
             f.description = (f"reads Hermes model-provider key {named[0]}; skill scripts never receive it, "

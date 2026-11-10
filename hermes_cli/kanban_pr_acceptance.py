@@ -43,6 +43,11 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # 401/403/404 = the login cannot see this repository (wrong profile identity
         # or missing grant), not a transient API failure. Persist only the status
         # code + endpoint, never gh's stderr (credentials/host details).
+        if ("rules/branches/" in endpoint and "HTTP 403" in (exc.stderr or "")
+                and "Upgrade to GitHub Pro" in exc.stderr):
+            # GitHub Free private repos have no rulesets at all: the plan-limit wall IS the
+            # "no rules" answer, not an auth or infra failure.
+            raise _NoBranchRules(endpoint.split('?')[0]) from None
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
@@ -53,6 +58,11 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
+
+
+class _NoBranchRules(RuntimeError):
+    """403 "Upgrade to GitHub Pro" on a rules endpoint: the repo sits on GitHub
+    Free, so no rulesets can exist for it — treat as "no branch rules"."""
 
 
 class _GateAuthError(RuntimeError):
@@ -133,17 +143,18 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        plan_limited = False
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _NoBranchRules:
+            rules = []  # GitHub Free private repo: rulesets cannot exist, nothing to merge
+            plan_limited = not protection
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
-        receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
-        if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
-            return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
                      paginate=True, profile_home=profile_home)
         runs = [run for page in pages for run in page["check_runs"]]
@@ -151,6 +162,39 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("Incomplete check-run pagination")
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
                                                        paginate=True, profile_home=profile_home) for s in page]
+        if not required and plan_limited:
+            # Free plan, no branch protection, no rulesets: the head's own CI evidence IS
+            # the repository's bar — at least one check on the head sha, and every one of
+            # them green (neutral/skipped included: nothing failed). A failing or pending
+            # run still blocks exactly as a required check would.
+            outcomes = []
+            for run in runs:
+                outcome = run.get("conclusion")
+                # Reviewer contract for the fallback: neutral/skipped are green; a failing,
+                # errored or still-running run blocks (stale head sha always blocks).
+                classification = "success" if (run.get("status") == "completed" and outcome in {"success", "neutral", "skipped"}) else _classify(run, sha, outcome, True)
+                outcomes.append(classification)
+                receipt["checks"].append({"name": run["name"], "id": run["id"],
+                    "url": run.get("html_url"), "head_sha": run.get("head_sha"),
+                    "classification": classification, "conclusion": outcome})
+            for status in statuses:
+                classification = _classify(status, sha, status["state"], False)
+                outcomes.append(classification)
+                receipt["checks"].append({"name": status["context"], "id": status["id"],
+                    "url": status.get("target_url"), "head_sha": sha,
+                    "classification": classification, "conclusion": status["state"]})
+            receipt["required"] = [{"context": None, "app_id": None} for _ in receipt["checks"]]
+            receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
+            receipt["ok"] = receipt["classification"] == "success"
+            if receipt["ok"]:
+                current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
+                if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
+                    receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
+            return receipt
+        receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
+        if not required:
+            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
+            return receipt
         outcomes = []
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and

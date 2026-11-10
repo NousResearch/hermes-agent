@@ -186,13 +186,20 @@ def _truncate_results(results: list[dict], char_limit: int, debug_call_data: dic
             logger.info("%s (%d chars, whole)", url, len(clean))
 
 
+def _served_by(result: dict) -> dict:
+    """``{"served_by": name}`` for a page a fallback-chain backend served (tools/web_tools_chain.py)."""
+    meta = result.get("metadata")
+    return {"served_by": meta["served_by"]} if isinstance(meta, dict) and meta.get("served_by") else {}
+
+
 def _trim_results(results: list[dict]) -> list[dict]:
-    """Keep only url/title/content/error per entry (+ blocked_by_policy when present)."""
+    """Keep only url/title/content/error per entry (+ blocked_by_policy / served_by when present)."""
     return [
         {
             "url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""),
             "error": r.get("error"),
             **({"blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
+            **_served_by(r),
         }
         for r in results
     ]

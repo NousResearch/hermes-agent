@@ -391,21 +391,21 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
 
 
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
-    """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
-    longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
-    recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
+    """True when a live ``pid`` is NOT the process fingerprinted at spawn (or it is unreadable): signalling
+    it would hit a stranger. ``None`` = legacy row, never recycled; UNVERIFIED is always foreign; an int
+    (pre boot witness) compares the start time only. ``"<epoch>|<start>"``: exact epoch, start within the
+    2 s liveness tolerance (pre-#140967 fingerprints read the same process ~1 s off either way)."""
     if started_at is None or not pid:
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
-    if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
-    current = get_process_start_time(int(pid))
-    if current is None:
-        return True
+    from gateway.status import _start_times_agree, get_process_start_time, start_time_fingerprints_match
+    current = get_process_start_time(int(pid))  # None -> TypeError below -> recycled
     try:
+        if isinstance(started_at, str) and "|" in started_at:
+            from gateway.drain_control import current_instantiation_epoch
+            epoch, start = started_at.rsplit("|", 1)
+            return epoch != current_instantiation_epoch() or not start_time_fingerprints_match(start, current)
         return not _start_times_agree(current, started_at)
     except (TypeError, ValueError):
         return True

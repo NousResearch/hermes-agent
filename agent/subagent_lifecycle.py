@@ -302,7 +302,9 @@ class SubagentLifecycleService:
         child = _build_child_preserving_parent_tools(
             task_index=0, goal=request.goal, context=request.context,
             toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
-            model=request.model or creds["model"], max_iterations=DEFAULT_MAX_ITERATIONS,
+            model=request.model or creds["model"],
+            # Same budget source as delegate_task: delegation.max_iterations, else the default.
+            max_iterations=_load_config().get("max_iterations", DEFAULT_MAX_ITERATIONS),
             task_count=1, parent_agent=parent, role=request.role, **_credential_overrides(creds, routing_cfg),
         )
         subagent_id = str(getattr(child, "_subagent_id", "") or "")

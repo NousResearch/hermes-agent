@@ -1,16 +1,17 @@
 name: turn-completion-nudge
 repo: https://github.com/ether-btc/turn-completion-nudge
-sha: 6b81c43ce1a1f5dc6c5878d96e4bb86be83fc4ab
+sha: fc2f52707a60fb8f2c86b7d8dee1d08765daca58
 subdir: "plugin"
 description: "Nudges the agent to continue when a turn ends prematurely (planning or announcing next steps it has not done). Fail-open: never blocks a turn."
 maintainer: ether-btc
 tier: community
 category: tools
 requires_hermes: ">=0.21.3"
-version: "0.3.0"
+version: "0.3.1"
 known_issues:
   - "free-model rot: default scorer model `respan/span-01-lite-20260925:free` may be delisted upstream - pin or monitor (see the scorer_model config description in the plugin repo)"
-  - "privacy default: an absent `send_turn_text` is treated as opted out (dormant), but an explicit `send_turn_text: true` egresses clipped turn text (~1200-char user request + ~1500-char assistant message) via the keyless Amos systemone fallback when OPENROUTER_API_KEY is missing; opt-in egress remains possible by design"
+  - "privacy default: an absent `send_turn_text` is treated as opted out (dormant) in every context; an explicit `send_turn_text: true` egresses clipped turn text (~1200-char user request + ~1500-char assistant message) to the OpenRouter lane when a key is set — the keyless Amos/Scira fallback is a SEPARATE opt-in (`amos_fallback`, default false)"
+  - "nudge chains are capped at 2 consecutive nudge-driven turns per session (nudge text recognized on the next request); afterwards the hook stays silent until a real user turn arrives"
 capabilities:
   provides_tools: []
   provides_hooks:

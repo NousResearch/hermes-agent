@@ -1071,7 +1071,10 @@ def test_profile_manager_retires_observers_before_clearing_plugin_modules(
     def clear_modules(_manager):
         state_closed.set()
         release_running.set()
-        dispatcher.events.join()
+        with dispatcher.events.all_tasks_done:
+            assert dispatcher.events.all_tasks_done.wait_for(
+                lambda: dispatcher.events.unfinished_tasks == 0, timeout=5.0
+            )
 
     monkeypatch.setattr(plugins, "_clear_plugin_submodules", clear_modules)
     try:

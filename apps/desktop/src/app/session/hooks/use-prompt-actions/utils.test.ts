@@ -154,6 +154,11 @@ describe('session error classifiers', () => {
         new JsonRpcGatewayError('method not found', { code: 4001, data: { reason: 'method_not_found' } })
       )
     ).toBe(false)
+    expect(
+      isSessionNotFoundError(
+        new JsonRpcGatewayError('session not found', { code: 4001, data: { reason: 'session_read_only' } })
+      )
+    ).toBe(false)
   })
 })
 
@@ -252,6 +257,21 @@ describe('withSessionNotFoundResume', () => {
   it('does not resume for an unrelated structured gateway refusal', async () => {
     const d = deps()
     const refusal = new JsonRpcGatewayError('session_read_only', {
+      code: 4001,
+      data: { reason: 'session_read_only' }
+    })
+    const call = vi.fn(async () => {
+      throw refusal
+    })
+
+    await expect(withSessionNotFoundResume(DEAD, STORED, call, d)).rejects.toBe(refusal)
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(d.requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('honors a structured non-not-found reason over legacy error wording', async () => {
+    const d = deps()
+    const refusal = new JsonRpcGatewayError('session not found', {
       code: 4001,
       data: { reason: 'session_read_only' }
     })

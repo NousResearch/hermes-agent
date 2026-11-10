@@ -1,6 +1,6 @@
 name: ctx_handover
 repo: https://github.com/GottZ/ctx
-sha: 4ab97d8e22da11ab2135581670d6bd8b4b28af87
+sha: c207f413b5fff95a3d8f5415d9509f42363c548c
 subdir: integrations/hermes/plugin/ctx_handover
 version: "0.1.1"
 title: ctx handover
@@ -9,7 +9,7 @@ maintainer: GottZ
 tier: community
 category: tools
 requires_hermes: ">=0.22.6"
-docs_url: https://github.com/GottZ/ctx/blob/4ab97d8e22da11ab2135581670d6bd8b4b28af87/integrations/hermes/plugin/ctx_handover/README.md
+docs_url: https://github.com/GottZ/ctx/blob/c207f413b5fff95a3d8f5415d9509f42363c548c/integrations/hermes/plugin/ctx_handover/README.md
 capabilities:
   provides_tools: [handover]
   provides_hooks: [pre_llm_call, pre_tool_call, post_llm_call, post_compaction]

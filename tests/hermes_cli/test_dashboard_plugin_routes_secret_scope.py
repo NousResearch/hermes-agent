@@ -1,6 +1,6 @@
 """Dashboard agent-plugin mutations run in the request's profile scope, off the event loop.
 
-Regression for #115256: install/update reached ``git_credentials._github_token`` →
+Regression for #115256: install/update reached ``git_credentials._env_github_token`` →
 ``get_secret("GITHUB_TOKEN")`` with no profile secret scope bound. Once the process serves more
 than its launch profile (any cross-profile request flips multi-profile hosting on) that read fails
 closed with ``UnscopedSecretError``, so both routes answered a bare 500 for every repo-backed

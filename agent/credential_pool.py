@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 import re
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -46,7 +46,6 @@ from hermes_cli.auth import (
     _resolve_zai_base_url,
     _same_path,
     _save_auth_store,
-    _save_provider_state,
     _store_provider_state,
     read_credential_pool,
     write_credential_pool,
@@ -213,8 +212,8 @@ class PooledCredential:
     auth_type: str
     priority: int
     source: str
-    access_token: str
-    refresh_token: Optional[str] = None
+    access_token: str = field(repr=False)
+    refresh_token: Optional[str] = field(default=None, repr=False)
     last_status: Optional[str] = None
     last_status_at: Optional[float] = None
     last_error_code: Optional[int] = None
@@ -229,7 +228,7 @@ class PooledCredential:
     expires_at_ms: Optional[int] = None
     last_refresh: Optional[str] = None
     inference_base_url: Optional[str] = None
-    agent_key: Optional[str] = None
+    agent_key: Optional[str] = field(default=None, repr=False)
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
     # A provider may rate-limit one model while the same credential remains
@@ -1873,7 +1872,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                             "relogin_required": True,
                             "at": datetime.now(UTC).isoformat(),
                         }
-                        _save_provider_state(auth_store, self.provider, state)
+                        _store_provider_state(auth_store, self.provider, state, set_active=False)
                         _save_auth_store(auth_store)
         except Exception as clear_exc:
             logger.debug("Failed to clear terminal %s OAuth state: %s", display, clear_exc)
@@ -1894,7 +1893,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 if not store_refresh or store_refresh == str(entry.refresh_token or "").strip():
                     auth_mod._quarantine_nous_oauth_state(state, exc, reason="credential_pool_refresh_failure")
                     auth_mod._quarantine_nous_pool_entries(auth_store, exc, reason="credential_pool_refresh_failure")
-                    _save_provider_state(auth_store, "nous", state)
+                    _store_provider_state(auth_store, "nous", state, set_active=False)
                     _save_auth_store(auth_store)
         except Exception as clear_exc:
             logger.debug("Failed to clear terminal Nous OAuth state: %s", clear_exc)

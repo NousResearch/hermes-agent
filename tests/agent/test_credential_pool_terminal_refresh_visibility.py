@@ -180,3 +180,19 @@ def test_nous_transient_error_still_benched(monkeypatch, caplog):
 
     assert result is None and cleared == [] and benched == ["e1"]
     assert not [r for r in caplog.records if r.levelno == logging.WARNING and "terminally invalid" in r.getMessage()]
+
+
+def test_clearing_a_dead_grant_keeps_the_chosen_active_provider(tmp_path, monkeypatch):
+    """Quarantining a dead Codex login rewrites its state without making it the active provider."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = {"version": 1, "active_provider": "anthropic",
+             "providers": {"openai-codex": {"tokens": {"access_token": "dead-access", "refresh_token": "dead-refresh"}}}}
+    (tmp_path / "auth.json").write_text(json.dumps(store), encoding="utf-8")
+    entry = PooledCredential(id="e1", provider="openai-codex", auth_type="oauth", access_token="dead-access",
+                             refresh_token="dead-refresh", label="e1", source="device_code", priority=0)
+
+    _pool("openai-codex")._clear_terminal_tokens_state(entry, RuntimeError("invalid_grant"))
+
+    saved = json.loads((tmp_path / "auth.json").read_text(encoding="utf-8"))
+    assert "refresh_token" not in saved["providers"]["openai-codex"]["tokens"]
+    assert saved["active_provider"] == "anthropic"

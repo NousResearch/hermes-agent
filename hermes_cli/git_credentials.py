@@ -81,10 +81,6 @@ def _gh_cli_token() -> Optional[str]:
     return result.stdout.strip() or None
 
 
-def _github_token() -> Optional[str]:
-    return _env_github_token() or _gh_cli_token()
-
-
 def _credential_fill(origin: str) -> Optional[tuple[str, str]]:
     """``(username, password)`` from the user's own git credential helpers, never prompting."""
     git = shutil.which("git")

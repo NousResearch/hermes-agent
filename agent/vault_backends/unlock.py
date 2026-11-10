@@ -102,7 +102,6 @@ class _TokenOps(NamedTuple):
     commit: Callable[[_Key, str, Optional[int], Optional[str]], bool]
     lock_profile: Callable[[str, Optional[str]], None]
     release: Callable[[str], None]
-    lock_everything: Callable[[], None]
 
 
 def _token_store() -> _TokenOps:
@@ -198,13 +197,7 @@ def _token_store() -> _TokenOps:
                 forget(key)
             settle()
 
-    def lock_everything() -> None:
-        with guard:
-            for key in {*tokens, *owners}:
-                forget(key)
-            settle()
-
-    return _TokenOps(live, begin, commit, lock_profile, release, lock_everything)
+    return _TokenOps(live, begin, commit, lock_profile, release)
 
 
 _tokens = _token_store()
@@ -233,11 +226,6 @@ def lock(backend: Optional[str] = None) -> None:
 def release_session(session_id: str) -> None:
     """A gateway session ended: drop only the tokens that session unlocked."""
     _tokens.release(session_id)
-
-
-def lock_all_profiles() -> None:
-    """Process shutdown: drop every token."""
-    _tokens.lock_everything()
 
 
 def is_unlocked(backend: str) -> bool:

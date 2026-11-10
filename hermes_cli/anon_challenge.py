@@ -399,7 +399,7 @@ def _poll_status(client: httpx.Client, portal_base_url: str, anon_token: str) ->
 
 
 _WAITING = ("pending", "needs_interaction")
-_sleep = time.sleep     # seam for tests (same idiom as ``free_tier_bootstrap._sleep``)
+_sleep = time.sleep     # seam for tests
 
 
 def wait_for_challenge(exc: AnonChallengeRequired) -> bool:

@@ -1,4 +1,4 @@
-"""Unified provider catalog — one source of truth for the provider universe.
+"""Unified provider catalog: the provider list the CLI picker and the desktop Providers tabs share.
 
 The provider list shown by ``hermes model`` (CLI/TUI) and the desktop Settings → Providers tabs
 (Accounts + API keys) **must be the same set**; providers added after those lists were written

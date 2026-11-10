@@ -26,12 +26,12 @@ from dataclasses import dataclass, field
 from functools import partial
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Iterable, List, Optional
 from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
+from utils import atomic_json_write, env_float, file_cache_version
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -39,32 +39,31 @@ from hermes_cli.auth_model_picker import (
     _prompt_model_selection, _save_model_choice)
 from hermes_cli.auth_device_flow import (
     _can_open_graphical_browser, _default_verify, _is_remote_session,
-    _nous_device_auth_timeout_message, _offer_existing_oauth_credentials,
+    _offer_existing_oauth_credentials,
     _poll_device_token_generic, _poll_for_token, _print_device_code_instructions,
-    _print_login_success, _print_loopback_ssh_hint, _prompt_yes_no, _request_device_code,
-    _resolve_verify, _ssh_user_at_host)
+    _print_login_success, _prompt_yes_no, _request_device_code,
+    _resolve_verify)
 from hermes_cli.auth_oauth_grants import (
     SINGLE_USE_REFRESH_POOL_PROVIDERS, _oauth_heal_clean_marks, _oauth_heal_notices,
     consume_oauth_heal_notices, heal_forked_single_use_oauth_grants,
     strip_cloned_single_use_oauth_grants)
 from hermes_cli.auth_nous import (
-    NOUS_SESSION_TERMINAL, NOUS_SESSION_UNKNOWN, NOUS_SESSION_VALID, _ALLOWED_NOUS_INFERENCE_HOSTS,
     _agent_key_is_usable, _apply_nous_refreshed_tokens, _assert_nous_inference_jwt_usable,
-    _compute_nous_auth_status, _format_nous_entitlement_auth_error, _healed_nous_inference_url,
+    _compute_nous_auth_status, _format_nous_entitlement_auth_error,
     _login_nous, _merge_shared_nous_oauth_state, _migrate_stale_nous_portal_url,
     _nous_device_code_login, _nous_inference_env_override, _nous_invoke_jwt_is_usable,
-    _nous_invoke_jwt_status, _nous_portal_base_url, _nous_portal_env_override, _nous_shared_store_lock,
+    _nous_invoke_jwt_status, _nous_portal_base_url, _nous_shared_store_lock,
     _nous_shared_store_path, _pool_first_oauth_status, _quarantine_nous_oauth_state,
     _quarantine_nous_pool_entries, _read_shared_nous_state, _refresh_access_token,
     _refresh_nous_or_quarantine, _select_nous_invoke_jwt, _sync_nous_pool_from_auth_store,
-    _token_fingerprint, _try_import_shared_nous_state, _validate_nous_inference_url_from_network,
+    _try_import_shared_nous_state, _validate_nous_inference_url_from_network,
     _write_shared_nous_state, fetch_nous_models, get_nous_auth_status_local,
     get_nous_session_validity, persist_nous_credentials, refresh_nous_oauth_from_state,
     resolve_nous_runtime_credentials, step_up_nous_billing_scope)
 from hermes_cli.auth_minimax import (
-    _MINIMAX_OAUTH_ERROR_BODY_LIMIT, _login_minimax_oauth, _minimax_oauth_login, _minimax_pkce_pair,
-    _minimax_poll_token, _minimax_post_form, _minimax_request_user_code,
-    _minimax_resolve_token_expiry_unix, _minimax_response_error_text, _minimax_save_auth_state,
+    _login_minimax_oauth, _minimax_oauth_login, _minimax_pkce_pair,
+    _minimax_poll_token, _minimax_request_user_code,
+    _minimax_resolve_token_expiry_unix, _minimax_save_auth_state,
     _refresh_minimax_oauth_state, build_minimax_oauth_token_provider,
     resolve_minimax_oauth_runtime_credentials)
 from hermes_cli.auth_xai import (
@@ -83,7 +82,7 @@ from hermes_cli.auth_codex import (
 from hermes_cli.auth_openrouter import _openrouter_pkce_login
 from hermes_cli.guest_handoff import note_store_write
 from hermes_cli.auth_qwen import (
-    _qwen_access_token_is_expiring, _qwen_base_url, _qwen_cli_auth_path, _read_qwen_cli_tokens,
+    _qwen_base_url, _qwen_cli_auth_path, _read_qwen_cli_tokens,
     _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
     resolve_qwen_runtime_credentials)
 from hermes_cli.auth_constants import (
@@ -96,8 +95,8 @@ from hermes_cli.auth_constants import (
     MINIMAX_OAUTH_CN_INFERENCE, MINIMAX_OAUTH_REFRESH_SKEW_SECONDS, DEFAULT_QWEN_BASE_URL,
     DEFAULT_OLLAMA_CLOUD_BASE_URL, DEFAULT_ACTUAL_BASE_URL, DEFAULT_ACTUAL_LOCAL_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
-    CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPE,
-    XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+    CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+    XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     LMSTUDIO_NOAUTH_PLACEHOLDER,
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, CODEX_RATE_LIMITED_CODE, AuthError, _nous_err, httpx)
 
@@ -1773,7 +1772,7 @@ _NOUS_PORTAL_ALLOWED_HOSTS: frozenset[str] = frozenset({
 
 # Per-process memo for resolve_nous_access_token: startup runs one check_fn per managed tool and
 # each would trigger its own ~15s blocking refresh of an expired token; a short-TTL memo collapses
-# the burst into one round-trip. Callers needing freshness use force_fresh/refresh_nous_oauth_pure.
+# the burst into one round-trip. Callers needing freshness use force_fresh/refresh_nous_oauth_from_state.
 # Keyed by hermes_home_key(): the resolution itself is profile-scoped (_auth_file_path reads the
 # per-turn HERMES_HOME override a multiplex gateway sets), so a single slot would hand profile A's
 # Portal bearer to profile B for up to the TTL.

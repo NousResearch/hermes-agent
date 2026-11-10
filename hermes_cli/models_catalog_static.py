@@ -359,7 +359,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
 
 
 # ---------------------------------------------------------------------------
-# Canonical provider list — single source of truth for provider identity. Every code path that
+# Picker provider list (slug, label, description). Every code path that
 # lists, displays, or iterates providers (hermes model, /model, list_authenticated_providers)
 # derives from it. slug = internal ID (config.yaml, --provider); label = short display name;
 # tui_desc = longer description for the `hermes model` picker.

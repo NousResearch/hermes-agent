@@ -283,17 +283,6 @@ def usage_tag_levels(model_ids: list[str], pricing: Optional[dict[str, dict[str,
     return {m: lv for m, lv in levels.items() if not is_subscription_billed_row((pricing or {}).get(m))}
 
 
-def is_free_model(pricing_row: Optional[dict[str, Any]]) -> bool:
-    """True when the catalog lists the model at $0 in and $0 out (``:free`` / natively free). A row
-    with no pricing is NOT free — unknown price is not a promise."""
-    from hermes_cli.models_pricing import _price_float
-    if not pricing_row:
-        return False
-    inp = _price_float(pricing_row.get("prompt"), positive=False)
-    out = _price_float(pricing_row.get("completion"), positive=False)
-    return inp is not None and out is not None and inp <= 0.0 and out <= 0.0
-
-
 def format_percent_used(used_fraction: float) -> str:
     """Whole-percent used, same rule as the portal (``formatUsedPercentLabel``): floor, any sliver
     reads ``<1%`` (never ``0%``), and ``100%`` only once the allowance is actually exhausted."""

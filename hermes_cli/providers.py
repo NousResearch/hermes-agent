@@ -1,10 +1,10 @@
-"""Single source of truth for provider identity in Hermes Agent."""
+"""Provider identity resolution: aliases, models.dev overlay, transport and api_mode (credential rows live in hermes_cli.auth.PROVIDER_REGISTRY, picker rows in hermes_cli.models_catalog_static)."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional
 
 from utils import base_url_host_matches, base_url_hostname
 

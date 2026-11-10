@@ -865,31 +865,6 @@ def _agent_key_is_usable(state: dict[str, Any], min_ttl_seconds: int) -> bool:
         min_ttl_seconds=max(0, int(min_ttl_seconds)))
 
 
-def refresh_nous_oauth_pure(
-    access_token: str, refresh_token: str, client_id: str, portal_base_url: str,
-    inference_base_url: str, *, token_type: str = "Bearer", scope: str = DEFAULT_NOUS_SCOPE,
-    obtained_at: Optional[str] = None, expires_at: Optional[str] = None,
-    agent_key: Optional[str] = None, agent_key_expires_at: Optional[str] = None,
-    timeout_seconds: float = 15.0, insecure: Optional[bool] = None, ca_bundle: Optional[str] = None,
-    force_refresh: bool = False,
-    on_state_update: Optional[Callable[[dict[str, Any], str], None]] = None) -> dict[str, Any]:
-    """Refresh Nous OAuth state without mutating auth.json directly.
-
-    ``on_state_update`` fires after a successful access-token refresh so callers owning persistent
-    state can save the rotated refresh token before later validation can fail.
-    """
-    return refresh_nous_oauth_from_state(
-        {
-            "access_token": access_token, "refresh_token": refresh_token, "client_id": client_id,
-            "portal_base_url": portal_base_url, "inference_base_url": inference_base_url,
-            "token_type": token_type, "scope": scope, "obtained_at": obtained_at,
-            "expires_at": expires_at, "agent_key": agent_key,
-            "agent_key_expires_at": agent_key_expires_at,
-            "tls": {"insecure": insecure, "ca_bundle": ca_bundle}},
-        timeout_seconds=timeout_seconds, force_refresh=force_refresh,
-        on_state_update=on_state_update)
-
-
 def refresh_nous_oauth_from_state(
     src: dict[str, Any], *, timeout_seconds: float = 15.0, force_refresh: bool = False,
     on_state_update: Optional[Callable[[dict[str, Any], str], None]] = None) -> dict[str, Any]:

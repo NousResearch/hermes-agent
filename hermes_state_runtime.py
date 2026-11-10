@@ -8,6 +8,7 @@ import uuid
 from typing import NamedTuple, Optional
 
 from agent.conversation_compression_archive import ABSORBED_ROW_IDS
+from agent.message_sanitization import _sanitize_structure_surrogates
 from agent.message_metadata import (
     CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
 )
@@ -142,6 +143,10 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
         _text(value)
     if intent not in ('queue', 'steer', 'redirect'):
         raise RuntimeStoreError('invalid_params')
+    # A lone surrogate (Windows filenames, raw OS strings) survives _json's ensure_ascii=False
+    # dumps but aborts sqlite3's UTF-8 encoder mid-INSERT; repair at entry like the messages
+    # layer does (_scrub_surrogates), so the digest stays deterministic and replays exactly.
+    _sanitize_structure_surrogates(payload)
     encoded = _json(payload)
     from hermes_state_terminal import retry_terminal_admission
     retired = retry_terminal_admission(db, epoch=epoch, principal_id=principal_id, session_id=session_id,

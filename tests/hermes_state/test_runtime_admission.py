@@ -92,3 +92,24 @@ def test_sqlite_failure_never_acknowledges_or_partially_claims(tmp_path):
         assert len(rt.list_session_admissions(db, session_id='s')) == 1
     finally:
         db.close()
+
+
+def test_admission_payload_lone_surrogate_is_stored_scrubbed(tmp_path):
+    # Lone surrogates (raw Windows filenames, OS-provided strings) survive _json's
+    # ensure_ascii=False dumps but kill sqlite3's UTF-8 encoder mid-INSERT, aborting the whole
+    # admission write; the messages layer scrubs them (_scrub_surrogates) — the runtime payload
+    # path must repair the same way instead of wedging.
+    db = store(tmp_path)
+    try:
+        import hermes_state_runtime as rt
+        epoch = rt.begin_runtime_epoch(db, instance_id='boot')
+        args = dict(epoch=epoch, principal_id='human', session_id='s', request_id='surrogate',
+                    payload={'text': 'report-\ud83d.pdf'})
+        admitted = rt.admit_session_input(db, **args)
+        stored = str(admitted['payload'])
+        assert '\ud83d' not in stored, 'lone surrogate persisted'
+        assert '\ufffd' in stored, 'surrogate must be repaired to U+FFFD like the messages layer'
+        replay = rt.admit_session_input(db, **args)
+        assert replay['admission_id'] == admitted['admission_id'], 'post-scrub digest must replay exactly'
+    finally:
+        db.close()

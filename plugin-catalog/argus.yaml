@@ -1,0 +1,31 @@
+name: argus
+repo: https://github.com/albertodvp/argus
+sha: bf0b6a3b7ecf978590605ad166956229c39e238d
+subdir: argus
+description: "Reads a Hermes agent by intents instead of sessions and reviews what it learns: links each skill edit to the goal that produced it, flags edits applied without evidence and proposes rules backed by several intents, each kept or rejected by a person and applied through Hermes. Disclosure — derive passes send turn text, tool-call and tool-result excerpts, skill diffs and SKILL.md to the auxiliary.argus model; reads every profile's state.db, curator ledger, blobs, skills section of config.yaml and SKILL.md read-only; starts detached `hermes argus derive` passes when the agent is idle; writes skills only on an explicit apply, through rollback_entry or skill_manage as actor user; no credentials, no telemetry."
+maintainer: albertodvp
+tier: community
+category: general
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/albertodvp/argus#readme
+version: "0.1.0"
+platforms: [linux, macos]
+readme: true
+image: https://raw.githubusercontent.com/albertodvp/argus/bf0b6a3b7ecf978590605ad166956229c39e238d/assets/argus-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/albertodvp/argus/bf0b6a3b7ecf978590605ad166956229c39e238d/assets/showcase/02-matrix.png
+  - https://raw.githubusercontent.com/albertodvp/argus/bf0b6a3b7ecf978590605ad166956229c39e238d/assets/showcase/03-intents.png
+  - https://raw.githubusercontent.com/albertodvp/argus/bf0b6a3b7ecf978590605ad166956229c39e238d/assets/showcase/04-skill.png
+  - https://raw.githubusercontent.com/albertodvp/argus/bf0b6a3b7ecf978590605ad166956229c39e238d/assets/showcase/05-proposal.png
+  - https://raw.githubusercontent.com/albertodvp/argus/bf0b6a3b7ecf978590605ad166956229c39e238d/assets/showcase/07-apply.png
+  - https://raw.githubusercontent.com/albertodvp/argus/bf0b6a3b7ecf978590605ad166956229c39e238d/assets/showcase/08-applied.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - on_session_end
+    - on_skill_lifecycle
+    - on_session_delete
+  provides_middleware: []
+  requires_env: []

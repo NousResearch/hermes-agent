@@ -143,12 +143,7 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
     """Copy a SQLite database with the backup() API (WAL-safe consistent snapshot).
 
     Fails closed when no consistent snapshot can be made: copying only the main file loses WAL data.
-    Refuses before opening when this process serves hosted tenants and *src* is
-    a kanban board database (the one predicate the backup boundary asks):
-    the shared board's bytes must not be copied out of a hosted process.
     """
-    from hermes_cli.kanban_db import _refuse_board_path_if_hosted
-    _refuse_board_path_if_hosted(src)
     conn = backup_conn = None
     copier: Optional[_OffThreadCopy] = None
     try:

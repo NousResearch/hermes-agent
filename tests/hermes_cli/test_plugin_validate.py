@@ -241,6 +241,22 @@ class TestCapabilityProbe:
         assert report.ok, report.failures
 
 
+    def test_probe_service_attributes_are_usable_as_paths(self, tmp_path):
+        """``Path(ctx.state.data_dir)`` is how plugins find their data dir in register(); the probe's
+        inert service must hand back something ``Path()`` accepts, not a bare function."""
+        d = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "provides_tools": ["t"]},
+            init_py=(
+                "from pathlib import Path\n"
+                "def register(ctx):\n"
+                "    (Path(ctx.state.data_dir) / 'cache').mkdir(parents=True, exist_ok=True)\n"
+                "    ctx.register_tool('t', schema={}, handler=lambda **kw: None)\n"),
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+
+
 class TestModelProviderKind:
     def test_import_time_register_provider_is_the_entry_point(self, tmp_path):
         """``kind: model-provider`` plugins register at import via providers.register_provider and

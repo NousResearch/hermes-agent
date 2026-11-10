@@ -334,11 +334,19 @@ def launcher_text(raw: bytes) -> str:
         _unverified("the launcher is neither UTF-16 with a BOM nor UTF-8")
 
 
+# A VBS string literal (doubled quotes escape, an unterminated one runs to the end), or a ' / REM comment.
+# Literals match first, so an apostrophe inside a string never starts a comment.
+_VBS_VALUE = re.compile(r'"(?:[^"]|"")*(?:"|$)|(?P<comment>(?:\'|(?<![\w.])(?i:REM)\b).*$)')
+
+
 def _masked_literals(line: str) -> str:
     # A customised launcher line may assign an opaque credential the generic redactor can't recognise
-    # (``env.Item("S3_SECRET") = "..."``): keep the variable names, never the values.
-    return re.sub(r'"(?:[^"]|"")*(?:"|$)', lambda literal: literal[0] if line[:literal.start()].endswith(
-        ("Item(", "Environment(")) else '"***"', line)
+    # (``env.Item("S3_SECRET") = "..."``), or carry one in a comment: keep the names, never the values.
+    def mask(found: re.Match[str]) -> str:
+        if found["comment"] is not None:
+            return "' ***" if found["comment"].startswith("'") else found["comment"][:3] + " ***"
+        return found[0] if line[:found.start()].endswith(("Item(", "Environment(")) else '"***"'
+    return _VBS_VALUE.sub(mask, line)
 
 
 # The launcher's lines after its env block; None slots hold values, which _vbs_identity checks one by one.

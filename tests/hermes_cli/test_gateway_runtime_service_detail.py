@@ -102,6 +102,10 @@ _OPAQUE = "q8Zr2LmX0vN4pT7wK1yB9cD3fG6hJ5sA"
     (f'env.Item("S3_SECRET") = "{_OPAQUE}"', 'env.Item("S3_SECRET") = '),
     (f'env.Item("MY_TOKEN")="{_OPAQUE}"', 'env.Item("MY_TOKEN")='),
     (f'sh.Run "cmd /c set KEY={_OPAQUE}", 0, False', "sh.Run "),
+    (f"' rotate this: {_OPAQUE}", "' ***"),
+    (f"REM backup key {_OPAQUE}", "REM ***"),
+    (f'env.Item("K") = 1 \' {_OPAQUE}', "env.Item(\"K\") = 1 \\' ***"),  # repr escapes the ' when both quote kinds appear
+    (f'env.Item("K1") = "it\'s {_OPAQUE}"', 'env.Item("K1") = "***"'),  # a quoted ' is no comment
 ])
 def test_a_rejected_launcher_line_names_the_line_not_its_values(line, kept, tmp_path, monkeypatch):
     # A customised launcher may assign a credential; the detail reaches `gateway ensure` output

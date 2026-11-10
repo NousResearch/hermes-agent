@@ -853,9 +853,24 @@ def test_typed_reply_to_a_voice_note_keeps_its_type_and_reaches_stt(is_voice, fr
         assert ("not this message" in event.text) is spoken
         runner = object.__new__(GatewayRunner)
         runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
-        assert not spoken or (await runner._prepare_clarify_reply_text(event)).startswith("continue")
+        assert not spoken or await runner._prepare_clarify_reply_text(event) == "continue"
 
     asyncio.run(_run())
+
+
+def test_captioned_own_audio_still_answers_a_clarify_with_its_transcript():
+    """Only a replied-to voice note makes the typed text the answer: a TEXT event carrying the
+    sender's own audio and a caption (Google Chat keeps TEXT for that) is answered by its speech."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+
+    event = MessageEvent(
+        text="answer attached", message_type=MessageType.TEXT, media_urls=["cache/audio/a.ogg"], media_types=["audio/ogg"],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group", user_id="111"))
+    runner = object.__new__(GatewayRunner)
+    runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["2"]))
+
+    assert asyncio.run(runner._prepare_clarify_reply_text(event)) == "2"
 
 
 # ---------------------------------------------------------------------------

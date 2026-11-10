@@ -62,6 +62,8 @@ async def cache_replied_media(adapter: Any, msg: Any, event: Any) -> None:
             getattr(reply_msg, "from_user", None), "is_bot", False)
         note = f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]"
         if spoken:
+            # The typed reply, not the replied-to speech or this note, answers a pending clarify.
+            event.metadata["replied_voice_typed_text"] = (event.text or "").strip()
             note += " [Any transcript quoted above is that replied-to voice note, not this message.]"
         adapter._attach_cached(event, cached, note, "[Telegram] Cached replied-to %s at %s", retype=not spoken)
         return

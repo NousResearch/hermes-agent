@@ -2,7 +2,7 @@ name: gambit
 title: Gambit for Hermes
 repo: "https://github.com/itsflownium/gambit-hackathon"
 sha: "9c725ad0b04c2bc32f16efd00dfc1b4d421360cb"
-description: Play chess in a Hermes terminal or Desktop pane, understand mistakes, and replay or practice public Chess.com and Lichess matches.
+description: "Play chess in a Hermes terminal or Desktop pane, understand mistakes, and replay or practice public Chess.com and Lichess matches. Disclosure — runs a locally installed Stockfish executable (the path you set in plugin settings, or one found on PATH) as a subprocess that inherits Hermes' environment; fetches public games for a username you enter from api.chess.com and lichess.org; uses your configured Hermes model for each opponent move; and in Coach mode the Desktop pane automatically sends coaching requests into the bound chat when it is idle, each starting a model turn."
 maintainer: itsflownium
 tier: community
 category: tools

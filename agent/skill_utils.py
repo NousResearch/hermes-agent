@@ -415,7 +415,13 @@ def get_skill_search_roots(local: Optional[Path] = None, *, include_project: boo
     prompt index, slash commands, skill_view, preload and cron share. *local* overrides the profile
     skills dir (skills_tool passes its live root); that entry is kept even when missing."""
     roots = [(TIER_PROJECT, d) for d in get_project_skills_dirs()] if include_project else []
-    roots.append((TIER_LOCAL, Path(local) if local is not None else get_skills_dir()))
+    local_root = Path(local) if local is not None else get_skills_dir()
+    # Switch to active-only discovery only after bootstrap_layout has migrated
+    # every legacy package and written its commit marker. Empty directories alone
+    # must never hide existing skills after an interrupted/manual migration.
+    active_root = local_root / "active"
+    enabled = (local_root / ".lifecycle-enabled.json").is_file()
+    roots.append((TIER_LOCAL, active_root if enabled else local_root))
     create_dir = get_skill_create_dir()
     if create_dir is not None and create_dir.is_dir():
         roots.append((TIER_CREATE_DIR, create_dir))

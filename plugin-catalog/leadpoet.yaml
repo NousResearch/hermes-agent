@@ -1,6 +1,6 @@
 name: leadpoet
 repo: https://github.com/leadpoet/get-customers
-sha: 6f2168e0d59f19a1bb9eed61291258b68befae34
+sha: bcd2d8a7eebab93ff46b01afe1134672aa89a890
 title: Leadpoet
 description: Send your website and get customers. Hermes finds verified contacts, writes emails where every personal line shows its source, lets you approve from your phone, and brings replies back to chat. Try /customers demo with no account.
 maintainer: leadpoet
@@ -8,7 +8,7 @@ tier: community
 category: automation
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/leadpoet/get-customers#readme
-version: "0.2.0"
+version: "0.2.1"
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [leadpoet_desk_current, leadpoet_desk_set_draft, leadpoet_customers_status]

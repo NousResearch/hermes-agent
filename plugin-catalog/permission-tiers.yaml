@@ -1,0 +1,31 @@
+name: permission-tiers
+repo: https://github.com/imperator-clawdius/hermes-permission-tiers
+sha: 080cd7edfa0bb2193d4fe1277a2503b725a27b8e
+description: >-
+  Host-enforced tiered tool permissions: assign allow/ask/block tiers to tool-name patterns
+  (fnmatch globs), and the plugin's pre_tool_call hook vetoes or escalates matching calls
+  before they execute, while post_tool_call keeps a local SQLite audit ledger. Two tools
+  manage it: permission_tiers_report (rules + ledger) and permission_tiers_set (add/update/
+  remove). Implements the per-tool permission-levels feature requested in issue #527 without
+  touching Hermes core — public hooks only. Safe defaults: shell and MCP tools ask, everything
+  else keeps Hermes' existing behaviour; hook errors fail open; unattended runs fail closed
+  on ask escalations (the plugin never auto-approves). Disclosure — no network calls, no
+  third-party services, no stored credentials; reads/writes only its own tiers.json and
+  ledger under the Hermes plugin-data directory; bundled permission-tiers skill documents
+  usage.
+maintainer: imperator-clawdius
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/imperator-clawdius/hermes-permission-tiers#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - permission_tiers_report
+    - permission_tiers_set
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

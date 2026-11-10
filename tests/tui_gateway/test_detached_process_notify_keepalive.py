@@ -163,7 +163,11 @@ def test_unpublished_completion_survives_registry_pruning(server, registry, deta
     registry._move_to_finished(proc)
 
     assert seen == [(True, False)]
-    with registry._lock:  # once published, the entry is ordinary history again
+    with registry._lock:  # published but not yet delivered: the notice is still owed, so the entry stays
+        registry._prune_if_needed()
+    assert proc.id in registry._finished
+    registry.settle_notification(registry.completion_queue.get(timeout=5))
+    with registry._lock:  # once settled, the entry is ordinary history again
         registry._prune_if_needed()
     assert proc.id not in registry._finished
 
@@ -221,7 +225,12 @@ def test_queued_notice_survives_registry_pruning(server, registry, detached):
     with registry._lock:
         registry._prune_if_needed()
 
-    assert proc.id not in registry._finished
+    # The entry outlives pruning while its notice is owed (the Desktop row shows it as pending),
+    # and the queued notice keeps protecting its owner on its own.
+    assert proc.id in registry._finished
+    assert not server._session_is_reapable(sid, session)
+    with registry._lock:
+        registry._finished.pop(proc.id)
     assert not server._session_is_reapable(sid, session)
 
 

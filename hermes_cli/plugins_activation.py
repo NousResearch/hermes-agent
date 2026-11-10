@@ -129,7 +129,11 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]
     running), or when this process or the gateway cannot import the plugin's Python dependencies
     (``activation.missing_dependencies``; ``activation.missing_in`` names which: ``gateway`` and/or
     ``backend``, the Desktop / dashboard process): a running process never switches to the dependency
-    generation an enable just installed, so only restarting that process loads them."""
+    generation an enable just installed, so only restarting that process loads them. When the plugin
+    needs a dependency generation published after this process loaded its own
+    (:func:`_needs_restart_to_load`), nothing is loaded at all and ``activation`` is None."""
+    if _needs_restart_to_load(name):
+        return {"gateway_reloaded": False, "activation": None, "restart_required": True}
     from hermes_constants import get_hermes_home
     activation: Optional[dict[str, Any]] = load_and_go_live(name) if in_process else None
     if not in_process:
@@ -181,6 +185,39 @@ def gateway_reload_hint(answer: Optional[dict[str, Any]], name: str) -> str:
                 "  hermes gateway restart")
     return ("No running gateway answered. If one is running, restart it for this to take effect:\n"
             "  hermes gateway restart")
+
+
+def _needs_restart_to_load(name: str) -> bool:
+    """Would loading ``name`` now run it without its declared Python dependencies?
+
+    Enabling a plugin that declares dependencies publishes a new PM generation carrying them, but a
+    running process keeps the generation it booted on (``pm.environments_adopt.restart_needed``), and so
+    does a gateway started before it. Loading the plugin there fails on the missing imports; the next
+    process boots onto the new generation, so the enable only finishes after a restart. Never raises.
+    """
+    try:
+        from hermes_cli.plugins_cmd import _discover_all_plugins, _resolve_plugin_key
+        from hermes_cli.plugins_loader import _dist_installed
+        from pm.environments_adopt import restart_needed
+        from pm.paths import repo_root
+        from pm.plugin_declarations import read_python_declaration
+
+        key = _resolve_plugin_key(name) or name
+        path = next((entry[4] for entry in _discover_all_plugins() if entry[5] == key), None)
+        if path is None:
+            return False
+        declaration = read_python_declaration(Path(path))
+        # Requirements this process already imports need no restart, whatever the selection says.
+        if not declaration.installs_packages or all(
+                _dist_installed(req) is not False for req in declaration.install_requirements):
+            return False
+        reason = restart_needed(repo_root())
+    except Exception:
+        logger.debug("dependency generation check for %r failed", name, exc_info=True)
+        return False
+    if reason:
+        logger.info("Plugin %s is enabled; restart Hermes to load it (%s)", name, reason)
+    return bool(reason)
 
 
 def load_and_go_live(name: str) -> Optional[dict[str, Any]]:

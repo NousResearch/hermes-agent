@@ -30,20 +30,27 @@ import {
 import { handoffPreviewAnnotateStack } from '@/lib/preview-annotate/handoff'
 import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview-external'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { createPreviewWebview } from '@/lib/preview-webview'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $browserPages,
   $previewServerRestart,
+  type BrowserDocument,
+  canPopOutBrowserTab,
   commitBrowserTabLocation,
   failPreviewServerRestart,
+  hasViewerReopen,
   noteBrowserPage,
+  noteViewerDocument,
   popOutBrowserTab,
   type PreviewRenderMode,
   previewTabOwnerProfile,
   type PreviewTarget,
-  setPreviewRenderMode
+  reopenViewer,
+  setPreviewRenderMode,
+  viewerUrlSpent
 } from '@/store/preview'
 import { currentSessionId } from '@/store/preview-ownership'
 import { $selectedStoredSessionId, knownSessionProfile, ownerLookupSessionRows } from '@/store/session'
@@ -338,6 +345,15 @@ export function PreviewPane({
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
+  const isolatedBrowser = target.browserContext === 'isolated'
+  // An isolated viewer's address carries a one-time capability in its
+  // fragment; steering the live guest there would be a same-document hop the
+  // page never reads. A new viewer address builds a new guest instead.
+  const viewerUrl = isolatedBrowser ? target.url : null
+  // Bumped when a viewer's re-open failed, so the guest is then built from
+  // the address it has (the page explains what is missing).
+  const [viewerReopenRound, setViewerReopenRound] = useState(0)
+  const viewerReopenFailedRef = useRef<null | string>(null)
   const [annotate, setAnnotate] = useState(emptyAnnotateSession)
   const [draftNote, setDraftNote] = useState('')
   const annotateRef = useRef(annotate)
@@ -483,12 +499,20 @@ export function PreviewPane({
       return
     }
 
+    // Reloading a viewer re-runs its page without the capability it already
+    // spent; its opener mints a fresh one and the guest is rebuilt on it.
+    if (isolatedBrowser && tabId && hasViewerReopen(tabId)) {
+      void reopenViewer(tabId)
+
+      return
+    }
+
     if (webviewRef.current?.reloadIgnoringCache) {
       webviewRef.current.reloadIgnoringCache()
     } else {
       navigationRef.current?.reload?.()
     }
-  }, [isWebPreview])
+  }, [isolatedBrowser, isWebPreview, tabId])
 
   const annotateGuest = useCallback(() => createPreviewAnnotateGuest(webviewRef.current), [])
 
@@ -968,8 +992,9 @@ export function PreviewPane({
     lastReloadRequestRef.current = reloadRequest
 
     // An agent's file edit can only change a page a local dev server serves.
-    // Reloading any other site just throws away the user's page state.
-    if (target.kind !== 'url' || !isLoopbackPreviewUrl(currentUrl)) {
+    // Reloading any other site just throws away the user's page state. An
+    // isolated viewer strips its one-time ticket on load, so a reload kills it.
+    if (target.kind !== 'url' || target.browserContext === 'isolated' || !isLoopbackPreviewUrl(currentUrl)) {
       return
     }
 
@@ -978,7 +1003,15 @@ export function PreviewPane({
       message: copy.workspaceReloading
     })
     reloadPreview()
-  }, [appendConsoleEntry, copy.workspaceReloading, currentUrl, reloadPreview, reloadRequest, target.kind])
+  }, [
+    appendConsoleEntry,
+    copy.workspaceReloading,
+    currentUrl,
+    reloadPreview,
+    reloadRequest,
+    target.browserContext,
+    target.kind
+  ])
 
   useEffect(() => {
     if (
@@ -1118,13 +1151,42 @@ export function PreviewPane({
       })
     }
 
-    const webview = document.createElement('webview') as PreviewWebview
-    // A page with no background of its own shows white, as in a browser and the remote HTML frame below.
-    webview.className = 'flex h-full w-full flex-1 bg-white'
-    // Per-profile cookie jar so one profile's in-app sign-ins never land in another's jar (#150283 P1-3).
-    webview.setAttribute('partition', previewPartitionForTab(ownerSessionIdRef.current, tabId))
-    webview.setAttribute('src', initialUrl)
-    webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
+    // An isolated viewer's one-time capability was spent by the document that
+    // loaded it (the page strips it from its address). Rebuilding the guest —
+    // its pane was unmounted — from that address cannot connect, so ask the
+    // opener for a fresh one first. Without a re-open (or if it fails) the old
+    // address loads and the page explains itself.
+    if (
+      tabId &&
+      target.browserContext === 'isolated' &&
+      viewerUrlSpent(tabId, initialUrl) &&
+      hasViewerReopen(tabId) &&
+      viewerReopenFailedRef.current !== initialUrl
+    ) {
+      let cancelled = false
+
+      // Success changes target.url, which rebuilds this guest on its own.
+      void reopenViewer(tabId).then(ok => {
+        if (cancelled || ok) {
+          return
+        }
+
+        viewerReopenFailedRef.current = initialUrl
+        setViewerReopenRound(round => round + 1)
+      })
+
+      return () => {
+        cancelled = true
+      }
+    }
+
+    const webview = createPreviewWebview(
+      initialUrl,
+      target.browserContext,
+      // Per-profile cookie jar so one profile's in-app sign-ins never land in another's jar (#150283 P1-3).
+      previewPartitionForTab(ownerSessionIdRef.current, tabId)
+    ) as PreviewWebview
+    let liveDocument: BrowserDocument | undefined
 
     // The guest preload (main.ts installs it on this partition) forwards a
     // clicked `_blank` anchor here. Admission is our side of the contract —
@@ -1188,7 +1250,31 @@ export function PreviewPane({
         return
       }
 
-      noteBrowserPage(tabId, guestPage(webview, liveUrlRef.current))
+      noteBrowserPage(tabId, { ...guestPage(webview, liveUrlRef.current), document: liveDocument })
+    }
+
+    const dropDocument = () => {
+      liveDocument = undefined
+      notePage()
+    }
+
+    const onReady = () => {
+      const current: BrowserDocument = { isLive: () => liveDocument === current && webview.isConnected }
+      liveDocument = current
+
+      if (tabId && target.browserContext === 'isolated') {
+        noteViewerDocument(tabId, targetUrlRef.current)
+      }
+
+      notePage()
+    }
+
+    const onDocumentStart = (event: Event) => {
+      const detail = event as Event & { isMainFrame?: boolean; isInPlace?: boolean }
+
+      if (detail.isMainFrame && !detail.isInPlace) {
+        dropDocument()
+      }
     }
 
     const onNavigate = (event: Event) => {
@@ -1345,6 +1431,10 @@ export function PreviewPane({
     }
 
     webview.addEventListener('console-message', onConsole)
+    webview.addEventListener('dom-ready', onReady)
+    webview.addEventListener('did-start-navigation', onDocumentStart)
+    webview.addEventListener('render-process-gone', dropDocument)
+    webview.addEventListener('destroyed', dropDocument)
     webview.addEventListener('ipc-message', onGuestExternal)
     webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
@@ -1376,6 +1466,11 @@ export function PreviewPane({
         webviewRef.current = null
       }
 
+      dropDocument()
+      webview.removeEventListener('dom-ready', onReady)
+      webview.removeEventListener('did-start-navigation', onDocumentStart)
+      webview.removeEventListener('render-process-gone', dropDocument)
+      webview.removeEventListener('destroyed', dropDocument)
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('ipc-message', onGuestExternal)
       webview.removeEventListener('context-menu', onGuestContextMenu)
@@ -1393,7 +1488,19 @@ export function PreviewPane({
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, noteGuestReady, tabId, target.kind])
+  }, [
+    appendConsoleEntry,
+    consoleState,
+    copy,
+    isRemoteHtml,
+    isWebPreview,
+    noteGuestReady,
+    tabId,
+    target.browserContext,
+    target.kind,
+    viewerUrl,
+    viewerReopenRound
+  ])
 
   // Steers the LIVE guest when the session opens a new URL (#120265): loadURL
   // keeps the webview instance (JS state, cookies, form data, scroll, refs,
@@ -1403,7 +1510,7 @@ export function PreviewPane({
   // already shows the address (an in-page navigation got there first).
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (!isWebPreview || isRemoteHtml) {
+    if (!isWebPreview || isRemoteHtml || viewerUrl !== null) {
       return
     }
 
@@ -1434,7 +1541,7 @@ export function PreviewPane({
       })
       setLoading(false)
     })
-  }, [consoleState, copy.unreachableDescription, isRemoteHtml, isWebPreview, target.url])
+  }, [consoleState, copy.unreachableDescription, isRemoteHtml, isWebPreview, target.url, viewerUrl])
 
   return (
     <aside
@@ -1510,9 +1617,7 @@ export function PreviewPane({
             onOpenExternal={externalOpenerFor(currentUrl)}
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
-              target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
-                ? undefined
-                : () => popOutBrowserTab(tabId)
+              isBrowserWindow() || !tabId || !canPopOutBrowserTab(tabId) ? undefined : () => popOutBrowserTab(tabId)
             }
             onReload={reloadPreview}
             onToggleAnnotate={toggleAnnotate}
@@ -1525,7 +1630,7 @@ export function PreviewPane({
 
         {/* First-open real-profile consent offer — Browser tabs only (URL
             vessels the user browses with), never file/HTML previews. */}
-        {target.kind === 'url' && tabId && <RealProfileConsentDialog tabId={tabId} />}
+        {target.kind === 'url' && !isolatedBrowser && tabId && <RealProfileConsentDialog tabId={tabId} />}
 
         <div
           className="pointer-events-auto relative min-h-0 flex-1 overflow-hidden bg-transparent"

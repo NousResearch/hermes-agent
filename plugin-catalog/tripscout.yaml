@@ -1,11 +1,15 @@
 name: tripscout
 repo: https://github.com/marcofailli/tripscout
-sha: afce41cf7689420ef84ef7ad4c51c3375a0d7a17
+sha: 09e412f345a2b487911d0bb2e410dcd3998dae4f
 subdir: ""
 description: >-
-  Cheap city-break finder: prices flights AND hotels together across a date window, adds the
+  Cheap city-break finder: prices flights AND lodging together across a date window, adds the
   ground cost of reaching each departure airport, and ranks whole trips by total cost, with
   lodging-type filters (hotel/hostel/apartment) and optional food and attraction estimates.
+  Say where you leave from, e.g. "Prato", and the airports serving it and their train/bus
+  costs are resolved for you — 33 departure cities and 49 destinations ship with it. Ships
+  four agent tools plus a Hermes Desktop pane (desktop/plugin.js) whose backend runs the same
+  engine as the tools.
   Disclosure — no API key and no account: searches read the Google Flights results page and
   Google Hotels' public batchexecute RPC from your own IP address with a browser TLS
   fingerprint, so the cities, airports, dates, traveller count and currency you search are
@@ -20,8 +24,8 @@ maintainer: marcofailli
 tier: community
 category: tools
 requires_hermes: ">=0.23"
-docs_url: https://github.com/marcofailli/tripscout/tree/afce41cf7689420ef84ef7ad4c51c3375a0d7a17
-version: "0.2.1"
+docs_url: https://github.com/marcofailli/tripscout/tree/09e412f345a2b487911d0bb2e410dcd3998dae4f
+version: "0.3.0"
 readme: true
 platforms: [linux, macos, windows]
 capabilities:
@@ -29,6 +33,7 @@ capabilities:
     - tripscout_search
     - tripscout_price_trip
     - tripscout_history
+    - tripscout_origins
   provides_hooks: []
   provides_middleware: []
   requires_env: []

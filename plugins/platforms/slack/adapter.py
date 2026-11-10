@@ -2970,6 +2970,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
+            retry = list(chunk)  # what the per-image fallback still owes (refused links already went out)
             try:
                 file_uploads, initial_comment_parts, refused = await collect_image_uploads(
                     chunk, _unquote, _is_safe_url, create_ssrf_safe_async_client, safe_url_for_log)
@@ -2977,6 +2978,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                     sent = await self.send(chat_id, f"{alt_text}\n{image_url}" if alt_text else image_url,
                                            metadata=metadata)
                     delivered = delivered or sent.success
+                    retry.remove((image_url, alt_text))
                 if not file_uploads:
                     continue
                 initial_comment = "\n".join(initial_comment_parts) if initial_comment_parts else ""
@@ -2992,8 +2994,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                 logger.warning(
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
                     chunk_idx + 1, len(chunks), e, exc_info=True)
-                fallback = await super().send_multiple_images(
-                    chat_id, chunk, metadata, human_delay=human_delay)
+                fallback = await super().send_multiple_images(chat_id, retry, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 

@@ -38,13 +38,26 @@ def search(query, max_results=3):
 
 
 def display(food):
-    nutrients = {n["nutrientName"]: n.get("value", "?") for n in food.get("foodNutrients", [])}
-    cal = nutrients.get("Energy", "?")
-    prot = nutrients.get("Protein", "?")
-    fat = nutrients.get("Total lipid (fat)", "?")
-    carb = nutrients.get("Carbohydrate, by difference", "?")
-    fib = nutrients.get("Fiber, total dietary", "?")
-    sug = nutrients.get("Sugars, total including NLEA", "?")
+    # Names collide (Energy in kcal/kJ) and vary between USDA data types.
+    nutrients = {
+        (n["nutrientId"], n["unitName"].upper()): n["value"]
+        for n in food.get("foodNutrients", [])
+        if n.get("value") is not None
+    }
+
+    def value(*ids, unit="G"):
+        for nutrient_id in ids:
+            if (nutrient_id, unit) in nutrients:
+                return nutrients[nutrient_id, unit]
+        return "?"
+
+    # Prefer legacy Energy, then Atwater general, then Atwater specific.
+    cal = value(1008, 2047, 2048, unit="KCAL")
+    prot = value(1003)
+    fat = value(1004)
+    carb = value(1005)
+    fib = value(1079)
+    sug = value(2000)
 
     print(f"  {food.get('description', 'N/A')}")
     print(f"    Calories : {cal} kcal")

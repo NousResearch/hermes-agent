@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent.image_gen_provider import ImageGenProvider
+from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class GenerationError(RuntimeError):
 
 @dataclass(frozen=True)
 class SpriteProvider:
-    """Logical provider choice, resolved backend, and model pinned for this generation."""
+    """Logical provider choice, the backend serving it, and a model only a managed redirect pins."""
 
     name: str
     provider: ImageGenProvider
@@ -56,28 +57,34 @@ def _available(name: str):
     return provider if provider is not None and provider.is_available() else None
 
 
-def _sprite_provider(name: str, provider: ImageGenProvider) -> SpriteProvider:
-    """Keep the logical provider choice, but honor its managed model's gateway."""
-    from hermes_cli.config import load_config_readonly
+def _managed_krea_model() -> str | None:
+    """The stored native Krea id when the stored selection routes to the Krea gateway (a managed
+    ``nous`` pick, or no provider set), else ``None``."""
+    from plugins.image_gen._common import load_image_gen_config
     from tools.image_generation_managed import KREA, managed_route
 
-    cfg = load_config_readonly().get("image_gen", {})
+    cfg = load_image_gen_config()
     model = cfg.get("model")
-    model = model.strip() if isinstance(model, str) and model.strip() else None
-    if name == "nous" and managed_route(cfg.get("provider"), model) == KREA:
-        # Nous is one subscription choice spanning several gateways. Calling
-        # its Portal provider directly sends native Krea ids to the wrong API.
-        managed_provider = _available(KREA)
-        if managed_provider is None:
-            raise GenerationError(
-                "The selected Nous image model needs the Krea gateway, but that "
-                "backend is unavailable. Check Nous Subscription under "
-                "`hermes tools` → Image Generation."
-            )
-        provider = managed_provider
-    return SpriteProvider(
-        name=name, provider=provider, supports_references=True, model=model
-    )
+    if not isinstance(model, str) or managed_route(cfg.get("provider"), model) != KREA:
+        return None
+    return model.strip()
+
+
+def _candidate(name: str) -> SpriteProvider | None:
+    """The sprite backend for the logical choice *name*, or ``None`` when it cannot serve.
+
+    Nous Subscription is one choice spanning several gateways: a native Krea id under it goes to the
+    Krea backend (the Portal 404s on it), pinned so ``KREA_IMAGE_MODEL`` cannot swap the model, as the
+    image tool's managed route does; with Krea unavailable, Nous cannot serve. Every other choice keeps
+    its own model resolution (env override, ``image_gen.<provider>.model``): the top-level
+    ``image_gen.model`` may be another backend's id.
+    """
+    if (provider := _available(name)) is None:
+        return None
+    if name == NOUS_MANAGED_PROVIDER and (model := _managed_krea_model()):
+        krea = _available("krea")
+        return None if krea is None else SpriteProvider(name=name, provider=krea, supports_references=True, model=model)
+    return SpriteProvider(name=name, provider=provider, supports_references=True)
 
 
 def resolve_provider(*, require_references: bool = True, prefer: str | None = None) -> SpriteProvider:
@@ -85,26 +92,34 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
 
     Preference: ``HERMES_PET_IMAGE_PROVIDER`` (QA override, unknown values ignored),
     then *prefer* (desktop picker), then the active provider, then the first available
-    — each only if ref-capable and configured. With *require_references* off, any
-    available active provider is accepted (prompt-only base drafts).
+    — each only if ref-capable and configured (Nous with a native Krea model only while the
+    Krea backend is available). With *require_references* off, any available active
+    provider is accepted (prompt-only base drafts).
     """
     _discover()
     from agent.image_gen_registry import get_active_provider
 
     forced = os.environ.get("HERMES_PET_IMAGE_PROVIDER", "").strip().lower()
     for name in (forced, prefer):
-        if name in _REF_CAPABLE and (chosen := _available(name)) is not None:
-            return _sprite_provider(name, chosen)
+        if name in _REF_CAPABLE and (sprite := _candidate(name)) is not None:
+            return sprite
     try:
         active = get_active_provider()
     except Exception:
         active = None
     active_name = getattr(active, "name", "") if active is not None else ""
-    if active is not None and active_name in _REF_CAPABLE and active.is_available():
-        return _sprite_provider(active_name, active)
+    if active_name in _REF_CAPABLE and (sprite := _candidate(active_name)) is not None:
+        return sprite
     for name in _REF_CAPABLE:
-        if (provider := _available(name)) is not None:
-            return _sprite_provider(name, provider)
+        if (sprite := _candidate(name)) is not None:
+            return sprite
+    # The scan above found Nous unable to serve; when it is configured, that means its Krea model
+    # lacks the Krea backend. Raised before the prompt-only fallback, which would hit the Portal.
+    if _available(NOUS_MANAGED_PROVIDER) is not None:
+        raise GenerationError(
+            "The selected Nous image model needs the Krea gateway, but that backend is "
+            "unavailable. Check Nous Subscription under `hermes tools` → Image Generation."
+        )
     if not require_references and active is not None and active.is_available():
         return SpriteProvider(name=getattr(active, "name", "unknown"), provider=active, supports_references=False)
     raise GenerationError(
@@ -124,7 +139,7 @@ def list_sprite_providers() -> list[dict]:
     return [
         {"name": name, "label": _PROVIDER_LABELS.get(name, name), "default": name == default_name}
         for name in _REF_CAPABLE
-        if _available(name) is not None
+        if _candidate(name) is not None
     ]
 
 

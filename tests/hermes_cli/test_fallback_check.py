@@ -210,7 +210,10 @@ _ANSWER = {"index": 0, "message": {"role": "assistant", "content": "OK"}, "finis
     # An HTTP-200 relay of an upstream failure is classified like the request error it reports.
     ({"choices": [], "error": {"code": "invalid_api_key", "message": "Incorrect API key provided", "status": 401}},
      "live_auth"),
-    ({"success": False, "error": {"message": "Unauthorized: invalid api key"}}, "live_auth"),
+    ({"success": False, "data": {"error": {"message": "Unauthorized: invalid api key"}}}, "live_auth"),
+    # An always-present error object with empty fields is not a failure.
+    ({"choices": [_ANSWER], "error": {"message": None, "code": None}}, "ready"),
+    ({"choices": [_ANSWER], "error": {"code": 0, "message": ""}}, "ready"),
     ({"success": True, "data": {"id": "c", "object": "chat.completion", "created": 0, "model": "m",
                                 "choices": [_ANSWER]}}, "ready"),
     # Envelope normalization drops status/error, so both are read from the envelope first.
@@ -223,7 +226,7 @@ _ANSWER = {"index": 0, "message": {"role": "assistant", "content": "OK"}, "finis
     # Responses-style text outside ``choices`` is an answer, as on the aux path.
     ({"choices": [], "object": "response", "status": "completed", "output_text": "OK"}, "ready"),
     ({"choices": [], "object": "response", "status": "failed", "output_text": "OK"}, "live_response"),
-    # A malformed Responses-style body fails this entry, not the whole command.
+    # A malformed Responses-style body fails this entry (recovery raises inside the per-entry boundary).
     ({"choices": [], "object": "response", "output": [{"type": "message", "content": 42}]}, "live_unknown"),
 ])
 def test_live_judges_the_answer_body(monkeypatch, body, status):

@@ -1,0 +1,26 @@
+name: hermes-plant
+repo: https://github.com/tuancookiez-hub/hermes-plant
+sha: 55e0d555f118fc45cf313018fa2554fbb89625e5
+version: "1.0.0"
+title: Hermes Plant
+description: "A calm houseplant for Hermes Desktop that grows slowly in real time over days and weeks. It sits above the app like the Hermes pet, takes no layout space and can be dragged anywhere. Click it for a care wheel: water, prune, rotate, feed, repot, or ask Hermes. Pruning shapes how it branches, so every plant differs, and neglect only pauses it. Two agent tools let Hermes check the plant and tend it when you ask. Original blue-ink artwork drawn in code. Reachable from the status bar, the command palette and the keyboard, and it speaks through the Hermes pet when one is showing. Disclosure: no network requests, no background model calls and no background processes; Ask Hermes submits one chat message only when you press it; the plant is kept in Desktop plugin storage and in plugin-data/hermes-plant/data.db; the plugin adds its own floating element to the page (Hermes has no SDK area for one) and removes it on unload, without reading or changing core markup."
+maintainer: tuancookiez-hub
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/tuancookiez-hub/hermes-plant/tree/55e0d555f118fc45cf313018fa2554fbb89625e5
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/55e0d555f118fc45cf313018fa2554fbb89625e5/docs/images/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/55e0d555f118fc45cf313018fa2554fbb89625e5/docs/images/stages.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/55e0d555f118fc45cf313018fa2554fbb89625e5/docs/images/wheel.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/55e0d555f118fc45cf313018fa2554fbb89625e5/docs/images/shapes.png
+platforms: []
+capabilities:
+  provides_tools:
+    - plant_status
+    - plant_tend
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "The agent tools and the sync route need the Python half: add hermes-plant to plugins.enabled and restart Hermes. Without that the plant still works in Desktop."

@@ -229,6 +229,7 @@ def _seed_accounting(backend, scope):
     m.append(SessionId("acc-3"), _msg("plain", 4))
     for sid in ("acc-1", "acc-2", "acc-3"):
         s.end(SessionId(sid), "cli_close")
+    assert u.flush_usage() is True
 
 
 def _prune_ids(backend, scope, criteria: PruneCriteria) -> set[str]:

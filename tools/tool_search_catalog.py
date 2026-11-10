@@ -263,13 +263,17 @@ def hidden_declared_sources() -> list[dict[str, Any]]:
 
 
 def build_catalog_listing_with_form(
-    deferrable: list[dict[str, Any]], *, max_tokens: int = 4000) -> tuple[Optional[str], str]:
+    deferrable: list[dict[str, Any]], *, max_tokens: int = 4000,
+    server_form: str = "auto") -> tuple[Optional[str], str]:
     """Render the deferred-catalog manifest: ``- name: short desc`` lines grouped per source.
     Returns ``(text, form)``; form is ``"full"``, ``"names"``, ``"mixed"`` (oversized servers
     collapsed to a name + count line), ``"groups"`` (every server summarized) or ``"none"``
     (over budget even summarized -> text is None). Ordering is deterministic (sorted groups
     and tools) so the block is byte-stable — the request prefix stays cacheable. Degradation
-    is PER SERVER, largest first: one huge server must not cost a small one its listing."""
+    is PER SERVER, largest first: one huge server must not cost a small one its listing.
+    ``server_form`` ``"names"``/``"summary"`` pins every multi-tool group (a plugin or MCP
+    server) to that form while single-tool groups (deferred built-ins) keep their full line;
+    when the pinned render is over budget the budget ladder below decides as usual."""
     groups: dict[str, list[tuple[str, str]]] = {}
     for td in deferrable:
         fn = _fn(td)
@@ -320,6 +324,11 @@ def build_catalog_listing_with_form(
         text = "\n".join([header] + singles + blocks)
         return text if math.ceil(len(text) / CHARS_PER_TOKEN) <= max_tokens else None
 
+    if server_form in ("names", "summary") and any(len(g) > 1 for g in groups.values()):
+        text = assemble_if_fits({lbl: server_form if len(groups[lbl]) > 1 else "full" for lbl in groups})
+        if text is not None:
+            return text, "names" if server_form == "names" else (
+                "mixed" if any(len(g) == 1 for g in groups.values()) else "groups")
     for mode in ("full", "names"):  # 1. everything full; 2. everything names-only
         text = assemble_if_fits({lbl: mode for lbl in groups})
         if text is not None:

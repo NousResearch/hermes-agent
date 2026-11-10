@@ -50,6 +50,8 @@ class ToolSearchConfig:
     max_search_limit: int
     listing: str = "auto"  # "auto"/"on" = embed the manifest when it fits; "off" = bare bridge
     listing_max_tokens: int = 4000  # budget = min(this, threshold_pct% of context)
+    # "auto" = budget ladder only; "names"/"summary" pin multi-tool servers to that form.
+    listing_servers: str = "auto"
     # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
     defer_tools: Optional[frozenset] = None
 
@@ -81,6 +83,7 @@ class ToolSearchConfig:
             max_search_limit=max_search_limit,
             listing=_tri_state(raw.get("listing", "auto")),
             listing_max_tokens=_clamped_int(raw.get("listing_max_tokens"), 4000, 200, 60000),
+            listing_servers=_server_form(raw.get("listing_servers")),
             defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
                          if isinstance(defer_raw, (list, tuple, set)) else None))
 
@@ -92,6 +95,12 @@ def _tri_state(value: Any) -> str:
     """Normalize an ``auto``/``on``/``off`` setting (bool-ish aliases accepted)."""
     text = str(value).strip().lower()
     return _TRI_STATE_ALIASES.get(text, text if text in ("auto", "on", "off") else "auto")
+
+
+def _server_form(value: Any) -> str:
+    """``names``/``summary`` pin how multi-tool servers are listed; anything else is ``auto``."""
+    text = str(value or "").strip().lower()
+    return text if text in ("names", "summary") else "auto"
 
 
 def _clamped_int(value: Any, fallback: int, lo: int, hi: int) -> int:
@@ -365,7 +374,7 @@ def assemble_tool_defs(tool_defs: list[dict[str, Any]], *, context_length: Optio
     listing_budget = listing_token_budget(config, context_length)
     if config.listing != "off":
         listing, listing_form = build_catalog_listing_with_form(
-            deferrable, max_tokens=listing_budget)
+            deferrable, max_tokens=listing_budget, server_form=config.listing_servers)
     bridge = bridge_tool_schemas(len(deferrable), listing=listing, listing_form=listing_form,
                                  connections_granted=connections_granted)
     tier = 1 if listing_form in ("full", "names", "mixed") else 2

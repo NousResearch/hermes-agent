@@ -131,6 +131,8 @@ def test_literal_hash_normalization_preserves_markdown_regions(content):
     escaped = escape_literal_hash_prefixes("1. #89\n\n> - ##tag\n\n#release")
     assert escaped == "1. \\#89\n\n> - \\#\\#tag\n\n\\#release"
     assert escape_literal_hash_prefixes(escaped) == escaped
+    # Inline ```x``` is a code span, not an unclosed block fence swallowing the rest of the reply.
+    assert escape_literal_hash_prefixes("Use ```x``` here.\n\n#89 open.") == "Use ```x``` here.\n\n\\#89 open."
 
 
 @pytest.mark.asyncio

@@ -1183,7 +1183,12 @@ Custom providers can implement `supports_token`/`verify_token` the same way to e
 A provider can also accept **peer passes** (`supports_peer_pass = True` + `verify_peer_pass(token=...)`): short-lived tokens minted for one agent that let another Hermes agent call this agent's API server through the dashboard, without the agent's `API_SERVER_KEY`.
 
 - `/api/peer/<path>` forwards to the gateway API server on loopback and adds the API server key on the way; `/api/peer/p/<profile>/<path>` reaches one profile, named as the API server's `/p/<profile>/` prefix names it (`hermes` is the default profile unless a profile has that name).
-- Each path needs a permission the pass carries. `agents:message` covers what `hermes peer` uses: health, capabilities, sessions (list, create, get, chat), runs (start, status, events, stop). `agents:control` includes messaging and adds the rest of the user-facing API: run approvals, clarify, steer and resolve-unknown; session fork, messages, model, rename and delete; scheduled jobs; models, skills and toolsets; chat completions and responses. Only `agents:control` may set `X-Hermes-Session-Key`, which picks the API server's memory scope.
+- Each path needs a permission the pass carries.
+  `agents:message` covers what `hermes peer` uses, in the agent's Bot Chat only (the one session every peer message lands in): health, capabilities, finding and creating the Bot Chat, reading it, chat turns (plain and streaming), runs in it (start, status, events, stop).
+  Each turn runs with the agent's tools, terminal included, so a messaging pass lets its holder have the agent carry out tasks.
+  `agents:control` includes messaging in any session and adds the rest of the user-facing API: run approvals, clarify, steer and resolve-unknown; session listing, fork, messages, model, rename and delete; scheduled jobs, which keep running after the pass expires; models, skills and toolsets; chat completions and responses.
+  Only `agents:control` may set or receive `X-Hermes-Session-Key`, which picks the API server's memory scope.
+- Every chat turn and run is credited to the pass holder: the turn author's id is set to the verified holder, whatever the request body says.
 - Any other path is never forwarded, including `/api/cron/fire`, platform event intake, RoomLink grants and `/health/detailed`.
 - A gateway that is asleep or restarting answers 503 with `Retry-After`. A request the gateway dropped after receiving it answers 502 `peer_gateway_dropped` with no retry hint, because it may have run.
 - Only a peer pass opens `/api/peer`. It is checked apart from `verify_token`, so a pass never authorises another provider's token routes, and a pass without the dashboard scope never opens a dashboard session.

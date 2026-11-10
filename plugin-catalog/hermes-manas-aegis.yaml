@@ -1,8 +1,8 @@
 name: hermes-manas-aegis
 title: Manas Aegis
 repo: https://github.com/elianjuan-g/hermes-manas-aegis
-sha: 7c5ab9132140c6ce34c5357cb213d739cd525246
-version: "2.6.3"
+sha: 27bf5c60015cbab8019cf9c457a9b391dbfdd0a3
+version: "2.6.4"
 description: >-
   [ALPHA] Experimental Hermes guardrail (prototype, not standalone security):
   pattern-based pre-tool checks that can block or rewrite some risky tool
@@ -57,6 +57,19 @@ description: >-
   two test payloads) moved from code literals to fixtures/vectors.json,
   loaded at import. Tests: 94/94 unit + contract; e2e HTTP 17/17;
   hermes plugins validate fully green (14/14 checks, security scan safe).
+  v2.6.4 fixes a load failure found by live verification: register()
+  called register_tool with a parameters= keyword that matches no
+  0.21.5 signature, so real discovery raised TypeError and the loader
+  discarded ALL of the plugin's registrations (hooks included) while
+  the HUD still served. Both tools now register with one
+  register_tool(name, toolset, schema, handler) call, and new
+  args-dict wrapper handlers read the arguments core passes
+  positionally (the bare functions would have bound the dict to
+  action/view and silently returned the default branch). Tests:
+  99/99 unit + contract (94 + 5 new, including a strict fake
+  context mimicking the real 0.21.5 signature); e2e HTTP 17/17;
+  hermes plugins validate fully green (14/14 checks, security scan
+  safe); live load test 33/33 through the real PluginManager.
   Serves a loopback-only HUD (http://127.0.0.1:18777) shown via a SandboxedFrame in
   the Desktop Manas Aegis tab; writes redacted interception telemetry
   (manas_telemetry.json, live file + append-only archive, unlimited) and a
@@ -71,8 +84,9 @@ description: >-
   scan). The HUD visual system follows the C3iHub CISO dashboard design
   (deep slate, one severity scale, sidebar navigation, Lucide SVG icons)
   with dark + light themes (toggle, saved in the browser). The two query tools (manas_tactical_core,
-  manas_stix_intelligence) need Hermes 0.23+ (register_tool parameters kwarg);
-  the core guard hooks work on 0.21.0+.
+  manas_stix_intelligence) register on Hermes 0.21.5+ via one
+  register_tool(name, toolset, schema, handler) call; the core
+  guard hooks work on 0.21.0+.
 maintainer: elianjuan-g
 tier: community
 category: tools
@@ -80,7 +94,6 @@ requires_hermes: ">=0.21.0"
 docs_url: https://github.com/elianjuan-g/hermes-manas-aegis
 known_issues:
   - "Alpha release: prototype guardrail, not standalone security; opt-in, test environments only."
-  - "The two query tools (manas_tactical_core, manas_stix_intelligence) need Hermes 0.23+; on 0.21.x the doctor reports a register_tool parameters mismatch (core guard hooks unaffected)."
   - "The HUD's big KPI cards count only local activity and the plugin's
     internal rule/indicator count; the live CISA KEV + NVD feed appears
     only in the separate global-intel panel, as awareness only — the

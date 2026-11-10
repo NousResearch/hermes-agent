@@ -8,7 +8,9 @@ agent's own key is added only here, on the way to loopback.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import urllib.parse
 from types import SimpleNamespace
 
 import httpx
@@ -225,6 +227,40 @@ def test_a_messaging_pass_sends_only_what_hermes_peer_sends(peer, path, body):
     allowed = peer.client.post(f"/api/peer{path}", headers=_bearer("pass-control"), json=body)
     assert allowed.status_code < 300, allowed.text
     assert {k: v for k, v in json.loads(peer.seen[-1]["body"]).items() if k != "author"} == body
+
+
+def _raw_get(path: str, query: bytes, token: str) -> int:
+    """One request whose query bytes reach the app as given, as an HTTP parser that keeps a literal
+    ``#`` in the request target (h11) hands them over; HTTP clients would cut it as a fragment."""
+    messages: list = []
+    pending = [{"type": "http.request", "body": b"", "more_body": False}]
+    answered = asyncio.Event()
+
+    async def receive():
+        if pending:
+            return pending.pop()
+        await answered.wait()  # the client hangs up once the response is complete
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+        if message["type"] == "http.response.body" and not message.get("more_body"):
+            answered.set()
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1",
+             "method": "GET", "scheme": "https", "path": path, "raw_path": path.encode(), "query_string": query,
+             "root_path": "", "client": ("198.51.100.9", 40000), "server": ("agent.example.com", 443),
+             "headers": [(b"host", b"agent.example.com"), (b"authorization", f"Bearer {token}".encode())]}
+    asyncio.run(web_server.app(scope, receive, send))
+    return next(m["status"] for m in messages if m["type"] == "http.response.start")
+
+
+def test_the_query_sent_upstream_is_the_query_checked(peer):
+    """A literal ``#`` would end the URL built for the gateway, which would then miss the Bot Chat
+    title filter the check saw and list every session."""
+    assert _raw_get("/api/peer/api/sessions", b"x=#&title=Bot+Chat", "pass-message") == 200
+    sent = peer.seen[-1]
+    assert sent["path"] == "/api/sessions"
+    assert urllib.parse.parse_qs(sent["query"]) == {"x": ["#"], "title": ["Bot Chat"]}
 
 
 def test_a_messaging_pass_on_a_profile_reaches_that_profiles_bot_chat(peer):

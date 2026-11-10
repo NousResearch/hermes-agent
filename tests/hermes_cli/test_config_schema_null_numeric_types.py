@@ -93,5 +93,6 @@ def test_null_numeric_fields_can_be_cleared_back_to_auto() -> None:
     AutoField emits ``null`` on an empty input only for entries carrying this flag, so a
     missing flag turns "clear the override" into "set the count to zero".
     """
+    assert NULL_NUMERIC_KEYS, "the null-default numeric table is missing or empty"
     for key in sorted(NULL_NUMERIC_KEYS):
         assert CONFIG_SCHEMA[key].get("nullable") is True, key

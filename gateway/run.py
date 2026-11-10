@@ -2386,6 +2386,16 @@ def _resolve_gateway_model_context(
             base_url = route["base_url"]
             api_key = route.get("api_key")
             return
+        named = str((route or {}).get("provider") or "").strip()
+        if named and named.lower() not in {"custom", "auto"} and named != str(configured_provider or "").strip():
+            # A route that names a provider but carries no endpoint (a persisted / SessionDB route of
+            # a session /model-switched to ``providers.<name>``) must resolve THAT provider's endpoint.
+            # Falling back to the default runtime looked the window up against the default endpoint and
+            # its context pin (e.g. a 1M local model reported as the default proxy's 512K).
+            named_rt = _best_effort(lambda: _resolve_runtime_agent_kwargs_for_provider(named, target_model=resolved_model))
+            if named_rt and named_rt.get("base_url"):
+                provider, base_url, api_key = named, named_rt["base_url"], named_rt.get("api_key")
+                return
         runtime = _resolve_runtime_agent_kwargs()
         provider = runtime.get("provider") or provider
         base_url = runtime.get("base_url") or base_url

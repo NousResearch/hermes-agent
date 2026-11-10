@@ -400,12 +400,24 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         Call via ``asyncio.to_thread``: resolution can block (credential refresh, context-length
         probes), and the scope is entered here so contextvars behave in the worker thread."""
         with self._profile_scope_for_source(source):
-            return self._format_session_info()
+            override = None
+            try:  # the session's /model switch survives the reset, so report THAT route, not the default
+                override = self._session_model_override(self._session_key_for_source(source))
+            except Exception:
+                override = None
+            return self._format_session_info(override)
 
-    def _format_session_info(self) -> str:
-        """Model / provider / context-length / endpoint block so users can spot bad context detection."""
+    def _format_session_info(self, override: dict | None = None) -> str:
+        """Model / provider / context-length / endpoint block so users can spot bad context detection.
+
+        ``override`` is the session's in-memory /model override; when it names a model the block
+        resolves that model on its own route instead of the profile's default model."""
         from gateway.run import _resolve_gateway_model_context
-        resolved = _resolve_gateway_model_context()
+        if isinstance(override, dict) and override.get("model"):
+            resolved = _resolve_gateway_model_context(
+                override["model"], {k: override.get(k) for k in ("provider", "base_url", "api_key")})
+        else:
+            resolved = _resolve_gateway_model_context()
         context_length = resolved.context_length
         ctx_source = {
             "config": "config",

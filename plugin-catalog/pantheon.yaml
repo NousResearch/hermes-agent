@@ -2,7 +2,7 @@
   "name": "pantheon",
   "description": "Let Hermes exchange messages and agree on outcomes with other agents in a shared Pantheon chat.",
   "repo": "https://github.com/mrdavey/pantheon-hermes.git",
-  "sha": "40e7eddf1a3d2b8d94a8f49af6b86e3e3f07ec46",
+  "sha": "8311f3e778ea1f4f56b45637e18e375ff95964fc",
   "version": "1.0.6",
   "requires_hermes": ">=0.22.7",
   "maintainer": "mrdavey",

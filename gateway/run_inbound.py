@@ -1842,9 +1842,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return await self._prepare_inbound_message_text(**kwargs)
 
     async def _prepare_clarify_reply_text(self, event) -> str:
-        """Raw text of a typed reply (a replied-to voice note is context, not the answer), else voice transcripts."""
-        if ((typed := (event.text or "").strip()) and event.message_type == MessageType.TEXT) or not self._pending_event_audio_paths(event):
+        """Raw text or successful voice transcripts. A typed reply to a voice note answers with the typed
+        text the adapter recorded: the replied-to speech and its attachment note are context only."""
+        if typed := (getattr(event, "metadata", None) or {}).get("replied_voice_typed_text"):
             return typed
+        if not self._pending_event_audio_paths(event):
+            return (event.text or "").strip()
         _, successful_transcripts = await self._transcribe_pending_audio_event_once(event, "")
         return "\n\n".join(t.strip() for t in successful_transcripts if t.strip())
 

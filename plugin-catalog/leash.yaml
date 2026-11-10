@@ -1,6 +1,6 @@
 name: leash
 repo: https://github.com/nicoarias81/leash
-sha: ccd63b115accbea379277bb23962a8a452904c82
+sha: f3bf4f4dc3b4300aef0fabdaf5b08bd77bb63c9a
 description: "Lean OWASP Top 10 pentest toolkit run by the agent against your own dev app: scope-gated recon (TCP scan, same-origin crawl), multi-identity access-control testing with canary-based leak detection, parameter fuzzing, security-header audit and an evidence ledger that turns findings into a plain-language report grouped by OWASP category. Disclosure — all engine tools are network-active by design and fail closed without an authorized scope file; session tokens for test identities are stored locally in plugin-data and never enter the model context; enforce mode also blocks out-of-scope network-capable tool calls."
 maintainer: nicoarias81
 tier: community
@@ -26,3 +26,7 @@ capabilities:
     - post_tool_call
   provides_middleware: []
   requires_env: []
+screenshots:
+  - https://raw.githubusercontent.com/nicoarias81/leash/f3bf4f4dc3b4300aef0fabdaf5b08bd77bb63c9a/screenshots/toolbox.png
+  - https://raw.githubusercontent.com/nicoarias81/leash/f3bf4f4dc3b4300aef0fabdaf5b08bd77bb63c9a/screenshots/replay-bola.png
+  - https://raw.githubusercontent.com/nicoarias81/leash/f3bf4f4dc3b4300aef0fabdaf5b08bd77bb63c9a/screenshots/report.png

@@ -1,7 +1,7 @@
 """``HostedRoomAttachmentRepository`` on SQLite: room attachment rows and their content-deduplicated blob files
 in the hosted-room tables of either file.
 
-Blob bytes are files under ``<dir of the file>/hosted-room-attachments/blobs/`` (``HostedFiles.attachment_root``). A blob is written or verified inside the write transaction that records it, so a committed row always names a verified file; released blobs are unlinked after the commit, and the orphan sweep renames ``.tmp-`` staging files, ``.prune-`` quarantine files and unreferenced ``blob_*`` files inside its own write and unlinks them after it. The first attachment verb on a file in a process first runs the file's setup: the attachment tables in their own ``BEGIN IMMEDIATE``, the reconciliation of commitments their durable events name, then the prune with its sweep. ``put`` prunes again before it stores, so an expired upload never holds quota. The quotas are the ``session_rules.hosted_attachments`` constants.
+Blob bytes are files under ``<dir of the file>/hosted-room-attachments/blobs/`` (``HostedFiles.attachment_root``). A blob is written or verified inside the write transaction that records it, so a committed row always names a verified file; released blobs are unlinked after the commit, and the orphan sweep renames ``.tmp-`` staging files, ``.prune-`` quarantine files and unreferenced ``blob_*`` files inside its own write and unlinks them after it. The first attachment verb on a file in a process first runs the file's setup: the attachment tables in their own ``BEGIN IMMEDIATE``, the reconciliation of commitments their durable events name, then the prune with its sweep. ``put`` prunes again before it stores, so an expired upload never holds quota. On a read-only handle the read verbs skip that setup and only read: a file without the attachment tables holds no attachment, a missing blob reads as on a writable handle, and tables older than this version are refused, never migrated. The quotas are the ``session_rules.hosted_attachments`` constants.
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ import stat
 import threading
 import time
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from hermes_dir_acl import make_user_dir
-from persistence import JsonValue
+from persistence import JsonValue, PermanentStoreError
 from persistence.gateway.hosted_rooms import (
     AttachmentConflictError,
     AttachmentData,
@@ -39,10 +39,12 @@ from session_rules.hosted_attachments import (
 from session_rules.hosted_rooms import clock
 
 from .._backend import SQLiteStore, register_repository, translated
-from ._hosted_rooms_common import table_exists
+from ._hosted_rooms_common import table_columns, table_exists
 from ._hosted_store import HostedFiles
 
 __all__ = ["SQLiteHostedRoomAttachmentRepository", "retain_message_attachments"]
+
+_T = TypeVar("_T")
 
 # (state.db, blob root) file identities whose reconciliation and prune already ran in this process.
 _STARTED: set[tuple[str, str, int, int] | None] = set()
@@ -50,6 +52,10 @@ _STARTED_LOCK = threading.Lock()
 
 
 # ── schema ────────────────────────────────────────────────────────────────────
+
+
+# The columns ``_initialize`` adds to older attachment tables.
+_CURRENT_COLUMNS = frozenset({"viewer_access", "catalog_name"})
 
 
 # The attachment and blob tables and their indexes; older tables gain ``viewer_access`` and a filled ``catalog_name``.
@@ -238,10 +244,11 @@ def _read_committed_row(
     viewer: bool,
     now: float,
 ) -> sqlite3.Row:
+    # A read-only handle never creates the tables, so a file without them holds no attachment.
     row = conn.execute(
         "SELECT * FROM hosted_room_attachments WHERE attachment_id=? AND room_id=?",
         (attachment_id, room_id),
-    ).fetchone()
+    ).fetchone() if table_exists(conn, "hosted_room_attachments") else None
     if row is None or str(row["state"]) != "committed":
         raise AttachmentNotFoundError("attachment is not committed for this room")
     if row["expires_at"] is not None and float(row["expires_at"]) <= now:
@@ -359,10 +366,26 @@ class SQLiteHostedRoomAttachmentRepository:
     """Attachment rows and blob files on either hosted-room file."""
 
     def __init__(self, store: SQLiteStore) -> None:
+        self._store = store
         self._files = HostedFiles(store)
 
     def _blob_root(self, placement: HostedPlacement) -> Path:
         return self._files.attachment_root(placement) / "blobs"
+
+    def _read_root(self, placement: HostedPlacement, now: float) -> Path:
+        """The blob directory for a read verb: a writable handle runs ``_open`` first; a read-only handle only reads, so it creates, chmods, prunes and migrates nothing."""
+        return self._blob_root(placement) if self._store.read_only else self._open(placement, now)
+
+    def _read_rows(self, placement: HostedPlacement, fn: Callable[[sqlite3.Connection], _T]) -> _T:
+        """``fn`` on a read connection of the placement's file; a read-only handle refuses attachment tables older than this version instead of migrating them."""
+        if not self._store.read_only:
+            return self._files._hosted_read(placement, fn)
+
+        def _current(conn: sqlite3.Connection) -> _T:
+            if table_exists(conn, "hosted_room_attachments") and not _CURRENT_COLUMNS <= table_columns(conn, "hosted_room_attachments"):
+                raise PermanentStoreError(f"{self._files.path(placement)} is not set up for this version; a read-only store handle never migrates it")
+            return fn(conn)
+        return self._files._hosted_read(placement, _current)
 
     def _open(self, placement: HostedPlacement, now: float) -> Path:
         """Prepare the private root, run the first-touch schema, reconciliation and prune of this file once per process, and return the blob directory."""
@@ -817,8 +840,8 @@ class SQLiteHostedRoomAttachmentRepository:
                 normalized_event=event_id, viewer=viewer, now=now,
             )
         with translated():
-            blob_root = self._open(placement, now)
-            row = self._files._hosted_read(placement, _read)
+            blob_root = self._read_root(placement, now)
+            row = self._read_rows(placement, _read)
             data = _read_blob(
                 blob_root,
                 blob_id=str(row["blob_id"]),
@@ -841,8 +864,8 @@ class SQLiteHostedRoomAttachmentRepository:
             )
             return _metadata(row)
         with translated():
-            self._open(placement, now)
-            return self._files._hosted_read(placement, _read)
+            self._read_root(placement, now)
+            return self._read_rows(placement, _read)
 
     def read_range(self, *, placement: HostedPlacement, room_id: str, attachment_id: str, recipient_member_id: str,
                    event_id: str, offset: int, length: int, now: float | None = None) -> AttachmentData:
@@ -860,8 +883,8 @@ class SQLiteHostedRoomAttachmentRepository:
                 raise AttachmentError("attachment range starts past the end")
             return row
         with translated():
-            blob_root = self._open(placement, now)
-            row = self._files._hosted_read(placement, _read)
+            blob_root = self._read_root(placement, now)
+            row = self._read_rows(placement, _read)
             data = _read_blob_range(
                 blob_root, blob_id=str(row["blob_id"]), size=int(row["size"]), offset=offset, length=length)
             return AttachmentData(_metadata(row), data)
@@ -903,13 +926,13 @@ class SQLiteHostedRoomAttachmentRepository:
                 raise AttachmentNotFoundError("attachment changed during viewer read")
             return current
         with translated():
-            blob_root = self._open(placement, clock(now))
-            row = self._files._hosted_read(placement, _first)
+            blob_root = self._read_root(placement, clock(now))
+            row = self._read_rows(placement, _first)
             # No execution lock or SQLite snapshot spans filesystem/hash work.
             data = _read_blob(
                 blob_root, blob_id=str(row["blob_id"]), size=int(row["size"]), sha256=str(row["sha256"]),
             )
-            current = self._files._hosted_read(placement, _second)
+            current = self._read_rows(placement, _second)
             return AttachmentData(_metadata(current), data)
 
 

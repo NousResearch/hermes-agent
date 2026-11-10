@@ -3,7 +3,7 @@ title: UNBL0CK
 repo: https://github.com/KyaniteLabs/unbl0ck
 sha: cea69470241cd57aee35eaa970325104c555e8bc
 version: "0.4.5"
-description: "One queue of everything blocked on you: live agent prompts, pairing requests, blocked Kanban cards and chats on any platform that ask you something. Answer Kanban cards in place; optional one-line summaries and Ask send item text to your configured model through ctx.llm (both can be turned off)."
+description: "One queue of everything blocked on you: live agent prompts, pairing requests, blocked Kanban cards and chats on any platform that ask you something. Answer Kanban cards in place; optional one-line summaries and Ask send item text to your configured model through ctx.llm (both can be turned off). Disclosure — reads every local profile's chat history (state.db, read-only), profile titles and pending pairing requests (through Hermes's PairingStore, never the codes) to build one queue, records live clarify/approval prompt text in its plugin data, and can comment on and unblock Kanban cards when you answer one; by default sends each new queue item's text (other profiles' chats included) to the configured model for a one-line summary, and card data on Ask (turn off with `bluf_enabled: false` / `ask_enabled: false`); on messaging platforms `/unbl0ck` replies with a count only; uses Hermes's internal Kanban modules, so a Hermes update can break it; no network of its own, no shell, no credentials."
 maintainer: KyaniteLabs
 tier: community
 category: tools

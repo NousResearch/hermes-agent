@@ -327,7 +327,11 @@ result by identity with the entry your card was rendered for before acting on a 
 `BasePlatformAdapter.get_session_model_settings(source)` is a synchronous, read-only
 accessor for native settings sheets. The named consumer is the **Inline platform plugin**:
 its agent settings sheet currently reads the runner's private session-model override map
-and combines it with configured defaults. Use this method instead of accessing that map.
+and combines it with configured defaults. This accessor supports a **partial migration**:
+model, provider, and session-key display can use it. Inline also passes its unsanitized
+configured/override endpoint to `list_picker_providers` for provider matching and custom-provider
+discovery. That operational picker path still needs a separate appropriate seam; the sanitized
+display URL below cannot replace it. Inline cannot remove its private read wholesale with this API.
 
 ```python
 # In a BasePlatformAdapter subclass, using the SessionSource built for this conversation:
@@ -346,8 +350,11 @@ change a previously returned result. An unattached adapter or rejected profile r
 returns `None`. An attached adapter with **no session** still returns configured defaults.
 
 For each setting, a nonempty in-memory session override wins over the channel default
-(model/provider), then the owning profile's configured model settings. Missing model and
-endpoint are `""`; missing provider is `"openrouter"`, as in Inline's existing display.
+(model/provider), then the owning profile's configured model settings. Channel model and
+provider defaults apply independently, including provider-only overrides. The display `base_url`
+falls back independently to the global configured endpoint even when the selected provider changes;
+it can belong to a different provider. Do not present that provider/endpoint pair as routing information.
+Missing model and endpoint are `""`; missing provider is `"openrouter"`, as in Inline's existing display.
 Both a flat `model: name` and the mapping form (`default`, or legacy `model`) are supported.
 The source's existing routing identity, or the adapter's canonical routing resolver on a
 copy of the source, selects the profile; the caller's source is not modified.

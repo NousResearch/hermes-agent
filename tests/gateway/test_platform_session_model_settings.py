@@ -149,6 +149,31 @@ def test_channel_and_session_precedence(settings_env):
     assert result["provider"] == "channel-provider"
 
 
+@pytest.mark.parametrize("model, provider", [
+    (None, "channel-provider"),
+    ("channel-model", None),
+])
+def test_channel_model_and_provider_defaults_are_independent(settings_env, model, provider):
+    from gateway.config import ChannelOverride
+
+    adapter, runner, source, home = settings_env
+    (home / "config.yaml").write_text(
+        "model:\n  default: global-model\n  provider: global-provider\n  base_url: https://global.example/v1\n"
+    )
+    runner.config.platforms = {Platform.TELEGRAM: PlatformConfig(channel_overrides={
+        source.chat_id: ChannelOverride(model=model, provider=provider)})}
+    key = runner._session_key_for_source(source)
+    assert adapter.get_session_model_settings(source) == {
+        "session_key": key, "model": model or "global-model",
+        "provider": provider or "global-provider", "base_url": "https://global.example/v1",
+    }
+    runner._session_state(key).conversation.model_override = {"provider": "session-provider"}
+    result = adapter.get_session_model_settings(source)
+    assert result["model"] == (model or "global-model")
+    assert result["provider"] == "session-provider"
+    assert result["base_url"] == "https://global.example/v1"
+
+
 def test_pinned_profile_config_and_source_are_isolated(settings_env):
     from gateway.session_identity import RoutingIdentity
 

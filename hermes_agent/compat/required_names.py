@@ -14,6 +14,9 @@ their canaries. Kinds:
   file copied out alone); the old path holds a byte copy of the moved file.
 
 Comments: the releases that reach the name, and one caller. Plain literals, importable on Python 3.11.
+
+``REQUIRED_TEXT``: text a release searches for in the file at the old path. The shim carries it in a
+comment. The text is fixed by the releases that read it.
 """
 
 REQUIRED_NAMES: dict[str, str] = {
@@ -105,6 +108,7 @@ REQUIRED_NAMES: dict[str, str] = {
     "hermes_cli.version_info": "module",  # v0.22.7..v0.23.0: hermes_cli/update_cmd_fleet.py:144@v0.23.0
     "hermes_bootstrap": "module",  # v0.21.6..v0.23.0: every launcher script and inline launch command, -I, no finder: hermes_cli/_launchers.py:68,499@v0.23.0
     "hermes_constants": "module",  # v0.21.6..v0.23.0: launcher --print-runtime-command, before hermes_bootstrap: hermes_cli/_launchers.py:61,492,504@v0.23.0
+    "hermes_state_common": "module",  # v0.22.7..v0.23.1: the updater reads its text, see REQUIRED_TEXT
     "model_tools": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "run_agent": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "tools.env_passthrough": "module",  # v0.22.7..v0.23.0: tools/environments/local.py:322@v0.23.0
@@ -139,4 +143,10 @@ REQUIRED_NAMES: dict[str, str] = {
     "plugins/platforms/weixin/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
     "plugins/platforms/whatsapp/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
     "plugins/platforms/whatsapp_cloud/gateway_env.py": "exists",  # v0.22.7..v0.23.0: gateway/platform_env.py:196@v0.23.0
+}
+
+REQUIRED_TEXT: dict[str, str] = {
+    # v0.22.7..v0.23.1: hermes_cli/update_downgrade_guard.py:67@v0.23.1 greps the target's root
+    # hermes_state*.py for the ledger table and refuses the update as a downgrade when it is absent
+    "hermes_state_common": "CREATE TABLE IF NOT EXISTS session_admissions",
 }

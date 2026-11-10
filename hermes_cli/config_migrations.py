@@ -960,12 +960,12 @@ def run_migrations(
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
     advance between steps — each step is gated on the same initial value.
 
-    Returns the target version of the first step that raised (also ``results["failed_step"]``),
-    else None. The ladder stops there: the caller stamps no further than the step before it, so
-    the next pass retries it, and the later steps wait for it. Running them now would make that
-    pass run them a second time, and a one-time step would then overwrite a value the user set in
-    between. *stop_at_failure* False (an in-memory migration that is never written back) runs
-    the rest anyway.
+    Returns the target version of the first step that raised (also ``results["failed_step"]``,
+    with its warning in ``results["failed_warning"]``), else None. The ladder stops there: the
+    caller stamps no further than the step before it, so the next pass retries it, and the later
+    steps wait for it. Running them now would make that pass run them a second time, and a
+    one-time step would then overwrite a value the user set in between. *stop_at_failure* False
+    (an in-memory migration that is never written back) runs the rest anyway.
 
     *config_only* transforms the config document alone (see :data:`_CONFIG_ONLY`).
     """
@@ -990,6 +990,7 @@ def run_migrations(
                         print(f"  ⚠ {warning}")
                     if failed is None:
                         failed = results["failed_step"] = target_ver
+                        results["failed_warning"] = warning
                     if stop_at_failure:
                         break
         return failed

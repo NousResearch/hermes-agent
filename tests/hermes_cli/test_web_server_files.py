@@ -956,7 +956,6 @@ def test_blocking_route_work_never_runs_on_the_event_loop(forced_files_client, m
     assert seen and not any(seen), seen
 
 
-
 def _refused_writes(client, target):
     """Status codes of upload and upload-stream overwriting *target*."""
     upload = client.post("/api/files/upload", json={
@@ -1103,3 +1102,58 @@ def test_managed_writes_allow_a_plain_chain_of_exactly_the_hop_bound(forced_file
         previous = link
 
     assert _refused_writes(client, previous) == (200, 200)
+# ── Host files under a remote workspace (#152838) ──────────────────────────────────────────
+# ``image_generate`` writes to the gateway host's ``cache/generated/images``. When the profile
+# runs ``terminal.backend: ssh`` the Webapp asked the remote machine for that path, failed, and
+# dropped the generated image from the reply. The unit under test is the classifier that decides
+# whether a path is the gateway host's own file before any SSH dial happens.
+
+
+@pytest.fixture
+def host_home(tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "hermes-home"
+    token = set_hermes_home_override(home)
+    try:
+        yield home
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _write_generated_image(home: Path, name: str = "image_20261110_101500_ab12cd34.png") -> Path:
+    path = home / "cache" / "generated" / "images" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    return path
+
+
+def test_a_generated_image_is_a_host_file_for_a_remote_workspace(host_home):
+    image = _write_generated_image(host_home)
+
+    assert _rt_files._is_host_file(str(image), None) is True
+    assert _rt_files._remote_fs_backend(str(image), None) is None
+
+
+def test_a_file_nested_under_the_generated_cache_is_not_a_host_file(host_home):
+    nested = _write_generated_image(host_home, "nested/image_20261110_101500_ab12cd34.png")
+
+    assert _rt_files._is_host_file(str(nested), None) is False
+
+
+def test_a_symlink_out_of_the_generated_cache_is_not_a_host_file(host_home, tmp_path):
+    image = _write_generated_image(host_home)
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("not a generated image")
+    image.unlink()
+    image.symlink_to(outside)
+
+    assert _rt_files._is_host_file(str(image), None) is False
+
+
+def test_a_browser_paste_still_reads_back_while_the_workspace_is_remote(host_home):
+    paste = host_home / "cache" / "images" / "paste_20261110_101500_ab12cd34.png"
+    paste.parent.mkdir(parents=True, exist_ok=True)
+    paste.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    assert _rt_files._is_host_file(str(paste), None) is True

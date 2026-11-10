@@ -400,11 +400,20 @@ def _chat_image_dir(home: Path) -> Path:
     return get_hermes_dir("cache/images", "image_cache", home=home)
 
 
+def _generated_image_dir(home: Path) -> Path:
+    """Where ``image_generate`` writes its output on this host: ``cache/generated/images``
+    (``agent.provider_media.GENERATED_SUBDIR``). These files are the only copy of a
+    base64-returning provider's output, so they stay host files for a profile whose
+    workspace is an SSH machine, exactly like a browser paste in ``_chat_image_dir``."""
+    return home / "cache" / "generated" / "images"
+
+
 def _is_host_file(path: str, profile: Optional[str]) -> bool:
     """Whether *path* is a file the profile keeps on this host even when its workspace is an SSH
-    machine, read back to be previewed and sent: a browser paste in its image cache, or a file the
-    browser's picker staged in its uploads folder. Only a file directly in one of those two folders
-    counts, after resolving symlinks and ``..``, so an SSH profile reads no other host file here.
+    machine, read back to be previewed and sent: a browser paste in its image cache, an image
+    ``image_generate`` wrote to its generated-image cache, or a file the browser's picker staged
+    in its uploads folder. Only a file directly in one of those folders counts, after resolving
+    symlinks and ``..``, so an SSH profile reads no other host file here.
     A ``file:`` URL counts by the native path it names, decoded once as ``_fs_path`` decodes it."""
     if path.lower().startswith("file:"):
         try:
@@ -419,19 +428,21 @@ def _is_host_file(path: str, profile: Optional[str]) -> bool:
         return False  # not on this host: the workspace's to answer
     with _profile_scope(profile):
         home = get_hermes_home()
-        cache = _chat_image_dir(home)
-    try:
-        if target.parent == cache.resolve(strict=True):
-            return True
-    except (OSError, RuntimeError):
-        pass
+        host_dirs = (_chat_image_dir(home), _generated_image_dir(home))
+    for host_dir in host_dirs:
+        try:
+            if target.parent == host_dir.resolve(strict=True):
+                return True
+        except (OSError, RuntimeError):
+            continue
     return is_staged_upload(home, target)
 
 
 def _remote_fs_backend(path: str, profile: Optional[str]):
-    """The SSH workspace reader for *path*, or None when this host owns it. The host's pastes and
-    staged uploads are checked before the SSH machine is dialed, so they read back while that
-    machine is down; every other path is the SSH machine's to answer (see ``_fs_backend``)."""
+    """The SSH workspace reader for *path*, or None when this host owns it. The host's pastes,
+    generated images and staged uploads are checked before the SSH machine is dialed, so they
+    read back while that machine is down; every other path is the SSH machine's to answer
+    (see ``_fs_backend``)."""
     if _is_host_file(path, profile):
         return None
     return _fs_backend(profile)

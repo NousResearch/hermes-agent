@@ -716,6 +716,7 @@ export function overlayRepoLanes(
   const deeperRepoPaths = root
     ? projectRepoPaths.filter((p): p is string => Boolean(p) && pathKey(p) !== repoRootKey && isPathUnder(root, p!))
     : []
+
   // Lanes that arrived with no rows are not eviction casualties — they're real
   // structure (a `git worktree list` lane, or one whose sessions are pinned
   // away). The prune below is only allowed to drop lanes IT emptied.

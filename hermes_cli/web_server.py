@@ -582,6 +582,49 @@ class _LocalOriginCORSMiddleware(CORSMiddleware):
 app.add_middleware(_LocalOriginCORSMiddleware, allow_methods=["*"], allow_headers=["*"])
 
 
+# Security headers for every response (browser-side hardening). Registered AFTER the CORS
+# middleware so it is the outermost one: even rejections produced by the auth gate carry them.
+#
+# CSP is deliberately conservative on scripts (all JS is bundled, index.html has no inline
+# <script>) and permissive on styles ('unsafe-inline'), because the SPA sets element styles
+# at runtime. ``connect-src`` must allow ws/wss: the dashboard streams over WebSockets.
+# COOP uses same-origin-allow-popups so OAuth/popup sign-in keeps working.
+_SECURITY_HEADERS: dict[str, str] = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+    "Permissions-Policy": "geolocation=(), payment=(), usb=()",
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; "
+        # Themes fetch their webfonts from Google Fonts at runtime.
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' data: https://fonts.gstatic.com; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; "
+        "object-src 'none'; form-action 'self'"
+    ),
+}
+
+
+@app.middleware("http")
+async def _security_headers_middleware(request: Request, call_next):
+    """Attach hardening headers to every response, including auth rejections and static files.
+
+    HSTS is added only when the request itself arrived over HTTPS (direct TLS or a trusted
+    reverse proxy announcing ``X-Forwarded-Proto: https``): sending it on plain-HTTP loopback
+    or a tailnet port would pin a scheme the deployment does not serve.
+    """
+    from hermes_cli.dashboard_auth.cookies import detect_https
+
+    response = await call_next(request)
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    if detect_https(request):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
 # Authenticated-route self-test: one in-process request per minute against a
 # cheap DB-touching route, catching "liveness fine but every authed request 500s".
 _DASHBOARD_SELFTEST_INTERVAL_SECONDS = 60.0

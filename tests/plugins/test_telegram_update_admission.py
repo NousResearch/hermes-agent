@@ -25,7 +25,7 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_context
 from gateway.session_context import get_session_env
 from tests.waiting import async_wait_until
-from plugins.platforms.telegram import adapter as tg_adapter
+from plugins.platforms.telegram import adapter as tg_adapter, telegram_media_fetch
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.update_admission import DEFAULT_MAX_CONCURRENT_UPDATES, PerChatUpdateProcessor
 
@@ -779,6 +779,9 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
         if stage == "inline":
             monkeypatch.setattr(InlineQuery, "answer", effect_then_fail)
         if stage == "media_warning":
+            # Every retry still runs (3 fetches), just without the production 2 s / 5 s backoff,
+            # so the warning reply is reached inside the 2 s entry wait below.
+            monkeypatch.setattr(telegram_media_fetch, "FETCH_RETRY_DELAYS", (0.0, 0.0))
             monkeypatch.setattr(PhotoSize, "get_file", AsyncMock(side_effect=OSError("download unavailable")))
             monkeypatch.setattr(Message, "reply_text", effect_then_fail)
         first = asyncio.create_task(app.process_update(update(app.bot, **args)))

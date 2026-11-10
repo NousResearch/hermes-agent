@@ -80,9 +80,22 @@ def _boot_or_effective_config() -> dict[str, Any]:
 def record_boot_config(config: Mapping[str, Any]) -> None:
     """Record the effective config the boot itself resolved, so every later hosted-mode read
     (:func:`is_hosted`, the boot checks) consults it instead of re-reading the profile's files.
-    The verdict stays frozen for the process either way."""
+    A config that CONTRADICTS the process's frozen verdict refuses instead of flipping it:
+    the kind of process this is was decided once, and a second, disagreeing record is a
+    mismatch the boot must stop on — an armed code fence cannot be disarmed by a verdict
+    change, so letting the two diverge would serve a boot whose checks answered a different
+    config than its enforcement did."""
+    hosted = _hosted_enabled(config)
+    frozen = _VERDICT.get("hosted")
+    if isinstance(frozen, bool) and hosted != frozen:
+        _refuse(
+            f"the config the boot would record disagrees with the verdict frozen for this "
+            f"process (this process is {'hosted' if frozen else 'local'}, the config is not)",
+            "The kind of process this is was decided once from the deployment's config; "
+            "restart with one consistent config instead of recording a second one that "
+            "contradicts it")
     _VERDICT["config"] = config
-    _VERDICT["hosted"] = _hosted_enabled(config)
+    _VERDICT["hosted"] = hosted
 
 
 def is_hosted() -> bool:
@@ -349,22 +362,40 @@ def hosted_boot_preflight(*, profile_homes: tuple[Path, ...] = (),
     loader: a config read discovers and imports plugins, and a plugin this process must refuse
     must be refused before its module-level code can run. No-op when this process is not hosted.
 
-    The process-wide code fence is installed first
-    (:func:`hermes_cli.hosted_code_fence.install_hosted_code_fence`): from here on NO code
-    whose file resolves outside the deployment image can load in this process, whatever loader
-    tries — including the parent package of a dotted entry point checked below, and any loader
-    a later change forgets to guard. Passing clears the discovery gate
-    (:func:`plugin_loading_permitted`); a refusal raises before any plugin code loaded. Checks
-    manifests, config and provenance records only.
+    The start-flag confirmation runs first, in both directions: the hosted start command's
+    ``--hosted`` flag armed the process-wide code fence at process entry, before any
+    application import (:func:`hermes_cli.hosted_code_fence.arm_from_start_argv`), and this
+    preflight is where the flag is confirmed against the deployment's config. A hosted boot
+    whose start command did not arm the fence (so its application imported unfenced) refuses,
+    and so does a flagged start on a deployment whose config does not enable hosted — the
+    verdict the flag decided and the verdict the config records must agree. Passing clears the
+    discovery gate (:func:`plugin_loading_permitted`); a refusal raises before any plugin code
+    loaded. Checks manifests, config and provenance records only.
     """
+    from hermes_cli.hosted_code_fence import armed_by_start_flag
+
     if not is_hosted():
+        if armed_by_start_flag():
+            _refuse(
+                "the start command passed --hosted but this deployment's config does not "
+                "enable hosted",
+                "The --hosted start flag exists to arm the process-wide code fence before any "
+                "application import; a deployment that is not hosted must not pass it — "
+                "remove the flag from the start command, or enable hosted in the "
+                "deployment's config")
         return
+    if not armed_by_start_flag():
+        _refuse(
+            "a hosted boot must start with the --hosted start flag",
+            "The flag is what arms the process-wide code fence before any application "
+            "import — a boot that arms it only here would import the application first; "
+            "add --hosted to the hosted gateway's start command")
     if config is None:
         config = _boot_or_effective_config()
-    record_boot_config(config)
+    record_boot_config(config)  # also the config-versus-frozen-verdict confirmation
     from hermes_cli.hosted_code_fence import install_hosted_code_fence
 
-    install_hosted_code_fence()
+    install_hosted_code_fence()  # idempotent: the start flag already armed the fence at entry
     _refuse_credential_environment(env)
     _refuse_profile_secret_files(profile_homes)
     _refuse_uncurated_inprocess_code(config)
@@ -391,14 +422,15 @@ def assert_hosted_boot(gateway_config: Any = None, *, profile_homes: tuple[Path,
     ``None`` the platform check is skipped (a caller that serves nothing has no direct adapter).
     *profile_homes* are the profile directories the caller would serve besides the launch home.
 
-    The import-free checks run first (they are the preflight — an uncurated plugin is refused
-    before the discovery below can import it); then the checks that need loaded things run.
+    The preflight runs first — it is also what confirms the start command's ``--hosted`` flag
+    against config, in both directions — then the checks that need loaded things run. A local
+    install stops at the preflight's no-op, exactly as before.
     """
+    hosted_boot_preflight(profile_homes=profile_homes, config=config, env=env)
     if not is_hosted():
         return
     if config is None:
-        config = _boot_or_effective_config()
-    hosted_boot_preflight(profile_homes=profile_homes, config=config, env=env)
+        config = _boot_or_effective_config()  # the preflight recorded it: no further file I/O
     _refuse_direct_platform_adapters(gateway_config)
     # Discovery loads what the process serves, so the sandbox backend can be checked as
     # registered. Anything non-curated that would load was already refused above, before import.

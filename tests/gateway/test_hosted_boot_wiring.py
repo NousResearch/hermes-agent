@@ -114,6 +114,9 @@ async def test_a_hosted_refusal_stops_the_boot_before_anything_serves(_startup, 
         raise HostedBootRefused("a condition the process may not serve with. the fix")
 
     monkeypatch.setattr(hosted_mode, "assert_hosted_boot", refuse)
+    # The real start command armed the code fence at process entry, so the preflight's
+    # arm-confirmation sees it; this in-process boot simulation fakes exactly that.
+    monkeypatch.setattr("hermes_cli.hosted_code_fence.armed_by_start_flag", lambda: True)
     from gateway.config import GatewayConfig
     from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 
@@ -171,6 +174,11 @@ async def test_uncurated_user_plugin_code_never_runs_before_the_hosted_refusal(_
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     monkeypatch.setattr(hosted_mode, "_VERDICT",
                         {"hosted": None, "config": None, "plugins_permitted": False})
+    # The real start command armed the code fence at process entry (--hosted) and the
+    # preflight's install is an idempotent no-op there; this in-process boot simulation fakes
+    # both — an in-process fence is irremovable and would fence the local-boot tests below.
+    monkeypatch.setattr("hermes_cli.hosted_code_fence.armed_by_start_flag", lambda: True)
+    monkeypatch.setattr("hermes_cli.hosted_code_fence.install_hosted_code_fence", lambda: False)
     # The runner's own environment carries credential-shaped tool settings that are this test's
     # noise, not the probe's subject (the environment check has its own tests): skip it here so
     # the refusal under test is the plugin's.

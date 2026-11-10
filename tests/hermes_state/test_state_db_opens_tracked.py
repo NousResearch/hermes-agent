@@ -60,7 +60,7 @@ def test_readiness_probe_opens_the_tracked_file_with_reserved_home_characters(
     """URI parsing must not redirect a tracked readiness open to a different file."""
     from gateway.readiness import _probe_state_db
 
-    home = tmp_path / "profile #? with spaces"
+    home = tmp_path / "profile # with spaces"  # no "?": Windows rejects it in a file name
     state_db.parent.rename(home)
     db_path = home / "state.db"
     opened_paths: list[str] = []

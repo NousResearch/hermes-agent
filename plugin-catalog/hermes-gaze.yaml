@@ -2,7 +2,7 @@
 name: hermes-gaze
 title: Look
 repo: https://github.com/SilentHacks/look
-sha: "6ff0a462d29adb8056e144d677b5e839e541409e"
+sha: "0ce5e6a6b2d31269cccf5c7a273c5bf497652bd2"
 version: "0.1.0"
 requires_hermes: ">=0.23.1"
 description: "Ask about pages and use guarded Chrome actions. Apple Silicon macOS beta with broad debugger access and optional local voice and eyes."
@@ -12,12 +12,12 @@ category: web
 docs_url: https://github.com/SilentHacks/look
 readme: true
 screenshots:
-  - https://raw.githubusercontent.com/SilentHacks/look/6ff0a462d29adb8056e144d677b5e839e541409e/docs/catalog/screenshots/01-typed-input.png
-  - https://raw.githubusercontent.com/SilentHacks/look/6ff0a462d29adb8056e144d677b5e839e541409e/docs/catalog/screenshots/02-scripted-answer.png
-  - https://raw.githubusercontent.com/SilentHacks/look/6ff0a462d29adb8056e144d677b5e839e541409e/docs/catalog/screenshots/03-followup-input.png
-  - https://raw.githubusercontent.com/SilentHacks/look/6ff0a462d29adb8056e144d677b5e839e541409e/docs/catalog/screenshots/04-followup-answer.png
-  - https://raw.githubusercontent.com/SilentHacks/look/6ff0a462d29adb8056e144d677b5e839e541409e/docs/catalog/screenshots/05-protected-action-review.png
-  - https://raw.githubusercontent.com/SilentHacks/look/6ff0a462d29adb8056e144d677b5e839e541409e/docs/catalog/screenshots/06-extension-consent.png
+  - https://raw.githubusercontent.com/SilentHacks/look/0ce5e6a6b2d31269cccf5c7a273c5bf497652bd2/docs/catalog/screenshots/01-typed-input.png
+  - https://raw.githubusercontent.com/SilentHacks/look/0ce5e6a6b2d31269cccf5c7a273c5bf497652bd2/docs/catalog/screenshots/02-scripted-answer.png
+  - https://raw.githubusercontent.com/SilentHacks/look/0ce5e6a6b2d31269cccf5c7a273c5bf497652bd2/docs/catalog/screenshots/03-followup-input.png
+  - https://raw.githubusercontent.com/SilentHacks/look/0ce5e6a6b2d31269cccf5c7a273c5bf497652bd2/docs/catalog/screenshots/04-followup-answer.png
+  - https://raw.githubusercontent.com/SilentHacks/look/0ce5e6a6b2d31269cccf5c7a273c5bf497652bd2/docs/catalog/screenshots/05-protected-action-review.png
+  - https://raw.githubusercontent.com/SilentHacks/look/0ce5e6a6b2d31269cccf5c7a273c5bf497652bd2/docs/catalog/screenshots/06-extension-consent.png
 platforms:
   - macos
 known_issues:
@@ -25,8 +25,7 @@ known_issues:
   - "Eye tracking is experimental. Real-camera accuracy and screen-reader compatibility are unverified. English-first voice and UI."
   - "Questions and page evidence reach the configured model. Optional TypeSafe scope requests can add costs."
   - "Explicit allow-all skips Look action review for requested actions. Chrome sign-ins, model caches, calibration and Hermes/provider history survive plugin removal."
-  - "Converter-owned CoreML/MLX source acceptance under catalog rule 17 remains unresolved."
-  - "Gallery shows fixture-backed UI captured before v3 integration: scripted answers, no provider inference; not native Chrome consent or a fresh install."
+  - "Gallery shows fixture-backed UI captured before v3 integration, with scripted answers and no provider inference. Not native Chrome consent or a fresh install."
 capabilities:
   provides_tools:
     - gaze_resolve

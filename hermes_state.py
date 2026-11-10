@@ -318,6 +318,9 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]
 _collected_references: queue.SimpleQueue = queue.SimpleQueue()
 _reaper: Optional[threading.Thread] = None
 _reaper_lock = threading.Lock()
+# Bound at import: a caller that later swaps threading.Thread for a synchronous stand-in (a test fixture) would
+# otherwise run the reaper's endless loop on its own thread at its first holder-less open.
+_ReaperThread = threading.Thread
 
 
 def _reap_collected_references() -> None:
@@ -334,7 +337,7 @@ def _ensure_reaper() -> None:
     with _reaper_lock:
         if _reaper is None or not _reaper.is_alive():
             # health: allow HX012 -- the reaper returns references for every profile's files and reads no profile state
-            _reaper = threading.Thread(target=_reap_collected_references, name="sessiondb-reaper", daemon=True)
+            _reaper = _ReaperThread(target=_reap_collected_references, name="sessiondb-reaper", daemon=True)
             _reaper.start()
 
 

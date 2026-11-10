@@ -8,11 +8,22 @@ scans without these rules. Leaf module: nothing here imports ``tools.skills_guar
 
 import re
 
+# The Hermes name must sit inside the load_dotenv / dotenv_values call's own arguments, not in a trailing
+# comment or a later statement. A regex cannot balance parens, so the span is spelled out for the call plus 3
+# nested levels (pitfall 12 is ``load_dotenv(join(environ.get("HERMES_HOME", expanduser("~/.hermes")), ...))``).
+def _closed(depth: int) -> str:  # a balanced (...) group at most *depth* levels deep
+    return r'\([^()\n]*\)' if depth == 1 else rf'\((?:[^()\n]|{_closed(depth - 1)})*\)'
+
+
+def _open_prefix(depth: int) -> str:  # text inside an open group, possibly entering one more nested group
+    return r'[^()\n]*' if depth == 1 else rf'(?:[^()\n]|{_closed(depth - 1)})*(?:\({_open_prefix(depth - 1)})?'
+
+
 # Case-sensitive, and ``.hermes`` must be a whole path segment, so ``.hermes-project.env``, ``myapp.hermes.env``
 # or a ``hermes_home_env_path`` variable do not match. Prose that quotes the call ("Never call
 # ``load_dotenv(HERMES_HOME/.env)``") matches too: that is a caution the user confirms, not a hard block.
 SKILL_ONLY_PATTERNS = [(re.compile(
-    r'\b(?:load_dotenv|dotenv_values)\s*\([^\n]*'
+    rf'\b(?:load_dotenv|dotenv_values)\s*\({_open_prefix(4)}'
     r'(?:HERMES_HOME|get_hermes_home|[~/\\"\']\.hermes(?:[/\\"\']|$))'),
     "hermes_env_dotenv", "high", "exfiltration", "loads the Hermes .env (every key of the profile) into the script")]
 ENV_READ_IDS = frozenset({"python_getenv_secret", "python_environ_get_secret"})

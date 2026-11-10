@@ -258,14 +258,18 @@ def test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception(tmp
 
 #: How an injected writer fails, each channel naming the value it saw: a plain exception's
 #: message, an OSError's strerror, an OSError's filename, a refusal typed as the store's own,
-#: and an OSError whose errno slot holds whatever the failing code put there — Python allows a
-#: string, so a writer that fails as ``OSError(value, ...)`` names the value in ``errno``.
+#: an OSError whose errno slot holds whatever the failing code put there — Python allows a
+#: string, so a writer that fails as ``OSError(value, ...)`` names the value in ``errno`` — and
+#: an exception whose very class is named after the value (``type(value, (OSError,), {})``):
+#: the class name is the failing code's own text too, and a fresh error that copies it names
+#: the value as surely as one that copies a message.
 _WRITER_FAILURES = {
     "plain": lambda value: ValueError("validation saw " + value),
     "strerror": lambda value: OSError(5, "writer saw " + value),
     "filename": lambda value: OSError(5, "I/O failed", value),
     "refusal": lambda value: SecretAdminRefused("plugin refused " + value),
     "string errno": lambda value: OSError(value, "write failed"),
+    "class name": lambda value: type(value, (OSError,), {})(5, "the writer failed"),
 }
 
 
@@ -273,11 +277,13 @@ _WRITER_FAILURES = {
 def test_a_failed_writes_fresh_error_names_none_of_the_writers_text(tmp_path, monkeypatch, kind):
     """A writer (or a backend plugin) that fails naming the value it saw — in its message, in
     an OSError's strerror, in an OSError's filename, in a refusal it typed as the store's own,
-    in the errno slot of an OSError it built with the value's text —
+    in the errno slot of an OSError it built with the value's text, in an exception class it
+    named after the value —
     puts nothing in the error the caller reads: whatever fails part-way through the write is
-    re-raised as the port's own fresh error, whose message the port wrote — the failing
-    exception's class name and, for an OSError, its errno number — never the failing code's own
-    text, which nothing vouches free of the value."""
+    re-raised as the port's own fresh error, whose message the port wrote — a fixed failure
+    category (``os-error``, ``encode-error`` or ``write-error``) and, for an OSError, its
+    errno number — never the failing code's own text, which nothing vouches free of the
+    value, its class name included."""
     from tests.conformance.secrets.mutants import apply_mutant
     apply_mutant(monkeypatch)  # only under test_mutants.py, which names a broken backend
     backend, _homes, _provider = local_backend(tmp_path, monkeypatch)

@@ -22,6 +22,9 @@ serialized, escaped form a writer quoted it into, and
 original failure to it, frames and all. Against the fresh error's own text:
 ``local_keeps_strerror_in_the_fresh_error`` copies the failing writer's own message, strerror
 and filename into the error the caller reads, and
+``local_keeps_the_writers_class_name_in_the_fresh_error`` copies the failing code's own
+exception class name instead of a fixed category label — a writer that names its class after
+the value it saw puts the value in the error the caller reads — and
 ``local_logs_exc_info_while_holding_the_value`` logs the failure with the live exception —
 exc_info and all — from a frame that still binds the value, so a log handler that keeps the
 record renders the plaintext from it later; ``local_loads_the_auth_store_after_binding_the_record``
@@ -341,6 +344,19 @@ def local_keeps_strerror_in_the_fresh_error(monkeypatch):
     monkeypatch.setattr("hermes_secret_port_local.fresh_write_error", fresh_write_error)
 
 
+def local_keeps_the_writers_class_name_in_the_fresh_error(monkeypatch):
+    """The fresh error names the failing code's own exception class — text the failing code
+    chose — so a writer that raises an exception class named after the value it saw puts the
+    value in the error the caller reads: the class name is writer text exactly like a message
+    is, and only a fixed category label keeps it out."""
+    from hermes_secret_port import SecretWriteFailed
+
+    def fresh_write_error(exc: BaseException) -> BaseException:
+        return SecretWriteFailed(f"the credential write failed: {type(exc).__name__}")
+
+    monkeypatch.setattr("hermes_secret_port_local.fresh_write_error", fresh_write_error)
+
+
 def local_logs_exc_info_while_holding_the_value(monkeypatch):
     """The failed write logs the failure — exc_info and all — from a frame that still binds the
     value, so a log handler that keeps the record renders the plaintext from that frame's
@@ -572,6 +588,9 @@ MUTANTS = {
     "local_keeps_strerror_in_the_fresh_error": (
         local_keeps_strerror_in_the_fresh_error,
         "tests/conformance/secrets/test_local.py::test_a_failed_writes_fresh_error_names_none_of_the_writers_text[strerror]"),
+    "local_keeps_the_writers_class_name_in_the_fresh_error": (
+        local_keeps_the_writers_class_name_in_the_fresh_error,
+        "tests/conformance/secrets/test_local.py::test_a_failed_writes_fresh_error_names_none_of_the_writers_text[class name]"),
     "local_logs_exc_info_while_holding_the_value": (
         local_logs_exc_info_while_holding_the_value,
         "tests/conformance/secrets/test_local.py::"

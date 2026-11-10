@@ -2643,6 +2643,7 @@ cli:
     ctx_pinned: " sabit"
     ctx_fallback: " varsayılan"
     ctx_unknown: "bağlam --"
+    weekly_usage: "hafta {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Zula ({count} öğe)"
     stash_header_other: "📌 Zula ({count} öğe)"

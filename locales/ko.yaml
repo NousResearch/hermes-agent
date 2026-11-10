@@ -2643,6 +2643,7 @@ cli:
     ctx_pinned: " 고정됨"
     ctx_fallback: " 기본값"
     ctx_unknown: "ctx --"
+    weekly_usage: "주 {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 스태시 ({count}개 항목)"
     stash_header_other: "📌 스태시 ({count}개 항목)"

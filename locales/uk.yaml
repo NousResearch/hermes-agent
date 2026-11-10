@@ -2643,6 +2643,7 @@ cli:
     ctx_pinned: " закріплено"
     ctx_fallback: " за замовчуванням"
     ctx_unknown: "ctx --"
+    weekly_usage: "тижд. {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Схованка ({count} елемент)"
     stash_header_other: "📌 Схованка ({count} елементів)"

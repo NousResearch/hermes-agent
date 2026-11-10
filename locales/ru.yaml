@@ -2643,6 +2643,7 @@ cli:
     ctx_pinned: " закреплён"
     ctx_fallback: " по умолчанию"
     ctx_unknown: "ctx --"
+    weekly_usage: "нед. {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Отложено ({count} элемент)"
     stash_header_other: "📌 Отложено (элементов: {count})"

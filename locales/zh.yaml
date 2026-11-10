@@ -2643,6 +2643,7 @@ cli:
     ctx_pinned: " 已固定"
     ctx_fallback: " 默认值"
     ctx_unknown: "上下文 --"
+    weekly_usage: "周 {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 暂存（{count} 项）"
     stash_header_other: "📌 暂存（{count} 项）"

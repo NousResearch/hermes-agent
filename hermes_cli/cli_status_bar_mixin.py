@@ -72,6 +72,28 @@ class CLIStatusBarMixin:
         return _threshold_style(cache_pct, ((70, "good"), (40, "warn")), "bad")
 
     @staticmethod
+    def _weekly_usage_style(percent_used: int) -> str:
+        """Yellow once half the week's allowance is gone, red for the last fifth of it."""
+        return _threshold_style(percent_used, ((80, "critical"), (50, "warn")), "good")
+
+    def _status_bar_weekly_usage(self, agent) -> Optional[int]:
+        """``wk N%`` reading, opt-in like the branch: reading it starts a background fetch from the
+        provider's usage API, so the default bar never touches that API."""
+        field_set = self._get_status_bar_field_set()
+        if field_set is None or "weekly_usage" not in field_set:
+            return None
+        from hermes_cli.status_bar_usage import weekly_usage_percent
+
+        return weekly_usage_percent(getattr(agent, "provider", None) or getattr(self, "provider", None))
+
+    def _weekly_usage_segments(self, snapshot, field_set) -> list:
+        """The ``wk N%`` segment, or none: unlisted in the fields, or no reading yet."""
+        percent = snapshot.get("weekly_usage_percent")
+        if percent is None or field_set is None or "weekly_usage" not in field_set:
+            return []
+        return [[(self._weekly_usage_style(percent), t("cli.status_bar.weekly_usage", percent=percent))]]
+
+    @staticmethod
     def _battery_status_style(category: str) -> str:
         return {
             "good": "class:status-bar-good",
@@ -231,6 +253,7 @@ class CLIStatusBarMixin:
             "battery_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
             "git_branch": "",
+            "weekly_usage_percent": None,
             "goal_active": False,
             "goal_turns_used": 0,
             "goal_max_turns": 0}
@@ -253,6 +276,8 @@ class CLIStatusBarMixin:
                 snapshot["git_branch"] = current_git_branch()
         except Exception:
             pass
+
+        snapshot["weekly_usage_percent"] = self._status_bar_weekly_usage(agent)
 
         # Battery reads are memoised inside agent.battery, so per-repaint polling is cheap.
         if getattr(self, "_battery_visible", False):
@@ -996,10 +1021,10 @@ class CLIStatusBarMixin:
         """Visible status-bar fields from ``display.status_bar.fields`` (module-level
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
-        Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
-        bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
-        prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
-        (opt-in only). Order is fixed; the config controls visibility only.
+        Fields: model, context_detail, context_pct, cache_hit, weekly_usage (opt-in only),
+        latency, tps, compressions, bg_tasks, bg_processes, bg_subagents, goal, git_branch
+        (opt-in only), duration, prompt_elapsed, idle_since, focus, yolo, stash, battery, title,
+        total_tokens (opt-in only). Order is fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -1075,6 +1100,7 @@ class CLIStatusBarMixin:
             cache = self._cache_hit_rate(snapshot, precision=1 if wide else 0)
             if cache:
                 add("cache_hit", self._cache_hit_rate_style(cache[0]), cache[1])
+            segs.extend(self._weekly_usage_segments(snapshot, field_set))
             if wide:
                 for name, key, glyph in (
                     ("latency", "avg_latency_label", "◷"), ("tps", "avg_velocity_label", "↑")):

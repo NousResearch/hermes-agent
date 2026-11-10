@@ -2643,6 +2643,7 @@ cli:
     ctx_pinned: " vasgepen"
     ctx_fallback: " terugval"
     ctx_unknown: "ktx --"
+    weekly_usage: "wk {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Bergplek ({count} item)"
     stash_header_other: "📌 Bergplek ({count} items)"

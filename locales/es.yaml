@@ -2643,6 +2643,7 @@ cli:
     ctx_pinned: " fijado"
     ctx_fallback: " por defecto"
     ctx_unknown: "ctx --"
+    weekly_usage: "sem. {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Guardados ({count} elemento)"
     stash_header_other: "📌 Guardados ({count} elementos)"

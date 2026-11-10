@@ -2743,6 +2743,7 @@ cli:
     ctx_pinned: " pinned"
     ctx_fallback: " fallback"
     ctx_unknown: "ctx --"
+    weekly_usage: "wk {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Stash ({count} item)"
     stash_header_other: "📌 Stash ({count} items)"

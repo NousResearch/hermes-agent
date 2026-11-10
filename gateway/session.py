@@ -843,7 +843,7 @@ class SessionStore(
         self._has_active_processes_fn = has_active_processes_fn
         self._write_sessions_json = bool(getattr(config, "write_sessions_json", True))
 
-        # Storage handles are cached per path and resolved for the active scope per call, never bound
+        # Storage handles are cached per profile and resolved for the active scope per call, never bound
         # once: a multiplexed gateway serves every profile from ONE process and a handle frozen to
         # the root home would land every profile's rows in the root state.db.
         # Initialize SQLite session database. A multiplexed gateway serves every profile from a SINGLE

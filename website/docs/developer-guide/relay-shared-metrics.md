@@ -480,6 +480,11 @@ offline (no network call, no subprocess):
   that cannot be read leaves the four fields out rather than reporting a false zero.
   A group chat created and disbanded inside the window is not counted as created.
   Room ids, names, members, link targets and message text are never read into the event.
+- `hosting` (`self_hosted`, `nous_cloud`): who hosts the install.
+  It reads `nous_cloud` only when the `HERMES_HOSTING` environment variable says so (Hermes Cloud sets it on
+  the agents it runs); anything else, or nothing, reads `self_hosted`, and the variable's raw value is never
+  recorded.
+  It carries no account, agent or machine identifier.
 
 ### Decision-data metrics
 
@@ -727,7 +732,7 @@ packages use v4, which adds `failure_class` to `hermes.compression.count` and
 `hermes.memory.op.count` and still accepts their v3 field sets (and, extended in place with additive values only, also after v4 shipped in a stable release,
 `failure_class` on `hermes.extension.install.count` / `hermes.update.run` plus `registry` on the
 former, still accepting their earlier v4 field sets; `hermes.prepared_compaction.count` and the
-snapshot's optional `compression_prepare_ahead` and `group_chat_*` counts arrived the same way), as v3 accepted the v2
+snapshot's optional `compression_prepare_ahead`, `group_chat_*` counts and `hosting` arrived the same way), as v3 accepted the v2
 field sets of `hermes.model_route.count`, `hermes.tool_call.count` and the task
 counters, so counters recorded before an upgrade drain safely.
 Vocabularies derived from in-repo registries (tool names, platforms, memory

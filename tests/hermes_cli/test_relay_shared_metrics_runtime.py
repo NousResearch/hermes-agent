@@ -2857,8 +2857,8 @@ def test_install_snapshot_is_daily_and_carries_only_bucketed_counts(
     lifecycle.invoke_hook("pre_llm_call", **event)
     lifecycle.finalize_session(session_id="t3")
 
-    [snapshot] = _stored_counters(tmp_path)["hermes.install.snapshot"]  # group chat counts: their own file
-    assert {k: v for k, v in snapshot.items() if not k.startswith("group_chat_")} == {
+    [snapshot] = _stored_counters(tmp_path)["hermes.install.snapshot"]  # group chats, hosting: own files
+    assert {k: v for k, v in snapshot.items() if not k.startswith(("group_chat_", "hosting"))} == {
         "cron_job_count_bucket": "0", "display_language": "en", "install_age_bucket": snapshot["install_age_bucket"],
         "main_provider": "none", "mcp_server_count_bucket": "1", "memory_provider": "plugin",
         "messaging_platform_count_bucket": "0", "plugin_count_bucket": "3_to_5",

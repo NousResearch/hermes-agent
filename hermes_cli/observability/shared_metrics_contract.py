@@ -357,6 +357,8 @@ RAM_BUCKETS = frozenset({
 })
 GPU_CLASSES = frozenset({"amd", "apple_silicon", "intel", "none", "nvidia", "unknown"})
 YES_NO = frozenset({"no", "yes"})
+# Who hosts the install, from HERMES_HOSTING (set by the hosting platform); anything else is self-hosted.
+HOSTINGS = frozenset({"nous_cloud", "self_hosted"})
 _INSTALL_V4_SNAPSHOT_DIMENSIONS = {
     "behind_bucket": BEHIND_BUCKETS, "gpu_class": GPU_CLASSES, "local_model_provider_used": YES_NO,
     "ram_bucket": RAM_BUCKETS, "release_channel": RELEASE_CHANNELS, "version_age_bucket": VERSION_AGE_BUCKETS,
@@ -915,7 +917,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "plugin_count_bucket": SIZE_BUCKETS, "profile_count_bucket": SIZE_BUCKETS,
         "skill_count_bucket": SIZE_BUCKETS, "terminal_backend": TERMINAL_BACKENDS,
         **_INSTALL_V4_SNAPSHOT_DIMENSIONS, **PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
-        **dict.fromkeys(GROUP_CHAT_SNAPSHOT_FIELDS, SIZE_BUCKETS),
+        **dict.fromkeys(GROUP_CHAT_SNAPSHOT_FIELDS, SIZE_BUCKETS), "hosting": HOSTINGS,
     },
     SESSION_METRIC: {
         "active_duration_bucket": SESSION_DURATION_BUCKETS, "entrypoint": TASK_ENTRYPOINTS,
@@ -1158,8 +1160,11 @@ _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
         _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS),
     ),
 }
-_LEGACY_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] = tuple(s - set(GROUP_CHAT_SNAPSHOT_FIELDS) for s in (  # group chats
-    *_LEGACY_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC], _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC]))
+# The group chat counts and hosting arrived together: every earlier shape lacks both, and an unreadable
+# room store leaves out only the group chat counts.
+_LEGACY_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] = (*(s - {*GROUP_CHAT_SNAPSHOT_FIELDS, "hosting"} for s in (
+    *_LEGACY_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC], _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC])),
+    _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(GROUP_CHAT_SNAPSHOT_FIELDS))
 # ---- v5 engagement ----
 _LEGACY_METRIC_FIELDS[SESSION_METRIC] = (_METRIC_FIELDS[SESSION_METRIC] - set(SESSION_VOLUME_DIMENSIONS),)
 # ---- end v5 engagement ----

@@ -155,7 +155,7 @@ def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:
     with contextlib.suppress(Exception):
         language = _display_language()
     from .shared_metrics_group_chats import group_chat_snapshot_fields
-    from .shared_metrics_install import install_v4_snapshot_fields
+    from .shared_metrics_install import install_hosting, install_v4_snapshot_fields
     from .shared_metrics_prepared_compaction import prepare_ahead_state
 
     return {**install_snapshot_fields(
@@ -171,4 +171,4 @@ def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:
         terminal_backend=_sub(_sub(config, "terminal"), "backend"),
         display_language=language,
     ), **install_v4_snapshot_fields(config), "compression_prepare_ahead": prepare_ahead_state(config),
-        **group_chat_snapshot_fields()}
+        **group_chat_snapshot_fields(), "hosting": install_hosting()}

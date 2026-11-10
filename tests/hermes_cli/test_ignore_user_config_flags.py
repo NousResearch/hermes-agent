@@ -124,14 +124,8 @@ class TestIgnoreUserConfigEnvGate:
         assert cfg["model"].get("default", "") not in ("test-vendor/project-sentinel", "test-vendor/user-sentinel")
 
 class TestIgnoreUserConfigDelegationDefault:
-    """``--ignore-user-config`` must not silently shrink the subagent iteration budget.
-
-    ``tools.delegate_tool_config._load_config()`` documents that
-    ``HERMES_IGNORE_USER_CONFIG=1`` "is only honored by the legacy loader, so it stays
-    authoritative when that flag is set" — i.e. the whole ``delegation`` section comes from
-    ``cli._cli_config_defaults()``, bypassing ``hermes_cli.config.DEFAULT_CONFIG``. Those two
-    default tables have to agree, or an isolated run gets a different cap from every other run.
-    """
+    """``--ignore-user-config`` must not silently shrink the subagent iteration budget: the
+    delegation reader must give the same cap as ``DEFAULT_CONFIG``."""
 
     def test_builtin_delegation_default_matches_the_delegate_tool_default(self):
         """The CLI's built-in default (``hermes_cli/cli_config_load.py``, re-exported by ``cli``) is the
@@ -187,8 +181,8 @@ class TestOneDefaultTableAndOneBypass:
         return tmp_path
 
     def test_classic_cli_defaults_are_the_shared_defaults(self, tmp_path, monkeypatch):
-        """An empty config.yaml gives ``hermes chat`` the turn cap, subagent cap and terminal timeout
-        that load_config (gateway, TUI, dashboard) gives: unlimited, 250, 180."""
+        """An empty config.yaml gives ``hermes chat`` the turn cap and subagent cap that load_config
+        (gateway, TUI, dashboard) gives: unlimited and 250."""
         from hermes_cli.config import load_config
         from hermes_cli.config_defaults import DEFAULT_CONFIG
 
@@ -198,7 +192,15 @@ class TestOneDefaultTableAndOneBypass:
 
         assert cfg["agent"]["max_turns"] == shared["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
         assert cfg["delegation"]["max_iterations"] == shared["delegation"]["max_iterations"] == 250
-        assert cfg["terminal"]["timeout"] == shared["terminal"]["timeout"] == DEFAULT_CONFIG["terminal"]["timeout"]
+
+    def test_a_shell_terminal_timeout_survives_a_file_terminal_section(self, tmp_path, monkeypatch):
+        """``hermes chat`` mirrors the file's terminal section to env; a key the file does not set
+        must not export a built-in default over the user's TERMINAL_TIMEOUT."""
+        self._home(tmp_path, monkeypatch, "terminal:\n  backend: local\n")
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "600")
+        import cli
+        cli.load_cli_config()
+        assert os.environ["TERMINAL_TIMEOUT"] == "600"
 
     def test_every_layered_reader_drops_the_user_file(self, tmp_path, monkeypatch):
         """With the flag set no layered read returns a value only config.yaml sets; the raw readers

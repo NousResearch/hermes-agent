@@ -187,7 +187,6 @@ def _cli_config_defaults():
         "model": {"default": "", "base_url": "", "provider": "auto"},
         "terminal": {
             "env_type": "local", "cwd": ".", "home_mode": "auto", "lifetime_seconds": 300,  # cwd "." -> os.getcwd()
-            "timeout": shared["terminal"]["timeout"],
             "docker_image": img, "docker_forward_env": [], "modal_image": img, "daytona_image": img, "docker_volumes": [],
             "docker_mount_cwd_to_workspace": False,  # opt-in only: sandbox isolation
             "docker_shared_container_key": "",

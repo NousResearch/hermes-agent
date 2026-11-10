@@ -288,3 +288,54 @@ def test_two_spellings_of_one_path_do_not_pin_each_other(tmp_path):
     registry.close_all_under(home)
     assert not _is_open(fd)
     assert not _is_open(alias_fd)
+
+
+@pytest.mark.platforms("posix")
+def test_close_all_under_does_not_block_on_a_held_probe_lock(tmp_path, monkeypatch):
+    """The second scan runs while ``offline_file_access`` holds ``_live_lock``, so it must never
+    wait unbounded on ``_HEADER_PROBE_LOCK``: a writer holding that lock in ``_pread_db_range`` can
+    be waiting on ``_live_lock`` behind a collection that finalizes an unclosed ``SessionDB``, and
+    the sweep would park for good. Driving ``close_all_under`` end to end is the point: the leaf
+    call alone would still pass on a tree whose scan blocks."""
+    import contextlib
+
+    from hermes_cli import sqlite_safe_read
+
+    home, db_path = _home(tmp_path, "contended")
+    _probe(db_path)
+    entry = dbfile._HEADER_PROBE_FDS[str(db_path)]
+    lock_held = threading.Event()
+    release = threading.Event()
+
+    def _hold_lock():
+        with dbfile._HEADER_PROBE_LOCK:
+            lock_held.set()
+            assert release.wait(10.0)
+
+    holder = threading.Thread(target=_hold_lock, daemon=True)
+    real_offline_file_access = sqlite_safe_read.offline_file_access
+
+    @contextlib.contextmanager
+    def _contended_offline_file_access(path, **kwargs):
+        # The probe lock is held for the whole offline window, as a writer holds it inside
+        # _pread_db_range while _live_lock is held here.
+        with real_offline_file_access(path, **kwargs):
+            holder.start()
+            assert lock_held.wait(5.0)
+            try:
+                yield
+            finally:
+                release.set()
+                holder.join(10.0)
+
+    monkeypatch.setattr(sqlite_safe_read, "offline_file_access", _contended_offline_file_access)
+    sweeper = threading.Thread(target=registry.close_all_under, args=(home,), daemon=True)
+    sweeper.start()
+    sweeper.join(5.0)
+    try:
+        assert not sweeper.is_alive(), "the sweep waited on the probe lock while _live_lock was held"
+        _assert_probe_kept(db_path, entry)
+    finally:
+        release.set()
+        holder.join(10.0)
+        sweeper.join(10.0)

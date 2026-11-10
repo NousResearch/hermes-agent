@@ -7,9 +7,12 @@ name: Sandbox desktop image
 # when its Dockerfile changes, not when the agent changes.
 #
 # Triggers: a PR that edits the Dockerfile/smoke (build + smoke, no push),
-# a release (publish :<tag>-desktop and roll :desktop), and manual dispatch.
-# Deliberately NOT on every main push: two 4 GB multi-arch builds per commit
-# for an image that changes a few times a year.
+# a successful Stable Release (publish :<tag>-desktop and roll :desktop), a
+# weekly rebuild (roll :desktop), and manual dispatch.
+# Deliberately NOT on every main push: two 4 GB multi-arch builds per commit.
+# Its CVEs come from the floating base tag and the apt packages, so freshness
+# is a rebuild on a clock, not a Dockerfile change: every publishing run
+# builds without layer cache and re-pulls the base.
 
 on:
   pull_request:
@@ -17,8 +20,13 @@ on:
       - docker/sandbox-desktop.Dockerfile
       - docker/sandbox-desktop-smoke.sh
       - .github/workflows/sandbox-image.yml
-  release:
-    types: [published]
+  # Not `release: published`: release automation creates releases with
+  # GITHUB_TOKEN, which starts no workflows, so that trigger never fired.
+  workflow_run:
+    workflows: ['Stable Release']
+    types: [completed]
+  schedule:
+    - cron: '23 4 * * 1'
   workflow_dispatch:
     inputs:
       publish:
@@ -39,7 +47,11 @@ env:
 jobs:
   # PR code: secret-free build + smoke per arch.
   build:
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: >-
+      github.repository == 'NousResearch/hermes-agent' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     strategy:
       fail-fast: false
       matrix:
@@ -66,6 +78,10 @@ jobs:
           platforms: ${{ matrix.platform }}
           tags: ${{ env.IMAGE_NAME }}:test
           load: true
+          # A publishing run starts fresh so it picks up base and apt fixes; publish then
+          # reuses these layers through the cache written below, so it pushes what was smoked.
+          no-cache: ${{ github.event_name != 'pull_request' }}
+          pull: ${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=sandbox-${{ matrix.arch }}
           cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope=sandbox-{0}', matrix.arch) || '' }}
 
@@ -75,7 +91,7 @@ jobs:
 
   # Trusted source only; the sole Docker Hub credential boundary.
   publish:
-    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'workflow_run' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish))
     needs: [build]
     environment: container-publish
     strategy:
@@ -129,7 +145,7 @@ jobs:
 
   # Registry-side stitch of the two digests into one tagged manifest list.
   merge:
-    if: ${{ !cancelled() && github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
+    if: ${{ !cancelled() && needs.publish.result == 'success' && github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'workflow_run' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
     needs: [publish]
     # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
     # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
@@ -156,7 +172,8 @@ jobs:
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          # Stable Release's run-name is "Stable release rc.<N>-v<version>"; the release is v<version>.
+          RUN_TITLE: ${{ github.event.workflow_run.display_title }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -170,8 +187,12 @@ jobs:
           fi
           # :desktop is the stable tag docker_image points at; releases also get a pinned tag.
           tags=(-t "${IMAGE_NAME}:desktop")
-          if [ -n "${RELEASE_TAG}" ]; then
-            tags+=(-t "${IMAGE_NAME}:${RELEASE_TAG}-desktop")
+          if [ "${GITHUB_EVENT_NAME}" = workflow_run ]; then
+            if [[ ! "${RUN_TITLE}" =~ rc\.[0-9]+-(v[^[:space:]]+)$ ]]; then
+              echo "::error::no release tag in Stable Release run title: ${RUN_TITLE}"
+              exit 1
+            fi
+            tags+=(-t "${IMAGE_NAME}:${BASH_REMATCH[1]}-desktop")
           fi
           for i in 1 2 3; do
             if docker buildx imagetools create "${tags[@]}" "${args[@]}"; then

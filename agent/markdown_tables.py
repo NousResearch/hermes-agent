@@ -29,13 +29,25 @@ def _disp_width(s: str) -> int:
     return max(wcswidth(s), 0)
 
 
+def _fills_cell(row: str, start: int, end: int) -> bool:
+    """The backtick run ``row[start:end]`` is a whole cell: whitespace, then a pipe or the row edge, on
+    both sides. A run touching a pipe (`` `| grep` ``, `` `cat |` ``) opens or closes code holding it."""
+    left = start
+    while left > 0 and row[left - 1].isspace():
+        left -= 1
+    right = end
+    while right < len(row) and row[right].isspace():
+        right += 1
+    return ((left == 0 or (row[left - 1] == "|" and left < start))
+            and (right == len(row) or (row[right] == "|" and right > end)))
+
+
 def _not_a_code_span(row: str, opener: int, opener_end: int, closing_end: int) -> bool:
     """A backtick pair that crosses a spaced pipe without being code: glued to a word on its outside
-    (``don`t | it`s``: apostrophes), or a run alone in its cell (`` `` | x | `` ``)."""
+    (``don`t | it`s``: apostrophes), or both runs alone in their cells (`` `` | x | `` ``)."""
     closer = closing_end - (opener_end - opener)
-    content = row[opener_end:closer].strip()
     return ((opener > 0 and row[opener - 1].isalnum()) or (closing_end < len(row) and row[closing_end].isalnum())
-            or content.startswith("|") or content.endswith("|"))
+            or (_fills_cell(row, opener, opener_end) and _fills_cell(row, closer, closing_end)))
 
 
 def split_table_row(row: str) -> list[str]:
@@ -54,6 +66,8 @@ def split_table_row(row: str) -> list[str]:
             scan -= 1
         start = scan + 1
         width = end - start
+        if width > 1 and width - 1 in next_run:
+            matching_ends[start + 1] = next_run[width - 1]  # the opener left after an escaped first tick
         if width in next_run:
             matching_ends[start] = next_run[width]
         next_run[width] = end

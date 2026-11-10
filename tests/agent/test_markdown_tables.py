@@ -75,6 +75,12 @@ def test_split_preserves_cells_when_backticks_pair_across_boundaries():
     assert split_table_row("| `` | x | `` |") == ["``", "x", "``"]
 
 
+def test_split_keeps_code_cell_whose_content_starts_or_ends_with_a_pipe():
+    assert split_table_row("| cmd | `| grep py | wc -l` | note |") == ["cmd", "`| grep py | wc -l`", "note"]
+    assert split_table_row("| cmd | `cat x | grep py |` | note |") == ["cmd", "`cat x | grep py |`", "note"]
+    assert split_table_row(r"| \``a | b` | c |") == [r"\``a | b`", "c"]
+
+
 def test_split_many_distinct_unmatched_backtick_runs():
     cells = ["`" * width for width in range(1, 160)]
     assert split_table_row("| " + " | ".join(cells) + " |") == cells

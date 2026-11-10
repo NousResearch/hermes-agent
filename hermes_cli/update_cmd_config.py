@@ -201,7 +201,8 @@ def _check_and_apply_config_migration(
         print(f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…")
         try:
             _mig_results = migrate_config(interactive=False, quiet=True)
-            print("  ✓ Config format updated (no new settings to configure)")
+            if _mig_results.get("failed_step") is None:
+                print("  ✓ Config format updated (no new settings to configure)")
             # quiet=True also mutes steps that RESET/REMOVE a setting; re-surface them so an
             # unattended update never silently changes config (config_added holds only mutations here).
             # In this branch missing_config is empty, so config_added can only contain migration-step

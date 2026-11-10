@@ -377,21 +377,44 @@ def _check_config_backend(backend, home, f: Finding) -> bool:
 
 
 def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
-    from hermes_cli.config import check_config_version, migrate_config
+    from hermes_cli.config import check_config_version, migrate_config, newer_stamp_message
     current_ver, latest_ver = check_config_version()
-    outdated = (f"Config version outdated (v{current_ver} → v{latest_ver})", "(new settings available)")
+    if current_ver > latest_ver:
+        check_warn(f"Config version v{current_ver} is newer than this build (v{latest_ver})", "(read as is)")
+        f.manual_issues.append(newer_stamp_message(current_ver))
+        return
+    failing = _failing_boot_migration()
+    outdated = (f"Config version outdated (v{current_ver} → v{latest_ver})",
+                f"(the last start's migration stopped: {failing})" if failing else "(new settings available)")
     if check_bool(current_ver >= latest_ver, f"Config version up to date (v{current_ver})", outdated):
         return
     if not should_fix:
         f.issues.append("Run 'hermes doctor --fix' or 'hermes setup' to migrate config")
         return
     try:
-        migrate_config(interactive=False, quiet=False)
+        results = migrate_config(interactive=False, quiet=False)
+        if results.get("failed_step") is not None:
+            check_warn(f"Config migration stopped at v{results['failed_step']}",
+                       f"(kept the steps before it, now v{check_config_version()[0]})")
+            f.manual_issues.append(next(
+                (w for w in results["warnings"] if f"v{results['failed_step']} failed" in w), results["warnings"][-1]))
+            return
         check_ok("Config migrated to latest version")
         f.fixed += 1
     except Exception as mig_err:
         check_warn(f"Auto-migration failed: {mig_err}")
         f.issues.append("Run 'hermes setup' to migrate config")
+
+
+def _failing_boot_migration():
+    """The error of this install's last boot migration when it stopped at a failing step, else None."""
+    try:
+        from hermes_cli.boot_bootstrap import read_last_known, record_path
+        from pm.paths import install_root
+        last = (read_last_known(record_path(install_root())).get("results") or {}).get("migrate_config") or {}
+    except (ImportError, OSError, ValueError):
+        return None
+    return last.get("error") if last.get("failed_step") else None
 
 
 def _drift_stale_root_keys(f: Finding, should_fix: bool, config_path) -> None:

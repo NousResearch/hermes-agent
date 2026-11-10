@@ -24,7 +24,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -35,6 +35,7 @@ import { attachPasskeyFlow, loadPasskeySigner } from './passkey_socket.js';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { appendPassiveRecord, buildPassiveRecord, isPassiveTerminal } from './passive_capture.js';
 import {
   addMentions,
   buildPollPayload,
@@ -162,21 +163,8 @@ const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000'
 function capturePassiveEvent(event) {
   if (!PASSIVE_CAPTURE_ENABLED) return;
   try {
-    mkdirSync(path.dirname(PASSIVE_CAPTURE_FILE), { recursive: true, mode: 0o700 });
-    appendFileSync(PASSIVE_CAPTURE_FILE, `${JSON.stringify({
-      capturedAt: new Date().toISOString(),
-      direction: 'inbound',
-      chatId: event.chatId,
-      senderId: event.senderId,
-      senderName: event.senderName || '',
-      isGroup: Boolean(event.isGroup),
-      messageId: event.messageId || '',
-      timestamp: event.timestamp || null,
-      body: event.body || '',
-      hasMedia: Boolean(event.hasMedia),
-      mediaType: event.mediaType || '',
-      mediaUrls: event.mediaUrls || [],
-    })}\n`, { encoding: 'utf8', mode: 0o600 });
+    const record = buildPassiveRecord(event);
+    if (record) appendPassiveRecord(PASSIVE_CAPTURE_FILE, record);
   } catch (err) {
     console.warn('[bridge] passive capture failed:', err.message);
   }
@@ -356,6 +344,8 @@ function logPollUpdateDiagnostic({ sourcePath, pollId, pollCreation, pollUpdates
 }
 
 function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
+  // Passive capture: poll votes must not reach the agent either.
+  if (PASSIVE_CAPTURE_ENABLED) return;
   const chatId = normalizeWhatsAppId(key?.remoteJid || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.remoteJid || '');
   const senderId = normalizeWhatsAppId(
     key?.participant
@@ -840,7 +830,7 @@ async function startSocket() {
       // Capture before admission. In passive mode this is the terminal
       // ingress path: the event must never reach the agent adapter, because
       // even a rejected event can otherwise trigger a typing indicator.
-      if (PASSIVE_CAPTURE_ENABLED && !msg.key.fromMe) {
+      if (isPassiveTerminal({ enabled: PASSIVE_CAPTURE_ENABLED, fromMe: msg.key.fromMe })) {
         capturePassiveEvent(event);
         continue;
       }
@@ -1258,6 +1248,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    passiveCapture: PASSIVE_CAPTURE_ENABLED,
     // path.resolve, not realpath: the adapter compares against os.path.abspath, which keeps symlinks.
     session: path.resolve(SESSION_DIR),
     capabilities: { outboundMentions: true },

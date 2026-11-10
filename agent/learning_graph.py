@@ -9,11 +9,10 @@ memory→skill links are derived from lexical overlap.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -53,14 +52,8 @@ def _related(fm: dict[str, Any]) -> list[str]:
 
 
 def _load_usage() -> dict[str, dict[str, Any]]:
-    try:
-        from tools.skill_usage import load_usage
-        return load_usage()
-    except Exception:
-        try:
-            return json.loads((get_hermes_home() / "skills" / ".usage.json").read_text(encoding="utf-8-sig"))
-        except Exception:
-            return {}
+    from tools.skill_usage import load_usage
+    return load_usage()
 
 
 def _to_int_ts(value: Any) -> Optional[int]:

@@ -83,9 +83,6 @@ class ProviderConfigSchema:
     docs_url: str = ""
     fields: tuple[ProviderField, ...] = dataclass_field(default_factory=tuple)
 
-    def inline_fields(self) -> tuple[ProviderField, ...]:
-        return tuple(f for f in self.fields if f.inline)
-
 
 _SCHEMA_CACHE: dict[str, ProviderConfigSchema] = {}
 _SCHEMA_FAILURES_LOGGED: set[str] = set()

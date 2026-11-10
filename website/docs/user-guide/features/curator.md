@@ -212,8 +212,8 @@ are true:
 Currently, only the **background self-improvement review fork** sets this marker
 — when it creates a new umbrella skill during its periodic review pass (~every 10
 agent turns). The background fork runs with a write origin of `"background_review"`
-(via `tools/skill_provenance.py`), which is the only path that triggers the
-`mark_agent_created()` call in `skill_manage`.
+(via `tools/skill_provenance.py`), which is the only path where `skill_manage` calls
+`record_created(agent_created=True)`.
 
 Skills the foreground agent creates via `skill_manage(action="create")` during a
 conversation (including `/learn`) are **not** marked as agent-created — they are
@@ -308,7 +308,7 @@ protected built-in skills, which have an owner other than you.
 
 Skills that ARE agent-created follow the full lifecycle:
 
-- `active` → (30d unused) `stale` → (90d unused) `archived`
+- `active` → (`stale_after_days` unused, default 14) `stale` → (`archive_after_days` unused, default 30) `archived`
 - Pinned skills bypass all auto-transitions
 - Archives are recoverable via `hermes curator restore <name>`
 

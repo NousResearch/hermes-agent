@@ -423,8 +423,6 @@ def _render_skill_block(
     loaded_skill, skill_dir, skill_name = loaded
     try:
         # Track active usage for Curator lifecycle management (#17782)
-        # Track active usage for Curator lifecycle management (#17782)
-        # Track active usage for Curator lifecycle management (#17782)
         from tools.skill_usage import bump_use
         bump_use(skill_name, task_id=task_id)
     except Exception:

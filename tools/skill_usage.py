@@ -12,7 +12,7 @@ import logging
 import os
 import threading
 from contextlib import contextmanager, suppress
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Optional
 

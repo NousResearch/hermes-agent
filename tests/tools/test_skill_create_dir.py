@@ -1,9 +1,8 @@
 """Tests for ``skills.create_dir`` — config-driven skill creation directory.
 
 When configured, agent-created skills (skill_manage action=create) land in
-``skills.create_dir`` instead of the profile-local skills dir, the directory
-is scanned for discovery like the local dir, and the instruction text that
-names the creation path renders the configured directory.
+``skills.create_dir`` instead of the profile-local skills dir, and the directory
+is scanned for discovery like the local dir.
 """
 
 import json
@@ -81,19 +80,6 @@ class TestGetSkillCreateDir:
         from agent.skill_utils import get_skill_create_dir
         _write_config(isolated_home, "skills:\n  create_dir: ''\n")
         assert get_skill_create_dir() is None
-
-
-class TestDisplaySkillCreateDir:
-    def test_default_renders_local_skills_path(self, isolated_home):
-        from agent.skill_utils import display_skill_create_dir
-        _write_config(isolated_home, "skills: {}\n")
-        assert display_skill_create_dir().endswith("/skills/")
-
-    def test_configured_renders_configured_path(self, isolated_home, tmp_path):
-        from agent.skill_utils import display_skill_create_dir
-        brain = tmp_path / "opt-brain"
-        _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
-        assert "opt-brain" in display_skill_create_dir()
 
 
 def test_tool_schema_stays_stable_when_skill_creation_home_changes(isolated_home, tmp_path):

@@ -20,7 +20,7 @@ import re
 import tarfile
 import time as _time
 import uuid
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any, Optional
 

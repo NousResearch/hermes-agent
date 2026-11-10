@@ -131,29 +131,9 @@ def _read_manifest() -> dict[str, str]:
 
 
 def _read_suppressed_names() -> set:
-    """Built-in skills the curator pruned — must NOT be re-seeded on sync.
-
-    Delegates to ``tools.skill_usage`` (single source of truth) and falls back
-    to reading ``~/.hermes/skills/.curator_suppressed`` directly if that import
-    is unavailable in a packaged/update context.
-    """
-    try:
-        from tools.skill_usage import read_suppressed_names
-
-        return read_suppressed_names()
-    except Exception:
-        path = _skills_dir() / ".curator_suppressed"
-        if not path.exists():
-            return set()
-        names = set()
-        try:
-            for line in path.read_text(encoding="utf-8-sig").splitlines():
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    names.add(line)
-        except OSError:
-            pass
-        return names
+    """Built-in skills the curator pruned — must NOT be re-seeded on sync."""
+    from tools.skill_usage import read_suppressed_names
+    return read_suppressed_names()
 
 
 def _write_manifest(entries: dict[str, str]):

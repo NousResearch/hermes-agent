@@ -17,9 +17,9 @@ import threading
 import time
 from collections import Counter
 from contextvars import copy_context
-from datetime import datetime, timedelta, timezone, UTC
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
+from typing import Any, Callable, NamedTuple, Optional
 
 from hermes_constants import get_hermes_home
 from agent.skill_utils import get_disabled_skill_names
@@ -193,17 +193,12 @@ def _cron_referenced_skills() -> set[str]:
 
 def _archive_as_curator(_u, name: str) -> bool:
     """Archive via skill_usage with the ledger actor tagged 'curator', so the ledger entry reads as an autonomous transition, not a foreground call."""
-    try:
-        from tools.skill_ledger import reset_ledger_actor, set_ledger_actor
-        tok = set_ledger_actor("curator")
-    except Exception:
-        tok = reset_ledger_actor = None  # type: ignore[assignment]
+    from tools.skill_ledger import reset_ledger_actor, set_ledger_actor
+    tok = set_ledger_actor("curator")
     try:
         return _u.archive_skill(name)[0]
     finally:
-        if tok is not None:
-            with contextlib.suppress(Exception):
-                reset_ledger_actor(tok)
+        reset_ledger_actor(tok)
 
 
 def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int]:
@@ -323,11 +318,6 @@ CURATOR_REVIEW_PROMPT = (
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
     "3. DO NOT touch skills shown as pinned=yes. Skip them entirely.\n"
-    "3b. DO NOT archive, delete, consolidate, move, or otherwise modify any "
-    "skill named in the protected built-ins list (currently: plan). These "
-    "back load-bearing UX (slash-command entry points referenced in docs and "
-    "tips) and are filtered out of the candidate list below — never resurrect "
-    "one as an archive or absorb target.\n"
     "3c. DO NOT archive or prune any skill marked `cron=yes` in the candidate "
     "list. A cron job depends on it and will fail to load it on its next "
     "run. You MAY still consolidate it into an umbrella — but only because "

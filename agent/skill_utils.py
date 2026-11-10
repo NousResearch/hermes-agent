@@ -387,18 +387,6 @@ def get_skill_create_dir() -> Optional[Path]:
     return resolved
 
 
-def display_skill_create_dir() -> str:
-    """User-facing path where new skills are created (``~/`` shorthand when
-    possible); tool schema descriptions and prompts follow ``skills.create_dir``."""
-    from hermes_constants import display_hermes_home
-    create_dir = get_skill_create_dir()
-    if create_dir is None:
-        return f"{display_hermes_home()}/skills/"
-    if create_dir.is_relative_to(Path.home()):
-        return "~/" + create_dir.relative_to(Path.home()).as_posix() + "/"
-    return create_dir.as_posix() + "/"
-
-
 # Cross-directory precedence, lowest tier wins: trusted project > local profile > skills.create_dir >
 # skills.external_dirs. Inside ONE tier two different skills sharing a name stay ambiguous — refused,
 # never guessed (59da8ec4e) — while identical copies under one root resolve to the shallowest.

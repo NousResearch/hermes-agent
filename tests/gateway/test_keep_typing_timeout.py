@@ -251,6 +251,86 @@ class TestPreDeliveryTypingSuspend:
             f"got {len(ticks)}"
         )
 
+    @pytest.mark.asyncio
+    async def test_max_typing_seconds_cap_exits_stalled_loop(self, monkeypatch):
+        """When a turn stalls without setting stop_event, PlatformConfig.max_typing_seconds
+        stops the refresh loop on its own so the platform's typing bubble expires naturally."""
+        from tests.waiting import async_wait_until
+
+        cfg = PlatformConfig.from_dict({"enabled": True, "max_typing_seconds": 0.05})
+        assert cfg.max_typing_seconds == 0.05
+        assert cfg.to_dict()["max_typing_seconds"] == 0.05
+
+        adapter = _StubAdapter()
+        adapter.config.max_typing_seconds = 0.05
+        ticks = []
+
+        async def recording_send_typing(chat_id, metadata=None):
+            ticks.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="stalled-chat",
+                interval=0.05,
+                stop_event=stop_event,
+            )
+        )
+        try:
+            # Non-cancelling wait: if the safety cap is removed, task.done() stays False
+            # and async_wait_until fails with AssertionError instead of cancelling the task.
+            await async_wait_until(
+                lambda: task.done(),
+                timeout=2.0,
+                what="_keep_typing to exit on its own at max_typing_seconds",
+            )
+            await task
+            assert not task.cancelled()
+            assert len(ticks) >= 1
+        finally:
+            if not task.done():
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+    @pytest.mark.asyncio
+    async def test_max_typing_seconds_zero_disables_cap(self, monkeypatch):
+        """max_typing_seconds=0 disables the cap and keeps refreshing until stop_event."""
+        from tests.waiting import async_wait_until
+
+        adapter = _StubAdapter()
+        adapter.config.max_typing_seconds = 0
+        ticks = []
+
+        async def recording_send_typing(chat_id, metadata=None):
+            ticks.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="uncapped-chat",
+                interval=0.05,
+                stop_event=stop_event,
+            )
+        )
+        try:
+            await async_wait_until(
+                lambda: len(ticks) >= 2 or task.done(),
+                timeout=2.0,
+                what="at least 2 typing ticks while uncapped",
+            )
+            assert not task.done()
+            assert len(ticks) >= 2
+        finally:
+            stop_event.set()
+            await asyncio.wait_for(task, timeout=1.0)
+
 
 @pytest.mark.asyncio
 async def test_process_message_pauses_typing_before_a_stalled_final_send():

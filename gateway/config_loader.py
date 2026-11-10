@@ -222,7 +222,7 @@ _SHARED_KEYS: tuple = (
     ),
     ("channel_skill_bindings", _DISCORD_SLACK, None),
     ("channel_prompts", None, _str_keyed),
-    *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
+    *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text", "max_typing_seconds"),
 )
 
 def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_block: bool = False) -> dict:

@@ -61,11 +61,17 @@ _ROUTES: dict[tuple[str, str], str] = {
 _METHODS = sorted({method for method, _ in _ROUTES})
 #: The routes whose turns the api_server credits to the body's ``author`` (memory attribution).
 _TURNS = frozenset({("POST", "api/sessions/*/chat"), ("POST", "api/sessions/*/chat/stream"), ("POST", "v1/runs")})
-#: Routes whose JSON body this route reads before forwarding.
-_READ_BODY = _TURNS | {("POST", "api/sessions")}
-#: What ``hermes peer`` sends to create the Bot Chat, which the api_server's own Bot Chat create
-#: also limits itself to (``api_server_bot_chat._PEER_CREATE_FIELDS``).
-_BOT_CHAT_CREATE_FIELDS = frozenset({"title", "source"})
+#: The body fields a messaging pass may send where this route reads the body: what ``hermes peer``
+#: sends (the api_server's own Bot Chat create also takes only ``title`` and ``source``). The
+#: api_server takes more there, which change more than the turn's own message: a model, kept for
+#: every later caller with ``require_model_lock``; a system prompt; a history; a stored response
+#: chain; the new session's settings. Those need ``agents:control``.
+_MESSAGING_FIELDS: dict[tuple[str, str], frozenset[str]] = {
+    ("POST", "api/sessions"): frozenset({"title", "source"}),
+    ("POST", "api/sessions/*/chat"): frozenset({"message", "author"}),
+    ("POST", "api/sessions/*/chat/stream"): frozenset({"message", "author"}),
+    ("POST", "v1/runs"): frozenset({"input", "session_id", "author"}),
+}
 #: The api_server's request size limit (``api_server.MAX_REQUEST_BYTES``).
 _MAX_BODY_BYTES = 10_000_000
 
@@ -201,11 +207,10 @@ async def _outside_the_bot_chat(client: httpx.AsyncClient, base: str, key: str, 
         titles = [value for name, value in urllib.parse.parse_qsl(query, keep_blank_values=True) if name == "title"]
         return None if titles and all(title.strip() == BOT_CHAT_TITLE for title in titles) else _bot_chat_only()
     if template == "api/sessions":
-        fits = str(body.get("title") or "").strip() == BOT_CHAT_TITLE and set(body) <= _BOT_CHAT_CREATE_FIELDS
-        return None if fits else _bot_chat_only()
+        return None if str(body.get("title") or "").strip() == BOT_CHAT_TITLE else _bot_chat_only()
     if template == "v1/runs":
         session_id = body.get("session_id")
-        if not isinstance(session_id, str) or not session_id or "previous_response_id" in body:
+        if not isinstance(session_id, str) or not session_id:
             return _bot_chat_only()
     elif template.startswith("api/sessions/"):
         session_id = segments[2]
@@ -247,10 +252,16 @@ async def peer_forward(request: Request, path: str):
         return _refusal("insufficient_scope", f"This pass does not grant {needed}.", 403)
     method = request.method
     body: Optional[dict] = None
-    if (method, template) in _READ_BODY:
+    if (method, template) in _MESSAGING_FIELDS:
         body, invalid = await _json_object(request)
         if invalid is not None:
             return invalid
+        extra = sorted(set(body) - _MESSAGING_FIELDS[(method, template)])
+        if extra and not control:
+            audit_log(AuditEvent.TOKEN_AUTH_FAILURE, reason="insufficient_scope", principal=principal.principal,
+                      method=method, path=request.url.path, ip=client_ip(request))
+            named = ", ".join(name[:64] for name in extra[:5])
+            return _refusal("insufficient_scope", f"Setting {named} here needs {CONTROL}.", 403)
         if (method, template) in _TURNS:
             body["author"] = _holder_author(body.get("author"), principal)
 

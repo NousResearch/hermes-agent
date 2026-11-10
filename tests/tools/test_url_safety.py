@@ -645,8 +645,8 @@ class TestDefaultUserAgent:
 class TestNormalizeUrlForRequestEdgeCases:
     def test_non_string_returns_input(self):
         """Non-string input is returned unchanged."""
-        assert normalize_url_for_request(42) == 42  # type: ignore[arg-type]
-        assert normalize_url_for_request(None) is None  # type: ignore[arg-type]
+        assert normalize_url_for_request(42) == 42  # type: ignore[invalid-argument-type]
+        assert normalize_url_for_request(None) is None  # type: ignore[invalid-argument-type]
 
     def test_empty_string_returns_empty(self):
         assert normalize_url_for_request("") == ""

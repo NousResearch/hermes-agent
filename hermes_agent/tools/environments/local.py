@@ -824,7 +824,7 @@ def _make_run_env(env: dict) -> dict:
 # configured HERMES_HOME spelling (possibly a junction to another drive).
 _hermes_repo_root: Path = Path(project_root_str())
 _hermes_repo_root_aliases: tuple[Path, ...] = _build_hermes_repo_root_aliases(
-    _hermes_repo_root, Path(__file__).absolute().parents[2], get_process_hermes_home())
+    _hermes_repo_root, Path(__file__).absolute().parents[3], get_process_hermes_home())
 _in_venv: bool = (getattr(sys, "base_prefix", sys.prefix) != sys.prefix
                   or hasattr(sys, "real_prefix"))  # real_prefix: virtualenv<20
 _hermes_site_packages: list[Path] | None = None  # lazily cached by local_pythonpath

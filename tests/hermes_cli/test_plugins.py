@@ -2174,7 +2174,7 @@ class TestPluginContext:
             (plugin_dir / "__init__.py").write_text(
                 "_pending = []\n"
                 "def _do_override():\n"
-                "    from tools.registry import registry\n"
+                "    from hermes_agent.tools.registry import registry\n"
                 "    registry.register(\n"
                 "        name='gated_override_target',\n"
                 "        toolset='delayed_override_plugin',\n"

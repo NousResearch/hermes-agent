@@ -439,7 +439,7 @@ After implementing everything, verify with:
 python -m pytest tests/ -q
 
 # Grep for your platform name to find any missed integration points
-grep -r "telegram\|discord\|whatsapp\|slack" gateway/ tools/ agent/ cron/ hermes_cli/ hermes_agent/toolsets.py \
+grep -r "telegram\|discord\|whatsapp\|slack" gateway/ hermes_agent/tools/ agent/ cron/ hermes_cli/ hermes_agent/toolsets.py \
   --include="*.py" -l | sort -u
 # Check each file in the output — if it mentions other platforms but not yours, you missed it
 ```

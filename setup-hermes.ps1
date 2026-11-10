@@ -124,7 +124,7 @@ if (-not (Test-Path $envFile)) {
 # ---------------------------------------------------------------------------
 $skillsDir = if ($env:HERMES_HOME) { Join-Path $env:HERMES_HOME 'skills' } else { Join-Path $HOME '.hermes/skills' }
 New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
-$sync = Join-Path $repo 'tools/skills_sync.py'
+$sync = Join-Path $repo 'hermes_agent/tools/skills_sync.py'
 $venvPy = Join-Path $repo 'venv/Scripts/python.exe'
 if ((Test-Path $sync) -and (Test-Path $venvPy)) {
     & $venvPy $sync 2>$null

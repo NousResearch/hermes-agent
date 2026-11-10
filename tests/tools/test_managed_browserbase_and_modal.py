@@ -12,7 +12,7 @@ from hermes_cli.nous_account import NousPortalAccountInfo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TOOLS_DIR = REPO_ROOT / "tools"
+TOOLS_DIR = REPO_ROOT / "hermes_agent" / "tools"
 PLUGINS_DIR = REPO_ROOT / "plugins"
 
 
@@ -51,15 +51,15 @@ def _restore_tool_and_agent_modules():
     original_modules = {
         name: module
         for name, module in sys.modules.items()
-        if name == "tools"
-        or name.startswith("tools.")
+        if name == "hermes_agent.tools"
+        or name.startswith("hermes_agent.tools.")
         or name == "agent"
         or name.startswith("agent.")
     }
     try:
         yield
     finally:
-        _reset_modules(("tools", "agent"))
+        _reset_modules(("hermes_agent.tools", "agent"))
         sys.modules.update(original_modules)
 
 
@@ -84,7 +84,7 @@ def _enable_managed_nous_tools(monkeypatch):
 
 
 def _install_fake_tools_package():
-    _reset_modules(("tools", "agent"))
+    _reset_modules(("hermes_agent.tools", "agent"))
 
     tools_package = types.ModuleType("hermes_agent.tools")
     tools_package.__path__ = [str(TOOLS_DIR)]  # type: ignore[attr-defined]

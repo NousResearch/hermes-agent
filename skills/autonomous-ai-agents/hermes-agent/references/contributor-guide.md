@@ -33,7 +33,7 @@ Two files. Auto-discovery imports any `hermes_agent/tools/*.py` with a top-level
 `registry.register()` call, but a tool is only *exposed* to an agent once
 its name appears in a toolset.
 
-**1. Create `tools/your_tool.py`:**
+**1. Create `hermes_agent/tools/your_tool.py`:**
 ```python
 import json, os
 from hermes_agent.tools.registry import registry

@@ -1029,8 +1029,8 @@ def _session_title(agent: Any) -> str:
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
     # Spawned as a script with the sender's sys.executable, which under PM is the bare store
     # interpreter (dependencies are activated in-process, never inherited), so boot like every
-    # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is tools/.
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is hermes_agent/tools/.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     # Only the delivery lane boots: the reply waiter is stdlib only and its stdout is the
     # sender's wake-up, and any other argv exits 2 before a Hermes import.
     if sys.argv[1:2] == ["--run-delivery"]:

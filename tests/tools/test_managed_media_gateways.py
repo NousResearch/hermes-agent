@@ -8,7 +8,7 @@ import pytest
 from hermes_cli.nous_account import NousPortalAccountInfo
 
 
-TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
+TOOLS_DIR = Path(__file__).resolve().parents[2] / "hermes_agent" / "tools"
 
 
 def _load_tool_module(module_name: str, filename: str):
@@ -25,8 +25,8 @@ def _restore_tool_and_agent_modules():
     original_modules = {
         name: module
         for name, module in sys.modules.items()
-        if name == "tools"
-        or name.startswith("tools.")
+        if name == "hermes_agent.tools"
+        or name.startswith("hermes_agent.tools.")
         or name == "agent"
         or name.startswith("agent.")
         or name in {"fal_client", "openai"}

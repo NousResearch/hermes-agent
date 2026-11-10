@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-LAUNCHER = Path(__file__).resolve().parents[2] / "tools" / "bot_desktop" / "launcher.sh"
+LAUNCHER = Path(__file__).resolve().parents[2] / "hermes_agent" / "tools" / "bot_desktop" / "launcher.sh"
 pytestmark = pytest.mark.platforms("linux")
 
 

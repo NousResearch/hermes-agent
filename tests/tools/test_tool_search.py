@@ -618,7 +618,7 @@ class TestCatalogListing:
         discover_builtin_tools()
         clipped = {}
         for entry in registry.get_all_entries():
-            if not getattr(entry.handler, "__module__", "").startswith("tools."):
+            if not getattr(entry.handler, "__module__", "").startswith("hermes_agent.tools."):
                 continue
             schema = dict(entry.schema)
             if entry.dynamic_schema_overrides:

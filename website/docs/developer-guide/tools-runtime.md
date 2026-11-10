@@ -24,7 +24,7 @@ Each tool module calls `registry.register(...)` at import time.
 
 ### How `registry.register()` works
 
-Every tool file in `tools/` calls `registry.register()` at module level to declare itself. The function signature is:
+Every tool file in `hermes_agent/tools/` calls `registry.register()` at module level to declare itself. The function signature is:
 
 ```python
 registry.register(
@@ -56,10 +56,10 @@ def discover_builtin_tools(tools_dir=None):
         if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
             continue
         if _module_registers_tools(path):  # AST check for top-level registry.register()
-            importlib.import_module(f"tools.{path.stem}")
+            importlib.import_module(f"hermes_agent.tools.{path.stem}")
 ```
 
-This auto-discovery means new tool files are picked up automatically — no manual list to maintain. The AST check only matches top-level `registry.register()` calls (not calls inside functions), so helper modules in `tools/` are not imported.
+This auto-discovery means new tool files are picked up automatically — no manual list to maintain. The AST check only matches top-level `registry.register()` calls (not calls inside functions), so helper modules in `hermes_agent/tools/` are not imported.
 
 Each import triggers the module's `registry.register()` calls. Errors in optional tools (e.g., missing `fal_client` for image generation) are caught and logged — they don't prevent other tools from loading.
 

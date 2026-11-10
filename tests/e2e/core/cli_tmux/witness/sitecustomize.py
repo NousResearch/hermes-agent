@@ -94,7 +94,7 @@ if _PATH:
             return original(self, name, args, *rest, **kwargs)
         cls.dispatch = dispatch
 
-    _PATCHES = {"run_agent": _patch_run_agent, "tools.registry": _patch_registry}
+    _PATCHES = {"run_agent": _patch_run_agent, "hermes_agent.tools.registry": _patch_registry}
 
     class _Loader(importlib.abc.Loader):
         def __init__(self, inner, patch):

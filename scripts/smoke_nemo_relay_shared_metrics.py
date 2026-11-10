@@ -890,7 +890,7 @@ def main() -> int:
             "-c",
             "\n".join([
                 "from hermes_cli.observability import relay_shared_metrics",
-                "from tools.skill_usage import (",
+                "from hermes_agent.tools.skill_usage import (",
                 "    STATE_ACTIVE, STATE_ARCHIVED, STATE_STALE, bump_patch,",
                 "    bump_use, record_created, record_installed, set_state,",
                 ")",

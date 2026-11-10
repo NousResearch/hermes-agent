@@ -110,7 +110,7 @@ def _module_registers_tools(module_path: Path) -> bool:
 
 
 def _tool_module_candidates(tools_path: Path) -> list[Path]:
-    """Flat ``hermes_agent/tools/*.py`` modules plus the package entry point ``tools/<pkg>/tool.py``, in one
+    """Flat ``hermes_agent/tools/*.py`` modules plus the package entry point ``hermes_agent/tools/<pkg>/tool.py``, in one
     sorted list. Only ``tool.py`` is scanned in a package, so every other file in it is a library
     by construction. Sorted after merging: ``register()`` lets a same-name, same-toolset duplicate
     overwrite silently, so the import order must not depend on file depth."""
@@ -128,7 +128,8 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
         # Toolset filtering happens AFTER import. Keep the troubleshooting worker's
         # import graph closed over reviewed core tools, not plugin-backed wrappers
         # or a profile-writable discovery cache. Core approval/redaction stay intact.
-        module_names = ["tools.file_tools", "tools.terminal_tool", "tools.process_registry"]
+        module_names = ["hermes_agent.tools.file_tools", "hermes_agent.tools.terminal_tool",
+                        "hermes_agent.tools.process_registry"]
         for module_name in module_names:
             importlib.import_module(module_name)
         return module_names
@@ -160,7 +161,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
             cache_dirty = True
         fresh_cache[abs_path] = [stat_key[0], stat_key[1], registers]
         if registers:
-            module_names.append(".".join(("tools", *rel_parts)))
+            module_names.append(".".join(("hermes_agent", "tools", *rel_parts)))
 
     # Drop entries for files that no longer exist; rewrite only when changed.
     if cache_dirty or set(fresh_cache) != set(cache):
@@ -770,7 +771,7 @@ class ToolRegistry:
         """True for a tool Hermes ships: handler defined in the ``tools`` package, and not an
         MCP server's tool (those handlers live in ``tools`` too, under an ``mcp-*`` toolset)."""
         return (not entry.toolset.startswith("mcp-")
-                and self._callable_module(entry.handler).partition(".")[0] == "tools")
+                and (self._callable_module(entry.handler) + ".").startswith(__package__ + "."))
 
     @staticmethod
     def _callable_module(handler: Callable) -> str:

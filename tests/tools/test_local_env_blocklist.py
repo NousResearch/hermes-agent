@@ -963,7 +963,7 @@ class TestNativeEnvironmentContracts:
         def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
             return '{"output": "mock", "exit_code": 0}'
 
-        hermes_root = str(Path(cet.__file__).resolve().parents[1])
+        hermes_root = str(Path(cet.__file__).resolve().parents[2])
         venv_sp = str(_running_venv_site_packages())
         user_a = "/home/user/my-lib"
         user_b = "/opt/project/lib"
@@ -1056,7 +1056,7 @@ class TestNativeEnvironmentContracts:
         from hermes_agent.tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
 
         local_file = Path(__import__("hermes_agent.tools.environments.local", fromlist=["__file__"]).__file__).resolve()
-        real_repo_root = local_file.parents[2]
+        real_repo_root = local_file.parents[3]
         direct_child = str(real_repo_root / "tools")
 
         env = {

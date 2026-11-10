@@ -93,7 +93,7 @@ def _accepted(names, refusal_msg: str):
 
 
 def _load_config_passthrough() -> frozenset[str]:
-    """Load ``hermes_agent.tools.env_passthrough`` from config.yaml (cached). Same credential
+    """Load ``tools.env_passthrough`` from config.yaml (cached). Same credential
     filter as register_env_passthrough: operator config must not tunnel provider
     credentials into sandbox children either (GHSA-rhgp-j443-p4rf)."""
     from hermes_constants import hermes_home_key

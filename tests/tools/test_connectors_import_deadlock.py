@@ -43,8 +43,8 @@ def run(target):
             errors.append((target, type(exc).__name__))
         purge()
 
-threads = [threading.Thread(target=run, args=("tools.connectors",)) for _ in range(3)]
-threads += [threading.Thread(target=run, args=("tools.connectors.tool",)) for _ in range(3)]
+threads = [threading.Thread(target=run, args=("hermes_agent.tools.connectors",)) for _ in range(3)]
+threads += [threading.Thread(target=run, args=("hermes_agent.tools.connectors.tool",)) for _ in range(3)]
 for t in threads:
     t.start()
 for t in threads:

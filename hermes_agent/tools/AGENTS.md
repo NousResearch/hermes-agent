@@ -1,4 +1,4 @@
-# tools/ + hermes_agent/toolsets.py + hermes_agent/model_tools.py — model tools
+# hermes_agent/tools/ + hermes_agent/toolsets.py + hermes_agent/model_tools.py — model tools
 
 Applies on top of the root `AGENTS.md`: settle the **Footprint Ladder** before adding anything here.
 Most capabilities should NOT be core tools. Long-form: `website/docs/developer-guide/adding-tools.md`,
@@ -11,7 +11,7 @@ Most capabilities should NOT be core tools. Long-form: `website/docs/developer-g
 (`discover_builtin_tools()`), then `run_agent.py`, `cli.py`, `hermes_agent/batch_runner.py`, `environments/`
 consume it. Any `hermes_agent/tools/*.py` with a top-level `registry.register()` is imported automatically — no
 manual import list. A tool that is a whole package (`hermes_agent/tools/connectors/`) registers from
-`tools/<pkg>/tool.py`, the only file discovery scans inside a package; every sibling in the package
+`hermes_agent/tools/<pkg>/tool.py`, the only file discovery scans inside a package; every sibling in the package
 is a library by construction, and the package needs an `__init__.py` or discovery skips it with a
 warning (setuptools would drop it from the wheel). The registry handles schema collection, dispatch (`handle_function_call()`),
 availability (`check_fn`, TTL-cached process-wide), and error wrapping. **All handlers return a JSON
@@ -24,9 +24,9 @@ private vision check.
 
 For custom/local-only tools do NOT edit core: create `~/.hermes/plugins/<name>/plugin.yaml` +
 `__init__.py` and call `ctx.register_tool(...)`; plugin toolsets are discovered automatically and
-toggled without touching `tools/` or `hermes_agent/toolsets.py` (`plugins/AGENTS.md`).
+toggled without touching `hermes_agent/tools/` or `hermes_agent/toolsets.py` (`plugins/AGENTS.md`).
 
-1. `tools/your_tool.py`:
+1. `hermes_agent/tools/your_tool.py`:
    ```python
    from agent.secret_scope import get_secret
    from hermes_agent.tools.registry import registry
@@ -97,7 +97,7 @@ time + its `--user-data-dir` argv token; the reaper walks every served home and 
 `browser_tool.py` and `browser_tool_install.py` are frozen old-updater stubs only (see their
 docstrings); never grow them.
 
-## Backends and providers inside tools/
+## Backends and providers inside hermes_agent/tools/
 
 Several tools front pluggable backends: terminal environments in `hermes_agent/tools/environments/` (local,
 docker, ssh, modal, daytona; `terminal_tool_backends.py`, `tool_backend_helpers.py`),

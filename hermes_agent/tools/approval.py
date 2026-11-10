@@ -366,8 +366,8 @@ def clear_session(session_key: str) -> None:
     _release_permission_mode_dependents(session_key)
     # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
     # finished conversation cannot leak a live interpreter.
-    for module, shutdown in (("tools.code_kernel", "shutdown_kernels_for_owner"),
-                             ("tools.code_kernel_remote", "shutdown_remote_kernels_for_owner")):
+    for module, shutdown in (("hermes_agent.tools.code_kernel", "shutdown_kernels_for_owner"),
+                             ("hermes_agent.tools.code_kernel_remote", "shutdown_remote_kernels_for_owner")):
         try:
             getattr(importlib.import_module(module), shutdown)(session_key)
         except Exception:

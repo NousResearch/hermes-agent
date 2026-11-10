@@ -14,7 +14,7 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 
 _PLUGIN = '''
 from pathlib import Path
-from tools.computer_use.backend import ActionResult, ComputerUseBackend, ComputerUseProvider
+from hermes_agent.tools.computer_use.backend import ActionResult, ComputerUseBackend, ComputerUseProvider
 
 TAG = Path(__file__).parent.name
 CALLS = []

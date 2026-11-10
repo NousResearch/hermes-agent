@@ -7,8 +7,8 @@ too. The refusal here is structural — the name that selects the local backend,
 provider class is defined in when that module is the local backend's, and the one
 shared-board-root declaration (``LOCAL_SHARED_BOARD``) a provider cannot make and still isolate
 tenants — because a provider can hand one store to whoever asks and another to its callers:
-resolution never opens a store to check. Every other path that reaches the local store is
-refused by the store itself (``tests/conformance/kanban/test_hosted_refusal.py``).
+resolution never opens a store to check. Every other path that reaches the local board is
+refused at the board's own access boundary (``tests/conformance/kanban/test_hosted_refusal.py``).
 """
 import textwrap
 

@@ -1,13 +1,15 @@
-"""The local store's own hosted refusal: every path that reaches the shared root fails there.
+"""The shared board's own hosted refusal: every path that reaches it fails there.
 
 A provider can hand one store to whoever asks and another to its callers, so hosted resolution
 never opens a store to inspect it (``tests/conformance/kanban/test_resolve.py`` refuses the
 local backend by its name, its module and the one shared-board-root declaration). What is left —
 a wrapper delegating to the local provider, a forwarding proxy around the local store, the local
 provider with the declaration overridden away on a subclass, a provider that opens the local
-backend only from its second open — all reach the same local store, and the store itself refuses
-to open in a hosted process, whoever constructs it. No card of one agent's board is exposed
-under another agent's scope, and on a single-user machine nothing changes.
+backend only from its second open — all resolve the same local board, and the board itself
+refuses in a hosted process, at the one boundary every path to it crosses: its root resolution
+and every open (``hermes_cli.kanban_db``, which the ported regression of every existing surface
+exercises in ``tests/conformance/kanban/test_shared_board_surfaces.py``). No card of one agent's
+board is exposed under another agent's scope, and on a single-user machine nothing changes.
 """
 import sys
 import types
@@ -79,33 +81,38 @@ def test_the_local_store_refuses_to_open_in_a_hosted_process_whoever_reaches_it(
             LocalKanbanStorageProvider().open()
 
 
-def test_the_resolvers_explicit_hosted_answer_carries_to_the_local_store(tmp_path, monkeypatch):
-    """The resolver passes its explicit ``hosted=`` answer to the local provider it hands out
-    and the provider carries it to the store, so the refusal holds without the boot profile's
-    module — and an explicit not-hosted answer opens today's store, as a local caller needs."""
+def test_the_resolvers_explicit_hosted_answer_can_only_refuse(tmp_path, monkeypatch):
+    """The resolver's explicit ``hosted=`` answer may only force the refusal, never lift
+    it: an explicit not-hosted answer resolves the local provider while the process is
+    local (no boot module: the boundary's guarded import answers False), and once the
+    process serves hosted tenants it changes nothing — the resolver refuses by name and
+    the provider it would hand out opens the same refusal at the board's boundary."""
     provider = resolve_kanban_storage("local", hosted=False)
-    assert provider.hosted is False
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "board"))
-    assert provider.open().kanban.list_boards()  # the explicit answer says this is not hosted
+    assert provider.open().kanban.list_boards()  # local: today's store opens, unchanged
+    with pytest.raises(LookupError, match="single-user machine"):
+        resolve_kanban_storage("local", hosted=True)  # explicit hosted forces the refusal
+    _serve_hosted_tenants(monkeypatch)
+    with pytest.raises(LookupError, match="single-user machine"):
+        resolve_kanban_storage("local", hosted=False)  # ...and not-hosted cannot lift it
     with pytest.raises(LookupError, match=_REFUSAL):
-        LocalKanbanStorageProvider(hosted=True).open()
-    with pytest.raises(LookupError, match=_REFUSAL):
-        LocalKanbanStore(hosted=True)
+        LocalKanbanStorageProvider().open()  # the board's own boundary refuses, ambient
 
 
 def test_an_un_declaring_subclass_still_cannot_open_the_shared_root_hosted(tmp_path, monkeypatch):
     """The declaration is what the conformance suite asserts, never what hosted mode trusts:
-    a subclass can un-declare it (the suite fails it there), but the store it opens still
+    a subclass can un-declare it (the suite fails it there), but the board it opens still
     refuses a hosted process outright — and on a single-user machine it still opens."""
     _serve_hosted_tenants(monkeypatch)
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "board"))
     hiding = type("Hiding", (LocalKanbanStore,), {"LOCAL_SHARED_BOARD": False})
     with pytest.raises(LookupError, match=_REFUSAL):
-        hiding()  # no explicit answer: the hosted process itself refuses
-    assert hiding(hosted=False).list_boards()  # explicit not-hosted: today's store opens
+        hiding()  # the board's own boundary refuses, whoever subclasses the store
     silent = type("Silent", (LocalKanbanStore,), {})
     assert silent.LOCAL_SHARED_BOARD is True
-    assert silent(hosted=False).list_boards()  # today's local behaviour, unchanged
+    monkeypatch.delitem(sys.modules, "hermes_cli.hosted_mode")
+    assert hiding().list_boards()  # locally: today's store opens, unchanged
+    assert silent().list_boards()
 
 
 @pytest.mark.parametrize("kind", ["proxy", "second-open"])

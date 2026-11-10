@@ -398,10 +398,31 @@ def _require_slug(slug: str) -> str:
     return normed
 
 
+def _refuse_shared_board_if_hosted() -> None:
+    """Refuse here when this process serves hosted tenants: the one board root a
+    single-user machine shares across every profile cannot serve a shared
+    deployment, whose tenants each get their own agents' boards. This is the one
+    boundary every path to the shared board crosses — resolving the root (this
+    module, whose ``kanban_db_path`` lands here) and opening its database
+    (:func:`hermes_cli.kanban_db_connect.connect`) — so the storage port's local
+    store, the CLI, the model tools, the assignee API and the dispatcher's claim
+    policy all refuse the same way, whoever calls them. Locally (no hosted boot
+    profile) nothing changes."""
+    from hermes_kanban_port import _hosted_process
+    if _hosted_process(None):
+        raise LookupError(
+            "the local kanban board keeps one board root shared across every profile of a "
+            "single-user machine; it refuses to open in a hosted process")
+
+
 def kanban_home() -> Path:
     """``HERMES_KANBAN_HOME`` else ``get_default_hermes_root()``. Shared across
     profiles BY DESIGN: resolving through the active profile's HERMES_HOME would
-    fork the board per profile and break the dispatcher/worker handoff."""
+    fork the board per profile and break the dispatcher/worker handoff.
+    Refuses wherever the process serves hosted tenants (see
+    ``_refuse_shared_board_if_hosted``): this resolution is the one boundary every
+    path to the shared board crosses."""
+    _refuse_shared_board_if_hosted()
     from hermes_cli.kanban_db_home import scoped_home_override
     override = scoped_home_override()  # a context-scoped pin (see kanban_db_home)
     if override:

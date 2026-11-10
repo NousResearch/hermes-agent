@@ -37,9 +37,10 @@ conformance suite asserts its inverse cross-agent matrix from it. A shared deplo
 each get their own agents' boards, behind a backend that pins the agent too, and that refusal is
 structural, not inspected: wherever the process runs hosted, :func:`resolve_kanban_storage`
 refuses the local backend on what cannot be lied about (the name that selects it, the module its
-provider class is defined in) and the local store itself refuses to open
-(:mod:`hermes_kanban_port_local`), so a wrapper, a forwarding proxy or a provider that opens the
-local backend under another name fails at the store, whoever calls it.
+provider class is defined in) and the shared board itself refuses at its own access boundary —
+its root resolution and every open (``hermes_cli.kanban_db``) — so a wrapper, a forwarding proxy
+or a provider that opens the local backend under another name fails at the board, whoever calls
+it.
 """
 
 from __future__ import annotations
@@ -79,8 +80,8 @@ class KanbanStore(ABC):
     #: sets it. The declaration is what the suite asserts, never what hosted mode trusts: a
     #: wrapper or a subclass can hide it, so wherever the process runs hosted the local backend
     #: is refused on what cannot be lied about — the name and the module
-    #: (:func:`resolve_kanban_storage`) — and the local store refuses to open itself
-    #: (``hermes_kanban_port_local``), whoever reaches it.
+    #: (:func:`resolve_kanban_storage`) — and the shared board's own access boundary, its root
+    #: resolution and every open (``hermes_cli.kanban_db``), refuses, whoever reaches it.
     LOCAL_SHARED_BOARD: bool = False
 
     # --- Boards
@@ -313,11 +314,12 @@ class KanbanStorageProvider(ABC):
 
 
 def _hosted_process(hosted: Optional[bool]) -> bool:
-    """Whether this process serves hosted tenants: the caller's explicit answer, else what the
-    hosted boot profile reports (``hermes_cli.hosted_mode.is_hosted``; a checkout without that
-    module is not hosted — the first hosted-capable caller passes the answer explicitly)."""
-    if hosted is not None:
-        return hosted
+    """Whether this process serves hosted tenants. An explicit ``True`` answer forces
+    hosted; an explicit ``False`` answer never downgrades what the hosted boot profile
+    reports (``hermes_cli.hosted_mode.is_hosted``; a checkout without that module is
+    not hosted, so the guarded import answers False there)."""
+    if hosted:
+        return True
     try:
         from hermes_cli.hosted_mode import is_hosted
     except ImportError:
@@ -334,14 +336,15 @@ def resolve_kanban_storage(name: str, *, hosted: Optional[bool] = None) -> Kanba
     the name that selects the local backend, the module a provider class is defined in when that
     module is the local backend's, and the one shared-board-root declaration a provider cannot
     make and still isolate tenants — and it never opens a store to check, because a provider can
-    hand one store to whoever asks and another to its callers. The local store refuses to open in
-    a hosted process itself (``hermes_kanban_port_local``), so every other path that reaches it —
-    a wrapper, a forwarding proxy, a provider that opens the local backend under another name —
-    fails at the store, whoever calls it."""
+    hand one store to whoever asks and another to its callers. The shared board itself refuses
+    in a hosted process at its own access boundary — its root resolution and every open
+    (``hermes_cli.kanban_db``) — so every other path that reaches it — a wrapper, a forwarding
+    proxy, a provider that opens the local backend under another name, or a surface that never
+    constructs a store at all — fails at the board, whoever calls it."""
     name = name.strip()
     if name in ("", "local"):
         from hermes_kanban_port_local import LocalKanbanStorageProvider
-        provider = LocalKanbanStorageProvider(hosted=hosted)
+        provider = LocalKanbanStorageProvider()
     else:
         from plugins.kanban_storage import KanbanStorageRefused, load_kanban_storage
         try:

@@ -26,7 +26,10 @@ scripts/run_tests.sh                                    # full suite
 scripts/run_tests.sh tests/gateway/                     # one directory
 scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # runner is file-granular; -k narrows
 scripts/run_tests.sh -v --tb=long                       # pytest flags pass through
+just test tests/agent/test_foo.py -k test_x             # same runner; refuses to start with no path
 ```
+
+`just test-all` is the explicit full-suite form.
 
 - **Flake policy:** a failing FILE is retried once in a fresh subprocess (`--file-retries`;
   `HERMES_TEST_FILE_RETRIES=0` disables); a worker killed by signal or the file timeout is never
@@ -41,7 +44,7 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
   `utils`, `hermes_constants`, packaging) sit directly in `tests/`. No issue numbers in filenames —
   cite the issue in the module docstring (`test_89315_x.py` → `test_x.py`, "Regression for #89315").
 - **Placement (CI lanes):** `scripts/ci/classify_changes.py` picks jobs by changed files. A Python test
-  asserting about `package.json`, `package-lock.json`, `tsconfig.json`, or `.ts/.tsx/.js/
+  asserting about `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, or `.ts/.tsx/.js/
   .mjs/.cjs` sources will not run on a JS-only PR (green on PR, red on `main` where the
   classifier fails open). Such tests belong in the vitest suite, not `tests/*.py`.
 - **Tests must not write to `~/.hermes/`.** The autouse `_isolate_hermes_home` fixture in
@@ -58,6 +61,12 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
   ```
   Tests that `patch.object(Path, "home", ...)` must ALSO set `HERMES_HOME` — code reads the
   env var, not `Path.home()/.hermes`.
+- **Tests never reach the network.** `tests/conftest.py` refuses every lookup of a host off this
+  machine for the whole pytest process (address literals and loopback pass). Serve what a test
+  needs from a fixture: a server on `127.0.0.1`, a stubbed transport, a seeded cache (models.dev,
+  model catalog), or `public_dns` for SSRF-guard lookups. Only secrets-gated canaries
+  (`@pytest.mark.live`) and PM toolchain/wheel downloads (`@pytest.mark.allow_network`) open it.
+  Child processes a test spawns are outside the fence: give them a seeded home.
 
 ## Don't fake the host OS
 

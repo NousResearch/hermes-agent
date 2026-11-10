@@ -37,6 +37,8 @@ class Gateway:
     async def rpc(self, method, **params):
         if method == "session.resume":
             return {"session_id": params["session_id"], "prompts": [self.prompt], "pending": []}
+        if method == "config.set":  # the editor's live-reasoning flag on every (re)attach, never a respond
+            return {"key": params["key"], "value": params["value"], "scope": "session"}
         self.responses.append((method, params.get("choice", params.get("answer"))))
         if self.lose:
             self.lose = False

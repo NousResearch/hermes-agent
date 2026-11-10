@@ -72,3 +72,31 @@ def test_the_drain_sends_a_queued_backlog_as_one_batch():
         loop.call_soon_threadsafe(loop.stop)
         runner.join(5)
         loop.close()
+
+
+def test_a_viewer_a_turn_of_streamed_text_behind_keeps_its_subscription():
+    """A viewer stalled for a whole long reply (thousands of few-hundred-byte deltas, well under the
+    byte cap) is behind, not stuck: it keeps its subscription and gets every frame in order. A
+    frame-count cap tuned for big frames dropped it after 256, and a `chat -q` turn then ended
+    `session_replay_gap` on a merely loaded host."""
+    loop = asyncio.new_event_loop()
+    runner = threading.Thread(target=loop.run_forever, daemon=True)
+    runner.start()
+    try:
+        socket = _LoopSocket(loop)
+        fanout = FanoutTransport(socket)
+        gaps = []
+        fanout.write(_delta(0), overflow=lambda transport: gaps.append(transport) or None)
+        assert socket.first_send_started.wait(10), 'the drain never reached the socket'
+        behind = 3000  # ~12 KB of reply streamed 8 characters at a time, ~1 MB of frames
+        for index in range(1, behind + 1):
+            fanout.write(_delta('x' * 300 + str(index)), overflow=lambda transport: gaps.append(transport) or None)
+        assert not gaps and fanout.contains(socket), 'a viewer one reply behind lost its subscription'
+        loop.call_soon_threadsafe(socket.release.set)
+        wait_until(lambda: len(socket.frames) == behind + 1, timeout=30, what='the backlog delivered')
+        assert [f['params']['payload']['text'] for f in socket.frames[1:]] == [
+            'x' * 300 + str(i) for i in range(1, behind + 1)]
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        runner.join(5)
+        loop.close()

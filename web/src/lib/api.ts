@@ -7,13 +7,46 @@ import { createDashboardSessionMutations } from "./session-mutations";
 
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
-import type { AuxiliaryModelsResponse } from "./api-aux";
+import type { AuxiliaryModelsResponse, ModelAssignmentResponse } from "./api-aux";
+import type {
+  AgentPluginUpdateResponse,
+  AgentPluginsUpdateAllResponse,
+  CatalogResponse,
+  PluginAutoUpdateState,
+  PluginProvidersPutRequest,
+} from "./api-plugins";
+import type {
+  WhatsAppOnboardingApplyResponse,
+  WhatsAppOnboardingStartRequest,
+  WhatsAppOnboardingStartResponse,
+  WhatsAppOnboardingStatusResponse,
+} from "./api-whatsapp";
+export type {
+  WhatsAppOnboardingApplyResponse,
+  WhatsAppOnboardingStartResponse,
+  WhatsAppOnboardingStatusResponse,
+} from "./api-whatsapp";
+import type {
+  MessagingPlatform,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinksResponse,
+} from "./api-messaging";
+export type {
+  MessagingPlatform,
+  MessagingPlatformEnvVar,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinkedAccount,
+  RelayLinksResponse,
+} from "./api-messaging";
 import type {
   ManagedFileReadResponse,
   ManagedFilesResponse,
   ManagedFileWriteResponse,
 } from "./api-files";
 import { dashboardServingProfile } from "./profile-bootstrap";
+import { PROFILE_SCOPED_PREFIXES, sameOriginRequestUrl as resolveSameOrigin } from "./api-request-scope";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -90,62 +123,6 @@ export function getManagementProfile(): string {
   return _managementProfile || dashboardServingProfile();
 }
 
-// Endpoint families that honor ?profile= on the backend (web_server.py
-// _profile_scope or explicit per-profile DB opens). Anything else — cron (which
-// has its own per-job profile params), profiles themselves — is machine-global or
-// self-scoped and must NOT be rewritten.
-const PROFILE_SCOPED_PREFIXES = [
-  "/api/status",
-  "/api/gateway",
-  "/api/analytics",
-  "/api/skills",
-  "/api/tools/toolsets",
-  "/api/config",
-  "/api/env",
-  "/api/mcp",
-  "/api/messaging/platforms",
-  "/api/messaging/telegram/onboarding",
-  "/api/messaging/whatsapp/onboarding",
-  // OAuth/account state is profile-owned too: status, login sessions, polling,
-  // cancellation, and disconnect must all follow the selected management
-  // profile rather than silently targeting the dashboard process's profile.
-  "/api/providers/oauth",
-  "/api/model/info",
-  "/api/model/set",
-  "/api/model/auxiliary",
-  "/api/model/moa",
-  "/api/model/options",
-  // A named profile keeps its own pairing whitelist, and its gateway only
-  // consults that one — approving into the global store would grant access
-  // the running gateway never sees.
-  "/api/pairing",
-  // Memory files, the curator state file, webhook subscriptions, shell hooks,
-  // checkpoints, backups/imports and the dashboard's own theme/font/plugin
-  // preferences all live in a profile home. One backend now serves every
-  // profile, so the switcher's selection has to ride on the request or a reset
-  // lands on the launch profile's data.
-  "/api/memory",
-  "/api/curator",
-  "/api/webhooks",
-  "/api/ops",
-  "/api/logs",
-  "/api/portal",
-  // Pool entries live in the profile's home, and DELETE /api/credentials/pool/{provider}/{index}
-  // is destructive — without this prefix the dashboard's remove button never named a profile and
-  // a multi-profile host refused it outright.
-  "/api/credentials",
-  // Not covered by "/api/dashboard/plugins": this one writes memory.provider + context.engine
-  // into the named profile's config.yaml (same key as PUT /api/memory/provider).
-  "/api/dashboard/plugin-providers",
-  // Model/runtime activation persists into config.yaml; the read routes ignore an extra param.
-  "/api/model/recommended-default",
-  "/api/local-models",
-  "/api/dashboard/theme",
-  "/api/dashboard/font",
-  "/api/dashboard/plugins",
-  // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
-  "/api/shared-metrics",
-];
 
 // The dashboard's own profile when nothing else named one. The backend injects it only
 // when it provably resolves back to the serving home, so this can never retarget another
@@ -167,6 +144,7 @@ export async function fetchJSON<T>(
   options?: FetchJSONOptions,
 ): Promise<T> {
   url = withManagementProfile(url);
+  const target = resolveSameOrigin(BASE, url);
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
@@ -175,7 +153,7 @@ export async function fetchJSON<T>(
   }
   let res: Response;
   try {
-    res = await fetch(`${BASE}${url}`, {
+    res = await fetch(target, {
       ...init,
       headers,
       // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
@@ -183,6 +161,10 @@ export async function fetchJSON<T>(
       // server doesn't read cookies and the legacy session-token header is
       // already attached above.
       credentials: init?.credentials ?? "include",
+      // After ``...init`` so a caller cannot widen it: the browser then refuses a
+      // cross-origin redirect and any ``<base href>`` resolution off this origin,
+      // which the up-front URL check cannot see.
+      mode: "same-origin",
     });
   } catch (cause) {
     // fetch() only rejects when the request never got a response: the
@@ -325,15 +307,17 @@ export async function authedFetch(
   // not the launch profile's, and an unprofiled back door beside a family that now
   // 400s is exactly how the next hole gets in.
   url = withManagementProfile(url);
+  const target = resolveSameOrigin(BASE, url);
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
   }
-  return fetch(`${BASE}${url}`, {
+  return fetch(target, {
     ...init,
     headers,
     credentials: init?.credentials ?? "include",
+    mode: "same-origin",
   });
 }
 
@@ -354,12 +338,9 @@ export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
 ): Promise<string> {
-  return buildHermesWebSocketUrl({
-    authParam: await buildWsAuthParam(),
-    basePath: BASE,
-    params,
-    path,
-  });
+  const profile = getManagementProfile(); // a plugin socket names it as its REST calls do (PLG-3)
+  if (profile && path.startsWith("/api/plugins/") && !params?.profile) params = { ...params, profile };
+  return buildHermesWebSocketUrl({ authParam: await buildWsAuthParam(), basePath: BASE, params, path });
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.
@@ -970,6 +951,18 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getRelayLinks: () => fetchJSON<RelayLinksResponse>("/api/messaging/relay"),
+  requestRelayLink: (platform: string) =>
+    fetchJSON<RelayLinkCode>(`/api/messaging/relay/${encodeURIComponent(platform)}/link`, {
+      method: "POST",
+    }),
+  getRelayLinkState: (code: string) =>
+    fetchJSON<RelayLinkCodeState>(`/api/messaging/relay/link/${encodeURIComponent(code)}`),
+  unlinkRelayAccount: (platform: string, platformUserId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/relay/${encodeURIComponent(platform)}/accounts/${encodeURIComponent(platformUserId)}`,
+      { method: "DELETE" },
+    ),
   testMessagingPlatform: (id: string) =>
     fetchJSON<MessagingPlatformTestResult>(
       `/api/messaging/platforms/${encodeURIComponent(id)}/test`,
@@ -1005,10 +998,7 @@ export const api = {
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
-  startWhatsAppOnboarding: (body: {
-    mode?: "bot" | "self-chat";
-    allowed_users?: string;
-  }) =>
+  startWhatsAppOnboarding: (body: WhatsAppOnboardingStartRequest) =>
     fetchJSON<WhatsAppOnboardingStartResponse>(
       "/api/messaging/whatsapp/onboarding/start",
       {
@@ -1058,8 +1048,8 @@ export const api = {
     ),
 
   // Dashboard plugins
-  getPlugins: () =>
-    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  getPlugins: (profile = getManagementProfile()) => // the profile the caller's asset URLs will name
+    fetchJSON<PluginManifestResponse[]>(`/api/dashboard/plugins${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
@@ -1095,15 +1085,33 @@ export const api = {
       method: "POST",
     }),
 
-  updateAgentPlugin: (name: string, acceptCapabilities = false) =>
+  updateAgentPlugin: (
+    name: string,
+    { acceptCapabilities = false, force = false }: { acceptCapabilities?: boolean; force?: boolean } = {},
+  ) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities, force }),
       },
     ),
+
+  updateAllAgentPlugins: () =>
+    fetchJSON<AgentPluginsUpdateAllResponse>("/api/dashboard/agent-plugins/update-all", {
+      method: "POST",
+    }),
+
+  getPluginAutoUpdate: () =>
+    fetchJSON<PluginAutoUpdateState>("/api/dashboard/plugins/auto-update"),
+
+  setPluginAutoUpdate: (enabled: boolean) =>
+    fetchJSON<PluginAutoUpdateState>("/api/dashboard/plugins/auto-update", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
 
   removeAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string }>(
@@ -1659,50 +1667,6 @@ export interface McpOAuthFlow {
   tools?: Array<{ name: string; description: string }>;
 }
 
-export interface MessagingPlatformEnvVar {
-  key: string;
-  required: boolean;
-  is_set: boolean;
-  redacted_value: string | null;
-  description: string;
-  prompt: string;
-  help: string;
-  url: string | null;
-  is_password: boolean;
-  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
-  is_list?: boolean;
-  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
-  value?: string | null;
-  advanced: boolean;
-}
-
-export interface MessagingPlatform {
-  id: string;
-  name: string;
-  description: string;
-  docs_url: string;
-  enabled: boolean;
-  configured: boolean;
-  gateway_running: boolean;
-  /**
-   * "connected" | "disabled" | "not_configured" | "pending_restart" |
-   * "gateway_stopped" | "startup_failed" | "disconnected" | "fatal" | string
-   */
-  state: string;
-  error_code: string | null;
-  error_message: string | null;
-  updated_at: string | null;
-  home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
-  /** Multiplex secondary served on the default profile's shared listener: the vendor callback URL. */
-  ingress_url?: string | null;
-  whatsapp_setup?: {
-    mode?: string;
-    allowed_users_set?: boolean;
-    home_channel_set?: boolean;
-  } | null;
-  env_vars: MessagingPlatformEnvVar[];
-}
-
 export interface MessagingPlatformsResponse {
   env_path: string;
   gateway_start_command: string;
@@ -2182,38 +2146,6 @@ export interface TelegramOnboardingApplyResponse {
   restart_error?: string;
 }
 
-export interface WhatsAppOnboardingStartResponse {
-  pairing_id: string;
-  status:
-    | "starting"
-    | "installing"
-    | "waiting"
-    | "connected"
-    | "error"
-    | "expired"
-    | "cancelled";
-  qr_payload?: string | null;
-  expires_at: string;
-  mode: "bot" | "self-chat";
-  allowed_users: string;
-  account_id?: string | null;
-  account_name?: string | null;
-  account_phone?: string | null;
-  error?: string | null;
-}
-
-export type WhatsAppOnboardingStatusResponse = WhatsAppOnboardingStartResponse;
-
-export interface WhatsAppOnboardingApplyResponse {
-  ok: boolean;
-  platform: "whatsapp";
-  needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
-  restart_pid?: number | null;
-  restart_error?: string;
-}
-
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
@@ -2535,6 +2467,17 @@ export interface ModelInfoResponse {
 export type { ModelOptionProvider, ModelOptionsResult };
 
 export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
+export type {
+  AgentPluginScanFinding,
+  AgentPluginUpdateResponse,
+  AgentPluginsUpdateAllResponse,
+  CatalogCapabilities,
+  CatalogEntry,
+  CatalogRemovedEntry,
+  CatalogResponse,
+  PluginAutoUpdateState,
+  PluginProvidersPutRequest,
+} from "./api-plugins";
 
 export interface MoaModelSlot {
   provider: string;
@@ -2578,29 +2521,6 @@ export interface ModelAssignmentRequest {
   base_url?: string;
   /** For auxiliary: task slot name, "" for all, "__reset__" to reset all. */
   task?: string;
-}
-
-/** An auxiliary task still pinned to a provider that differs from the
- *  newly-selected main provider after a main-model switch. */
-export interface StaleAuxAssignment {
-  task: string;
-  provider: string;
-  model: string;
-}
-
-export interface ModelAssignmentResponse {
-  confirm_message?: string;
-  confirm_required?: boolean;
-  ok: boolean;
-  scope?: string;
-  provider?: string;
-  model?: string;
-  tasks?: string[];
-  reset?: boolean;
-  /** Auxiliary slots still pinned to a different provider than the new main.
-   *  Switching main never clears aux pins; this lets the UI warn the user
-   *  their helper tasks aren't following the switch. Only set on scope:'main'. */
-  stale_aux?: StaleAuxAssignment[];
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────
@@ -2750,64 +2670,4 @@ export interface AgentPluginInstallResponse {
   after_install_path?: string | null;
   enabled?: boolean;
   error?: string;
-}
-
-// ── Plugin catalog types ───────────────────────────────────────────────
-
-export interface CatalogCapabilities {
-  provides_tools: string[];
-  provides_hooks: string[];
-  provides_middleware: string[];
-  requires_env: string[];
-}
-
-export interface CatalogEntry {
-  name: string;
-  description: string;
-  repo: string;
-  sha: string;
-  sha_short: string;
-  tier: "official" | "community";
-  maintainer: string;
-  requires_hermes: string;
-  platforms: string[];
-  capabilities: CatalogCapabilities;
-  docs_url: string;
-  capability_summary: string;
-  /** Installed-state merge (computed server-side). */
-  installed: boolean;
-  installed_sha: string | null;
-  update_available: boolean;
-  runtime_status: "disabled" | "enabled" | "inactive" | null;
-}
-
-export interface CatalogRemovedEntry {
-  name: string;
-  repo: string;
-  reason: string;
-  date: string;
-}
-
-export interface CatalogResponse {
-  entries: CatalogEntry[];
-  removed: CatalogRemovedEntry[];
-  generated_at: string;
-}
-
-export interface AgentPluginUpdateResponse {
-  ok: boolean;
-  name?: string;
-  output?: string;
-  unchanged?: boolean;
-  error?: string;
-  /** The new catalog pin widens the plugin; nothing changed until the client
-   *  retries with `accept_capabilities`. */
-  consent_required?: boolean;
-  sha?: string;
-  delta_lines?: string[];
-}
-
-export interface PluginProvidersPutRequest {
-  memory_provider?: string;
-  context_engine?: string;
 }

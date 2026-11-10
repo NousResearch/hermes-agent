@@ -1,0 +1,18 @@
+name: adaptlypost
+title: AdaptlyPost
+repo: https://github.com/adaptlypost/claude-plugin
+sha: a8d036393febe52c5a809c74437ca498e7692bdf
+version: "1.15.0"
+description: "Draft, schedule, publish and analyze social media posts through AdaptlyPost's hosted MCP server (Streamable HTTP at https://mcp.adaptlypost.com/mcp, OAuth sign-in, no keys in config): Instagram, TikTok, YouTube, X, LinkedIn, Facebook, Pinterest, Threads, Bluesky, Mastodon, Google Business Profile, Tumblr, Telegram and WordPress, with bulk and recurring posts, media uploads, RSS feeds, webhooks, AI captions and images, and post analytics across every workspace the user belongs to. Bundles the adaptlypost workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to AdaptlyPost's hosted server (mcp.adaptlypost.com) and acts on the user's AdaptlyPost account with their own workspace role; the tool set is served by that server at runtime and is not covered by the pinned sha. Published posts go out to the user's connected social accounts, inbox tools send replies and direct messages from those accounts and can hide or delete comments and delete review replies, and generate_caption, refine_caption and generate_image spend AdaptlyPost AI credits. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: AdaptlyPost
+tier: community
+category: tools
+docs_url: https://github.com/adaptlypost/claude-plugin#install-in-hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,18 @@
+name: return-line
+repo: https://github.com/ousiaresearch/return-line
+subdir: return-line
+sha: 86c85f742cb98e1a4da51b8a730643049e917692
+description: "Carry the agent's own state and dated excerpts of its own record into every live turn — appended to the message being answered at API time, never the system prompt, so per-conversation prompt caching is untouched. One raw ledger line per turn goes the other way. Works stand-alone; pairs with the biomimetic-brain mind kit, which produces the state file it reads. Disclosure — it appends an agent-state block and retrieved record excerpts to the current user message on every turn, leaving the system prompt untouched; it indexes recent user and assistant messages from $HERMES_HOME/state.db across all sessions and platforms into a local plaintext SQLite index under the configured agent directory, and may surface those excerpts in any later conversation (relevant on multi-user gateways); it appends every turn's inbound and outbound text to <agent_dir>/turn-ledger.jsonl; it loads <agent_dir>/scripts/wander.py from the companion mind kit in-process and may run that script and <agent_dir>/scripts/consolidate-mind.py as background subprocesses with the Hermes environment; no network calls of its own, no credentials, no dependencies beyond the host interpreter (numpy and scikit-learn are optional, with a keyword-search fallback)."
+maintainer: ousiaresearch
+tier: community
+category: general
+version: "1.1.1"
+docs_url: https://github.com/ousiaresearch/return-line
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  provides_middleware: []
+  requires_env: []

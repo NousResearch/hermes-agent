@@ -76,7 +76,7 @@ def _connect_patches(mock_proc, mock_fh):
         patch.object(Path, "exists", return_value=True),
         patch.object(Path, "mkdir", return_value=None),
         patch("subprocess.run", return_value=MagicMock(returncode=0)),
-        patch("subprocess.Popen", return_value=mock_proc),
+        patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc),
         patch("builtins.open", return_value=mock_fh),
         patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
         patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"),
@@ -174,7 +174,7 @@ class TestConnectCleanup:
              patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
              patch("subprocess.run", return_value=install_result), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("gateway.status.release_scoped_lock") as mock_release:
+             patch("gateway.status_scoped_locks.release_scoped_lock") as mock_release:
             result = await adapter.connect()
 
         assert result is False
@@ -588,3 +588,27 @@ class TestNamedConnectFailures:
 
         assert adapter.fatal_error_code == "whatsapp_bridge_timeout"
         assert adapter.fatal_error_retryable is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("passkey", [True, False])
+@pytest.mark.parametrize("startup", [True, False])
+async def test_passkey_required_stops_retries_at_startup_and_during_polling(passkey, startup):
+    from plugins.platforms.whatsapp.adapter import PASSKEY_REQUIRED_EXIT
+
+    # bridge.passkey.test.mjs asserts the bridge really exits 78 on a gateway-mode passkey challenge.
+    assert PASSKEY_REQUIRED_EXIT == 78
+    returncode, retryable = (PASSKEY_REQUIRED_EXIT, False) if passkey else (1, True)
+    adapter = _make_adapter()
+    adapter._bridge_process = MagicMock(returncode=returncode, **{"poll.return_value": returncode})
+    adapter._notify_fatal_error = AsyncMock()
+    if startup:
+        with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
+            assert await adapter._wait_for_bridge() is False
+    else:
+        assert await adapter._check_managed_bridge_exit()
+        adapter._notify_fatal_error.assert_awaited_once()
+    assert adapter.fatal_error_retryable is retryable
+    assert adapter.fatal_error_code == ("whatsapp_bridge_exited" if retryable else "whatsapp_passkey_required")
+    if not retryable:
+        assert "hermes whatsapp --passkey-browser" in adapter.fatal_error_message

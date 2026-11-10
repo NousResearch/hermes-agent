@@ -92,6 +92,14 @@ export const zhHant: Translations = {
     webUi: "管理面板",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "目前記憶提供者",
+    noProvider: "無 — 僅內建",
+    builtinLayer: "內建層",
+    builtinNote: "MEMORY.md 和 USER.md 是 Hermes 自己的記憶，獨立於任何外部提供者。兩者預設都會載入工作階段；設定開關 (memory.memory_enabled / memory.user_profile_enabled) 可分別關閉。外部提供者是對它們的補充，絕不會取代它們。",
+  },
+
   status: {
     actionFailed: "動作失敗",
     actionFinished: "已完成",
@@ -361,6 +369,13 @@ export const zhHant: Translations = {
     authRequired: "需要驗證",
     authRequiredHint: "執行此指令以完成驗證：",
     updateGit: "Git pull",
+    updateAll: "全部更新",
+    updatingAll: "正在更新外掛…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `已更新 ${updated}，需審核 ${needsReview}，失敗 ${failed}`,
+    autoUpdate: "自動更新",
+    autoUpdateDesc: (hours: number) =>
+      `閘道檢查時（每 ${hours} 小時）自動套用外掛更新。更新後的程式碼會在新工作階段中載入。`,
     versionBadge: "版本",
     showInSidebar: "顯示於側邊欄",
     hideFromSidebar: "從側邊欄隱藏",

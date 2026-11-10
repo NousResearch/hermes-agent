@@ -19,7 +19,10 @@ class EditPeer(BaseHTTPRequestHandler):
         self.server.requests.append(request)
         # write_file refuses to replace an existing file this task never read in full
         # (stale-overwrite guard), so the scripted model reads first, then edits.
-        seen = sum(1 for m in request.get('messages', []) if m['role'] == 'tool')
+        # Counted since the latest user turn, so a second prompt in the session edits again.
+        messages = request.get('messages', [])
+        last_user = max((i for i, m in enumerate(messages) if m['role'] == 'user'), default=-1)
+        seen = sum(1 for m in messages[last_user + 1:] if m['role'] == 'tool')
         tool = seen < 2
         message = {'role': 'assistant', 'content': 'EDITOR_FINISHED'}
         if seen == 0:
@@ -111,3 +114,55 @@ async def test_real_editor_diff_requires_native_consent_before_write(daemon, tmp
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.asyncio
+async def test_accept_edits_runs_a_workspace_edit_unasked_and_a_sensitive_one_still_asks(daemon, tmp_path, model_peer):
+    """ACP-7: Accept Edits is the session's ``edit_policy`` on the owner; a second surface reads it, a
+    workspace edit runs without a permission request, and a sensitive path (``.env``) still asks."""
+    target = tmp_path / 'owned.txt'
+    target.write_text('original edit')
+    model_peer.target = target
+    model_peer.RequestHandlerClass = EditPeer
+    async with viewer(daemon) as ws:
+        sid = (await ws.rpc('session.create', source='acp', cwd=str(tmp_path), request_id='accept'))['session_id']
+        assert (await ws.rpc('session.info', session_id=sid))['edit_approval_policy'] == 'ask'
+        async with editor(daemon, tmp_path) as acp:
+            await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
+            loaded = await acp.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
+            modes = loaded['result']['modes']
+            assert modes['currentModeId'] == 'default', loaded
+            assert [m['id'] for m in modes['availableModes']] == ['default', 'accept_edits', 'dont_ask']
+            assert 'result' in await acp.rpc('session/set_mode', sessionId=sid, modeId='accept_edits')
+            # Every surface attached to the session sees the same policy.
+            assert (await ws.rpc('session.info', session_id=sid))['edit_approval_policy'] == 'workspace_session'
+            turn = await acp.rpc('session/prompt', sessionId=sid, prompt=[{'type': 'text', 'text': 'Edit it'}])
+            assert turn['result']['stopReason'] == 'end_turn', turn
+            assert target.read_text() == 'approved edit'
+            assert not any(f.get('method') == 'session/request_permission' for f in acp.frames)
+
+            sensitive = tmp_path / '.env'
+            sensitive.write_text('SECRET=1')
+            model_peer.target = sensitive
+            task = asyncio.create_task(acp.rpc('session/prompt', sessionId=sid,
+                prompt=[{'type': 'text', 'text': 'Edit the env file'}]))
+            try:
+                await async_wait_until(lambda: any(f.get('method') == 'session/request_permission' for f in acp.frames),
+                                       timeout=20, what='the sensitive edit permission request')
+                permission = next(f for f in acp.frames if f.get('method') == 'session/request_permission')
+                assert permission['params']['toolCall']['kind'] == 'edit', permission
+                acp.process.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': permission['id'], 'result': {
+                    'outcome': {'outcome': 'selected', 'optionId': 'deny'}}}).encode() + b'\n')
+                await acp.process.stdin.drain()
+                assert (await task)['result']['stopReason'] == 'end_turn'
+                assert sensitive.read_text() == 'SECRET=1'
+            finally:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            # A second editor attaching to the session is shown the session's mode.
+            async with editor(daemon, tmp_path) as second:
+                await second.rpc('initialize', protocolVersion=1, clientCapabilities={})
+                again = await second.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
+                assert again['result']['modes']['currentModeId'] == 'accept_edits', again

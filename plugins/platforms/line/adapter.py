@@ -40,7 +40,7 @@ from gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult,
+    gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
@@ -885,11 +885,10 @@ class LineAdapter(BasePlatformAdapter):
             try:
                 await self._client.push(chat_id, batches[i])
             except Exception as exc:
-                if i > 0:
-                    logger.warning("LINE: push for follow-up batch failed: %s", exc)
-                elif text:
-                    logger.error("LINE: push send failed: %s", exc)
-                return SendResult(success=False, error=str(exc))
+                shown = describe_proxy_error(exc, env_proxy_for_redaction(LINE_PUSH_URL, trust_env=gateway_trust_env())) or str(exc)  # the text may echo the proxy URL
+                if i > 0 or text:
+                    logger.log(logging.WARNING if i > 0 else logging.ERROR, "LINE: push %s failed: %s", "for follow-up batch" if i > 0 else "send", shown)
+                return SendResult(success=False, error=shown)
         return SendResult(success=True, message_id=None)
 
 
@@ -947,8 +946,8 @@ async def _standalone_send(
     try:
         await _LineClient(token).push(chat_id, messages)
         return {"success": True, "message_id": None}
-    except Exception as exc:
-        return send_error(str(exc))
+    except Exception as exc:  # the text may echo the proxy URL: it reaches the model
+        return send_error(describe_proxy_error(exc, env_proxy_for_redaction(LINE_PUSH_URL, trust_env=gateway_trust_env())) or str(exc))
 
 
 _SETUP_PROMPTS = (  # (env var, prompt, masked)
@@ -978,6 +977,8 @@ def interactive_setup() -> None:
 def register(ctx) -> None:
     ctx.register_platform(
         name="line", label="LINE", adapter_factory=lambda cfg: LineAdapter(cfg), check_fn=check_requirements,
+        dashboard_description="Use Hermes from LINE via the LINE Messaging API webhook.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/line",
         validate_config=validate_config, is_connected=is_connected,
         required_env=["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET"], install_hint="pip install aiohttp",
         setup_fn=interactive_setup, env_enablement_fn=_env_enablement, cron_deliver_env_var="LINE_HOME_CHANNEL",

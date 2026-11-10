@@ -184,7 +184,8 @@ def build_token_provider(scope: Optional[str] = None, *, config: Optional[EntraI
     in the worker."""
     ai = _require_azure_identity()
     config = _resolve_config(config, scope, exclude_interactive_browser=exclude_interactive_browser)
-    return ai.get_bearer_token_provider(build_credential(config), config.scope)
+    from agent.credential_source import ENTRA_ID, tag_credential_source
+    return tag_credential_source(ai.get_bearer_token_provider(build_credential(config), config.scope), ENTRA_ID)
 
 
 def _probe_token(config: EntraIdentityConfig, timeout_seconds: float) -> Optional[dict[str, Any]]:

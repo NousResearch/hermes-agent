@@ -24,14 +24,17 @@ keyword, defaulting to `"unknown"`. Only these two exact values prepare receipts
 
 | Origin | Set by core caller | Receipt reason / surface |
 |---|---|---|
-| `user_rest` | Dashboard single and selected-ID bulk REST deletion | `explicit_user` / `dashboard_rest` |
-| `user_rpc` | Desktop/TUI backend `session.delete` RPC | `explicit_user` / `session_rpc` |
+| `user_rest` | Dashboard REST deletion written by this process: the in-process owner, or the owner-less offline fallback | `explicit_user` / `dashboard_rest` |
+| `user_rpc` | Desktop/TUI `session.delete`, and an authenticated `session.mutate` delete. A dashboard REST delete forwarded to a live gateway owner is this case: the RPC carries no provenance field, and the owner stamps `user_rpc` | `explicit_user` / `session_rpc` |
 
 These values are authored by the actual handlers, not accepted from REST/RPC
-payloads. They describe local caller intent, **not external authorization**.
-Single REST deletion retains the owner's request/revision/generation fences and
-passes provenance as a private Python keyword, outside the client payload. Its
-identity preparation and mutation retry receipt share one transaction; an exact
+payloads. They describe the committing surface, **not external authorization**.
+An in-process REST delete passes provenance as a private Python keyword,
+outside the client payload. If that dashboard is not the store owner, it
+forwards `session.mutate` with no provenance field; the live owner then stamps
+`user_rpc`. Selected-ID bulk REST deletion that this process writes still uses
+`user_rest`.
+Its identity preparation and mutation retry receipt share one transaction; an exact
 retry replays the committed result without preparing another deletion receipt.
 Plugins are trusted code; the Python keyword is not an access-control boundary.
 An absent, unknown or unrecognized origin does not authorize external cleanup.

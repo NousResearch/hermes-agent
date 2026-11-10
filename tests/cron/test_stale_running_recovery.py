@@ -9,6 +9,7 @@ timeout is unlimited or not a finite positive number.
 
 from __future__ import annotations
 
+import sqlite3
 import time
 import uuid
 from datetime import timedelta
@@ -100,3 +101,26 @@ def test_live_owner_recent_claim_not_recovered(monkeypatch, timeout):
     else:
         assert executions_mod._live_owner_stale_after_seconds() is None
         assert recovered == 0 and _status(ancient) == "running"
+
+
+def test_progress_stamped_during_the_sweep_keeps_the_run(monkeypatch):
+    """A worker that stamps progress after the sweep read its silent row is not reclaimed: the
+    reclaim UPDATE must not act on the stale snapshot (race audit threads-4: the live run would be
+    filed ``unknown`` and its job could fire a second time)."""
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "600")
+    bound = executions_mod._live_owner_stale_after_seconds()
+    eid = _seed_running("job-resumed", age_seconds=bound + 3600)
+
+    def owner_resumes(pid, started_at):
+        # The external worker process (touch_execution_progress there) commits a fresh stamp
+        # while this sweep is probing its liveness.
+        worker = sqlite3.connect(executions_mod.EXECUTIONS_FILE)
+        with worker:
+            worker.execute("UPDATE executions SET progress_at=? WHERE id=?", (_hermes_now().isoformat(), eid))
+        worker.close()
+        return True
+
+    monkeypatch.setattr(executions_mod, "_owner_is_live", owner_resumes)
+
+    assert recover_interrupted_executions() == 0
+    assert _status(eid) == "running"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import enum
 import os
+import posixpath
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
@@ -38,7 +39,8 @@ def _safe_progress(cb: Any, event_type: Any, *args: Any, **kwargs: Any) -> None:
 def _clean_error_text(error: Any, max_chars: int = 200) -> str:
     """Reduce an error payload (traceback / JSON wall) to one clean line: the exception message (last line of a
     traceback) or the first non-empty line, hard-capped in length."""
-    lines = [ln.strip() for ln in str(error or "").strip().splitlines() if ln.strip()]
+    from tools.delegation_redaction import redact_child_text
+    lines = [ln.strip() for ln in redact_child_text(str(error or ""), force=False).strip().splitlines() if ln.strip()]
     if not lines:
         return ""
     line = lines[-1] if lines[0].startswith("Traceback") else lines[0]
@@ -119,8 +121,9 @@ _LEGACY_EVENT_MAP: dict[str, DelegateEvent] = {
 # Event → _ChildProgressRelay method name. Lifecycle strings are emitted by the orchestrator itself (not
 # DelegateEvent). Any other DelegateEvent (TASK_TOOL_STARTED and the reserved TASK_* values) takes the tool-started
 # path; None means "recognised but ignored".
-_LIFECYCLE_EVENTS = frozenset({"subagent.start", "subagent.complete", "subagent.text"})
+_LIFECYCLE_EVENTS = frozenset({"subagent.spawn_requested", "subagent.start", "subagent.complete", "subagent.text"})
 _EVENT_HANDLERS: dict[Any, Optional[str]] = {
+    "subagent.spawn_requested": "_on_spawn_requested",
     "subagent.start": "_on_start",
     "subagent.complete": "_on_complete",
     "subagent.text": "_on_text",
@@ -218,16 +221,38 @@ def _build_child_system_prompt(
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     """Best-effort local workspace hint for child prompts: only a concrete
-    absolute directory is ever injected (never a fake container path)."""
+    absolute directory is ever injected (never a fake container path).
+
+    On SSH a candidate must name the target, not this host. Skip a relative or
+    ``~`` cwd (expanding it against this host's HOME or process cwd can land on
+    a same-named local directory), read the session cwd raw instead of the
+    subdirectory tracker's copy (resolved on this host, and the host process
+    cwd when unset), and skip a directory the SSH cwd rewrite changes (the
+    official image's ``/opt/data`` and its subprocess home exist only where
+    Hermes runs).
+    """
     from agent.runtime_cwd import scope_terminal_cwd
+    from tools.terminal_scope import terminal_env
+    from tools.terminal_tool_config import coerce_ssh_remote_cwd
+
+    env_type = terminal_env("TERMINAL_ENV", "local")
+    on_ssh = env_type.strip().lower() == "ssh"
+    session_dir = (
+        getattr(parent_agent, "session_cwd", None) if on_ssh
+        else getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None)
+    )
     candidates = [
-        scope_terminal_cwd(), getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
-        getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
+        scope_terminal_cwd(), session_dir, getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
     ]
     for candidate in filter(None, candidates):
         with _quiet(None):
-            text = os.path.abspath(os.path.expanduser(str(candidate)))
-            if os.path.isabs(text) and os.path.isdir(text):
+            raw = str(candidate)
+            if on_ssh and not posixpath.isabs(raw):
+                continue
+            text = os.path.abspath(os.path.expanduser(raw))
+            if coerce_ssh_remote_cwd(text, env_type) != text:
+                continue
+            if os.path.isdir(text):
                 return text
     return None
 
@@ -345,6 +370,9 @@ class _ChildProgressRelay:
             self.batch.clear()
 
     # ── Lifecycle events emitted by the orchestrator itself ──
+    def _on_spawn_requested(self, tool_name, preview, args, kwargs):
+        self._relay("subagent.spawn_requested", preview=preview or self.goal_label or "", **kwargs)
+
     def _on_start(self, tool_name, preview, args, kwargs):
         if self.goal_label:
             self._tree_line(f"🔀 {_short(self.goal_label, 55)}")

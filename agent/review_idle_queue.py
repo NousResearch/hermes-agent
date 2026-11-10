@@ -47,7 +47,7 @@ def review_targets_managed_local(agent: Any, task_cfg: Optional[dict[str, Any]])
     supervisor state file; any failure reads False (immediate spawn is the safe default). The cheap
     TTL-cached netloc probe runs FIRST so cloud-only installs skip runtime resolution on the turn's tail."""
     try:
-        from agent.auxiliary_client import _is_managed_local_endpoint, _managed_local_netloc
+        from agent.auxiliary_managed_local import _is_managed_local_endpoint, _managed_local_netloc
 
         if not _managed_local_netloc():
             return False
@@ -116,12 +116,17 @@ class ReviewIdleQueue:
                 self._thread = threading.Thread(target=self._run, daemon=True, name="bg-review-idle-queue")
                 self._thread.start()
 
-    def _quiet_for(self) -> float:
-        """Seconds this process has been turn-free (0 while a turn runs)."""
+    def quiet_period(self) -> tuple[float, Optional[float]]:
+        """Process-wide quiet clock: (seconds since the last live turn ended, the stamp that quiet period began
+        at). ``(0.0, None)`` while any turn runs or before the first turn ends."""
         with self._lock:
             if self._live_turns > 0 or self._quiet_since is None:
-                return 0.0
-            return self._now() - self._quiet_since
+                return 0.0, None
+            return self._now() - self._quiet_since, self._quiet_since
+
+    def _quiet_for(self) -> float:
+        """Seconds this process has been turn-free (0 while a turn runs)."""
+        return self.quiet_period()[0]
 
     def _pop_dispatchable(self) -> Optional[_PendingReview]:
         """Oldest aged-out item, else the oldest item once quiet+idle hold."""
@@ -201,7 +206,9 @@ def _managed_server_idle() -> bool:
         loaded = [m["id"] for m in _get("/models").get("data", [])
                   if (m.get("status") or {}).get("value") in ("loaded", "ready")]
         return not any(
-            s.get("is_processing") for mid in loaded for s in _get(f"/slots?model={quote(mid)}") if isinstance(s, dict)
+            # autoload=false: a model unloaded since the /models read must not load again for a status read.
+            s.get("is_processing") for mid in loaded
+            for s in _get(f"/slots?model={quote(mid)}&autoload=false") if isinstance(s, dict)
         )
     except Exception:
         return True

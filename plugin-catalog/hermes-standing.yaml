@@ -1,0 +1,24 @@
+name: hermes-standing
+repo: https://github.com/percyhendrux123-prog/hermes-standing
+sha: "8c8126ee85073d9ef8cfaf6ed935ce68dcae42d8"
+version: "0.1.2"
+title: Standing
+description: "Earned trust for Hermes workers. Each profile has a level (L0 read, L1 draft, L2 act, L3 trusted) that decides which tool calls need the owner's approval, and a local record of checks that held up and checks that did not. A worker can always report on its own card (block, comment, request review, heartbeat), but it cannot mark the task done on its word: kanban_complete is blocked until the task has a passing standing_proof in the same session, and Standing runs that check itself (owner-scoped file, owner-allowlisted HTTP URL, or exact owner-allowlisted read-only command). Ten clean passes raise a level (capped at L1 automatically; L2 needs the owner's explicit opt-in); one failed check lowers it; a check that could not run is logged as unavailable and changes nothing. Seeds only create new actors, so restarts never undo a demotion. /standing shows the record, /standing log the last events, and /standing set (local owner only) changes a level. Optional same-machine shared ledger for a governor and its workers, and a short score line on the task card after a completion or demotion. Disclosure — pre_tool_call returns Hermes' own approve directive for every tool call outside the profile's level (at the default L1 that includes every terminal/shell, send and unknown-tool call) and blocks kanban_complete until a Standing proof passes in the same session; a worker's block/comment/review/heartbeat calls on its own assigned card skip the Standing prompt; under cron and other unattended runs Hermes' approval policy (default deny) decides; it adds a guidance note to the model context through pre_llm_call; it never auto-approves or calls a model, and makes network or subprocess calls only for owner-scoped proofs (HTTP GET with no redirects, proxies or credentials; exact allowlisted argv, shell=False, minimal environment); it stores actors and hashed proof events in SQLite under its plugin data directory (or an owner-set db_path) and, when card_line is on, posts task-card comments through the public kanban_comment tool."
+maintainer: percyhendrux123-prog
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/percyhendrux123-prog/hermes-standing/blob/8c8126ee85073d9ef8cfaf6ed935ce68dcae42d8/README.md
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [standing_proof]
+  provides_hooks: [pre_tool_call, post_tool_call, pre_llm_call, on_session_finalize, on_session_reset]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "A passing check proves only what it checks. Standing does not judge whether the whole deliverable is right; choose meaningful checks."
+  - "Not a sandbox. Other internal hook errors fail open (logged, no directive); only the completion proof check fails closed."
+  - "At L2, shell and unknown tools run without a Standing prompt so proven unattended workers can work; recognized spend and delete/move calls still ask below L3."
+  - "Sandboxed workers cannot use host file proofs; use owner-allowlisted HTTP or command proofs instead."
+  - "Command proofs are POSIX only (Linux, macOS)."

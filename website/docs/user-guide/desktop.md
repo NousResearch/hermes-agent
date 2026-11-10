@@ -32,6 +32,187 @@ hermes desktop
 
 That uses your current config, keys, sessions, and skills.
 
+## Use the Desktop workspace from a browser
+
+The gateway can serve this workspace to a normal browser: sessions, profiles, Capabilities, Messaging,
+Artifacts, scheduled jobs, the host file tree, Git review, previews and the terminal rail. This is
+**not the Web Dashboard**. Turn it on once, then open it with `hermes webapp`:
+
+```bash
+hermes config set webapp.enabled true
+hermes gateway restart
+hermes webapp
+```
+
+The gateway then serves the Webapp at `http://127.0.0.1:9120` (see [Configuration → Webapp](./configuration.md#webapp)
+for the host and port). `hermes webapp` builds the bundle when it is out of date, starts the gateway if
+it is not running, and opens a one-use sign-in link. Chats run on that gateway, the same process that
+serves the CLI, the native Desktop and messaging, so every surface sees one conversation with one queue.
+
+**Signing in.** The link works once, within 60 seconds. The browser exchanges it for a sign-in that it
+keeps in that tab, so reloading keeps you signed in, and so does a gateway restart. A fresh tab or a
+bare URL shows instructions instead of access: run `hermes webapp` again for a new link. **New
+Window**, profile windows and session pop-outs hand the sign-in over with their own one-use link. On
+Linux the gateway checks that the browser's connection belongs to your OS user; on Windows the link
+travels only in the browser launcher's command line, which other standard users cannot read. On macOS,
+the BSDs and illumos neither holds, so the command writes the link into a page only your OS user can
+read (in the gateway home's `webapp` folder) and opens that page: the launcher sees only its path.
+On macOS a browser can open where you don't see it (over SSH, on the Mac's own screen): if none did,
+run `hermes webapp --no-open` for the link. Where it cannot open a browser (`--no-open`, an SSH session
+on the BSDs or illumos) and on WSL (where the Windows browser reaches the gateway through WSL's
+relay), it prints the one-use link for you to open instead; until it
+is used it signs a browser in as you, so keep it private. `hermes webapp --sign-out` signs out every
+tab at once: their open connections close, Bot Desktop viewers included, and each shows the sign-in
+instructions. Behind the sign-in gate (below) it also signs out every browser that signed in with a
+dashboard account; each must sign in again. The account tokens such a login keeps in its cookies work
+on the Webapp only as that login (the gateway refuses them as a bearer token, on a connection's URL and
+on its token refresh), so they end with it. A native Hermes app that signed in to the gateway on its own stays signed in.
+The deployment session token (`HERMES_DASHBOARD_SESSION_TOKEN`, see [Deployment session-token provider](./features/web-dashboard.md#deployment-session-token-provider-token-only-deployments))
+also works there on its own, as a bearer token, in the `X-Hermes-Session-Token` header (what Desktop sends on REST) or on a connection's URL, while the session-token provider is enabled.
+
+For a named profile, `hermes -p work webapp` opens the Webapp on `work`. Profiles the default gateway
+serves share its Webapp; a standalone profile's own gateway serves its own when its config turns it on.
+
+**From another machine.** Set `webapp.host` to `0.0.0.0`; the gateway then requires the
+[dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
+for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). Behind a reverse proxy or tunnel
+you run on the same machine, keep the loopback host and set `webapp.public_url` to the address it
+serves instead; that requires the same sign-in. A proxy in another container or on another machine
+cannot reach that loopback address: see [Docker → Behind a tunnel or reverse proxy](./docker.md#webapp-behind-a-proxy).
+`hermes webapp` then opens the Webapp's address, where you sign in with
+your dashboard account: `webapp.public_url` when set; on the LAN, the address **Web Access → Start**
+registered Nous sign-in for, while it is still this machine's address and the Webapp's port; else the
+loopback address (a password provider, or sign-in you set up by hand for that address). One-use
+links serve only a Webapp that needs no sign-in. HTTPS is strongly recommended remotely.
+
+**What plain HTTP loses.** Browsers turn off features that need a secure context on a plain-HTTP
+address other than loopback (`http://localhost` and `http://127.0.0.1` count as secure): the bot
+screen viewer, the microphone (dictation, live voice and the remote wake word), reading the clipboard
+(terminal paste, pasting an image) and system notifications. The bot screen and
+live voice say so instead of opening. `hermes webapp` and `hermes webapp --status` print a note when
+the address a browser opens (`webapp.public_url`, else the LAN address **Start** registered sign-in
+for) is plain HTTP on another host. To keep these features, open the Webapp over
+HTTPS (`webapp.public_url`) or through an SSH tunnel to `127.0.0.1`.
+
+:::warning Treat Webapp access like access to Hermes on the host
+A signed-in Webapp user can run arbitrary commands as the OS account running Hermes, run agent tools,
+use host files and Git, and reach that account's environment and credentials. Do not expose it without
+a sign-in provider. Prefer an SSH tunnel, Tailscale or another trusted VPN.
+:::
+
+`hermes webapp --status` shows whether the gateway serves the Webapp. When it cannot (the port is
+taken, sign-in is required and no sign-in provider is set up, or the Webapp's browser sign-in file
+`webapp/session-token` in the Hermes home cannot be read or written), the gateway still serves native
+clients and the status says why. The gateway reads these settings when it starts, so restart it after
+fixing the cause (`hermes gateway restart`). When the port was taken, the gateway also replaces the
+Webapp's sign-in, so open tabs need `hermes webapp` again. When the Webapp's bundle has not been built
+yet, the status says so instead: `hermes webapp` builds it, and the running gateway serves it without a
+restart.
+
+Browser-selected files and pasted or dropped images are staged under the active profile before they
+enter the normal attachment flow, with a **16 MiB** limit per file. Host files download through the
+browser's download manager, and supported audio and video play inline using the server's file-access
+rules. **Save Image** for
+cross-origin URLs needs CORS, with a **25 MiB** limit and a **30-second** deadline. Website links open
+in a separate tab; explicit URL previews use a sandboxed iframe that cannot open popups, so use **Open
+in browser** for sites that refuse embedding. Native-only features stay in Electron: global shortcuts,
+always-on-top overlays, OS-window inspection, external-terminal launch and the updater.
+
+Chats written before the gateway owned sessions show their history but cannot be continued from the
+browser until they are adopted: run `hermes sessions adopt` once on the host (`hermes -p <profile>
+sessions adopt` for another profile), or open them once in the native Desktop, TUI or CLI. That
+includes chats a phone app started through the dashboard login under its own label (`mobile`, `ios`):
+they continue like Desktop chats. Rows a separate WebUI process wrote with its own agent, and old cron
+or subagent runs, stay read-only.
+
+### Open it from your phone or another computer
+
+In the native app, **Settings → Web Access** turns the Webapp on for other devices, behind sign-in with
+your Nous account (Providers → Accounts). It appears only in the native app on its local connection,
+and only that app can change it: a browser signed in over the network cannot.
+
+- **This network:** devices on the same Wi-Fi open `http://<this computer's address>:<port>`, where the
+  port is `webapp.port` (9120 unless you set another, or Start chose one for a standalone profile).
+  This is plain HTTP: the connection is not encrypted, so others on the network could read it, and
+  browsers turn off the features listed under **What plain HTTP loses** above. Use it only on a
+  network you trust.
+- **My own URL:** an HTTPS address you already run (Tailscale Serve, a tunnel or a reverse proxy) that
+  forwards to `http://127.0.0.1:<port>`. It is saved as `webapp.public_url`. Never forward that port
+  from your router directly.
+
+**Start** builds the Webapp if it is missing or out of date (the same build `hermes webapp` runs, which
+can take a few minutes the first time), registers its sign-in address with your Nous account when that
+address changed, saves the `webapp:` settings and restarts the gateway, which reads them when it
+starts. Until it is done the pane names the step it is on and how long Start has run, also in a
+pane opened during it. While a chat is running the gateway refuses to restart: the pane shows
+**Restart needed**, the settings apply on the next restart, and **Restart gateway** restarts it once
+the chat ends. **Stop** turns the Webapp off the same way. A Webapp you turned on for this computer only
+(`webapp.enabled: true` without Web Access) shows as served on this computer.
+
+Web Access changes only the `webapp:` settings and keeps your `webapp.port`. It leaves
+`dashboard.public_url` alone, so a standalone dashboard you publish separately keeps its own address.
+Its Nous sign-in uses a sign-in client of its own, which the first Start registers with your Nous
+account and keeps in the gateway's home (`webapp/sign-in-registration.json`). Start never reads or
+writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` in `.env`, so turning Web Access on never changes the
+standalone dashboard's Nous sign-in. A standalone profile with its own gateway serves its Webapp on a
+port of its own: when its `webapp.port` is unset, the first Start picks the first free port above 9120
+that no other profile uses and saves it as that profile's `webapp.port`, so its address stays the same
+after restarts. A `webapp.port` you set is always kept. `hermes update` rebuilds the Webapp
+whenever a profile has it turned on.
+If that build fails, the gateway reports the Webapp unavailable, and the page says so, until
+`hermes webapp` rebuilds it.
+
+### Reach your other gateways from one Webapp
+
+The Webapp's **Settings → Gateways** has the same **Saved connections** list as the native app,
+and it is the same list: a machine keeps one, in `gateway-connections.json` in its Hermes home
+(user-only, beside `ui-preferences.json`). Adding, editing or removing a connection in the native app
+shows in the Webapp, and the other way round, without a restart. The first time the native app runs
+after this change it copies its existing connections in, with the same ids, so nothing needs to be
+set up again.
+
+Each saved gateway joins the Webapp's gateway switcher and the sidebar's gateway groups. The
+browser still talks only to the gateway serving the page. That gateway sends each request and socket
+on to the saved one, with the credential saved for it, exactly as the native app would: the session
+token in the `X-Hermes-Session-Token` header, or the bearer token of a sign-in, plus any extra
+headers saved with the connection. The other gateway needs no setting of its own.
+
+Anyone who can sign in to this Webapp can use every gateway saved on this machine, as whoever the
+saved credential belongs to. Save only gateways you would let them reach. What a saved gateway sends
+back never runs as this Webapp's page: it is served under a sandboxing content policy, the browser
+keeps no copy of it, and it cannot redirect outside that gateway. Removing a connection closes its
+open sockets at once.
+
+A Webapp tab and the windows it opens run on the gateway serving the page, so **Open in new window**
+and **Set as default** are offered for that gateway's own profiles. Open another gateway's from the
+switcher. A chat on another gateway stays in the tab: popping it out says so instead of opening a
+window.
+
+### Terminal in the Webapp
+
+The terminal rail opens the host's interactive shell, running as a child of the gateway, in your home
+folder unless `terminal.cwd` names another. Dropping files onto it uploads them to the host (**16 MiB**
+each) and types their paths. Refreshing the page or losing the connection detaches the terminal
+without ending its shell; the saved terminal tab reattaches to that shell and its profile. Hiding a
+terminal is not closing it; closing its tab ends the shell. A second browser tab attaching to the same
+terminal takes over the connection.
+
+Detached shells are kept for **15 minutes** while the gateway runs, up to **16 host terminals**
+including detached ones. A gateway restart or update ends them. Reconnecting replays up to **1 MiB** of
+recent output; full-screen programs may need their own redraw command.
+
+A terminal opened on a saved SSH gateway runs a login shell over that connection's SSH
+transport, like the native app. The serving Webapp retains the SSH terminal across browser
+disconnects; its selected gateway and profile remain the attachment scope. The shell uses the
+remote SSH login environment, not a same-named profile on the Webapp host. Removing or
+re-pointing the saved connection ends its terminals. The remote `serve --isolated` does not
+need Webapp enabled. For an HTTP gateway connection, the remote must itself provide the
+Webapp host-terminal service; a plain `serve` or gateway listener does not expose host shells.
+
+The bundle's npm dependencies install into `.build/webapp-workspace` in the checkout, separately from
+the native Desktop, and reinstall only when the lockfile changes. With lazy installs disabled, a plain
+`hermes webapp` does not install them; `--build-only` or `--force-build` does.
+
 ## What's in the app
 
 The desktop app is organized as a chat-first window with a left sidebar for navigation. It's built to allow managing multiple simultaneous agent conversations, configuring messaging providers, creating artifacts, browsing projects' folder structures, and working on multiple projects at once.
@@ -104,10 +285,18 @@ The model picker lives in the **composer**, just left of the microphone. Click i
 The **microphone** is dictation; hover it and the other voice toggles fan out above it — **Read replies aloud** and the **wake word** ear. A toggle that is on shows as a solid disc. Starting a full voice conversation stays on the primary button to the right. In the HUD and in narrow tiles the same controls fold into one menu behind the mic instead. When dictation talks to the speech-to-text provider directly (client-direct voice), the request honours the same `stt.openai.timeout` budget (default 60 s) as the gateway's own transcription client, so a slow endpoint fails with "Transcription timed out" instead of leaving the mic stuck on transcribing.
 
 - **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default — with one exception: on a fresh profile that has no `model.default`/`model.provider` configured yet, the first pick is persisted so the app has a real default instead of falling through to a stray API-key env var on restart. Persistence follows the same rule as `/model` (`model.persist_switch_by_default`); use **Settings → Model** to change the default deliberately. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
-- **Set the default in Settings → Model.** That "main" model is your **per-profile global default** — it's what new chats, crons, subagents, and auxiliary tasks start from, and it's the only place that writes it. Each [profile](#sessions--profiles) keeps its own default.
+- **Set the default in Settings → Model → Main model.** Choose a provider and model in their labeled rows, then click **Apply** below the model selector. Controls align to the right on wide windows and stack below their labels on narrow windows. The **Defaults** section has separate reasoning and speed controls where the model supports them. That "main" model is your **per-profile global default**, which new chats, crons, subagents, and auxiliary tasks start from. Each [profile](#sessions--profiles) keeps its own default.
 - **Per-model effort/fast presets.** Each model remembers its own reasoning effort and fast-mode choice in the desktop app, re-applied to the session whenever you pick that model. These presets are a desktop convenience and don't change crons or subagents.
 - **Favorite models.** Click the star on the left of a model row (or shift-click the row, the same gesture that pins a chat in the sidebar; Shift+Enter from the search box) to lift it into a **Favorites** section at the top of the picker. Starring never selects the model or closes the menu, so the same gesture undoes it. The section only appears once something is starred. Favorites show in the composer, in session tiles, and anywhere else a model is picked, because they are one stored preference. They persist per device, keep the order you starred them, and ignore the **Edit models** shortlist (a star IS an explicit "always show me this one"); a favorite for a provider that is not connected is kept and reappears when it reconnects. Searching is unaffected — a query lists every match in its provider's place.
 - **Mid-chat switches reset the prompt cache.** Switching the model inside a live chat means the next message re-reads the whole conversation at full input price (provider prompt caches are keyed to the model). Fine occasionally; on a long chat, a fresh chat on the new model is often cheaper than bouncing back and forth.
+
+#### Subagent models and limits
+
+Open **Settings → Model → Subagents** to choose a delegated agent's provider and model and adjust its turn limit, concurrency, timeout, and reasoning effort. Provider and model dropdowns have separate labeled rows, with controls aligned to the right on wide windows and stacked below their labels on narrow windows. The catalog and saved changes belong to the profile selected under **Applies to**.
+
+Provider and model changes remain a local draft until you click **Apply**. **Cancel**, leaving the page, or changing the settings profile discards an unapplied route. A provider switch requires a model; select **Use parent model** explicitly for a provider-only override, and make sure that provider supports the parent's model.
+
+**Inherit from main agent** uses the parent's model and credentials. **Custom model (use parent credentials)** overrides only the model. Existing direct endpoints are shown as **Direct endpoint override**. Applying a different route clears the superseded delegation endpoint, its stored key and its wire protocol together, without removing other request settings. If the catalog is unavailable, use **Custom provider...** and **Custom model…** to enter a route manually, or click **Retry** without losing your draft.
 
 ### File browser
 
@@ -161,6 +350,17 @@ A real terminal lives in the right sidebar, next to the file browser:
 - **Ctrl+`** shows the terminal (opening one if none exist); **Ctrl+Shift+`** spawns an additional one. Multiple terminals stack in a tab rail — **Ctrl+Shift+↓/↑** walk between them, **Ctrl+Shift+W** closes the active one.
 - **Shells persist while hidden.** Closing or hiding the panel doesn't kill your shell — every open terminal stays mounted with its scrollback and running processes intact until you explicitly close it.
 - **Add to chat** — select terminal output and send it into the composer as context for your next message.
+
+**Per-gateway terminals.** Each terminal tab runs on the gateway it was opened on, and keeps running there
+when you pick another gateway in Sessions. **New terminal** (**+** on the terminal rail) opens on the
+gateway picked in Sessions. When an SSH gateway is registered, the chevron under **+** (or a
+right-click on **+**) opens one on **This device** or any SSH gateway, so several hosts can be open
+side by side. A tab shows its gateway as a small glyph on its rail square and in its tooltip
+(`zsh · NAS`); This device tabs are labeled only once tabs run on more than one host. URL/token and
+cloud gateways have no shell access, so a terminal opened while one is picked runs on This device
+and says so. After a relaunch, each tab reopens on its own gateway. Editing an SSH gateway
+disconnects its tabs (press Enter to reconnect). If a tab's gateway was removed, the tab says so and
+does not start a shell anywhere else.
 
 ### Live subagents
 
@@ -255,9 +455,15 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 - **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
 - **Per-task reasoning effort** — each row under **Settings → Model → Auxiliary models** has a reasoning selector next to its provider/model pick: a level, **Off**, or **inherit · main model effort** (the default, which removes the task's override). It is saved as `auxiliary.<task>.reasoning_effort` in `config.yaml`, the same key `hermes model` writes, and shows in the row's summary when set. Use it to run frequent helpers such as compression or titling at low or no reasoning while the main agent stays at high.
 - **VS Code Marketplace themes** — beyond the built-in theme presets, the appearance settings include a live VS Code Marketplace search: pick any color theme and the app downloads, converts, and installs it as a desktop theme. The same importer is available from the command palette (*Install theme*), and imported themes can be removed again from the appearance settings.
-- **Keep computer awake** — **Settings → Advanced → Keep computer awake** stops the machine from sleeping so long or overnight agent runs keep going (the display can still dim). **While working** holds the machine awake only while a turn is in flight and lets it sleep normally once the run finishes or fails; **Always** holds it whenever Hermes is open. This is a per-computer setting.
+- **Keep computer awake** — **Settings → Advanced → Keep computer awake** stops the machine from sleeping so long or overnight agent runs keep going (the display can still dim). **While working** holds the machine awake only while a turn is in flight and lets it sleep normally once the run finishes or fails; **Always** holds it whenever Hermes is open. **While working** is the default on a computer where nobody has picked a mode. If you turned it **Off** and a timed sleep interrupts a turn, Hermes offers **Keep awake while working** once on wake. Closing the lid or choosing Sleep still sleeps the machine, and on battery Windows may still sleep after its own timeout. This is a per-computer setting.
 
 First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
+
+#### Where your display preferences live
+
+Display preferences (theme and light/dark mode, session-list density and sidebar layout, status-bar readouts, transcript and tool display, sounds, keybinds, saved layouts, model-picker favourites, and which tips, tours and first-run onboarding you already saw or skipped) are stored once per computer, in `ui-preferences.json` in the root Hermes home (`~/.hermes/ui-preferences.json` by default; with a custom `HERMES_HOME`, the root of that home, never a profile folder). The desktop app on that computer and every browser that opens the [Webapp](#use-the-desktop-workspace-from-a-browser) it serves read and write the same file. A change in one reaches the others: the desktop app's windows get it within a couple of seconds and Webapp tabs when they regain focus or within about ten seconds. Theme, mode, density and the other settings an open window already follows across windows repaint at once; the rest apply the next time a window or tab loads. This includes another device, a private window, and another address for the same Webapp (`127.0.0.1`, the LAN address, `webapp.public_url`).
+
+The file belongs to the computer, not to a gateway connection or a profile. A desktop app connected to a remote gateway, or to several gateways, keeps its own computer's preferences. Settings that are already per profile, such as the theme picked for one profile, stay per profile inside the file. Credentials, sign-ins, permission grants, drafts and per-window state (open tabs, pane layout, scroll position, zoom) are never written to it and stay in each window or browser. The first time an app or browser meets the file (or finds none), it copies in the settings it has that the file lacks, and adopts the values already there; it never overwrites them, and nothing it has is removed just because the file lacks it. A default an app or browser filled in for itself (for example read-aloud carried over from `voice.auto_tts`) is never copied in, so it cannot replace a setting you chose elsewhere. If the file is ever damaged, it is kept beside the new one as `ui-preferences.json.corrupt-<timestamp>`, and every open window and tab copies its settings back into the new file. If the file exists but cannot be read (for example, its permissions changed), changes wait in each window and are saved once it is readable again.
 
 #### Per-profile settings: the "Applies to" scope
 
@@ -414,7 +620,7 @@ When you start Hermes from the application grid or menu (the launcher sets `DESK
 
 | Flag                 | Description                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------- |
-| `--skip-build`       | Skip npm install/package and launch the existing unpacked app from `apps/desktop/release` |
+| `--skip-build`       | Skip pnpm install/package and launch the existing unpacked app from `apps/desktop/release` |
 | `--force-build`      | Force a full rebuild even if the content stamp matches                                    |
 | `--build-only`       | Build the desktop app but do not launch it (used by `hermes update`)                      |
 | `--source`           | Launch via `electron .` against `apps/desktop/dist` instead of the packaged app           |
@@ -450,9 +656,9 @@ Further down the same **Settings → Gateways** page, **Registered gateways** ma
 - **Choose what opens after a restart.** **Open on launch** keeps the backward-compatible **Primary gateway** default, or can resume the **Last used** gateway after it connects successfully. This preference is stored outside the application bundle and survives Desktop updates.
 - **Add / edit / remove / test** connections from the panel. The **Add** flow offers all four kinds — **Local**, **Hermes Cloud**, **Remote gateway**, and **SSH** (the Local button is disabled while the app-managed local entry exists, and a hint points cloud adds at the sign-in/discovery flow above). The local entry is managed by the app and cannot be removed. **Test** probes the connection's own HTTP and WebSocket legs directly.
 - **Duplicates are rejected at save time**: only one **local** entry ever; remote and cloud entries are deduplicated on the normalized URL (trimmed, trailing slashes stripped, lowercased — across both kinds); SSH entries on the normalized `user@host:port` plus remote profile.
-- Existing settings are **imported automatically** the first time you run a build with the registry: your current global connection and any legacy per-profile overrides become named entries. The legacy settings file is left untouched, so older builds keep working.
+- Existing settings are **imported automatically, once**, the first time you run a build with the shared list: your current global connection, any legacy per-profile overrides and your saved connections become named entries. The old files in the app's user-data directory are left untouched, so older builds keep working, and they are never read again after that import: a connection you remove stays removed after a restart, in the native app and in the Webapp.
 - Cloud entries come from the Hermes Cloud sign-in/discovery flow above, not from a hand-typed URL.
-- Tokens are stored encrypted with the OS keyring (with an explicit plain-text opt-in on keyring-less Linux).
+- The list and its credentials live in your Hermes home, shared by the native app and the [Webapp](#reach-your-other-gateways-from-one-webapp): `gateway-connections.json` (connections, including session tokens and extra headers) and `gateway-connection-tokens.json` (sign-in credentials). Both are owner-only (0600) files holding the secrets as plain text, so the Webapp's server can read them; the OS keychain option does not apply to them. See [Security notes](./multi-connection-desktop.md#security-notes).
 
 Side-by-side routing is live: each registered gateway dials its own backends and sockets on demand (keyed per connection + profile), the plugin SDK exposes the union agent roster (`host.agents()` / `host.ensureAgent()`), and **Update all instances** on the Gateways page dispatches `hermes update` to every eligible gateway at once — Hermes Cloud entries are skipped (the platform updates them), and each instance reports its own result.
 
@@ -479,17 +685,19 @@ Set a username and password, then start the backend bound to a reachable address
 cat >> ~/.hermes/.env <<'EOF'
 HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
 HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=choose-a-strong-password
+EOF
 # Recommended: a stable signing secret so sessions survive restarts.
 # Without it a random key is generated per boot and you'll be logged out
-# on every restart.
-HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)
-EOF
+# on every restart. This runs openssl, so the secret is unique to you.
+echo "HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)" >> ~/.hermes/.env
 chmod 600 ~/.hermes/.env
 
 # 2. Run the backend bound to a reachable address. The non-loopback bind
 #    engages the auth gate; the username/password provider handles login.
 hermes serve --host 0.0.0.0 --port 9119
 ```
+
+An earlier version of this recipe wrote the secret line inside the quoted heredoc, which stores the text `$(openssl rand -base64 32)` instead of a random value. If `grep BASIC_AUTH_SECRET ~/.hermes/.env` shows that text, replace the line with a freshly generated secret and restart the backend.
 
 Keep that `hermes serve` process running for as long as you want the desktop app to be able to connect — if it stops, the app can no longer reach the backend. Run it under `systemd`, `tmux`, or your process manager of choice so it survives logout and reboots.
 
@@ -559,6 +767,34 @@ SHA-pinned) plus an import allowlist — not isolation. A plugin whose
 row; **⌘K → Reload desktop plugins** re-reads every installed `plugin.js`,
 including one an installer replaced in place.
 
+The [Webapp](#use-the-desktop-workspace-from-a-browser) loads the desktop plugins installed on the
+host that serves it, from the `desktop-plugins` folder of that host's Hermes root, whichever profile
+the tab is on. A new or removed plugin folder shows up within seconds; an edited `plugin.js` loads on
+**⌘K → Reload desktop plugins**, since a browser cannot watch the host's files. The desktop half of
+an agent+desktop package is copied into the folder by the host itself, so it also appears on a
+headless host that native Desktop never runs on.
+
+**Install** works from the Webapp too: **Capabilities → Plugins → Install** inspects the repository
+first, then has the host that serves the tab clone a desktop-only repository into that folder, under
+the same folder name native Desktop uses. The host installs exactly the commit the dialog showed (or
+the one you pinned) and refuses if that commit cannot be fetched. A package that also ships an agent
+plugin is installed once, as an agent plugin on that host, and the host copies its desktop half out of
+that checkout, as native Desktop does with a local backend. That install is held to the commit the
+dialog showed too: if the branch moved after you reviewed it, nothing is installed and the dialog
+reads the source again and shows the new commit for you to review before you click Install again
+(native Desktop works the same way). A catalog pick is held to the catalog pin the dialog showed: if the
+catalog re-pins the entry before you click Install, the dialog shows the new pin for review first. A
+backend older than the app cannot hold an install to the reviewed commit; the dialog says so and installs
+only if you choose **Install anyway**. If a package's agent half installs but its desktop half cannot
+follow because the source moved, the dialog says only the agent half is in, and installs again only with
+**Force reinstall**, which replaces both halves with the version shown. The desktop-only clone takes
+any source `hermes plugins install` takes, held to the reviewed commit. Because a browser tab asks for
+it, the clone refuses a plugin folder that contains symbolic links or is larger than 64 MB, and never
+replaces an installed plugin unless **Force reinstall** is checked. A plugin installed this way loads on the next scan; a plugin that
+starts disabled is turned on from its card. Removing one from **Capabilities → Plugins** deletes the
+folder on that host; the desktop half of a package is removed with the package. A plugin's folder
+access (`ctx.files`) is not available in a browser.
+
 **Capabilities → Plugins** is the one place for everything that extends
 Hermes: **one row per plugin**, with two switch columns.
 
@@ -607,8 +843,11 @@ picker installs reviewed entries at their pinned commit into the selected
 profile, and **Install from Git** takes any other repository through the same
 review-then-install dialog; its optional **Pin to commit** field installs one
 exact 40-character commit SHA (private repos included), and pinned plugins
-carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
-redirect here.
+carry a `pinned @ <sha8>` badge in the list. **Install from Git** takes any
+git source `hermes plugins install` accepts, including private repos over
+`git@`/`ssh://` and local folders (`file://`). A desktop plugin folder that
+contains a symbolic link is refused. Old `Settings → Plugins` links redirect
+here.
 
 ## Troubleshooting
 
@@ -678,6 +917,10 @@ bootstrap marker does not force installation when that launcher works.
 
 On Linux, Chromium's own errors go to `HERMES_HOME/logs/desktop-chromium.log`, and a crash of the shell itself leaves a minidump under the app's `Crashpad/` directory (inside Electron's user-data directory, next to `connection.json`). If the window vanishes with `SIGTRAP` in the journal, the `FATAL:` line in that log names the check that fired; attach it to the bug report. Nothing is uploaded.
 
+On Ubuntu 23.10 and later, `kernel.apparmor_restrict_unprivileged_userns=1` blocks Chromium's user-namespace sandbox for any program without an AppArmor profile. `hermes desktop` checks this through the Hermes binary itself and then uses Chromium's setuid `chrome-sandbox` helper (root-owned, mode 4755), which asks for `sudo` again after each rebuild. That helper is the recommended route. If the helper cannot be set up either, Desktop starts with `--no-sandbox` and the launcher prints both commands, the helper first.
+
+`hermes desktop --install-apparmor-profile` is the opt-in alternative that survives rebuilds: it installs a profile under `/etc/apparmor.d/` (sudo required) that grants user namespaces to this app's path. Chrome and VS Code get the same grant, but for root-owned binaries. This app's path is usually in a checkout your account can write, so any program running as you could put its own binary there and get the user namespaces the restriction withholds. For your account, that is about the same as turning the restriction off. The command refuses install paths containing AppArmor pattern characters (`? * [ ] { } ^ " \` and non-printable characters; see apparmor.d(5) "Globbing"). It checks the profile with `apparmor_parser --skip-kernel-load` before writing anything, and removes the file again if loading it fails.
+
 If Python dependencies are damaged, run the installation's `hermes pm repair`.
 Then restart Desktop. Do not delete guessed `venv` paths or PM facts. For
 damaged application files, repair through the
@@ -723,12 +966,12 @@ To **use a mirror** (e.g. a corporate one, or `npmmirror.com`, the de-facto Elec
 
 ```bash
 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
-  bash -c 'cd "$HOME/.hermes/hermes-agent/apps/desktop" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'
+  bash -c 'cd "$HOME/.hermes/hermes-agent/apps/desktop" && CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run pack'
 ```
 
-**Other native downloads (e.g. the `get-windows` prebuilt on Windows) that need a mirror:** put the npm keys in `$HERMES_HOME/npmrc` (`%LOCALAPPDATA%\hermes\npmrc` on Windows, `~/.hermes/npmrc` elsewhere) — for example `node_get_windows_binary_host_mirror=https://<mirror>/sindresorhus/get-windows/releases/download/`. Every `npm ci`/`npm run` the updater spawns (desktop, web and TUI builds) points `NPM_CONFIG_USERCONFIG` at that file when it exists, so the config survives `hermes update`; the repo-root `.npmrc` is git-tracked and gets autostashed on every update, and `~/.npmrc` may be missed because the desktop hand-off inherits the GUI's environment. An `NPM_CONFIG_USERCONFIG` you set yourself is never overridden.
+**Other native downloads (e.g. the `get-windows` prebuilt on Windows) that need a mirror:** put the npm keys in `$HERMES_HOME/npmrc` (`%LOCALAPPDATA%\hermes\npmrc` on Windows, `~/.hermes/npmrc` elsewhere) — for example `node_get_windows_binary_host_mirror=https://<mirror>/sindresorhus/get-windows/releases/download/`. Every dependency install and build the updater spawns (desktop, web and TUI builds) points `NPM_CONFIG_USERCONFIG` at that file when it exists (pnpm reads its registry and auth from it) and hands its other keys to the build's child processes as `npm_config_<key>` environment variables (the `get-windows` prebuilt is fetched by node-pre-gyp, which `stage-native-deps.mjs` runs during the build), so the config survives `hermes update`. Credentials (`_authToken`, `_auth`, `_password` and any other `_`-key or `//host/:` key), scoped keys (`@scope:registry`), `otp`, `key`, `cert` and `key[]=` array lines are never handed to install scripts. Hermes's own npm downloads (pinned tool archives, `hermes pm update` lookups) use the `registry=` from the same file. When this file exists it replaces `~/.npmrc` for those builds and downloads (npm's userconfig rule; the two are not merged), so copy any `registry=` or auth line you need from `~/.npmrc` into it; `~/.npmrc` may be missed because the desktop hand-off inherits the GUI's environment. An `NPM_CONFIG_USERCONFIG` you set yourself is never overridden. The pnpm and npm executables that Hermes installs for those builds come from the same `registry=` (or `npm_config_registry`), which may be a plain-`http://` LAN mirror; see [Release age and package mirrors](../reference/package-management.md#release-age-and-package-mirrors).
 
-**If `get-windows` is missing or half-installed:** the build no longer fails — it prints `[stage-native-deps] get-windows not installed ... read_window_below will be unavailable in this build` and ships without the `read_window_below` tool. When the package directory exists but is not loadable (a Windows in-place update interrupted by a running Hermes window, `TAR_ENTRY_ERROR` in the install log), the same warning names the directory, and the next `hermes desktop --force-build` or update removes it before its npm install so the package is re-extracted — close every Hermes window and gateway first so the extract is not interrupted again. A package whose native binding or macOS helper is missing is likewise shipped without window enumeration rather than failing the build.
+**If `get-windows` is missing or half-installed:** the build no longer fails — it prints `[stage-native-deps] get-windows not installed ... read_window_below will be unavailable in this build` and ships without the `read_window_below` tool. When the package directory exists but is not loadable (a Windows in-place update interrupted by a running Hermes window, `TAR_ENTRY_ERROR` in the install log), the same warning names the directory, and the next `hermes desktop --force-build` or update removes it before its pnpm install so the package is re-extracted — close every Hermes window and gateway first so the extract is not interrupted again. A package whose native binding or macOS helper is missing is likewise shipped without window enumeration rather than failing the build.
 
 To clear a corrupt cached zip by hand:
 
@@ -742,26 +985,28 @@ rm -f "$HOME/.cache/electron"/electron-*.zip            # Linux
 If you want to hack on the app itself, install workspace deps from the repo root once, then run the dev server from `apps/desktop`:
 
 ```bash
-npm install          # from repo root — links apps/desktop, web, apps/shared
+pnpm install         # from repo root — links apps/desktop, web, apps/shared
 cd apps/desktop
-npm run dev          # Vite renderer + Electron, which boots the Python backend
+pnpm run dev         # Vite renderer + Electron, which boots the Python backend
 ```
+
+On Windows x64, the first `pnpm run dev` (and `profile:main`) fetches `get-windows`' native binding into `node_modules`, because the dependency install skips its script; if that fails or takes over two minutes, dev starts without `read_window_below` and retries next time. That fetch reads a mirror or proxy only from the environment (`npm_config_node_get_windows_binary_host_mirror`, `HTTP_PROXY` or `npm_config_proxy`), not from `.npmrc`.
 
 Point the app at a specific checkout, or sandbox it from your real config:
 
 ```bash
-HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
-HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway npm run dev
-npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
+HERMES_DESKTOP_HERMES_ROOT=/path/to/clone pnpm run dev
+HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway pnpm run dev
+pnpm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
 Build installers:
 
 ```bash
-npm run dist:mac     # DMG + zip
-npm run dist:win     # NSIS + MSI
-npm run dist:linux   # AppImage + deb + rpm
-npm run pack         # unpacked app under release/ (no installer)
+pnpm run dist:mac     # DMG + zip
+pnpm run dist:win     # NSIS + MSI
+pnpm run dist:linux   # AppImage + deb + rpm
+pnpm run pack         # unpacked app under release/ (no installer)
 ```
 
 macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).

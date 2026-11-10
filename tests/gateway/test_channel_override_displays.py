@@ -60,6 +60,18 @@ async def test_footer_preview_reports_channel_override(home, thread_id, expected
 
 
 @pytest.mark.asyncio
+async def test_footer_preview_prefers_session_model_override_over_channel_pin(home):
+    """A session /model override outranks the channel pin for the turn, so the preview shows it."""
+    runner = _runner()
+    event = _event("/footer on", "777")
+    runner._session_model_overrides[runner._session_key_for_source(event.source)] = {
+        "model": "session/picked-model", "provider": "openrouter", "api_key": "sk-test",
+        "base_url": "https://openrouter.ai/api/v1"}
+    reply = await runner._handle_footer_command(event)
+    assert "picked-model" in reply and "lane-model" not in reply
+
+
+@pytest.mark.asyncio
 async def test_model_switch_keeps_config_backed_custom_endpoint(home, monkeypatch):
     """A channel pinned to ``provider: custom`` hands switch_model the endpoint config.yaml defines."""
     (home / "config.yaml").write_text(yaml.safe_dump({"model": {

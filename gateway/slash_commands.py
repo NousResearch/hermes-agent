@@ -1070,11 +1070,15 @@ class GatewaySlashCommandsMixin(
             return t("gateway.config_save_failed", error=e)
         example = ""
         if new_state:
-            # Show a preview using current agent state if available.
-            _channel = self._channel_override_for(event.source)
+            # Preview the model the next turn runs: the turn's own resolver (session /model >
+            # channel_overrides > config.yaml); an unresolvable route still previews the config model.
+            try:
+                preview_model, _ = self._resolve_session_agent_runtime(source=event.source, user_config=user_config)
+            except Exception:  # health: allow BLE001 -- a broken route must not break /footer on
+                logger.debug("Footer preview: session runtime unresolvable", exc_info=True)
+                preview_model = _resolve_gateway_model(user_config)
             preview = format_runtime_footer(
-                model=(_channel.model if _channel is not None and _channel.model else None)
-                or _resolve_gateway_model(user_config) or None, context_tokens=0, context_length=None,
+                model=preview_model or None, context_tokens=0, context_length=None,
                 fields=effective.get("fields") or ["model", "context_pct", "cwd"])
             if preview:
                 example = t("gateway.footer.example_line", preview=preview)

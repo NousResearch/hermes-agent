@@ -337,6 +337,12 @@ class PluginContext(PluginCapabilityCtxMixin):
                                self.manifest.name, server, tool, timeout, len(raw or ""))
         return self._mcp_envelope(raw)
 
+    def get_portable_mcp_servers(self) -> dict[str, dict[str, Any]]:
+        """Enabled portable MCP server configs (defensive copy) — the documented availability read
+        for plugins that call MCP servers, so an ``is_available()`` check (config/dependency only,
+        never network) needs no private manager access (#152373). Empty before discovery is fine."""
+        return self._manager.get_portable_mcp_servers()
+
     _MCP_RESULT_CHAR_CAP = 65536
 
     @classmethod

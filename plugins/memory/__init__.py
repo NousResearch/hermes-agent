@@ -484,6 +484,18 @@ class _ProviderCollector:
 
         return _forward
 
+    def call_mcp(self, server: str, tool: str, arguments: Optional[dict] = None, timeout: float = 30) -> dict:
+        """Forward to the real ``PluginContext``'s gated ``call_mcp``: the per-server allowlist
+        keys to THIS provider's name (``plugins.entries.<name>.mcp_allowlist``, default-deny), so
+        a reading provider never has to build its own context out of private core imports
+        (#152373). The context is cached, so a provider keeps working after ``register()`` returns."""
+        return self._plugin_context().call_mcp(server, tool, arguments=arguments, timeout=timeout)
+
+    def get_portable_mcp_servers(self) -> dict:
+        """The portable MCP server discovery as a public read, for an ``is_available()`` check that
+        stays inside its documented contract (config/dependency checks, never network, #152373)."""
+        return self._plugin_context().get_portable_mcp_servers()
+
     def _plugin_context(self):
         """A real ``PluginContext``, built once on demand: the common provider that only
         calls ``register_memory_provider`` must not pay for importing the plugin manager."""

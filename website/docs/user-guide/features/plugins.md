@@ -128,6 +128,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Register a memory backend | Subclass `MemoryProvider` in `plugins/memory/<name>/__init__.py` — see [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md) (uses a separate discovery system) |
 | Run a host-owned LLM call | `ctx.llm.complete(...)` / `ctx.llm.complete_structured(...)` — borrow the user's active model + auth for a one-shot completion with optional JSON schema validation. See [Plugin LLM Access](../../developer-guide/plugin-llm-access.md) |
 | Call an MCP tool (capability-gated) | `ctx.call_mcp(server, tool, arguments, timeout=30)` — see [Calling MCP servers from plugins](#calling-mcp-servers-from-plugins) |
+| Read the portable MCP server discovery | `ctx.get_portable_mcp_servers()` — defensive copy of the enabled portable server configs, for `is_available()` checks that stay config/dependency-only (never network) |
 | Register an inference backend (LLM provider) | `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/__init__.py` — see [Model Provider Plugins](../../developer-guide/model-provider-plugin.md) (uses a separate discovery system) |
 
 :::note Slash command handlers run in the gateway
@@ -1176,6 +1177,10 @@ else:
 **Signature:** `ctx.call_mcp(server: str, tool: str, arguments: dict | None = None, timeout: float = 30) -> dict`
 
 Returns a stable envelope: `{"ok": True, "result": ...}` (plus `structuredContent` when the server provides it) or `{"ok": False, "error": "..."}`. Results over ~64 KB are truncated and flagged with `"truncated": True`.
+
+**Availability read:** `ctx.get_portable_mcp_servers()` returns a defensive copy of the enabled portable MCP server configs (empty before discovery is fine). Use it for `is_available()` checks — that contract is config/dependency checks only, never network.
+
+Memory provider plugins receive the same two methods on the `ctx` their `register(ctx)` is handed: the collector forwards `ctx.call_mcp(...)` (allowlist keyed to the provider's name) and `ctx.get_portable_mcp_servers()`, so a reading provider never builds its own `PluginContext` out of private core imports.
 
 ### Security: default-off, per-server allowlist
 

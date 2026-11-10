@@ -1,0 +1,28 @@
+name: culprit
+title: Culprit
+repo: https://github.com/d0txyz/hermes-culprit
+sha: 30336c608e3ae3c0b194aa86a502a2c869257696
+version: "0.1.0"
+description: "git bisect for your agent. Records a snapshot after every tool call that changes a file, then binary-searches those snapshots with your test command to name the exact step that broke it, with its diff, and can undo only that step while keeping every later change. Works as /culprit, as `hermes culprit`, and as tools the agent can call. Disclosure: no network and no telemetry; runs git against a private object store under HERMES_HOME/plugin-data/culprit/ (the project's own .git is never read or written) and stores unencrypted copies of the working folder's files there, honouring .gitignore and always skipping .env files, keys, credential folders and dependency folders; keeps each step's tool name and the first 100 characters of its path or command with token-like values masked on a best-effort basis; during a search it runs the given test command through the system shell in temporary copies and deletes them; revert writes only the files in the reverted step's diff and refuses when later edits conflict; model-initiated culprit_bisect and culprit_revert always go to Hermes's approval prompt and fail closed in unattended runs, while /culprit typed by the user runs directly; no background processes; nothing is pruned automatically (/culprit clear deletes a project's data)."
+maintainer: Rizal
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/d0txyz/hermes-culprit/tree/30336c608e3ae3c0b194aa86a502a2c869257696#readme
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/d0txyz/hermes-culprit/30336c608e3ae3c0b194aa86a502a2c869257696/docs/screenshots/culprit-found.png
+  - https://raw.githubusercontent.com/d0txyz/hermes-culprit/30336c608e3ae3c0b194aa86a502a2c869257696/docs/screenshots/steps.png
+  - https://raw.githubusercontent.com/d0txyz/hermes-culprit/30336c608e3ae3c0b194aa86a502a2c869257696/docs/screenshots/revert.png
+capabilities:
+  provides_tools:
+    - culprit_timeline
+    - culprit_bisect
+    - culprit_revert
+  provides_hooks:
+    - on_session_start
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

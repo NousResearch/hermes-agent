@@ -1,0 +1,45 @@
+name: speckle
+repo: https://github.com/NikolaosArgy/hermes-speckle
+sha: 14fc6d8b08918d575e1864a955deb6d9a6f28ff0
+version: "0.1.0"
+title: Speckle
+description: >-
+  Browse, query and diff 3D/BIM models (mainly for the AECO industry) from Speckle
+  (Revit, Rhino, IFC, Archicad, Tekla, ETABS, Civil 3D, Blender), run saved checks on
+  every new version, get a chat message when a watched model gets a new version, and see
+  the model in a live 3D viewer in Hermes Desktop. Requires a Speckle personal access
+  token (SPECKLE_TOKEN). Disclosure — network connections go to the configured Speckle
+  server (app.speckle.systems by default), the only host that receives the token, and to
+  the file storage that server links to for model downloads, without the token; the 3D
+  viewer library ships bundled in the repo and makes no network connections; while a
+  model is watched a background thread checks it every poll_seconds (default 60, minimum
+  15); watches, checks, the viewer selection, caches and preview images stay in the
+  plugin's data folder; speckle_create_issue is the only write to Speckle and the agent
+  asks first; no shell commands, no telemetry.
+maintainer: NikolaosArgy
+tier: community
+category: tools
+requires_hermes: ">=0.22"
+docs_url: https://github.com/NikolaosArgy/hermes-speckle/blob/14fc6d8b08918d575e1864a955deb6d9a6f28ff0/README.md
+screenshots:
+  - https://raw.githubusercontent.com/NikolaosArgy/hermes-speckle/14fc6d8b08918d575e1864a955deb6d9a6f28ff0/assets/screenshots/model-in-pane.jpg
+  - https://raw.githubusercontent.com/NikolaosArgy/hermes-speckle/14fc6d8b08918d575e1864a955deb6d9a6f28ff0/assets/screenshots/colour-by-category.jpg
+  - https://raw.githubusercontent.com/NikolaosArgy/hermes-speckle/14fc6d8b08918d575e1864a955deb6d9a6f28ff0/assets/screenshots/empty-pane.jpg
+capabilities:
+  provides_tools:
+    - speckle_list_projects
+    - speckle_list_models
+    - speckle_list_versions
+    - speckle_model_summary
+    - speckle_query_objects
+    - speckle_diff_versions
+    - speckle_checks
+    - speckle_show_model
+    - speckle_viewer
+    - speckle_create_issue
+    - speckle_watch_model
+    - speckle_unwatch_model
+    - speckle_list_watches
+  provides_hooks: [on_session_start, pre_llm_call]
+  provides_middleware: []
+  requires_env: [SPECKLE_TOKEN]

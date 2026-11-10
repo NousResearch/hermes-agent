@@ -77,7 +77,7 @@ def env(monkeypatch):
 def _background(registry, env, *, task_id=ENV_KEY, owner=RAW_ID, sid="proc_bg"):
     session = ProcessSession(
         id=sid, command="sleep 900", task_id=task_id, owner_task_id=owner, started_at=time.time(),
-        pid=4242, pid_scope="sandbox", env_ref=env, notify_on_complete=True)
+        pid=4242, pid_scope="sandbox" if env is not None else "host", env_ref=env, notify_on_complete=True)
     registry._running[session.id] = session
     return session
 
@@ -215,7 +215,8 @@ def test_failed_teardown_does_not_settle_processes_of_a_sandbox_still_running(re
 
 
 def test_reaper_keeps_a_sandbox_whose_process_matches_only_by_key(registry, env):
-    """A process recovered from a checkpoint has no env object, only the env key it ran under."""
+    """A host process (local, or recovered from a checkpoint) has no env object, only the env key
+    it ran under. Checkpoint recovery skips sandbox processes, so only host ones reach here."""
     _background(registry, None)
 
     _cleanup_inactive_envs(lifetime_seconds=300)
@@ -295,10 +296,8 @@ def test_settlement_keeps_a_success_published_after_its_snapshot(registry, env):
         registry._finish_exited(session, 0)
         natural.append(session.id in registry._finished)
 
-    from tools.process_registry_env_scope import settle_env_closed
-
     registry._lock = _ReleaseHook(lock, natural_exit)
-    settled = settle_env_closed(registry, env)
+    settled = registry.settle_env_closed(env)
 
     success = (0, "exited", "")
     assert natural == [True]  # the success was published before settlement's finish call

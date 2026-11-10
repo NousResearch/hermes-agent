@@ -1,22 +1,17 @@
 name: patchreview
 title: PatchReview
 repo: https://github.com/Bilalsnz/plugin
-sha: 228460d031cf4b52f8565404b91a636cc13fb612
-description: "Intercepts supported file-writing tool calls before execution and queues proposed changes for explicit human review. Users can inspect diffs, accept or reject individual proposals, or accept all pending proposals; accepted writes use a stale-file guard and atomic replacement. Includes an offline sample review UI (not a live queue client). Disclosure — accepting a proposal writes the staged UTF-8 file content to its target path; replacement proposals read the current target file to prepare the diff. The plugin stores its review queue under Hermes plugin data. It makes no network calls, sends no telemetry, invokes no shell commands, stores no credentials, and starts no background processes. It does not intercept arbitrary shell writes or unrelated processes, and unsupported tool argument shapes may pass through."
+sha: dc97125399223f8c5789195c86cd4f26f9eee578
+description: "Routes recognized file-writing tool calls through Hermes' native human-approval gate with a proposed diff. PatchReview never exposes model-callable accept tools and never writes target files: on approval, Hermes executes the original tool through its normal write path and protections. Full-content and exact string-replacement previews support replace_all; unsupported or unparseable recognized calls are blocked. Coverage is limited to recognized tool names and does not intercept shell commands, scripts, or unrelated processes. The plugin makes no network calls, sends no telemetry, invokes no shell commands, stores no credentials, and starts no background processes."
 maintainer: Bilalsnz
 tier: community
 category: tools
 requires_hermes: ">=0.20"
-docs_url: https://github.com/Bilalsnz/plugin/blob/228460d031cf4b52f8565404b91a636cc13fb612/README.md
+docs_url: https://github.com/Bilalsnz/plugin/blob/dc97125399223f8c5789195c86cd4f26f9eee578/README.md
 version: "1.0.0"
 platforms: []
 capabilities:
-  provides_tools:
-    - patchreview_list
-    - patchreview_accept
-    - patchreview_reject
-    - patchreview_accept_all
-    - patchreview_status
+  provides_tools: []
   provides_hooks:
     - pre_tool_call
   provides_middleware: []

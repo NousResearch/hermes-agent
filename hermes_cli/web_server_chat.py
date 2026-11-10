@@ -19,7 +19,6 @@ from typing import Optional
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from pathlib import Path
-from typing import Optional
 from hermes_cli.pty_session import PtySessionRegistry
 
 # Same logger the code used before extraction (record parity).

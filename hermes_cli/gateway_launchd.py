@@ -14,7 +14,6 @@ import shlex
 import subprocess
 import sys
 import time
-from xml.sax.saxutils import escape
 from datetime import UTC
 
 from hermes_cli import gateway_service_owner

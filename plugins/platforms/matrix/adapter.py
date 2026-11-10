@@ -886,8 +886,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._text_batch_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
         self._approval_reaction_map = {
-            "✅": "once", "🌀": "session", "♾️": "always", "♾": "always", "\u267e\ufe0f": "always",
-            "\u267e": "always", "❌": "deny", "❎": "deny"}
+            "✅": "once", "🌀": "session", "♾️": "always", "♾": "always", "❌": "deny", "❎": "deny"}
         self._approval_prompts_by_event: dict[str, _MatrixApprovalPrompt] = {}
         self._approval_prompt_by_session: dict[str, str] = {}
         self._approval_require_sender: bool = _env_truthy("MATRIX_APPROVAL_REQUIRE_SENDER", "true")

@@ -190,7 +190,6 @@ def _read_default_model(codex_home: Path) -> Optional[str]:
         return None
     try:
         import tomllib
-        import tomllib
         payload = tomllib.loads(config_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None

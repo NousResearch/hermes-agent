@@ -5,7 +5,7 @@ import { type ConversationMatch, searchConversation } from '@/api/conversation-s
 import { useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -52,6 +52,27 @@ export function ConversationSearch() {
   const input = useRef<HTMLInputElement>(null)
   const jumping = useRef<AbortController | null>(null)
   const surface = () => trigger.current?.closest<HTMLElement>('[data-chat-surface]') ?? null
+
+  // The default pane layout hides the chat header band, so the trigger can be unlaid-out while
+  // Cmd/Ctrl+F opens the search: anchor to the transcript's top edge then, not the window corner.
+  const anchor = useMemo(
+    () => ({
+      current: {
+        getBoundingClientRect: () => {
+          const own = trigger.current?.getBoundingClientRect()
+
+          if (own && (own.width || own.height)) {
+            return own
+          }
+
+          const bounds = surface()?.querySelector('[data-slot="composer-bounds"]')?.getBoundingClientRect()
+
+          return bounds ? new DOMRect(bounds.left + 12, bounds.top + 8, 0, 0) : (own ?? new DOMRect())
+        }
+      }
+    }),
+    []
+  )
 
   useEffect(() => {
     const root = surface()
@@ -117,6 +138,7 @@ export function ConversationSearch() {
 
   return (
     <Popover onOpenChange={open => search.reset(open)} open={state.open}>
+      <PopoverAnchor virtualRef={anchor} />
       <Tip label={copy.open}>
         <PopoverTrigger asChild>
           <Button

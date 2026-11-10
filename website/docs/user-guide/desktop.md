@@ -1083,8 +1083,10 @@ time. Grants are stable from then on. If a permission gets stuck, reset it with
 
 ### Search the open conversation
 
-Use the search icon beside the conversation title to search its stored transcript,
-including earlier compression segments and compacted messages. Previous/next
+Press **Cmd/Ctrl+F** and click the find bar's search button (or, when the chat
+header is shown, the search icon beside the conversation title) to search the
+conversation's stored transcript, including earlier compression segments and
+compacted messages the rendered page no longer holds. Previous/next
 buttons and snippet selection load one bounded history window and highlight the
 matching message. Enter selects the next match; Shift+Enter selects the previous
 one. The thread's existing return-to-latest control resumes the live view.

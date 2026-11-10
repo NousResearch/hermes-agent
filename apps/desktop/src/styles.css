@@ -4266,6 +4266,8 @@ html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
 .aui-error-details .aui-error-details-link:hover {
   background: none;
   color: var(--err-ink);
+}
+
 /* Explicit stored-transcript match selection; cleared on query/scope change. */
 [data-message-id][data-conversation-match] {
   outline: 2px solid var(--ui-accent);

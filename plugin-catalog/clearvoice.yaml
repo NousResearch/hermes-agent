@@ -1,20 +1,20 @@
 name: clearvoice
 repo: https://github.com/thebangarang/clearvoice-hermes-plugin
 # Full 40-character commit SHA of the reviewed tree.
-sha: 874657a61250ca94df01b36cc1b800c865022fe4
+sha: d4bc366ec72d4f2af1a1772b3a94f48bd0e0b156
 description: Local push-to-talk speech bridge — your words on screen and spoken clearly in 17 languages, with no account, no cloud and no audio on disk.
 maintainer: thebangarang
 tier: community
 category: voice
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/thebangarang/clearvoice-hermes-plugin/blob/874657a61250ca94df01b36cc1b800c865022fe4/README.md
-version: "0.7.1"
+docs_url: https://github.com/thebangarang/clearvoice-hermes-plugin/blob/d4bc366ec72d4f2af1a1772b3a94f48bd0e0b156/README.md
+version: "0.7.2"
 title: ClearVoice Hermes Plugin
-image: https://raw.githubusercontent.com/thebangarang/clearvoice-hermes-plugin/874657a61250ca94df01b36cc1b800c865022fe4/docs/banner.png
+image: https://raw.githubusercontent.com/thebangarang/clearvoice-hermes-plugin/d4bc366ec72d4f2af1a1772b3a94f48bd0e0b156/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/thebangarang/clearvoice-hermes-plugin/874657a61250ca94df01b36cc1b800c865022fe4/docs/shot-verbatim.png
-  - https://raw.githubusercontent.com/thebangarang/clearvoice-hermes-plugin/874657a61250ca94df01b36cc1b800c865022fe4/docs/shot-courteous.png
-  - https://raw.githubusercontent.com/thebangarang/clearvoice-hermes-plugin/874657a61250ca94df01b36cc1b800c865022fe4/demo/poster.png
+  - https://raw.githubusercontent.com/thebangarang/clearvoice-hermes-plugin/d4bc366ec72d4f2af1a1772b3a94f48bd0e0b156/docs/shot-verbatim.png
+  - https://raw.githubusercontent.com/thebangarang/clearvoice-hermes-plugin/d4bc366ec72d4f2af1a1772b3a94f48bd0e0b156/docs/shot-courteous.png
+  - https://raw.githubusercontent.com/thebangarang/clearvoice-hermes-plugin/d4bc366ec72d4f2af1a1772b3a94f48bd0e0b156/demo/poster.png
 readme: true
 platforms: [linux, macos, windows]
 known_issues:

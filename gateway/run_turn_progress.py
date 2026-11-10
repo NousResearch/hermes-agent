@@ -613,6 +613,9 @@ class GatewayTurnProgressMixin:
         flood_pending: bool = False
         # (message_id, text) of bubbles a content reset closed while their update was flood-held.
         owed_bubbles: list = dataclasses.field(default_factory=list)
+        # The buffer (no bubble id yet) holds a remainder a reset carried out of a flood-held
+        # bubble: owed as a fresh bubble, so a further reset carries it on instead of clearing it.
+        owed_fresh: bool = False
 
     def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
@@ -701,7 +704,7 @@ class GatewayTurnProgressMixin:
                 return True
             if result.success and result.message_id:
                 st.progress_msg_id = result.message_id
-        st.flood_pending = False
+        st.flood_pending = st.owed_fresh = False
         # The newest continuation is the only mutable bubble: keep just its lines so later
         # edits update it instead of replaying the full transcript into new messages.
         st.progress_lines = groups[-1]
@@ -723,6 +726,9 @@ class GatewayTurnProgressMixin:
             first, *rest = self._split_progress_groups(st, st.progress_lines)
             st.owed_bubbles.append((st.progress_msg_id, self._progress_text(first)))
             carried = [line for group in rest for line in group]
+        elif st.owed_fresh and st.progress_msg_id is None:
+            carried = st.progress_lines  # a carried remainder still unsent: it rides on to the next bubble
+        st.owed_fresh = bool(carried)
         st.progress_msg_id, st.progress_lines = None, carried
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
@@ -800,6 +806,7 @@ class GatewayTurnProgressMixin:
         _settle_progress_send(st, result)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
+            st.owed_fresh = False
         return True
 
     async def _deliver_flood_pending_progress(self, st) -> bool:

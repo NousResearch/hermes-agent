@@ -8,6 +8,7 @@ Drives the real ``TelegramAdapter`` and the real progress mixin; only the PTB ``
 """
 
 import queue
+import re
 import time
 from collections import Counter
 from types import SimpleNamespace
@@ -28,12 +29,16 @@ class RetryAfter(Exception):
 
 
 def _bot(refuse):
-    """A PTB bot fake: ``refuse(text, attempt)`` decides which ``send_message`` calls are flood-refused."""
+    """A PTB bot fake: ``refuse(text, attempt)`` decides which ``send_message`` calls fail: truthy raises
+    a flood refusal, an exception instance is raised as is."""
     bot = SimpleNamespace(sends=[], landed=[], edits=[])
 
     async def send_message(**kwargs):
         bot.sends.append(kwargs["text"])
-        if refuse(kwargs["text"], len(bot.sends)):
+        refused = refuse(kwargs["text"], len(bot.sends))
+        if isinstance(refused, Exception):
+            raise refused
+        if refused:
             raise RetryAfter(20)
         bot.landed.append(kwargs["text"])
         return SimpleNamespace(message_id=100 + len(bot.landed))
@@ -47,7 +52,7 @@ def _bot(refuse):
     return bot
 
 
-def _held_over_cap_bubble(bot):
+def _held_over_cap_bubble(bot, content_resets=1):
     from gateway.run_turn_progress import GatewayTurnProgressMixin
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
@@ -62,7 +67,8 @@ def _held_over_cap_bubble(bot):
     st.progress_msg_id, st.flood_pending, st.flood_until = "7", True, time.monotonic() + 60
     for i in range(160):  # ~9.4k chars: well past one Telegram message
         loop._progress_absorb(st, f'💻 terminal: "build step {i:03d} running the long command here"')
-    loop._reset_progress_bubble(st)  # a content bubble lands while the window is still open
+    for _ in range(content_resets):  # content bubbles land while the window is still open
+        loop._reset_progress_bubble(st)
     st.flood_until = 0.0  # the window closes while the agent keeps working
     return loop, st
 
@@ -93,3 +99,19 @@ async def test_a_flood_refused_progress_message_arms_the_window_instead_of_loopi
 
     assert st.flood_until > time.monotonic() + 10  # the 20 s penalty is honoured
     assert len(bot.sends) == 1, bot.sends  # nothing else fired into it, no plain-text retry either
+
+
+def _shown_steps(bot):
+    return set(re.findall(r"build step (\d{3})", "\n".join(bot.edits + bot.landed)))
+
+
+@pytest.mark.asyncio
+async def test_a_second_content_bubble_inside_the_window_keeps_the_carried_lines():
+    bot = _bot(lambda text, attempt: False)
+    loop, st = _held_over_cap_bubble(bot, content_resets=2)  # text, tool, more text: one penalty
+
+    await _idle_ticks(loop, st)
+
+    assert _shown_steps(bot) == {f"{i:03d}" for i in range(160)}
+    assert len(bot.landed) == len(set(bot.landed))
+

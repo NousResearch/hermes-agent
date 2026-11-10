@@ -606,3 +606,32 @@ async def test_typed_voice_note_reply_answers_a_clarify_with_every_merged_chunk(
     runner = object.__new__(GatewayRunner)
     runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
     assert await runner._prepare_clarify_reply_text(merged) == "option B\nand keep the logs"
+
+
+@pytest.mark.asyncio
+async def test_a_photo_reply_merged_beside_a_voice_note_reply_keeps_its_note_out_of_the_answer():
+    """One chunk replies to a voice note, the next to a photo: the clarify answer is both typed
+    texts, and the photo's ``saved at`` note stays agent context only."""
+    from types import SimpleNamespace
+
+    from gateway.run import GatewayRunner
+
+    adapter = _make_adapter()
+    voice = SimpleNamespace(path="cache/audio/voice.ogg", media_type="audio/ogg", kind="audio", display_name="voice.ogg")
+    photo = SimpleNamespace(path="cache/images/p.jpg", media_type="image/jpeg", kind="image", display_name="p.jpg")
+    chunks = [_make_event("option B"), _make_event("and keep the logs")]
+    for chunk, cached, reply_to in (
+            (chunks[0], voice, SimpleNamespace(voice=SimpleNamespace(file_name="voice.ogg"), from_user=SimpleNamespace(is_bot=False))),
+            (chunks[1], photo, SimpleNamespace(voice=None, from_user=SimpleNamespace(is_bot=False)))):
+        adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+        await adapter._cache_replied_media(SimpleNamespace(reply_to_message=reply_to), chunk)
+
+    for chunk in chunks:
+        adapter._enqueue_text_event(chunk)
+    await async_wait_until(lambda: adapter.handle_message.called, timeout=2.0)
+
+    merged = adapter.handle_message.call_args[0][0]
+    assert "cache/images/p.jpg" in merged.text  # the agent still sees the photo
+    runner = object.__new__(GatewayRunner)
+    runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
+    assert await runner._prepare_clarify_reply_text(merged) == "option B\nand keep the logs"

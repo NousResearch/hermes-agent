@@ -1,0 +1,33 @@
+name: hermes-phone-use
+title: Hermes Phone Use
+repo: https://github.com/brucexu-eth/hermes-phone-use
+sha: d5868cd2976ea896d7efde85c26bfdbdc47b3160
+description: >-
+  Operate your real iPhone or Android from any Hermes (for example one on a Linux server)
+  through Pinky on the Mac the phone is connected to. Approvals and hand-offs wait for the
+  person and are announced in chat; screenshots come back as images.
+maintainer: brucexu-eth
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.2.0"
+capabilities:
+  provides_tools:
+    - phone_apps
+    - phone_batch
+    - phone_connect
+    - phone_files
+    - phone_handoff
+    - phone_key
+    - phone_launch
+    - phone_observe
+    - phone_release
+    - phone_request_approval
+    - phone_swipe
+    - phone_tap
+    - phone_type
+    - phone_wait_for
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PINKY_TOKEN

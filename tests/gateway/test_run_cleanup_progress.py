@@ -294,3 +294,42 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_survives_a_newer_turn_registering_first(monkeypatch, tmp_path):
+    """A follow-up turn (e.g. an async subagent completion) that registers its own post-delivery
+    callback before this turn's reply lands must not drop this turn's bubble cleanup."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+    runner._session_run_generation[session_key] = 1
+
+    result = await runner._run_agent(
+        message="hello", context_prompt="", history=[], source=source,
+        session_id="sess-1", session_key=session_key, run_generation=1,
+    )
+    assert result["final_response"] == "done"
+    progress_ids = {m["message_id"] for m in adapter.sent}
+    assert progress_ids
+
+    newer_fired = []
+    stale_fired = []
+    adapter.register_post_delivery_callback(session_key, lambda: newer_fired.append(True), generation=2)
+    adapter.register_post_delivery_callback(session_key, lambda: stale_fired.append(True), generation=1)
+
+    assert adapter.pop_post_delivery_callback(session_key, generation=1) is None
+    cb = adapter.pop_post_delivery_callback(session_key, generation=2)
+    await _fire_post_delivery_cb(cb)
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter.deleted:
+            break
+
+    assert newer_fired == [True]
+    assert stale_fired == []
+    assert {d["message_id"] for d in adapter.deleted} & progress_ids

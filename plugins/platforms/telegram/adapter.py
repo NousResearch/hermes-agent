@@ -193,7 +193,7 @@ from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, 
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
-from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note
+from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, TelegramCallbackGateMixin, answer_callback, answer_or_note
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, build_ptb_requests, discover_fallback_ips, parse_fallback_ip_env,
     proxy_target_hosts)
@@ -204,6 +204,7 @@ from plugins.platforms.telegram.telegram_typing_gate import typing_may_fire
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
+from plugins.platforms.telegram.telegram_widgets import TelegramWidgetsMixin
 from utils import env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif", ".avif"}
@@ -461,7 +462,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramReplacementMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, TelegramSendPathRecoveryMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramReplacementMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, TelegramSendPathRecoveryMixin, TelegramCallbackGateMixin, TelegramWidgetsMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -561,6 +562,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._allow_cjk_rich_messages: bool = self._coerce_bool_extra("allow_cjk_rich_messages", False)
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
         self._rich_send_disabled = self._rich_draft_disabled = False  # latched after a capability failure
+        self._widgets_enabled: bool = self._coerce_bool_extra("widgets", False)  # Bot API 10.4 widgets (telegram_widgets.py)
         # Transient sendChatAction failures recur on every keep-typing tick; back off per chat.
         self._telegram_typing_cooldown_until: dict[str, float] = {}
         self._telegram_typing_cooldown_seconds: float = self._coerce_float_extra(
@@ -1710,7 +1712,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             # helper and abandon the partial updater (caller rebuilds).
             await _await_with_thread_deadline(
                 app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES, drop_pending_updates=drop_pending_updates, error_callback=_generation_error_callback),
+                    allowed_updates=self._allowed_update_types(Update.ALL_TYPES), drop_pending_updates=drop_pending_updates, error_callback=_generation_error_callback),
                 timeout=_UPDATER_START_TIMEOUT,
                 on_abandon=((lambda app=app: _shutdown_abandoned_app(app)) if abandon_app_on_timeout else None))
         finally:
@@ -2770,6 +2772,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
+        self._add_widget_update_handler(app, TypeHandler, Update)  # opt-in Bot API 10.4 widget queries: group 0, after the core handlers
         # gateway_platform_event observer: group 99 observes alongside, never displaces, core handlers.
         app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
         # Everything appended above is core; a late plugin re-wire must land BEFORE these (#87770).
@@ -2926,7 +2929,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         webhook_path = urlparse(webhook_url).path or "/telegram"
         await self._app.updater.start_webhook(
             listen=webhook_host, port=webhook_port, url_path=webhook_path, webhook_url=webhook_url,
-            secret_token=webhook_secret, allowed_updates=Update.ALL_TYPES,
+            secret_token=webhook_secret, allowed_updates=self._allowed_update_types(Update.ALL_TYPES),
             drop_pending_updates=self._cold_boot_drop_pending(is_reconnect=is_reconnect),
             bootstrap_retries=1,  # one transient delete/set failure must not leave the webhook unset
        )
@@ -4381,25 +4384,6 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         except Exception:
             self._fail_update_preparation()
             logger.debug("[%s] inline picker answer failed", self.name, exc_info=True)
-
-    @staticmethod
-    def _callback_ctx(query) -> dict[str, Any]:
-        """Chat/thread/user context of a button tap, for the callback auth gate."""
-        query_message = getattr(query, "message", None)
-        query_chat = getattr(query_message, "chat", None)
-        return {
-            "chat_id": getattr(query_message, "chat_id", None), "chat_type": getattr(query_chat, "type", None),
-            "thread_id": getattr(query_message, "message_thread_id", None), "user_name": getattr(query.from_user, "first_name", None)}
-
-    async def _callback_authorized(self, query, cb: dict[str, Any], denial_text: str) -> bool:
-        """Gate a button tap on the callback allowlist; answers ``denial_text`` when refused."""
-        if self._is_callback_user_authorized(
-            str(getattr(query.from_user, "id", "")), chat_id=cb["chat_id"],
-            chat_type=str(cb["chat_type"]) if cb["chat_type"] is not None else None,
-            thread_id=str(cb["thread_id"]) if cb["thread_id"] is not None else None, user_name=cb["user_name"]):
-            return True
-        await answer_callback(query, denial_text)
-        return False
 
     async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Dispatch inline keyboard button clicks on the callback_data prefix."""

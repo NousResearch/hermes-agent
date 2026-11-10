@@ -1610,8 +1610,7 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},
         "allowed_chats": "",  # if set, ONLY respond in these group/supergroup chat IDs
         "extra": {
-            # Bot API 10.1 native rich messages (tables/task lists/math). Off = legacy MarkdownV2,
-            # since rich messages are hard to copy as plain text.
+            # Bot API 10.1 native rich messages (tables/task lists/math). Off = legacy MarkdownV2, since rich messages are hard to copy as plain text.
             "rich_messages": False,
             # Experimental rich DM stream previews; off: Telegram Desktop/macOS overlays draft frames.
             "rich_drafts": False,
@@ -1619,6 +1618,7 @@ DEFAULT_CONFIG = {
             # set True on an unaffected client to get native rich tables for CJK.
             "allow_cjk_rich_messages": False,
             "dm_topic_auto_transfer": False,  # /topic mode: root-DM message opens a fresh topic
+            "widgets": False,  # Bot API 10.4 HTML widgets: sendWidget + answered widget taps (private chats)
         },
     },
 

@@ -1136,6 +1136,7 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 - **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. Hermes uses this for two distinct features: operator-curated [Private Chat Topics](#private-chat-topics-bot-api-94) (config-driven, fixed topic list) and user-driven [Multi-session DM mode](#multi-session-dm-mode-topic) (activated by `/topic`, unlimited user-created topics).
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
 - **Bot API 9.5 (Mar 2026): Native streaming via `sendMessageDraft`.** Hermes uses Telegram's native streaming-draft API for private chats under the default `auto` transport (groups and group forum topics always use the `editMessageText` path; private-chat topics try drafts too and fall back to edits if Telegram rejects them). If the draft preview visibly collapses and re-renders on your Telegram client, set `transport: edit` (see below).
+- **Bot API 10.4 (Nov 2026): Widgets.** Interactive HTML widgets in messages, with taps answered by the bot. Hermes supports them as an opt-in foundation; see [Widgets](#widgets-bot-api-104).
 
 ### Streaming transport (`gateway.streaming.transport`)
 
@@ -1209,6 +1210,49 @@ gateway:
 When enabled, Hermes attaches Telegram's `LinkPreviewOptions(is_disabled=True)` to every outgoing message, including the streaming preview edits and the final edit of a streamed reply (edits that resolve a button prompt, such as an approval card, don't carry it yet), and falls back to the legacy `disable_web_page_preview` parameter on older `python-telegram-bot` versions.
 
 **Long replies and flood control.** A reply longer than Telegram's 4,096-character limit is sent as numbered parts (`(1/3)`, `(2/3)`, …). Sends to one chat are delivered one reply at a time, so a scheduled report and a DM answer landing together cannot interleave their parts, and a file upload cannot land between two parts of the text it accompanies. If Telegram's flood control refuses a part mid-way, Hermes resumes from the refused part once the penalty passes instead of re-sending the parts already on screen, and while a chat is inside a known penalty window further sends to it fail closed locally (no extra requests that would lengthen the penalty). A penalty longer than the gateway's inline wait cap is handed to the delivery ledger, which redelivers the reply with a "part of it may already have arrived above" note. File attachments (documents, photos, videos, voice) follow the same rule: a short penalty is waited out and the upload retried; a longer one schedules a single native re-upload once the window has passed, and you only see the "Couldn't deliver the file attachment" notice if that re-upload is refused too.
+
+## Widgets (Bot API 10.4)
+
+Bot API 10.4 (November 2026) lets a bot send an interactive HTML **widget** as a message (`sendWidget`) and answer the taps inside it (`widget_query` updates, answered with `answerWidgetQuery`). Hermes ships the foundation for widgets, **off by default**. When you turn it on, the gateway asks Telegram for widget updates, checks every tap against your allowlist, routes it to a registered handler, and answers it. No built-in Hermes feature sends widgets yet, so turning the flag on changes nothing visible until a plugin or a later release registers a handler.
+
+### Configuration
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        widgets: true   # default: false
+```
+
+The top-level `telegram.extra.widgets` key (shown in Desktop Settings) works too. With the flag off, Hermes requests the same update types as before and registers no widget handler.
+
+### How it works
+
+1. **Updates.** Hermes passes Telegram an explicit `allowed_updates` list, in polling and webhook mode alike, and the flag adds `widget_query` and `shared_widget_query` to it.
+2. **Authorization.** A tap is checked by the same allowlist gate as inline-button taps, using the sender Telegram authenticates. A tap without a chat (from a forwarded shared widget) is judged as the sender's own private chat. With no allowlist configured, taps are refused.
+3. **Routing.** An authorized tap goes to the handler registered on the adapter for the longest matching prefix of its `data`. This registry is the seam for built-in widget features, and none ship yet. Wallet outcomes (`sign_data`, `sent_transaction`) are never routed by their `data`. A plugin can take raw widget updates itself through [`ctx.register_platform_handler("telegram", ...)`](../../developer-guide/plugins/index.md#register-native-platform-handlers-any-platform): a plugin handler in group 0 runs instead of Hermes' handler, and must then answer every query itself.
+4. **Answering.** Every tap is answered exactly once, failures included, because an unanswered tap shows `TIMEOUT` in the widget. The one exception is a tap still being handled when the gateway disconnects from Telegram. A handler gets 8 seconds, so that time spent waiting in the update queue still fits Telegram's 15-second window, and its answer is cut to 1,024 bytes. A handler that runs out of time may still finish its work after the widget was told `timeout`.
+5. **Sending.** The adapter's `send_widget`, `send_shared_widget`, `edit_widget_data` and `edit_shared_widget_data` helpers check Telegram's limits before any request (HTML of 1 to 32,768 bytes and at most 4,096 bytes after zlib compression, state of at most 1,024 bytes, no NUL characters). They route through forum and private-chat topics the same way replies do. A request that timed out is never sent again, because it may already have arrived.
+
+When Hermes answers a tap instead of a handler, the widget receives one of these texts:
+
+| Answer | Meaning |
+|---|---|
+| `{"error":"unauthorized"}` | The sender is not on your allowlist |
+| `{"error":"unknown_query"}` | No handler is registered for the tap's prefix |
+| `{"error":"unsupported"}` | A wallet outcome or another query type Hermes doesn't route |
+| `{"error":"busy"}` | Eight widget handlers were already running for this bot |
+| `{"error":"failed"}` | The handler raised an error or returned something other than text |
+| `{"error":"timeout"}` | The handler took longer than 8 seconds |
+
+:::caution Telegram's production limits
+- Widgets work only in **private chats** with the bot (groups, inline mode and forwarding are test-server only), and they can't be forwarded or copied.
+- Widgets have **no text input**: buttons are the only form control.
+- Telegram refuses an answer after **15 seconds**.
+- A user can send at most **5 requests every 5 seconds** across all of your bot's widgets, background refreshes included.
+- A tap's `data` is untrusted input. Hermes never takes the chat or the user from it.
+:::
 
 ## Group Allowlisting
 

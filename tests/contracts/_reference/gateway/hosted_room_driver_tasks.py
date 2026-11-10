@@ -91,11 +91,11 @@ def lease_row_matches(row: Row | None, lease: DriverLease) -> bool:
         lease.gateway_id, lease.authority_epoch, lease.process_generation, lease.lease_generation)
 
 
-def require_active_lease(tables: HostedTables, lease: DriverLease, *, now: float) -> Row:
-    """Room authority, then the matching, unreleased, unexpired lease row."""
+def require_active_lease(tables: HostedTables, lease: DriverLease, *, now: float, allow_expired: bool = False) -> Row:
+    """Room authority, then the matching, unreleased, unexpired lease row; ``allow_expired`` drops only the expiry term."""
     require_room_authority(tables, lease.room_id, lease.gateway_id, lease.authority_epoch)
     row = tables["hosted_room_driver_leases"].get(lease.room_id)
-    if not lease_row_matches(row, lease) or row["released_at"] is not None or float(row["expires_at"]) <= now:
+    if not lease_row_matches(row, lease) or row["released_at"] is not None or (not allow_expired and float(row["expires_at"]) <= now):
         raise StaleLeaseError("driver lease is stale or expired")
     return row
 
@@ -158,8 +158,8 @@ class DriverTaskMixin:
 
     _store: Any
 
-    def _transition(self, placement: HostedPlacement, identity: HostedTaskIdentity, *, changes: Row, fence: Callable[[Row], bool], stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True, replay: Replay | None = None, guard: Callable[[Row], None] | None = None) -> dict[str, Any]:
-        """One transition in one write: lease check, row load, replay, guard, then the fenced update."""
+    def _transition(self, placement: HostedPlacement, identity: HostedTaskIdentity, *, changes: Row, fence: Callable[[Row], bool], stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True, replay: Replay | None = None, guard: Callable[[Row], None] | None = None, allow_expired_lease: bool = False) -> dict[str, Any]:
+        """One transition in one write: lease check, row load, replay, guard, then the fenced update. ``allow_expired_lease`` relaxes only the post-replay lease check."""
         with write_tables(self._store, placement) as tables:
             if lease is not None and lease_first:
                 require_active_lease(tables, lease, now=now)
@@ -168,7 +168,7 @@ class DriverTaskMixin:
             if replay is not None and (replayed := replay(row)) is not None:
                 return replayed
             if lease is not None and not lease_first:
-                require_active_lease(tables, lease, now=now)
+                require_active_lease(tables, lease, now=now, allow_expired=allow_expired_lease)
             if guard is not None:
                 guard(row)
             if not fence(row):
@@ -245,10 +245,10 @@ class DriverTaskMixin:
             capture_transition_locked(tables, identity.room_id)
             return TaskAttempt(identity=identity, lease=lease, execution_generation=execution_generation, cancel_generation=expected_cancel_generation)
 
-    def settle_task(self, attempt: TaskAttempt, *, placement: HostedPlacement, settlement_id: str, status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
+    def settle_task(self, attempt: TaskAttempt, *, placement: HostedPlacement, settlement_id: str, status: TerminalStatus, result: JsonValue, now: float | None = None, allow_expired_lease: bool = False) -> Mapping[str, JsonValue]:
         now = rules.clock(now)
         replay, changes = _settlement(settlement_id, status, result, now)
-        return self._run_fence_transition(placement, attempt, guard_stale="task attempt is stale or cancelled", lease_first=False, now=now, replay=replay, changes=changes, stale="task changed during settlement")
+        return self._run_fence_transition(placement, attempt, guard_stale="task attempt is stale or cancelled", lease_first=False, now=now, replay=replay, changes=changes, stale="task changed during settlement", allow_expired_lease=allow_expired_lease)
 
     def settle_stopping_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, settlement_id: str, status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
         now = rules.clock(now)

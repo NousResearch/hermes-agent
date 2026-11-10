@@ -423,10 +423,11 @@ def test_live_settlement_commits_after_plain_lease_expiry(db):
         lease,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
 
     clock.advance(5)  # plain expiry of our own unreleased, un-reclaimed lease
-    with pytest.raises(driver.StaleLeaseError):
+    with pytest.raises(StaleLeaseError):
         driver.settle_task(
             db,
             attempt,
@@ -434,6 +435,7 @@ def test_live_settlement_commits_after_plain_lease_expiry(db):
             status="settled",
             result={"text": "late"},
             clock=clock,
+            placement="profile",
         )
     settled = driver.settle_task(
         db,
@@ -443,10 +445,11 @@ def test_live_settlement_commits_after_plain_lease_expiry(db):
         result={"text": "late"},
         clock=clock,
         allow_expired_lease=True,
+        placement="profile",
     )
 
     assert settled["status"] == "settled"
-    assert driver.get_task(db, identity)["status"] == "settled"
+    assert driver.get_task(db, identity, placement="profile")["status"] == "settled"
 
 
 def test_live_settlement_after_expiry_still_fences_on_reclaim(db):
@@ -460,13 +463,14 @@ def test_live_settlement_after_expiry_still_fences_on_reclaim(db):
         lease,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
 
     clock.advance(5)
     second = _lease(db, clock, process="process-b")
-    driver.recover_room(db, second, clock=clock)
+    driver.recover_room(db, second, clock=clock, placement="profile")
 
-    with pytest.raises(driver.StaleLeaseError):
+    with pytest.raises(StaleLeaseError):
         driver.settle_task(
             db,
             attempt,
@@ -475,8 +479,9 @@ def test_live_settlement_after_expiry_still_fences_on_reclaim(db):
             result={"text": "late"},
             clock=clock,
             allow_expired_lease=True,
+            placement="profile",
         )
-    assert driver.get_task(db, identity)["status"] == "indeterminate"
+    assert driver.get_task(db, identity, placement="profile")["status"] == "indeterminate"
 
 
 @pytest.mark.parametrize("status", ["settled", "failed"])

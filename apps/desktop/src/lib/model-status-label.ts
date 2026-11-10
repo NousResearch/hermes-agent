@@ -1,11 +1,31 @@
+type CatalogProviderIdentity = {
+  aliases?: null | string[]
+  name?: string
+  slug?: string
+}
+
+type ModelOptionsSelection = {
+  model?: string
+  provider?: string
+  providers?: CatalogProviderIdentity[]
+}
+
+function catalogContainsProvider(providers: CatalogProviderIdentity[] | undefined, provider: string): boolean {
+  return (
+    providers?.some(row => row.slug === provider || row.name === provider || row.aliases?.includes(provider)) ?? false
+  )
+}
+
 /** Which model/provider pair a picker should mark "current". SessionView state
  *  also drives the composer label, so a complete pair there wins over an older
- *  `model.options` response. During initial hydration (or pre-session startup),
+ *  `model.options` response. A populated catalog is an exception: when the
+ *  persisted provider matches no row, its current pair is the only selection
+ *  the picker can verify. During initial hydration (or pre-session startup),
  *  options remain the fallback. Pick one complete pair before mixing fields so
  *  a model is never shown under a different provider. */
 export function currentPickerSelection(
   store: { model: string; provider: string },
-  options?: { model?: string; provider?: string }
+  options?: ModelOptionsSelection
 ): { model: string; provider: string } {
   const storeSelection = {
     model: String(store.model || ''),
@@ -17,7 +37,11 @@ export function currentPickerSelection(
     provider: String(options?.provider || '')
   }
 
-  if (storeSelection.model && storeSelection.provider) {
+  if (
+    storeSelection.model &&
+    storeSelection.provider &&
+    (!options?.providers?.length || catalogContainsProvider(options.providers, storeSelection.provider))
+  ) {
     return storeSelection
   }
 

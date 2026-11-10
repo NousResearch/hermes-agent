@@ -6,6 +6,7 @@ import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { purgeInFlightTurnJournals, resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
+import { type GatewayRequester, setSessionYolo } from '@/lib/yolo-session'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionStoredIdRotation,
@@ -18,6 +19,7 @@ import {
   $selectedStoredSessionId,
   $sessionStartedAt,
   $turnStartedAt,
+  $yoloActive,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
@@ -28,7 +30,8 @@ import {
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
-  setTurnStartedAt
+  setTurnStartedAt,
+  setYoloActive
 } from '@/store/session'
 import {
   $sessionStates,
@@ -495,6 +498,62 @@ function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessP
 
   return null
 }
+
+describe('useSessionStateCache — per-session YOLO survives the view re-sync', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setYoloActive(false)
+    $sessionStates.set({})
+  })
+
+  it('keeps the confirmed flag on the focused session across a later transcript append', async () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
+    )
+
+    const requestGateway = vi.fn(async () => ({ value: '1' })) as unknown as GatewayRequester
+
+    await act(async () => {
+      await setSessionYolo(requestGateway, 'runtime-A', true)
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('config.set', { key: 'yolo', session_id: 'runtime-A', value: '1' })
+    expect($yoloActive.get()).toBe(true)
+    expect($sessionStates.get()['runtime-A']?.yolo).toBe(true)
+
+    // What /yolo does next: appends its own "YOLO on" system line. Before the
+    // slice carried the flag, this re-sync flipped the indicator straight off.
+    act(() => {
+      cache.updateSessionState('runtime-A', state => ({
+        ...state,
+        messages: [...state.messages, { id: 'sys-1', parts: [], role: 'system' } as ChatMessage]
+      }))
+    })
+
+    expect($yoloActive.get()).toBe(true)
+  })
+
+  it("never paints a background session's toggle on the focused indicator", async () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
+    )
+
+    await act(async () => {
+      await setSessionYolo((async () => ({ value: '1' })) as unknown as GatewayRequester, 'runtime-B', true)
+    })
+
+    expect($sessionStates.get()['runtime-B']?.yolo).toBe(true)
+    expect($yoloActive.get()).toBe(false)
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-B')?.yolo).toBe(true)
+  })
+})
 
 function RotationHarness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
   const busyRef = useRef(false)

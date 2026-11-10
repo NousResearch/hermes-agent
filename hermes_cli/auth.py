@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
+from hermes_cli.auth_store_corruption import degraded_store_for_corrupt_file, refuse_save_of_degraded_store
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -739,22 +740,8 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> dict[str, Any]:
             auth_file, exc_info=True)
         raise
     except Exception as exc:
-        # Genuine corruption: unparseable JSON or non-UTF-8 bytes. Preserve a copy, but never
-        # advertise a backup that was not written.
-        corrupt_path = auth_file.with_suffix(".json.corrupt")
-        try:
-            shutil.copy2(auth_file, corrupt_path)
-            preserved = True
-        except Exception:
-            preserved = False
-            logger.debug("auth: could not preserve a copy of the corrupt store at %s", corrupt_path,
-                         exc_info=True)
-        logger.warning(
-            "auth: failed to parse %s (%s), starting with empty store. %s %s",
-            auth_file, exc,
-            "Corrupt file preserved at" if preserved else "A copy could NOT be preserved at",
-            corrupt_path)
-        return _empty_auth_store()
+        # Genuine corruption (unparseable JSON, non-UTF-8 bytes): unique copy + a store that refuses saving.
+        return degraded_store_for_corrupt_file(auth_file, exc, _empty_auth_store())
 
     if isinstance(raw, dict) and (
         isinstance(raw.get("providers"), dict) or isinstance(raw.get("credential_pool"), dict)):
@@ -784,6 +771,7 @@ def _save_auth_store(auth_store: dict[str, Any], target_path: Optional[Path] = N
     """Atomically persist *auth_store* (0o600, parent tightened to 0o700) to the active store, or to
     an explicit *target_path* (e.g. the global-root write-through for rotating xAI OAuth grants)."""
     auth_file = target_path if target_path is not None else _auth_file_path()
+    refuse_save_of_degraded_store(auth_store, auth_file)
     auth_store["version"] = AUTH_STORE_VERSION
     auth_store["updated_at"] = datetime.now(UTC).isoformat()
     _save_private_json(auth_file, auth_store, fsync_dir=True)

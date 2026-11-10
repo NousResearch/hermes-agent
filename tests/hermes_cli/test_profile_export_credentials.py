@@ -127,7 +127,7 @@ class TestCredentialExclusion:
             *_backup_existing((profile_dir / ".env", profile_dir / "config.yaml")).values(),
         ]
         _load_auth_store(profile_dir / "auth.json")  # "fake-credential" is not JSON: quarantined
-        copies.append(profile_dir / "auth.json.corrupt")
+        copies.extend(profile_dir.glob("auth.json.corrupt.*"))
         assert all(c and c.exists() for c in copies), copies
         _patch_named_profile(monkeypatch, profiles_root, profile_dir)
 

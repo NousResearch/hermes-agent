@@ -116,7 +116,7 @@ class TestAuthStoreEncodingRoundTrip:
 
         auth._load_auth_store(auth_path)
 
-        assert not (hermes_home / "auth.json.corrupt").exists()
+        assert not list(hermes_home.glob("auth.json.corrupt*"))
         # original file untouched — read it back and compare structurally
         # (json.dumps may escape non-ASCII, so compare parsed values, not text)
         on_disk = json.loads(auth_path.read_text(encoding="utf-8"))

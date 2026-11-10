@@ -1,0 +1,38 @@
+name: physis
+repo: https://github.com/ilPez00/hermes-physis
+sha: 44b60f20c6f9b8b0023cc4b07887be132b2b744e
+version: "1.6.0"
+description: "Offline evidence-backed execution memory: per-repo graph context, a deterministic verify hook, and verified tool recipes that replay with zero provider calls and refuse when their inputs changed. Sessions that pass their check become approvable workflow candidates. Two bundled offline engines, no API key, no network, no Python dependencies. Operator-only approval and replay; model cannot set executable paths or trigger raw commands."
+maintainer: ilPez00
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ilPez00/hermes-physis#readme
+image: https://raw.githubusercontent.com/ilPez00/hermes-physis/44b60f20c6f9b8b0023cc4b07887be132b2b744e/assets/banner.png
+readme: true
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - physis_engine_status
+    - physis_trace
+    - physis_observe
+    - physis_snapshot
+    - physis_context
+    - physis_query
+    - physis_why
+    - physis_diff
+    - physis_classify
+    - physis_chain
+    - physis_grid
+    - physis_ingest
+    - physis_observed
+    - replant_demo
+    - replant_show
+    - replant_stats
+    - physis_candidates
+  provides_hooks:
+    - post_tool_call
+    - pre_verify
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

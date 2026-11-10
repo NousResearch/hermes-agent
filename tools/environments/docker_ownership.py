@@ -249,7 +249,16 @@ def hand_back_media_file(docker_exe: str, host_path: str) -> bool:
     gateway can read a MEDIA file the agent restricted (``chmod 600``) before teardown runs
     the full handback. Runs ``chown`` inside the container that mounts it (the agent's own
     root could do the same), on that regular file only (``find -P``, no symlinks), and records
-    it so the next root container takes it back. Returns whether ownership changed."""
+    it so the next root container takes it back. Returns whether ownership changed; a Docker or
+    record failure is ``False`` (the reply still goes out, with the usual undeliverable notice)."""
+    try:
+        return _hand_back_media_file(docker_exe, host_path)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("MEDIA handback of %s failed: %s", host_path, e)
+        return False
+
+
+def _hand_back_media_file(docker_exe: str, host_path: str) -> bool:
     ids = _handback_ids(docker_exe)
     listing = run_capture([docker_exe, "ps", "-q", "--filter", "label=hermes-agent=1"], timeout=10) if ids else None
     for container_id in (listing.stdout.split() if listing and listing.returncode == 0 else []):
@@ -268,12 +277,8 @@ def hand_back_media_file(docker_exe: str, host_path: str) -> bool:
                     "-exec", "/bin/chown", "-h", f"{ids[0]}:{ids[1]}", "{}", "+", "-print0"]
             with (Path(src).parent / HANDBACK_RECORD).open("ab") as fh:  # recorded before the chown, like teardown
                 fh.write(inner.encode() + b"\0")
-            try:
-                result = _docker(docker_exe, ["exec", "-i", "-u", "0:0", *_SAFE_ENV, container_id], argv,
-                                 time.monotonic() + _CHOWN_TIMEOUT_S)
-            except (subprocess.TimeoutExpired, OSError) as e:
-                logger.debug("MEDIA handback of %s failed: %s", inner, e)
-                return False
+            result = _docker(docker_exe, ["exec", "-i", "-u", "0:0", *_SAFE_ENV, container_id], argv,
+                             time.monotonic() + _CHOWN_TIMEOUT_S)
             return result.returncode == 0 and bool(result.stdout)
     return False
 

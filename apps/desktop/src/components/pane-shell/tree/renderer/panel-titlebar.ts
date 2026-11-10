@@ -50,6 +50,13 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
     const right = Math.min(rect.width - left, Math.max(0, rect.right - rightControls.left))
     element.style.setProperty('--panel-titlebar-left', `${left}px`)
     element.style.setProperty('--panel-titlebar-right', `${right}px`)
+    // The header's spacers are flex items at the INLINE edges, while the
+    // clusters above are fixed to physical sides. Map once here so in RTL the
+    // inline-start spacer covers the right cluster and the drag handle can't
+    // land under Settings (Electron app-region ignores z-order).
+    const rtl = getComputedStyle(element).direction === 'rtl'
+    element.style.setProperty('--panel-titlebar-start', `${rtl ? right : left}px`)
+    element.style.setProperty('--panel-titlebar-end', `${rtl ? left : right}px`)
     setBelowControls(minimized || rect.width - left - right < 120)
   }, [enabled, minimized, ref])
 

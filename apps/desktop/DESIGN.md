@@ -307,6 +307,8 @@ focusing its composer.
   spacing. When you do need one, it's a single `--ui-stroke-tertiary` hairline.
 
 ## Panel titlebars
+  The thumb moves toward inline-end when checked in both LTR and RTL, staying
+  inside its track. Logical margin owns its travel; do not add per-screen transforms.
 
 Top-edge panels extend into the native titlebar band. Their tab strips remain
 inside their own zones so tab drops, focus, and split boundaries use the same
@@ -332,11 +334,32 @@ Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
 status dots after 400ms, without changing tab widths. Hints follow the same
 binding and hovered/focused-zone resolver as the number shortcuts.
 
-Tab close buttons fade the label with a content mask, not a painted gradient.
-The tab reads its surface token directly so glass tint is painted only once.
-Close glyphs keep a 24px hit area, including session tabs wrapped in context menus.
-`PaneTab` owns its `data-slot` marker after forwarded props so composition cannot
-disable that width or the label mask.
+`PaneTab` owns every horizontal pane tab's close control: a fixed 24px hit target,
+non-shrinking and in normal flex flow at inline-start (right in Arabic, left in
+English), with 4px logical margins. Its slot stays reserved when hidden; hover
+and focus change opacity only, never geometry. No absolute close overlay or title
+mask, and no per-screen close positioning. Icons, badges and dirty indicators
+occupy separate flow slots; title content alone shrinks and clips. The tab reads
+its surface token directly so glass tint is painted only once. `PaneTab` owns its
+`data-slot` marker after forwarded props, including context-menu composition.
+`PaneTabStrip` guarantees 4px gaps between tabs and in-list controls (including
+new-tab), plus 4px inline edge clearance from pinned menus, split/overflow/scroll
+controls and external drag handles. Pinned controls never shrink into the list;
+crowded tabs scroll within the list instead. Consumers must not negate these gaps.
+`PaneTabLabel` preserves title case and isolates each title with `bdi dir="auto"`;
+all tabs ellipsize at the title's inline-end, including closeable tabs. English
+titles therefore keep their beginning in an Arabic shell, clear of the close slot.
+
+Consumer audit: `tree/renderer/tree-group.tsx` owns the horizontal strip for
+workspace/session tiles, previews, terminal/log bottom panels and contributed
+plugin panes, plus the vertical collapsed rail and fixed page header.
+`tree/renderer/narrow-overlays.tsx` is the second `PaneTabStrip` consumer (fixed,
+non-closeable overlay tabs). Both use `PaneTab`/`PaneTabLabel`; there is no other
+tab-close glyph implementation. The terminal's icon-only `terminal/rail.tsx`,
+`CompactTabPicker` and UI `TabsTrigger` have no tab-close glyph; they retain their
+existing gestures/menu actions rather than inventing another close control.
+Run `node --test scripts/pane-tab-layout.test.mjs` from `apps/desktop` against
+the running renderer to check native RTL/LTR geometry without CDP or an app build.
 
 Sticky user messages clip covered scrolling content, including the gap above
 them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.
@@ -630,3 +653,10 @@ The detailed state contract lives in the scoped
 - [ ] `cursor-pointer`, focus ring, and `Esc`-to-close behave?
 - [ ] Touched a primitive, token, or variant? Its named-contract entry in this
       file is updated in the same change.
+- Numeric stat values (`tabular-nums`) are isolated LTR fragments; shared statusbar
+  labels/details use `bdi dir="auto"`. Keep row order label then value so flex
+  places them at inline-start/end. Usage percentages use `formatPercent` and the
+  active locale, with isolated interpolation in Arabic sentences.
+
+- The root `I18nProvider` supplies Radix direction from the active locale, including
+  portaled menus and selects. Submenu arrows and keyboard navigation mirror together.

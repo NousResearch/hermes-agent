@@ -174,6 +174,95 @@ describe('TreeSplit sash drag cleanup', () => {
     vi.restoreAllMocks()
   })
 
+  it.each([
+    { movement: -60, expectedWidth: SIDEBAR_PX + 60 },
+    { movement: 60, expectedWidth: SIDEBAR_PX - 60 }
+  ])('follows the pointer in an RTL row (movement $movement)', ({ movement, expectedWidth }) => {
+    disposers = registerPanes()
+    const { kidA } = renderSplit()
+    kidA.parentElement!.style.direction = 'rtl'
+
+    pressSash(1000 - SIDEBAR_PX)
+
+    try {
+      moveTo(1000 - SIDEBAR_PX + movement)
+      flushRaf()
+      expect(kidA.style.flexBasis).toBe(`${expectedWidth}px`)
+    } finally {
+      releaseAt(1000 - SIDEBAR_PX + movement)
+    }
+
+    expect(panesMock.setPaneWidthOverride).toHaveBeenCalledWith(SIDEBAR_ID, expectedWidth)
+  })
+
+  it.each(
+    (['ltr', 'rtl'] as const).flatMap(direction =>
+      [0, 1, 2].flatMap(boundary => [-30, 30].map(movement => ({ direction, boundary, movement })))
+    )
+  )(
+    'maps $direction seam $boundary movement $movement to only its adjacent pair',
+    ({ direction, boundary, movement }) => {
+      disposers = registerPanes()
+
+      for (const id of ['right-panel', 'far-panel']) {
+        disposers.push(
+          registry.register({ id, area: 'panes', data: { placement: 'right', width: '200px' }, render: () => null })
+        )
+      }
+
+      const node = split(
+        'row',
+        [
+          group([SIDEBAR_ID], { id: 'grp-side' }),
+          group(['workspace'], { id: 'grp-main' }),
+          group(['right-panel'], { id: 'grp-right' }),
+          group(['far-panel'], { id: 'grp-far' })
+        ],
+        [1, 1, 1, 1],
+        SPLIT_ID
+      )
+
+      const { container: host } = render(<TreeSplit node={node} />)
+      const container = host.querySelector<HTMLElement>('[data-tree-split]')!
+      container.style.direction = direction
+      const kids = [...container.children] as HTMLElement[]
+      const widths = [240, 760, 200, 200]
+      stubWidth(container, 1400)
+      kids.forEach((kid, index) => {
+        stubWidth(kid, widths[index])
+        stubWidth(kid.querySelector('[data-tree-group]'), widths[index])
+      })
+      const handles = screen.getAllByRole('separator')
+      handles.forEach((handle, index) => {
+        expect(handle.parentElement).toBe(kids[index + 1])
+        // The leading edge of child i is adjacent to child i-1 in BOTH
+        // directions. Physical left would instead drive the next visual seam.
+        expect(handle.style.insetInlineStart).toBe('0px')
+        expect(handle.className).not.toMatch(/\bleft-0\b/)
+      })
+      fireEvent.pointerDown(handles[boundary], { button: 0, clientX: 500, pointerId: 1 })
+
+      try {
+        moveTo(500 + movement)
+        flushRaf()
+        const logicalDelta = movement * (direction === 'rtl' ? -1 : 1)
+        const expected = [...widths]
+        expected[boundary] += logicalDelta
+        expected[boundary + 1] -= logicalDelta
+        kids.forEach((kid, index) => expect(kid.style.flexBasis).toBe(`${expected[index]}px`))
+      } finally {
+        releaseAt(500 + movement)
+      }
+
+      const paneIds = [SIDEBAR_ID, 'workspace', 'right-panel', 'far-panel']
+      paneIds.forEach((id, index) => {
+        if (index !== boundary && index !== boundary + 1) {
+          expect(panesMock.setPaneWidthOverride).not.toHaveBeenCalledWith(id, expect.anything())
+        }
+      })
+    }
+  )
+
   it('restores both seam wrapper styles when the released px is a store no-op', () => {
     disposers = registerPanes()
     // The override already holds the exact px the drag will end at.

@@ -12,7 +12,7 @@ pytest.importorskip("fastapi")
 from starlette.testclient import TestClient
 
 ROUTES_PLUGIN = '''
-from agent.delegation_provider import DelegationProvider
+from hermes_agent.agent.delegation_provider import DelegationProvider
 
 
 class _Routes(DelegationProvider):

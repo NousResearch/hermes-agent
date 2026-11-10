@@ -1904,14 +1904,14 @@ class TestFallbackWarning:
         from contextlib import ExitStack
         stack = ExitStack()
         for target, value in [
-            ("agent.model_metadata.get_cached_context_length", None),
-            ("agent.model_metadata.fetch_model_metadata", {}),
-            ("agent.model_metadata.fetch_endpoint_model_metadata", {}),
-            ("agent.model_metadata._query_ollama_api_show", None),
-            ("agent.model_metadata._query_anthropic_context_length", None),
-            ("agent.model_metadata._endpoint_scoped_context_length", None),
-            ("agent.model_metadata._resolve_endpoint_context_length", None),
-            ("agent.models_dev.lookup_models_dev_context", None),
+            ("hermes_agent.agent.model_metadata.get_cached_context_length", None),
+            ("hermes_agent.agent.model_metadata.fetch_model_metadata", {}),
+            ("hermes_agent.agent.model_metadata.fetch_endpoint_model_metadata", {}),
+            ("hermes_agent.agent.model_metadata._query_ollama_api_show", None),
+            ("hermes_agent.agent.model_metadata._query_anthropic_context_length", None),
+            ("hermes_agent.agent.model_metadata._endpoint_scoped_context_length", None),
+            ("hermes_agent.agent.model_metadata._resolve_endpoint_context_length", None),
+            ("hermes_agent.agent.models_dev.lookup_models_dev_context", None),
         ]:
             stack.enter_context(patch(target, return_value=value))
         return stack

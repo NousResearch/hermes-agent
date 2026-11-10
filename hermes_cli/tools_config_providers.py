@@ -86,11 +86,11 @@ def _plugin_provider_rows(
 # config writes + model pickers through the registry; ``browser_provider`` is the legacy ``browser.cloud_provider``
 # key; TTS rows write ``tts.provider: <name>``.
 _PLUGIN_PROVIDER_ROW_SPECS = {
-    "image_gen": ("agent.image_gen_registry", ("image_gen_plugin_name",), {"require_name": False}),
-    "video_gen": ("agent.video_gen_registry", ("video_gen_plugin_name",), {"require_name": False}),
-    "web": ("agent.web_search_registry", ("web_backend", "web_search_plugin_name"), {"flatten_variants": True}),
-    "browser": ("agent.browser_registry", ("browser_provider", "browser_plugin_name"), {}),
-    "tts": ("agent.tts_registry", ("tts_provider", "tts_plugin_name"), {"skip_builtin": True})}
+    "image_gen": ("hermes_agent.agent.image_gen_registry", ("image_gen_plugin_name",), {"require_name": False}),
+    "video_gen": ("hermes_agent.agent.video_gen_registry", ("video_gen_plugin_name",), {"require_name": False}),
+    "web": ("hermes_agent.agent.web_search_registry", ("web_backend", "web_search_plugin_name"), {"flatten_variants": True}),
+    "browser": ("hermes_agent.agent.browser_registry", ("browser_provider", "browser_plugin_name"), {}),
+    "tts": ("hermes_agent.agent.tts_registry", ("tts_provider", "tts_plugin_name"), {"skip_builtin": True})}
 
 
 def _plugin_rows_for(category: str) -> list[dict]:

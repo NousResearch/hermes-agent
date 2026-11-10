@@ -280,7 +280,7 @@ def main() -> int:
     wire = _FakeChat()
     result: dict = {"checkout": str(ROOT), "head": head,
                     "compressor_sha256": hashlib.sha256(
-                        (ROOT / "agent/context_compressor.py").read_bytes()).hexdigest()}
+                        (ROOT / "hermes_agent/agent/context_compressor.py").read_bytes()).hexdigest()}
     try:
         for shape in ("cli", "gateway", "restore"):
             result[f"{shape}_past_window_inflated"] = scenario(

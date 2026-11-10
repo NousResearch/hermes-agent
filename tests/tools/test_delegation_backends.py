@@ -18,7 +18,7 @@ from hermes_cli.plugins import PluginManager
 REPO_PLUGINS = Path(__file__).resolve().parents[2] / "plugins"
 
 PROBE_PLUGIN = '''
-from agent.delegation_provider import DelegationProvider, DelegationRouteError
+from hermes_agent.agent.delegation_provider import DelegationProvider, DelegationRouteError
 
 class Options(DelegationProvider):
     @property

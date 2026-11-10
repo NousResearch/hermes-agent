@@ -27,8 +27,8 @@ def _restore_tool_and_agent_modules():
         for name, module in sys.modules.items()
         if name == "hermes_agent.tools"
         or name.startswith("hermes_agent.tools.")
-        or name == "agent"
-        or name.startswith("agent.")
+        or name == "hermes_agent.agent"
+        or name.startswith("hermes_agent.agent.")
         or name in {"fal_client", "openai"}
     }
     try:
@@ -315,7 +315,7 @@ def _load_video_gen_plugin(monkeypatch):
     _install_fake_tools_package()
 
     # Also need the hermes_agent.agent.video_gen_provider ABC
-    agent_dir = Path(__file__).resolve().parents[2] / "agent"
+    agent_dir = Path(__file__).resolve().parents[2] / "hermes_agent" / "agent"
     spec = spec_from_file_location(
         "hermes_agent.agent.video_gen_provider",
         agent_dir / "video_gen_provider.py",
@@ -342,7 +342,7 @@ def test_video_gen_happy_horse_uses_alibaba_namespace():
     # Load just the plugin module to check the catalog
     plugin_init = PLUGINS_DIR / "video_gen" / "fal" / "__init__.py"
 
-    agent_dir = Path(__file__).resolve().parents[2] / "agent"
+    agent_dir = Path(__file__).resolve().parents[2] / "hermes_agent" / "agent"
     spec = spec_from_file_location(
         "hermes_agent.agent.video_gen_provider",
         agent_dir / "video_gen_provider.py",

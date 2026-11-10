@@ -166,7 +166,7 @@ def test_canonical_safe_launch_is_frozen_policy_executed_in_isolated_worker(tmp_
 
     def worker_pids(owner_pid):
         return sorted({r['pid'] for r in records() if r['kind'] == 'start' and r['ppid'] == owner_pid
-                       and r['argv'][-2:] == ['-m', 'agent.managed_worker']})
+                       and r['argv'][-2:] == ['-m', 'hermes_agent.agent.managed_worker']})
 
     def system_text(request):
         return json.dumps([m for m in request['body']['messages'] if m['role'] in {'system', 'developer'}])

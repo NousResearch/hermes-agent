@@ -13,7 +13,7 @@ import json
 import pytest
 
 STUB_PLUGIN_INIT = '''
-from agent.secret_sources.base import SECRET_SOURCE_API_VERSION, FetchResult, SecretSource
+from hermes_agent.agent.secret_sources.base import SECRET_SOURCE_API_VERSION, FetchResult, SecretSource
 
 
 class TestVaultSource(SecretSource):

@@ -219,7 +219,7 @@ Trajectory saving is a `hermes_agent/run_agent.py` / library-level switch — th
 does not expose a config key or flag for it:
 
 ```bash
-python hermes_agent/run_agent.py --save_trajectories --query='your question here'
+python -m hermes_agent.run_agent --save_trajectories --query='your question here'
 ```
 
 Or programmatically: `AIAgent(..., save_trajectories=True)` /

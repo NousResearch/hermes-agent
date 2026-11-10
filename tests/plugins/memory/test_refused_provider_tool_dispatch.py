@@ -24,7 +24,7 @@ _SHARED_MODULE = '''
 import json
 from functools import partial
 
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 _provider = None
 

@@ -94,7 +94,7 @@ def test_real_plugin_discovery_reload_and_disable(tmp_path, monkeypatch):
     plugin.mkdir(parents=True)
     (plugin / "plugin.yaml").write_text("name: login_example\n", encoding="utf-8")
     (plugin / "__init__.py").write_text(dedent('''
-        from agent.vault_backends.base import LoginBackend
+        from hermes_agent.agent.vault_backends.base import LoginBackend
         class Backend(LoginBackend):
             name, prefix, display_name = "example", "example:", "Example"
             def list_items(self):

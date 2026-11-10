@@ -69,7 +69,7 @@ class TestRegisterTTSProvider:
             hermes_home / "plugins",
             "my-tts-plugin",
             register_body=(
-                "from agent.tts_provider import TTSProvider\n"
+                "from hermes_agent.agent.tts_provider import TTSProvider\n"
                 "    class P(TTSProvider):\n"
                 "        @property\n"
                 "        def name(self): return 'fake-tts'\n"
@@ -131,7 +131,7 @@ class TestRegisterTTSProvider:
             hermes_home / "plugins",
             "shadow-tts-plugin",
             register_body=(
-                "from agent.tts_provider import TTSProvider\n"
+                "from hermes_agent.agent.tts_provider import TTSProvider\n"
                 "    class P(TTSProvider):\n"
                 "        @property\n"
                 "        def name(self): return 'edge'\n"

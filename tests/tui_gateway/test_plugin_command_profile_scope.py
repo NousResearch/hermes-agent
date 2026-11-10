@@ -25,7 +25,7 @@ def _plugin_pkg(home, slug: str, command: str) -> None:
         "def register(ctx):\n"
         "    def _handler(args):\n"
         "        import hermes_constants\n"
-        "        from agent.secret_scope import get_secret\n"
+        "        from hermes_agent.agent.secret_scope import get_secret\n"
         "        try:\n"
         "            key = get_secret('PROBE_KEY')\n"
         "        except Exception as exc:\n"
@@ -201,7 +201,7 @@ def test_plugin_that_reads_a_secret_while_registering_loads_in_its_profile(plugi
     (pkg / "plugin.yaml").write_text("name: probe-reg\nversion: 1.0.0\ndescription: p\nauthor: p\n", encoding="utf-8")
     (pkg / "__init__.py").write_text(
         "def register(ctx):\n"
-        "    from agent.secret_scope import get_secret\n"
+        "    from hermes_agent.agent.secret_scope import get_secret\n"
         "    key = get_secret('PROBE_KEY')\n"
         "    ctx.register_command('regkey', handler=lambda args: 'reg:' + str(key), description='p')\n",
         encoding="utf-8")

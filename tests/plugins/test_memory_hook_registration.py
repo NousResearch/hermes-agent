@@ -22,7 +22,7 @@ def _install(home, monkeypatch, *, label="first", enabled=True):
     (plugin / "plugin.yaml").write_text("name: dual\nversion: 1.0.0\nkind: standalone\n")
     (plugin / "values.py").write_text(f"LABEL = {label!r}\n")
     (plugin / "__init__.py").write_text(textwrap.dedent('''\
-        from agent.memory_provider import MemoryProvider
+        from hermes_agent.agent.memory_provider import MemoryProvider
         from .values import LABEL
 
         class Provider(MemoryProvider):

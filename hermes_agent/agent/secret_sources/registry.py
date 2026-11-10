@@ -45,9 +45,9 @@ _REGISTRY_LOCK = _registry._lock
 
 # (module, class, label) for the bundled sources, in registration order.
 _BUILTIN_SOURCES = (
-    ("agent.secret_sources.bitwarden", "BitwardenSource", "Bitwarden"),
-    ("agent.secret_sources.onepassword", "OnePasswordSource", "1Password"),
-    ("agent.secret_sources.command", "CommandSource", "command"),
+    ("hermes_agent.agent.secret_sources.bitwarden", "BitwardenSource", "Bitwarden"),
+    ("hermes_agent.agent.secret_sources.onepassword", "OnePasswordSource", "1Password"),
+    ("hermes_agent.agent.secret_sources.command", "CommandSource", "command"),
 )
 
 

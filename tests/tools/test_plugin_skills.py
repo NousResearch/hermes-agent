@@ -324,7 +324,7 @@ class TestSkillViewQualifiedName:
         )
         (plugin_dir / "__init__.py").write_text(
             "from pathlib import Path\n"
-            "from agent.memory_provider import MemoryProvider\n"
+            "from hermes_agent.agent.memory_provider import MemoryProvider\n"
             "class Provider(MemoryProvider):\n"
             "    @property\n"
             f"    def name(self): return {name!r}\n"

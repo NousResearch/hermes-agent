@@ -67,7 +67,7 @@ class TestRegisterTranscriptionProvider:
             hermes_home / "plugins",
             "my-stt-plugin",
             register_body=(
-                "from agent.transcription_provider import TranscriptionProvider\n"
+                "from hermes_agent.agent.transcription_provider import TranscriptionProvider\n"
                 "    class P(TranscriptionProvider):\n"
                 "        @property\n"
                 "        def name(self): return 'fake-stt'\n"
@@ -123,7 +123,7 @@ class TestRegisterTranscriptionProvider:
             hermes_home / "plugins",
             "shadow-stt-plugin",
             register_body=(
-                "from agent.transcription_provider import TranscriptionProvider\n"
+                "from hermes_agent.agent.transcription_provider import TranscriptionProvider\n"
                 "    class P(TranscriptionProvider):\n"
                 "        @property\n"
                 "        def name(self): return 'openai'\n"

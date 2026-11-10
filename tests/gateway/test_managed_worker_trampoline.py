@@ -137,7 +137,7 @@ def test_managed_worker_completes_through_interpreter_trampoline(tmp_path):
             assert 'RECOVERY_ACK_TRAMPOLINE_PROBE' in json.dumps(restored['result']['messages']), restored
             assert query('SELECT status FROM worker_executions WHERE session_id=?', (sid,)) == [('terminal',)], evidence
             workers = [json.loads(l) for l in launches.read_text(encoding='utf-8').splitlines()
-                       if json.loads(l)['argv'][-2:] == ['-m', 'agent.managed_worker']]
+                       if json.loads(l)['argv'][-2:] == ['-m', 'hermes_agent.agent.managed_worker']]
             assert len(workers) == 1 and workers[0]['launcher'] != workers[0]['child'], evidence
             # The launcher chain is fully reaped: neither the launcher nor the real worker (nor
             # anything under them) survives the owner's close, which runs after the admission
@@ -157,7 +157,7 @@ def test_managed_worker_completes_through_interpreter_trampoline(tmp_path):
                 for pid in chain - {pid for pid, _ in alive}:
                     with suppress(psutil.NoSuchProcess):
                         p = psutil.Process(pid)
-                        if p.status() != psutil.STATUS_ZOMBIE and p.cmdline()[-2:] == ['-m', 'agent.managed_worker']:
+                        if p.status() != psutil.STATUS_ZOMBIE and p.cmdline()[-2:] == ['-m', 'hermes_agent.agent.managed_worker']:
                             alive.append((pid, p.cmdline()))
                 return alive
             await async_wait_until(lambda: not leftovers(), timeout=15, interval=.1, what='the launcher chain to be reaped')

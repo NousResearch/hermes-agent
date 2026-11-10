@@ -780,7 +780,7 @@ class TestPluginLoading:
         provider_dir = plugins_dir / "mempalace_dup"
         provider_dir.mkdir(parents=True)
         (provider_dir / "__init__.py").write_text(
-            "from agent.memory_provider import MemoryProvider\n"
+            "from hermes_agent.agent.memory_provider import MemoryProvider\n"
             "class MyProvider(MemoryProvider):\n"
             "    @property\n"
             "    def name(self): return 'mempalace_dup'\n"
@@ -2374,7 +2374,7 @@ class TestPluginCommands:
             })
         )
         (plugin_dir / "__init__.py").write_text(
-            "from agent.context_engine import ContextEngine\n\n"
+            "from hermes_agent.agent.context_engine import ContextEngine\n\n"
             "class StubEngine(ContextEngine):\n"
             "    @property\n"
             "    def name(self):\n"
@@ -2425,7 +2425,7 @@ class TestPluginCommands:
                 },
                 register_body=(
                     "import os\n"
-                    "    from agent.context_engine import ContextEngine\n\n"
+                    "    from hermes_agent.agent.context_engine import ContextEngine\n\n"
                     "    class HomeEngine(ContextEngine):\n"
                     "        def __init__(self):\n"
                     "            self.home = os.environ.get('HERMES_HOME')\n\n"

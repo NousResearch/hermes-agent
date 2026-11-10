@@ -90,7 +90,7 @@ meaningful:
 
 11. **Credentials come through Hermes, never from files.** A plugin gets
    secrets only through Hermes's routes. Its declared `requires_env` and
-   `config_schema` secrets are read with `agent.secret_scope.get_secret(NAME)`,
+   `config_schema` secrets are read with `hermes_agent.agent.secret_scope.get_secret(NAME)`,
    which honours the active profile (a bare `os.environ` read can pick up another
    profile's key under multiplexing). A subscription sign-in (Codex / ChatGPT
    today) is used only through `credentialed_provider_request` with

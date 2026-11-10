@@ -78,7 +78,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional[ContextEngine]:
     host = None if is_bundled else user_plugin_host()
     if host is not None:
         return host.load_instance(engine_dir, module_name=module_name, capture="register_context_engine",
-                                  base_ref="agent.context_engine:ContextEngine")
+                                  base_ref="hermes_agent.agent.context_engine:ContextEngine")
     mod = _loader.load_plugin_module(
         module_name, engine_dir, parents=(__package__.rpartition(".")[0], __package__), logger=logger,
         synthetic_namespace=None if is_bundled else _USER_NAMESPACE)

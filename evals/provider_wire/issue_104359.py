@@ -187,10 +187,10 @@ print(
                 name: sys.modules[name].__file__
                 for name in [
                     SessionDB.__module__,
-                    "agent.moa_loop",
-                    "agent.auxiliary_client",
-                    "agent.turn_request_assembly",
-                    "agent.transports.chat_completions",
+                    "hermes_agent.agent.moa_loop",
+                    "hermes_agent.agent.auxiliary_client",
+                    "hermes_agent.agent.turn_request_assembly",
+                    "hermes_agent.agent.transports.chat_completions",
                 ]
             },
         },

@@ -120,13 +120,21 @@ Para JavaScript, ejecuta `pnpm install --frozen-lockfile` en la raíz del reposi
 
 ```
 hermes-agent/
-├── run_agent.py              # Clase AIAgent — bucle de conversación central, despacho de herramientas, persistencia de sesión
 ├── cli.py                    # Clase HermesCLI — TUI interactiva, integración prompt_toolkit
 ├── hermes_agent/             # el paquete de Python
+│   ├── run_agent.py              # Clase AIAgent — bucle de conversación central, despacho de herramientas, persistencia de sesión
 │   ├── model_tools.py            # Orquestación de herramientas (capa delgada sobre tools/registry.py)
 │   ├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-telegram, etc.)
 │   ├── hermes_state.py           # Base de datos de sesiones SQLite con búsqueda de texto completo FTS5, títulos de sesión
 │   ├── batch_runner.py           # Procesamiento en lote paralelo para generación de trayectorias
+│   │
+│   ├── agent/                    # Internos del agente (módulos extraídos)
+│   │   ├── prompt_builder.py         # Ensamblaje del prompt del sistema (identidad, habilidades, archivos de contexto, memoria)
+│   │   ├── context_compressor.py     # Auto-resumición al acercarse a los límites de contexto
+│   │   ├── auxiliary_client.py       # Resuelve clientes OpenAI auxiliares (resumición, visión)
+│   │   ├── display.py                # KawaiiSpinner, formateo del progreso de herramientas
+│   │   ├── model_metadata.py         # Longitudes de contexto del modelo, estimación de tokens
+│   │   └── trajectory.py             # Ayudantes para guardar trayectorias
 │   │
 │   ├── tools/                    # Implementaciones de herramientas (auto-registradas)
 │   │   ├── registry.py               # Registro central de herramientas (esquemas, manejadores, despacho)
@@ -150,14 +158,6 @@ hermes-agent/
 │       ├── session.py                # Almacén de sesiones, prompts de contexto, políticas de reset
 │       └── platforms/                # Adaptadores de plataformas
 │           ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
-│
-├── agent/                    # Internos del agente (módulos extraídos)
-│   ├── prompt_builder.py         # Ensamblaje del prompt del sistema (identidad, habilidades, archivos de contexto, memoria)
-│   ├── context_compressor.py     # Auto-resumición al acercarse a los límites de contexto
-│   ├── auxiliary_client.py       # Resuelve clientes OpenAI auxiliares (resumición, visión)
-│   ├── display.py                # KawaiiSpinner, formateo del progreso de herramientas
-│   ├── model_metadata.py         # Longitudes de contexto del modelo, estimación de tokens
-│   └── trajectory.py             # Ayudantes para guardar trayectorias
 │
 ├── hermes_cli/               # Implementaciones de comandos CLI
 │   ├── main.py                   # Punto de entrada, análisis de argumentos, despacho de comandos

@@ -27,8 +27,8 @@ class _SafeWorkerPolicy:
 _policy: _SafeWorkerPolicy | None = None
 _bind_lock = Lock()
 _RUNTIME_IMPORTS = frozenset({
-    "run_agent", "hermes_agent.model_tools", "hermes_cli.config", "hermes_cli.env_loader",
-    "hermes_cli.plugins", "providers", "agent.agent_init",
+    "hermes_agent.run_agent", "hermes_agent.model_tools", "hermes_cli.config", "hermes_cli.env_loader",
+    "hermes_cli.plugins", "providers", "hermes_agent.agent.agent_init",
 })
 
 

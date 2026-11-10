@@ -1676,7 +1676,7 @@ def _worker_config_snapshot() -> Optional[dict[str, Any]]:
     try:
         from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
     except ModuleNotFoundError as exc:
-        if exc.name != "agent" and not "agent".startswith(f"{exc.name}."):
+        if exc.name != "hermes_agent.agent" and not "hermes_agent.agent".startswith(f"{exc.name}."):
             raise
         return None
     return worker_config_snapshot()

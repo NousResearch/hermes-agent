@@ -188,7 +188,7 @@ def test_restore_runs_the_installers_store_git_when_path_has_none(checkout, monk
     # Every console script (`hermes`, `hermes-agent`, `hermes-acp`) repairs before its entry module imports
     # any other checkout module past hermes_bootstrap: any of them may be a half-written file.
     repo = os.path.realpath(Path(er.__file__).parent.parent)
-    for entry in ("hermes_cli.main", "agent.legacy_cli", "run_agent", "hermes_agent.acp_adapter.entry"):
+    for entry in ("hermes_cli.main", "hermes_agent.agent.legacy_cli", "hermes_agent.run_agent", "hermes_agent.acp_adapter.entry"):
         run = subprocess.run([sys.executable, "-c", _ENTRY_SPY, entry], cwd=repo, capture_output=True, text=True,
                              encoding="utf-8", env={**os.environ, "PYTHONPATH": repo}, timeout=120, check=False)
         assert run.stdout.strip().splitlines()[-1:] == ["[]"], (entry, run.stdout[-500:], run.stderr[-2000:])

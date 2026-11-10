@@ -13,7 +13,7 @@ from hermes_agent.tui_gateway.command_discovery import command_catalog
 
 def _catalog(get_plugin_commands):
     stubs = {"hermes_cli.plugins": SimpleNamespace(get_plugin_commands=get_plugin_commands),
-             "agent.skill_commands": SimpleNamespace(get_interactive_skill_commands=dict)}
+             "hermes_agent.agent.skill_commands": SimpleNamespace(get_interactive_skill_commands=dict)}
     return command_catalog(load_cfg=dict, module_loader=lambda name: stubs.get(name) or import_module(name))
 
 

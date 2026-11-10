@@ -66,8 +66,10 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     run([uv, "python", "install", "--no-bin", "--no-registry", minor])
     source = tmp_path / "fixture source"
     source.mkdir()
-    for name in ("pm", "hermes_cli", "hermes_platform", "hermes_agent"):
+    for name in ("pm", "hermes_cli", "hermes_platform"):
         shutil.copytree(ROOT / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(ROOT / "hermes_agent", source / "hermes_agent", ignore=lambda d, names: (
+        ["__pycache__"] + (["agent"] if Path(d) == ROOT / "hermes_agent" else [])))
     for name in ("utils.py", "hermes_constants.py", "hermes_dir_acl.py", "hermes_yaml.py", "hermes_bootstrap.py",
                  "setup-hermes.sh"):
         shutil.copy2(ROOT / name, source / name)
@@ -75,10 +77,10 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     # its config/env layer consults the stdlib-only safe-worker policy, and the update path's wait
     # loops use the stdlib-only hermes_agent.agent.deadline; the rest of agent/ stays out so the tail cannot grow
     # a dependency on the agent runtime.
-    (source / "agent").mkdir()
+    (source / "hermes_agent/agent").mkdir()
     for name in ("__init__.py", "jiter_preload.py", "i18n.py", "i18n_layers.py", "i18n_languages.py",
                  "safe_worker_policy.py", "deadline.py"):
-        shutil.copy2(ROOT / "agent" / name, source / "agent" / name)
+        shutil.copy2(ROOT / "hermes_agent/agent" / name, source / "hermes_agent/agent" / name)
     (source / "locales").mkdir()
     shutil.copy2(ROOT / "locales/en.yaml", source / "locales/en.yaml")
     wheels = source / "wheels"

@@ -18,7 +18,7 @@ from hermes_cli import plugins as plugins_mod
 from hermes_cli.plugins import PluginManager, _plugin_home_scope
 
 _PROVIDER = '''
-from agent.context_references import ContextReferenceProvider
+from hermes_agent.agent.context_references import ContextReferenceProvider
 
 class Tickets(ContextReferenceProvider):
     prefix = "tkt"

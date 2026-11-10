@@ -16,7 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def test_entry_ignores_an_inherited_source_root(tmp_path):
     decoy = tmp_path / "decoy-checkout"
     decoy.mkdir()
-    (decoy / "run_agent.py").write_text("raise SystemExit('imported the decoy tree')\n", encoding="utf-8")
+    (decoy / "hermes_agent").mkdir()
+    (decoy / "hermes_agent/__init__.py").write_text("raise SystemExit('imported the decoy tree')\n", encoding="utf-8")
 
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env.update(PYTHONPATH=str(PROJECT_ROOT), HERMES_PYTHON_SRC_ROOT=str(decoy),
@@ -34,4 +35,4 @@ def test_entry_ignores_an_inherited_source_root(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
     first_path, run_agent_file = json.loads(report.read_text(encoding="utf-8"))
     assert Path(first_path) == PROJECT_ROOT
-    assert Path(run_agent_file).parent == PROJECT_ROOT
+    assert Path(run_agent_file).parent == PROJECT_ROOT / "hermes_agent"

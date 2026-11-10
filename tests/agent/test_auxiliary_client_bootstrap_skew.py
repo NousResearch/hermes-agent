@@ -18,7 +18,7 @@ def test_missing_bootstrap_helper_degrades_instead_of_raising(monkeypatch, caplo
     real_import = builtins.__import__
 
     def _fail_bootstrap(name, *args, **kwargs):
-        if name == "agent.process_bootstrap":
+        if name == "hermes_agent.agent.process_bootstrap":
             raise ImportError(
                 "cannot import name 'build_keepalive_http_client' "
                 "from 'agent.process_bootstrap'"

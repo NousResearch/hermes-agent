@@ -317,7 +317,7 @@ def test_second_process_adopts_the_terminal_verdict(
     import hermes_agent.agent as _agent_pkg
 
     repo_root = str(
-        __import__("pathlib").Path(_agent_pkg.__file__).resolve().parents[1]
+        __import__("pathlib").Path(_agent_pkg.__file__).resolve().parents[2]
     )
     env = dict(os.environ)
     env["HERMES_HOME"] = str(hermes_home)

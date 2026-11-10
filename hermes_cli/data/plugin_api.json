@@ -117,8 +117,9 @@
       ]
     },
     {
-      "source": "adding-platform-adapters.md § Read a conversation's model settings (BasePlatformAdapter.get_session_model_settings)",
+      "source": "adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter)",
       "entries": [
+        "gateway.platforms.session_model:SessionModelPickerProvider",
         "gateway.platforms.session_model:SessionModelSettings"
       ]
     },

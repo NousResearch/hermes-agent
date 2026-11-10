@@ -1,9 +1,9 @@
 name: explainer
 title: Explainer Studio
 repo: https://github.com/suhas-svg/hermes_explainer
-sha: f3dffb09f72eec13a01f1a25500c8573caf1817a
-version: "1.0.0"
-description: "Turn any link, PDF, notes or topic into a narrated explainer video (MP4): themed slides, a neural voice, bullets revealed the moment they are spoken, word-by-word highlighted captions, title card and progress bar, in 16:9 or 9:16 for Shorts/Reels, plus SRT captions, transcript and thumbnail. Includes an explainer-video skill and a weekly recap-video blueprint. Narration text is sent to Microsoft's online Edge text-to-speech service via edge-tts (no account or key); scene images given as https URLs are downloaded; ffmpeg runs locally to encode. Videos stay local. No telemetry."
+sha: 4aea2971ae4af44463473ad2a93051f7cb2b26a0
+version: "1.0.1"
+description: "Turn any link, PDF, notes or topic into a narrated explainer video (MP4): themed slides, a neural voice, bullets revealed the moment they are spoken, word-by-word highlighted captions, title card and progress bar, in 16:9 or 9:16 for Shorts/Reels, plus SRT captions, transcript and thumbnail. Includes an explainer-video skill and a weekly recap-video blueprint. Narration text is sent to Microsoft's online Edge text-to-speech service via edge-tts (no account or key); scene images given as https URLs are downloaded only from public addresses (redirects checked) and local images only from allowed folders; ffmpeg runs locally to encode. Videos stay local. No telemetry."
 maintainer: suhas-svg
 tier: community
 category: tools

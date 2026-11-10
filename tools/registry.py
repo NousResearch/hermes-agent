@@ -849,6 +849,12 @@ class ToolRegistry:
             raise ValueError(
                 f"Tool {name!r}: schema['parameters'] must be an object (JSON Schema dict), "
                 f"got {type(params).__name__}")
+        # Every request serializes the whole tool list, so one value JSON can't encode (a Path or
+        # set default, NaN) fails every turn with "not JSON serializable" (kilocode#15921).
+        try:
+            json.dumps(schema, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Tool {name!r}: schema is not JSON-serializable: {exc}") from None
         handler_owner = self._plugin_owner_of(handler)
         caller_owner = self._plugin_namespace_of_module(self._caller_module())
         owner = caller_owner or handler_owner

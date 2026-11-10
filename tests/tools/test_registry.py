@@ -3,6 +3,7 @@
 import json
 import logging
 import threading
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -78,6 +79,16 @@ class TestRegisterAndDispatch:
         reg.register(name="noargs", toolset="core",
                      schema={"name": "noargs", "description": "x"}, handler=_dummy_handler)
         assert reg.get_entry("noargs") is not None
+
+    @pytest.mark.parametrize("default", [Path("/x"), {1}, float("nan")])
+    def test_register_rejects_schema_json_cannot_encode(self, default):
+        """One unencodable value would fail every request's tool list (kilocode#15921)."""
+        reg = ToolRegistry()
+        bad = {"name": "bad3", "description": "x", "parameters": {
+            "type": "object", "properties": {"p": {"type": "string", "default": default}}}}
+        with pytest.raises(ValueError, match="bad3.*JSON-serializable"):
+            reg.register(name="bad3", toolset="core", schema=bad, handler=_dummy_handler)
+        assert reg.get_entry("bad3") is None
 
 
     def test_cross_mcp_toolsets_do_not_overwrite_atomically(self, caplog):

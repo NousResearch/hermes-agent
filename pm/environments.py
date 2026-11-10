@@ -7,6 +7,7 @@ any dependency from that environment has been imported.
 from __future__ import annotations
 
 import argparse
+from contextlib import suppress
 import hashlib
 import json
 import os
@@ -490,6 +491,7 @@ def activate_dependencies(project_root: Path) -> None:
                 environment, release = current, lease_generation(current)
             selected = site_packages(environment)
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
+                release()
                 return
             built_for = venv_python_version(environment)
     else:
@@ -509,15 +511,19 @@ def activate_dependencies(project_root: Path) -> None:
     if built_for is not None and built_for != sys.version_info[:2]:
         if release is not None:
             release()
-        if (stream := sys.stderr or sys.__stderr__) is not None:
-            print(
-                f"hermes: dependency environment {environment} targets Python "
-                f"{built_for[0]}.{built_for[1]}; keeping the Python "
-                f"{sys.version_info[0]}.{sys.version_info[1]} launch environment",
-                file=stream,
-            )
+        stream = sys.stderr if sys.stderr is not None else sys.__stderr__
+        if stream is not None:
+            with suppress(OSError, ValueError):
+                print(
+                    f"hermes: dependency environment {environment} targets Python "
+                    f"{built_for[0]}.{built_for[1]}; keeping the Python "
+                    f"{sys.version_info[0]}.{sys.version_info[1]} launch environment",
+                    file=stream,
+                )
         return
     if not selected.is_dir():
+        if release is not None:
+            release()
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
     import site
 

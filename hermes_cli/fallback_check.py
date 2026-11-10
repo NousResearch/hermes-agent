@@ -224,7 +224,8 @@ def _body_failure(raw: Any) -> tuple[Optional[dict[str, Any]], bool]:
     from agent.auxiliary_client import _field
     data = _field(raw, "data")
     layers = [raw, data] if isinstance(data, dict) else [raw]
-    embedded = next((e for e in map(outcome.embedded_provider_error, layers) if e), None)
+    # Some providers always send an ``error`` object; one whose fields are all empty is not a failure.
+    embedded = next((e for e in map(outcome.embedded_provider_error, layers) if e and any(e.values())), None)
     failed = any(str(_field(layer, "status") or "").lower() in _FAILED_STATUSES for layer in layers)
     return embedded, failed
 
@@ -236,7 +237,7 @@ def _judge_answer(result: EntryCheck, raw: Any, model: str, client: Any, secrets
     from agent.auxiliary_client import _recover_aux_response_message, _unwrap_data_envelope, extract_content_or_reasoning
     from agent.errors import InvalidProviderResponseError
     from agent.transports.chat_completions import is_router_timeout_shim
-    provider = result.provider
+    provider = result.provider  # already lowercased by check_entry_static
     embedded, failed = _body_failure(raw)
     response = None  # with a failure in the body there is no answer to judge
     if embedded is None and not failed:

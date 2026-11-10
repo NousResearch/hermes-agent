@@ -487,8 +487,6 @@ gateway:
     root_new: "Chun comhrá Hermes comhthreomhar nua a thosú, oscail an topaic All Messages ag barr chomhéadan an bhota seo agus seol teachtaireacht ar bith ann. Cruthóidh Telegram topaic nua dó.\n\nIs seisiún Hermes neamhspleách gach topaic. Ná húsáid /new taobh istigh de thopaic atá ann cheana ach amháin más mian leat seisiún reatha na topaice sin a athsholáthar."
     new_header: "Tosaíodh seisiún Hermes nua sa topaic seo.\n\nLeid: le haghaidh oibre comhthreomhaire, oscail All Messages agus seol teachtaireacht ann chun topaic ar leith a chruthú in ionad /new a úsáid anseo. Athsholáthraíonn /new an seisiún atá ceangailte leis an topaic reatha."
     help: "/topic — cumasaigh mód DM il-seisiúin (bot amháin, go leor comhráite comhthreomhara)\n\nÚsáid:\n  /topic             Cumasaigh mód topaice, nó taispeáin an stádas má tá sé ar siúl cheana\n  /topic help        Taispeáin an teachtaireacht seo\n  /topic off         Díchumasaigh mód topaice agus glan na ceangail topaice\n  /topic <id>        Taobh istigh de thopaic: athchóirigh seisiún roimhe seo de réir ID\n\nConas a oibríonn sé:\n1. Rith /topic uair amháin sa DM seo — seiceálann Hermes go bhfuil BotFather Threads\n   Settings cumasaithe agus casann sé mód il-seisiúin air.\n2. Tapáil All Messages ag barr an bhota agus seol teachtaireacht ar bith.\n   Cruthaíonn Telegram topaic nua don teachtaireacht sin; is seisiún Hermes\n   neamhspleách gach topaic (stair úr, comhthéacs úr).\n3. Éiríonn an DM fréimhe ina fhorhalla córais — seol /topic, /status,\n   /help, /usage ansin. Téann gnáthleideanna i dtopaic.\n4. Athshocraíonn /new taobh istigh de thopaic seisiún na topaice sin amháin.\n5. Athchóiríonn /topic <id> taobh istigh de thopaic seanseisiún isteach ann."
-    system_topic_name: "Córas"
-    system_topic_intro: "Topaic chórais d'orduithe agus do stádas Hermes."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Níorbh fhéidir ID an chomhrá a dhéanamh amach."
     mode_not_enabled: "Níl mód topaice il-seisiúin cumasaithe don chomhrá seo faoi láthair."
@@ -625,6 +623,8 @@ gateway:
     action_always: "Ceadaigh i gCónaí"
     action_deny: "Diúltaigh"
     deadline: "Mura bhfreagraíonn tú laistigh de {window}, NÍ rithfear é."
+    not_requester: "Ní féidir ach le {requester} an cead seo a fhreagairt."
+    not_requester_admins_only: "Ní féidir ach le riarthóir nó le ceadaitheoir liostaithe an cead seo a fhreagairt."
     text_choice_once: "Freagair `{prefix}approve` chun é a rith uair amháin"
     text_choice_session: "`{prefix}approve session` chun an patrún seo a cheadú don chuid eile den seisiún seo"
     text_choice_always: "`{prefix}approve always` chun é a cheadú go buan"
@@ -632,6 +632,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", nó {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Réamhamharc giorraithe: tá an t-ordú iomlán ({total} carachtar) sa teachtaireacht thuas."
+    truncated_deny_only: "Réamhamharc giorraithe ({total} carachtar) agus níorbh fhéidir an t-ordú iomlán a thaispeáint anseo, mar sin níl ach Diúltaigh ar fáil. Athbhreithnigh é sa CLI nó san aip Desktop."
+    text_prompt_deny_only: "Tá an leid cheadaithe iomlán rófhada don ardán seo, mar sin níl ach Diúltaigh ar fáil. Athbhreithnigh é sa CLI nó san aip Desktop."
   notify:
     media_kind:
       audio: "fuaime"
@@ -974,9 +977,6 @@ platform:
     approved: "✅ Ceadaithe."
     denied: "❌ Diúltaithe."
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
-  yuanbao:
-    slow_response_notice: "Tá an tasc seo beagán casta — táim fós ag obair air, fan go fóill le do thoil..."
-    owner_command_denied: "⚠️ Níl {command} ar fáil ach don chruthaitheoir i mód comhrá phríobháidigh"
   shared:
     truncated_suffix: "\n...(giorraithe)"
     unknown: "anaithnid"
@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Ní féidir ach le húsáideoir Matrix údaraithe na rialtáin seo a úsáid."
       not_requester: "Ní féidir ach leis an úsáideoir a d'iarr an gníomh seo na rialtáin seo a úsáid."
   feishu:
+    clarify:
+      title: "Tá d'ionchur de dhíth ar Hermes"
+      other: "✏️ Eile (clóscríobh freagra)"
+      awaiting_typed: "Ag fanacht le freagra clóscríofa ó {user}…"
+    picker:
+      apply_error: "Earráid agus an rogha á cur i bhfeidhm: {error}"
     approval:
       action_session: "Seisiún"
       action_always: "I gcónaí"
@@ -1474,6 +1480,8 @@ platform:
     prompt_other: "✏️ Eile (clóscríobh freagra)"
     prompt_expired: ⌛ Níl an leid sin ag fanacht le freagra a thuilleadh. Seol do fhreagra mar ghnáth-theachtaireacht.
 slash:
+  rewind:
+    description: "Athchas go leid níos luaithe chun í a chur in eagar & a athsheoladh, nó gabhlaigh as sin (Esc Esc)"
   approve:
     description: "Ceadaigh ordú contúirteach atá ag fanacht"
   bg:
@@ -1701,6 +1709,20 @@ slash:
   quit:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:
+  backtrack:
+    title: "↺ Tras-scríbhinn — roghnaigh leid le cur in eagar"
+    keys_hint: "Ag brabhsáil na tras-scríbhinne · ↑↓/jk scrollaigh · ←→/hl leideanna · ↵ cuir in eagar · f gabhlaigh · esc siar"
+    prime_hint: "esc arís chun an teachtaireacht roimhe seo a chur in eagar"
+    no_previous: "Níl aon teachtaireacht roimhe seo le cur in eagar."
+    editing_hint: "↺ Leid {number} á cur in eagar — athchasann Enter go dtí seo agus seolann · cealaíonn Esc Esc"
+    edit_cancelled: "↺ Athchasadh cealaithe; níor baineadh aon rud."
+    rewound: "↺ Athchasta go leid {number} ({count} teachtaireacht curtha i gcartlann); an t-eagarthóireacht á seoladh."
+    forked: "⑂ Gabhlaithe roimh leid {number}; níor athraíodh an seisiún bunaidh {parent}. Cuir an leid thíos in eagar agus brúigh Enter chun é a sheoladh."
+    nothing: "(._.) Níl aon leideanna níos luaithe le hathchasadh chucu."
+    target_changed: "(x_x) D'athraigh an seisiún ó roghnaigh tú leid {number}; níor baineadh aon rud. Tá d'eagarthóireacht ar ais sa chumadóir."
+    invalid: "(._.) Níl leid {value} ann — roghnaigh 1 go {total}."
+    usage: "Úsáid: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Theip ar an athchasadh; níor athraíodh an stair: {error}"
   modern:
     thought_for: "Smaoinigh ar feadh {seconds}s"
     thought: "Smaoinigh"
@@ -2164,6 +2186,7 @@ cli:
     images_attached_other: "📎 {count} íomhá ceangailte"
     command_interrupted: "Briseadh isteach ar an ordú."
     welcome: "Fáilte go Hermes Agent! Clóscríobh do theachtaireacht nó /help le haghaidh orduithe."
+    vscode_images_hint: "Is féidir le VS Code íomhánna lánrúin a thaispeáint anseo: cas air terminal.integrated.enableImages sna socruithe."
     activated_skills_label: "Scileanna gníomhachtaithe:"
     redaction_disabled_title: "⚠  Tá ceilt rún DÍCHUMASAITHE"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). D'fhéadfadh eochracha API agus comharthaí a bheith le feiceáil focal ar fhocal in aschur comhrá, i JSON na seisiún agus i logaí. Socraigh {setting} i config.yaml chun é a athchumasú."
@@ -2618,6 +2641,7 @@ cli:
     goal_turns: "⊙ sprioc {used}/{max}"
     goal: "⊙ sprioc"
     ctx_pinned: " pionnáilte"
+    ctx_fallback: " cúltaca"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Taisce ({count} mhír)"
@@ -3957,3 +3981,8 @@ plan_usage:
   large_notice_limit: "Samhail mhór: tá do theorainn {name} bainte amach ({resets})."
   large_notice_limit_stops: "Samhail mhór: tá do theorainn {name} bainte amach ({resets}), mar sin ní rithfidh sí go dtí sin."
   large_notice_percent: "Samhail mhór: úsáideann sí níos mó de d’úsáid plean in aghaidh na teachtaireachta. Teorainn mhíosúil na samhlacha móra: {percent} úsáidte."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Comhaid a athraíodh sna seal a cealaíodh: {files}. Rith /rollback chun seicphointí a liostú agus ceann a athchóiriú."
+    more: "+{count} eile"

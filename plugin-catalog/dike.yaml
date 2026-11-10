@@ -1,0 +1,17 @@
+name: dike
+repo: https://github.com/Grizaceo/hermes-dike
+sha: 9780e467ec31d4635eb559e4c09bd49f17e178de
+description: "Diké: checks every article citation of Chilean law in a legal brief against a local, hash-identified copy of 25 statutes (Ley Chile), and refuses to certify what it cannot prove. Each citation comes back verified, with its identifier, source URL and text SHA-256, or unverified with the engine's reason (AMBIGUOUS, UNRESOLVABLE). One tool (dike_verificar_citas, text or a .md/.txt path) and one command (/dike-verificar). Spanish output. Not legal advice: it never certifies that a provision supports an argument, nor that a dated copy is today's text. Disclosure — each call runs the vendored Diké engine as a subprocess (same interpreter, no shell, 300 s timeout, minimal environment without agent credentials; PYTHONPATH carries the Hermes process's site-packages so the engine finds its dependencies; not a sandbox). Reads only the text passed or the named regular .md/.txt file (no symlinks, 400,000 bytes max). Writes only under HERMES_HOME/plugin-data/dike: the corpus, unpacked once from the bundled tarball after a SHA-256 check (tarfile data filter) and re-checked against recorded hashes on every call, temporary files removed after each call, and engine caches. No network after dependency install, no hooks, no background processes, no telemetry, no credentials, never signs."
+maintainer: Grizaceo
+tier: community
+category: tools
+docs_url: https://github.com/Grizaceo/hermes-dike#readme
+version: "0.2.0"
+requires_hermes: ">=0.22.7"
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - dike_verificar_citas
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -19,7 +19,7 @@ import {
   focusedRosterOwner,
   rosterWatermarks
 } from './bot-state'
-import { ensureBotMetadata } from './canonical-chat'
+import { ensureBotProfile } from './canonical-chat'
 import {
   $botMeta,
   BOT_META_V1_KEY,
@@ -343,8 +343,8 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
 
 /** Clone a bot: profile (config/skills/SOUL/memory via clone_from) + look.
  *  Name is "<base>-2", "-3", … — first free slot against the live roster. */
-export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
-  await ensureBotMetadata(bot)
+export async function duplicateBot(source: RosterRow, roster: RosterRow[]) {
+  const bot = await ensureBotProfile(source)
   const base = bot.name
   const ownerRoute = botConnectionRoute(bot)
   const ownerKey = ownerRoute ? botRouteKey(ownerRoute) : null

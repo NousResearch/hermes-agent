@@ -51,9 +51,7 @@ def _make_event(text: str = "hello", chat_id: str = "123") -> MessageEvent:
 def _make_runner(*, session_id: str = "parent-session") -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._busy_ack_ts = {}
     runner._draining = False
     runner.adapters = {}
     runner.config = MagicMock()

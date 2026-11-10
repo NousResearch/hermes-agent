@@ -148,6 +148,9 @@ RULES: tuple[Rule, ...] = (
          " blocks on an Event the test sets at teardown."
          " `sleep(0)` to yield is fine. A delay that IS the behaviour under test takes"
          " `# health: allow HX013 -- <why>`", "ast", include=TESTS, exclude=()),
+    Rule("HX014", "private API-error predicate", "use `classify_api_error` (`agent.auxiliary_error_policy`"
+         " on the aux path); add the phrasing to its pattern tables", "ast",
+         include=("agent/auxiliary*.py", "agent/context_compressor*.py", "agent/turn_*.py")),
 )
 
 RULES_BY_ID = {rule.id: rule for rule in RULES}

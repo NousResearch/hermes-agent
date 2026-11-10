@@ -47,7 +47,6 @@ ALLOWED_FILES = {ROOT / "hermes_cli" / "config_backend.py", ROOT / "utils.py"}
 # Modules whose ``config_path`` / ``path`` names are their OWN config file, never a hermes
 # config.yaml (the name heuristic would flag every line of them).
 FOREIGN_CONFIG_FILES = {
-    "plugins/memory/honcho": "Honcho's own honcho.json",
     "plugins/memory/openviking": "OpenViking's own ovcli config",
     "agent/proxy_sources/iron_proxy.py": "iron-proxy's proxy.yaml",
 }
@@ -235,6 +234,9 @@ def main(argv: list[str]) -> int:
             files.extend(p for p in t.rglob("*.py") if "node_modules" not in p.parts and "tests" not in p.parts)
         elif t.suffix == ".py" and t.exists():
             files.append(t)
+        elif not t.exists():
+            print(f"{t} does not exist: a scan target that moved would be skipped in silence", file=sys.stderr)
+            return 2
     problems: list[str] = []
     for f in sorted(set(files)):
         if f.resolve() in ALLOWED_FILES:

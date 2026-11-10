@@ -456,6 +456,13 @@ export const en: Translations = {
     authRequired: "Auth required",
     authRequiredHint: "Run this command to authenticate:",
     updateGit: "Git pull",
+    updateAll: "Update all",
+    updatingAll: "Updating plugins…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Updated ${updated}, needs review ${needsReview}, failed ${failed}`,
+    autoUpdate: "Auto-update",
+    autoUpdateDesc: (hours: number) =>
+      `Apply plugin updates automatically when the gateway checks (every ${hours} h). Updated code loads in new sessions.`,
     updateConsentBody: (name: string, sha: string) =>
       `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
     updateScanBody: (name: string, count: number) =>

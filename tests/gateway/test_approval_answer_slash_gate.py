@@ -224,3 +224,6 @@ def test_narrowed_approvers_take_precedence_over_the_slash_gate(approvers, user_
     if approvers == ["*"]:  # the typed command passes the same slash gate the button does
         typed = "/deny" if choice == "deny" else "/approve"
         assert (_runner(extra)._check_slash_access(_event(who, typed).source, typed[1:]) is None) is allowed
+        from gateway.slash_access import policy_for_runner_source  # /whoami and /help list what runs
+        listed = policy_for_runner_source(_runner(extra), _event(who, typed).source).user_runnable_commands
+        assert (typed[1:] in listed or who == ADMIN) is allowed

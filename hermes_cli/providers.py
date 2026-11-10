@@ -504,14 +504,9 @@ def resolve_user_provider(name: str, user_config: dict[str, Any]) -> Optional[Pr
         return None
     # Callers lowercase the requested name; the config key keeps the user's case (``Axonhub``).
     # The pdef id is the config key so later ``user_config[target_provider]`` reads still hit.
-    # The case-insensitive match sits behind the runtime's own named-provider gate
-    # (``_select_named_custom_provider``): the runtime keeps a built-in name such as ``anthropic``
-    # on the built-in even when ``Anthropic:`` is configured, so the switch must too (#151775).
     if name not in user_config:
-        from hermes_cli.runtime_provider_custom import _shadowed_by_builtin
         wanted = str(name or "").strip().lower()
-        if wanted and wanted != "auto" and not _shadowed_by_builtin(wanted):
-            name = next((k for k in user_config if isinstance(k, str) and k.strip().lower() == wanted), name)
+        name = next((k for k in user_config if isinstance(k, str) and k.strip().lower() == wanted), name)
     entry = user_config.get(name)
     if not isinstance(entry, dict):
         return None

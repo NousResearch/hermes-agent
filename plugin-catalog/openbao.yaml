@@ -1,12 +1,12 @@
 name: openbao
 repo: https://github.com/Schultzenator/hermes-plugin-openbao
-sha: b56f4d9fe886b928e19d512f1a1ed6dd7adb786f
+sha: 4dac74ebe68215fe51850d1a12af457617f678ca
 subdir: ""
 description: "Resolve mapped bao:// references from OpenBao or HashiCorp Vault KV v1/v2 into Hermes environment variables at startup. Disclosure — makes outbound HTTP(S) calls to the configured Vault/OpenBao address and sends HERMES_OPENBAO_TOKEN as X-Vault-Token; never reads .env/auth stores directly, never caches secrets, never prompts, and starts no background process."
 maintainer: Schultzenator
 tier: community
 category: tools
-version: "0.1.0"
+version: "0.1.1"
 requires_hermes: ">=0.0.0"
 readme: true
 platforms: [linux, macos, windows]

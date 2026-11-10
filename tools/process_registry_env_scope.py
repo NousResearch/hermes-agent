@@ -1,16 +1,18 @@
 """Which background processes run inside a terminal environment, for its teardown.
 
-A process belongs to an environment by the environment's cache key (``ProcessSession.task_id``,
-e.g. ``session:<id>``) or by the environment object it was spawned through (``env_ref``, which a
-handoff to another owner does not change). ``owner_task_id`` is the raw spawning id and does not
-name an environment, so it cannot answer either question.
+A live process belongs to the environment object it was spawned through (``env_ref``).
+A handoff changes its ``task_id`` to the new owner's cache key without moving the process.
+Only checkpoint-recovered processes without an ``env_ref`` fall back to their saved ``task_id``.
+``owner_task_id`` is the raw spawning id, not an environment identity.
 """
 
 from typing import Any, Optional
 
 
 def _in_env(session, key: str, env: Optional[Any]) -> bool:
-    return session.task_id == key or (env is not None and session.env_ref is env)
+    if session.env_ref is not None:
+        return env is not None and session.env_ref is env
+    return session.task_id == key
 
 
 def has_running_in_env(registry, key: str, env: Optional[Any] = None) -> bool:

@@ -7,6 +7,7 @@ tool output forge the exit trailer the dead-worker sweep reads, and never leakin
 secrets.
 """
 import asyncio
+import io
 import json
 import re
 import subprocess
@@ -21,6 +22,13 @@ from gateway.session_contract import SessionActor, SessionRef
 SECRET = 'sk-proj-' + 'Q' * 40
 ASSIGNMENT = 'opaque-assignment-secret-value'
 LINE_RE = re.compile(r'^\[tool\] \d{4}-\d\d-\d\d \d\d:\d\d:\d\d (start|done|error) terminal: ')
+# Opaque URL credentials: no vendor prefix and no pattern shape, so only the strict URL pass
+# catches them. The card feed is durable, so they must not survive it.
+URL_PASSWORD = 'Zq8xW2vTn4Rk'
+URL_TOKEN = 'opaque-token-9f3KdLmQ'
+URL = f'https://runner:{URL_PASSWORD}@host.example/api/report?access_token={URL_TOKEN}&view=summary'
+URL_REDACTED = 'https://***:***@host.example/api/report?access_token=***&view=summary'
+URL_LINE_RE = re.compile(r'^\[tool\] \d{4}-\d\d-\d\d \d\d:\d\d:\d\d (start|done) web_extract: ')
 
 
 @pytest.fixture
@@ -87,6 +95,48 @@ def test_task_log_is_capped_never_rotated_never_created(kanban_home):
 
     assert TaskToolLog.for_policy(None, list) is None
     assert TaskToolLog.for_policy(SimpleNamespace(kanban_json=None), list) is None
+
+
+def test_task_log_redacts_opaque_url_credentials_on_disk(kanban_home):
+    """The card feed is a durable egress boundary: a URL's opaque userinfo password and
+    credential-named query value must not reach the file, while the host, the path and a
+    non-sensitive query value still identify the request. Exercises ``TaskToolLog``'s real
+    disk output for both a ``tool.start`` and its ``tool.complete`` result.
+    """
+    from gateway.session_managed_worker_log import TaskToolLog
+    path = _log(kanban_home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('Session: s\n', encoding='utf-8')
+    args = {'urls': [URL]}
+    log = TaskToolLog(json.dumps({'board': 'default', 'task_id': 't_feed'}), list)
+
+    log.write({'type': 'tool.start', **tool_frame('call-1', 'web_extract', args)})
+    log.write({'type': 'tool.complete', **tool_frame('call-1', 'web_extract', args, f'fetched {URL}')})
+
+    text = path.read_text(encoding='utf-8')
+    assert URL_PASSWORD not in text and URL_TOKEN not in text, text
+    owner = text.splitlines()[1:]
+    assert len(owner) == 2, owner
+    start, done = owner
+    assert URL_LINE_RE.match(start) and URL_LINE_RE.match(done)
+    assert start.endswith('start web_extract: ' + URL_REDACTED), start
+    assert done.endswith('done web_extract: fetched ' + URL_REDACTED), done
+    # Still useful: the host, the path and a non-sensitive query value identify the request.
+    assert 'host.example/api/report' in start and 'view=summary' in start
+
+
+def test_stderr_sink_keeps_its_looser_url_policy(tmp_path):
+    """The strict URL pass is the card feed's alone: the shared per-profile sink still preserves
+    opaque query tokens (magic links, OAuth callbacks, pre-signed URLs must survive it) while its
+    exact-secret scrub keeps working.
+    """
+    from gateway.session_managed_worker_log import drain_worker_stderr
+    path = tmp_path / 'logs' / 'managed-worker.log'
+    drain_worker_stderr(io.BytesIO(f'GET {URL} app={ASSIGNMENT}\n'.encode()), path, 7,
+                        lambda: [ASSIGNMENT])
+    text = path.read_text(encoding='utf-8')
+    assert 'access_token=' + URL_TOKEN in text and 'view=summary' in text
+    assert ASSIGNMENT not in text
 
 
 CHILD = """import json, os, sys, psutil

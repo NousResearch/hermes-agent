@@ -72,11 +72,11 @@ def _append(path, text):
             os.close(fd)
 
 
-def _redact(line, scrub):
+def _redact(line, scrub, *, strict_urls=False):
     from agent.redact import redact_sensitive_text
     for value in sorted((v for v in scrub() if isinstance(v, str) and v), key=len, reverse=True):
         line = line.replace(value, '***')
-    return redact_sensitive_text(line, force=True)
+    return redact_sensitive_text(line, force=True, redact_url_credentials=strict_urls)
 
 
 def format_tool_line(frame, scrub):
@@ -86,6 +86,11 @@ def format_tool_line(frame, scrub):
     The whole text is redacted before it is cut (pattern redaction such as a PEM block or
     ``KEY=value`` needs the original line structure), then every line break is collapsed so the
     line can never forge the submitter's exit trailer, then it is shortened.
+
+    Unlike the per-profile stderr sink, this line is durable per-card output that no round trip
+    reads back, so it opts into the existing strict URL pass: an opaque ``access_token`` value or
+    URL userinfo password must not be persisted. The stderr sink keeps the looser default, where
+    opaque query tokens are preserved for magic-link / OAuth-callback / pre-signed URLs.
     """
     from agent.display import build_tool_preview
     name = frame['name']
@@ -96,7 +101,7 @@ def format_tool_line(frame, scrub):
     else:
         verb = 'error' if frame['is_error'] else 'done'
         text = frame['result']
-    body = _LINE_BREAKS.sub(' ', _redact(f'{name}: {text}', scrub)).strip()
+    body = _LINE_BREAKS.sub(' ', _redact(f'{name}: {text}', scrub, strict_urls=True)).strip()
     if len(body) > TASK_LOG_PREVIEW_CHARS:
         body = body[:TASK_LOG_PREVIEW_CHARS] + ' [truncated]'
     return f'{TASK_LOG_TAG} {time.strftime("%Y-%m-%d %H:%M:%S")} {verb} {body}\n'

@@ -811,27 +811,28 @@ def failed_delegations_for_session(
     return failed[:limit]
 
 
-def live_delegations_in_other_processes(conn: sqlite3.Connection, parent_session_ids) -> list[dict[str, Any]]:
-    """``{delegation_id, owner_pid}`` for each running unit ``parent_session_ids`` dispatched that ANOTHER
-    live process owns.
+def live_delegations_in_other_processes(conn: sqlite3.Connection, parent_session_ids=None) -> list[dict[str, Any]]:
+    """``{delegation_id, parent_session_id, owner_pid}`` for each running unit that ``parent_session_ids``
+    (None: any session) dispatched and that ANOTHER live process owns.
 
     Live children sit in their owner's memory (``_records``, ``delegate_tool_registry``), so a process
     that serves the same conversation later sees none of them. ``owner_pid`` on the durable row names
     the owner; a dead owner's row is ``recover_abandoned_delegations``'s, not live work. ``conn`` is the
     caller's profile-correct ``state.db`` connection. An unreadable ledger answers ``[]``."""
-    ids = sorted({str(sid) for sid in parent_session_ids if sid})
+    ids = None if parent_session_ids is None else sorted({str(sid) for sid in parent_session_ids if sid})
     alive = _owner_liveness()
     if alive is None:
         return []
+    owner_sql = "" if ids is None else f" AND parent_session_id IN ({','.join('?' * len(ids))})"
     try:
         rows = conn.execute(
-            f"""SELECT delegation_id, owner_pid, owner_started_at FROM async_delegations
-                WHERE state IN ('running','finalizing') AND parent_session_id IN ({','.join('?' * len(ids))})""",
-            ids).fetchall()
+            f"""SELECT delegation_id, parent_session_id, owner_pid, owner_started_at FROM async_delegations
+                WHERE state IN ('running','finalizing'){owner_sql}""", ids or ()).fetchall()
     except sqlite3.Error:
         logger.debug("async delegation ledger unreadable for %s", ids, exc_info=True)
         return []
-    return [{"delegation_id": delegation_id, "owner_pid": int(pid)} for delegation_id, pid, started in rows
+    return [{"delegation_id": delegation_id, "parent_session_id": parent, "owner_pid": int(pid)}
+            for delegation_id, parent, pid, started in rows
             if pid and int(pid) != os.getpid() and alive(pid, started)]
 
 

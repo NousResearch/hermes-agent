@@ -18,23 +18,4 @@ capabilities:
   provides_middleware: []
   requires_env:
     - LEXICON_API_KEY
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    

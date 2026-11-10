@@ -100,6 +100,23 @@ def test_reaper_keeps_the_sandbox_of_a_process_handed_off_to_another_key(registr
     assert tt._active_environments.get(ENV_KEY) is env
 
 
+def test_reaper_reaps_the_new_owners_idle_sandbox_after_handoff(registry, env):
+    """A handoff updates task_id but the running child remains in its original sandbox."""
+    new_owner_key = "session:parent"
+    unrelated_sandbox = _SandboxEnv()
+    tt._active_environments[new_owner_key] = unrelated_sandbox
+    tt._last_activity[new_owner_key] = time.time() - 600
+    session = _background(registry, env, task_id=new_owner_key, owner="parent")
+
+    _cleanup_inactive_envs(lifetime_seconds=300)
+
+    assert tt._active_environments.get(ENV_KEY) is env
+    assert not env.closed
+    assert new_owner_key not in tt._active_environments
+    assert unrelated_sandbox.closed
+    assert session.id in registry._running and not session.exited
+
+
 def test_reaper_closes_the_sandbox_once_its_process_has_exited(registry, env):
     session = _background(registry, env)
     registry._finish_exited(session, 0)

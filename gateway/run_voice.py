@@ -484,6 +484,7 @@ class GatewayVoiceMixin:
                 return
             actual_paths = paths
             await self._deliver_voice_reply(event, actual_paths)
+            event._voice_reply_sent = True  # the adapter's text send then applies the display hook
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:

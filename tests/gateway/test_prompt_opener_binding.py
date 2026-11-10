@@ -167,3 +167,16 @@ async def test_second_update_while_one_runs_keeps_the_first_opener(tmp_path, mon
     assert json.loads((tmp_path / ".update_pending.json").read_text())["user_id"] == "alice"
     assert update_prompt_refusal("alice", extra={}) is None
     assert update_prompt_refusal("bob", extra={}) == "Alice"
+
+
+def test_clarify_with_an_empty_authority_answers_to_anyone():
+    """A clarify registered with ``authority={}`` records no restriction, so any admitted sender's
+    reply answers it (a plugin's rewritten voice-note reply relies on this)."""
+    from gateway.approval_actor import clarify_refusal
+    from tools import clarify_gateway
+
+    clarify_gateway.register("cl-open", "agent:main:telegram:dm:1", "Which one?", None, authority={})
+    try:
+        assert clarify_refusal("cl-open", "bob", extra=EXTRA) is None
+    finally:
+        clarify_gateway.clear_session("agent:main:telegram:dm:1")

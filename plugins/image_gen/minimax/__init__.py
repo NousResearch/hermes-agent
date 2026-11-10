@@ -1,23 +1,15 @@
-"""MiniMax H3-Image backend: ``/v1/images/generations`` and ``/v1/images/edits``.
-
-Selection: ``MINIMAX_IMAGE_MODEL`` → ``image_gen.minimax.model`` → :data:`DEFAULT_MODEL`.
-Endpoint: ``image_gen.minimax.base_url`` → ``MINIMAX_BASE_URL`` → :data:`DEFAULT_BASE_URL`;
-key: env named by ``image_gen.minimax.key_env`` → ``MINIMAX_API_KEY``.
-Resolution is native ``aspect_ratio`` + ``area`` (1K/2K/4K, default 4K) rather than the
-OpenAI-compatible 1024-level ``size`` trio. Requests are not retried (H3 is not idempotent).
-"""
+"""MiniMax H3-Image backend: ``/v1/images/generations`` and ``/v1/images/edits``."""
 
 from __future__ import annotations
 
 import base64
 import logging
 import mimetypes
-import os
 from pathlib import Path
 from typing import Any, Optional
 
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, success_response
-from agent.secret_scope import get_secret, get_secret_str
+from agent.secret_scope import get_secret
 from plugins.image_gen._common import (
     StaticImageGenProvider, collect_source_images, error_factory, load_image_gen_config,
     materialize_image, post_json, prompt_required_error, resolve_static_model)
@@ -26,12 +18,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "MiniMax-H3-Image"
 DEFAULT_BASE_URL = "https://api.minimax.io/v1"
-DEFAULT_AREA = "4K"
-# H3 4K generation is ~17-19s and edits can run longer; the API requires a timeout above 600s.
-_REQUEST_TIMEOUT = (30, 610)
-_AREAS = ("1K", "2K", "4K")
+_REQUEST_TIMEOUT = (30, 610)  # H3 requires a read timeout above 600s
 _ASPECT_RATIOS = {"landscape": "16:9", "square": "1:1", "portrait": "9:16"}
-_MAX_SOURCE_IMAGES = 16
 
 MODELS = {
     DEFAULT_MODEL: {
@@ -43,37 +31,20 @@ MODELS = {
 }
 
 
-def _resolve_model() -> tuple[str, dict[str, Any]]:
-    return resolve_static_model(
-        MODELS, DEFAULT_MODEL, env_var="MINIMAX_IMAGE_MODEL", config_key="minimax")
-
-
-def _resolve_endpoint() -> tuple[str, str]:
-    """``(base_url, api_key)`` — scoped config, then ``MINIMAX_BASE_URL`` / ``MINIMAX_API_KEY``."""
+def _endpoint() -> tuple[str, str]:
     cfg = load_image_gen_config("minimax")
-    base_url = (
-        str(cfg.get("base_url") or "").strip().rstrip("/")
-        or get_secret_str("MINIMAX_BASE_URL").strip().rstrip("/")
-        or DEFAULT_BASE_URL
-    )
-    key_env = str(cfg.get("key_env") or "").strip()
-    api_key = (get_secret(key_env) if key_env else None) or get_secret("MINIMAX_API_KEY") or ""
-    return base_url, api_key
+    base_url = str(cfg.get("base_url") or "").strip().rstrip("/") or DEFAULT_BASE_URL
+    return base_url, get_secret("MINIMAX_API_KEY") or ""
 
 
-def _resolve_area() -> str:
-    env = (os.environ.get("MINIMAX_IMAGE_AREA") or "").strip()
-    if env in _AREAS:
-        return env
+def _area() -> str:
     area = str(load_image_gen_config("minimax").get("area") or "").strip()
-    return area if area in _AREAS else DEFAULT_AREA
+    return area if area in ("1K", "2K", "4K") else "4K"
 
 
 def _image_url_field(ref: str) -> str:
-    """Pass through URL/data-URI references; encode a local path as a data URI."""
     ref = ref.strip()
-    lower = ref.lower()
-    if lower.startswith(("http://", "https://", "data:")):
+    if ref.lower().startswith(("http://", "https://", "data:")):
         return ref
     from agent.file_safety import raise_if_read_blocked
 
@@ -83,19 +54,7 @@ def _image_url_field(ref: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
-def _payload(model: str, prompt: str, aspect: str, area: str) -> dict[str, Any]:
-    return {
-        "model": model,
-        "prompt": prompt,
-        "n": 1,
-        "aspect_ratio": _ASPECT_RATIOS.get(aspect, "1:1"),
-        "area": area,
-    }
-
-
 class MiniMaxImageGenProvider(StaticImageGenProvider):
-    """MiniMax H3-Image text-to-image and image-editing backend."""
-
     provider_id = "minimax"
     label = "MiniMax"
     models = MODELS
@@ -108,10 +67,10 @@ class MiniMaxImageGenProvider(StaticImageGenProvider):
         url="https://platform.minimax.io")
 
     def is_available(self) -> bool:
-        return bool(_resolve_endpoint()[1])
+        return bool(_endpoint()[1])
 
     def capabilities(self) -> dict[str, Any]:
-        return {"modalities": ["text", "image"], "max_reference_images": _MAX_SOURCE_IMAGES}
+        return {"modalities": ["text", "image"], "max_reference_images": 16}
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
@@ -122,21 +81,23 @@ class MiniMaxImageGenProvider(StaticImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
             return prompt_required_error("minimax", aspect)
-        base_url, api_key = _resolve_endpoint()
+        base_url, api_key = _endpoint()
         if not api_key:
             return error_factory("minimax", aspect)(
-                "MINIMAX_API_KEY not set (or the variable named by image_gen.minimax.key_env is empty). "
-                "Run `hermes tools` → Image Generation → MiniMax to configure, or set MINIMAX_API_KEY. "
-                "For the CN endpoint, set image_gen.minimax.base_url to https://api.minimaxi.com/v1 "
-                "and image_gen.minimax.key_env to MINIMAX_CN_API_KEY.",
+                "MINIMAX_API_KEY not set. Run `hermes tools` → Image Generation → MiniMax "
+                "to configure, or set MINIMAX_API_KEY.",
                 "auth_required")
 
-        model_id, _meta = _resolve_model()
-        area = _resolve_area()
-        sources = collect_source_images(image_url, reference_image_urls, limit=_MAX_SOURCE_IMAGES)
+        model_id, _meta = resolve_static_model(
+            MODELS, DEFAULT_MODEL, env_var="MINIMAX_IMAGE_MODEL", config_key="minimax")
+        area = _area()
+        sources = collect_source_images(image_url, reference_image_urls, limit=16)
         is_edit = bool(sources)
         fail = error_factory("minimax", aspect, model=model_id, prompt=prompt)
-        payload = _payload(model_id, prompt, aspect, area)
+        payload = {
+            "model": model_id, "prompt": prompt, "n": 1,
+            "aspect_ratio": _ASPECT_RATIOS.get(aspect, "1:1"), "area": area,
+        }
         if is_edit:
             try:
                 payload["images"] = [{"image_url": _image_url_field(ref)} for ref in sources]
@@ -157,7 +118,9 @@ class MiniMaxImageGenProvider(StaticImageGenProvider):
         base_resp = result.get("base_resp") if isinstance(result, dict) else None
         if isinstance(base_resp, dict) and base_resp.get("status_code") not in (0, None):
             msg = base_resp.get("status_msg") or base_resp.get("status_code")
-            return fail(f"MiniMax image {'editing' if is_edit else 'generation'} failed: {msg}", "api_error")
+            return fail(
+                f"MiniMax image {'editing' if is_edit else 'generation'} failed: {msg}",
+                "api_error")
 
         data = (result or {}).get("data") or []
         if not data:
@@ -171,10 +134,9 @@ class MiniMaxImageGenProvider(StaticImageGenProvider):
         if err:
             return err
         return success_response(
-            image=image_ref, model=model_id, prompt=prompt, aspect_ratio=aspect, provider="minimax",
-            modality="image" if is_edit else "text", extra={"area": area})
+            image=image_ref, model=model_id, prompt=prompt, aspect_ratio=aspect,
+            provider="minimax", modality="image" if is_edit else "text", extra={"area": area})
 
 
 def register(ctx) -> None:
-    """Plugin entry point — wire ``MiniMaxImageGenProvider`` into the registry."""
     ctx.register_image_gen_provider(MiniMaxImageGenProvider())

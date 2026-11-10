@@ -1839,13 +1839,10 @@ stt:
 #   deepinfra:
 #     # Leave `model` blank for the first live `image-gen`-tagged result.
 #     model: ""
-#   # MiniMax H3-Image (text-to-image and editing). Default area is 4K.
+#   # MiniMax H3-Image (default area 4K). CN: set base_url to https://api.minimaxi.com/v1
 #   # provider: "minimax"
 #   # minimax:
 #   #   model: MiniMax-H3-Image
-#   #   # area: "4K"   # 1K / 2K / 4K
-#   #   # base_url: "https://api.minimax.io/v1"  # CN: https://api.minimaxi.com/v1
-#   #   # key_env: MINIMAX_API_KEY
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)

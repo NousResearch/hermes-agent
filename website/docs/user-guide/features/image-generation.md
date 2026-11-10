@@ -250,34 +250,12 @@ name that matches no `providers:` entry is logged as a warning and ignored.
 ## MiniMax: H3-Image
 
 The **MiniMax** provider generates and edits images with `MiniMax-H3-Image`
-using `MINIMAX_API_KEY`. Select it through `hermes tools` → Image Generation → MiniMax, or set:
-
-```bash
-hermes config set image_gen.provider minimax
-```
-
-```yaml
-image_gen:
-  provider: minimax
-  minimax:
-    model: MiniMax-H3-Image
-    # area: 4K                              # 1K, 2K, or 4K (default 4K)
-    # base_url: https://api.minimax.io/v1   # CN: https://api.minimaxi.com/v1
-    # key_env: MINIMAX_API_KEY              # CN: MINIMAX_CN_API_KEY
-```
-
-Only the variable *name* is stored in `config.yaml`; the secret stays in `.env`
-or the process environment. Availability checks and generation use the same
-resolution, so a configured `key_env` is enough — no `MINIMAX_API_KEY` is
-required when `key_env` points at another variable.
-
-Hermes aspect ratios map to H3's native `aspect_ratio` plus `area` (not the
-OpenAI-compatible 1024-level `size` trio): `landscape` → `16:9`, `square` → `1:1`,
-`portrait` → `9:16`. Default `area` is `4K`; set `image_gen.minimax.area` or
-`MINIMAX_IMAGE_AREA` to `1K` or `2K` to request a smaller output. Requests are
-not retried (the H3 image API is not idempotent) and use a timeout above 600
-seconds. Editing accepts up to 16 reference images (`image_url` plus
-`reference_image_urls`) as HTTPS URLs, data URIs, or local paths.
+using `MINIMAX_API_KEY`. Select it through `hermes tools` → Image Generation → MiniMax,
+or set `image_gen.provider: minimax`. Hermes `landscape` / `square` / `portrait`
+map to H3 `aspect_ratio` `16:9` / `1:1` / `9:16` plus `area` (default `4K`).
+Optional `image_gen.minimax.area` (`1K` / `2K` / `4K`) and
+`image_gen.minimax.base_url` (CN: `https://api.minimaxi.com/v1`). Requests are
+not retried and use a 610s read timeout.
 
 ## Usage
 

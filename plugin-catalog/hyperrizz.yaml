@@ -1,7 +1,7 @@
 name: hyperrizz
 title: Hyperrizz
 repo: https://github.com/mojomast/hyperrizz
-sha: 1675e52a9f9bdeb6bed3b1c666ce4436e879d62a
+sha: 35c482e22413ee43c74955bd6da7fe7b053cdd9b
 subdir: ""
 description: >-
   Agent-led HyperFrames films with a live review pane, frame notes, revisions and
@@ -18,12 +18,12 @@ tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/mojomast/hyperrizz#readme
-version: "2.0.1"
-image: https://raw.githubusercontent.com/mojomast/hyperrizz/1675e52a9f9bdeb6bed3b1c666ce4436e879d62a/docs/assets/hermes-review-pane.png
+version: "2.1.0"
+image: https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/assets/hermes-review-pane.png
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hyperrizz/1675e52a9f9bdeb6bed3b1c666ce4436e879d62a/docs/assets/hermes-review-pane.png
-  - https://raw.githubusercontent.com/mojomast/hyperrizz/1675e52a9f9bdeb6bed3b1c666ce4436e879d62a/docs/assets/hyperframes-studio.jpg
-  - https://raw.githubusercontent.com/mojomast/hyperrizz/1675e52a9f9bdeb6bed3b1c666ce4436e879d62a/docs/examples/broadcast-lab.png
+  - https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/assets/hermes-review-pane.png
+  - https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/assets/hyperframes-studio.jpg
+  - https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/examples/broadcast-lab.png
 readme: true
 platforms: [linux, macos]
 known_issues:

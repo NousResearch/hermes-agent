@@ -1,5 +1,5 @@
 """Session-persistent Python kernels for execute_code: one child per (owner, mode,
-interpreter, cwd, tool-set), one code cell per call, state survives across calls.
+interpreter, tool-set), one code cell per call, state survives across cwd changes.
 
 Constraints, in order: (1) SAME security envelope as per-call (``_build_child_env``
 scrubbing, ``_rpc_server_loop`` token + per-cell tool budget, ANSI strip + secret
@@ -58,6 +58,8 @@ def run_cell(request, execution_count):
     status, trace = "ok", ""
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            if request.get("cwd"):
+                os.chdir(request["cwd"])
             exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
     except SystemExit as exc:
         status, trace = "exit", "SystemExit: " + repr(exc.code)
@@ -808,9 +810,9 @@ def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
 ) -> str:
-    """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
+    """Run one cell in the (owner, mode, python, tools) session kernel. The owner is the
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
-    key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
+    key = (_resolve_owner(task_id) or "", mode, child_python, tuple(sorted(sandbox_tools)))
     exec_start = time.monotonic()
     from agent.delegation_context import is_delegated_child_context
     kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
@@ -847,7 +849,7 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
             kernel.cell_log_start = len(kernel.tool_call_log)
             kernel.raw.drain(), kernel.stderr.drain()  # raw output leaked between cells belongs to no cell
             kernel.cell_authority = authority
-            kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))
+            kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code, "cwd": child_cwd}) + "\n").encode("utf-8"))
             kernel.proc.stdin.flush()
             status, payload = _await_cell(kernel, timeout, is_interrupted)
             result = _cell_result(

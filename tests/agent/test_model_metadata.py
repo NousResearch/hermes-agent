@@ -25,7 +25,6 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_model_context_length,
-    get_next_probe_tier,
     get_cached_context_length,
     parse_context_limit_from_error,
     save_context_length,
@@ -1552,15 +1551,6 @@ class TestContextProbeTiers:
     def test_tiers_descending(self):
         for i in range(len(CONTEXT_PROBE_TIERS) - 1):
             assert CONTEXT_PROBE_TIERS[i] > CONTEXT_PROBE_TIERS[i + 1]
-
-
-class TestGetNextProbeTier:
-    def test_from_256k(self):
-        assert get_next_probe_tier(CONTEXT_PROBE_TIERS[0]) == CONTEXT_PROBE_TIERS[1]
-
-
-    def test_from_8k_returns_none(self):
-        assert get_next_probe_tier(CONTEXT_PROBE_TIERS[-1]) is None
 
 
 # =========================================================================

@@ -251,7 +251,7 @@ kimi:model-name
 
 ### `agent/auxiliary_client.py`
 
-如果这是一个直接 API key provider，在 `_API_KEY_PROVIDER_AUX_MODELS` 中添加一个廉价/快速的默认辅助模型。
+如果这是一个直接 API key provider，在该 provider 的 `ProviderProfile` 上将 `default_aux_model` 设为一个廉价/快速的模型。
 
 辅助任务包括：
 
@@ -447,7 +447,7 @@ provider 路由等字段只属于支持它们的 provider。
 - `_model_flow_`
 - `select_provider_and_model`
 - `api_mode`
-- `_API_KEY_PROVIDER_AUX_MODELS`
+- `default_aux_model`
 - `self.client.`
 
 ## 相关文档

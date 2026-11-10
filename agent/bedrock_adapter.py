@@ -216,11 +216,6 @@ def parse_bedrock_openai_model_id(model_id: str) -> Optional[tuple[str, str]]:
     return (normalized, prefix) if normalized in _BEDROCK_OPENAI_MODEL_IDS_LOWER else None
 
 
-def is_openai_bedrock_model(model_id: str) -> bool:
-    """True for Bedrock-hosted OpenAI GPT models in any endpoint form (GPT-OSS excluded)."""
-    return parse_bedrock_openai_model_id(model_id) is not None
-
-
 def bedrock_openai_uses_mantle(model_id: str) -> bool:
     """True when the model is served by Mantle's OpenAI Responses endpoint: the bare in-Region ID.
     A geo/global profile ID is a bedrock-runtime ID (Mantle rejects it) and rides Converse."""
@@ -1158,11 +1153,6 @@ def normalize_converse_response(response: dict) -> SimpleNamespace:
 
 
 # --- Streaming response conversion ---
-
-def normalize_converse_stream_events(event_stream) -> SimpleNamespace:
-    """Consume a ConverseStream event stream (no callbacks) → same shape as ``normalize_converse_response()``."""
-    return stream_converse_with_callbacks(event_stream)
-
 
 def stream_converse_with_callbacks(
     event_stream, on_text_delta=None, on_tool_start=None, on_reasoning_delta=None,

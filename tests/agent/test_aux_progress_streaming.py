@@ -20,7 +20,6 @@ from agent.auxiliary_client import (
     _ClassifiedAttempt,
     _CodexCompletionsAdapter,
     _acreate_with_progress,
-    _acreate_with_stream,
     _aggregate_chat_stream,
     _aggregate_chat_stream_async,
     _anthropic_event_has_content,
@@ -743,7 +742,7 @@ class TestProviderRequiresStream:
 
     def test_config_marker_matches_custom_endpoint(self):
         with patch(
-            "hermes_cli.config.load_config",
+            "hermes_cli.config.load_config_readonly",
             return_value={"auxiliary": {"stream_only_base_urls": ["my-proxy.example.com"]}},
         ):
             assert _provider_requires_stream(
@@ -825,36 +824,6 @@ class TestAsyncStreamAggregation:
         assert result.choices[0].finish_reason == "tool_calls"
         assert stream.closed is True
 
-    @pytest.mark.asyncio
-    async def test_acreate_with_stream_passes_stream_kwargs(self):
-        calls = []
-
-        class _AsyncStream:
-            def __init__(self, items):
-                self._items = list(items)
-
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                if not self._items:
-                    raise StopAsyncIteration
-                return self._items.pop(0)
-
-        class _AsyncClient:
-            def __init__(self):
-                completions = SimpleNamespace(create=self._create)
-                self.chat = SimpleNamespace(completions=completions)
-
-            async def _create(self, **kwargs):
-                calls.append(kwargs)
-                return _AsyncStream([_chunk(content="ok", finish_reason="stop")])
-
-        result = await _acreate_with_stream(
-            _AsyncClient(), {"model": "m1", "messages": [], "timeout": 30},
-        )
-        assert calls[0]["stream"] is True
-        assert result.choices[0].message.content == "ok"
     @pytest.mark.asyncio
     async def test_async_dispatch_only_auth_failure_does_not_tick_progress(self):
         """Async twin of the #114938 pin: a 401 dispatch must not reset the

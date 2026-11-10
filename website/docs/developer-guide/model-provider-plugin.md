@@ -499,11 +499,11 @@ Only a **user** plugin (`$HERMES_HOME/plugins/model-providers/` or an installed 
 
 ## api_mode selection
 
-Four built-in values are recognized (`chat_completions`, `codex_responses`, `anthropic_messages`, `bedrock_converse`), plus any mode a plugin registers itself. Hermes picks one based on:
+Five built-in values are recognized (`chat_completions`, `codex_responses`, `anthropic_messages`, `bedrock_converse`, and the opt-in `codex_app_server`), plus any mode a plugin registers itself. Hermes picks one based on:
 
 1. User explicit override (`config.yaml` `model.api_mode` when set)
 2. OpenCode's per-model dispatch (`opencode_model_api_mode` for Zen and Go)
-3. URL auto-detection — `/anthropic` suffix → `anthropic_messages`, `api.openai.com` → `codex_responses`, `api.x.ai` → `codex_responses`, `/coding` on Kimi domains → `chat_completions`
+3. URL auto-detection — `/anthropic` suffix → `anthropic_messages`, `api.openai.com` → `codex_responses`, `api.x.ai` → `codex_responses`, `api.kimi.com/coding` → `anthropic_messages`
 4. **Profile `api_mode`** as a fallback when URL detection finds nothing
 5. Default `chat_completions`
 

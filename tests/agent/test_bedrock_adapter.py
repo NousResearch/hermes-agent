@@ -468,7 +468,7 @@ class TestNormalizeConverseStreamEvents:
     """Test Bedrock ConverseStream event → OpenAI format conversion."""
 
     def test_text_stream(self):
-        from agent.bedrock_adapter import normalize_converse_stream_events
+        from agent.bedrock_adapter import stream_converse_with_callbacks
         events = {"stream": [
             {"messageStart": {"role": "assistant"}},
             {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
@@ -478,14 +478,14 @@ class TestNormalizeConverseStreamEvents:
             {"messageStop": {"stopReason": "end_turn"}},
             {"metadata": {"usage": {"inputTokens": 5, "outputTokens": 3}}},
         ]}
-        result = normalize_converse_stream_events(events)
+        result = stream_converse_with_callbacks(events)
         assert result.choices[0].message.content == "Hello, world!"
         assert result.choices[0].finish_reason == "stop"
         assert result.usage.prompt_tokens == 5
         assert result.usage.completion_tokens == 3
 
     def test_redacted_reasoning_stream_is_preserved(self):
-        from agent.bedrock_adapter import normalize_converse_stream_events
+        from agent.bedrock_adapter import stream_converse_with_callbacks
 
         events = {"stream": [
             {"messageStart": {"role": "assistant"}},
@@ -499,14 +499,14 @@ class TestNormalizeConverseStreamEvents:
             {"metadata": {"usage": {"inputTokens": 2, "outputTokens": 3}}},
         ]}
 
-        result = normalize_converse_stream_events(events)
+        result = stream_converse_with_callbacks(events)
         assert result.choices[0].message.reasoning_details == [{
             "type": "redacted_thinking",
             "data": "c3RyZWFtLXNlY3JldA==",
         }]
 
     def test_tool_use_stream(self):
-        from agent.bedrock_adapter import normalize_converse_stream_events
+        from agent.bedrock_adapter import stream_converse_with_callbacks
         events = {"stream": [
             {"messageStart": {"role": "assistant"}},
             {"contentBlockStart": {"contentBlockIndex": 0, "start": {
@@ -522,7 +522,7 @@ class TestNormalizeConverseStreamEvents:
             {"messageStop": {"stopReason": "tool_use"}},
             {"metadata": {"usage": {"inputTokens": 10, "outputTokens": 8}}},
         ]}
-        result = normalize_converse_stream_events(events)
+        result = stream_converse_with_callbacks(events)
         assert result.choices[0].finish_reason == "tool_calls"
         tc = result.choices[0].message.tool_calls
         assert len(tc) == 1
@@ -552,8 +552,8 @@ class TestNormalizeConverseStreamEvents:
         the text into one block per delta and let the toolUse start (index 1) overwrite the second fragment
         and sort into the middle — a ``[text, toolUse, text...]`` sidecar Claude 5 on Bedrock rejects on
         replay as "does not support assistant message prefill"."""
-        from agent.bedrock_adapter import normalize_converse_stream_events
-        result = normalize_converse_stream_events({"stream": list(self._LIVE_TEXT_THEN_TOOL_EVENTS)})
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        result = stream_converse_with_callbacks({"stream": list(self._LIVE_TEXT_THEN_TOOL_EVENTS)})
         msg = result.choices[0].message
         assert msg.content == "I'll echo banana now."
         assert msg.bedrock_content_blocks == [
@@ -565,13 +565,13 @@ class TestNormalizeConverseStreamEvents:
     def test_events_without_content_block_index_fall_back_to_arrival_order(self):
         """Proxies/test doubles may omit contentBlockIndex: deltas continue the current block, a start opens a
         new one, so text still lands before the toolUse instead of being overwritten by it."""
-        from agent.bedrock_adapter import normalize_converse_stream_events
+        from agent.bedrock_adapter import stream_converse_with_callbacks
         events = [{k: {kk: vv for kk, vv in v.items() if kk != "contentBlockIndex"} for k, v in e.items()}
                   for e in self._LIVE_TEXT_THEN_TOOL_EVENTS[:-2]]
         # Text after the tool's stop must open its own slot, not land on the closed tool block.
         events += [{"contentBlockDelta": {"delta": {"text": "done"}}}, {"contentBlockStop": {}},
                    {"messageStop": {"stopReason": "tool_use"}}]
-        msg = normalize_converse_stream_events({"stream": events}).choices[0].message
+        msg = stream_converse_with_callbacks({"stream": events}).choices[0].message
         assert msg.content == "I'll echo banana now.\ndone"
         assert [list(b) for b in msg.bedrock_content_blocks] == [["text"], ["toolUse"], ["text"]]
         assert msg.bedrock_content_blocks[1]["toolUse"]["input"] == {"s": "banana"}
@@ -1090,23 +1090,23 @@ class TestOpenAIBedrockClassifier:
 
     @pytest.mark.parametrize("model_id", _openai_bedrock_id_forms())
     def test_every_allowlisted_id_form_is_a_bedrock_openai_model(self, model_id):
-        from agent.bedrock_adapter import is_openai_bedrock_model
-        assert is_openai_bedrock_model(model_id) is True
+        from agent.bedrock_adapter import parse_bedrock_openai_model_id
+        assert parse_bedrock_openai_model_id(model_id) is not None
 
     @pytest.mark.parametrize("model_id", [
         "openai.gpt-6-astra", "openai.gpt-6-sol", "openai.gpt-6-luna", "openai.gpt-6.1-sol",
     ])
     def test_gpt6_generation_is_allowlisted(self, model_id):
-        from agent.bedrock_adapter import is_openai_bedrock_model
-        assert is_openai_bedrock_model(model_id) is True
+        from agent.bedrock_adapter import parse_bedrock_openai_model_id
+        assert parse_bedrock_openai_model_id(model_id) is not None
 
     @pytest.mark.parametrize("model_id", [
         "openai.gpt-oss-120b", "us.openai.gpt-oss-120b-1:0", "anthropic.claude-opus-5",
         "us.anthropic.claude-opus-5", "openai.gpt-99", "bogus.openai.gpt-6.1-sol", "", None,
     ])
     def test_non_allowlisted_ids_stay_off_the_openai_route(self, model_id):
-        from agent.bedrock_adapter import is_openai_bedrock_model
-        assert is_openai_bedrock_model(model_id) is False
+        from agent.bedrock_adapter import parse_bedrock_openai_model_id
+        assert parse_bedrock_openai_model_id(model_id) is None
 
 
 class TestBedrockContextLength:
@@ -1771,7 +1771,7 @@ CROSS_REGION_REJECTION = (
 
 def _kimi_turn_history():
     """Turn 1 as the ConverseStream path captures it: signed thinking, a sealed blob, then a tool call."""
-    from agent.bedrock_adapter import normalize_converse_stream_events
+    from agent.bedrock_adapter import stream_converse_with_callbacks
     events = [
         {"messageStart": {"role": "assistant"}},
         {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "let me think"}}}},
@@ -1785,7 +1785,7 @@ def _kimi_turn_history():
         {"messageStop": {"stopReason": "tool_use"}},
         {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1}}},
     ]
-    msg = normalize_converse_stream_events({"stream": events}).choices[0].message
+    msg = stream_converse_with_callbacks({"stream": events}).choices[0].message
     return [
         {"role": "user", "content": "go"},
         {"role": "assistant", "content": None, "reasoning_content": msg.reasoning_content,

@@ -1210,11 +1210,6 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     drop_context_cache_rows({key, f"{model}@{base_url}", f"{key}/"}, key)
 
 
-def get_next_probe_tier(current_length: int) -> Optional[int]:
-    """Next lower probe tier, or None if already at minimum."""
-    return next((tier for tier in CONTEXT_PROBE_TIERS if tier < current_length), None)
-
-
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any.
 

@@ -290,11 +290,11 @@ register_provider(ProviderProfile(
 
 ## api_mode 选择
 
-系统识别四个值。Hermes 的选择依据：
+系统识别五个内置值（`chat_completions`、`codex_responses`、`anthropic_messages`、`bedrock_converse`，以及需显式启用的 `codex_app_server`），另加插件自行注册的模式。Hermes 的选择依据：
 
 1. 用户显式覆盖（`config.yaml` 中设置了 `model.api_mode`）
 2. OpenCode 的按模型分发（Zen 和 Go 的 `opencode_model_api_mode`）
-3. URL 自动检测——`/anthropic` 后缀 → `anthropic_messages`，`api.openai.com` → `codex_responses`，`api.x.ai` → `codex_responses`，Kimi 域名上的 `/coding` → `chat_completions`
+3. URL 自动检测——`/anthropic` 后缀 → `anthropic_messages`，`api.openai.com` → `codex_responses`，`api.x.ai` → `codex_responses`，`api.kimi.com/coding` → `anthropic_messages`
 4. **Profile 的 `api_mode`** 作为 URL 检测无结果时的回退
 5. 默认 `chat_completions`
 

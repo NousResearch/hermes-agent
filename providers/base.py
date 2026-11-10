@@ -4,9 +4,9 @@ A ProviderProfile declares everything about an inference provider in one place:
 auth, endpoints, client quirks, request-time quirks. The transport reads this
 instead of receiving 20+ boolean flags.
 
-Provider profiles are DECLARATIVE — they describe the provider's behavior.
-They do NOT own client construction, credential rotation, or streaming.
-Those stay on AIAgent.
+Provider profiles are mostly declarative. Optional hooks let a profile build its
+own client (create_client) and own credential seeding and refresh; streaming and
+retries stay on AIAgent.
 """
 
 from __future__ import annotations

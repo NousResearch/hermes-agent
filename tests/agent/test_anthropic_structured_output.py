@@ -13,7 +13,7 @@ def _capture_anthropic_kwargs(
 ) -> dict:
     from agent.auxiliary_client import (
         _AnthropicCompletionsAdapter,
-        _AsyncAnthropicCompletionsAdapter,
+        _AsyncCompletionsAdapter,
     )
 
     captured = {}
@@ -21,7 +21,7 @@ def _capture_anthropic_kwargs(
         MagicMock(name="anthropic_client"), model, is_oauth=False,
     )
     adapter = (
-        _AsyncAnthropicCompletionsAdapter(sync_adapter)
+        _AsyncCompletionsAdapter(sync_adapter)
         if async_call
         else sync_adapter
     )

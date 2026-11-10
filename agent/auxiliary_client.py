@@ -835,9 +835,6 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: dict[str, str] = {
     # No "deepinfra": its aux model lives on the ProviderProfile (read first).
 }
 
-# Legacy alias for callers not yet using _get_aux_model_for_provider().
-_API_KEY_PROVIDER_AUX_MODELS: dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALLBACK
-
 # Tasks that may opt into ``auxiliary.<task>.prefer_fast_model``.
 _FAST_MODEL_TASKS: frozenset = frozenset({"title_generation"})
 
@@ -1656,9 +1653,6 @@ class _AsyncAuxiliaryClientBase:
             # reusing the closed transport, failing every subsequent async aux call with 'Connection error'
             # until the gateway restarts.
             self._real_client = sync_wrapper._real_client
-
-
-_AsyncAnthropicCompletionsAdapter = _AsyncCompletionsAdapter  # imported by tests
 
 
 class CodexAuxiliaryClient:
@@ -4666,13 +4660,12 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
     default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
     final_model = _normalize_resolved_model(model or default_model, provider) or default_model
     if bedrock_openai_uses_mantle(final_model):
-        # Module-level lazy ``OpenAI`` proxy on purpose so tests can patch("agent.auxiliary_client.OpenAI").
         client_kwargs: dict[str, Any] = {
             "api_key": resolve_bedrock_bearer_token() or "aws-sdk",
             "base_url": bedrock_openai_base_url(region),
         }
         configure_bedrock_openai_client_kwargs(client_kwargs)
-        client = OpenAI(**client_kwargs)
+        client = _create_openai_client(**client_kwargs)
         logger.debug("resolve_provider_client: bedrock-openai (%s, %s)", final_model, region)
         return (client if raw_codex else CodexAuxiliaryClient(client, final_model)), final_model
     base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
@@ -4706,9 +4699,7 @@ def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[
         return None, None
     final_model = _normalize_resolved_model(model or "google/gemini-3-flash-preview", provider)
     try:
-        # Aliased import: a bare `from openai import OpenAI` would shadow the module-level lazy proxy.
-        from openai import OpenAI as _VertexOpenAI
-        client = _VertexOpenAI(api_key=token, base_url=base_url)
+        client = _create_openai_client(api_key=token, base_url=base_url)
     except Exception as exc:
         logger.warning("resolve_provider_client: cannot create Vertex client: %s", exc)
         return None, None
@@ -6857,8 +6848,8 @@ def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:
     if base_url_host_matches(_url, "copilot.tencent.com") or _is_managed_local_endpoint(_url):
         return True
     try:
-        from hermes_cli.config import load_config
-        markers = (load_config() or {}).get("auxiliary", {}).get("stream_only_base_urls") or []
+        from hermes_cli.config import load_config_readonly
+        markers = (load_config_readonly() or {}).get("auxiliary", {}).get("stream_only_base_urls") or []
         if isinstance(markers, (list, tuple)):
             return any(
                 isinstance(marker, str) and marker.strip() and marker.strip().lower() in _url
@@ -7170,15 +7161,6 @@ async def _aggregate_chat_stream_async(
             with contextlib.suppress(Exception):
                 await pending
     return acc.finish()
-
-
-async def _acreate_with_stream(client: Any, kwargs: dict[str, Any], task: Optional[str] = None) -> Any:
-    """Async create() for stream-only providers: ``stream=True`` + aggregate the async chunks."""
-    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs, client)
-    chunks = await client.chat.completions.create(**stream_kwargs)
-    if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
-        return chunks
-    return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
 
 
 def _async_client_streams_internally(client: Any) -> bool:

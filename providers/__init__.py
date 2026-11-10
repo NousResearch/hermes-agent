@@ -766,10 +766,7 @@ def _discover_entry_point_providers() -> None:
     ``register_provider()`` — a pip package cannot hijack a first-party
     provider name.
     """
-    try:
-        import importlib.metadata as _md
-    except Exception:  # pragma: no cover — importlib.metadata always present ≥3.8
-        return
+    import importlib.metadata as _md
 
     # Same opt-in gate as the general PluginManager: only entry points named
     # in ``plugins.enabled`` load, and ``plugins.disabled`` always wins.
@@ -785,12 +782,7 @@ def _discover_entry_point_providers() -> None:
 
     group = "hermes_agent.plugins"
     try:
-        eps = _md.entry_points()
-        # Python 3.10+ exposes .select(); older returns a dict-like mapping.
-        if hasattr(eps, "select"):
-            group_eps = list(eps.select(group=group))
-        else:  # pragma: no cover — legacy interpreters
-            group_eps = list(eps.get(group, []))  # type: ignore[attr-defined]
+        group_eps = list(_md.entry_points().select(group=group))
     except Exception as exc:
         logger.debug("entry-point provider scan skipped: %s", exc)
         return

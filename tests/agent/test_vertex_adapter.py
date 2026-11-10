@@ -271,3 +271,18 @@ def test_metadata_preserving_rotation_invalidates_creds_cache(vertex_adapter, mo
     (key2,) = vertex_adapter._creds_cache
     assert key2 != key1, "content change must produce a new cache key"
     assert vertex_adapter._creds_cache[key2][0] is not creds_obj_1
+
+
+def test_auxiliary_vertex_client_leaves_retries_to_hermes(monkeypatch):
+    """The SDK's internal retries would multiply every auxiliary attempt on a hung endpoint."""
+    import agent.vertex_adapter as va
+    from agent.auxiliary_client import resolve_provider_client
+
+    monkeypatch.setattr(va, "has_vertex_credentials", lambda: True)
+    monkeypatch.setattr(va, "get_vertex_config", lambda: (
+        "ya29.FAKE", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"))
+    client, model = resolve_provider_client("vertex", "google/gemini-3-flash-preview")
+
+    assert model == "google/gemini-3-flash-preview"
+    assert client.max_retries == 0
+    client.close()

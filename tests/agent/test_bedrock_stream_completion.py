@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from agent.bedrock_adapter import normalize_converse_stream_events
+from agent.bedrock_adapter import stream_converse_with_callbacks
 
 
 def _frame(kind, payload):
@@ -76,7 +76,7 @@ def test_bedrock_wire_requires_message_stop(terminal):
             messages=[{"role": "user", "content": [{"text": "hello"}]}],
         )
         if terminal:
-            result = normalize_converse_stream_events(response)
+            result = stream_converse_with_callbacks(response)
             assert result.choices[0].message.content == "partial answer"
             assert result.choices[0].finish_reason == "stop"
         else:
@@ -85,7 +85,7 @@ def test_bedrock_wire_requires_message_stop(terminal):
             with pytest.raises(
                 EmptyStreamError, match="(?i)(incomplete|messageStop|truncat)"
             ):
-                normalize_converse_stream_events(response)
+                stream_converse_with_callbacks(response)
     finally:
         client.close()
         server.shutdown()

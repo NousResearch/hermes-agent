@@ -256,7 +256,7 @@ Two files matter here:
 
 ### `agent/auxiliary_client.py`
 
-Add a cheap / fast default aux model to `_API_KEY_PROVIDER_AUX_MODELS` if this is a direct API-key provider.
+Set `default_aux_model` on the provider's `ProviderProfile` to a cheap / fast model if this is a direct API-key provider.
 
 Auxiliary tasks include things like:
 
@@ -454,7 +454,7 @@ If you are hunting for all the places a provider touches, search these symbols:
 - `_model_flow_`
 - `select_provider_and_model`
 - `api_mode`
-- `_API_KEY_PROVIDER_AUX_MODELS`
+- `default_aux_model`
 - `self.client.`
 
 ## Related docs

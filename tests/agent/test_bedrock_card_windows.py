@@ -56,10 +56,10 @@ class TestCardSizedOpenAIModels:
     @pytest.mark.parametrize("bare", ["openai.gpt-6.1-terra", "openai.gpt-5.4"])
     def test_terra_and_gpt54_route_like_their_siblings(self, bare):
         """Cards: bare ID on bedrock-mantle only, us./global. profiles on bedrock-runtime (Converse)."""
-        from agent.bedrock_adapter import bedrock_openai_uses_mantle, is_openai_bedrock_model
-        assert is_openai_bedrock_model(bare) and bedrock_openai_uses_mantle(bare)
+        from agent.bedrock_adapter import bedrock_openai_uses_mantle, parse_bedrock_openai_model_id
+        assert (parse_bedrock_openai_model_id(bare) is not None) and bedrock_openai_uses_mantle(bare)
         for profile in (f"us.{bare}", f"global.{bare}"):
-            assert is_openai_bedrock_model(profile) and not bedrock_openai_uses_mantle(profile)
+            assert (parse_bedrock_openai_model_id(profile) is not None) and not bedrock_openai_uses_mantle(profile)
 
     def test_terra_keeps_the_gpt6_reasoning_replay_policy(self):
         from agent.bedrock_adapter import _converse_replay_policy

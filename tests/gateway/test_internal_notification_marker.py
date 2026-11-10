@@ -175,11 +175,12 @@ async def test_failed_early_fallback_row_is_marked_for_internal_event(
         }
     )
 
-    await runner._handle_message_with_agent(
+    response = await runner._handle_message_with_agent(
         _event(internal=True, text="[ASYNC DELEGATION BATCH COMPLETE]"),
         _source(), SESSION_KEY, 1,
     )
 
+    assert response == ""
     entries = _user_entries(runner.session_store.append_to_transcript.call_args_list)
     assert entries, "expected a fallback user-row write"
     for entry in entries:
@@ -203,10 +204,11 @@ async def test_failed_early_fallback_row_is_unmarked_for_real_user(
         }
     )
 
-    await runner._handle_message_with_agent(
+    response = await runner._handle_message_with_agent(
         _event(internal=False), _source(), SESSION_KEY, 1,
     )
 
+    assert response
     entries = _user_entries(runner.session_store.append_to_transcript.call_args_list)
     assert entries
     for entry in entries:

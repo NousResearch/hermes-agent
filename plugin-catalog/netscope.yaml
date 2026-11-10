@@ -1,0 +1,29 @@
+name: netscope
+title: netScope
+repo: https://github.com/Mxhi-04/hermes-netscope
+sha: 4d3823e024ef09a75419a8f5fe22fdb7b322b747
+version: "0.1.0"
+description: >-
+  Offline pcap/pcapng network capture analyzer with interactive HTML reports,
+  protocol graphs, traffic replay, and deterministic anomaly heuristics.
+  Disclosure: netScope makes no network calls, runs no shell commands or subprocesses,
+  starts no background processes, stores or reads no credentials, and sends no telemetry.
+  It reads only the capture file the user names (a read outside the plugin's own data)
+  and writes HTML reports only under $HERMES_HOME/netscope/reports/. Reports contain IP
+  addresses and DNS/SNI/HTTP-host names found in the capture and should be treated as sensitive.
+  Packet payloads are not stored or displayed. It does not auto-update.
+maintainer: Mxhi-04
+tier: community
+category: tools
+docs_url: https://github.com/Mxhi-04/hermes-netscope/blob/4d3823e024ef09a75419a8f5fe22fdb7b322b747/README.md
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - netscope_analyze
+    - netscope_query
+    - netscope_visualize
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

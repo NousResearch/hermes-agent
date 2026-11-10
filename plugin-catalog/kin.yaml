@@ -2,7 +2,7 @@ name: kin
 title: Avatar
 repo: https://github.com/vdimarco/hermes-kin
 sha: 83f8d9da73d060185fcf66ce151f28d5c27e3ecd
-description: "Gives Hermes Desktop a face. Pick one of thirteen original characters, six 3D busts and seven 2D cartoons, each with its own voice. It watches your sessions, frowns when a step fails, and grins when a turn finishes. An optional overlay adds a plain-English task drawer, voice input, and one-click screen diagnosis."
+description: "Gives Hermes Desktop a face. Pick one of thirteen original characters, six 3D busts and seven 2D cartoons, each with its own voice. It watches your sessions, frowns when a step fails, and grins when a turn finishes. An optional overlay adds a plain-English task drawer, voice input, and one-click screen diagnosis. Disclosure — the optional overlay is a separate Electron app you install with npm and run yourself. It reads Hermes's state.db (read-only), processes.json and the latest terminal output to draw its task drawer. When you click it, it captures the active window or terminal with the OS screenshot tool, OCRs it with tesseract, and submits that text to Hermes as a prompt. Switching persona runs `hermes config set` for tts.openai.voice and voice.gpt_live.voice, which changes Hermes's TTS voice everywhere. While the overlay runs, the first 280 characters of each reply are spoken through Hermes's configured TTS provider, and opt-in mic audio is transcribed by local whisper.cpp or Hermes's configured STT provider."
 maintainer: vdimarco
 tier: community
 category: desktop

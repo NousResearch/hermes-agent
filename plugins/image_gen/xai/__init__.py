@@ -56,7 +56,7 @@ _XAI_ASPECT_RATIOS = {
 }
 _XAI_RESOLUTIONS = {"1k", "2k"}
 DEFAULT_RESOLUTION = "1k"
-_MAX_SOURCE_IMAGES = 3
+_MAX_SOURCE_IMAGES = 5
 _REQUEST_TIMEOUT = 120
 _REMOTE_PREFIXES = ("http://", "https://", "data:")
 _FILE_OUTPUT_EXTRA_KEYS = (
@@ -191,7 +191,7 @@ def _xai_image_field(source: str) -> dict[str, str]:
 def _check_source_images(
     source_images: list[str], image_url: Optional[str], fail: Any
 ) -> Optional[dict[str, Any]]:
-    """Edit-request guard: at most 3 sources, each a remote URL/data URI or an existing local file."""
+    """Edit-request guard: at most 5 sources, each a remote URL/data URI or an existing local file."""
     if len(source_images) > _MAX_SOURCE_IMAGES:
         return fail(
             f"xAI image editing supports at most {_MAX_SOURCE_IMAGES} source images", "too_many_references",
@@ -236,9 +236,9 @@ class XAIImageGenProvider(StaticImageGenProvider):
         }
 
     def capabilities(self) -> dict[str, Any]:
-        # /v1/images/edits accepts up to 3 total source images.
+        # /v1/images/edits accepts up to 5 total source images (live: 6 → 400 "at most 5").
         return {
-            "modalities": ["text", "image"], "max_reference_images": 2,
+            "modalities": ["text", "image"], "max_reference_images": _MAX_SOURCE_IMAGES - 1,
             "max_source_images": _MAX_SOURCE_IMAGES,
         }
 
@@ -297,7 +297,10 @@ class XAIImageGenProvider(StaticImageGenProvider):
             endpoint_url = f"{base_url}/images/generations"
         if storage_options is not None:
             payload["storage_options"] = storage_options
-
+        else:
+            # Without storage the URL is a short-lived CDN link we download anyway; inline bytes
+            # skip that fetch and are the only format Zero Data Retention teams may request.
+            payload["response_format"] = "b64_json"
         fail = error_factory(provider_name, aspect, model=model_id, prompt=prompt)
         result, failure = post_json(
             endpoint_url, headers=headers, payload=payload, timeout=_REQUEST_TIMEOUT, label="xAI")

@@ -1,0 +1,29 @@
+name: storage-utility
+repo: https://github.com/ShawnCRMer/hermes-tune-up
+sha: "a5822f94f2c9f3db2b4b2f43f02cab5af3a32567"
+title: Tune-up
+description: "Keep Hermes fast, healthy and tidy from one Desktop panel. Clean up sorts the Hermes home into Safe to clean, Take a quick look and Kept safe on purpose, with plain-language answers to what is it, is it safe and can I undo; it reviews exact items before anything happens and reports the measured space recovered. It runs the maintenance Hermes ships but few people find (sessions prune with preview, pm gc, uv cache prune, checkpoints, worktree prune, session-database packing), finds folders Hermes created elsewhere from its own session history, and moves reviewable items to a restorable 30-day Trash. Checkup explains down or crash-looping Hermes services and stops leftover agent processes; Explore shows a size map with folder descriptions and duplicate finding; optional consented AI explanation via its own auxiliary task. Disclosure: no network except the optional, consented AI explanation (folder totals and counts only, no names or contents) through Hermes's routing; reads home metadata, session history, /proc and systemctl status; on user confirmation runs allow-listed hermes/uv/git maintenance commands (no shell), systemctl start/restart/stop/disable on Hermes services, can write a Restart=always drop-in and run 'hermes plugins enable disk-cleanup' when asked, sends SIGTERM to selected leftovers, and briefly stops and restarts Hermes services to pack state.db; never opens credential files; state in <home>/storage-utility; no telemetry."
+maintainer: ShawnCRMer
+tier: community
+category: tools
+version: "0.7.2"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ShawnCRMer/hermes-tune-up#readme
+image: https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/card.png
+screenshots:
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/home.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/clean-up-review.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/clean-up-done.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/take-a-look.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/explore.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tune-up/a5822f94f2c9f3db2b4b2f43f02cab5af3a32567/docs/explorer-page.png
+readme: true
+platforms: [linux]
+known_issues:
+  - "Tested with Hermes on Linux with systemd; service checks and session-database packing need systemd. macOS and Windows hosts are not certified."
+  - "Packing the session database pauses Hermes services for a few minutes; it asks first and restarts what it stopped."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

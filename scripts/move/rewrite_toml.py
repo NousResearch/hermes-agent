@@ -53,11 +53,10 @@ def _flags(line: str, number: int, table: str, plan) -> list[str]:
     for match in _STRING.finditer(line):
         text = match.group(2)
         name = text.removesuffix(".*").partition(":")[0]
-        if plan.names_module(name) and text not in plan.config_keys:
+        if plan.is_target(name) and text not in plan.config_keys:
             reason = ("package list names a moved package; keep the old name only while a shim lives there"
                       if table.startswith("tool.setuptools") else "TOML value names a moved module; fix by hand")
             out.append(f"pyproject.toml:{number}  toml  {text}  {reason}")
-        elif plan.path_pattern is not None and (path := plan.path_pattern.search(text)):
-            out.append(f"pyproject.toml:{number}  toml  {path.group(1)}  "
-                       f"TOML value names a moved path (now {plan.new_path[path.group(1)]})")
+        elif (found := plan.find_path(text)) is not None:
+            out.append(f"pyproject.toml:{number}  toml  {found[0]}  TOML value names a moved path (now {found[1]})")
     return out

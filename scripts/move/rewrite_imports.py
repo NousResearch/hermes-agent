@@ -2,26 +2,28 @@
 
 Usage: python scripts/move/rewrite_imports.py --from-commit <A> [--paths P ...] [--check]
 
-Sites listed in ``exclusions.py`` are left as they are and printed once per reason as ``excluded <reason>``;
-sites listed as by-hand are flagged instead of rewritten. A row whose anchor is no longer in its file is flagged.
-A UTF-8 BOM is kept; a file that is not UTF-8 is skipped with a flag.
+Imports: ``import a`` becomes ``from hermes_agent import a`` (same bound name; the lint rejects
+``import hermes_agent.a as a``), except in a ``try`` whose handler catches ModuleNotFoundError or reads
+``exc.name``, and in a function that removes modules from ``sys.modules``: there the from-form changes
+the exception or skips the re-import, so ``import hermes_agent.a as a  # noqa: PLR0402`` is written.
+``import a.b`` binds the new root and its uses are respelled. ``from a import x`` changes its module.
 
-Rewritten: ``import`` and ``from`` statements (``import a`` keeps its bound name: ``import new.a as a``),
-attribute chains of plain ``import a.b`` bindings, ``"-m", "<module>"`` argv pairs and ``-m <module>`` in
-strings, ``sys.modules`` keys and logger names (the strict compat finder in tests cannot see those), a string
-passed to any call whose whole value is a moved module or ``module.attr`` of a name it defines, the literal
-head of an f-string target, and ``pyproject.toml`` entry points and package-data keys. Config keys
-(``DEFAULT_CONFIG`` paths such as ``agent.reasoning_effort``) never change. Every other site that names a
-moved module or path is printed as a flag, one line each: ``path:line  <class>  <old name>  <reason>``.
-The new old-name keys go into the compat MOVES table. Exit status 1 when a file fails to parse, a flag
-remains, or (with --check) a file would change.
+Strings change only where the code takes a module name (decision D47, see ``sinks.py``): import
+functions and the helpers that wrap them, validated patch targets, ``sys.modules`` keys, logger names,
+``-m`` argv pairs, commands given to a process, Python code given to an interpreter, and
+``pyproject.toml`` entry points. A string anywhere else that names a moved module or path is printed
+as a flag, ``path:line  <class>  <name>  <reason>``, and left as it is.
+
+Sites listed in ``exclusions.py`` are left alone and printed once per reason as ``excluded <reason>``;
+by-hand sites are flagged. A row whose anchor is gone is flagged. A UTF-8 BOM is kept; a file that is not
+UTF-8 is skipped with a flag. The new old-name keys go into the compat MOVES table. Exit status 1 when a
+file fails to parse, a flag remains, or (with --check) a file would change.
 """
 from __future__ import annotations
 
 import argparse
 import ast
 import functools
-import itertools
 import os
 import re
 import sys
@@ -34,24 +36,27 @@ from libcst.helpers import get_full_name_for_node
 from libcst.metadata import GlobalScope, MetadataWrapper, ParentNodeProvider, PositionProvider, ScopeProvider
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from exclusions import BY_HAND, EXCLUDED, IDENTITY, anchor_spans
+from exclusions import BY_HAND, EXCLUDED, IDENTITY, KEPT_NAMES, anchor_spans
 from renames import current_name, git, module_renames, moved_modules, renamed_paths
+from pieces import respell, text_of
 from rewrite_toml import rewrite_pyproject
+from sinks import ARGV, CODE, COMMAND, LOGGER, MODULE, STRINGS, SYS_MODULES, TARGET, Findings, Sink, \
+    SinkFinder, helper_parameters, string_parts
 
-DYNAMIC, STRING_REF, BY_PATH, FILE_MATH, BY_HAND_KIND, OTHER, CALL_ARG = (
-    "dynamic-import", "string-module-ref", "by-path", "file-math", "by-hand", "other", "call-arg")
-_DOTTED_NAME = re.compile(r"[A-Za-z_][\w.]*(?::[A-Za-z_][\w.]*)?")
+DYNAMIC, STRING_REF, BY_PATH, FILE_MATH, BY_HAND_KIND, MODULE_STRING, MODULE_TABLE, CODE_STRING, KEPT_NAME, \
+    IMPORT, OTHER = ("dynamic-import", "string-module-ref", "by-path", "file-math", "by-hand", "module-string",
+                     "module-table", "code-string", "kept-name", "import", "other")
 GENERATE_HINT = ("next: after `just move-docs`, run `just move-generate`: generated files embed code and docstrings "
                  "this move rewrote (apps/shared/src/gateway-contract.*, tests/hermes_cli/serve_handler_ledger.json)")
-_DASH_M = re.compile(r"(?<![\w-])(-m(?:\s+|[\"'],\s*[\"']))([A-Za-z_][\w.]*)")
-_CODE_IMPORT = re.compile(r"(?<![\w.])((?:from|import)\s+)([A-Za-z_][\w.]*)(?=\s+import\b|\s*(?:$|[\n,;)]|\\n| as\b))",
+NOQA = "PLR0402"
+_DASH_M = re.compile(r"(?<![\w-])(-m(?:\s+|[\"'],\s*[\"']))([A-Za-z_][\w.-]*)")
+_DASH_C = re.compile(r"(?<![\w-])-c\s+([\"'])(.+?)(?<!\\)\1", re.DOTALL)
+_CODE_IMPORT = re.compile(r"(?<![\w.])((?:from|import)\s+)([A-Za-z_][\w.]*)(?=\s+import\b|\s*(?:$|[\n,;)#]|\\n| as\b))",
                           re.MULTILINE)
 _PYTHON_SHEBANG = re.compile(r"#!.*\bpython")
-_SYS_MODULES = re.compile(r"(?:(?:^|\.)_*sys_*\.)?modules$")
-_ASSERT_LOGS = {"assertLogs", "assertNoLogs"}
-_SYS_MODULES_METHODS = {"pop", "get", "setdefault"}
-_ATTRIBUTE_TARGETS = {"patch", "setattr", "delattr", "resolve_name"}
-_MODULE_TARGETS = {"import_module", "__import__", "find_spec", "importorskip"}
+_WORD = re.compile(r"[a-z]+")
+_MODULE_ATTRIBUTES = {"__file__", "__name__", "__path__", "__spec__", "__loader__", "__dict__", "__all__", "__doc__"}
+_HELPER_SOURCES = re.compile(r"import_module|__import__|find_spec|importorskip")
 
 
 @dataclass
@@ -59,13 +64,19 @@ class Plan:
     renames: dict[str, str]
     paths: list[tuple[str, str]]
     names: dict[str, set[str]]
-    """Every moved module's old name -> the names its top level defines."""
+    """Every moved module's old name -> the names its top level binds (imports included)."""
     moves: dict[str, str] = field(default_factory=dict)
     """The compat MOVES table of the tree: earlier chunks' old names, so exclusion paths match after any move."""
     excluded: tuple[tuple[str, str, str], ...] = EXCLUDED
     by_hand: tuple[tuple[str, str], ...] = BY_HAND
     config_keys: frozenset[str] = frozenset()
     """Dotted ``DEFAULT_CONFIG`` keys: ``agent.reasoning_effort`` is a config key even where it is also a module."""
+    defined: dict[str, set[str]] = field(default_factory=dict)
+    """Every moved module's old name -> the names its top level defines (``def``, ``class``, assignment)."""
+    helpers: dict[str, dict[str, dict[int, str]]] = field(default_factory=dict)
+    """Module -> function -> parameters it passes straight to an import function."""
+    kept_names: frozenset[str] = frozenset()
+    """Moved module names that excluded sites keep under their old name (persisted command lines)."""
 
     @property
     def moved_files(self) -> set[str]:
@@ -98,13 +109,44 @@ class Plan:
 
     @functools.cached_property
     def path_pattern(self) -> re.Pattern | None:
-        """One pattern for every old path text (compiled once: per-literal compiles dominated chunk 11's run time)."""
-        olds = [old for old, _ in self.old_paths()]
-        return re.compile(r"(?<![\w/.])(" + "|".join(map(re.escape, olds)) + ")") if olds else None
+        """Path-shaped text that starts with a top-level name this move took away; ``find_path`` checks it."""
+        tops = sorted({PurePosixPath(old).parts[0] for old, _ in self.paths}, key=len, reverse=True)
+        return re.compile(r"(?<![\w/.-])((?:" + "|".join(map(re.escape, tops)) + r")(?:/[\w.-]+)*/?)") if tops else None
+
+    @functools.cached_property
+    def old_tree(self) -> frozenset[str]:
+        """Every old file path this move renamed and every folder above one."""
+        out = set()
+        for old, _ in self.paths:
+            parts = PurePosixPath(old).parts
+            out |= {"/".join(parts[:size]) for size in range(1, len(parts) + 1)}
+        return frozenset(out)
+
+    def find_path(self, text: str) -> tuple[str, str] | None:
+        """(old, new) for the first moved file or folder ``text`` names: a top-level file, a folder followed by a file
+        or folder that moved with it (``tools/registry.py``, ``tools/environments/``; never ``tools/list``), or the
+        whole string being a moved folder (``"tools/"``)."""
+        if self.path_pattern is None:
+            return None
+        if text.endswith("/") and text[:-1] in self.old_tree and "/" not in text[:-1]:
+            return text, self.new_path.get(text, "")
+        for match in self.path_pattern.finditer(text):
+            parts = match.group(1).rstrip("/").split("/")
+            for size in range(len(parts), 0, -1):
+                old = "/".join(parts[:size])
+                if old in self.old_tree and (size > 1 or old.endswith(".py")):
+                    folder = not old.endswith(".py")
+                    return old + "/" * folder, self.new_path.get(old + "/" * folder, "")
+        return None
 
     @functools.cached_property
     def new_path(self) -> dict[str, str]:
         return dict(self.old_paths())
+
+    @functools.cached_property
+    def folders(self) -> frozenset[str]:
+        """Top-level folder and file names this move took away: ``tools``, ``model_tools.py``."""
+        return frozenset(PurePosixPath(old).parts[0] for old, _ in self.paths)
 
     def old_paths(self) -> list[tuple[str, str]]:
         """Old -> new path text a by-path literal can carry: each moved file and each moved directory."""
@@ -115,26 +157,49 @@ class Plan:
                 pairs[old_dir + "/"] = new_dir + "/"
         return sorted(pairs.items(), key=lambda item: -len(item[0]))
 
-    def resolves(self, text: str, attribute_allowed: bool) -> bool:
-        """``text`` starts with a moved module; what follows it is an attribute only when ``attribute_allowed``."""
-        name, colon, _ = text.partition(":")
-        parts = name.split(".")
-        for size in range(len(parts), 0, -1):
-            if ".".join(parts[:size]) in self.names:
-                return size == len(parts) or (attribute_allowed and not colon)
-        return False
+    def new(self, name: str) -> str | None:
+        return current_name(name, self.renames)
 
-    def names_module(self, text: str) -> bool:
-        """``text`` is a moved module, ``module:attr`` or ``module.attr`` of a name that module defines."""
-        module, colon, _ = text.partition(":")
+    def is_module(self, text: str) -> bool:
+        """``text`` is exactly a moved module, package or namespace folder."""
+        return text in self.names
+
+    def is_target(self, text: str) -> bool:
+        """``module``, ``module.attr`` or ``module:attr``, where ``attr`` is a name the module binds."""
+        module, colon, attr = text.partition(":")
         if colon:
-            return module in self.names
+            return module in self.names and attr.split(".")[0] in self.names[module]
         parts = text.split(".")
         for size in range(len(parts), 0, -1):
             prefix = ".".join(parts[:size])
             if prefix in self.names:
-                return size == len(parts) or parts[size] in self.names[prefix]
+                return size == len(parts) or parts[size] in _MODULE_ATTRIBUTES \
+                    or bool({parts[size], "__getattr__"} & self.names[prefix])
         return False
+
+    def has_module_prefix(self, text: str) -> bool:
+        parts = text.partition(":")[0].split(".")
+        return any(".".join(parts[:size]) in self.names for size in range(len(parts), 0, -1))
+
+    def module_text(self, text: str) -> bool:
+        """A string that reads as a moved module: the module, or ``module.attr``/``module:attr`` of a name it defines."""
+        module, colon, attr = text.partition(":")
+        if colon:
+            return module in self.defined and attr in self.defined[module]
+        if text in self.names:
+            return True
+        prefix, _, attr = text.rpartition(".")
+        return prefix in self.defined and attr in self.defined[prefix]
+
+    def is_word(self, text: str) -> bool:
+        """An ordinary lower-case word (``tools``, ``agent``): read as English unless the context says module."""
+        return _WORD.fullmatch(text) is not None
+
+    def helper(self, module: str, function: str) -> dict[int, str]:
+        for name in (module, self.new(module)):
+            if name is not None and function in self.helpers.get(name, {}):
+                return self.helpers[name][function]
+        return {}
 
 
 @dataclass
@@ -147,35 +212,24 @@ class Result:
     error: str | None = None
 
 
-@dataclass
-class _Sink:
-    kind: str
-    attribute_allowed: bool | None = None
-    by_hand: bool = False
-    """None: rewrite any literal; otherwise rewrite only a name that resolves in the moved tree."""
-    pair: cst.BaseExpression | None = None
-    """For a call argument: the positional argument after it (``_lazy("mod", "attr")``)."""
-
-
 class _Rewriter(cst.CSTTransformer):
     METADATA_DEPENDENCIES = (PositionProvider,)
 
-    def __init__(self, plan: Plan, path: str, accesses: dict[cst.CSTNode, str | None],
-                 blocked_imports: dict[cst.CSTNode, str] | None = None) -> None:
+    def __init__(self, plan: Plan, path: str, found: Findings, accesses: dict[cst.CSTNode, tuple],
+                 blocked_imports: dict[cst.CSTNode, str]) -> None:
         super().__init__()
-        self.plan, self.path, self.accesses = plan, path, accesses
-        self.blocked_imports = blocked_imports or {}
+        self.plan, self.path, self.found, self.accesses = plan, path, found, accesses
+        self.blocked_imports = blocked_imports
         self.counts: dict[str, int] = {}
         self.flags: list[str] = []
         self.excluded: list[str] = []
         self.ranges: list[tuple[int, int, str]] = []
         self.by_hand_spans: list[tuple[int, int]] = []
         self.stale: list[str] = []
-        self.sinks: dict[int, _Sink] = {}
-        self.prose: set[int] = set()
         self.blocked: dict[int, str] = {}
-        self.matchers: dict[int, str] = {}
-        self.caught: set[str] = set()
+        self.noqa: set[int] = set()
+        self.split: set[int] = set()
+        self.chains_done: set[int] = set()
         self.moved = path in plan.moved_files
         self.tops = {old.split(".")[0] for old in plan.renames}
 
@@ -224,36 +278,59 @@ class _Rewriter(cst.CSTTransformer):
             return True
         return False
 
-    def _new(self, dotted: str | None) -> str | None:
-        return current_name(dotted, self.plan.renames) if dotted else None
-
     # Imports and the names they bind.
 
-    def leave_Import(self, original: cst.Import, updated: cst.Import) -> cst.Import:
-        """``import a`` becomes ``import new.a as a``: the bound name stays, so its uses keep their spelling.
-
-        ``import a.b`` binds the new root, so its uses are respelled; one that would shadow another use of
-        that root in the same function (UnboundLocalError) is flagged instead.
-        """
+    def leave_Import(self, original: cst.Import, updated: cst.Import):
+        """``import a`` -> ``from hermes_agent import a``; ``import a.b`` -> ``import hermes_agent.a.b``."""
         if original in self.blocked_imports:
-            self._flag(original, OTHER, _code(original), self.blocked_imports[original])
+            self._flag(original, IMPORT, _code(original), self.blocked_imports[original])
             return updated
-        names = []
+        keep_form = id(original) in self.found.keep_module_form
+        kept, froms = [], []
         for alias in updated.names:
             old = get_full_name_for_node(alias.name)
-            new = self._new(old)
-            if new is not None and not self._held(original, old):
-                keep = {} if alias.asname is not None or "." in old else {"asname": cst.AsName(name=cst.Name(old))}
-                alias = alias.with_changes(name=cst.parse_expression(new), **keep)
-                self._count("import")
-            names.append(alias)
-        return updated.with_changes(names=names)
+            new = self.plan.new(old)
+            if new is None or self._held(original, old):
+                kept.append(alias)
+                continue
+            self._count("import")
+            bound = alias.asname.name.value if alias.asname else None if "." in old else old
+            parent, _, leaf = new.rpartition(".")
+            if bound is None:
+                kept.append(alias.with_changes(name=cst.parse_expression(new)))
+            elif leaf == bound and parent and not keep_form:
+                froms.append(cst.ImportFrom(module=cst.parse_expression(parent), names=[cst.ImportAlias(cst.Name(leaf))]))
+            else:
+                kept.append(alias.with_changes(name=cst.parse_expression(new), asname=cst.AsName(name=cst.Name(bound))))
+                if leaf == bound and parent:
+                    self.noqa.add(id(original))
+        if not froms:
+            return updated.with_changes(names=_commas(kept))
+        statements = ([updated.with_changes(names=_commas(kept))] if kept else []) + froms
+        if len(statements) == 1:
+            return statements[0]
+        self.split.add(id(original))
+        return cst.FlattenSentinel(statements)
+
+    def leave_SimpleStatementLine(self, original: cst.SimpleStatementLine, updated: cst.SimpleStatementLine):
+        ids = {id(statement) for statement in original.body}
+        if ids & self.noqa:
+            updated = updated.with_changes(trailing_whitespace=_with_noqa(updated.trailing_whitespace))
+        if len(original.body) == 1 and ids & self.split:
+            lines = []
+            for index, statement in enumerate(updated.body):
+                lines.append(updated.with_changes(
+                    body=[statement.with_changes(semicolon=cst.MaybeSentinel.DEFAULT)],
+                    leading_lines=updated.leading_lines if index == 0 else (),
+                    trailing_whitespace=updated.trailing_whitespace if index == 0 else cst.TrailingWhitespace()))
+            return cst.FlattenSentinel(lines)
+        return updated
 
     def leave_ImportFrom(self, original: cst.ImportFrom, updated: cst.ImportFrom) -> cst.ImportFrom:
         if updated.relative or updated.module is None:
             return updated
         module = get_full_name_for_node(updated.module)
-        new_module = self._new(module)
+        new_module = self.plan.new(module)
         if self._held(original, module):
             return original
         if not isinstance(updated.names, cst.ImportStar):
@@ -268,14 +345,14 @@ class _Rewriter(cst.CSTTransformer):
     def _split_parent(self, original: cst.ImportFrom, node: cst.ImportFrom, module: str,
                       new_module: str) -> cst.ImportFrom | None:
         """``from pkg import child`` where ``pkg.child`` moved apart from ``pkg``."""
-        targets = [self._new(f"{module}.{alias.name.value}") for alias in node.names]
+        targets = [self.plan.new(f"{module}.{alias.name.value}") for alias in node.names]
         apart = [t for t, alias in zip(targets, node.names)
                  if t is not None and t != f"{new_module}.{alias.name.value}"]
         if not apart:
             return None
         parents = {t.rpartition(".")[0] for t in apart}
         if len(apart) != len(node.names) or len(parents) != 1:
-            self._flag(original, OTHER, module, "from-import mixes children that moved apart; split it by hand")
+            self._flag(original, IMPORT, module, "from-import mixes children that moved apart; split it by hand")
             return None
         names = []
         for alias, target in zip(node.names, targets):
@@ -292,6 +369,8 @@ class _Rewriter(cst.CSTTransformer):
         return self._access(original, updated)
 
     def leave_Attribute(self, original: cst.Attribute, updated: cst.Attribute) -> cst.BaseExpression:
+        if self.found.collapse.get(id(original)) in self.chains_done:
+            return updated.value
         return self._access(original, updated)
 
     def visit_Del(self, node: cst.Del) -> None:
@@ -309,265 +388,227 @@ class _Rewriter(cst.CSTTransformer):
         if id(original) in self.blocked:
             new, reason = None, self.blocked[id(original)]
         if new is None:
-            self._flag(original, OTHER, get_full_name_for_node(original), reason)
+            self._flag(original, IMPORT, get_full_name_for_node(original), reason)
             return updated
         if self._held(original, get_full_name_for_node(original)):
             return updated
         self._count("attribute")
         return cst.parse_expression(new)
 
-    # Which string nodes are sinks: decided top-down, before their children are left.
+    def leave_Call(self, original: cst.Call, updated: cst.Call) -> cst.Call:
+        """``__import__("a.b").b.X`` -> ``__import__("hermes_agent.a.b", fromlist=["X"]).X``."""
+        chain = self.found.chains.get(id(original))
+        if chain is None or updated.args[0].value.deep_equals(original.args[0].value):
+            return updated
+        self.chains_done.add(id(original))
+        fromlist = cst.Arg(keyword=cst.Name("fromlist"), value=cst.List([cst.Element(cst.SimpleString(f'"{chain[1]}"'))]),
+                           equal=cst.AssignEqual(cst.SimpleWhitespace(""), cst.SimpleWhitespace("")))
+        first = updated.args[0].with_changes(comma=cst.Comma(whitespace_after=cst.SimpleWhitespace(" ")))
+        return updated.with_changes(args=[first, fromlist])
 
-    def visit_Subscript(self, node: cst.Subscript) -> None:
-        if _is_sys_modules(node.value) and len(node.slice) == 1 \
-                and isinstance(node.slice[0].slice, cst.Index):
-            self._mark(node.slice[0].slice.value, "sys-modules")
-
-    def visit_ExceptHandler(self, node: cst.ExceptHandler) -> None:
-        if node.name is not None and isinstance(node.name.name, cst.Name):
-            self.caught.add(node.name.name.value)
-
-    def _hold_matcher(self, node: cst.BaseExpression, reason: str) -> None:
-        self.matchers.update((id(string), reason) for string in _strings(node))
-
-    def _visit_matcher(self, node: cst.Comparison) -> None:
-        sides = [node.left, *(target.comparator for target in node.comparisons)]
-        exception_name = any(isinstance(side, cst.Attribute) and side.attr.value == "name"
-                             and get_full_name_for_node(side.value) in self.caught for side in sides)
-        for side in sides:
-            if exception_name:
-                self._hold_matcher(side, "ImportError.name literal")
-            elif isinstance(side, (cst.List, cst.Tuple)) and isinstance(node.comparisons[0].operator,
-                                                                         (cst.Equal, cst.NotEqual)):
-                for element in side.elements:
-                    self._hold_matcher(element.value, "command-line matcher")
-
-    def visit_Comparison(self, node: cst.Comparison) -> None:
-        self._visit_matcher(node)
-        target = node.comparisons[0]
-        if len(node.comparisons) == 1 and isinstance(target.operator, (cst.In, cst.NotIn)) \
-                and _is_sys_modules(target.comparator):
-            self._mark(node.left, "sys-modules")
-
-    def visit_Call(self, node: cst.Call) -> None:
-        func = get_full_name_for_node(node.func) or ""
-        if isinstance(node.func, cst.Attribute) and node.func.attr.value == "startswith" \
-                and any(f"{name}.name" in _code(arg.value) for arg in node.args for name in self.caught):
-            self._hold_matcher(node.func.value, "ImportError.name literal")
-        owner_node = node.func.value if isinstance(node.func, cst.Attribute) else None
-        method = node.func.attr.value if owner_node is not None else func
-        positional = [arg.value for arg in node.args if arg.keyword is None and not arg.star]
-        keywords = {arg.keyword.value: arg.value for arg in node.args if arg.keyword is not None}
-        if method == "getLogger" and (positional or "name" in keywords):
-            self._mark(positional[0] if positional else keywords["name"], "logger")
-        elif method in ("set_level", "at_level") and "logger" in keywords:
-            self._mark(keywords["logger"], "logger")
-        elif method in _ASSERT_LOGS and (positional or "logger" in keywords):
-            self._mark(positional[0] if positional else keywords["logger"], "logger")
-        elif owner_node is not None and _is_sys_modules(owner_node) and method in _SYS_MODULES_METHODS and positional:
-            self._mark(positional[0], "sys-modules")
-        elif positional and _is_sys_modules(positional[0]):
-            if method == "dict" and len(positional) > 1 and isinstance(positional[1], cst.Dict):
-                for element in positional[1].elements:
-                    if isinstance(element, cst.DictElement):
-                        self._mark(element.key, "sys-modules")
-            elif method in ("setitem", "delitem") and len(positional) > 1:
-                self._mark(positional[1], "sys-modules")
-        elif positional and method in _ATTRIBUTE_TARGETS | _MODULE_TARGETS:
-            self._mark(positional[0], STRING_REF, method in _ATTRIBUTE_TARGETS)
-        self._mark_argv(node.args)
-        for arg, after in itertools.zip_longest(node.args, node.args[1:]):
-            if not arg.star and id(arg.value) not in self.sinks \
-                    and isinstance(arg.value, (cst.SimpleString, cst.FormattedString)):
-                pair = after.value if after is not None and after.keyword is None and not after.star else None
-                self.sinks[id(arg.value)] = _Sink(CALL_ARG, pair=pair)
-
-    def visit_Expr(self, node: cst.Expr) -> None:
-        if isinstance(node.value, (cst.SimpleString, cst.ConcatenatedString)):
-            self.prose.update(id(n) for n in _strings(node.value))
-
-    def visit_List(self, node: cst.List) -> None:
-        self._mark_argv(node.elements)
-
-    def visit_Tuple(self, node: cst.Tuple) -> None:
-        self._mark_argv(node.elements)
-
-    def _mark_argv(self, elements) -> None:
-        """``"-m", "<module>"`` element pairs: the child process runs without the compat finder."""
-        for flag, module in itertools.pairwise(elements):
-            if isinstance(flag.value, cst.SimpleString) and flag.value.evaluated_value == "-m":
-                self._mark(module.value, "argv")
-
-    def _mark(self, node: cst.BaseExpression, kind: str, attribute_allowed: bool | None = None) -> None:
-        self.sinks[id(node)] = _Sink(kind, attribute_allowed)
-
-    # Strings, at the string node.
+    # Strings.
 
     def on_leave(self, original, updated):
         updated = super().on_leave(original, updated)
-        sink = self.sinks.get(id(original))
-        if id(original) in self.matchers:
+        if not isinstance(original, STRINGS):
+            return updated
+        key = id(original)
+        if key in self.found.matchers:
             return self._leave_matcher(original, updated)
+        sink = self.found.sinks.get(key)
         if sink is not None:
             return self._leave_sink(original, updated, sink)
-        if isinstance(original, cst.SimpleString):
-            return self._leave_string(original, updated)
-        if isinstance(original, cst.FormattedString):
-            return self._leave_fstring(original, updated)
+        if key in self.found.joined:
+            return updated
+        if isinstance(original, cst.ConcatenatedString):
+            found = text_of(original)
+            self._judge(original, found[0] if found else "".join(_literal_text(p) for p in string_parts(original)))
+        elif isinstance(original, cst.SimpleString) and isinstance(original.evaluated_value, str):
+            self._judge(original, original.evaluated_value)
+        elif isinstance(original, cst.FormattedString):
+            self._judge_fstring(original)
         return updated
-
-    def _leave_sink(self, original, updated, sink: _Sink):
-        if id(original) in self.matchers:
-            return self._leave_matcher(original, updated)
-        if isinstance(original, cst.FormattedString) and (head := self._fstring_head(original, updated)) is not None:
-            return head
-        if sink.kind == CALL_ARG:
-            return self._leave_call_arg(original, updated, sink)
-        if isinstance(updated, cst.SimpleString) and isinstance(text := updated.evaluated_value, str):
-            if self._new(text.partition(":")[0]) is None or self._held(original, text):
-                return updated
-            if sink.attribute_allowed is not None and not self.plan.resolves(text, sink.attribute_allowed):
-                self._flag(original, sink.kind, text, "string target does not resolve in the moved tree; fix by hand")
-                return updated
-            rewritten = _with_text(updated, self._whole)
-            if rewritten is None:
-                self._flag(original, OTHER, text, f"{sink.kind} literal spells the name with escapes; fix by hand")
-                return updated
-            self._count(sink.kind)
-            return rewritten
-        if isinstance(original, (cst.FormattedString, cst.BinaryOperation, cst.ConcatenatedString)) \
-                and _mentions_old(original, self.plan.renames):
-            self._flag(original, DYNAMIC, _code(original), f"computed {sink.kind} name; check by hand")
-        return updated
-
-    def _leave_call_arg(self, original, updated, sink: _Sink):
-        """A string passed to a call is rewritten when its whole value names a moved module, ``module.attr`` or
-        ``module:attr`` of a name that module defines; a bare top-level name needs ``(module, attr)`` evidence.
-        A dotted name that only starts with a moved module is flagged; config keys are left alone."""
-        if isinstance(original, cst.FormattedString):
-            return self._leave_fstring(original, updated)
-        text = updated.evaluated_value if isinstance(updated, cst.SimpleString) else None
-        if not isinstance(text, str) or not _DOTTED_NAME.fullmatch(text) or text in self.plan.config_keys \
-                or self._new(text.partition(":")[0]) is None:
-            return self._leave_string(original, updated) if isinstance(original, cst.SimpleString) else updated
-        dotted = "." in text or ":" in text
-        paired = isinstance(sink.pair, cst.SimpleString) and sink.pair.evaluated_value in self.plan.names.get(text, ())
-        if not self.plan.names_module(text) or not (dotted or paired):
-            if not dotted or self.plan.path_pattern is not None and self.plan.path_pattern.search(text):
-                return self._leave_string(original, updated)
-            self._flag(original, CALL_ARG, text, "call argument starts with a moved module but does not resolve "
-                                                 "in the moved tree; fix by hand")
-            return updated
-        if self._held(original, text):
-            return updated
-        rewritten = _with_text(updated, self._whole)
-        if rewritten is None:
-            self._flag(original, OTHER, text, "call-arg literal spells the name with escapes; fix by hand")
-            return updated
-        self._count(CALL_ARG)
-        return rewritten
-
-    def _fstring_head(self, original: cst.FormattedString, node: cst.FormattedString) -> cst.FormattedString | None:
-        """``f"pkg.mod.{name}"`` in a sink: its literal head names a moved module, so only the head changes."""
-        head = node.parts[0] if node.parts else None
-        if not isinstance(head, cst.FormattedStringText) or len(node.parts) < 2 or not head.value.endswith(".") \
-                or "\\" in head.value or not self.plan.names_module(module := head.value[:-1]) \
-                or self._held(original, module):
-            return None
-        self._count("f-string")
-        return node.with_changes(parts=[head.with_changes(value=self._new(module) + "."), *node.parts[1:]])
-
-    def _whole(self, text: str) -> str:
-        module, colon, attr = text.partition(":")
-        return (self._new(module) or module) + colon + attr
 
     def _leave_matcher(self, original, updated):
         text = original.evaluated_value if isinstance(original, cst.SimpleString) else ""
-        if isinstance(text, str) and self._new(text.partition(":")[0]) is not None:
-            self._flag(original, BY_HAND_KIND, text, f"{self.matchers[id(original)]}; edit by hand")
+        if isinstance(text, str) and self.plan.new(text.partition(":")[0]) is not None:
+            self._flag(original, BY_HAND_KIND, text, f"{self.found.matchers[id(original)]}; edit by hand")
         return updated
 
-    def _leave_string(self, original: cst.SimpleString, updated: cst.SimpleString):
-        text = original.evaluated_value
-        if not isinstance(text, str):
+    def _leave_sink(self, original, updated, sink: Sink):
+        if sink.kind in (CODE, COMMAND):
+            return self._leave_program(original, updated, sink)
+        if isinstance(original, cst.FormattedString):
+            return self._leave_fstring_sink(original, updated, sink)
+        if not isinstance(original, cst.SimpleString) or not isinstance(text := original.evaluated_value, str):
+            if _mentions_old(original, self.plan.renames):
+                self._flag(original, DYNAMIC, _code(original), f"computed {sink.kind} name; check by hand")
             return updated
-        if id(original) in self.matchers:
-            return self._leave_matcher(original, updated)
-        rewritten = self._text(text, original)
-        if self.plan.names_module(rewritten) and rewritten not in self.plan.config_keys:
-            self._flag(original, OTHER, text, "string names a moved module; rewrite or confirm by hand")
-        elif self.plan.path_pattern is not None and (match := self.plan.path_pattern.search(rewritten)):
-            old = match.group(1)
-            where = "docstring prose" if id(original) in self.prose else "string"
-            self._flag(original, BY_PATH, old, f"{where} names a moved path (now {self.plan.new_path[old]})")
-        if rewritten == text or self._held(original, text):
-            return updated
-        dashed = _DASH_M.sub(self._dash_m, text)
-        replaced = _with_text(updated, lambda raw: _DASH_M.sub(self._dash_m, raw)) if rewritten == dashed \
-            else _with_value(updated, rewritten)
-        if replaced is None:
-            self._flag(original, OTHER, text[:80], "code in a string spells the name with escapes; fix by hand")
-            return updated
-        self._count("string-code")
-        return replaced
+        return self._leave_name(original, updated, sink, text)
 
-    def _text(self, text: str, node: cst.CSTNode | None = None) -> str:
-        """``-m <module>`` arguments, and the Python program when the text parses as one: code a child process runs."""
+    def _leave_name(self, original: cst.SimpleString, updated: cst.SimpleString, sink: Sink, text: str):
+        new = self.plan.new(text.partition(":")[0])
+        if new is None or self._held(original, text):
+            return updated
+        if (reason := self.found.import_flags.get(id(original))) is not None:
+            self._flag(original, DYNAMIC, text, f"{reason}; fix by hand")
+            return updated
+        if sink.kind == ARGV and text in self.plan.kept_names and self.path.startswith("tests/"):
+            self._flag(original, KEPT_NAME, text, "excluded production code keeps this module name in persisted "
+                                                  "command lines; check whether this test mirrors it")
+            return updated
+        valid = {MODULE: self.plan.is_module, ARGV: self.plan.is_module,
+                 TARGET: self.plan.has_module_prefix if sink.loose else self.plan.is_target}.get(sink.kind)
+        if valid is not None and not valid(text):
+            self._flag(original, STRING_REF, text, f"{sink.kind} string does not resolve in the moved tree; fix by hand")
+            return updated
+        rewritten = _with_text(updated, self._whole)
+        if rewritten is None:
+            self._flag(original, OTHER, text, f"{sink.kind} literal spells the name with escapes; fix by hand")
+            return updated
+        self._count(f"{sink.kind}-table" if sink.table else sink.kind)
+        return rewritten
+
+    def _whole(self, text: str) -> str:
+        module, colon, attr = text.partition(":")
+        return (self.plan.new(module) or module) + colon + attr
+
+    def _leave_fstring_sink(self, original: cst.FormattedString, updated: cst.FormattedString, sink: Sink):
+        """``f"pkg.mod.{name}"`` in a sink: its literal head names a moved module, so only the head changes."""
+        head = updated.parts[0] if updated.parts else None
+        valid = self.plan.is_target if sink.kind == TARGET else self.plan.is_module
+        if isinstance(head, cst.FormattedStringText) and len(updated.parts) > 1 and head.value.endswith(".") \
+                and "\\" not in head.value and valid(module := head.value[:-1]):
+            if self._held(original, module):
+                return updated
+            self._count(f"{sink.kind}-f-string")
+            return updated.with_changes(parts=[head.with_changes(value=self.plan.new(module) + "."), *updated.parts[1:]])
+        if _imports_old(original, self.plan.renames) or _mentions_old(original, self.plan.renames):
+            self._flag(original, DYNAMIC, _code(original), f"computed {sink.kind} name; check by hand")
+        return updated
+
+    def _leave_program(self, original, updated, sink: Sink):
+        """Code an interpreter runs, or a command a process runs: rewrite what it imports and runs with -m."""
+        found = text_of(updated)
+        if found is None:
+            return updated
+        text, pieces = found
+        new = self._program(original, text, sink.kind)
+        if new == text or self._held(original, text[:60]):
+            return updated
+        rewritten = respell(updated, pieces, new)
+        if rewritten is None:
+            self._flag(original, CODE_STRING, text[:80].replace("\n", " "), "the rewrite crosses string pieces or "
+                                                                             "needs an escape; fix by hand")
+            return updated
+        self._count(f"{sink.kind}-table" if sink.table else sink.kind)
+        return rewritten
+
+    def _program(self, node: cst.CSTNode, text: str, kind: str) -> str:
+        if kind == CODE and (program := self._python(node, text)) is not None:
+            return program
         text = _DASH_M.sub(self._dash_m, text)
-        if node is None or "import" not in text or not any(top in text for top in self.tops):
+        return _DASH_C.sub(lambda match: self._dash_c(node, match), text)
+
+    def _python(self, node: cst.CSTNode, text: str) -> str | None:
+        """``text`` rewritten as a Python program; None when it does not parse as one."""
+        if not any(top in text for top in self.tops):
             return text
         try:
             program = rewrite_source(text, "<string>", self.plan)
         except RecursionError:
-            program = Result("<string>", error="too deep")
+            return None
         if program.error:
-            for match in _CODE_IMPORT.finditer(text):
-                if self._new(match.group(2)) is not None:
-                    self._flag(node, OTHER, match.group(0), "code in a string imports a moved module but does not parse; fix by hand")
-            return text
+            return None
         for flag in program.flags:
             _, kind, name, reason = flag.split("  ", 3)
             self._flag(node, kind, name, reason)
         return program.source if program.source is not None else text
 
     def _dash_m(self, match: re.Match) -> str:
-        new = self._new(match.group(2))
-        return match.group(0) if new is None else match.group(1) + new
+        new = self.plan.new(match.group(2))
+        return match.group(0) if new is None or not self.plan.is_module(match.group(2)) else match.group(1) + new
 
-    def _leave_fstring(self, original: cst.FormattedString, updated: cst.FormattedString):
-        parts = []
-        for part in updated.parts:
-            if isinstance(part, cst.FormattedStringText):
-                text = _DASH_M.sub(self._dash_m, part.value)
-                if text != part.value and not self._held(original, text):
-                    self._count("string-code")
-                    part = part.with_changes(value=text)
-            parts.append(part)
-        updated = updated.with_changes(parts=parts)
-        for match in _CODE_IMPORT.finditer("".join(_literal_text(part) for part in parts)):
-            if self._new(match.group(2)) is not None:
-                self._flag(original, OTHER, match.group(0), "f-string builds code that imports a moved module; fix by hand")
+    def _dash_c(self, node: cst.CSTNode, match: re.Match) -> str:
+        quote, code = match.group(1), match.group(2)
+        program = self._python(node, code.replace("\\" + quote, quote))
+        if program is None:
+            return match.group(0)
+        return match.group(0).replace(code, program.replace(quote, "\\" + quote), 1)
+
+    def _judge(self, node: cst.CSTNode, text: str) -> None:
+        """Flags for a string no sink receives: it is left as it is."""
+        key = id(node)
+        if key in self.found.i18n or key in self.found.prose:
+            return
+        if self._code_flags(node, text):
+            return
+        if (reason := self.found.tables.get(key)) is not None:
+            if self.plan.module_text(text):
+                self._flag(node, MODULE_TABLE, text, f"module name in a table: {reason}; rewrite or confirm by hand")
+            return
+        if self.plan.module_text(text) and text not in self.plan.config_keys:
+            self._judge_module(node, text, key)
+        elif text.endswith(".") and self.plan.is_module(text[:-1]):
+            self._flag(node, MODULE_STRING, text, "module-name prefix outside any import; rewrite or confirm by hand")
+        elif key in self.found.path_pieces and text in self.plan.folders:
+            self._flag(node, BY_PATH, text, "path built from a moved folder name; check the path arithmetic")
+        elif (found := self.plan.find_path(text)) is not None:
+            self._flag(node, BY_PATH, found[0], f"string names a moved path (now {found[1]})")
+
+    def _judge_module(self, node: cst.CSTNode, text: str, key: int) -> None:
+        if key in self.found.path_pieces:
+            self._flag(node, BY_PATH, text, "path built from a moved folder name; check the path arithmetic")
+        elif key in self.found.module_elements:
+            self._flag(node, MODULE_TABLE, text, "module name in a table no import reads here; rewrite or confirm "
+                                                 "by hand")
+        elif not self.plan.is_word(text):
+            self._flag(node, MODULE_STRING, text, "string names a moved module outside any import; rewrite or "
+                                                  "confirm by hand")
+
+    def _code_flags(self, node: cst.CSTNode, text: str) -> bool:
+        found = False
+        for match in _DASH_M.finditer(text):
+            if self.plan.new(match.group(2)) is not None:
+                self._flag(node, CODE_STRING, match.group(0), "`-m` names a moved module in a string no process "
+                                                              "receives here; rewrite or confirm by hand")
+                found = True
+        if "import" in text:
+            for match in _CODE_IMPORT.finditer(text):
+                if self.plan.new(match.group(2)) is not None:
+                    self._flag(node, CODE_STRING, match.group(0).strip(), "code in a string no interpreter receives "
+                                                                          "here imports a moved module")
+                    found = True
+        return found
+
+    def _judge_fstring(self, original: cst.FormattedString) -> None:
+        if id(original) in self.found.i18n or id(original) in self.found.prose:
+            return
+        found = text_of(original)
+        text = found[0] if found else "".join(_literal_text(part) for part in original.parts)
+        if self._code_flags(original, text):
+            return
         if _imports_old(original, self.plan.renames):
-            self._flag(original, DYNAMIC, _code(original), "f-string builds a moved module name; check by hand")
-        return updated
+            self._flag(original, MODULE_STRING, _code(original), "f-string builds a moved module name outside any "
+                                                                 "import; check by hand")
 
 
-def _strings(node: cst.BaseExpression):
-    if isinstance(node, cst.SimpleString):
-        yield node
-    elif isinstance(node, cst.ConcatenatedString):
-        yield from _strings(node.left)
-        yield from _strings(node.right)
+def _commas(aliases: list[cst.ImportAlias]) -> list[cst.ImportAlias]:
+    if aliases:
+        aliases[-1] = aliases[-1].with_changes(comma=cst.MaybeSentinel.DEFAULT)
+    return aliases
 
 
-def _is_sys_modules(node: cst.BaseExpression) -> bool:
-    if isinstance(node, cst.SimpleString):
-        return node.evaluated_value == "sys.modules"
-    if isinstance(node, cst.Attribute) and isinstance(node.value, cst.Call) and node.attr.value == "modules":
-        call = node.value
-        return get_full_name_for_node(call.func) == "__import__" and len(call.args) == 1 \
-            and isinstance(call.args[0].value, cst.SimpleString) and call.args[0].value.evaluated_value == "sys"
-    return _SYS_MODULES.search(get_full_name_for_node(node) or "") is not None
+def _with_noqa(trailing: cst.TrailingWhitespace) -> cst.TrailingWhitespace:
+    comment = trailing.comment.value if trailing.comment is not None else ""
+    if NOQA in comment:
+        return trailing
+    if "noqa:" in comment:
+        value = re.sub(r"(noqa:\s*[\w, ]*\w)", rf"\1, {NOQA}", comment, count=1)
+    else:
+        value = f"{comment}  # noqa: {NOQA}" if comment else f"# noqa: {NOQA}"
+    whitespace = trailing.whitespace if comment else cst.SimpleWhitespace("  ")
+    return trailing.with_changes(whitespace=whitespace, comment=cst.Comment(value))
 
 
 def _with_text(node: cst.SimpleString, transform) -> cst.SimpleString | None:
@@ -579,23 +620,6 @@ def _with_text(node: cst.SimpleString, transform) -> cst.SimpleString | None:
     raw = node.value[head:-len(node.quote)]
     candidate = node.with_changes(value=node.value[:head] + transform(raw) + node.quote)
     return candidate if candidate.evaluated_value == transform(node.evaluated_value) else None
-
-
-def _with_value(node: cst.SimpleString, value: str) -> cst.SimpleString | None:
-    """``node`` spelling ``value``; None when its escapes cannot be kept (``\\x``, ``\\u``, a raw prefix with backslashes)."""
-    head = len(node.prefix) + len(node.quote)
-    raw = node.value[head:-len(node.quote)]
-    if raw != node.evaluated_value:
-        if "\\" in re.sub(r"\\[nt\\'\"]", "", raw) or "r" in node.prefix.lower():
-            return None
-        quote = node.quote[0]
-        raw = value.replace("\\", "\\\\").replace(quote, "\\" + quote)
-        if len(node.quote) == 1:
-            raw = raw.replace("\n", "\\n").replace("\t", "\\t")
-    else:
-        raw = value
-    candidate = node.with_changes(value=node.value[:head] + raw + node.quote)
-    return candidate if candidate.evaluated_value == value else None
 
 
 def _code(node: cst.CSTNode) -> str:
@@ -628,8 +652,8 @@ def _binding_accesses(wrapper: MetadataWrapper, renames: dict[str, str]):
     """Uses of names bound by a plain dotted ``import a.b``, as (new dotted spelling, None) or (None, flag reason),
     and the function-local dotted imports whose new root binding would shadow another use of that root.
 
-    ``import a`` keeps its bound name (``import new.a as a``), so its uses are not touched. A use is rewritten
-    only when every binding it can see is an import of a moved module.
+    ``import a`` keeps its bound name, so its uses are not touched. A use is rewritten only when every binding it
+    can see is an import of a moved module.
     """
     found, local, uses = {}, {}, []
     parents = wrapper.resolve(ParentNodeProvider)
@@ -734,7 +758,9 @@ def rewrite_source(source: str, path: str, plan: Plan) -> Result:
         wrapper = MetadataWrapper(cst.parse_module(source))
     except cst.ParserSyntaxError as error:
         return Result(path, error=f"{path}: parse error: {str(error).splitlines()[0]}")
-    rewriter = _Rewriter(plan, path, *_binding_accesses(wrapper, plan.renames))
+    finder = SinkFinder(plan, path)
+    wrapper.visit(finder)
+    rewriter = _Rewriter(plan, path, finder.found, *_binding_accesses(wrapper, plan.renames))
     if path != "<string>":
         rewriter.anchor(source)
     new = wrapper.visit(rewriter).code
@@ -742,9 +768,10 @@ def rewrite_source(source: str, path: str, plan: Plan) -> Result:
                   rewriter.excluded)
 
 
-def top_level_names(source: str) -> set[str]:
-    """Names a module's top level binds, including inside its top-level ``if``/``try``/``with``/``for``."""
-    names = set()
+def top_level_names(source: str) -> tuple[set[str], set[str]]:
+    """Names a module's top level defines and the names it imports, including inside top-level
+    ``if``/``try``/``with``/``for``."""
+    defined, imported = set(), set()
     pending = list(ast.parse(source).body)
     while pending:
         node = pending.pop()
@@ -752,16 +779,16 @@ def top_level_names(source: str) -> set[str]:
             pending += node.body + getattr(node, "orelse", []) + getattr(node, "finalbody", []) + \
                 [s for h in getattr(node, "handlers", []) for s in h.body]
             if isinstance(node, ast.For):
-                names |= {n.id for n in ast.walk(node.target) if isinstance(n, ast.Name)}
+                defined |= {n.id for n in ast.walk(node.target) if isinstance(n, ast.Name)}
             continue
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
+            defined.add(node.name)
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            names |= {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
+            defined |= {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            names |= {(a.asname or a.name).split(".")[0] for a in node.names}
-    return names
+            imported |= {(a.asname or a.name).split(".")[0] for a in node.names}
+    return defined, imported
 
 
 _BOM = "\ufeff"
@@ -825,14 +852,14 @@ def update_moves(root: Path, renames: dict[str, str], write: bool) -> int:
     return sum(1 for old in table if moves.get(old) != table[old])
 
 
-def _module_names(file: Path) -> set[str] | None:
-    """Top-level names of a moved module in the working tree; None when the branch deleted it."""
+def _module_names(file: Path) -> tuple[set[str], set[str]] | None:
+    """(defined, imported) top-level names of a moved module in the working tree; None when the branch deleted it."""
     if not file.is_file():
         return None
     try:
         return top_level_names(file.read_bytes().decode("utf-8-sig", errors="replace"))
     except SyntaxError:
-        return set()
+        return set(), set()
 
 
 def _moves_table(root: Path) -> dict[str, str]:
@@ -860,11 +887,68 @@ def _config_keys(root: Path) -> frozenset[str]:
     return frozenset(keys)
 
 
-def build_plan(root: Path, commit: str) -> Plan:
-    names = {old: found for old, (_, path) in moved_modules(root, commit).items()
-             if (found := _module_names(root / path)) is not None}
-    return Plan(module_renames(root, commit), renamed_paths(root, commit), names, _moves_table(root),
-                config_keys=_config_keys(root))
+def _moved_names(root: Path, commit: str, renames: dict[str, str]) -> dict[str, tuple[set[str], set[str]]]:
+    """Old dotted name -> (defined, imported) names of every moved module, by its import name and by its path from
+    the repository root, so a module under a folder without ``__init__.py`` (``plugins.platforms.x``) is known, and
+    each folder on the way is known as a namespace package."""
+    out: dict[str, tuple[set[str], set[str]]] = {}
+    for old, (_, path) in moved_modules(root, commit).items():
+        if (found := _module_names(root / path)) is not None:
+            out[old] = found
+    for old_path, new_path in renamed_paths(root, commit):
+        if not old_path.endswith(".py") or (found := _module_names(root / new_path)) is None:
+            continue
+        parts = old_path[:-3].removesuffix("/__init__").split("/")
+        dotted = ".".join(parts)
+        if current_name(dotted, renames) is not None:
+            out.setdefault(dotted, found)
+        for size in range(1, len(parts)):
+            prefix = ".".join(parts[:size])
+            if current_name(prefix, renames) is not None:
+                out.setdefault(prefix, (set(), set()))
+    return {name: found for name, found in out.items() if current_name(name, renames) is not None}
+
+
+def _helpers(root: Path, files: list[str]) -> dict[str, dict[str, dict[int, str]]]:
+    """Module -> function -> parameter: functions that pass a parameter straight to an import function."""
+    out = {}
+    for path in files:
+        if not path.endswith(".py"):
+            continue
+        text = (root / path).read_text(encoding="utf-8-sig", errors="replace")
+        if _HELPER_SOURCES.search(text) and (found := helper_parameters(text)):
+            out[path[:-3].removesuffix("/__init__").replace("/", ".")] = found
+    return out
+
+
+def _kept_names(root: Path, plan: Plan) -> frozenset[str]:
+    """Moved module names written inside excluded sites kept for persisted or shipped text."""
+    out = set()
+    dotted = re.compile(r"[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+")
+    for path, anchor, reason in plan.excluded:
+        if reason not in KEPT_NAMES:
+            continue
+        for alias in plan.aliases(path):
+            file = root / alias
+            if not file.is_file():
+                continue
+            source = file.read_text(encoding="utf-8-sig", errors="replace")
+            lines = source.splitlines()
+            for first, last in anchor_spans(source, anchor):
+                out |= {m for m in dotted.findall("\n".join(lines[first - 1:last])) if plan.new(m) is not None}
+    return frozenset(out)
+
+
+def build_plan(root: Path, commit: str, files: list[str] | None = None) -> Plan:
+    renames = module_renames(root, commit)
+    found = _moved_names(root, commit, renames)
+    names = {old: defined | imported for old, (defined, imported) in found.items()}
+    defined = {old: names_defined for old, (names_defined, _) in found.items()}
+    listed = files if files is not None else git(root, "ls-files", "*.py").split()
+    plan = Plan(renames, renamed_paths(root, commit), names, _moves_table(root), config_keys=_config_keys(root),
+                defined=defined, helpers=_helpers(root, listed))
+    plan.kept_names = _kept_names(root, plan)
+    return plan
 
 
 def main(argv: list[str] | None = None) -> int:

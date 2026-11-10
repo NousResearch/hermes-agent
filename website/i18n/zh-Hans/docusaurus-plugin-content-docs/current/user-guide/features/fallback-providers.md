@@ -27,7 +27,7 @@ Hermes Agent 具备三层弹性机制，在提供商出现问题时保持会话�
 hermes fallback
 ```
 
-`hermes fallback` 复用 `hermes model` 的提供商选择器——相同的提供商列表、相同的凭据提示、相同的验证流程。使用子命令 `add`、`list`（别名 `ls`）、`remove`（别名 `rm`）和 `clear` 来管理备用链。更改会持久化到 `config.yaml` 顶层的 `fallback_providers:` 列表中。
+`hermes fallback` 复用 `hermes model` 的提供商选择器——相同的提供商列表、相同的凭据提示、相同的验证流程。使用子命令 `add`、`list`（别名 `ls`）、`remove`（别名 `rm`）和 `clear` 来管理备用链，并用 `check` 检查备用链是否可用（`hermes fallback check [--live] [--json]`：逐项按备用切换的同一解析方式检查配置和凭据，`--live` 对每个条目只发送一次最小请求，并在提供商如实报告时核对实际应答的模型；任一条目不可用时退出码为 1，不创建 agent 会话）。更改会持久化到 `config.yaml` 顶层的 `fallback_providers:` 列表中。
 
 如果你更倾向于直接编辑 YAML，可在 `~/.hermes/config.yaml` 中添加 `fallback_model` 部分：
 

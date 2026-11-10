@@ -6186,7 +6186,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             allowed, note = self._telegram_media_size_allowed(source, f"{label} '{name}'" if isinstance(name, str) and name else label)
             if not allowed:
                 self._note_instead_of_media(event, note or "")
-                logger.info("[Telegram] Skipped oversized user %s (size=%s)", kind, getattr(source, "file_size", None))
+                logger.info(
+                    "[Telegram] Skipped user %s media with unverifiable or over-limit size (size=%s)",
+                    kind,
+                    getattr(source, "file_size", None),
+                )
                 return
             file_obj, data = await fetch_telegram_file(source, f"user {kind}")
             if kind == "video":
@@ -6229,8 +6233,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                     ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}.get(doc_mime, "")
             display = original_filename or doc_mime or ext or 'unknown'
             # Size check before the image branch so image documents can't bypass the limit.
-            if not doc.file_size or doc.file_size > self._max_doc_bytes:
-                logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
+            doc_size = self._int_or_zero(doc.file_size)
+            if not (0 < doc_size <= self._max_doc_bytes):
+                logger.info("[Telegram] Document has unverifiable or over-limit size: %s bytes", doc.file_size)
                 return self._note_instead_of_media(
                     event, f"Document '{display}' is too large or its size could not be verified. Maximum: {self._max_doc_bytes // (1024 * 1024)} MB.")
             # Screenshots/photos sent as documents take the image cache + batching path.

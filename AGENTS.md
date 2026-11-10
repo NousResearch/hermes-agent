@@ -30,7 +30,7 @@ Two invariants shape almost every design decision and are the lens for reviewing
 The project's intent layer, for contributors and for the triage sweeper (which may only close on
 `implemented_on_main`, `cannot_reproduce` or `incoherent`; taste-based closes are a maintainer's
 call, and when in doubt a PR stays open). Long form with examples:
-`website/docs/developer-guide/contributing.md` § Contribution rubric.
+`apps/docs/content/en/developer-guide/contributing.md` § Contribution rubric.
 
 **Wanted:** real bug fixes (repro on `main`, the exact line, the whole class incl. sibling paths);
 reach at the edges (adapters, providers, models, UI features) wired into the existing setup UX;
@@ -62,7 +62,7 @@ unreachable otherwise).
 
 `source ./activate` (fish: `activate.fish`, PowerShell: `activate.ps1`) provisions and activates the
 PM environment; pick an isolated `HERMES_HOME`/`HERMES_RUNTIME_DIR` first
-(`website/docs/reference/package-management.md#developer-workflow`). Tests need the separate test
+(`apps/docs/content/en/reference/package-management.md#developer-workflow`). Tests need the separate test
 environment in `CONTRIBUTING.md`. **`python scripts/check`** (`just check`) runs every blocking
 lint check CI runs, with CI's pinned tools; `--install-hook pre-push` runs it on every push (re-run
 after pulling to refresh the hook). `just` lists every developer command, and lefthook calls the
@@ -83,7 +83,7 @@ hermes-agent/
 ├── hermes_state.py       # SessionDB facade; hermes_state_*.py siblings
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── scripts/              # check, run_tests.sh, code_health/, ci/
-└── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
+└── apps/docs/            # Fumadocs app; content/en holds the long-form docs
 ```
 
 **User state:** `~/.hermes/config.yaml` (settings), `.env` (secrets only), `logs/` (`hermes logs`);
@@ -105,7 +105,7 @@ Every former god file is a **facade** (public entry points + the names other pac
   a function into a sibling to offset growth, or put new tests in a new test file). Behaviour goes
   in a sibling, never a facade; name ladders become a dict → handler.
 - **No re-export shims for internal moves;** internal paths are not API. Moving a symbol means
-  fixing its docs in the same PR (grep `website/docs`, `skills/`, every `AGENTS.md`).
+  fixing its docs in the same PR (grep `apps/docs/content/en`, `skills/`, every `AGENTS.md`).
 
 ## Rules that apply everywhere
 
@@ -125,7 +125,7 @@ Every former god file is a **facade** (public entry points + the names other pac
 - **Dependencies carry upper bounds** (`>=floor,<next_major`; git URLs and Actions pinned to a SHA);
   after editing `pyproject.toml` run `hermes pm lock` and commit `uv.lock`; never mutate a Hermes
   environment with raw pip/uv. Full policy: `pm/AGENTS.md`.
-- **TypeScript (desktop, TUI, website):** feature-owned nanostores over threaded state, thin route
+- **TypeScript (desktop, TUI, docs):** feature-owned nanostores over threaded state, thin route
   roots, narrow hooks and colocated action modules, `interface` for props and shared shapes,
   table-driven dispatch over condition ladders; `src/app` routes, `src/store` atoms, `src/lib` pure
   helpers.
@@ -160,5 +160,5 @@ Every former god file is a **facade** (public entry points + the names other pac
 | `pm/`, `pyproject.toml` | `pm/AGENTS.md` | pinning policy, PM-owned environments, plugin quarantine |
 | `hermes_platform/` | `hermes_platform/AGENTS.md` | host facts, resolvers |
 
-Long-form background: `website/docs/developer-guide/`. Workflow rules (PR/issue/review/salvage
+Long-form background: `apps/docs/content/en/developer-guide/`. Workflow rules (PR/issue/review/salvage
 process) live in the `hermes-agent-dev` skill, not here.

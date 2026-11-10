@@ -322,7 +322,7 @@ tools. Refresh happens automatically before `expires_in` elapses.
 
 1. **Do not assume "headless" means "OAuth impossible."** The built-in flow works fine for local CLI; the issue is strictly remote deployments where the user's browser and the Hermes process are on different machines. Check the execution environment before claiming OAuth isn't an option.
 
-2. **Read the source, not just the skill docs.** `tools/mcp_oauth.py` and the MCP config reference in `website/docs/` are the authoritative references. Grep the tree before telling the user a feature "doesn't exist."
+2. **Read the source, not just the skill docs.** `tools/mcp_oauth.py` and the MCP config reference in `apps/docs/content/en/` are the authoritative references. Grep the tree before telling the user a feature "doesn't exist."
 
 3. **Cloudflare UA filter.** Many MCP/OAuth providers front their infra with Cloudflare, which 403s `python-urllib/*` user agents on metadata endpoints even though those endpoints are public. Set `User-Agent: python-httpx/0.27` (or any browser-like string) on every request in this flow. Hermes itself uses httpx, so this is never a problem in the real connection path.
 

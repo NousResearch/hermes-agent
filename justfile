@@ -143,41 +143,42 @@ sandbox *args:
 icons:
     node scripts/generate-icons.mjs
 
-# Install the website's npm dependencies
+# Install the docs app's npm dependencies (own lockfile, not a workspace)
 [group('docs')]
 docs-install:
-    npm ci --prefix website
+    npm ci --prefix apps/docs
 
-# Build the English docs site
+# Build the docs app (Next static export, both locales)
 [group('docs')]
 docs-build:
-    npm run build:fast --prefix website
+    npm run build --prefix apps/docs
 
 # Regenerate the skills dashboard data and the per-skill docs pages
 [group('docs')]
 docs-generate:
-    scripts/hermes-python website/scripts/extract-skills.py
-    scripts/hermes-python website/scripts/generate-skill-docs.py
+    scripts/hermes-python apps/docs/scripts/extract-skills.py
+    scripts/hermes-python apps/docs/scripts/generate-skill-docs.py
 
 # Run every docs check CI runs, after regenerating the skill docs
 [group('docs')]
 docs-check: && docs-check-links docs-lint-diagrams
-    website/scripts/check_generated_skill_docs.sh {{ quote(just_executable()) }} docs-generate
+    apps/docs/scripts/check_generated_skill_docs.sh {{ quote(just_executable()) }} docs-generate
 
 # Fail when the committed skill docs differ from the generator's output
 [group('docs')]
 docs-check-generated:
-    website/scripts/check_generated_skill_docs.sh
+    apps/docs/scripts/check_generated_skill_docs.sh
 
 # Fail on cross-page links that break on GitHub or on the site
 [group('docs')]
 docs-check-links:
-    scripts/hermes-python website/scripts/check_doc_links.py
+    scripts/hermes-python apps/docs/scripts/check_doc_links.py
+    node apps/docs/scripts/check-source-links.mjs
 
 # Lint docs for ASCII box diagrams (pm installs the pinned ascii-guard on first run)
 [group('docs')]
 docs-lint-diagrams:
-    scripts/hermes-python -m scripts.ci.python_packages ascii-guard==2.3.0 ruamel.yaml==0.18.17 -- -m ascii_guard.cli lint --exclude-code-blocks website/docs
+    scripts/hermes-python -m scripts.ci.python_packages ascii-guard==2.3.0 ruamel.yaml==0.18.17 -- -m ascii_guard.cli lint --exclude-code-blocks apps/docs/content/en
 
 # Stage pinned bionic pm packages and their runtime libraries into a Termux payload
 [group('dev')]

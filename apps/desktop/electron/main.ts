@@ -313,7 +313,6 @@ import {
 } from './hardening'
 import { isHermesProcess } from './hermes-process'
 import { assertNotPassiveSpawn } from './host-backend-singleton'
-import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -6739,17 +6738,9 @@ function installDownloadHandling() {
 }
 
 function installMediaPermissions() {
-  // Async request handler: the prompt-style path (most platforms).
-  // clipboard-sanitized-write is granted ONLY to the exact Skills Hub origins
-  // (hub-iframe-policy.ts): the picker's Copy controls write to the clipboard,
-  // and every other frame — artifact previews included — stays denied.
+  // Async request handler: the prompt-style path (most platforms). Media
+  // capture only — every other permission (clipboard included) stays denied.
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    if ((permission as string) === 'clipboard-sanitized-write') {
-      callback(isHermesHubClipboardWrite(focusedFrameOrigin(webContents)))
-
-      return
-    }
-
     callback(isMediaCapturePermission(permission, details))
   })
 
@@ -6761,82 +6752,8 @@ function installMediaPermissions() {
   // permissions — identical policy to the request handler below, just without
   // the metadata refinement (absent metadata is allowed there too).
   session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
-    if ((permission as string) === 'clipboard-sanitized-write') {
-      return isHermesHubClipboardWrite(focusedFrameOrigin(webContents))
-    }
-
     return isMediaCapturePermission(permission, undefined)
   })
-}
-
-// Origin of the frame a permission request came from. The request handler is
-// given the webContents of the TOP document (Chromium routes subframe
-// permission requests through it in Electron 40 without exposing the frame
-// directly), so when the top document is NOT on a hub origin we fall back to
-// the request's own `requestingUrl` — the URL the frame actually asked for —
-// whose origin is exact for both hub deployments and `null` for anything
-// sandboxed or opaque.
-function focusedFrameOrigin(
-  webContents: { getURL?: () => string } | null | undefined,
-  details?: { requestingUrl?: string }
-): string | null {
-  try {
-    if (details?.requestingUrl) {
-      return new URL(details.requestingUrl).origin
-    }
-
-    if (webContents?.getURL) {
-      return new URL(webContents.getURL()).origin
-    }
-  } catch {
-    // Unparseable URL — report no origin; callers deny.
-  }
-
-  return null
-}
-
-/** The picker embed URL the hub iframe starts on (both deployments). */
-function isHermesHubPickerUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    const isHubOrigin = parsed.origin === HERMES_HUB_ORIGIN || parsed.origin === HERMES_HUB_FALLBACK_ORIGIN
-    const isPickerPath = parsed.pathname === '/hermes-agent/docs/skills' || parsed.pathname === '/docs/skills'
-
-    return isHubOrigin && isPickerPath
-  } catch {
-    return false
-  }
-}
-
-/** Look up a subframe by its process/routing id; never throws. */
-function findFrameByIdentifier(
-  webContents: { frames?: readonly unknown[]; framesInSubtree?: readonly unknown[] } | null | undefined,
-  frameProcessId: number,
-  frameRoutingId: number
-): { origin?: string; reload?: () => void } | null {
-  const candidates = [...(webContents?.frames ?? []), ...(webContents?.framesInSubtree ?? [])] as Array<{
-    processId?: number
-    routingId?: number
-    frameProcessId?: number
-    frameRoutingId?: number
-    origin?: string
-    reload?: () => void
-  }>
-
-  return (
-    candidates.find(
-      f => (f.frameProcessId ?? f.processId) === frameProcessId && (f.frameRoutingId ?? f.routingId) === frameRoutingId
-    ) ?? null
-  )
-}
-
-/** `frame.origin` as a safe string; destroyed frames report opaque/'null'. */
-function safeFrameOrigin(frame: { origin?: string } | null | undefined): string | null {
-  if (!frame?.origin || frame.origin === 'null') {
-    return null
-  }
-
-  return frame.origin
 }
 
 // ---------------------------------------------------------------------------
@@ -11869,46 +11786,9 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   installContextMenuBridge(win)
   // Always deny, never open as a side effect: GHSA-9f4c-93c8-jc8g. Trusted
   // links arrive via `hermes:openExternal`, not here. See window-open-policy.ts.
-  // The trusted-hub delegation (window-open-policy.ts, #91612) also never
-  // creates a window: it hands http/https/mailto opens from the EXACT hub
-  // origin to the audited `openExternalUrl` as a deny side effect.
   win.webContents.setWindowOpenHandler(
-    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`), {
-      getOpenerOrigin: () => win.webContents.getFocusedFrame?.()?.origin ?? null,
-      openExternalUrl: (url: string) => void openExternalUrl(url)
-    })
+    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`))
   )
-  // The embedded Skills Hub picker must stay pinned to its picker URL
-  // (#91612): the frame is free to navigate itself within the picker (search,
-  // pagination), but the moment it tries to escape to the full docs site —
-  // whose layout is not embeddable and whose links are then dead — the
-  // navigation is denied and the frame is reloaded onto the picker URL.
-  win.webContents.on('will-frame-navigate', (event, url, isMainFrame, frameProcessId, frameRoutingId) => {
-    if (isMainFrame) {
-      return
-    }
-
-    const frame = findFrameByIdentifier(win.webContents, frameProcessId, frameRoutingId)
-    const frameOrigin = safeFrameOrigin(frame)
-
-    if (frameOrigin !== HERMES_HUB_ORIGIN && frameOrigin !== HERMES_HUB_FALLBACK_ORIGIN) {
-      return
-    }
-
-    if (isHermesHubPickerUrl(url)) {
-      return
-    }
-
-    event.preventDefault()
-
-    // Reload the frame back onto the picker instead of leaving it on a
-    // half-navigated document.
-    try {
-      frame?.reload()
-    } catch {
-      // A destroyed frame is gone; nothing to restore.
-    }
-  })
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
       return

@@ -151,7 +151,7 @@ class TestDocsGenerator:
 
         script = (
             Path(__file__).resolve().parents[2]
-            / "website" / "scripts" / "extract-automation-blueprints.py"
+            / "apps" / "docs" / "scripts" / "extract-automation-blueprints.py"
         )
         spec = importlib.util.spec_from_file_location("extract_cron_blueprints", script)
         assert spec is not None and spec.loader is not None

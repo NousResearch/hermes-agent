@@ -1,6 +1,6 @@
 """Public helpers for a provider plugin's own ``hermes model`` step (``ProviderProfile.model_setup_flow``).
 
-Documented in website/docs/developer-guide/model-provider-plugin.md: these are the contract a plugin
+Documented in apps/docs/content/en/developer-guide/model-provider-plugin.md: these are the contract a plugin
 flow calls instead of re-implementing core's config rules.
 """
 

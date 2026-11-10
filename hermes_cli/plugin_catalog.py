@@ -7,7 +7,7 @@ the human-merged approval gate; SHA bumps are new, re-reviewed PRs; ``removed.ya
 ``plugin-catalog/README.md``.
 
 Live refresh: the docs build publishes the same data as ONE JSON document
-(``website/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
+(``apps/docs/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
 an installed Hermes sees new entries and removals without updating. A fetch failure reuses the last valid
 cached copy regardless of age, then falls back to the in-tree copy when no valid cache exists.
 """
@@ -89,7 +89,7 @@ class PluginCatalogEntry:
     docs_url: str = ""
     version: str = ""            # human label for the pinned sha ("1.4.0"); cosmetic, never parsed
     image: str = ""              # https image URL on a GitHub host; shown on catalog cards
-    screenshots: list[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /docs/plugins/<name>
+    screenshots: list[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /marketplace/<name>
     readme: bool = False         # docs site renders the README from the pinned commit on the entry's page
     platforms: list[str] = field(default_factory=list)  # empty = all OSes
     title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``

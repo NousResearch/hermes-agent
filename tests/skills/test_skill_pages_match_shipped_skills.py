@@ -1,6 +1,6 @@
 """Contract: a generated per-skill page exists only while its skill ships.
 
-``website/scripts/generate-skill-docs.py`` writes a page per discovered skill but never *prunes*
+``apps/docs/scripts/generate-skill-docs.py`` writes a page per discovered skill but never *prunes*
 pages for skills that were moved or merged. Once the catalogs and the sidebar are regenerated
 they stop pointing at the leftovers, so an orphan page stays reachable only through cross-links
 from other pages — and it still advertises ``Source | Bundled (installed by default)`` for a
@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILL_PAGES = REPO_ROOT / "website" / "docs" / "user-guide" / "skills"
+SKILL_PAGES = REPO_ROOT / "apps" / "docs" / "content" / "en" / "user-guide" / "skills"
 _PATH_ROW_RE = re.compile(r"^\|\s*Path\s*\|\s*`([^`]+)`", re.MULTILINE)
 
 

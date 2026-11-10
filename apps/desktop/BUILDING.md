@@ -47,7 +47,7 @@ need them for Git-dependent operations.
 
 User data remains outside the package. Optional additions use writable PM
 storage and complete Python environment generations, not writes into the app.
-See [Package management](../../website/docs/reference/package-management.md).
+See [Package management](../../apps/docs/content/en/reference/package-management.md).
 
 ## Python runtime contract
 
@@ -371,7 +371,7 @@ signing/notarization acceptance; a successful download is not native execution p
 
 ## Development, assets, and verification
 
-Prepare and activate the [PM developer environment](../../website/docs/reference/package-management.md#developer-workflow)
+Prepare and activate the [PM developer environment](../../apps/docs/content/en/reference/package-management.md#developer-workflow)
 first. Use Bash `source ./activate` or PowerShell `. .\activate.ps1`, and keep a
 separate development home. Activation supplies the toolchain, not `node_modules`.
 

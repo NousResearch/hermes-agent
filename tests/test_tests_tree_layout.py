@@ -33,7 +33,7 @@ _NON_MIRROR_DIRS = {
     "ci", "conformance", "dashboard", "desktop", "docker", "e2e", "evals",
     "fakes", "fixtures", "install", "integration", "manual",
     "monitoring", "perf_guards", "scripts", "secret_sources",
-    "security", "skills", "verify", "website", "computer_use", "hermes_state",
+    "security", "skills", "verify", "docs_site", "computer_use", "hermes_state",
 }
 
 # Root-level modules whose tests sit directly in tests/ (no package to mirror).

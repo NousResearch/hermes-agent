@@ -107,7 +107,7 @@ async def _rescan_retaining_beta(runner, beta, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('retained', [False, True])
 async def test_a_relay_frame_for_a_parked_profile_is_refused_to_its_sender_not_held(tmp_path, monkeypatch, retained):
-    """website/docs/developer-guide/relay-connector-contract.md §3.2: on reconnect the connector drains
+    """apps/docs/content/en/developer-guide/relay-connector-contract.md §3.2: on reconnect the connector drains
     its per-instance buffer in order, ack-gated. b1 routes to the parked beta, b2 to the healthy
     default profile and is sent only once b1 is acknowledged: holding b1 for the park would hold b2.
     Also when the park retained beta's retiring authority, which refuses every admission."""

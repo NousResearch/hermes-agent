@@ -18,7 +18,7 @@ import pytest
 import hermes_yaml as yaml
 from hermes_cli.plugin_validate import validate_plugin_dir
 
-_GUIDE = Path(__file__).resolve().parents[2] / "website/docs/developer-guide/browser-vault-plugin.md"
+_GUIDE = Path(__file__).resolve().parents[2] / "apps/docs/content/en/developer-guide/browser-vault-plugin.md"
 
 
 def _private_warnings(plugin: Path) -> list[str]:

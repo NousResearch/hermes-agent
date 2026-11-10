@@ -1,5 +1,5 @@
 #!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
-"""Regenerate website/docs/developer-guide/gateway-command-parity.md from the code.
+"""Regenerate apps/docs/content/en/developer-guide/gateway-command-parity.md from the code.
 
 For every ``COMMAND_REGISTRY`` command it records what each local client does with it on the
 shared gateway -- the classic CLI (main's ``HermesCLI`` dispatch table, ``cli.py``), Ink
@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "website" / "docs" / "developer-guide" / "gateway-command-parity.md"
+OUT = ROOT / "apps" / "docs" / "content" / "en" / "developer-guide" / "gateway-command-parity.md"
 
 # Per-session settings: slash.exec runs their messaging handler, which applies a setting to the local
 # session it came from (gateway/session_setting_commands.py; tests/gateway/test_session_setting_commands.py).

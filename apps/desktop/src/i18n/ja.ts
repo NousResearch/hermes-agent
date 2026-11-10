@@ -1333,14 +1333,7 @@ export const jaOverrides = {
   skills: {
     plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab, ...jaPluginUpdateAll },
     hub: {
-      search: '検索',
-      searching: '検索中…',
-      noResults: '一致するスキルがハブにありません。',
-      installed: 'インストール済み',
       installStarted: name => `「${name}」をインストール中…`,
-      pickerBrowse: 'ハブ全体を見る',
-      pickerHide: 'ハブのブラウザーを隠す',
-      pickerHint: 'スキルの「+ Add to this Agent」を押すと、インストールされて上の一覧に表示されます。'
     },
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',

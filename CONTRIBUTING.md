@@ -123,7 +123,7 @@ The rules that most often send a submission back: the plugin must extend Hermes 
 
 ### PM developer environment
 
-Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,
+Use the [PM developer workflow](apps/docs/content/en/reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,
 dependency changes, and test environments. Select your development
 home before setup so experimental code does not migrate production data.
 
@@ -176,7 +176,7 @@ script or tool in this repository, so the commands below also work without
 | `just test-all` | the full Python suite |
 | `just js-install`, `just check-js`, `just test-js` | `pnpm install --frozen-lockfile`, `pnpm -r check`, `pnpm -r test` (after building `@hermes/ink`) |
 | `just desktop`, `just tui` | the desktop and TUI dev servers |
-| `just docs-install`, `just docs-build` | the website's `npm ci` and `build:fast` |
+| `just docs-install`, `just docs-build` | the docs app's `npm ci` and `build` |
 | `just docs-generate`, `just docs-check` | regenerate the skill docs pages; then every docs check CI runs (committed pages match, links, diagrams) |
 | `just lock` | `scripts/relock.sh`: refreshes `uv.lock` after a `pyproject.toml` change, then re-syncs |
 | `just check-repo-guards`, `just check-uv-lock` | the repo-guards history, contributor and supply-chain steps, and the `uv.lock` check, through `scripts/ci/local_step.sh` against the merge base with `origin/main` |
@@ -189,7 +189,7 @@ a shell that was never activated. A new developer command is a script under
 
 ### Manual development and test environment
 
-Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) to prepare Python 3.14 (`>=3.14,<3.15`) first.
+Use the [PM developer workflow](apps/docs/content/en/reference/package-management.md#developer-workflow) to prepare Python 3.14 (`>=3.14,<3.15`) first.
 Run these commands from that checkout with its prepared Python. Keep the same
 development `HERMES_HOME`. PM must be able to start before it can build another
 environment. On Windows, initialize the native C++ build environment for your
@@ -226,7 +226,7 @@ For an isolated development instance, select a disposable `HERMES_HOME` before
 starting the source command. Use `hermes setup` to configure it rather
 than copying production credentials into the checkout.
 
-### JavaScript workspaces and website
+### JavaScript workspaces and the docs app
 
 From the repository root, run `pnpm install --frozen-lockfile` (`just js-install`) for the desktop,
 TUI, dashboard, and shared JS workspaces. `pm/lock.json` pins pnpm
@@ -237,12 +237,12 @@ filtered `pnpm install` included: the root `preinstall` script requires the
 root `engines.pnpm` range. pnpm 12 skips the root `preinstall` under
 `--ignore-scripts`, `--lockfile-only` (which writes `pnpm-lock.yaml`) and `pnpm fetch`,
 so another pnpm 12 is not refused there; CI installs every changed lockfile with the
-pinned pnpm under `--frozen-lockfile`. The website is a separate npm project
+pinned pnpm under `--frozen-lockfile`. The docs app is a separate npm project (own lockfile, not a workspace)
 (`just docs-install`, `just docs-build`):
 
 ```bash
-npm ci --prefix website
-npm run build:fast --prefix website
+npm ci --prefix apps/docs
+npm run build --prefix apps/docs
 ```
 
 In the repository root and the JS workspace folders, npm refuses every command that
@@ -288,7 +288,7 @@ subprocess through `scripts/run_tests_parallel.py`. It does not use xdist.
 
 Run the relevant JS workspace checks for JS changes. Native install/update
 E2E runs on disposable CI hosts, never against the developer's live app.
-See [Package management](website/docs/reference/package-management.md) for PM commands and runtime ownership.
+See [Package management](apps/docs/content/en/reference/package-management.md) for PM commands and runtime ownership.
 
 ---
 
@@ -364,7 +364,7 @@ hermes-agent/
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
 ├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
 ├── tests/                    # Test suite
-├── website/                  # Documentation site (hermes-agent.nousresearch.com)
+├── apps/docs/                # Documentation site, own install/lockfile (hermes-agent.nousresearch.com)
 │
 ├── cli-config.yaml.example   # Example configuration (copied to ~/.hermes/config.yaml)
 └── AGENTS.md                 # Development guide for AI coding assistants

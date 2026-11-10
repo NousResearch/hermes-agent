@@ -1981,16 +1981,12 @@ export interface Translations extends NoticeTranslations {
     officialPill: string
     hub: {
       searchPlaceholder: string
-      search: string
-      searching: string
       connectingHubs: string
       connectedHubs: string
       featured: string
       landingHint: string
-      noResults: string
       resultCount: (count: number, ms: number | null) => string
       timedOut: (sources: string) => string
-      installed: string
       install: string
       installing: string
       uninstall: string
@@ -2022,10 +2018,6 @@ export interface Translations extends NoticeTranslations {
       openLog: string
       actionLog: string
       alreadyInstalled: (name: string) => string
-      pickerTitle: string
-      pickerBrowse: string
-      pickerHide: string
-      pickerHint: string
       loadFailed: string
       previewFailed: string
       scanFailed: string

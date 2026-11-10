@@ -6,7 +6,7 @@ loaded by the process plugin manager, as ``hermes`` itself loads it. The tests a
 of the plugin would see: the tool answers through ``handle_function_call``, hooks fire with the
 documented keyword fields, middleware rewrites the call, ``/conformance-ping`` and
 ``hermes conformance-cli`` answer, each provider resolves by name, and unloading the plugin takes
-every one of those back. See website/docs/developer-guide/plugins/index.md § Native plugin
+every one of those back. See apps/docs/content/en/developer-guide/plugins/index.md § Native plugin
 compatibility contract.
 """
 
@@ -28,7 +28,7 @@ _ROOT = Path(__file__).resolve().parents[3]
 PLUGIN = "conformance-surface"
 NAME = "conformance"
 
-# The documented kwargs (website/docs/user-guide/features/hooks.md, plugin hook table).
+# The documented kwargs (apps/docs/content/en/user-guide/features/hooks.md, plugin hook table).
 _PRE_TOOL_CALL = {"tool_name", "args", "task_id", "session_id", "conversation_id", "tool_call_id", "turn_id",
                   "api_request_id", "middleware_trace"}
 _POST_TOOL_CALL = {"tool_name", "args", "result", "task_id", "session_id", "conversation_id", "tool_call_id",

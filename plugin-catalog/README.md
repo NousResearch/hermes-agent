@@ -10,7 +10,7 @@ Curated, Nous-approved Hermes plugins. Each YAML file in this directory
 Presence in this directory **is** the trust signal. The rules that keep it
 meaningful:
 
-<!-- admission-rules:start (mirrored in website/docs/developer-guide/plugins/catalog-submission.md; tests/website/test_catalog_rules_mirror.py keeps them identical) -->
+<!-- admission-rules:start (mirrored in apps/docs/content/en/developer-guide/plugins/catalog-submission.md; tests/docs_site/test_catalog_rules_mirror.py keeps them identical) -->
 1. **Human-merged gate.** Entries are added *only* via a PR to the
    `hermes-agent` repository, reviewed and merged by a maintainer. There is
    no self-serve registry, no automated ingestion.
@@ -195,8 +195,8 @@ docs_url: ""                # optional
 version: "1.4.0"            # optional human label for the sha (quote it); shown as "1.4.0 @ abcd1234"
 image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1200x600), e.g.
                             # https://raw.githubusercontent.com/owner/repo/<sha>/docs/banner.png
-screenshots: []             # optional, up to 6 https images on a GitHub host; gallery on /docs/plugins/<name>
-readme: true                # optional, default true; the README at the PINNED SHA renders on /docs/plugins/<name>
+screenshots: []             # optional, up to 6 https images on a GitHub host; gallery on /marketplace/<name>
+readme: true                # optional, default true; the README at the PINNED SHA renders on /marketplace/<name>
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 title: ""                   # optional human name on cards ("NVIDIA App"); default = name
 onboarding: false           # optional; offered on the Desktop onboarding card (official or verified entries only)
@@ -223,13 +223,11 @@ so the Desktop catalog and the docs site never fetch from third-party hosts;
 pin the raw URL to the entry's commit and the picture is as immutable as the
 code.
 
-Every entry gets a page at `https://hermes-agent.nousresearch.com/docs/plugins/<name>`
-and every maintainer a page at `/docs/plugins/by/<maintainer>`, both generated
-from these files at docs build time. `screenshots:` fills the page's gallery;
-the build fetches the README (from `subdir` if set, else the repo root) **at the
+Every entry gets a page at `https://hermes-agent.nousresearch.com/marketplace/<name>`
+and every maintainer a page at `/marketplace/by/<maintainer>`, both built from
+these files. `screenshots:` fills the page's gallery; the marketplace fetches the README (from `subdir` if set, else the repo root) **at the
 pinned sha** — GitHub and GitLab repos, on by default, `readme: false` opts out — and renders it
-through an allowlist (raw HTML dropped, links and images resolved against the
-pinned tree). The page therefore shows the README the reviewer read, and it
+with raw HTML dropped and links and images resolved against the pinned tree. The page therefore shows the README the reviewer read, and it
 changes only when a reviewed re-pin lands.
 
 ## removed.yaml — the blocklist

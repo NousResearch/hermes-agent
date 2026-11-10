@@ -137,7 +137,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
 
 
 class TestMinimaxOauthAliases:
-    """Every ``--provider`` alias the user guide (website/docs/guides/minimax-oauth.md)
+    """Every ``--provider`` alias the user guide (apps/docs/content/en/guides/minimax-oauth.md)
     promises for ``minimax-oauth`` must resolve through the plugin registry, not only the
     CLI alias tables — ``get_provider_profile(agent.provider)`` is what selects the
     anthropic_messages wire, extra_body and headers (#107928)."""

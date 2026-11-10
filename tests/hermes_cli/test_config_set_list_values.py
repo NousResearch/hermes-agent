@@ -174,3 +174,28 @@ def test_bare_string_into_list_slot_absent_from_defaults_is_refused(user_home, c
             set_config_value(key, "a,b")
         assert "must be a list" in capsys.readouterr().err
     assert read_raw_config() in (None, {})
+
+
+def test_bare_string_into_excluded_models_mapping_is_refused(user_home, capsys):
+    """`model_catalog.excluded_models` is omitted from DEFAULT_CONFIG and every
+    reader requires a provider -> patterns mapping, so a bare string must be
+    refused rather than stored and silently ignored."""
+    from hermes_cli.config import set_config_value, read_raw_config
+
+    with pytest.raises(SystemExit):
+        set_config_value("model_catalog.excluded_models", "claude-*-4-*")
+    assert "must be a mapping" in capsys.readouterr().err
+    assert read_raw_config() in (None, {})
+
+
+def test_excluded_models_mapping_literal_and_provider_entry_are_stored(user_home):
+    from hermes_cli.config import read_raw_config, set_config_value
+    from hermes_cli.model_filters import filter_model_ids
+
+    set_config_value("model_catalog.excluded_models", '{"openrouter": ["anthropic/*"]}')
+    set_config_value("model_catalog.excluded_models.anthropic", "claude-*-4-*")
+    rules = read_raw_config()["model_catalog"]["excluded_models"]
+    assert rules["openrouter"] == ["anthropic/*"]
+    assert filter_model_ids(
+        "anthropic", ["claude-opus-4-6", "claude-opus-5-5"], rules,
+    ) == ["claude-opus-5-5"]

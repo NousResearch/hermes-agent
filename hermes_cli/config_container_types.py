@@ -16,6 +16,7 @@ _KNOWN_CONTAINER_TYPES = {
     "plugins.enabled": "list",
     "plugins.disabled": "list",
     "model_catalog.excluded_providers": "list",
+    "model_catalog.excluded_models": "mapping",
 }
 # List slots whose readers go through ``parse_config_string_list``: a bare name is one entry.
 _SCALAR_AS_ONE_ITEM_LIST_KEYS = frozenset({"agent.disabled_toolsets", "skills.disabled"})

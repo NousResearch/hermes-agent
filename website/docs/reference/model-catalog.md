@@ -135,7 +135,9 @@ Vercel AI Gateway scope.
 The patterns use shell-style globs: `*` matches any sequence, `?` matches one
 character, and bracket expressions such as `[ab]` match one listed character.
 Exact model IDs work without wildcard characters. Matching is
-case-insensitive.
+case-insensitive. A single pattern can also be given as a plain string, which
+is what `hermes config set model_catalog.excluded_models.anthropic
+'claude-*-4-*'` stores.
 
 This is a picker policy, not a runtime authorization block. An existing saved
 model remains valid, and CLI or slash-command paths that accept an explicit

@@ -36,6 +36,10 @@ def _patterns_for_provider(
             raw_patterns = value
             break
 
+    # `hermes config set model_catalog.excluded_models.<provider> 'glob'`
+    # stores a bare string; treat it as one pattern rather than ignoring it.
+    if isinstance(raw_patterns, str):
+        raw_patterns = [raw_patterns]
     if not isinstance(raw_patterns, list):
         return ()
 

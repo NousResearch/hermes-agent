@@ -46,6 +46,19 @@ def test_filter_model_ids_matches_exact_and_glob_case_insensitively():
     ) == ["deepseek/deepseek-v4"]
 
 
+def test_filter_model_ids_treats_a_bare_string_rule_as_one_pattern():
+    # `hermes config set model_catalog.excluded_models.anthropic 'claude-*-4-*'`
+    # stores a string, not a one-item list; it must still take effect.
+    assert filter_model_ids(
+        "anthropic",
+        ["claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-5-5"],
+        {"anthropic": "claude-*-4-*"},
+    ) == ["claude-opus-5-5"]
+    assert filter_model_ids(
+        "anthropic", ["claude-opus-4-6"], {"anthropic": "  "},
+    ) == ["claude-opus-4-6"]
+
+
 def test_filter_model_ids_is_scoped_to_provider():
     rules = {"openrouter": ["anthropic/*", "openai/*"]}
 
@@ -100,7 +113,7 @@ def test_filter_model_ids_ignores_malformed_rules():
     assert filter_model_ids(
         "openrouter",
         models,
-        {"openrouter": "anthropic/*"},
+        {"openrouter": {"pattern": "anthropic/*"}},
     ) == models
     assert filter_model_ids(
         "openrouter",

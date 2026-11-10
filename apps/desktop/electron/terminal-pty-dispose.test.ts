@@ -21,7 +21,7 @@ vi.mock('node-pty', () => ({ default: { spawn: (...args: unknown[]) => spawnMock
 import { registerTerminalIpc } from './terminal-ipc'
 
 interface FakePty {
-  listeners: { exit: null | ((event: { exitCode: number | null; signal: string | null }) => void) }
+  listeners: { exit: null | ((event: { exitCode: number | null; signal: number | null }) => void) }
   pty: {
     kill: ReturnType<typeof vi.fn>
     onData: ReturnType<typeof vi.fn>
@@ -89,7 +89,7 @@ async function startSession() {
   return { fake, sender, session }
 }
 
-function fireExit(fake: FakePty, event: { exitCode: number | null; signal: string | null }) {
+function fireExit(fake: FakePty, event: { exitCode: number | null; signal: number | null }) {
   assert.ok(fake.listeners.exit, 'the session must subscribe to PTY exit')
 
   fake.listeners.exit(event)
@@ -100,8 +100,8 @@ test('an exited shell releases its PTY handle without waiting for tab dispose', 
 
   // The child is gone; the /dev/ptmx master fd must be released right here.
   // Waiting for the tab to close (or the renderer to attach) leaks PTYs until
-  // macOS cannot allocate one (#128942).
-  fireExit(fake, { exitCode: 0, signal: null })
+  // macOS cannot allocate one (#128942). node-pty reports signal 0 for a normal exit.
+  fireExit(fake, { exitCode: 0, signal: 0 })
   assert.equal(fake.pty.kill.mock.calls.length >= 1, true)
 
   // Killing the handle must not break the buffered-exit delivery: a renderer

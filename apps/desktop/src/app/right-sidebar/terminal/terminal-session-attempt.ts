@@ -1,7 +1,7 @@
 import type { Terminal } from '@xterm/xterm'
 import type { RefObject } from 'react'
 
-import type { HermesTerminalSession } from '@/global'
+import type { HermesTerminalExit, HermesTerminalSession } from '@/global'
 import { translateNow } from '@/i18n'
 import { hostHas } from '@/lib/host-capabilities'
 
@@ -45,6 +45,10 @@ if (typeof window !== 'undefined') {
   window.addEventListener('pageshow', () => {
     appTearingDown = false
   })
+}
+
+function exitStatusLabel(exit: HermesTerminalExit): string {
+  return exit.code ? `exit code ${exit.code}` : `signal ${exit.signal}`
 }
 
 interface SessionAttemptOptions {
@@ -234,7 +238,15 @@ export function createSessionAttemptController(
               return
             }
 
-            // Only a current process exit removes the persisted tab.
+            // A shell that ended cleanly closes its tab; a failed or killed one keeps its
+            // scrollback (the error is usually the last thing it printed) and Enter starts a new shell.
+            if (exit.code || exit.signal) {
+              resumeOnly = false
+              armRetry(`\r\n${translateNow('rightSidebar.terminalExitedBody', exitStatusLabel(exit))}`)
+
+              return
+            }
+
             removeExitedTerminal(id)
           })
         )

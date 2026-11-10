@@ -171,6 +171,46 @@ def _effective_watchdog_leash(runner: object) -> float:
     return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
 
 
+def _running_project_root() -> Optional[str]:
+    """Project root the running process imported ``hermes_cli`` from, else None.
+
+    A source checkout reached through PYTHONPATH (``scripts/hermes-python``):
+    ``<root>/hermes_cli``. An install inside site-packages needs no PYTHONPATH
+    — the interpreter finds it on its own — so only a non-site-packages root
+    is returned.
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("hermes_cli")
+        origin = getattr(spec, "origin", None) if spec is not None else None
+        if not origin:
+            return None
+        root = Path(origin).resolve().parent.parent
+        if any(part in ("site-packages", "dist-packages") for part in root.parts):
+            return None
+        return str(root)
+    except Exception:
+        return None
+
+
+def _detached_restart_log_path() -> Optional[Path]:
+    """``<HERMES_HOME>/logs/detached-restart.log`` when the logs dir is writable.
+
+    The detached restart helper runs after the gateway exits, so its stderr
+    and exit status have nowhere to go in-process; without a file they vanish
+    into /dev/null and a failed respawn looks like a successful restart
+    (#152714). None keeps the old DEVNULL behaviour when the log cannot be
+    created.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        log_path = get_hermes_home() / "logs" / "detached-restart.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        return log_path
+    except Exception:
+        return None
+
+
 class GatewayShutdownMixin(GatewaySessionEndMixin):
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
@@ -1403,6 +1443,19 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             )
         watcher_env = drop_bridged_env(watcher_env)
         watcher_env.pop("_HERMES_GATEWAY", None)
+        # The child-env builders strip Hermes-owned PYTHONPATH entries by
+        # design, so ordinary children never inherit the parent's checkout.
+        # The restart watcher is the exception: it must re-exec THIS install,
+        # and a gateway started from a source checkout through PYTHONPATH
+        # (scripts/hermes-python) is otherwise unimportable to it — the
+        # respawn fails with "No module named 'hermes_cli'" and nothing is
+        # logged (#152714). Keep the project root the running process
+        # imported hermes_cli from on the watcher's PYTHONPATH.
+        project_root = _running_project_root()
+        if project_root:
+            existing = [p for p in watcher_env.get("PYTHONPATH", "").split(os.pathsep) if p]
+            if project_root not in existing:
+                watcher_env["PYTHONPATH"] = os.pathsep.join([project_root, *existing])
         return watcher_env
 
     @staticmethod
@@ -1470,11 +1523,25 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             GatewayShutdownMixin._spawn_windows_restart_watcher(hermes_cmd, current_pid, restart_after_s)
             return
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
-        shell_cmd = (
-            f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
-            f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
-        )
+        # The helper runs after this process exits, so its stderr and exit
+        # status have nowhere to go in-process: send them to a file under
+        # HERMES_HOME/logs instead of /dev/null silence, or a failed respawn
+        # looks like a successful restart (#152714).
+        log_path = _detached_restart_log_path()
+        if log_path is not None:
+            log_arg = shlex.quote(str(log_path))
+            shell_cmd = (
+                f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
+                f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
+                f"{cmd} gateway restart >> {log_arg} 2>&1; "
+                f"echo \"detached restart exited with status $?\" >> {log_arg}"
+            )
+        else:
+            shell_cmd = (
+                f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
+                f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
+                f"{cmd} gateway restart"
+            )
         setsid_bin = shutil.which("setsid")
         argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]
         subprocess.Popen(  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object

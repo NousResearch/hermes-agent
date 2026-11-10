@@ -387,6 +387,40 @@ async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch
     assert kwargs["creationflags"] == 0x08000200
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.asyncio
+async def test_posix_detached_restart_logs_helper_output_and_exit_status(monkeypatch, tmp_path):
+    """The detached restart helper runs after the gateway exits, so a failed
+    respawn used to vanish into /dev/null: the user was told the gateway is
+    restarting and it stayed down. Its stderr and exit status must land in
+    <HERMES_HOME>/logs/detached-restart.log (#152714)."""
+    import shlex
+
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    shell_cmd = popen_calls[0][0][-1]
+    log_path = tmp_path / "logs" / "detached-restart.log"
+    assert log_path.parent.is_dir()
+    log_arg = shlex.quote(str(log_path))
+    assert "hermes gateway restart" in shell_cmd
+    assert f">> {log_arg} 2>&1" in shell_cmd
+    assert f'echo "detached restart exited with status $?" >> {log_arg}' in shell_cmd
+
+
 # ── Shutdown notification tests ──────────────────────────────────────
 
 

@@ -53,7 +53,7 @@ def test_probe_runs_without_lazy_installs(capsys, monkeypatch):
 
     (args, kwargs) = recorded[0]
     assert args[0][:2] == [sys.executable, "-c"]
-    assert args[0][2] == "import hermes_cli.web_server"
+    assert args[0][2] == "import hermes_agent.hermes_cli.web_server"
     env = kwargs["env"]
     assert env["HERMES_DISABLE_LAZY_INSTALLS"] == "1"
     assert kwargs["timeout"] >= 60

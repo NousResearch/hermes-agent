@@ -40,7 +40,7 @@ def homes(tmp_path, monkeypatch):
         (hermes_home / "plugins" / name).mkdir(parents=True)
 
     def run(argv, env, check=False):
-        hermes_args = argv[argv.index("hermes_cli.main") + 1:]
+        hermes_args = argv[argv.index("hermes_agent.hermes_cli.main") + 1:]
         calls.append(("import", hermes_args, env["HERMES_HOME"]))
         (hermes_home / "config.yaml").write_text(f"imported: {hermes_args[-1]}\n", encoding="utf-8")
         return subprocess.CompletedProcess(argv, 0)

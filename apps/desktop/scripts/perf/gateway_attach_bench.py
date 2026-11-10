@@ -222,7 +222,7 @@ def _report_surfaces() -> None:
     attach_rpcs = ("image.attach", "image.attach_bytes", "file.attach", "clipboard.paste")
 
     surfaces = {
-        "CLI (cli.py)": [root / "cli.py"],
+        "CLI (cli.py)": [root / "hermes_agent" / "cli.py"],
         "TUI (ui-tui)": sorted((root / "ui-tui" / "src").rglob("*.ts")),
         "Desktop (apps/desktop)": sorted((root / "apps" / "desktop" / "src").rglob("*.ts")),
     }

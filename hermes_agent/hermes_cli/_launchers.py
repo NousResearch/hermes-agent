@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 if __name__ == "__main__":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pm.environments import owning_home_root, payload_command_dir, store_root
 
@@ -389,20 +389,22 @@ def _hermes_closure_repair():
     if not re.fullmatch('[0-9a-f]{40}|[0-9a-f]{64}', pre):
         return
     closure = git / __CLOSURE_DIR__ / pre
-    files = (*__CLOSURE__, __INIT__)
+    layouts = __LAYOUTS__
 
     def blob_id(data):
         return hashlib.new('sha1' if len(pre) == 40 else 'sha256', b'blob %d\\0' % len(data) + data).hexdigest()
 
-    def verified():
+    def verified():  # the closure's package (``hermes_cli`` before the move), or '' when not whole
         try:
             listed = dict(line.split(' ', 1)[::-1] for line in (closure / __MANIFEST__).read_text(encoding='utf-8-sig').splitlines())
-            return (set(listed) == set(files) and listed[__INIT__] == blob_id(b'')
-                    and all(blob_id((closure / rel).read_bytes()) == oid for rel, oid in listed.items()))
+            return next((package for files, init, package in layouts if set(listed) == {*files, init}
+                         and listed[init] == blob_id(b'')
+                         and all(blob_id((closure / rel).read_bytes()) == oid for rel, oid in listed.items())), '')
         except (OSError, ValueError):
-            return False
+            return ''
 
-    if not verified():
+    package = verified()
+    if not package:
         exe = fields.get('git', '').strip()
         if not (os.path.isabs(exe) and os.path.isfile(exe)):
             names = ('git.exe',) if os.name == 'nt' else ('git',)
@@ -421,12 +423,13 @@ def _hermes_closure_repair():
         staging = closure.with_name('.%s.%d.launch' % (pre, os.getpid()))
         try:
             ids = {}
-            for entry in git_out('ls-tree', '-z', '--full-tree', pre, '--', *__CLOSURE__).split(b'\\0'):
+            for entry in git_out('ls-tree', '-z', '--full-tree', pre, '--', *(rel for files, _, _ in layouts for rel in files)).split(b'\\0'):
                 meta, _, rel = entry.decode('utf-8', 'replace').partition('\\t')
                 if meta.split()[1:2] == ['blob']:
                     ids[rel] = meta.split()[2]
-            blobs = {__INIT__: b''}
-            for rel in __CLOSURE__:
+            files, init, _ = next((layout for layout in layouts if all(rel in ids for rel in layout[0])), layouts[0])
+            blobs = {init: b''}
+            for rel in files:
                 blobs[rel] = git_out('cat-file', 'blob', ids[rel])
                 if blob_id(blobs[rel]) != ids[rel]:  # an object that inflates to bytes pre never had
                     raise OSError('%s does not hash to %s' % (rel, ids[rel]))
@@ -440,9 +443,10 @@ def _hermes_closure_repair():
             pass
         finally:
             shutil.rmtree(staging, ignore_errors=True)
-        if not verified():
+        package = verified()
+        if not package:
             return
-    for name in [n for n in sys.modules if n.split('.')[0] in ('hermes_cli', 'hermes_bootstrap', 'hermes_constants', 'pm')]:
+    for name in [n for n in sys.modules if n.split('.')[0] in ('hermes_agent', 'hermes_cli', 'hermes_bootstrap', 'hermes_constants', 'pm')]:
         del sys.modules[name]
     tree = os.path.normcase(os.path.realpath(root))
     sys.path[:] = [str(closure)] + [p for p in sys.path if p and os.path.normcase(os.path.realpath(p)) != tree
@@ -452,7 +456,7 @@ def _hermes_closure_repair():
     restored = False
     try:
         with contextlib.redirect_stderr(said):
-            from hermes_cli import _early_recovery
+            _early_recovery = __import__(package + '._early_recovery', fromlist=['_early_recovery'])
             restored = _early_recovery.restore_interrupted_pull(root)
     except Exception as exc:
         said.write('hermes: the checkout cannot start after an interrupted `hermes update`, and it was not '
@@ -481,17 +485,15 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
     root = str(repo_root.resolve())
     from hermes_agent.hermes_cli._early_recovery import (
         INTERRUPTED_PULL_MARKER,
-        RECOVERY_CLOSURE,
         RECOVERY_CLOSURE_DIR,
-        RECOVERY_CLOSURE_INIT,
+        RECOVERY_CLOSURE_LAYOUTS,
         RECOVERY_CLOSURE_MANIFEST,
     )
 
     closure_repair = (_CLOSURE_REPAIR.replace("__MARKER__", repr(INTERRUPTED_PULL_MARKER))
                       .replace("__CLOSURE_DIR__", repr(RECOVERY_CLOSURE_DIR))
                       .replace("__MANIFEST__", repr(RECOVERY_CLOSURE_MANIFEST))
-                      .replace("__INIT__", repr(RECOVERY_CLOSURE_INIT))
-                      .replace("__CLOSURE__", repr(RECOVERY_CLOSURE))
+                      .replace("__LAYOUTS__", repr(RECOVERY_CLOSURE_LAYOUTS))
                       .replace("__ROOT__", repr(root)))  # last: a path is never re-substituted
     return (
         # The repair's own stdlib, bound before the checkout root goes on sys.path: a stdlib-named
@@ -1186,13 +1188,13 @@ if __name__ == "__main__":
     import argparse
 
     if sys.argv[1:2] == ["--print-runtime-command"]:
-        print_runtime_command(Path(__file__).resolve().parents[1], sys.argv[2:])
+        print_runtime_command(Path(__file__).resolve().parents[2], sys.argv[2:])
         raise SystemExit(0)
 
     parser = argparse.ArgumentParser(description="Publish source-install launchers.")
     parser.add_argument("out_dir", type=Path)
     args = parser.parse_args()
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     if resolve_store_python(repo_root, publication=True) is None:
         parser.exit(1, "hermes: store interpreter is missing; finish pm install before publishing launchers\n")
     args.out_dir.mkdir(parents=True, exist_ok=True)

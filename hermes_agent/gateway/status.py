@@ -780,7 +780,7 @@ def _record_argv() -> list[str]:
     ``_record_matches_live_gateway_pid``). Recording the module path follows runpy's ``alter_sys``
     convention, which is what the ``--run-module`` and store-launcher forms already persist."""
     argv = list(sys.argv)
-    entry = sys.modules.get("hermes_cli.main")
+    entry = sys.modules.get("hermes_agent.hermes_cli.main")
     if argv[:1] == ["-c"] and getattr(entry, "__file__", None):
         argv[0] = entry.__file__
     return argv

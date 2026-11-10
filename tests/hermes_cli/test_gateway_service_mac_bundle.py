@@ -24,10 +24,13 @@ def _mac_bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
     app = tmp_path / "Hermes.app"
     payload = app / "Contents" / "Resources" / "agent-payload"
     repo = payload / "hermes-agent"
-    (repo / "hermes_cli").mkdir(parents=True)
-    for relative in ("hermes_cli/__init__.py", "hermes_cli/stderr_timestamp.py"):
+    # What the service command (`-m hermes_cli.stderr_timestamp`) loads: the old-path package file and the package.
+    for relative in ("hermes_cli/__init__.py", "hermes_agent/__init__.py", "hermes_agent/hermes_cli/__init__.py",
+                     "hermes_agent/hermes_cli/stderr_timestamp.py",
+                     *(str(path.relative_to(ROOT)) for path in sorted((ROOT / "hermes_agent/compat").glob("*.py")))):
+        (repo / relative).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, repo / relative)
-    (repo / "hermes_cli" / "main.py").write_text(
+    (repo / "hermes_agent" / "hermes_cli" / "main.py").write_text(
         "import json, sys\ndef main():\n    print(json.dumps(sys.argv[1:]), flush=True)\n    return 7\n", encoding="utf-8")
     (repo / "install-stamp.json").write_text(json.dumps({
         "commit": "a" * 40, "distribution": "desktop-app", "updateMechanism": "electron-updater",
@@ -45,7 +48,7 @@ def _mac_bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
         encoding="utf-8")
     launcher = payload / "bin" / "hermes"
     launcher.parent.mkdir()
-    launcher.write_text(posix_launcher("hermes", "hermes_cli.main:main", python=str(interpreter), repo="hermes-agent",
+    launcher.write_text(posix_launcher("hermes", "hermes_agent.hermes_cli.main:main", python=str(interpreter), repo="hermes-agent",
                                        site=site, target="darwin-arm64"), encoding="utf-8")
     launcher.chmod(0o755)
     return app, repo, launcher

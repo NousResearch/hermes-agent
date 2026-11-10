@@ -35,9 +35,15 @@ export function sourceRuntimeSettleCommand(root, env, platform = process.platfor
   const generated = commandFile.match(/^\s*@?"([^"\r\n]+)"\s+-I(?:\s|$)/m);
   if (!generated) throw new Error(`Unrecognized source command launcher: ${launcher}`);
   const command = generated[1];
-  const prepareLaunch = path.join(root, 'hermes_cli', 'venv_sync.py');
+  // `root` can be an install of an older release (the update e2e scripts settle the OLD install before
+  // updating it): take the layout that exists, the package layout first.
+  const layouts = [
+    { file: path.join(root, 'hermes_agent', 'hermes_cli', 'venv_sync.py'), module: 'hermes_agent.hermes_cli.venv_sync' },
+    { file: path.join(root, 'hermes_cli', 'venv_sync.py'), module: 'hermes_cli.venv_sync' },
+  ];
+  const layout = layouts.find(candidate => fs.existsSync(candidate.file));
   if (!fs.existsSync(command)) throw new Error(`Source launcher Python does not exist: ${command}`);
-  if (!fs.existsSync(prepareLaunch)) throw new Error(`Source update preparation does not exist: ${prepareLaunch}`);
-  const code = `import pathlib, sys; sys.path.insert(0, ${JSON.stringify(root)}); from hermes_cli.venv_sync import prepare_launch; prepare_launch(pathlib.Path(${JSON.stringify(root)}), ['status'])`;
+  if (!layout) throw new Error(`Source update preparation does not exist: ${layouts.map(candidate => candidate.file).join(' or ')}`);
+  const code = `import pathlib, sys; sys.path.insert(0, ${JSON.stringify(root)}); from ${layout.module} import prepare_launch; prepare_launch(pathlib.Path(${JSON.stringify(root)}), ['status'])`;
   return { launcher, command, args: ['-I', '-B', '-c', code], windowsVerbatimArguments: false };
 }

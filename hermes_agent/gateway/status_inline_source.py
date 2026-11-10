@@ -95,7 +95,7 @@ _BOOTSTRAPS = (
     ("module", re.compile(
         rf"import os, site, sys;\s*sys\.argv\[0\]\s*=\s*{_Q}[\w.-]+{_Q};\s*"
         rf"site\.addsitedir\(os\.environ\[{_Q}HERMES_SITE{_Q}\]\);"
-        r"\s*from\s+(?P<target>hermes_cli\.main)\s+import\s+main\s*;\s*sys\.exit\(\s*main\(\)\s*\)")),
+        r"\s*from\s+(?P<target>(?:hermes_agent\.)?hermes_cli\.main)\s+import\s+main\s*;\s*sys\.exit\(\s*main\(\)\s*\)")),
     # hermes_agent.hermes_cli._launchers._write_cmd_launcher: the launcher script, base64-encoded
     ("base64", re.compile(rf"import base64; exec\(base64\.b64decode\({_Q}(?P<target>[A-Za-z0-9+/=]+){_Q}\)\)")),
 )

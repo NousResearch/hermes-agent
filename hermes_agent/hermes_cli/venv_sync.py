@@ -16,7 +16,7 @@ from hermes_agent.hermes_cli.steward import UPDATE_MECHANISMS
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def _is_sealed(project_root: Path) -> bool:
@@ -331,7 +331,7 @@ _TAIL_SCRIPTS = frozenset({"source_completion.py", "update_completion.py"})
 def _is_tail_script(root: Path, argv0: str) -> bool:
     """Exact own-script identity; argv is not inherited by the processes a tail spawns."""
     script = Path(argv0)
-    return script.name in _TAIL_SCRIPTS and script.resolve().parent == root / "hermes_cli"
+    return script.name in _TAIL_SCRIPTS and script.resolve().parent in (root / "hermes_cli", root / "hermes_agent" / "hermes_cli")
 
 
 def _supervised_child() -> bool:

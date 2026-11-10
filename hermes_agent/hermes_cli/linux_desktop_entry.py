@@ -520,7 +520,8 @@ def _known_wrapper_candidates():
 def _project_root() -> Path:
     """``<checkout>`` from this file's location — lexical (no ``.resolve()``) so shim-text matching
     against the installer's lexically-written $INSTALL_DIR works on symlinked homes."""
-    return Path(os.path.abspath(__file__)).parent.parent
+    here = Path(os.path.abspath(__file__)).parent
+    return here.parent.parent if (here.parent / "compat").is_dir() else here.parent  # moved file, or its old-path copy
 
 
 def _needs_interpreter(bin_path: Path) -> bool:

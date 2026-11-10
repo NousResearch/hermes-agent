@@ -92,7 +92,7 @@ def run_case(root, output, name, behind, early=False, cancel=False):
             result = {"case": name, "ready": ready, "exited": exited,
                       "returncode": proc.returncode, "garbled": "?[1;33m" in text,
                       "notice": "commits behind" in text or "update available" in text,
-                      "loaded_worktree": str(root / "hermes_cli/banner.py") in text,
+                      "loaded_worktree": str(root / "hermes_agent/hermes_cli/banner.py") in text,
                       "raw_path": str(output / f"{name}.pty")}
             assert result["loaded_worktree"] and proc.returncode == 0, result
             return result

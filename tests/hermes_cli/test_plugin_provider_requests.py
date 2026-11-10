@@ -88,7 +88,7 @@ def _plugin(declares: bool):
     (root / "dashboard").mkdir(parents=True)
     (root / "plugin.yaml").write_text("name: voice\n" + ("requires_auth: [openai-codex]\n" if declares else ""))
     (root / "dashboard" / "plugin_api.py").write_text(
-        "from hermes_cli.plugin_provider_requests import credentialed_provider_request\n"
+        "from hermes_agent.hermes_cli.plugin_provider_requests import credentialed_provider_request\n"
         "def mint(url):\n"
         "    return credentialed_provider_request('openai-codex', 'POST', url, json={'session': {}})\n")
     spec = importlib.util.spec_from_file_location(f"hermes_dashboard_plugin_{root.name}", root / "dashboard" / "plugin_api.py")

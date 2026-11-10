@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import hermes_agent.hermes_cli.sqlite_safe_read as sr
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 from hermes_agent.hermes_cli.sqlite_safe_read import (
     LiveConnectionError,
     connect_tracked,
@@ -352,7 +353,7 @@ def test_exit_with_a_leaked_connection_is_clean(tmp_path):
         threading.Thread(target=worker, daemon=True).start()
         held.wait()
     """)
-    root = Path(sr.__file__).resolve().parents[1]
+    root = Path(project_root_str())
     result = subprocess.run(
         [sys.executable, "-c", script, str(db), str(tmp_path / "other.db")],
         cwd=root, timeout=30, capture_output=True, text=True, check=False,

@@ -52,10 +52,10 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 
 ```text
 hermes-agent/
-├── cli.py                    # HermesCLI — 交互式终端 UI（大文件）
 ├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
 ├── hermes_agent/             # Python 包
 │   ├── run_agent.py              # AIAgent — 核心对话循环（大文件）
+│   ├── cli.py                    # HermesCLI — 交互式终端 UI（大文件）
 │   ├── model_tools.py            # 工具发现、schema 收集、分发
 │   ├── toolsets.py               # 工具分组与平台预设
 │   ├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
@@ -75,6 +75,23 @@ hermes-agent/
 │   │   ├── memory_manager.py    # 记忆管理器编排
 │   │   ├── memory_provider.py   # 记忆提供者 ABC
 │   │   └── trajectory.py         # 轨迹保存辅助函数
+│   │
+│   ├── hermes_cli/               # CLI 子命令与设置
+│   │   ├── main.py               # 入口点——所有 `hermes` 子命令（大文件）
+│   │   ├── config.py             # DEFAULT_CONFIG、OPTIONAL_ENV_VARS、迁移
+│   │   ├── commands.py           # COMMAND_REGISTRY——斜杠命令中央定义
+│   │   ├── auth.py               # PROVIDER_REGISTRY、凭据解析
+│   │   ├── runtime_provider.py   # Provider → api_mode + 凭据
+│   │   ├── models.py             # 模型目录、provider 模型列表
+│   │   ├── model_switch.py       # /model 命令逻辑（CLI + gateway 共用）
+│   │   ├── setup.py              # 交互式设置向导（大文件）
+│   │   ├── skin_engine.py        # CLI 主题引擎
+│   │   ├── skills_config.py      # hermes skills——按平台启用/禁用
+│   │   ├── skills_hub.py         # /skills 斜杠命令
+│   │   ├── tools_config.py       # hermes tools——按平台启用/禁用
+│   │   ├── plugins.py            # PluginManager——发现、加载、hook
+│   │   ├── callbacks.py          # 终端回调（clarify、sudo、approval）
+│   │   └── gateway.py            # hermes gateway 启动/停止
 │   │
 │   ├── tools/                    # 工具实现（每个工具一个文件）
 │   │   ├── registry.py           # 中央工具注册表
@@ -105,23 +122,6 @@ hermes-agent/
 │   │
 │   ├── acp_adapter/              # ACP 服务器（VS Code / Zed / JetBrains）
 │   └── cron/                     # 调度器（jobs.py、scheduler.py）
-│
-├── hermes_cli/               # CLI 子命令与设置
-│   ├── main.py               # 入口点——所有 `hermes` 子命令（大文件）
-│   ├── config.py             # DEFAULT_CONFIG、OPTIONAL_ENV_VARS、迁移
-│   ├── commands.py           # COMMAND_REGISTRY——斜杠命令中央定义
-│   ├── auth.py               # PROVIDER_REGISTRY、凭据解析
-│   ├── runtime_provider.py   # Provider → api_mode + 凭据
-│   ├── models.py             # 模型目录、provider 模型列表
-│   ├── model_switch.py       # /model 命令逻辑（CLI + gateway 共用）
-│   ├── setup.py              # 交互式设置向导（大文件）
-│   ├── skin_engine.py        # CLI 主题引擎
-│   ├── skills_config.py      # hermes skills——按平台启用/禁用
-│   ├── skills_hub.py         # /skills 斜杠命令
-│   ├── tools_config.py       # hermes tools——按平台启用/禁用
-│   ├── plugins.py            # PluginManager——发现、加载、hook
-│   ├── callbacks.py          # 终端回调（clarify、sudo、approval）
-│   └── gateway.py            # hermes gateway 启动/停止
 │
 ├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、whatsapp、
 │                             #   whatsapp_cloud、signal、weixin、bluebubbles、qqbot、

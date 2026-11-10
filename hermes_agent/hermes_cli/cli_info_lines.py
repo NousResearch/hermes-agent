@@ -52,7 +52,7 @@ def platforms_lines() -> list[str]:
             else:
                 out.append(f"    ○ {name:<12} {t('cli.gateway_status.not_configured', env_var=env_var)}")
         return [*out, "", f"  {t('cli.gateway_status.conversations_persist')}", "",
-                f"  {t('cli.gateway_status.to_start')}", "    python cli.py --gateway", "",
+                f"  {t('cli.gateway_status.to_start')}", "    python -m hermes_agent.cli --gateway", "",
                 f"  {t('cli.gateway_status.config_file', path=config_file)}", ""]
     except Exception as e:  # health: allow BLE001 -- moved unchanged from CLIInfoMixin._show_gateway_status (main): any config load failure prints the setup steps
         return [*out, f"  {t('cli.gateway_status.load_error', error=str(e))}", "",

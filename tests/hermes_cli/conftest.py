@@ -66,7 +66,7 @@ def _private_repo_checkout_lock(monkeypatch, tmp_path_factory):
 
     from hermes_agent.hermes_cli import update_lock
 
-    repo = Path(update_lock.__file__).resolve().parents[1]
+    repo = Path(update_lock.__file__).resolve().parents[2]
     real = update_lock.checkout_lock_path
     private = tmp_path_factory.mktemp("checkout-lock") / "hermes-update.lock"
 

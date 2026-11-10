@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import hermes_agent.hermes_cli.git_pack_tidy as tidy
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 _GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 _OFFLINE = {**_GIT_ENV, "GIT_NO_LAZY_FETCH": "1"}
@@ -169,7 +170,7 @@ def test_a_refused_or_killed_erase_leaves_git_reading_and_is_finished_later(
     _git("multi-pack-index", "write", *midx_layout, cwd=clone)
     assert list(pack_dir.glob("multi-pack-index*"))
     child = subprocess.run([sys.executable, "-c", _KILLED_MID_ERASE, str(clone)], capture_output=True, text=True, encoding="utf-8",
-                           env={**_GIT_ENV, "PYTHONPATH": str(Path(tidy.__file__).resolve().parents[1])}, check=False)
+                           env={**_GIT_ENV, "PYTHONPATH": project_root_str()}, check=False)
     assert child.returncode == 9, child.stderr
     assert not list(pack_dir.glob("multi-pack-index*")), "a killed erase left a multi-pack-index naming a lost pack"
     assert _objects(clone) == held

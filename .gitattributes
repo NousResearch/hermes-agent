@@ -112,6 +112,7 @@ docker/entrypoint.sh text eol=lf
 /hermes_cli/kanban_db.py linguist-generated=true
 /hermes_cli/linux_desktop_entry.py linguist-generated=true
 /hermes_cli/local_runtime/__init__.py linguist-generated=true
+/hermes_cli/local_runtime/catalog.json linguist-generated=true
 /hermes_cli/local_runtime/processes.py linguist-generated=true
 /hermes_cli/main.py linguist-generated=true
 /hermes_cli/moa_config.py linguist-generated=true

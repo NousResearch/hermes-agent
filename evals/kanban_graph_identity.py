@@ -29,7 +29,7 @@ def main():
     from hermes_agent.hermes_cli.kanban_db_dispatch import dispatch_once
     from hermes_agent.tools.kanban_tools import _handle_create
     from hermes_agent.hermes_cli.kanban_decompose import _apply_fanout, _Routing
-    graph = importlib.import_module("hermes_agent.hermes_cli.kanban_db_graph") if (args.repo / "hermes_cli/kanban_db_graph.py").exists() else kb
+    graph = importlib.import_module("hermes_agent.hermes_cli.kanban_db_graph") if (args.repo / "hermes_agent/hermes_cli/kanban_db_graph.py").exists() else kb
     decompose = graph.decompose_triage_task
     specs = [{"title": "work", "assignee": "default"}]
     with kbc.connect_closing() as conn:

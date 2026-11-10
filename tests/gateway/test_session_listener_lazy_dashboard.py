@@ -27,7 +27,7 @@ _PROBE = textwrap.dedent("""
 
         async def fake_handle_ws(ws, **kwargs):
             await ws.accept(subprotocol="hermes-gateway-v1")
-            await ws.send_json({"native": True, "dashboard_loaded": "hermes_cli.web_server" in sys.modules})
+            await ws.send_json({"native": True, "dashboard_loaded": "hermes_agent.hermes_cli.web_server" in sys.modules})
             await ws.close()
         tui_gateway.ws.handle_ws = fake_handle_ws
 
@@ -39,7 +39,7 @@ _PROBE = textwrap.dedent("""
         out = {}
         handle = await start_gateway_api(runner)
         try:
-            out["after_bind"] = sorted(m for m in ("hermes_cli.web_server", "fastapi") if m in sys.modules)
+            out["after_bind"] = sorted(m for m in ("hermes_agent.hermes_cli.web_server", "fastapi") if m in sys.modules)
             url = handle.api_origin.replace("http:", "ws:") + "/api/ws"
             def protocols():
                 return ["hermes-gateway-v1", "hermes-gateway-ticket." + tickets.mint(
@@ -58,17 +58,17 @@ _PROBE = textwrap.dedent("""
             await writer.drain()
             out["rebind"] = int((await asyncio.wait_for(reader.readline(), 10)).split()[1])
             writer.close()
-            out["before_http"] = "hermes_cli.web_server" in sys.modules
+            out["before_http"] = "hermes_agent.hermes_cli.web_server" in sys.modules
             async with httpx.AsyncClient(base_url=handle.api_origin, trust_env=False) as client:
                 out["status"] = (await client.get("/api/status")).status_code
                 out["rebind_http"] = (await client.get("/api/status", headers={"Host": "attacker.invalid"})).status_code
-            out["after_http"] = "hermes_cli.web_server" in sys.modules
-            from hermes_cli import web_server
+            out["after_http"] = "hermes_agent.hermes_cli.web_server" in sys.modules
+            from hermes_agent.hermes_cli import web_server
             out["runner_bound"] = web_server.app.state.gateway_runner is runner
             out["token_withheld"] = bool(web_server.app.state.withhold_session_token)
         finally:
             await stop_gateway_api(handle)
-        from hermes_cli import web_server
+        from hermes_agent.hermes_cli import web_server
         out["unbound"] = web_server.app.state.gateway_runner is None
         print("RESULT " + json.dumps(out), file=sys.stderr, flush=True)
 

@@ -75,6 +75,7 @@ from hermes_agent.hermes_cli.observability.shared_metrics_contract import (
 
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[2]
+    / "hermes_agent"
     / "hermes_cli"
     / "observability"
     / "schemas"

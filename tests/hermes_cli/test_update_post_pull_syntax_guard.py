@@ -78,7 +78,7 @@ def test_a_tree_without_a_declared_file_it_lists_is_refused_before_and_after_the
 
 
 def test_this_tree_declares_its_startup_files_and_has_every_one():
-    root = Path(update_cmd.__file__).resolve().parents[1]
+    root = Path(update_cmd.__file__).resolve().parents[2]
     declared, required = update_cmd_commit.startup_files((root / "pyproject.toml").read_bytes(), ())
     assert required and declared
     assert update_cmd_commit.tree_syntax_error(root, ()) is None
@@ -203,7 +203,7 @@ def test_the_critical_inventory_covers_every_module_the_entry_paths_import_first
     from hermes_agent.hermes_cli import _launchers
     from hermes_agent.hermes_cli._early_recovery import RECOVERY_CLOSURE
 
-    root = Path(update_cmd.__file__).resolve().parents[1]
+    root = Path(update_cmd.__file__).resolve().parents[2]
 
     def files(source: str) -> set[str]:
         names = set()

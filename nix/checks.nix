@@ -113,7 +113,7 @@
         export HOME=$TMPDIR
         ${hermesVenv}/bin/python3 -c '
 import json, sys
-from hermes_cli.config import DEFAULT_CONFIG
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 
 def leaf_paths(d, prefix=""):
     paths = []
@@ -1554,7 +1554,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             export HOME=$(mktemp -d) HERMES_HOME=$(mktemp -d)
             ${configMergeScript} ${configFiles.generated} "$HERMES_HOME/config.yaml"
             ${hermesVenv}/bin/python3 -c '
-            from hermes_cli.config import check_config_version
+            from hermes_agent.hermes_cli.config import check_config_version
             current, latest = check_config_version(raise_on_parse_error=True)
             assert current == latest, f"generated config.yaml reads as v{current}, package is v{latest}"
             print(f"PASS: generated config.yaml is at v{current}")
@@ -1639,7 +1639,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             ${configMergeScript} ${nixSettings} "$hermes_home/config.yaml"
             ${hermesVenv}/bin/python3 -c '
 import json, sys
-from hermes_cli.config import load_config
+from hermes_agent.hermes_cli.config import load_config
 json.dump(load_config(), sys.stdout, default=str)
 '
           }

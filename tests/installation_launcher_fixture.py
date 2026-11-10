@@ -16,9 +16,16 @@ def publish_fixture_launcher(root: Path, main_source: str) -> Path:
     # The application is a stand-in; launcher production and command queries
     # are real. The interpreter is external to the checkout, like PM's store.
     (root / "hermes_bootstrap.py").write_text("", encoding="utf-8")
-    (root / "pm").mkdir(exist_ok=True)
-    for relative in ("hermes_constants.py", "hermes_cli/_launchers.py", "pm/environments.py"):
-        shutil.copyfile(repository / relative, root / relative)
+    for folder in ("pm", "hermes_agent/hermes_cli"):
+        (root / folder).mkdir(parents=True, exist_ok=True)
+    (root / "hermes_agent" / "__init__.py").touch()
+    (root / "hermes_agent" / "hermes_cli" / "__init__.py").touch()
+    # Real modules, never the forwarding files at the old paths, which need the whole package.
+    for relative, source in (("hermes_constants.py", "hermes_constants.py"),
+                             ("hermes_cli/_launchers.py", "hermes_agent/hermes_cli/_launchers.py"),
+                             ("hermes_agent/hermes_cli/_launchers.py", "hermes_agent/hermes_cli/_launchers.py"),
+                             ("pm/environments.py", "pm/environments.py")):
+        shutil.copyfile(repository / source, root / relative)
     out = root / ".hermes" / "bin"
     out.mkdir(parents=True)
     launcher = mint_launcher("hermes", root, out, Path(sys.executable), None)

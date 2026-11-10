@@ -139,7 +139,7 @@ def completion(tmp_path, monkeypatch):
                     spec.loader.exec_module = execute
                     return spec
 
-                if fullname != 'hermes_cli.main':
+                if fullname != 'hermes_agent.hermes_cli.main':
                     return None
                 import selected_dependency
                 assert selected_dependency.VALUE == 'selected generation'
@@ -151,14 +151,14 @@ def completion(tmp_path, monkeypatch):
                     original(module)
                     # Install only service/machine boundaries after REAL CLI
                     # startup; all dependencies must be available by now.
-                    from hermes_cli import update_cmd as update
-                    from hermes_cli import update_cmd_maint as maint
-                    from hermes_cli import update_cmd_fleet as fleet
-                    from hermes_cli import update_cmd_fleet_verify as fleet_verify
-                    from hermes_cli import gateway_migrate
-                    from hermes_cli import macos_tcc_anchor
-                    from hermes_cli import source_build
-                    from hermes_cli.update_inventory import UpdatePlan, RuntimeRecord
+                    from hermes_agent.hermes_cli import update_cmd as update
+                    from hermes_agent.hermes_cli import update_cmd_maint as maint
+                    from hermes_agent.hermes_cli import update_cmd_fleet as fleet
+                    from hermes_agent.hermes_cli import update_cmd_fleet_verify as fleet_verify
+                    from hermes_agent.hermes_cli import gateway_migrate
+                    from hermes_agent.hermes_cli import macos_tcc_anchor
+                    from hermes_agent.hermes_cli import source_build
+                    from hermes_agent.hermes_cli.update_inventory import UpdatePlan, RuntimeRecord
                     from pm.package import Runner
                     import pm
                     import os
@@ -197,7 +197,7 @@ def completion(tmp_path, monkeypatch):
                     maint._print_post_update_notices_and_self_heals = lambda: None
                     maint._sync_profiles_after_update = lambda: None
                     # A detached git writer would outlive the test in its deleted tmp checkout.
-                    from hermes_cli import git_commit_graph
+                    from hermes_agent.hermes_cli import git_commit_graph
                     git_commit_graph.spawn_commit_graph_refresh = lambda root: False
                     maint._print_bundled_skills_sync_report = lambda: None
                     fleet_verify._print_legacy_units_warning = lambda: None
@@ -232,7 +232,7 @@ def completion(tmp_path, monkeypatch):
                     update._resume_windows_gateways_and_merge_outcome = resume
                     if fault == 'scm':
                         # The Windows service manager refuses the paused gateway's restart.
-                        from hermes_cli import update_cmd_windows
+                        from hermes_agent.hermes_cli import update_cmd_windows
                         def scm(token):
                             if token and token.get('resume_needed'):
                                 raise RuntimeError('Could not restart Windows gateway service(s): HermesGatewayProbe')

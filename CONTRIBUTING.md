@@ -296,9 +296,9 @@ See [Package management](website/docs/reference/package-management.md) for PM co
 
 ```
 hermes-agent/
-├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
 ├── hermes_agent/             # the Python package
 │   ├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
+│   ├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
 │   ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
 │   ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
 │   ├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
@@ -314,6 +314,22 @@ hermes-agent/
 │   │   ├── display.py                # KawaiiSpinner, tool progress formatting
 │   │   ├── model_metadata.py         # Model context lengths, token estimation
 │   │   └── trajectory.py             # Trajectory saving helpers
+│   │
+│   ├── hermes_cli/               # CLI command implementations
+│   │   ├── main.py                   # Entry point, argument parsing, command dispatch
+│   │   ├── cli_*_mixin.py            # HermesCLI mixins (slash commands, display, session, ...)
+│   │   ├── config.py                 # Config management, migration, env var definitions
+│   │   ├── setup.py                  # Interactive setup wizard
+│   │   ├── auth.py                   # Provider resolution, OAuth, Nous Portal (facade + auth_*.py siblings)
+│   │   ├── models.py                 # OpenRouter model selection lists
+│   │   ├── banner.py                 # Welcome banner, ASCII art
+│   │   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
+│   │   ├── callbacks.py              # Interactive callbacks (clarify, sudo, approval)
+│   │   ├── doctor.py                 # Diagnostics
+│   │   ├── skills_hub.py             # Skills Hub CLI + /skills slash command
+│   │   ├── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
+│   │   ├── web_server.py             # Dashboard server (facade + web_server_*.py siblings)
+│   │   └── web_routers/              # Dashboard FastAPI routers (one file per surface)
 │   │
 │   ├── tools/                    # Tool implementations (self-registering)
 │   │   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
@@ -340,22 +356,6 @@ hermes-agent/
 │       ├── session.py                # Session store, context prompts, explicit resets (+ session_*.py siblings)
 │       └── platforms/                # Platform adapters
 │           ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
-│
-├── hermes_cli/               # CLI command implementations
-│   ├── main.py                   # Entry point, argument parsing, command dispatch
-│   ├── cli_*_mixin.py            # HermesCLI mixins (slash commands, display, session, ...)
-│   ├── config.py                 # Config management, migration, env var definitions
-│   ├── setup.py                  # Interactive setup wizard
-│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal (facade + auth_*.py siblings)
-│   ├── models.py                 # OpenRouter model selection lists
-│   ├── banner.py                 # Welcome banner, ASCII art
-│   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
-│   ├── callbacks.py              # Interactive callbacks (clarify, sudo, approval)
-│   ├── doctor.py                 # Diagnostics
-│   ├── skills_hub.py             # Skills Hub CLI + /skills slash command
-│   ├── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
-│   ├── web_server.py             # Dashboard server (facade + web_server_*.py siblings)
-│   └── web_routers/              # Dashboard FastAPI routers (one file per surface)
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer

@@ -16,10 +16,10 @@ ASSETS = ROOT / "tests/install/e2e-assets"
 def _stamp_probe(tmp_path, shell):
     repo = tmp_path / "installed source"
     for relative in (
-        "scripts/write_install_stamp.py", "hermes_cli/__init__.py",
-        "hermes_cli/update_channel.py", "hermes_cli/release_channels.py",
+        "scripts/write_install_stamp.py", "hermes_agent/__init__.py", "hermes_agent/hermes_cli/__init__.py",
+        "hermes_agent/hermes_cli/update_channel.py", "hermes_agent/hermes_cli/release_channels.py",
         "pm/paths.py", "pm/environments.py",
-        "hermes_cli/steward.py", "hermes_constants.py",
+        "hermes_agent/hermes_cli/steward.py", "hermes_constants.py",
     ):
         dest = repo / relative
         dest.parent.mkdir(parents=True, exist_ok=True)

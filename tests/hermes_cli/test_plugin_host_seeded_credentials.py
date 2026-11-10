@@ -55,7 +55,7 @@ def test_hosted_profile_seeds_the_pool_from_a_shell_exported_ambient_token(tmp_p
     _install(tmp_path, monkeypatch)
     try:
         profile = providers.get_provider_profile("seedhost")
-        assert type(profile).__module__ == "hermes_cli.plugin_host_profiles"
+        assert type(profile).__module__ == "hermes_agent.hermes_cli.plugin_host_profiles"
         rows = [(e.source, e.access_token, e.label) for e in load_pool("seedhost").entries()]
         assert rows == [("env:GH_TOKEN", "minted-shell-only-True", rows[0][2])]
         assert rows[0][2] != f"pid {os.getpid()}"  # seeded by the plugin host, not in-process

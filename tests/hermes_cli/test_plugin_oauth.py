@@ -87,7 +87,7 @@ def _plugin(name: str = "voice", oauth: list | None = None, display: str | None 
         manifest["oauth"] = oauth
     (root / "plugin.yaml").write_text(json.dumps(manifest), encoding="utf-8")  # JSON is valid YAML
     (root / "api.py").write_text(
-        "from hermes_cli.plugin_provider_requests import credentialed_provider_request\n"
+        "from hermes_agent.hermes_cli.plugin_provider_requests import credentialed_provider_request\n"
         "def call(provider, url, method='POST', **kwargs):\n"
         "    return credentialed_provider_request(provider, method, url, **kwargs)\n", encoding="utf-8")
     spec = importlib.util.spec_from_file_location(f"hermes_plugins_{name}_api", root / "api.py")

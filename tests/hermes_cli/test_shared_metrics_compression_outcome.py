@@ -15,7 +15,7 @@ from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsSt
 from hermes_agent.hermes_cli.observability.shared_metrics_fields import compression_fields
 
 SCHEMA_PATH = (
-    Path(__file__).resolve().parents[2] / "hermes_cli" / "observability" / "schemas"
+    Path(__file__).resolve().parents[2] / "hermes_agent" / "hermes_cli" / "observability" / "schemas"
     / "hermes.shared_metrics.v4.schema.json"
 )
 RESOURCE = {"architecture": "x86_64", "hermes_version": "test", "install_method": "git", "os_family": "linux"}

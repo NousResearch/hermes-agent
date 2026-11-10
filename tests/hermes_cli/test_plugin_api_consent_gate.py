@@ -41,7 +41,7 @@ async def ping():
 @router.websocket("/events")
 async def events(ws: WebSocket):
     # The canonical WS credential check every dashboard plugin socket makes (kanban's too).
-    from hermes_cli.web_server_chat import _ws_auth_ok
+    from hermes_agent.hermes_cli.web_server_chat import _ws_auth_ok
     if not _ws_auth_ok(ws):
         await ws.close(code=1008)
         return

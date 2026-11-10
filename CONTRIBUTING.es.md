@@ -120,9 +120,9 @@ Para JavaScript, ejecuta `pnpm install --frozen-lockfile` en la raíz del reposi
 
 ```
 hermes-agent/
-├── cli.py                    # Clase HermesCLI — TUI interactiva, integración prompt_toolkit
 ├── hermes_agent/             # el paquete de Python
 │   ├── run_agent.py              # Clase AIAgent — bucle de conversación central, despacho de herramientas, persistencia de sesión
+│   ├── cli.py                    # Clase HermesCLI — TUI interactiva, integración prompt_toolkit
 │   ├── model_tools.py            # Orquestación de herramientas (capa delgada sobre tools/registry.py)
 │   ├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-telegram, etc.)
 │   ├── hermes_state.py           # Base de datos de sesiones SQLite con búsqueda de texto completo FTS5, títulos de sesión
@@ -135,6 +135,19 @@ hermes-agent/
 │   │   ├── display.py                # KawaiiSpinner, formateo del progreso de herramientas
 │   │   ├── model_metadata.py         # Longitudes de contexto del modelo, estimación de tokens
 │   │   └── trajectory.py             # Ayudantes para guardar trayectorias
+│   │
+│   ├── hermes_cli/               # Implementaciones de comandos CLI
+│   │   ├── main.py                   # Punto de entrada, análisis de argumentos, despacho de comandos
+│   │   ├── config.py                 # Gestión de configuración, migración, definiciones de variables de entorno
+│   │   ├── setup.py                  # Asistente de configuración interactivo
+│   │   ├── auth.py                   # Resolución de proveedor, OAuth, Nous Portal
+│   │   ├── models.py                 # Listas de selección de modelos de OpenRouter
+│   │   ├── banner.py                 # Banner de bienvenida, arte ASCII
+│   │   ├── commands.py               # Registro central de comandos de barra (CommandDef), autocompletado, ayudantes del gateway
+│   │   ├── callbacks.py              # Callbacks interactivos (aclarar, sudo, aprobación)
+│   │   ├── doctor.py                 # Diagnósticos
+│   │   ├── skills_hub.py             # CLI del Skills Hub + comando de barra /skills
+│   │   └── skin_engine.py            # Motor de skins/temas — personalización visual de CLI basada en datos
 │   │
 │   ├── tools/                    # Implementaciones de herramientas (auto-registradas)
 │   │   ├── registry.py               # Registro central de herramientas (esquemas, manejadores, despacho)
@@ -158,19 +171,6 @@ hermes-agent/
 │       ├── session.py                # Almacén de sesiones, prompts de contexto, políticas de reset
 │       └── platforms/                # Adaptadores de plataformas
 │           ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
-│
-├── hermes_cli/               # Implementaciones de comandos CLI
-│   ├── main.py                   # Punto de entrada, análisis de argumentos, despacho de comandos
-│   ├── config.py                 # Gestión de configuración, migración, definiciones de variables de entorno
-│   ├── setup.py                  # Asistente de configuración interactivo
-│   ├── auth.py                   # Resolución de proveedor, OAuth, Nous Portal
-│   ├── models.py                 # Listas de selección de modelos de OpenRouter
-│   ├── banner.py                 # Banner de bienvenida, arte ASCII
-│   ├── commands.py               # Registro central de comandos de barra (CommandDef), autocompletado, ayudantes del gateway
-│   ├── callbacks.py              # Callbacks interactivos (aclarar, sudo, aprobación)
-│   ├── doctor.py                 # Diagnósticos
-│   ├── skills_hub.py             # CLI del Skills Hub + comando de barra /skills
-│   └── skin_engine.py            # Motor de skins/temas — personalización visual de CLI basada en datos
 │
 ├── scripts/                  # Scripts del instalador y puente
 │   ├── install.sh                # Instalador Linux/macOS

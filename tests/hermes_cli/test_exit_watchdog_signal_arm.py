@@ -51,7 +51,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 _WEDGE_SRC = """
 import os, signal, sys, time
 sys.path.insert(0, {repo!r})
-import cli
+from hermes_agent import cli
 
 def _handler(signum, frame):
     # Production wiring: arm the backstop the moment shutdown intent exists,
@@ -68,7 +68,7 @@ while True:  # the wedge: never observes any unwind
 _CLEANUP_OVERLAP_SRC = """
 import os, signal, sys, threading, time
 sys.path.insert(0, {repo!r})
-import cli
+from hermes_agent import cli
 
 
 def _start_cleanup():

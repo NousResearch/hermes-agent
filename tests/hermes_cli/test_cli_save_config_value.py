@@ -82,7 +82,7 @@ class TestSaveConfigValueTargetsUserConfig:
         # user config, so a runtime setting is never buried in the shipped file.
         import hermes_agent.cli as cli_module
 
-        repo_cli_config = Path(cli_module.__file__).parent / "cli-config.yaml"
+        repo_cli_config = Path(cli_module.__file__).parents[1] / "cli-config.yaml"
         before = repo_cli_config.read_text() if repo_cli_config.exists() else None
 
         hermes_home = tmp_path / ".hermes"

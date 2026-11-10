@@ -1,6 +1,6 @@
 """Frozen compat surface for releases that finish `hermes update` via the post-swap hand-off.
 
-Releases from 2026-09-16 (94ced1a2b2) lazily import ``hermes_agent.hermes_cli.update_handoff``
+Releases from 2026-09-16 (94ced1a2b2) lazily import ``hermes_cli.update_handoff``
 from the NEW tree after the checkout swap. Like every other retired updater
 hook, this module keeps that import working by routing into the historical
 takeover (``hermes_agent.hermes_cli._old_updater`` → ``_update_takeover.py``) instead of
@@ -58,7 +58,7 @@ def post_swap_python() -> Path:
     from hermes_constants import project_venv_dir
     from pm.environments import venv_python
 
-    venv_dir = project_venv_dir(Path(__file__).resolve().parents[1])
+    venv_dir = project_venv_dir(Path(__file__).resolve().parents[2])
     if venv_dir is not None and _is_windows():
         candidate = venv_python(venv_dir, windows=True)
         if candidate.is_file():
@@ -67,7 +67,7 @@ def post_swap_python() -> Path:
 
 
 def post_swap_command(handoff_path: Path, argv_tail: list[str]) -> list[str]:
-    """``python -m hermes_agent.hermes_cli.main update <original flags> --post-swap <file>``.
+    """``python -m hermes_cli.main update <original flags> --post-swap <file>``.
 
     Historical command shape; kept so a printed manual-continuation line reads
     exactly as older releases expect. The takeover child this tree actually

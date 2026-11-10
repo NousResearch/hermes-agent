@@ -46,7 +46,7 @@ def test_module_subprocess_removes_only_the_disposable_home(layout, tmp_path):
     from pathlib import Path
 
     home, witnesses, data = layout
-    root = Path(uninstall.__file__).resolve().parents[1]
+    root = Path(uninstall.__file__).resolve().parents[2]
     env = {key: value for key, value in os.environ.items() if key.upper() in {
         "PATH", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "TEMP", "TMP",
     }}

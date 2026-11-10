@@ -208,7 +208,7 @@ out["blocked"] = blocked
 out["production_imports"] = {
     n: sys.modules[n].__file__
     for n in [
-        "hermes_cli.runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider",
         "hermes_agent.agent.auxiliary_client",
         "hermes_agent.agent.client_lifecycle",
     ]

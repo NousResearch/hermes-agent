@@ -34,7 +34,7 @@ def _doc_from(entries):
     """A fetchable catalog document built by mutating the packaged JSON."""
     from importlib.resources import files
 
-    doc = json.loads(files("hermes_cli.local_runtime")
+    doc = json.loads(files("hermes_agent.hermes_cli.local_runtime")
                      .joinpath("catalog.json").read_text(encoding="utf-8"))
     doc["models"] = entries(doc["models"])
     return doc
@@ -71,7 +71,7 @@ def test_refresh_swaps_in_memory_only(monkeypatch, tmp_path):
     disk is untouched (checkout stays clean)."""
     from importlib.resources import files
 
-    packaged_path = files("hermes_cli.local_runtime").joinpath("catalog.json")
+    packaged_path = files("hermes_agent.hermes_cli.local_runtime").joinpath("catalog.json")
     before = packaged_path.read_text(encoding="utf-8")
 
     def add_day0(models):
@@ -147,3 +147,16 @@ def test_first_refresh_is_due_shortly_after_boot(monkeypatch):
     assert cat.refresh_catalog() is True
     # The attempt is now stamped, so the TTL gate holds for the next six hours.
     assert cat.refresh_catalog() is False
+
+
+def test_the_refresh_url_names_the_packaged_file_and_so_does_the_path_older_releases_fetch():
+    """The refresh fetches the catalog from main by URL. A move of the file must move the URL, and the
+    path that releases up to v0.23.1 fetch must keep the same bytes, or their refresh gets a 404 and
+    they keep a stale catalog with no visible error."""
+    from importlib.resources import files
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    packaged = files("hermes_agent.hermes_cli.local_runtime").joinpath("catalog.json").read_bytes()
+    assert (root / cat._CATALOG_URL.split("/main/", 1)[1]).read_bytes() == packaged
+    assert (root / "hermes_cli/local_runtime/catalog.json").read_bytes() == packaged

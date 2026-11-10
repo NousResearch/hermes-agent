@@ -156,7 +156,7 @@ def test_fresh_abort_recovery_withholds_what_the_updaters_secret_source_supplied
         import json, subprocess
         _real = subprocess.run
         def _run(argv, *a, **k):
-            if "hermes_cli.main" in list(argv):
+            if "hermes_agent.hermes_cli.main" in list(argv):
                 with open({str(ledger)!r}, "a") as fh:
                     fh.write(json.dumps(k.get("env")) + "\\n")
                 return subprocess.CompletedProcess(argv, 0, "", "")

@@ -177,7 +177,7 @@ def test_main_arms_the_legacy_watchdog_then_imports_cli_before_runtime_prep(monk
 
     class FakeCliFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         def find_spec(self, name, path=None, target=None):
-            return importlib.util.spec_from_loader(name, self) if name == "cli" else None
+            return importlib.util.spec_from_loader(name, self) if name == "hermes_agent.cli" else None
 
         def create_module(self, spec):
             return None

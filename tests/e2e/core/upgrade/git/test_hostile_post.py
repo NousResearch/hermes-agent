@@ -254,13 +254,13 @@ def _publish_web_release(w: G.World, tag: str) -> str:
 
 def _publish_gateway_fault_release(w: G.World, tag: str) -> str:
     """A release whose ``hermes gateway run`` refuses to boot while the toggle exists."""
-    text = _head_file(w, "hermes_cli/gateway.py")
+    text = _head_file(w, "hermes_agent/hermes_cli/gateway.py")
     if _GATEWAY_MARK not in text:
         m = re.search(r"^def run_gateway\(.*?\):\n    \"\"\".*?\"\"\"\n", text, re.DOTALL | re.MULTILINE)
-        assert m, "premise: hermes_cli/gateway.py has no run_gateway() with a docstring to inject after"
+        assert m, "premise: hermes_agent/hermes_cli/gateway.py has no run_gateway() with a docstring to inject after"
         text = text[:m.end()] + _HOSTILE_GATEWAY + text[m.end():]
     return w.publish(f"release: e2e hostile post gateway {tag}", {
-        "hermes_cli/gateway.py": text,
+        "hermes_agent/hermes_cli/gateway.py": text,
         f"docs/e2e-hostile-post-{tag}.txt": f"release {tag}\n",
     })
 

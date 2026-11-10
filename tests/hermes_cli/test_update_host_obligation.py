@@ -234,8 +234,9 @@ def test_one_installs_completed_restart_never_erases_another_installs_debt(tmp_p
     from pathlib import Path
 
     source = Path(__file__).resolve().parents[2]
-    files = ("hermes_constants.py", "hermes_dir_acl.py", "hermes_cli/__init__.py", "hermes_cli/update_host_obligation.py",
-             "hermes_cli/update_restart_recovery.py", "hermes_cli/update_lock.py")
+    files = ("hermes_constants.py", "hermes_dir_acl.py", "hermes_agent/__init__.py", "hermes_agent/hermes_cli/__init__.py",
+             "hermes_agent/hermes_cli/update_host_obligation.py", "hermes_agent/hermes_cli/update_restart_recovery.py",
+             "hermes_agent/hermes_cli/update_lock.py")
     roots = {}
     for name in ("install-a", "install-b"):
         roots[name] = tmp_path / name
@@ -246,7 +247,7 @@ def test_one_installs_completed_restart_never_erases_another_installs_debt(tmp_p
 
     def run(install: str, body: str) -> str:
         code = (f"import sys\nsys.path.insert(0, {str(roots[install])!r})\n"
-                "from hermes_cli.update_host_obligation import *\n" + body)
+                "from hermes_agent.hermes_cli.update_host_obligation import *\n" + body)
         child = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", code], env=env, capture_output=True,
                                text=True, encoding="utf-8", stdin=subprocess.DEVNULL, timeout=60, check=False)
         assert child.returncode == 0, child.stdout + child.stderr

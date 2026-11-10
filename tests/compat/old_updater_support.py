@@ -84,6 +84,7 @@ class FreshChild:
         def check_import(name):
             if name == "pm" or name.startswith("pm.") or name in {
                 "hermes_cli._update_takeover", "hermes_cli.update_finish",
+                "hermes_agent.hermes_cli._update_takeover", "hermes_agent.hermes_cli.update_finish",
             }:
                 pytest.fail(f"fresh updater imported in the old parent: {name}")
 

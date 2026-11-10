@@ -836,7 +836,7 @@ ORPHAN_MARKER_GAP = (r"orphaned_update: \.hermes-update-in-progress (read DEAD|s
 # tree. Once every half is here the excuse is off, so the cell is strict on any runner, and
 # tests/ci/test_windows_update_crash_oracles.py (every PR) fails until the wrapper is deleted.
 ORPHAN_MARKER_FIX = (
-    ("hermes_cli/update_lock.py", "def delegate_live("),  # #132365: the judge honours a live delegate
+    ("hermes_agent/hermes_cli/update_lock.py", "def delegate_live("),  # #132365: the judge honours a live delegate
     ("scripts/desktop-update/marker.ps1", "function Add-MarkerDelegate("),  # #132354: the script names one
     ("scripts/desktop-update/windows.ps1", "Add-MarkerDelegate @($proc.Id)"),  # ... its update child
 )

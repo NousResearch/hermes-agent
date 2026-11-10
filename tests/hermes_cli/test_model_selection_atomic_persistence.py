@@ -121,7 +121,7 @@ def test_setting_saved_while_route_is_decided_survives(profile_config, monkeypat
             wrote.append(True)
             subprocess.run(
                 [sys.executable, "-c", writer, str(profile_config)],
-                cwd=Path(model_switch.__file__).resolve().parents[1],
+                cwd=Path(model_switch.__file__).resolve().parents[2],
                 check=True,
                 capture_output=True,
                 timeout=60,

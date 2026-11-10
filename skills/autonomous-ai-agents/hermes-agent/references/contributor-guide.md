@@ -6,22 +6,22 @@ For occasional contributors and PR authors. Full developer docs: https://hermes-
 
 ```
 hermes-agent/
-├── cli.py                # Interactive CLI (HermesCLI)
 ├── hermes_agent/         # the Python package
 │   ├── run_agent.py          # AIAgent — core conversation loop
 │   ├── model_tools.py        # Tool discovery and dispatch
 │   ├── toolsets.py           # Toolset definitions
+│   ├── cli.py                # Interactive CLI (HermesCLI)
 │   ├── hermes_state.py       # SQLite session store
 │   ├── agent/                # Prompt builder, context compression, memory, model routing, credential pooling, skill dispatch
+│   ├── hermes_cli/           # CLI subcommands, config, setup, commands
+│   │   ├── commands.py       # Slash command registry (CommandDef)
+│   │   ├── config.py         # DEFAULT_CONFIG, env var definitions
+│   │   └── main.py           # CLI entry point and argparse
 │   ├── tools/                # One file per tool
 │   │   └── registry.py       # Central tool registry
 │   ├── gateway/              # Messaging gateway
 │   │   └── platforms/        # Platform adapters (telegram, discord, etc.)
 │   └── cron/                 # Job scheduler
-├── hermes_cli/           # CLI subcommands, config, setup, commands
-│   ├── commands.py       # Slash command registry (CommandDef)
-│   ├── config.py         # DEFAULT_CONFIG, env var definitions
-│   └── main.py           # CLI entry point and argparse
 ├── tests/                # Extensive pytest suite (run via scripts/run_tests.sh)
 └── website/              # Docusaurus docs site
 ```

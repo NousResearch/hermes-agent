@@ -49,7 +49,7 @@ async def ping():
 async def events(ws: WebSocket):
     with Path(__file__).with_name("ENTERED").open("a") as entered:
         entered.write("x")
-    from hermes_cli.web_server_chat import _ws_auth_ok
+    from hermes_agent.hermes_cli.web_server_chat import _ws_auth_ok
     if not _ws_auth_ok(ws):
         await ws.close(code=1008)
         return

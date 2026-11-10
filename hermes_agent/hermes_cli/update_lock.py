@@ -105,7 +105,7 @@ def update_marker_path() -> Path:
 
 
 def _default_install_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def _git_common_dir(root: Path) -> Path | None:

@@ -156,10 +156,10 @@ def purge_env_credential_references(
     # Make the removal sticky the same way `hermes auth remove` does: a lingering shell export (or
     # another live process's os.environ) would otherwise re-seed the pool entry on the next
     # load_pool(). The save path lifts the suppression on an explicit re-add.
-    _for_each_provider(providers, "hermes_cli.auth.suppress_credential_source", f"env:{env_var}")
+    _for_each_provider(providers, "hermes_agent.hermes_cli.auth.suppress_credential_source", f"env:{env_var}")
     if clear_models_cache and providers:
         # Best-effort — a cache failure must not block the credential removal itself.
-        _for_each_provider(providers, "hermes_cli.models.clear_provider_models_cache")
+        _for_each_provider(providers, "hermes_agent.hermes_cli.models.clear_provider_models_cache")
     return {"pool_pruned": pruned, "providers": providers}
 
 
@@ -193,7 +193,7 @@ def save_provider_env_credential(env_var: str, value: str) -> dict[str, Any]:
 
     # A prior removal may have suppressed this env source; a fresh save is an explicit re-add.
     providers = _providers_for_env_var(env_var)
-    _for_each_provider(providers, "hermes_cli.auth.unsuppress_credential_source", f"env:{env_var}")
+    _for_each_provider(providers, "hermes_agent.hermes_cli.auth.unsuppress_credential_source", f"env:{env_var}")
 
     # ``load_pool`` is idempotent and additive-only for env sources, so re-running is safe even when
     # the pool already had this entry. Best-effort: never masks the successful .env write above.

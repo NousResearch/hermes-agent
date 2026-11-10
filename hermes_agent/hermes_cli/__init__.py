@@ -32,7 +32,7 @@ def __getattr__(name: str) -> str:
         import json
         from pathlib import Path
         try:
-            stamp = json.loads((Path(__file__).resolve().parents[1] / "install-stamp.json").read_text(encoding="utf-8-sig"))
+            stamp = json.loads((Path(__file__).resolve().parents[2] / "install-stamp.json").read_text(encoding="utf-8-sig"))
             return str(stamp.get("baseVersion") or "0.0.0")
         except (OSError, ValueError, AttributeError):
             return "0.0.0"

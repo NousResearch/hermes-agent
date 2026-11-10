@@ -23,8 +23,8 @@ def _fail_paths_import(monkeypatch, error):
 
 @pytest.mark.parametrize("missing", ["pm", "pm.paths"])
 def test_version_uses_checkout_stamp_when_pm_is_absent(monkeypatch, tmp_path, missing):
-    package = tmp_path / "hermes_cli"
-    package.mkdir()
+    package = tmp_path / "hermes_agent" / "hermes_cli"
+    package.mkdir(parents=True)
     monkeypatch.setattr(hermes_cli, "__file__", str(package / "__init__.py"))
     (tmp_path / "install-stamp.json").write_text('{"baseVersion": "1.2.3"}', encoding="utf-8")
     _fail_paths_import(monkeypatch, ModuleNotFoundError(name=missing))

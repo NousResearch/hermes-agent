@@ -138,7 +138,7 @@ class GatewayDashboardMount:
                 raise RuntimeError("gateway API stopped")
             import importlib
             web = sys.modules.get("hermes_agent.hermes_cli.web_server") or await asyncio.to_thread(
-                importlib.import_module, "hermes_cli.web_server")
+                importlib.import_module, "hermes_agent.hermes_cli.web_server")
             if self._closed:  # the listener stopped while the import ran
                 raise RuntimeError("gateway API stopped")
             if getattr(web.app.state, "gateway_runner", None) not in (None, self.runner):

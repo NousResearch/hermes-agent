@@ -258,11 +258,11 @@ def _paths(spec: str) -> list[tuple[tuple[str, ...], bool]]:
 
 
 def _sub(module: str, builder: str, handler: str) -> _CliSurface:
-    return _CliSurface("extracted", f"hermes_cli.subcommands.{module}", builder, handler)
+    return _CliSurface("extracted", f"hermes_agent.hermes_cli.subcommands.{module}", builder, handler)
 
 
 def _reg(module: str, handler: str | None = None) -> _CliSurface:
-    return _CliSurface("registered", f"hermes_cli.{module}", "register_cli", handler)
+    return _CliSurface("registered", f"hermes_agent.hermes_cli.{module}", "register_cli", handler)
 
 
 # root -> (surface, subcommand paths as a ``_paths`` spec). Registered in this order.
@@ -306,13 +306,13 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
         "list, show, info, *create, *use, *describe, *rename, *delete, *export, *import, "
         "*install, *update"),
     "cron": (_sub("cron", "build_cron_parser", "cmd_cron"), "*create, *edit, *remove, *tick"),
-    "portal": (_CliSurface("adder", "hermes_cli.portal_cli", "add_parser"), "info, tools"),
+    "portal": (_CliSurface("adder", "hermes_agent.hermes_cli.portal_cli", "add_parser"), "info, tools"),
     "project": (
-        _CliSurface("builder", "hermes_cli.projects_cmd", "build_parser", "cmd_project"),
+        _CliSurface("builder", "hermes_agent.hermes_cli.projects_cmd", "build_parser", "cmd_project"),
         "list, show, *create, *add-folder, *remove-folder, *rename, *set-primary, *use, "
         "*archive, *restore, *bind-board"),
     "kanban": (
-        _CliSurface("builder", "hermes_cli.kanban", "build_parser", "cmd_kanban"),
+        _CliSurface("builder", "hermes_agent.hermes_cli.kanban", "build_parser", "cmd_kanban"),
         "*init, boards list, *boards create, *boards rm, *boards switch, boards current, "
         "*boards rename, *boards set-workdir, *create, list, show, *assign, *reclaim, *reassign, "
         "diagnose, *link, *unlink, *claim, *comment, *complete, *edit, *block, *schedule, "
@@ -330,7 +330,7 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
 # (builder/adder families never did).
 _CONFIRMED_KINDS = {"extracted", "registered"}
 
-_SEND_SURFACE = _CliSurface("adder", "hermes_cli.send_cmd", "register_send_subparser")
+_SEND_SURFACE = _CliSurface("adder", "hermes_agent.hermes_cli.send_cmd", "register_send_subparser")
 
 
 def _register_command_family(

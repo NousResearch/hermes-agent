@@ -27,8 +27,9 @@ def _wait(path, process):
 def cell(tmp_path):
     # An unchanged copy owns its private checkout lock/root; never the live install's.
     root = tmp_path / "checkout"
-    (root / "hermes_cli").mkdir(parents=True)
-    shutil.copyfile(REPO / "hermes_cli/update_pause_record.py", root / "hermes_cli/update_pause_record.py")
+    (root / "hermes_agent/hermes_cli").mkdir(parents=True)
+    shutil.copyfile(REPO / "hermes_agent/hermes_cli/update_pause_record.py",
+                    root / "hermes_agent/hermes_cli/update_pause_record.py")
     home = tmp_path / "home"
     (home / ".hermes").mkdir(parents=True)
     env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
@@ -42,7 +43,8 @@ def cell(tmp_path):
             import importlib.util, json, os, sys, time
             from pathlib import Path
             root = Path(sys.argv[1])
-            spec = importlib.util.spec_from_file_location("hermes_cli.update_pause_record", root / "hermes_cli/update_pause_record.py")
+            spec = importlib.util.spec_from_file_location("hermes_agent.hermes_cli.update_pause_record",
+                                                  root / "hermes_agent/hermes_cli/update_pause_record.py")
             r = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = r
             spec.loader.exec_module(r)
@@ -79,7 +81,7 @@ def test_consumption_checkpoints_debt_before_unlink_and_producer_death(cell, cla
     ''', base / "ready", base / "consume", base / "consumed")
     _wait(base / "ready", consumer)
     owner = launch('''
-        from hermes_cli import update_cmd_windows as w
+        from hermes_agent.hermes_cli import update_cmd_windows as w
         from types import SimpleNamespace
         pid = int(sys.argv[2])
         home = Path(os.environ["HERMES_HOME"])
@@ -134,7 +136,7 @@ def test_failed_consumer_checkpoint_keeps_request_and_user_stop_is_not_update_de
     _, _, launch = cell
     result = _result(launch('''
         from gateway import status
-        from hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
+        from hermes_agent.hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
         pid = os.getpid()
         home = Path(os.environ["HERMES_HOME"])
         path = home / ".gateway-planned-stop.json"
@@ -178,7 +180,7 @@ def test_a_busy_pause_mutex_never_turns_a_planned_stop_into_an_unplanned_one(cel
     try:
         result = _result(launch('''
             from gateway import status
-            from hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
+            from hermes_agent.hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
             pid = os.getpid()
             home = Path(os.environ["HERMES_HOME"])
             assert _write_update_planned_stop_marker(home, pid)

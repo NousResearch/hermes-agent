@@ -13,7 +13,7 @@ from tests.gateway.test_session_plugin_rpc import two_profile_runner
 
 PLUGIN = '''
 import os, threading
-from hermes_cli.plugin_events import emit_plugin_session_event
+from hermes_agent.hermes_cli.plugin_events import emit_plugin_session_event
 
 CTX = []
 
@@ -108,7 +108,7 @@ def test_plugin_rpc_and_session_events_in_either_isolation_mode(tmp_path, monkey
 
 SENDER = '''
 import asyncio, sys, threading, types
-from hermes_cli.plugin_events import emit_plugin_session_event
+from hermes_agent.hermes_cli.plugin_events import emit_plugin_session_event
 
 CTX, UNLOADED = [], threading.Event()  # this load's: set when it unloads
 # Gates the test opens, shared by every load of this plugin in the host (each load re-imports this module).

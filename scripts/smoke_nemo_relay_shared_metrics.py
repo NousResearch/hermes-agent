@@ -955,6 +955,7 @@ def main() -> int:
     package_paths, packages = _validate_packages(
         telemetry / "outbox",
         hermes_repo
+        / "hermes_agent"
         / "hermes_cli"
         / "observability"
         / "schemas"

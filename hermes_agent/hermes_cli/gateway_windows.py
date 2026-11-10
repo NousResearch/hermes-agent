@@ -355,7 +355,7 @@ def _stable_gateway_working_dir(project_root: Path, home: Path | None = None) ->
 # ── Script rendering
 
 def _gateway_run_argv(python_exe: str, profile_arg: str) -> list[str]:
-    """``python -m hermes_agent.hermes_cli.main [--profile X] gateway run`` — shared by every launcher renderer."""
+    """``python -m hermes_cli.main [--profile X] gateway run`` — shared by every launcher renderer."""
     argv = [python_exe, "-m", "hermes_cli.main"]
     if profile_arg:
         argv.extend(profile_arg.split())

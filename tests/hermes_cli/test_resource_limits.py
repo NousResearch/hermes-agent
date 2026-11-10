@@ -124,7 +124,7 @@ def test_fresh_process_import_without_posix_resource_is_a_safe_noop():
     subprocess.run(
         [sys.executable, "-c", code, resource_limits.__file__],
         check=True,
-        cwd=Path(resource_limits.__file__).resolve().parents[1],
+        cwd=Path(resource_limits.__file__).resolve().parents[2],
         capture_output=True,
         text=True,
     )
@@ -320,7 +320,7 @@ def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_pa
         cli_main.cmd_dashboard(args)
 
     assert calls == []
-    assert exec_call["argv"][1:5] == ["-m", "hermes_cli.main", "-p", "default"]
+    assert exec_call["argv"][1:5] == ["-m", "hermes_agent.hermes_cli.main", "-p", "default"]
     assert exec_call["env"]["HERMES_HOME"] == str(tmp_path)
 
 

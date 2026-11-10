@@ -1061,6 +1061,8 @@ def _code_root_for_path(raw: Any) -> Optional[Path]:
             return None
         for parent in [candidate, *candidate.parents][:_CODE_ROOT_MAX_DEPTH]:
             if (parent / "hermes_cli" / "main.py").is_file():
+                if parent.name == "hermes_agent" and (parent.parent / "hermes_cli" / "main.py").is_file():
+                    parent = parent.parent
                 return parent.resolve()
     return None
 

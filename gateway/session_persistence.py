@@ -168,7 +168,7 @@ class SessionPersistenceMixin:
         active. ``_entries`` is one flat dict holding every profile's keys, so it must persist to ONE file
         (``_routing_home``), not whichever profile is scoped — otherwise a mid-turn rewrite and the unscoped
         startup load see different copies and crash markers under a secondary profile go unrecovered. A
-        pinned SessionDB still wins; bare test instances lacking the handle cache report none.
+        pinned store still wins; bare test instances lacking the handle cache report none.
 
         Resolving it from the active scope made that file whichever profile happened to be scoped at the
         time: a whole-index rewrite during one profile's turn copied every other profile's routing rows into

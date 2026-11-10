@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v10"
+SCANNER_VERSION = "skills-guard-v11"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -535,6 +535,44 @@ THREAT_PATTERNS = [
 
 _COMPILED_THREAT_PATTERNS = [(re.compile(pattern, re.IGNORECASE), *rest) for pattern, *rest in THREAT_PATTERNS]
 
+# ── Skill-only credential rules ──
+# A skill's scripts run in the execute_code or terminal child, which never receives a Hermes
+# model-provider key (the child-env scrub; GHSA-rhgp-j443-p4rf keeps a skill from declaring one back).
+# Loading the Hermes .env defeats that and hands the script every key of the profile, and reading a
+# provider key means the skill depends on getting it some other way. Both are high on a skill. Plugins
+# run in-process and read their own keys, so ``plugin_guard`` scans without these rules.
+_SKILL_ONLY_PATTERNS = [(re.compile(
+    r'\b(?:load_dotenv|dotenv_values)\s*\([^\n]*(?:HERMES_HOME|get_hermes_home|\.hermes\b)', re.IGNORECASE),
+    "hermes_env_dotenv", "high", "exfiltration", "loads the Hermes .env (every key of the profile) into the script")]
+_ENV_READ_IDS = frozenset({"python_getenv_secret", "python_environ_get_secret"})
+_QUOTED_ENV_NAME_RE = re.compile(r'["\']([A-Za-z_][A-Za-z0-9_]*)["\']')
+
+
+def _model_provider_key_names() -> frozenset:
+    """Env names that hold a Hermes model-provider key: every provider's ``api_key_env_vars`` plus the
+    secret provider entries of ``OPTIONAL_ENV_VARS`` (``OPENROUTER_API_KEY`` is declared only there)."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.config import OPTIONAL_ENV_VARS
+    names = {var.upper() for pconfig in PROVIDER_REGISTRY.values() for var in pconfig.api_key_env_vars}
+    names.update(name.upper() for name, meta in OPTIONAL_ENV_VARS.items()
+                 if meta.get("category") == "provider" and meta.get("password"))
+    return frozenset(names)
+
+
+def _raise_provider_key_reads(findings: list, lines: list) -> None:
+    """A secret read that names a model-provider key becomes ``provider_key_env_read`` (high); a read of
+    any other secret-shaped name stays medium (reading your own API key is normal, #60709)."""
+    reads = [f for f in findings if f.pattern_id in _ENV_READ_IDS]
+    if not reads:
+        return
+    provider_keys = _model_provider_key_names()
+    for f in reads:
+        named = [n for n in _QUOTED_ENV_NAME_RE.findall(lines[f.line - 1]) if n.upper() in provider_keys]
+        if named:
+            f.pattern_id, f.severity = "provider_key_env_read", "high"
+            f.description = (f"reads Hermes model-provider key {named[0]}; skill scripts never receive it, "
+                             "and the skill must not fetch it another way")
+
 # ── Inert path references (#92478) ──
 # The bare path-token patterns (`authorized_keys`, `~/.aws`, ...) fire on the token alone, so a skill that spells
 # a path in order to REFUSE it scores like one that appends to it, and one critical is an unoverridable dangerous
@@ -695,9 +733,10 @@ def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
     return out
 
 
-def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
+def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> list[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
-    name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
+    name). Regex findings dedupe per pattern per line; invisible chars yield one per line. *skill* adds the
+    skill-only credential rules (``_SKILL_ONLY_PATTERNS``, ``_raise_provider_key_reads``)."""
     rel_path = rel_path or file_path.name
     if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
         return []
@@ -709,7 +748,8 @@ def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
     traversal_lines = _mask_prose_link_destinations(lines) if file_path.suffix.lower() == ".md" else lines
     suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
-    for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
+    patterns = _COMPILED_THREAT_PATTERNS + (_SKILL_ONLY_PATTERNS if skill else [])
+    for pattern, pid, severity, category, description in patterns:
         for i, line in enumerate(lines, start=1):
             scan_line = traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS else line
             if i not in docstring_lines and pattern.search(scan_line):
@@ -718,6 +758,8 @@ def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
                     pid, severity, description, line, lines[owners[i - 1]], suffix)
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))
+    if skill:
+        _raise_provider_key_reads(findings, lines)
     for i, line in enumerate(lines, start=1):
         if (char := next((c for c in INVISIBLE_CHARS if c in line), None)) is not None:
             name = _unicode_char_name(char)
@@ -754,9 +796,9 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         findings.extend(_check_structure(skill_path, ignore=ignore))
         for f in skill_path.rglob("*"):
             if f.is_file() and not ignore(rel := str(f.relative_to(skill_path))):
-                findings.extend(scan_file(f, rel))
+                findings.extend(scan_file(f, rel, skill=True))
     elif skill_path.is_file():
-        findings.extend(scan_file(skill_path, skill_path.name))
+        findings.extend(scan_file(skill_path, skill_path.name, skill=True))
     if trust == "community":
         findings = [_community_note(f) for f in findings]
     verdict = _determine_verdict(findings)

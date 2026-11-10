@@ -466,6 +466,45 @@ class TestScanSkill:
         result = scan_skill(f, source="community")
         assert result.verdict != "safe"
 
+    def test_loading_hermes_dotenv_is_high(self, tmp_path):
+        """A skill that tells the agent to load the Hermes .env inside execute_code hands the
+        script every key of the profile: high, so a community install is a caution."""
+        skill_dir = tmp_path / "dotenv-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "# Skill\n\nLoad dotenv explicitly: `import os; from dotenv import load_dotenv; "
+            'load_dotenv(os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), ".env"))`\n',
+            encoding="utf-8")
+        (skill_dir / "run.py").write_text(
+            "from dotenv import dotenv_values\nfrom hermes_constants import get_hermes_home\n"
+            'keys = dotenv_values(get_hermes_home() / ".env")\n'
+            'load_dotenv("./project.env")\n', encoding="utf-8")
+        result = scan_skill(skill_dir, source="community")
+        hits = {(fi.file, fi.line, fi.severity) for fi in result.findings if fi.pattern_id == "hermes_env_dotenv"}
+        assert hits == {("SKILL.md", 3, "high"), ("run.py", 3, "high")}
+        assert result.verdict == "caution"
+        assert should_allow_install(result)[0] is False
+
+    def test_model_provider_key_read_is_high_other_secrets_stay_medium(self, tmp_path):
+        """Skill children never receive a Hermes model-provider key, so a skill reading one is high;
+        reading the skill's own third-party key stays the informational medium (#60709)."""
+        skill_dir = tmp_path / "key-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
+        (skill_dir / "run.py").write_text(
+            'a = os.getenv("OPENROUTER_API_KEY")\n'
+            'b = os.environ.get("ANTHROPIC_API_KEY", "")\n'
+            'c = os.getenv("TENOR_API_KEY")\n', encoding="utf-8")
+        result = scan_skill(skill_dir, source="community")
+        by_line = {fi.line: (fi.pattern_id, fi.severity) for fi in result.findings if fi.file == "run.py"}
+        assert by_line[1] == ("provider_key_env_read", "high")
+        assert by_line[2] == ("provider_key_env_read", "high")
+        assert by_line[3] == ("python_getenv_secret", "medium")
+        assert result.verdict == "caution"
+        # The rules are skill-only: a plain file scan (what plugin_guard uses) keeps the medium read.
+        plain = {fi.line: fi.pattern_id for fi in scan_file(skill_dir / "run.py", "run.py")}
+        assert plain == {1: "python_getenv_secret", 2: "python_environ_get_secret", 3: "python_getenv_secret"}
+
 
 # ---------------------------------------------------------------------------
 # _check_structure

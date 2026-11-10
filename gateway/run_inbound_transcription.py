@@ -19,33 +19,27 @@ def _dedupe_audio_paths(audio_paths: list[str]) -> list[str]:
     routes (Telegram's current voice + ``reply_to_message.voice``) under two cache paths, and
     each would be transcribed and billed. Only same-size files are hashed; an unreadable path
     keeps path identity so a failed probe never drops a distinct clip."""
-    unique: list[str] = []
-    by_size: dict[int, list[tuple[str, Optional[bytes]]]] = {}
-
-    def digest(path: str) -> Optional[bytes]:
+    paths = list(dict.fromkeys(audio_paths))
+    by_size: dict[int, list[str]] = {}
+    for path in paths:
         try:
-            with open(path, "rb") as fh:
-                return hashlib.file_digest(fh, "sha256").digest()
+            by_size.setdefault(os.path.getsize(path), []).append(path)
         except OSError:
-            return None
-
-    for path in dict.fromkeys(audio_paths):
-        try:
-            bucket = by_size.setdefault(os.path.getsize(path), [])
-        except OSError:
-            unique.append(path)
-            continue
-        if bucket:
-            mine = digest(path)
-            bucket[:] = [(p, d if d is not None else digest(p)) for p, d in bucket]
-            if mine is not None and any(d == mine for _p, d in bucket):
-                logger.info("Skipping duplicate audio attachment before STT: %s", path)
+            pass
+    duplicates: set[str] = set()
+    for group in by_size.values():
+        seen: set[bytes] = set()
+        for path in group if len(group) > 1 else ():
+            try:
+                with open(path, "rb") as fh:
+                    digest = hashlib.file_digest(fh, "sha256").digest()
+            except OSError:
                 continue
-            bucket.append((path, mine))
-        else:
-            bucket.append((path, None))
-        unique.append(path)
-    return unique
+            if digest in seen:
+                logger.info("Skipping duplicate audio attachment before STT: %s", path)
+                duplicates.add(path)
+            seen.add(digest)
+    return [path for path in paths if path not in duplicates]
 
 
 class GatewayInboundTranscriptionMixin:

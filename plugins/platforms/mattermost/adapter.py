@@ -429,9 +429,15 @@ class MattermostAdapter(BasePlatformAdapter):
             file_ids, caption_parts = [], []
             try:
                 for image_url, alt_text in chunk:
+                    loaded = await self._load_batch_image(image_url, len(file_ids))
+                    if loaded is None and not image_url.startswith("file://"):
+                        # Refused/failed remote image already left the reply text: keep the link.
+                        sent = await self.send(chat_id, f"{alt_text}\n{image_url}" if alt_text else image_url,
+                                               metadata=metadata)
+                        delivered = delivered or sent.success
+                        continue
                     if alt_text:
                         caption_parts.append(alt_text)
-                    loaded = await self._load_batch_image(image_url, len(file_ids))
                     if loaded is not None and (fid := await self._upload_file(chat_id, *loaded)):
                         file_ids.append(fid)
                 if not file_ids:

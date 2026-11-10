@@ -15,11 +15,14 @@ from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 
 CAP = 64 * 1024
+HUGE = CAP * 512  # 32 MiB: far more than socket buffers absorb once the client stops reading
 PNG = b"\x89PNG\r\n\x1a\n"
 
 
 class _ChunkedImage(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    served: dict[int, int] = {}  # requested size -> bytes the server managed to write
+    done = threading.Event()
 
     def do_GET(self):
         size = int(parse_qs(urlparse(self.path).query)["size"][0])
@@ -27,14 +30,18 @@ class _ChunkedImage(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "image/png")
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
-        body = PNG + b"\0" * (size - len(PNG))
+        written = 0
         try:
             for i in range(0, size, 16 * 1024):
-                piece = body[i:i + 16 * 1024]
+                piece = (PNG if i == 0 else b"") + b"\0" * (min(16 * 1024, size - i) - (len(PNG) if i == 0 else 0))
                 self.wfile.write(b"%x\r\n%s\r\n" % (len(piece), piece))
+                written += len(piece)
             self.wfile.write(b"0\r\n\r\n")
         except (BrokenPipeError, ConnectionResetError):
             pass
+        finally:
+            self.served[size] = written
+            self.done.set()
 
     def log_message(self, *_args):
         pass
@@ -55,7 +62,11 @@ def image_host():
     url_safety._reset_allow_private_cache()
 
 
-async def _ok(*_args, **_kwargs):
+TEXTS: list[str] = []  # what each adapter's ``send`` (text fallback) carried
+
+
+async def _ok(*args, **kwargs):
+    TEXTS.append(str(kwargs.get("content", args[1] if len(args) > 1 else "")))
     return SendResult(success=True, message_id="1")
 
 
@@ -170,9 +181,17 @@ async def test_reply_image_url_is_uploaded_whole_under_the_cap_and_refused_over_
         assert uploaded == [CAP // 2], "an under-cap image must still be uploaded whole"
 
         uploaded.clear()
-        await send(adapter, f"{image_host}/huge.png?size={CAP * 8}")
+        TEXTS.clear()
+        _ChunkedImage.done.clear()
+        await send(adapter, f"{image_host}/huge.png?size={HUGE}")
         assert uploaded == [], f"an over-cap image reached the upload ({uploaded} bytes)"
+        # The refused image already left the reply text, so its link survives as text.
+        assert any("huge.png" in text for text in TEXTS), f"the refused image vanished: {TEXTS}"
     finally:
         for session in (getattr(adapter, "_session", None), getattr(adapter, "_send_session", None)):
             if session is not None:
                 await session.close()
+    # The download stops near the cap: buffering the whole body and rejecting it after would let
+    # the server finish writing every byte (an aiohttp session holds the socket until it closes).
+    assert _ChunkedImage.done.wait(10)
+    assert _ChunkedImage.served[HUGE] < HUGE // 2, "the over-cap body was read to the end"

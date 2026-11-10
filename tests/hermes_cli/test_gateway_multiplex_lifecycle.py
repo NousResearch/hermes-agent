@@ -506,3 +506,17 @@ def test_same_home_record_requires_identity_and_stable_pid(homes, monkeypatch, v
     pids = iter([4242, 4343 if changed else 4242])
     monkeypatch.setattr(status, 'get_running_pid', lambda: next(pids))
     assert gw._owned_gateway_pid() == (4242 if verified and not changed else None)
+
+
+def test_create_profile_parked_skips_multiplexer(tmp_path, monkeypatch):
+    from hermes_cli import profiles
+    root = tmp_path / '.hermes'
+    root.mkdir(parents=True)
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    monkeypatch.setattr(profiles, 'get_active_profile_name', lambda: 'default')
+
+    p = profiles.create_profile('dormant', no_alias=True, no_skills=True, parked=True)
+    assert (p / 'gateway.parked').exists()
+    assert 'dormant' not in dict(profiles.profiles_to_serve(True))
+    assert 'dormant' in dict(profiles.profiles_to_serve(True, include_parked=True))

@@ -1045,3 +1045,25 @@ class TestContextFileReadTimeout:
 
         with pytest.raises(FileNotFoundError):
             _read_text_with_timeout(tmp_path / "missing.md", timeout=1.0)
+
+
+def test_build_skills_manifest_memoization(tmp_path):
+    from agent.prompt_builder import _build_skills_manifest, _MANIFEST_MEMO, clear_skills_system_prompt_cache
+    skills_dir = tmp_path / "skills"
+    cat_dir = skills_dir / "general"
+    cat_dir.mkdir(parents=True)
+    (cat_dir / "SKILL.md").write_text("# Test skill", encoding="utf-8")
+
+    clear_skills_system_prompt_cache()
+    assert str(skills_dir) not in _MANIFEST_MEMO
+
+    m1 = _build_skills_manifest(skills_dir)
+    assert str(skills_dir) in _MANIFEST_MEMO
+
+    # Second call hits memory cache
+    m2 = _build_skills_manifest(skills_dir)
+    assert m1 == m2
+
+    # Clearing cache drops memo
+    clear_skills_system_prompt_cache()
+    assert str(skills_dir) not in _MANIFEST_MEMO

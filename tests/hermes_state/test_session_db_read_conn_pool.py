@@ -761,3 +761,29 @@ def test_failed_initialization_does_not_register_duplicate_writer_handle(db, mon
         SessionDB(db_path=db.db_path)
 
     assert registered == []
+
+
+def test_fd_headroom_double_checked_caching(monkeypatch):
+    """Multiple concurrent callers share a cached fd probe without dogpiling /proc."""
+    call_count = 0
+    orig_open = hermes_state_readpool._open_fd_count
+
+    def counted_open():
+        nonlocal call_count
+        call_count += 1
+        return orig_open()
+
+    monkeypatch.setattr(hermes_state_readpool, "_open_fd_count", counted_open)
+    hermes_state_readpool._fd_usage_cache = (0.0, None)
+
+    threads = [
+        threading.Thread(target=lambda: [hermes_state_readpool._fd_headroom_ok() for _ in range(25)])
+        for _ in range(10)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # 250 calls across 10 threads should only trigger 1 (or at most 2 under slow context switch) probe calls
+    assert call_count <= 2, f"Expected <= 2 calls to _open_fd_count, got {call_count}"

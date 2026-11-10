@@ -91,3 +91,24 @@ async def test_observed_group_question_then_photo_is_one_turn():
     assert len(events) == 1
     assert events[0].media_urls == ["/tmp/post.jpg"]
     assert "Is this a real study?" in events[0].text
+
+
+@pytest.mark.asyncio
+async def test_photo_in_another_topic_does_not_hold_the_question():
+    """Same user, question in topic A, photo in topic B: the question flushes on time, not after B's download."""
+    adapter = _adapter()
+    release = asyncio.Event()
+    question, photo_msg = _text("Is this a real study?"), _slow_photo(release)
+    question.message_thread_id, photo_msg.message_thread_id = 10, 20
+    with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async", new=AsyncMock(return_value="/tmp/post.jpg")):
+        await adapter._handle_text_message(_update(question), MagicMock())
+        photo = asyncio.create_task(adapter._handle_media_message(_update(photo_msg), MagicMock()))
+        try:
+            await async_wait_until(lambda: adapter.handle_message.await_count >= 1, timeout=2)
+        finally:
+            release.set()
+            await photo
+        first = adapter.handle_message.await_args_list[0].args[0]
+        assert (first.text, first.media_urls, first.source.thread_id) == ("Is this a real study?", [], "10")
+        await async_wait_until(lambda: adapter.handle_message.await_count >= 2, timeout=5)
+    assert adapter.handle_message.await_args_list[1].args[0].media_urls == ["/tmp/post.jpg"]

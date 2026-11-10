@@ -46,24 +46,26 @@ def _is_image(msg: Any) -> bool:
 
 
 def _claim_pending_text(adapter: Any, msg: Any) -> None:
-    """Pin a text-only batch from the image's sender in the image's chat that is still waiting to flush."""
+    """Pin the text-only batch waiting to flush in the lane this image's own text would batch under.
+
+    The lane is the image's text-batch key (topic recovery and observed-group sender included), so an
+    image in topic B never holds the same user's question in topic A: that question flushes on time.
+    """
     sender = getattr(getattr(msg, "from_user", None), "id", None)
     chat = getattr(getattr(msg, "chat", None), "id", None)
-    if not _is_image(msg) or sender is None or chat is None:
+    if not _is_image(msg) or sender is None or chat is None or not any(
+            pending.source is not None and str(pending.source.chat_id) == str(chat)
+            for pending in adapter._pending_text_batches.values()):
+        return  # nothing pending in this chat: skip building the event
+    event = adapter._apply_telegram_group_observe_attribution(adapter._build_message_event(msg, MessageType.TEXT))
+    key = adapter._text_batch_key(copy.copy(event))  # topic recovery rewrites in place
+    pending = adapter._pending_text_batches.get(key)
+    if (pending is None or str(pending.sender_id()) != str(sender)  # observed groups keep the sender off the source
+            or pending.message_type != MessageType.TEXT or pending.media_urls
+            or getattr(pending, "_photo_claim", None) is not None):
         return
-    candidates = [
-        (key, pending) for key, pending in adapter._pending_text_batches.items()
-        if pending.source is not None and str(pending.source.chat_id) == str(chat)
-        and str(pending.sender_id()) == str(sender)  # observed groups keep the sender off the shared source
-        and pending.message_type == MessageType.TEXT and not pending.media_urls
-        and getattr(pending, "_photo_claim", None) is None]
-    thread = str(getattr(msg, "message_thread_id", None) or "")
-    # This topic's text first: claiming another topic's text would leave this one to flush alone.
-    candidates.sort(key=lambda item: str(item[1].source.thread_id or "") != thread)
-    if candidates:
-        key, pending = candidates[0]
-        done = pending._photo_claim = asyncio.Event()  # type: ignore[attr-defined]
-        _claims(adapter)[id(msg)] = (key, pending, done)
+    done = pending._photo_claim = asyncio.Event()  # type: ignore[attr-defined]
+    _claims(adapter)[id(msg)] = (key, pending, done)
 
 
 def absorb_claimed_text(adapter: Any, msg: Any, event: MessageEvent) -> None:

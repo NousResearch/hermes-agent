@@ -94,6 +94,11 @@ TASKS = {
                    f"contain the word ERROR. {NO_SELF} When the review is done, write {ws}/out/summary.md with one "
                    "row per file and a final line 'TOTAL=<sum>'."),
     },
+    "all_implicit_table": {
+        "kind": "all", "children": 3,
+        "prompt": (f"Have subagents pull the BUILD_ID and the number of ERROR lines out of {FILES}, one subagent per "
+                   f"file. {NO_SELF} I want a small table when it is done."),
+    },
     "each_write_as_lands": {
         "kind": "each", "children": 3,
         "prompt": (f"Three log files: {FILES}. Each has one line starting with BUILD_ID=. Use three parallel "
@@ -212,6 +217,8 @@ def success():
         return SLOWEST in final.lower() and str(FACTS[SLOWEST]["latency"]) in final
     if TASK_ID == "all_summary_file":
         return f"TOTAL={TOTAL_ERRORS}" in _read("out/summary.md").replace(" ", "")
+    if TASK_ID == "all_implicit_table":
+        return all(FACTS[n]["build"] in final for n in NAMES)
     if TASK_ID == "each_write_as_lands":
         return all(FACTS[n]["build"] in _read(f"out/{n}.txt") for n in NAMES)
     if TASK_ID == "each_stream_to_user":

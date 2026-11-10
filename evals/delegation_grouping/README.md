@@ -17,7 +17,7 @@ Arms are checkouts named by `DG_<ARM>_TREE` (`DG_BASE_TREE`, `DG_CAND_TREE`); pa
 
 | task | class | expected completion units |
 |---|---|---|
-| `all_join_ids`, `all_slowest`, `all_summary_file` | the answer needs every result | 1 |
+| `all_join_ids`, `all_slowest`, `all_summary_file`, `all_implicit_table` | the answer needs every result | 1 |
 | `each_write_as_lands`, `each_stream_to_user` | every result is acted on as it lands | 3 |
 | `single_control` | one subagent | 1 |
 

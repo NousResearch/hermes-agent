@@ -312,6 +312,8 @@ If Desktop closes before an image message is acknowledged, reopen its original c
 
 The **Artifacts** view collects what your sessions generate — **images, files, and links** — into one searchable, browsable gallery. Open it from the sidebar, the command palette (**Artifacts — Browse generated outputs**), or a `nav.artifacts` shortcut you bind yourself. It indexes recent session outputs automatically; every artifact shows which session produced it with a jump back to that chat, and images and files open in a preview with download / open-in-browser / copy actions.
 
+For a file produced inside a remote terminal backend, ask the agent to deliver it with `MEDIA:/absolute/path/to/file`. Before storing the final reply or cleaning up the terminal environment, Hermes copies the attachment from that turn's environment into the owning profile's `cache/generated/files/` and replaces the attachment path with the host copy. Desktop then reads or downloads that copy through its normal file transport, even after the terminal's source file is removed. Exports use the existing 50 MiB remote-media limit and credential-path checks; strict media delivery mode does not fetch remote files. A failed export becomes an attachment-unavailable notice instead of a link to a possibly unrelated host file. This applies to new final replies with explicit `MEDIA:` directives, not ordinary path links or attachments in existing history.
+
 ### Windows, tabs & panes
 
 The app is built for working on several things at once:

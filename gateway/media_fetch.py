@@ -75,13 +75,15 @@ def _active_remote_env():
     return get_active_env(get_session_env("HERMES_SESSION_ID") or get_session_env("HERMES_SESSION_KEY") or "default")
 
 
-def fetch_remote_media(path: str) -> Optional[str]:
+def fetch_remote_media(path: str, *, env=None, destination_dir: Optional[Path] = None) -> Optional[str]:
     """Host path of a validated copy of sandbox file ``path``, or None (never raises). Only fires
-    when a remote backend is active; the caller has already failed local validation."""
+    when a remote backend is active. Turn finalization passes the producing environment and a
+    durable destination explicitly; legacy adapter delivery uses the current session's cache."""
     from gateway.media_policy import media_delivery_strict
     if media_delivery_strict():
         return None
-    env = _active_remote_env()
+    if env is None:
+        env = _active_remote_env()
     if env is None:
         return None
     from gateway.platforms.base import (
@@ -96,6 +98,7 @@ def fetch_remote_media(path: str) -> Optional[str]:
         candidate = posixpath.normpath(posixpath.join(remote_home, candidate[2:]))
     if not candidate.startswith("/") or remote_path_is_denied(candidate, remote_home):
         return None
+    dest = None
     try:
         # ``[ -f ]`` in fetch_file follows symlinks, so the link TARGET is what gets screened;
         # an unresolvable path fails closed rather than trusting the unresolved name.
@@ -103,13 +106,17 @@ def fetch_remote_media(path: str) -> Optional[str]:
         if resolved is None or remote_path_is_denied(resolved, remote_home):
             return None
         basename = re.sub(r"[^\w.\-]", "_", posixpath.basename(resolved)) or "file"
-        dest = Path(DOCUMENT_CACHE_DIR) / f"remote_{uuid.uuid4().hex[:12]}_{basename}"
+        dest = Path(destination_dir or DOCUMENT_CACHE_DIR) / f"remote_{uuid.uuid4().hex[:12]}_{basename}"
         dest.parent.mkdir(parents=True, exist_ok=True)
         env.fetch_file(resolved, dest, max_bytes=_FETCH_MAX_BYTES)
     except FileFetchError as exc:
+        if dest is not None:
+            dest.unlink(missing_ok=True)
         logger.warning("Remote media fetch of %s skipped: %s", _log_safe_path(candidate), exc)
         return None
     except Exception:
+        if dest is not None:
+            dest.unlink(missing_ok=True)
         logger.warning("Remote media fetch of %s failed", _log_safe_path(candidate), exc_info=True)
         return None
     validated = validate_media_delivery_path(str(dest))

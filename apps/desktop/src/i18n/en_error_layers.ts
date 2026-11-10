@@ -10,9 +10,9 @@ export const enErrorLayers: Pick<ThreadCopy, 'errorLayerBodies' | 'errorLayers'>
     disk: 'Disk full',
     endpoint: "Can't reach your model server",
     gateway: "Couldn't send your message",
-    generic: "Hermes couldn't finish this reply",
+    generic: "The agent couldn't finish this reply",
     provider: 'The AI service returned an error',
-    runtime: 'Hermes hit a problem',
+    runtime: 'The agent hit a problem',
     streaming: 'The reply was cut off'
   },
   errorLayerBodies: {
@@ -22,7 +22,7 @@ export const enErrorLayers: Pick<ThreadCopy, 'errorLayerBodies' | 'errorLayers'>
     endpoint: "Hermes can't reach your custom model server. Check that it is running, then send your message again.",
     gateway:
       'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
-    generic: 'Something went wrong while Hermes was replying. Retry, or copy the details if it keeps happening.',
+    generic: 'Something went wrong while the agent was replying. Retry, or copy the details if it keeps happening.',
     provider: 'The AI service could not complete this request. Retry in a moment or switch provider.',
     runtime:
       'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',

@@ -29,7 +29,7 @@ export const enUninstallSection: UninstallSectionTranslations = {
     },
     full: {
       title: 'Uninstall everything',
-      description: 'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+      description: 'Remove the app, the agent, and all user data — config, chats, schedules, secrets, logs.',
       consequence: 'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
     }
   }

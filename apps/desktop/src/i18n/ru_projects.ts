@@ -38,7 +38,7 @@ export const ruProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   copyPath: 'Копировать путь',
   removeFromSidebar: 'Скрыть из боковой панели',
   createdInPreviousContext:
-    'Проект создан в прежнем подключении или профиле. Вернитесь к нему; файл IDEA.md не был записан.',
+    'Проект создан с прежним подключением или агентом. Вернитесь к нему; файл IDEA.md не был записан.',
   hiddenFromSidebar: 'Скрыто из боковой панели',
   undoHide: 'Отменить',
   createFailed: 'Не удалось создать проект',

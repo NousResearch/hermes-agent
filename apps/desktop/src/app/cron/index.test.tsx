@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import type * as HermesApi from '@/hermes'
 import type { CronJob, SessionInfo } from '@/hermes'
+import { en } from '@/i18n/en'
 import { queryClient } from '@/lib/query-client'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs } from '@/store/cron'
 import { notifyCronChanged, setChangeEventsAvailable } from '@/store/live-sync'
@@ -92,16 +93,15 @@ afterEach(() => {
   $agentSidebarChoice.set(null)
 })
 
-it('returns keyboard focus to the V2 page after cancelling the routine editor', async () => {
+it('returns keyboard focus after cancelling the page schedule editor', async () => {
   $agentSidebarChoice.set(true)
   await renderLoadedCron()
-  const opener = screen.getByRole('button', { name: 'New cron' })
+  const opener = screen.getByRole('button', { name: en.cron.newCron })
   opener.focus()
   fireEvent.click(opener)
-  await waitFor(() => expect(document.activeElement?.id).toBe('cron-name'))
-  fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
-  await waitFor(() => expect(document.activeElement).toBe(opener))
-  expect(screen.getByRole('heading', { name: 'Routines' })).toBeTruthy()
+  await waitFor(() => expect(window.document.activeElement?.id).toBe('cron-name'))
+  fireEvent.keyDown(window.document.activeElement!, { key: 'Escape' })
+  await waitFor(() => expect(window.document.activeElement).toBe(opener))
 })
 
 describe('CronView queued trigger feedback (#70826)', () => {

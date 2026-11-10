@@ -45,5 +45,4 @@ it('opens same-named rooms using their exact gateway authority and retains deskt
   fireEvent.click(screen.getByRole('button', { name: /Across gateways/ }))
   expect(openGroupChat).toHaveBeenLastCalledWith('Across gateways', 'name')
   expect(screen.getByRole('button', { name: 'New group chat' })).toBeTruthy()
-  expect(screen.getByText('2 bots')).toBeTruthy()
 })

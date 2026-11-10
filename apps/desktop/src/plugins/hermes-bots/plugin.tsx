@@ -111,9 +111,9 @@ interface ComposerDraftPayload {
 
 export default {
   id: ID,
-  name: translateNow('common.bots'),
+  name: translateNow('profiles.title'),
   description:
-    'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
+    'Agents — a one-chat-per-agent roster with avatars, schedules, group chats, and agent-to-agent messaging. Ships with the app; disable here if unwanted.',
   register(ctx: PluginContext) {
     setPluginCtx(ctx)
     // The user's own roster sections. Read once at register; every mutation
@@ -476,7 +476,7 @@ export default {
         area: 'panes',
         // `title` is sampled at register (module import, before the locale has
         // loaded) — the tab renders `tabTitle` below so BOTS follows the locale.
-        title: translateNow('common.bots'),
+        title: translateNow('profiles.title'),
         // dock: explicit adoption gesture — CENTER-STACK into the sessions zone
         // so the sidebar grows a SESSIONS | BOTS tab strip instead of splitting
         // two cramped panes down the column. Center is safe now: insertAtGroup
@@ -504,8 +504,8 @@ export default {
           width: '260px',
           collapsible: true,
           hideOnly: true,
-          tabTitle: () => <LocalizedTabTitle select={t => t.common.bots} />,
-          tabTitleText: () => translateNow('common.bots'),
+          tabTitle: () => <LocalizedTabTitle select={t => t.profiles.title} />,
+          tabTitleText: () => translateNow('profiles.title'),
           dock: {
             pane: 'sessions',
             pos: 'center',
@@ -786,7 +786,7 @@ export default {
       area: PALETTE_AREA,
       data: {
         id: `${ID}.new-agent`,
-        label: 'New bot…',
+        label: botsText().bot.newTitle,
         keywords: ['bot', 'agent', 'profile', 'teammate', 'create'],
         run: () => {
           host.notify({
@@ -838,8 +838,8 @@ export default {
                 kind: 'info',
                 title: 'This chat never resets',
                 message:
-                  'Bot chats are one continuous conversation — compacting instead. ' +
-                  'For a throwaway session with this bot, use Sessions mode.'
+                  'Agent chats are one continuous conversation — compacting instead. ' +
+                  'For a throwaway session with this agent, use Sessions mode.'
               })
 
               return {

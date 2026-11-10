@@ -2,7 +2,7 @@ import type { FirstRunCopy } from './types_first_run'
 
 export const enFirstRun: FirstRunCopy = {
   guide: {
-    title: 'Set up Hermes',
+    title: 'Set up your agent',
     resume: 'Resume setup',
     upgradeRequired:
       'This gateway needs an update for sessionless setup. On its host, run hermes update, restart the gateway, then retry. Your chats are unchanged.',
@@ -57,7 +57,7 @@ export const enFirstRun: FirstRunCopy = {
     notNow: 'Not now'
   },
   intro: {
-    greeting: "Hi, I'm Hermes.",
+    greeting: "Hi, I'm your agent.",
     plan: "Let's set things up for you. Then we'll get something cool done."
   },
   rerun: {

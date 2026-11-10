@@ -14,14 +14,14 @@ export const esDelegationRouting: DelegationRoutingTranslations = {
       description: 'Nombra algunos modelos. El agente elige uno para cada subagente.'
     },
     profile_routes: {
-      label: 'Rutas de perfil',
-      description: 'Los subagentes se ejecutan como uno de tus perfiles, con su propio modelo, habilidades y claves.'
+      label: 'Rutas de agente',
+      description: 'Los subagentes se ejecutan como uno de tus agentes, con su propio modelo, habilidades y claves.'
     }
   },
   inUse: 'En uso',
   plugin: 'Plugin',
-  pluginMissing: 'Rutas de modelo y Rutas de perfil provienen del plugin Advanced Delegation.',
-  pluginDisabled: 'Advanced Delegation está instalado, pero desactivado para este perfil.',
+  pluginMissing: 'Rutas de modelo y Rutas de agente provienen del plugin Advanced Delegation.',
+  pluginDisabled: 'Advanced Delegation está instalado, pero desactivado para este agente.',
   pluginNotLoaded:
     'Advanced Delegation está activado, pero Hermes aún no lo ha cargado. Reinicia Hermes para terminar.',
   installPlugin: 'Instalar plugin',
@@ -35,7 +35,7 @@ export const esDelegationRouting: DelegationRoutingTranslations = {
   blockedDetail:
     'Este modo está guardado, así que Hermes rechaza cada subagente en lugar de usar Predeterminado sin avisar.',
   blockedMissing: 'Los subagentes no se iniciarán hasta que Advanced Delegation esté instalado.',
-  blockedDisabled: 'Los subagentes no se iniciarán hasta que Advanced Delegation esté activado para este perfil.',
+  blockedDisabled: 'Los subagentes no se iniciarán hasta que Advanced Delegation esté activado para este agente.',
   blockedNotLoaded:
     'Los subagentes no se iniciarán hasta que Hermes cargue Advanced Delegation. Reinicia Hermes para terminar.',
   blockedUnavailable: label =>
@@ -89,22 +89,22 @@ export const esDelegationRouting: DelegationRoutingTranslations = {
   saveRoute: 'Guardar ruta',
   createRoute: 'Añadir ruta',
 
-  profileRoutesTitle: 'Perfiles como los que pueden ejecutarse los subagentes',
-  profileRoutesHint: 'Cada perfil marcado aporta su propio modelo, habilidades, personalidad y claves.',
+  profileRoutesTitle: 'Agentes que pueden actuar como subagentes',
+  profileRoutesHint: 'Cada agente marcado aporta su propio modelo, habilidades, personalidad y claves.',
   profileDescriptionPlaceholder: 'Cuándo usarlo (opcional)',
   profileDefault: 'Predeterminado',
-  profileEmpty: 'Aún no hay otros perfiles. Crea uno desde la barra de perfiles.',
-  profileMissing: name => `${name} (el perfil ya no existe)`,
+  profileEmpty: 'Aún no hay otros agentes. Crea uno desde la barra de agentes.',
+  profileMissing: name => `${name} (el agente ya no existe)`,
 
   inactiveTitle: 'No se usa en este modo',
   inactiveModelMap: route =>
     `Las rutas de modelo eligen el modelo de cada subagente. Los subagentes que no eligen ninguna ruta usan “${route}”.`,
   inactiveProfiles: profile =>
-    `Las rutas de perfil eligen el perfil de cada subagente. Los subagentes que no eligen ningún perfil se ejecutan como “${profile}”.`,
+    `Las rutas de agente eligen qué agente ejecuta cada subtarea. Si no se elige ninguno, se usa “${profile}”.`,
   inactiveModelMapNoDefault:
     'Las rutas de modelo eligen el modelo de cada subagente. Los subagentes que no eligen ruta usan el modelo del agente principal.',
   inactiveProfilesNoDefault:
-    'Las rutas de perfil eligen el perfil de cada subagente. Los subagentes que no eligen perfil usan el modelo del agente principal.',
+    'Las rutas de agente eligen qué agente ejecuta cada subtarea. Si no se elige ninguno, se usa el modelo del agente principal.',
   inactivePlugin: label => `${label} decide el modelo de cada subagente, así que este ajuste no se aplica.`,
   useDefault: 'Cambiar a Predeterminado'
 }

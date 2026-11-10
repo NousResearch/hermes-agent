@@ -1,7 +1,7 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const frOnboarding: TranslationOverrides['onboarding'] = {
-  headerTitle: 'Configurons Hermes Agent pour vous',
+  headerTitle: 'Configurons votre agent',
   headerDesc:
     'Connectez un fournisseur de modèles pour commencer à discuter. La plupart des options nécessitent un clic.',
   preparingInstall: "Hermes finalise l'installation. Cela prend généralement moins d'une minute au premier lancement.",

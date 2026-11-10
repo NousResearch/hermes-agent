@@ -25,7 +25,7 @@ export const frErrorLayers: Pick<ThreadCopy, 'errorLayerBodies' | 'errorLayers'>
     gateway:
       'Hermes a rencontré un problème interne au démarrage de cette réponse. Renvoyez votre message ; si cela persiste, envoyez les diagnostics.',
     generic:
-      "Une erreur s'est produite pendant la réponse de Hermes. Réessayez ou copiez les détails si cela persiste.",
+      'Une erreur s’est produite pendant la réponse de l’agent. Réessayez ou copiez les détails si cela persiste.',
     provider: "Le service d'IA n'a pas pu traiter cette demande. Réessayez dans un instant ou changez de fournisseur.",
     runtime:
       'Hermes a rencontré un problème interne au démarrage de cette réponse. Renvoyez votre message ; si cela persiste, envoyez les diagnostics.',

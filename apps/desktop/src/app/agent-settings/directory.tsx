@@ -78,10 +78,10 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
             {t.profiles.manageProfiles}
           </Button>
         }
-        title={t.simplifiedAgents.agents}
+        title={t.profiles.title}
       />
       <SearchField
-        aria-label={t.simplifiedAgents.agents}
+        aria-label={t.profiles.title}
         containerClassName="mb-6 max-w-md"
         onChange={setQuery}
         placeholder={t.titlebar.search}

@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { desktopTerms } from './desktop-terms'
 
 export const zhHantChrome = {
   fileMenu: {
@@ -38,7 +39,7 @@ export const zhHantChrome = {
   },
 
   sidebar: {
-    profileRail: '設定檔列',
+    profileRail: '智慧體列',
     markAllRead: '全部標示為已讀',
     filter: {
       grouping: '分組',
@@ -47,7 +48,7 @@ export const zhHantChrome = {
       filters: '篩選',
       status: '狀態',
       pullRequest: '提取請求',
-      profile: '設定檔',
+      profile: desktopTerms['zh-hant'].agents,
       project: '專案',
       archived: '已封存',
       resetToDefaults: '重設為預設值',
@@ -72,10 +73,10 @@ export const zhHantChrome = {
       noPR: '無 PR'
     },
     gatewayGroups: {
-      grouping: '閘道與設定檔',
+      grouping: '閘道與智慧體',
       rename: '重新命名群組',
       aliasLabel: '顯示名稱',
-      aliasHint: '僅變更顯示名稱；閘道和設定檔名稱維持不變。',
+      aliasHint: '僅變更顯示名稱；閘道和智慧體名稱維持不變。',
       resetName: '重設名稱',
       moveUp: '上移',
       moveDown: '下移',
@@ -87,7 +88,7 @@ export const zhHantChrome = {
       capabilities: '技能與工具',
       messaging: '訊息平台',
       artifacts: '成品',
-      cron: '排程工作'
+      cron: desktopTerms['zh-hant'].schedules
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',
@@ -100,7 +101,7 @@ export const zhHantChrome = {
     files: '檔案',
     review: '審查',
     logs: '記錄',
-    cronJobs: '排程任務',
+    cronJobs: desktopTerms['zh-hant'].schedules,
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',
     showProjects: '顯示專案',
@@ -147,7 +148,7 @@ export const zhHantChrome = {
       reveal: '在資料夾中顯示',
       copyPath: '複製路徑',
       removeFromSidebar: '從側邊欄移除',
-      createdInPreviousContext: '專案已在先前的連線或設定檔中建立。請切換回去；IDEA.md 尚未寫入。',
+      createdInPreviousContext: '專案已在先前的連線或智慧體中建立。請切換回去；IDEA.md 尚未寫入。',
       hiddenFromSidebar: '已從側邊欄移除',
       undoHide: '復原',
       createFailed: '無法建立專案',
@@ -215,7 +216,7 @@ export const zhHantChrome = {
       backgroundRunning: '背景任務執行中',
       draftSession: '草稿 — 尚未傳送',
       handoffOrigin: platform => `從 ${platform} 轉接`,
-      ownedByProfile: profile => `設定檔：${profile}`,
+      ownedByProfile: profile => `智慧體：${profile}`,
       renamed: '已重新命名',
       renameFailed: '重新命名失敗',
       renameTitle: '重新命名工作階段',
@@ -371,14 +372,14 @@ export const zhHantChrome = {
       gatewayOffline: '離線',
       gatewayRestarting: '重新啟動中…',
       gatewayTitle: '閘道',
-      agents: '代理',
-      closeAgents: '關閉代理',
-      openAgents: '開啟代理',
-      subagents: count => `${count} 個子代理`,
+      agents: desktopTerms['zh-hant'].agents,
+      closeAgents: '關閉智慧體',
+      openAgents: '開啟智慧體',
+      subagents: count => `${count} 個子智慧體`,
       failed: count => `${count} 個失敗`,
       running: count => `${count} 個執行中`,
-      cron: '排程',
-      openCron: '開啟排程工作',
+      cron: desktopTerms['zh-hant'].schedules,
+      openCron: '開啟排程',
       starmap: '記憶圖譜',
       openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',
@@ -400,7 +401,7 @@ export const zhHantChrome = {
           memory: '記憶',
           rules: '規則',
           skills: '技能',
-          subagent_definitions: '子代理定義',
+          subagent_definitions: '子智慧體定義',
           system_prompt: '系統提示詞',
           tool_definitions: '工具定義'
         },

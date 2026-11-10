@@ -11,15 +11,15 @@ export const frDelegationRouting: DelegationRoutingTranslations = {
       description: "Nommez quelques modèles. L'agent en choisit un pour chaque sous-agent."
     },
     profile_routes: {
-      label: 'Routes de profil',
+      label: 'Routes d’agent',
       description:
-        "Les sous-agents s'exécutent sous l'un de vos profils, avec son propre modèle, ses skills et ses clés."
+        'Les sous-agents utilisent l’un de vos agents, avec son propre modèle, ses skills et ses clés.'
     }
   },
   inUse: 'Utilisé',
   plugin: 'Plugin',
-  pluginMissing: 'Routes de modèle et Routes de profil proviennent du plugin Advanced Delegation.',
-  pluginDisabled: 'Advanced Delegation est installé mais désactivé pour ce profil.',
+  pluginMissing: 'Routes de modèle et Routes d’agent proviennent du plugin Advanced Delegation.',
+  pluginDisabled: 'Advanced Delegation est installé mais désactivé pour cet agent.',
   pluginNotLoaded:
     "Advanced Delegation est activé, mais Hermes ne l'a pas encore chargé. Redémarrez Hermes pour terminer.",
   installPlugin: 'Installer le plugin',
@@ -33,7 +33,7 @@ export const frDelegationRouting: DelegationRoutingTranslations = {
   blockedDetail:
     'Ce mode est enregistré : Hermes refuse donc chaque sous-agent au lieu de passer discrètement à Par défaut.',
   blockedMissing: 'Les sous-agents ne démarreront pas tant qu’Advanced Delegation n’est pas installé.',
-  blockedDisabled: 'Les sous-agents ne démarreront pas tant qu’Advanced Delegation n’est pas activé pour ce profil.',
+  blockedDisabled: 'Les sous-agents ne démarreront pas tant qu’Advanced Delegation n’est pas activé pour cet agent.',
   blockedNotLoaded:
     'Les sous-agents ne démarreront pas tant que Hermes n’a pas chargé Advanced Delegation. Redémarrez Hermes pour terminer.',
   blockedUnavailable: label =>
@@ -90,22 +90,22 @@ export const frDelegationRouting: DelegationRoutingTranslations = {
   saveRoute: 'Enregistrer la route',
   createRoute: 'Ajouter une route',
 
-  profileRoutesTitle: 'Profils sous lesquels les sous-agents peuvent tourner',
-  profileRoutesHint: 'Chaque profil coché apporte son propre modèle, ses skills, sa persona et ses clés.',
+  profileRoutesTitle: 'Agents disponibles pour les sous-agents',
+  profileRoutesHint: 'Chaque agent coché apporte son propre modèle, ses skills, ses instructions et ses clés.',
   profileDescriptionPlaceholder: "Quand l'utiliser (facultatif)",
   profileDefault: 'Par défaut',
-  profileEmpty: "Aucun autre profil pour l'instant. Créez-en un depuis la barre des profils.",
-  profileMissing: name => `${name} (le profil n'existe plus)`,
+  profileEmpty: 'Aucun autre agent pour l’instant. Créez-en un depuis la barre des agents.',
+  profileMissing: name => `${name} (l’agent n’existe plus)`,
 
   inactiveTitle: 'Inutilisé dans ce mode',
   inactiveModelMap: route =>
     `Les routes de modèle choisissent le modèle de chaque sous-agent. Les sous-agents qui ne choisissent aucune route utilisent « ${route} ».`,
   inactiveProfiles: profile =>
-    `Les routes de profil choisissent le profil de chaque sous-agent. Les sous-agents qui ne choisissent aucun profil tournent sous « ${profile} ».`,
+    `Les routes d’agent choisissent l’agent utilisé par chaque sous-agent. Les sous-agents sans choix explicite utilisent « ${profile} ».`,
   inactiveModelMapNoDefault:
     'Les routes de modèle choisissent le modèle de chaque sous-agent. Les sous-agents sans route utilisent le modèle de l’agent principal.',
   inactiveProfilesNoDefault:
-    'Les routes de profil choisissent le profil de chaque sous-agent. Les sous-agents sans profil utilisent le modèle de l’agent principal.',
+    'Les routes d’agent choisissent l’agent utilisé par chaque sous-agent. Sans choix explicite, les sous-agents utilisent le modèle de l’agent principal.',
   inactivePlugin: label => `${label} choisit le modèle de chaque sous-agent, ce réglage ne s’applique donc pas.`,
   useDefault: 'Passer à Par défaut'
 }

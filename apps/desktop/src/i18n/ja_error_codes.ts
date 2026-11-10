@@ -5,8 +5,8 @@ type ThreadCopy = Translations['assistant']['thread']
 // The error card's per-code title and body (lib/error-surface-copy.ts), keyed by error_surface.code.
 export const jaErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   cron_session_read_only: {
-    title: 'このチャットはスケジュールされたジョブ用です',
-    body: 'このチャットはそのジョブの実行専用のため、メッセージは実行されませんでした。送信するには新しいチャットを開始してください。'
+    title: 'このチャットはスケジュールの実行用です',
+    body: 'このチャットはスケジュールの実行専用のため、メッセージは実行されませんでした。送信するには新しいチャットを開始してください。'
   },
   session_read_only: {
     title: 'このチャットは読み取り専用です',

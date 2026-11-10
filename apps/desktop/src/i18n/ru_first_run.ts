@@ -2,7 +2,7 @@ import type { FirstRunCopy } from './types_first_run'
 
 export const ruFirstRun: FirstRunCopy = {
   guide: {
-    title: 'Настройте Hermes',
+    title: 'Настройте агента',
     resume: 'Продолжить настройку',
     upgradeRequired:
       'Для настройки без сессии необходимо обновить этот шлюз. На его хосте выполните hermes update, перезапустите шлюз и повторите попытку. Ваши чаты не изменены.',
@@ -58,7 +58,7 @@ export const ruFirstRun: FirstRunCopy = {
     notNow: 'Не сейчас'
   },
   intro: {
-    greeting: 'Привет, я Hermes.',
+    greeting: 'Привет, я ваш агент.',
     plan: 'Давайте всё настроим под вас. А потом сделаем что-нибудь классное.'
   },
   rerun: {

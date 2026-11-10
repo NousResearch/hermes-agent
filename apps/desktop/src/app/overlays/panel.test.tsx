@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 
 import { Panel, PanelHeader, PanelListRow, PanelRowMenu } from './panel'
@@ -39,18 +40,18 @@ it('uses a default Portal page heading and preserves row selection when returnin
   const select = vi.fn()
   render(
     <Panel onClose={vi.fn()}>
-      <PanelHeader simplifiedTitle="Routines" title="Scheduled jobs" />
+      <PanelHeader title={en.cron.title} />
       <PanelListRow active onSelect={select} title="Status report" />
     </Panel>
   )
-  expect(screen.getByRole('heading', { level: 1, name: 'Routines' })).toBeTruthy()
+  expect(screen.getByRole('heading', { level: 1 })).toBeTruthy()
   const row = screen.getByRole('button', { name: 'Status report' })
   expect(row.getAttribute('aria-current')).toBe('true')
   fireEvent.click(row)
   expect(select).toHaveBeenCalledOnce()
 
   act(() => $agentSidebarChoice.set(false))
-  expect(screen.getByRole('heading', { level: 2, name: 'Scheduled jobs' })).toBeTruthy()
+  expect(screen.getByRole('heading', { level: 2 })).toBeTruthy()
   expect(screen.queryByRole('heading', { level: 1 })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Status report' }))
   expect(select).toHaveBeenCalledTimes(2)

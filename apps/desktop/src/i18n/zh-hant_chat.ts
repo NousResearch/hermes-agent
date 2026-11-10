@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { desktopTerms } from './desktop-terms'
 
 export const zhHantChat = {
   composer: {
@@ -69,7 +70,7 @@ export const zhHantChat = {
       '/new': '開始新的桌面聊天',
       '/topic': '啟用或查看 Telegram 私訊話題工作階段',
       '/save': '將目前對話記錄儲存為 JSON',
-      '/retry': '重試最後一則訊息（重新傳送給代理）',
+      '/retry': '重試最後一則訊息（重新傳送給智慧體）',
       '/prompt': '在 $EDITOR 中用 Markdown 撰寫下一個提示詞，然後傳送',
       '/undo': '退回 N 個使用者回合並重新提示（預設為 1）',
       '/title': '重新命名目前工作階段',
@@ -78,20 +79,20 @@ export const zhHantChat = {
       '/worktree': '顯示、列出、建立或清理隔離的 Git worktree',
       '/compress': '壓縮此對話的上下文',
       '/rollback': '列出或還原檔案系統檢查點（還原會保留你的手動編輯；--all 可覆寫此行為）',
-      '/export': '將設定檔（設定、技能、主題）匯出為可分享的封存檔',
-      '/import': '將共用的設定檔封存檔匯入為新的設定檔',
+      '/export': '將智慧體（設定、技能、主題）匯出為可分享的封存檔',
+      '/import': '將分享的智慧體封存檔匯入為新的智慧體',
       '/stop': '停止目前回合與背景程序',
       '/pause': '暫停全域新工作（緊急停止）；/pause off 恢復',
       '/bg': '在獨立的背景工作階段中執行提示詞',
       '/btw': '在不中斷目前對話的情況下詢問旁支問題',
-      '/agents': '顯示作用中的代理與執行中的任務',
+      '/agents': '顯示作用中的智慧體與執行中的任務',
       '/journey': '開啟記憶圖譜 — 查看技能與記憶隨時間的變化',
       '/queue': '排入、檢視、編輯、移除、移動或清空下一回合提示詞',
       '/steer': '在下一次工具呼叫後插入訊息，不會中斷目前工作',
       '/goal': '設定持續目標，讓 Hermes 跨回合工作直到完成',
       '/heartbeat': '設定週期性提示詞，在閒置時重新進入此工作階段',
       '/refine': '立即檢查此對話，並將心得儲存至記憶或技能',
-      '/review': '產生獨立子代理，審查剛才討論的工作（PR、程式碼、文件）',
+      '/review': '產生獨立子智慧體，審查剛才討論的工作（PR、程式碼、文件）',
       '/loop': '在此工作階段以固定間隔重新執行提示詞',
       '/plan': '將 Markdown 實作計畫寫入 .hermes/plans/，不執行任何操作',
       '/moa': '使用預設的 Mixture of Agents 組合執行提示詞，完成後還原模型',
@@ -100,7 +101,7 @@ export const zhHantChat = {
       '/egress': '顯示 Docker 對外連線代理狀態',
       '/context': '顯示詳細的上下文視窗，包括用量、分類明細、壓縮統計與吞吐量',
       '/whoami': '顯示你的斜線指令存取權限（admin / user）',
-      '/profile': '切換作用中的 Hermes 設定檔',
+      '/profile': '切換作用中的智慧體',
       '/codex-runtime': '切換 OpenAI/Codex 模型使用的 Codex app-server runtime',
       '/personality': '設定預先定義的人格',
       '/battery': '切換狀態列中的彩色電池指示器',
@@ -121,7 +122,7 @@ export const zhHantChat = {
       '/init': '掃描儲存庫並產生或更新 AGENTS.md 專案指引',
       '/suggestions': '檢視建議的自動化項目（接受或略過）',
       '/blueprint': '使用 blueprint 範本設定自動化',
-      '/browser': '管理代理瀏覽器 [connect|disconnect|status]',
+      '/browser': '管理智慧體瀏覽器 [connect|disconnect|status]',
       '/palette': '開啟模糊搜尋指令面板（也可使用 Ctrl+P）',
       '/usage': '顯示 Token 用量與速率限制；`reset` 可兌換保留的 Codex 限額重設',
       '/subscription': '檢視你的 Nous 方案，並在瀏覽器中變更',
@@ -218,14 +219,14 @@ export const zhHantChat = {
   statusStack: {
     hideStack: '隱藏狀態面板',
     showStack: '顯示狀態面板',
-    agents: '代理',
+    agents: desktopTerms['zh-hant'].agents,
     background: count => `${count} 個背景任務`,
     goalActive: '目標進行中',
     goalBlocked: '目標受阻',
     goalDone: '目標已完成',
     goalPaused: '目標已暫停',
     goalWaiting: '目標等待中',
-    subagents: count => `${count} 個子代理`,
+    subagents: count => `${count} 個子智慧體`,
     todos: (done, total) => `任務 ${done}/${total}`,
     previousTodos: (done, total) => `先前任務 ${done}/${total}`,
     running: '執行中',
@@ -374,10 +375,10 @@ export const zhHantChat = {
     sudoSendFailed: '無法傳送 sudo 密碼',
     secretSendFailed: '無法傳送密鑰',
     sudoTitle: '管理員密碼',
-    sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的代理，並在本次工作階段中快取。',
-    sudoCommandUnavailable: '此代理未提供指令。如果無法在對話中確認，請取消。',
+    sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的智慧體，並在本次工作階段中快取。',
+    sudoCommandUnavailable: '此智慧體未提供指令。如果無法在對話中確認，請取消。',
     sudoInstallDesc:
-      'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝 Bot Screen 套件（TigerVNC + Xfce）。它只會傳送到該主機。',
+      'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝智慧體畫面套件（TigerVNC + Xfce）。它只會傳送到該主機。',
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
     secretDesc: 'Hermes 需要一個憑證才能繼續。',
@@ -385,7 +386,7 @@ export const zhHantChat = {
     vaultUnlockSendFailed: '無法傳送主密碼',
     vaultUnlockTitle: name => `解鎖 ${name}`,
     vaultUnlockDesc: name =>
-      `代理想使用儲存在 ${name} 中的登入資訊登入網站。輸入主密碼以在本工作階段解鎖——它會直接交給本機的 ${name}，不會被儲存或顯示給代理。`,
+      `智慧體想使用儲存在 ${name} 中的登入資訊登入網站。輸入主密碼以在本工作階段解鎖——它會直接交給本機的 ${name}，不會被儲存或顯示給智慧體。`,
     vaultUnlockPlaceholder: '主密碼',
     vaultUnlockKeepLocked: '保持鎖定',
     vaultUnlockConfirm: '解鎖',
@@ -426,11 +427,11 @@ export const zhHantChat = {
     yoloSystem: active => `此工作階段 YOLO ${active ? '已開啟' : '已關閉'}`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: '無法切換 YOLO',
-    profileStatus: current => `設定檔：${current}。使用 /profile <name> 或「新工作階段」選擇器在其他設定檔中開始聊天。`,
-    unknownProfile: '未知設定檔',
-    noProfileNamed: (target, available) => `沒有名為「${target}」的設定檔。可用的：${available}`,
-    newChatsProfile: name => `新聊天將使用設定檔 ${name}。`,
-    setProfileFailed: '設定設定檔失敗',
+    profileStatus: current => `智慧體：${current}。使用 /profile <name> 或「新工作階段」選擇器與其他智慧體開始聊天。`,
+    unknownProfile: '未知智慧體',
+    noProfileNamed: (target, available) => `沒有名為「${target}」的智慧體。可用的：${available}`,
+    newChatsProfile: name => `新聊天將使用智慧體 ${name}。`,
+    setProfileFailed: '無法切換智慧體',
     sttDisabled: '設定中已停用語音轉文字。',
     stopFailed: '停止失敗',
     regenerateFailed: '重新生成失敗',
@@ -444,7 +445,7 @@ export const zhHantChat = {
     resumeStrandedTitle: '無法載入此工作階段',
     resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認閘道正在執行，然後重試。',
     poolSlotTimeoutBody:
-      '所有本機設定檔後端插槽目前都在使用中。請在「設定」→「進階」中增加 Warm Bot Backends，或等待閒置後端被移除後重試。',
+      '所有本機智慧體後端插槽目前都在使用中。請在「設定」→「進階」中增加預熱智慧體後端數量，或等待閒置後端被移除後重試。',
     poolSlotTimeoutOpenSettings: '開啟進階設定',
     resumeRetry: '重試',
     nothingToBranch: '沒有可分支的內容',
@@ -518,23 +519,23 @@ export const zhHantChat = {
       },
       messaging: {
         title: '離開電腦也能用',
-        text: '接上 Telegram、Discord、Slack 等 — 同一個代理，同一份記憶。'
+        text: '接上 Telegram、Discord、Slack 等 — 同一個智慧體，同一份記憶。'
       },
       artifacts: {
         title: 'Hermes 做過的一切',
         text: '所有工作階段的圖片、檔案與連結，都彙整在這裡。'
       },
       cron: {
-        title: '會自己執行的工作',
-        text: '讓一則提示按小時、按夜間，或依 cron 運算式定時執行。'
+        title: '排程自動執行',
+        text: '讓提示詞按小時、每晚，或依 cron 運算式自動執行。'
       },
       'command-palette': {
         title: '一個輸入框搞定一切',
         text: '工作階段、設定、技能與指令都能從命令選單找到。'
       },
       profiles: {
-        title: '設定檔彼此獨立',
-        text: '每個都是獨立的 Hermes — 自己的金鑰、記憶與工作階段。'
+        title: '智慧體彼此獨立',
+        text: '每個智慧體都有自己的指令、設定和聊天。'
       },
       'composer-mentions': {
         title: '附件與指令',

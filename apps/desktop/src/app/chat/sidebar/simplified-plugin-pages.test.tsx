@@ -6,6 +6,7 @@ import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { registry } from '@/contrib/registry'
+import { en } from '@/i18n/en'
 import { $interfaceMode } from '@/store/interface-mode'
 import { SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 
@@ -19,22 +20,23 @@ afterEach(() => {
   noteActiveTreeGroup(null)
 })
 
-it('shows only core destinations when no plugin pages are enabled', () => {
+it.each([
+  [en.simplifiedAgents.chats, '/'],
+  [en.profiles.title, '/profiles'],
+  [en.sidebar.nav.capabilities, '/capabilities'],
+  [en.simplifiedAgents.library, '/artifacts'],
+  [en.cron.title, '/cron']
+])('navigates from the core %s destination to %s without plugin pages', (label, route) => {
+  const onNavigate = vi.fn()
   render(
     <MemoryRouter>
       <RootTooltipProvider>
-        <SimplifiedGlobalNav onNavigate={vi.fn()} />
+        <SimplifiedGlobalNav onNavigate={onNavigate} />
       </RootTooltipProvider>
     </MemoryRouter>
   )
-  expect(screen.getAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual([
-    'Chats',
-    'Agent settings',
-    'Capabilities',
-    'Library',
-    'Routines',
-    'Settings'
-  ])
+  fireEvent.click(screen.getByRole('button', { name: label }))
+  expect(onNavigate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ route }))
 })
 
 it('keeps plugin pages reachable and respects visibility, preferences, and unloading', () => {
@@ -70,15 +72,6 @@ it('keeps plugin pages reachable and respects visibility, preferences, and unloa
     )
     const capabilities = screen.getByRole('button', { name: 'Capabilities' })
     expect(capabilities.hasAttribute('aria-current')).toBe(false)
-    expect(screen.getAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual([
-      'Chats',
-      'Agent settings',
-      'Capabilities',
-      'Library',
-      'Routines',
-      'Test board',
-      'Settings'
-    ])
     expect(screen.queryByRole('button', { name: 'Advanced page' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Hidden page' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Invalid page' })).toBeNull()

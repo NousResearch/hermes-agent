@@ -12,7 +12,7 @@ export const frNotifications = {
     },
     input: {
       label: 'Saisie requise',
-      description: "Hermes a posé une question ou a besoin d'un mot de passe ou d'un secret."
+      description: 'L’agent a posé une question ou a besoin d’un mot de passe ou d’un secret.'
     },
     turnDone: {
       label: 'Réponse prête',

@@ -8,14 +8,14 @@ export const enDelegationRouting: DelegationRoutingTranslations = {
     default: { label: 'Default', description: 'Every subagent runs on the subagent model below.' },
     model_map: { label: 'Model routes', description: 'Name a few models. The agent picks one for each subagent.' },
     profile_routes: {
-      label: 'Profile routes',
-      description: 'Subagents run as one of your profiles, with its own model, skills and keys.'
+      label: 'Agent routes',
+      description: 'Subagents run as one of your agents, using its model, skills and keys.'
     }
   },
   inUse: 'In use',
   plugin: 'Plugin',
-  pluginMissing: 'Model routes and Profile routes come from the Advanced Delegation plugin.',
-  pluginDisabled: 'Advanced Delegation is installed but turned off for this profile.',
+  pluginMissing: 'Model routes and Agent routes come from the Advanced Delegation plugin.',
+  pluginDisabled: 'Advanced Delegation is installed but turned off for this agent.',
   pluginNotLoaded: 'Advanced Delegation is on, but Hermes has not loaded it yet. Restart Hermes to finish.',
   installPlugin: 'Install plugin',
   installUnavailable: 'Advanced Delegation is not in the plugin catalog yet. Install it from Capabilities › Plugins.',
@@ -26,7 +26,7 @@ export const enDelegationRouting: DelegationRoutingTranslations = {
   blockedPill: 'Not running',
   blockedDetail: 'This mode is saved, so Hermes refuses every subagent instead of quietly using Default.',
   blockedMissing: 'Subagents will not start until Advanced Delegation is installed.',
-  blockedDisabled: 'Subagents will not start until Advanced Delegation is turned on for this profile.',
+  blockedDisabled: 'Subagents will not start until Advanced Delegation is turned on for this agent.',
   blockedNotLoaded: 'Subagents will not start until Hermes loads Advanced Delegation. Restart Hermes to finish.',
   blockedUnavailable: label => `Subagents will not start until ${label} can run here. Its plugin reports it cannot.`,
   blockedUnregistered: name =>
@@ -78,21 +78,21 @@ export const enDelegationRouting: DelegationRoutingTranslations = {
   saveRoute: 'Save route',
   createRoute: 'Add route',
 
-  profileRoutesTitle: 'Profiles subagents can run as',
-  profileRoutesHint: 'Each checked profile brings its own model, skills, persona and keys.',
+  profileRoutesTitle: 'Agents subagents can run as',
+  profileRoutesHint: 'Each selected agent brings its own model, skills, instructions and keys.',
   profileDescriptionPlaceholder: 'When to use it (optional)',
   profileDefault: 'Default',
-  profileEmpty: 'No other profiles yet. Create one from the profile rail.',
-  profileMissing: name => `${name} (profile no longer exists)`,
+  profileEmpty: 'No other agents yet. Create one from the agent rail.',
+  profileMissing: name => `${name} (agent no longer exists)`,
 
   inactiveTitle: 'Not used in this mode',
   inactiveModelMap: route => `Model routes pick each subagent's model. Subagents that pick no route use “${route}”.`,
   inactiveProfiles: profile =>
-    `Profile routes pick each subagent's profile. Subagents that pick no profile run as “${profile}”.`,
+    `Agent routes choose which agent each subagent runs as. Subagents that make no selection run as “${profile}”.`,
   inactiveModelMapNoDefault:
     "Model routes pick each subagent's model. Subagents that pick no route use the main agent's model.",
   inactiveProfilesNoDefault:
-    "Profile routes pick each subagent's profile. Subagents that pick no profile use the main agent's model.",
+    "Agent routes choose which agent each subagent runs as. Subagents that make no selection use the main agent's model.",
   inactivePlugin: label => `${label} decides each subagent's model, so this setting does not apply.`,
   useDefault: 'Switch to Default'
 }

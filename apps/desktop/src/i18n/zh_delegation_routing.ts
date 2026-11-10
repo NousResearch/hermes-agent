@@ -8,14 +8,14 @@ export const zhDelegationRouting: DelegationRoutingTranslations = {
     default: { label: '默认', description: '所有子智能体都使用下方的子智能体模型。' },
     model_map: { label: '模型路由', description: '为几个模型命名，智能体会为每个子智能体挑选一个。' },
     profile_routes: {
-      label: '配置档案路由',
-      description: '子智能体以你的某个配置档案运行，使用该档案自己的模型、技能和密钥。'
+      label: '智能体路由',
+      description: '使用你已有的智能体作为子智能体，沿用它自己的模型、技能和密钥。'
     }
   },
   inUse: '使用中',
   plugin: '插件',
-  pluginMissing: '模型路由和配置档案路由来自 Advanced Delegation 插件。',
-  pluginDisabled: 'Advanced Delegation 已安装，但在此配置档案中处于关闭状态。',
+  pluginMissing: '模型路由和智能体路由来自 Advanced Delegation 插件。',
+  pluginDisabled: 'Advanced Delegation 已安装，但在此智能体中处于关闭状态。',
   pluginNotLoaded: 'Advanced Delegation 已开启，但 Hermes 尚未加载它。请重启 Hermes 以完成设置。',
   installPlugin: '安装插件',
   installUnavailable: 'Advanced Delegation 尚未加入插件目录。请在 技能与工具 › 插件 中安装。',
@@ -26,7 +26,7 @@ export const zhDelegationRouting: DelegationRoutingTranslations = {
   blockedPill: '未运行',
   blockedDetail: '此模式已保存，因此 Hermes 会拒绝每个子智能体，而不是悄悄改用默认。',
   blockedMissing: '安装 Advanced Delegation 之前，子智能体不会启动。',
-  blockedDisabled: '为此配置档案开启 Advanced Delegation 之前，子智能体不会启动。',
+  blockedDisabled: '为此智能体开启 Advanced Delegation 之前，子智能体不会启动。',
   blockedNotLoaded: 'Hermes 加载 Advanced Delegation 之前，子智能体不会启动。重启 Hermes 以完成。',
   blockedUnavailable: label => `${label} 能在此处运行之前，子智能体不会启动。其插件报告无法运行。`,
   blockedUnregistered: name => `安装并开启提供“${name}”的插件之前，子智能体不会启动。`,
@@ -77,18 +77,18 @@ export const zhDelegationRouting: DelegationRoutingTranslations = {
   saveRoute: '保存路由',
   createRoute: '添加路由',
 
-  profileRoutesTitle: '子智能体可使用的配置档案',
-  profileRoutesHint: '每个勾选的配置档案都会带上自己的模型、技能、人设和密钥。',
+  profileRoutesTitle: '可用作子智能体的智能体',
+  profileRoutesHint: '每个勾选的智能体都会使用自己的模型、技能、人设和密钥。',
   profileDescriptionPlaceholder: '何时使用（可选）',
   profileDefault: '默认',
-  profileEmpty: '还没有其他配置档案。可在配置档案栏中创建。',
-  profileMissing: name => `${name}（配置档案已不存在）`,
+  profileEmpty: '还没有其他智能体。可在智能体栏中创建。',
+  profileMissing: name => `${name}（智能体已不存在）`,
 
   inactiveTitle: '此模式下不使用',
   inactiveModelMap: route => `模型路由为每个子智能体挑选模型。未选择路由的子智能体使用“${route}”。`,
-  inactiveProfiles: profile => `配置档案路由为每个子智能体挑选配置档案。未选择配置档案的子智能体以“${profile}”运行。`,
+  inactiveProfiles: profile => `智能体路由决定使用哪个已有智能体。未指定时，子智能体以“${profile}”运行。`,
   inactiveModelMapNoDefault: '模型路由为每个子智能体挑选模型。未选择路由的子智能体使用主智能体的模型。',
-  inactiveProfilesNoDefault: '配置档案路由为每个子智能体挑选配置档案。未选择配置档案的子智能体使用主智能体的模型。',
+  inactiveProfilesNoDefault: '智能体路由决定使用哪个已有智能体。未指定时，子智能体使用主智能体的模型。',
   inactivePlugin: label => `${label} 决定每个子智能体的模型，因此此设置不适用。`,
   useDefault: '切换为默认'
 }

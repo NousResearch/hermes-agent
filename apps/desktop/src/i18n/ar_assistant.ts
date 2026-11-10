@@ -23,7 +23,7 @@ export const arAssistant = {
       skill: name => `المهارة ${name}`,
       kind: { plugin: 'إضافة', skill: 'مهارة' },
       tier: { official: 'رسمي', verified: 'موثّق', community: 'مجتمعي' },
-      targetProfile: profile => `يُثبَّت في ملفك الشخصي ${profile}`,
+      targetProfile: profile => `يُثبَّت للوكيل ${profile}`,
       sendFailed: 'تعذّر إرسال ردك. حاول مرة أخرى.',
       commitLabel: 'الإيداع',
       subdirLabel: 'المجلد',
@@ -195,8 +195,8 @@ export const arAssistant = {
           body: 'تسجيل الدخول بحساب Nous مجاني.'
         },
         cron_session_read_only: {
-          title: 'هذه المحادثة تابعة لمهمة مجدولة',
-          body: 'إنها تشغّل تلك المهمة فقط، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها.'
+          title: 'هذه المحادثة تابعة لجدول',
+          body: 'إنها مخصصة لتشغيل ذلك الجدول، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها.'
         },
         session_read_only: {
           title: 'هذه المحادثة للقراءة فقط',
@@ -412,8 +412,8 @@ export const arAssistant = {
           pendingAction: 'جار السؤال'
         },
         cronjob: {
-          done: 'مهمة مجدولة',
-          pending: 'جار جدولة المهمة',
+          done: 'تم إعداد الجدول',
+          pending: 'جار إعداد الجدول',
           pendingAction: 'جار الجدولة'
         },
         edit_file: {

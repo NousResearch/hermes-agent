@@ -8,14 +8,14 @@ export const arDelegationRouting: DelegationRoutingTranslations = {
     default: { label: 'افتراضي', description: 'يعمل كل وكيل فرعي بنموذج الوكيل الفرعي أدناه.' },
     model_map: { label: 'مسارات النماذج', description: 'سمِّ بضعة نماذج، ويختار الوكيل واحدًا منها لكل وكيل فرعي.' },
     profile_routes: {
-      label: 'مسارات الملفات الشخصية',
-      description: 'يعمل الوكلاء الفرعيون بأحد ملفاتك الشخصية، بنموذجه ومهاراته ومفاتيحه الخاصة.'
+      label: 'مسارات الوكلاء',
+      description: 'يعمل الوكلاء الفرعيون بإعدادات أحد وكلائك، بنموذجه ومهاراته ومفاتيحه الخاصة.'
     }
   },
   inUse: 'قيد الاستخدام',
   plugin: 'إضافة',
-  pluginMissing: 'مسارات النماذج ومسارات الملفات الشخصية مصدرها الإضافة Advanced Delegation.',
-  pluginDisabled: 'الإضافة Advanced Delegation مثبتة لكنها متوقفة لهذا الملف الشخصي.',
+  pluginMissing: 'مسارات النماذج ومسارات الوكلاء مصدرها الإضافة Advanced Delegation.',
+  pluginDisabled: 'الإضافة Advanced Delegation مثبتة لكنها متوقفة لهذا الوكيل.',
   pluginNotLoaded: 'الإضافة Advanced Delegation مفعّلة، لكن Hermes لم يحمّلها بعد. أعد تشغيل Hermes لإكمال ذلك.',
   installPlugin: 'تثبيت الإضافة',
   installUnavailable: 'الإضافة Advanced Delegation ليست في كتالوج الإضافات بعد. ثبّتها من المهارات ← الإضافات.',
@@ -26,7 +26,7 @@ export const arDelegationRouting: DelegationRoutingTranslations = {
   blockedPill: 'لا يعمل',
   blockedDetail: 'هذا الوضع محفوظ، لذا يرفض Hermes كل وكيل فرعي بدلًا من استخدام الوضع الافتراضي بصمت.',
   blockedMissing: 'لن يبدأ الوكلاء الفرعيون حتى تُثبَّت الإضافة Advanced Delegation.',
-  blockedDisabled: 'لن يبدأ الوكلاء الفرعيون حتى تُفعَّل الإضافة Advanced Delegation لهذا الملف الشخصي.',
+  blockedDisabled: 'لن يبدأ الوكلاء الفرعيون حتى تُفعَّل الإضافة Advanced Delegation لهذا الوكيل.',
   blockedNotLoaded:
     'لن يبدأ الوكلاء الفرعيون حتى يحمّل Hermes الإضافة Advanced Delegation. أعد تشغيل Hermes لإكمال ذلك.',
   blockedUnavailable: label => `لن يبدأ الوكلاء الفرعيون حتى يتمكن ${label} من العمل هنا. تفيد إضافته بأنه لا يستطيع.`,
@@ -78,22 +78,22 @@ export const arDelegationRouting: DelegationRoutingTranslations = {
   saveRoute: 'حفظ المسار',
   createRoute: 'إضافة مسار',
 
-  profileRoutesTitle: 'الملفات الشخصية التي يمكن للوكلاء الفرعيين العمل بها',
-  profileRoutesHint: 'يجلب كل ملف شخصي محدد نموذجه ومهاراته وشخصيته ومفاتيحه الخاصة.',
+  profileRoutesTitle: 'الوكلاء الذين يمكن استخدام إعداداتهم للوكلاء الفرعيين',
+  profileRoutesHint: 'يوفر كل وكيل محدد نموذجه ومهاراته وشخصيته ومفاتيحه الخاصة.',
   profileDescriptionPlaceholder: 'متى يُستخدم (اختياري)',
   profileDefault: 'افتراضي',
-  profileEmpty: 'لا توجد ملفات شخصية أخرى بعد. أنشئ واحدًا من شريط الملفات الشخصية.',
-  profileMissing: name => `${name} (لم يعد الملف الشخصي موجودًا)`,
+  profileEmpty: 'لا يوجد وكلاء آخرون بعد. أنشئ وكيلاً من شريط الوكلاء.',
+  profileMissing: name => `${name} (لم يعد الوكيل موجودًا)`,
 
   inactiveTitle: 'غير مستخدم في هذا الوضع',
   inactiveModelMap: route =>
     `تختار مسارات النماذج نموذج كل وكيل فرعي. الوكلاء الفرعيون الذين لا يختارون مسارًا يستخدمون «${route}».`,
   inactiveProfiles: profile =>
-    `تختار مسارات الملفات الشخصية ملف كل وكيل فرعي. الوكلاء الفرعيون الذين لا يختارون ملفًا شخصيًا يعملون بـ «${profile}».`,
+    `تحدد مسارات الوكلاء إعدادات كل وكيل فرعي. من لا يختار وكيلاً يعمل بإعدادات «${profile}».`,
   inactiveModelMapNoDefault:
     'تختار مسارات النماذج نموذج كل وكيل فرعي. الوكلاء الفرعيون الذين لا يختارون مسارًا يستخدمون نموذج الوكيل الرئيسي.',
   inactiveProfilesNoDefault:
-    'تختار مسارات الملفات الشخصية ملف كل وكيل فرعي. الوكلاء الفرعيون الذين لا يختارون ملفًا شخصيًا يستخدمون نموذج الوكيل الرئيسي.',
+    'تحدد مسارات الوكلاء إعدادات كل وكيل فرعي. من لا يختار وكيلاً يستخدم نموذج الوكيل الرئيسي.',
   inactivePlugin: label => `${label} يحدد نموذج كل وكيل فرعي، لذا لا ينطبق هذا الإعداد.`,
   useDefault: 'التبديل إلى الافتراضي'
 }

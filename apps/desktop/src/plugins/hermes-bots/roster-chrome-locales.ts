@@ -1,7 +1,6 @@
 import type { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 
 export interface RosterChromeMessages {
-  title: string
   toastsOn: string
   toastsOff: string
   newMenu: string
@@ -14,7 +13,6 @@ export interface RosterChromeMessages {
 
 export const ROSTER_CHROME = {
   'en': {
-    title: "Bots",
     toastsOn: "Activity toasts on — click to silence",
     toastsOff: "Activity toasts off — click to enable",
     newMenu: "New…",
@@ -25,7 +23,6 @@ export const ROSTER_CHROME = {
     hidden: "Hidden"
   },
   'ja': {
-    title: "ボット",
     toastsOn: "活動通知オン — クリックでオフ",
     toastsOff: "活動通知オフ — クリックでオン",
     newMenu: "新規…",
@@ -36,7 +33,6 @@ export const ROSTER_CHROME = {
     hidden: "非表示"
   },
   'zh': {
-    title: "机器人",
     toastsOn: "活动通知已开启 — 点击关闭",
     toastsOff: "活动通知已关闭 — 点击开启",
     newMenu: "新建…",
@@ -47,7 +43,6 @@ export const ROSTER_CHROME = {
     hidden: "已隐藏"
   },
   'zh-hant': {
-    title: "機器人",
     toastsOn: "活動通知已開啟 — 點擊關閉",
     toastsOff: "活動通知已關閉 — 點擊開啟",
     newMenu: "新增…",
@@ -58,7 +53,6 @@ export const ROSTER_CHROME = {
     hidden: "已隱藏"
   },
   'fr': {
-    title: "Bots",
     toastsOn: "Notifications d’activité activées — cliquer pour désactiver",
     toastsOff: "Notifications d’activité désactivées — cliquer pour activer",
     newMenu: "Nouveau…",
@@ -69,7 +63,6 @@ export const ROSTER_CHROME = {
     hidden: "Masqués"
   },
   'de': {
-    title: "Bots",
     toastsOn: "Aktivitätshinweise an — zum Ausschalten klicken",
     toastsOff: "Aktivitätshinweise aus — zum Einschalten klicken",
     newMenu: "Neu…",
@@ -80,7 +73,6 @@ export const ROSTER_CHROME = {
     hidden: "Ausgeblendet"
   },
   'es': {
-    title: "Bots",
     toastsOn: "Avisos de actividad activados — haz clic para silenciarlos",
     toastsOff: "Avisos de actividad desactivados — haz clic para activarlos",
     newMenu: "Nuevo…",
@@ -91,7 +83,6 @@ export const ROSTER_CHROME = {
     hidden: "Ocultos"
   },
   'ru': {
-    title: "Боты",
     toastsOn: "Уведомления об активности включены — нажмите, чтобы отключить",
     toastsOff: "Уведомления об активности отключены — нажмите, чтобы включить",
     newMenu: "Создать…",
@@ -102,7 +93,6 @@ export const ROSTER_CHROME = {
     hidden: "Скрытые"
   },
   'ar': {
-    title: "الروبوتات",
     toastsOn: "إشعارات النشاط مفعّلة — انقر لكتمها",
     toastsOff: "إشعارات النشاط معطّلة — انقر لتفعيلها",
     newMenu: "جديد…",

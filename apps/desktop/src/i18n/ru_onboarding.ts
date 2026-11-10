@@ -1,7 +1,7 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const ruOnboarding: TranslationOverrides['onboarding'] = {
-  headerTitle: 'Настроим для вас Hermes Agent',
+  headerTitle: 'Настроим для вас агента',
   headerDesc: 'Подключите провайдера модели, чтобы начать общение. Большинство вариантов — в один клик.',
   preparingInstall: 'Hermes завершает установку. Обычно это занимает меньше минуты при первом запуске.',
   starting: 'Запускаем Hermes…',
@@ -15,7 +15,7 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
   chooseLater: 'Выберу провайдера позже',
   recommended: 'Рекомендуется',
   connected: 'Подключено',
-  featuredPitch: 'Одна подписка, 300+ передовых моделей — рекомендуемый способ запускать Hermes',
+  featuredPitch: 'Одна подписка, 300+ передовых моделей — рекомендуемый способ работать с агентом',
   fireworksPitch: 'Прямой API моделей — передовые модели на хостинге Fireworks',
   openRouterPitch: 'Один ключ, сотни моделей — надёжный вариант по умолчанию',
   apiKeyOptions: {
@@ -33,7 +33,7 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
     local: {
       short: 'self-hosted',
       description:
-        'Укажите Hermes локальный или self-hosted OpenAI-совместимый endpoint (vLLM, llama.cpp, Ollama и т.д.).'
+        'Подключите агента к локальному или собственному OpenAI-совместимому эндпоинту (vLLM, llama.cpp, Ollama и т. д.).'
     }
   },
   backToSignIn: 'Назад ко входу',

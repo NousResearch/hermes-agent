@@ -43,7 +43,7 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   },
   no_reply: {
     title: "The reply didn't arrive",
-    body: 'Hermes finished this turn, but no reply reached this window. Retry to send it again.'
+    body: 'The agent finished this turn, but no reply reached this window. Retry to send it again.'
   },
   upstream_blocked: {
     title: provider => `${provider} blocked this request`,
@@ -98,16 +98,16 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
     body: provider => `${provider} returned nothing for this message. Retry in a moment.`
   },
   loop_error: {
-    title: "Hermes couldn't finish this step",
+    title: "The agent couldn't finish this step",
     body: 'Something went wrong handling the reply. Retry; if it happens again, send diagnostics from the details.'
   },
   SESSION_OWNER_BUSY: {
-    title: 'Hermes is busy in this chat',
+    title: 'The agent is busy in this chat',
     body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.'
   },
   cron_session_read_only: {
-    title: 'This chat belongs to a scheduled job',
-    body: 'It only runs that job, so your message was not run. Start a new chat to send it.'
+    title: 'This chat belongs to a schedule',
+    body: 'This chat only runs its schedule. Your message was not run. Start a new chat to send it.'
   },
   session_read_only: {
     title: 'This chat is read-only',

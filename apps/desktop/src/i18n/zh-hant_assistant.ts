@@ -23,7 +23,7 @@ export const zhHantAssistant = {
       skill: name => `技能 ${name}`,
       kind: { plugin: '外掛', skill: '技能' },
       tier: { official: '官方', verified: '已驗證', community: '社群' },
-      targetProfile: profile => `安裝到你的 ${profile} 設定檔`,
+      targetProfile: profile => `安裝到你的智慧體 ${profile}`,
       sendFailed: '無法傳送你的回覆，請再試一次。',
       commitLabel: '提交',
       subdirLabel: '資料夾',
@@ -214,8 +214,8 @@ export const zhHantAssistant = {
           body: '使用 Nous 帳戶登入完全免費。'
         },
         cron_session_read_only: {
-          title: '此聊天屬於一個排程工作',
-          body: '它只會執行該工作，因此你的訊息未被執行。請開始新的聊天後再傳送。'
+          title: '此聊天屬於一個排程',
+          body: '它只會自動執行該排程，因此你的訊息未被執行。請開始新的聊天後再傳送。'
         },
         session_read_only: {
           title: '此聊天為唯讀',
@@ -394,7 +394,7 @@ export const zhHantAssistant = {
         browser_take_screenshot: { done: '已擷取截圖', pending: '正在擷取截圖', pendingAction: '正在擷取' },
         browser_type: { done: '已在頁面輸入', pending: '正在頁面輸入', pendingAction: '正在輸入' },
         clarify: { done: '已提問', pending: '正在提問', pendingAction: '正在提問' },
-        cronjob: { done: 'Cron 工作', pending: '正在安排 Cron 工作', pendingAction: '正在安排' },
+        cronjob: { done: '已設定排程', pending: '正在設定排程', pendingAction: '正在設定' },
         edit_file: { done: '已編輯檔案', pending: '正在編輯檔案', pendingAction: '正在編輯' },
         execute_code: { done: '已執行程式碼', pending: '正在撰寫腳本', pendingAction: '正在撰寫腳本' },
         image_generate: { done: '已生成圖片', pending: '正在生成圖片', pendingAction: '正在生成' },

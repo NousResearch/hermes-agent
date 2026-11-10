@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
 import { pluginSettingsRouteHref } from '@/contrib/settings-pages'
+import { en } from '@/i18n/en'
 import { queryClient } from '@/lib/query-client'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
@@ -17,6 +18,7 @@ const plugin = {
   description: '', key: 'image_gen/fal', name: 'Fal', source: 'user', status: 'enabled', version: '1',
   settings_schema: [{ description: '', key: 'region', label: 'Region', required: false, type: 'string', value: 'us' }]
 }
+
 const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
   if (method === 'plugins.manage') {
     return params?.action === 'list' ? { plugins: [plugin] } : { ok: true, plugin }
@@ -24,6 +26,7 @@ const requestGateway = vi.fn(async (method: string, params?: Record<string, unkn
 
   return {}
 })
+
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
@@ -35,14 +38,20 @@ interface Request {
   method?: string
   body?: unknown
 }
+
 const api = vi.fn(async ({ path, method }: Request): Promise<unknown> => {
   const pathname = path.split('?')[0]
 
   if (pathname === '/api/skills' || pathname === '/api/tools/toolsets') {return []}
+
   if (pathname === '/api/cron/jobs') {return method === 'POST' ? { id: 'saved', enabled: true } : []}
+
   if (pathname === '/api/messaging/platforms') {return { platforms: [] }}
+
   if (pathname === '/api/profiles/sessions') {return { sessions: [], total: 0, limit: 5, offset: 0 }}
+
   if (pathname.endsWith('/soul')) {return { content: 'Owner instructions' }}
+
   if (pathname === '/api/profiles') {
     return {
       current: 'default',
@@ -55,6 +64,7 @@ const api = vi.fn(async ({ path, method }: Request): Promise<unknown> => {
 
   return {}
 })
+
 const originalDesktop = window.hermesDesktop
 
 beforeEach(() => {
@@ -103,10 +113,10 @@ it.each(['', '&connection=beta'])('pins every real overview request and routine 
       expect(request?.profile).toBe('default')
     }
   })
-  fireEvent.click(screen.getByRole('button', { name: 'Add routine' }))
-  fireEvent.change(screen.getByLabelText('Schedule'), { target: { value: '0 9 * * *' } })
-  fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Review notes' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  fireEvent.click(screen.getByRole('button', { name: en.cron.newCron }))
+  fireEvent.change(screen.getByPlaceholderText('0 9 * * *'), { target: { value: '0 9 * * *' } })
+  fireEvent.change(screen.getByLabelText(en.cron.promptLabel), { target: { value: 'Review notes' } })
+  fireEvent.click(screen.getByRole('button', { name: en.common.save }))
   await waitFor(() => expect(api.mock.calls.some(([request]) => request.method === 'POST')).toBe(true))
   const write = api.mock.calls.find(([request]) => request.method === 'POST')![0]
 

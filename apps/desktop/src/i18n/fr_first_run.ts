@@ -60,7 +60,7 @@ export const frFirstRun: FirstRunCopy = {
     notNow: 'Pas maintenant'
   },
   intro: {
-    greeting: 'Bonjour, je suis Hermes.',
+    greeting: 'Bonjour, je suis votre agent.',
     plan: 'Configurons tout pour vous. Ensuite, nous ferons quelque chose de génial.'
   },
   rerun: {

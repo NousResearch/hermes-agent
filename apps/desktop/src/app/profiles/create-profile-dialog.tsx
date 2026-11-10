@@ -112,7 +112,7 @@ export function CreateProfileDialog({
               autoFocus
               id="new-profile-name"
               onValueChange={setName}
-              placeholder="my-profile"
+              placeholder="my-agent"
               sanitize={slug}
               value={name}
             />

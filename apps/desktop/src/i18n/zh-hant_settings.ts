@@ -27,7 +27,7 @@ export const zhHantSettings = {
       appearanceGeneral: '一般',
       modelMain: '主要模型',
       modelAuxiliary: '輔助模型',
-      modelMoa: '多代理協作',
+      modelMoa: '多智慧體協作',
       modelFallbacks: '備用模型',
       chatBehavior: '行為',
       chatAttachments: '附件',
@@ -44,11 +44,11 @@ export const zhHantSettings = {
       voiceConversation: '語音對話',
       voiceTranscription: '語音轉文字',
       voiceSpeech: '文字轉語音',
-      advancedRuntime: '代理限制',
+      advancedRuntime: '智慧體限制',
       advancedTools: '工具存取',
       advancedTerminal: '終端後端',
       advancedOutput: '輸出限制',
-      advancedDelegation: '子代理',
+      advancedDelegation: '子智慧體',
       advancedDesktop: '桌面與啟動',
       gatewayConnection: '主要閘道',
       gatewayDevices: '已儲存的連線',
@@ -99,8 +99,8 @@ export const zhHantSettings = {
         installAnyway: '仍要安裝',
         partialInstall: sha =>
           sha
-            ? `外掛只安裝了一部分：代理部分已安裝在提交 ${sha}，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留代理部分。`
-            : '外掛只安裝了一部分：代理部分已安裝，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留代理部分。',
+            ? `外掛只安裝了一部分：智慧體部分已安裝在提交 ${sha}，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留智慧體部分。`
+            : '外掛只安裝了一部分：智慧體部分已安裝，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留智慧體部分。',
         nothingToInstall: '此套件在這裡沒有可安裝的內容。'
       }
     },
@@ -115,7 +115,7 @@ export const zhHantSettings = {
       blurb: '已安裝外掛程式加入的選項。每個外掛程式都有自己的頁面，有些還有子頁面。',
       empty: '還沒有外掛程式提供設定。',
       manage: '管理外掛程式',
-      agentSettings: '代理程式設定',
+      agentSettings: '智慧體設定',
       pageCount: (n: number) => `${n} 個頁面`,
       missing: '這個外掛程式沒有設定頁面，可能已停用或解除安裝。'
     },
@@ -142,14 +142,14 @@ export const zhHantSettings = {
     vault: {
       title: '密碼與登入',
       blurb:
-        '說一句「登入 GitHub」，代理就會代你登入。第一次遇到登入頁時它會當場向你索取登入資訊，之後就自動完成。密碼在本機加密儲存並直接填入頁面——模型永遠看不到。',
+        '說一句「登入 GitHub」，智慧體就會代你登入。第一次遇到登入頁時它會當場向你索取登入資訊，之後就自動完成。密碼在本機加密儲存並直接填入頁面——模型永遠看不到。',
       count: n => `已儲存 ${n} 項`,
       loadFailed: '無法載入保險庫項目',
       empty: '尚未儲存任何內容',
-      emptyDesc: '這裡不必手動新增。讓代理登入某個網站時，它會當場向你詢問一次登入資訊。若想提前輸入，可按「新增」。',
+      emptyDesc: '這裡不必手動新增。讓智慧體登入某個網站時，它會當場向你詢問一次登入資訊。若想提前輸入，可按「新增」。',
       add: '新增',
       addTitle: '新增登入資訊、信用卡或地址',
-      addDescription: '加密儲存在此裝置上。代理永遠不會看到密碼。',
+      addDescription: '加密儲存在此裝置上。智慧體永遠不會看到密碼。',
       added: '已儲存。',
       adding: '儲存中…',
       addConfirm: '儲存',
@@ -192,11 +192,11 @@ export const zhHantSettings = {
       sources: {
         title: '密碼管理器',
         blurb:
-          '已安裝的密碼管理器會被自動偵測。代理第一次需要其中的登入資訊時會請你解鎖（每個工作階段一次）；記憶體中只保留工作階段權杖，代理永遠看不到你的主密碼或任何登入資訊。',
+          '已安裝的密碼管理器會被自動偵測。智慧體第一次需要其中的登入資訊時會請你解鎖（每個工作階段一次）；記憶體中只保留工作階段權杖，智慧體永遠看不到你的主密碼或任何登入資訊。',
         toggleFailed: '無法更新密碼管理器',
         notInstalled: name => `未偵測到。安裝 ${name} 命令列工具並登入後，Hermes 會自動偵測。`,
         disabledDesc: '已偵測到，但已為 Hermes 關閉。',
-        lockedDesc: '已偵測到。代理需要登入資訊時會請你解鎖，也可立即解鎖。',
+        lockedDesc: '已偵測到。智慧體需要登入資訊時會請你解鎖，也可立即解鎖。',
         unlockedDesc: '本工作階段已解鎖。閒置 30 分鐘或關閉 Hermes 後會自動鎖定。',
         statusLocked: '已鎖定',
         statusNotDetected: '未偵測到',
@@ -207,7 +207,7 @@ export const zhHantSettings = {
         lock: '鎖定',
         unlocked: name => `${name} 已在本工作階段解鎖。`,
         unlockTitle: name => `解鎖 ${name}`,
-        unlockDescription: '輸入主密碼。它會交給本機的密碼管理器後立即捨棄，不會被儲存、記錄或顯示給代理。',
+        unlockDescription: '輸入主密碼。它會交給本機的密碼管理器後立即捨棄，不會被儲存、記錄或顯示給智慧體。',
         masterPasswordPlaceholder: '主密碼'
       }
     },
@@ -266,7 +266,7 @@ export const zhHantSettings = {
       muteSoundsTitle: '靜音介面提示音',
       muteSoundsDesc: '關閉自動完成、喚醒詞和思考提示音、觸感回饋以及系統通知聲音。聲音預覽和語音回覆仍會播放。',
       completionSoundTitle: '完成提示音',
-      completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
+      completionSoundDesc: '智慧體回合結束時播放。可在此選擇預設並預覽。',
       completionSoundPreview: '預覽'
     },
     sections: {
@@ -403,7 +403,7 @@ export const zhHantSettings = {
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
       themeSearchPlaceholder: '搜尋本機主題或 VS Code Marketplace…',
-      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
+      themeProfileNote: profile => `已為智慧體「${profile}」儲存——每個智慧體保留各自的主題。`,
       installTitle: '從 VS Code 安裝',
       installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
       installPlaceholder: 'publisher.extension',
@@ -467,7 +467,7 @@ export const zhHantSettings = {
         repoScanExcludePaths: '排除的程式碼儲存庫路徑'
       },
       agent: {
-        maxTurns: '最大代理步數',
+        maxTurns: '智慧體步數上限',
         imageInputMode: '圖片附件',
         apiMaxRetries: 'API 重試次數',
         serviceTier: '服務層級',
@@ -618,12 +618,12 @@ export const zhHantSettings = {
         }
       },
       delegation: {
-        model: '子代理模型',
-        provider: '子代理提供方',
-        maxIterations: '子代理輪次上限',
-        maxConcurrentChildren: '平行子代理',
-        childTimeoutSeconds: '子代理逾時',
-        reasoningEffort: '子代理推理強度'
+        model: '子智慧體模型',
+        provider: '子智慧體提供方',
+        maxIterations: '子智慧體輪次上限',
+        maxConcurrentChildren: '平行子智慧體',
+        childTimeoutSeconds: '子智慧體逾時',
+        reasoningEffort: '子智慧體推理強度'
       },
       updates: {
         nonInteractiveLocalChanges: '應用程式內更新的本機變更'
@@ -688,7 +688,7 @@ export const zhHantSettings = {
       },
       browser: {
         useRealProfile:
-          '本機瀏覽會使用你的真實登入狀態。Hermes 會將預設瀏覽器的設定（Cookie、登入資訊與偏好）複製成受管理的快照，再以內建的 Chromium 驅動它——不會直接開啟你正在使用的設定檔，且每次執行都會從目前的設定檔重新整理副本。設定雲端瀏覽器後端時，也允許代理視需要開啟本機真實設定檔工作階段。僅支援 Chromium 系瀏覽器（Chrome、Edge、Brave、Brave Origin、Chromium）；若預設瀏覽器並非 Chromium 系，會顯示明確錯誤。預設關閉。'
+          '本機瀏覽會使用你的真實登入狀態。Hermes 會將預設瀏覽器的設定（Cookie、登入資訊與偏好）複製成受管理的快照，再以內建的 Chromium 驅動它——不會直接開啟你正在使用的設定檔，且每次執行都會從目前的設定檔重新整理副本。設定雲端瀏覽器後端時，也允許智慧體視需要開啟本機真實設定檔工作階段。僅支援 Chromium 系瀏覽器（Chrome、Edge、Brave、Brave Origin、Chromium）；若預設瀏覽器並非 Chromium 系，會顯示明確錯誤。預設關閉。'
       },
       voice: {
         autoTts: '自動朗讀助手回覆。',
@@ -739,18 +739,18 @@ export const zhHantSettings = {
       options: {
         gui: {
           title: '僅解除安裝聊天 GUI',
-          description: '移除此桌面應用程式。Hermes 代理、你的設定和聊天記錄都會保留。',
+          description: '移除此桌面應用程式。Hermes 智慧體、你的設定和聊天記錄都會保留。',
           consequence: '桌面聊天 GUI（此應用程式及其資料）'
         },
         lite: {
-          title: '解除安裝 GUI 與代理，保留資料',
-          description: '移除應用程式和 Hermes 代理，但保留設定、聊天記錄和機密，以便日後重新安裝。',
-          consequence: '聊天 GUI 和 Hermes 代理（設定、聊天記錄和機密會保留）'
+          title: '解除安裝 GUI 與智慧體，保留資料',
+          description: '移除應用程式和 Hermes 智慧體，但保留設定、聊天記錄和機密，以便日後重新安裝。',
+          consequence: '聊天 GUI 和 Hermes 智慧體（設定、聊天記錄和機密會保留）'
         },
         full: {
           title: '解除安裝全部',
-          description: '移除應用程式、代理和所有使用者資料——設定、聊天記錄、排程工作、機密和日誌。',
-          consequence: '全部內容——聊天 GUI、Hermes 代理，以及你的所有設定、聊天記錄、機密和日誌'
+          description: '移除應用程式、智慧體和所有使用者資料——設定、聊天記錄、排程、機密和日誌。',
+          consequence: '全部內容——聊天 GUI、Hermes 智慧體，以及你的所有設定、聊天記錄、機密和日誌'
         }
       }
     },
@@ -913,7 +913,7 @@ export const zhHantSettings = {
       title: '閘道連線',
       envOverride: '環境變數覆寫',
       intro:
-        'Hermes Desktop 預設會啟動自己的本機閘道。如果您希望此應用程式控制另一台機器或可信代理後面已執行的 Hermes 後端，請使用遠端閘道。閘道連線屬於本機層級設定；設定檔是從已連線的閘道中探索出來的。',
+        'Hermes Desktop 預設會啟動自己的本機閘道。如果您希望此應用程式控制另一台機器或可信代理後面已執行的 Hermes 後端，請使用遠端閘道。閘道連線屬於本機層級設定；智慧體是從已連線的閘道中探索出來的。',
       envOverrideTitle: '環境變數正在控制此桌面工作階段。',
       envOverrideDesc: '取消設定 HERMES_DESKTOP_REMOTE_URL 和 HERMES_DESKTOP_REMOTE_TOKEN 後才會使用下方儲存的設定。',
       localTitle: '本機閘道',
@@ -1066,7 +1066,7 @@ export const zhHantSettings = {
     },
     profileScope: {
       appliesTo: '套用至',
-      editsProfile: profile => `此頁面的變更將套用至「${profile}」設定檔。`
+      editsProfile: profile => `此頁面的變更將套用至智慧體「${profile}」。`
     },
     mcp: {
       loading: '正在載入 MCP 伺服器...',
@@ -1144,10 +1144,10 @@ export const zhHantSettings = {
       inheritsFrom: task => `繼承 ${task}`,
       followTask: task => `跟隨 ${task}`,
       providerDefault: '(提供方預設)',
-      moaTitle: '混合代理（Mixture of Agents）',
+      moaTitle: '混合智慧體（Mixture of Agents）',
       moaPreset: '預設',
       moaDescription:
-        '設定以「混合代理」提供者下模型形式出現的命名預設。聚合模型是執行模型——它執行工具迴圈的每一步，整個運行幾乎全部費用都計入其提供者。參考模型預設每輪使用者訊息僅提供一次建議。',
+        '設定以「混合智慧體」提供者下模型形式出現的命名預設。聚合模型是執行模型——它執行工具迴圈的每一步，整個運行幾乎全部費用都計入其提供者。參考模型預設每輪使用者訊息僅提供一次建議。',
       moaAggregator: '聚合模型',
       moaAggregatorBilled: '執行模型 · 整個運行在此計費',
       moaReferenceHint: '默認每輪僅建議一次',
@@ -1157,24 +1157,24 @@ export const zhHantSettings = {
         approval: { label: '核准', hint: '智慧自動核准' },
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
-        review: { label: '評審', hint: '/review 評審子代理' },
+        review: { label: '評審', hint: '/review 評審子智慧體' },
         voice_chat: { label: '語音聊天', hint: '語音模式回覆' },
         triage_specifier: { label: '分類指定', hint: '看板任務規格補全' },
         kanban_decomposer: { label: '看板分解', hint: '任務拆解' },
-        profile_describer: { label: '設定檔描述', hint: '自動生成設定檔描述' },
+        profile_describer: { label: '智慧體描述', hint: '自動生成智慧體描述' },
         curator: { label: '策展器', hint: '技能使用審查' }
       },
       subagents: {
-        inherit: '繼承主代理設定',
-        modelOnly: '自訂模型（沿用主代理憑證）',
-        providerLabel: '子代理提供方',
-        modelLabel: '子代理模型',
+        inherit: '繼承主智慧體設定',
+        modelOnly: '自訂模型（沿用主智慧體憑證）',
+        providerLabel: '子智慧體提供方',
+        modelLabel: '子智慧體模型',
         direct: '直接端點覆寫',
         customProvider: '自訂提供方...',
-        customProviderLabel: '自訂子代理提供方',
-        parentModel: '使用主代理模型',
+        customProviderLabel: '自訂子智慧體提供方',
+        parentModel: '使用主智慧體模型',
         parentModelWarning:
-          '所選提供方必須支援主代理模型。模型不相容時，僅指定提供方的路由可能失敗。若該提供方設定了自己的預設模型，子代理會改用該模型。',
+          '所選提供方必須支援主智慧體模型。模型不相容時，僅指定提供方的路由可能失敗。若該提供方設定了自己的預設模型，子智慧體會改用該模型。',
         directActive: '直接端點已啟用，優先於已儲存的提供方。選擇此模式時會保留其端點與憑證。',
         directClear: '套用此路由會清除直接端點及其儲存的金鑰。其他請求設定維持不變。',
         catalogFailed: '模型目錄無法使用。請手動輸入提供方與模型，或重試。',
@@ -1665,7 +1665,7 @@ export const zhHantSettings = {
       browserRealProfile: {
         label: '使用我的真實瀏覽器設定檔',
         description:
-          '將預設瀏覽器的登入資訊與 Cookie 複製到受管理的快照中，代理使用該快照進行瀏覽，應用程式內瀏覽器也會用它們登入。絕不會直接開啟你的真實設定檔。將套用於新工作階段。',
+          '將預設瀏覽器的登入資訊與 Cookie 複製到受管理的快照中，智慧體使用該快照進行瀏覽，應用程式內瀏覽器也會用它們登入。絕不會直接開啟你的真實設定檔。將套用於新工作階段。',
         enabledTitle: '真實設定檔瀏覽：已開啟',
         enabledMessage: '新工作階段將使用預設瀏覽器設定檔的快照進行瀏覽。',
         disabledTitle: '真實設定檔瀏覽：已關閉',
@@ -1678,7 +1678,7 @@ export const zhHantSettings = {
         signinsFailed: '無法將登入資訊匯入應用程式內瀏覽器',
         prompt: {
           title: '讓網站保持登入狀態',
-          body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，無論是代理還是應用程式內瀏覽器，網站開啟時即已登入。',
+          body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，無論是智慧體還是應用程式內瀏覽器，網站開啟時即已登入。',
           bulletSnapshot: 'Cookie 與登入資訊會複製到受管理的快照中。',
           bulletLiveProfile: '絕不會直接開啟你的真實瀏覽器設定檔。',
           bulletLocal: '所有資料都不會離開這台電腦。',

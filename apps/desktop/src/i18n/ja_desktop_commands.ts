@@ -39,9 +39,9 @@ export const jaDesktopCommands = {
   savedTo: (path: string) => `会話を ${path} に保存しました`,
   saveCancelled: '保存されませんでした（キャンセル）。',
   exportRemote:
-    '/export はゲートウェイのホストからプロファイルをパッケージ化しますが、そのホストはこのコンピューターではありません。そのホストで `hermes profile export` を実行してください。',
+    '/export はゲートウェイのホストからエージェントをパッケージ化しますが、そのホストはこのコンピューターではありません。そのホストで `hermes profile export` を実行してください。',
   importRemote:
-    '/import はゲートウェイのホストにプロファイルをインストールしますが、そのホストはこのコンピューターではありません。そのホストで `hermes profile import <archive>` を実行してください。',
+    '/import はゲートウェイのホストにエージェントをインストールしますが、そのホストはこのコンピューターではありません。そのホストで `hermes profile import <archive>` を実行してください。',
   timestampsUsage: '使い方: /timestamps [on|off|status]',
   timestampsOn: 'タイムスタンプ: オン（このウィンドウのみ。維持するには config.yaml で display.timestamps を設定）',
   timestampsOff: 'タイムスタンプ: オフ（このウィンドウのみ。維持するには config.yaml で display.timestamps を設定）'

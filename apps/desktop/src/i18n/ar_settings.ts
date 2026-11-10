@@ -219,8 +219,8 @@ export const arSettings = {
         verified: 'موثّق',
         unverified: 'غير موثّق',
         reviewedByNous: 'راجعته Nous.',
-        installsAndEnables: profile => `يُثبَّت لملف ${profile} ويعمل فورًا.`,
-        installsOnly: profile => `يُثبَّت لملف ${profile}.`,
+        installsAndEnables: profile => `يُثبَّت للوكيل ${profile} ويعمل فورًا.`,
+        installsOnly: profile => `يُثبَّت للوكيل ${profile}.`,
         advanced: 'متقدم',
         versionLabel: 'الإصدار',
         reviewedPin: sha => (sha ? `الإصدار المثبّت المراجَع ${sha}` : 'الإصدار المثبّت المراجَع'),
@@ -408,7 +408,7 @@ export const arSettings = {
       technicalDesc: 'يعرض تفاصيل أكثر عن الأدوات والتنفيذ.',
       themeTitle: 'الثيم',
       themeDesc: 'اختر ثيم سطح المكتب.',
-      themeProfileNote: profile => `سيطبق هذا الثيم على الملف الشخصي ${profile}.`,
+      themeProfileNote: profile => `سيطبق هذا الثيم على الوكيل ${profile}.`,
       installTitle: 'تثبيت ثيم',
       installDesc: 'ألصق رابط ثيم أو اسمه لتثبيته.',
       installPlaceholder: 'رابط أو اسم الثيم',
@@ -692,7 +692,7 @@ export const arSettings = {
       title: 'اتصال البوابة',
       envOverride: 'تجاوز من البيئة',
       intro:
-        'يشغّل Hermes Desktop بوابة محلية خاصة افتراضياً. استخدم بوابة بعيدة عندما تريد أن يتحكم هذا التطبيق بخلفية Hermes تعمل مسبقاً على جهاز آخر أو خلف وكيل موثوق. اتصالات البوابة إعداد على مستوى الجهاز؛ ويتم اكتشاف الملفات الشخصية من البوابات المتصلة.',
+        'يشغّل Hermes Desktop بوابة محلية خاصة افتراضياً. استخدم بوابة بعيدة عندما تريد أن يتحكم هذا التطبيق بخلفية Hermes تعمل مسبقاً على جهاز آخر أو خلف وكيل موثوق. اتصالات البوابة إعداد على مستوى الجهاز؛ ويتم اكتشاف الوكلاء من البوابات المتصلة.',
       envOverrideTitle: 'متغيرات البيئة تتحكم في جلسة سطح المكتب هذه.',
       envOverrideDesc: 'أزل HERMES_DESKTOP_REMOTE_URL و HERMES_DESKTOP_REMOTE_TOKEN لاستخدام الإعداد المحفوظ أدناه.',
       localTitle: 'بوابة محلية',
@@ -799,7 +799,7 @@ export const arSettings = {
     },
     profileScope: {
       appliesTo: 'ينطبق على',
-      editsProfile: profile => `تنطبق التغييرات في هذه الصفحة على الملف الشخصي «${profile}».`
+      editsProfile: profile => `تنطبق التغييرات في هذه الصفحة على الوكيل «${profile}».`
     },
     mcp: {
       loading: 'جار تحميل خوادم MCP...',
@@ -914,8 +914,8 @@ export const arSettings = {
           hint: 'تفكيك المهام'
         },
         profile_describer: {
-          label: 'واصف الملف الشخصي',
-          hint: 'أوصاف ملفات شخصية تلقائية'
+          label: 'واصف الوكيل',
+          hint: 'أوصاف تلقائية للوكلاء'
         },
         curator: {
           label: 'المنسّق',

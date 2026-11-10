@@ -86,8 +86,8 @@ export const zhErrorCodes: Partial<ThreadCopy['errorCodes']> = {
     body: '使用 Nous 账户登录是免费的。'
   },
   cron_session_read_only: {
-    title: '此聊天属于一个定时任务',
-    body: '它只运行该任务，因此你的消息未被执行。请新建聊天后再发送。'
+    title: '此聊天属于一个计划',
+    body: '它只用于自动运行该计划，因此你的消息未被执行。请新建聊天后再发送。'
   },
   session_read_only: {
     title: '此聊天为只读',

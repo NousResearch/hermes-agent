@@ -82,7 +82,7 @@ export function botConnectionRoute(bot: Partial<RosterRow> | null | undefined): 
   const resolved = resolveBotConnectionRoute(bot)
 
   if (resolved.status === 'owner_removed') {
-    throw new Error(`Bot ${resolved.profile} has no connection owner`)
+    throw new Error(`Agent ${resolved.profile} has no connection owner`)
   }
 
   return resolved.route
@@ -99,7 +99,7 @@ export function botWorkspaceOwnerKey(bot: RosterRow) {
 export function setBotsWorkspaceOwner(
   ownerKey: string,
   bot: null | RosterRow = null,
-  blockedMessage = 'Select a Bot or group first.'
+  blockedMessage = 'Select an agent or group first.'
 ) {
   // Render-reachable (sidebar listener fires on visibility flips). An
   // orphaned row degrades to the blocked target instead of throwing.

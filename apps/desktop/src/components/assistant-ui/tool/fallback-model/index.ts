@@ -933,7 +933,7 @@ function cronjobSubtitle(argsRecord: Record<string, unknown>, resultRecord: Reco
   const jobs = Array.isArray(resultRecord.jobs) ? resultRecord.jobs : null
 
   if (jobs) {
-    return jobs.length ? `${jobs.length} cron job${jobs.length === 1 ? '' : 's'}` : 'No cron jobs'
+    return jobs.length ? translateNow('cron.count', jobs.length) : translateNow('cron.emptyTitleNew')
   }
 
   const message = firstStringField(resultRecord, ['message'])
@@ -946,7 +946,7 @@ function cronjobSubtitle(argsRecord: Record<string, unknown>, resultRecord: Reco
   const name = firstStringField(resultRecord, ['name']) || firstStringField(argsRecord, ['name', 'job_id'])
   const label = capitalize(action)
 
-  return name ? `${label} ${name}` : `Cron ${action}`
+  return name ? `${label} ${name}` : `${translateNow('cron.title')} · ${action}`
 }
 
 function cronjobDetail(argsRecord: Record<string, unknown>, resultRecord: Record<string, unknown>): string {
@@ -954,14 +954,14 @@ function cronjobDetail(argsRecord: Record<string, unknown>, resultRecord: Record
 
   if (jobs) {
     if (!jobs.length) {
-      return 'No cron jobs scheduled'
+      return translateNow('cron.emptyTitleNew')
     }
 
     return jobs
       .slice(0, 20)
       .map(job => {
         const row = isRecord(job) ? job : {}
-        const name = firstStringField(row, ['name', 'id']) || 'job'
+        const name = firstStringField(row, ['name', 'id']) || translateNow('assistant.tool.titles.cronjob.done')
         const sched = firstStringField(row, ['schedule_display', 'schedule'])
 
         return sched ? `- ${name} · ${sched}` : `- ${name}`

@@ -12,7 +12,7 @@ export const ruNotifications = {
     },
     input: {
       label: 'Нужен ввод',
-      description: 'Hermes задал вопрос или требует пароль/секрет.'
+      description: 'Агент задал вопрос или требует пароль/секрет.'
     },
     turnDone: {
       label: 'Ответ готов',

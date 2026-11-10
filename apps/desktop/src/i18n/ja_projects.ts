@@ -34,7 +34,7 @@ export const jaProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   copyPath: 'パスをコピー',
   removeFromSidebar: 'サイドバーから削除',
   createdInPreviousContext:
-    'プロジェクトは以前の接続またはプロファイルで作成されました。そこに戻ってください。IDEA.md は書き込まれていません。',
+    'プロジェクトは以前の接続またはエージェントで作成されました。そこに戻ってください。IDEA.md は書き込まれていません。',
   hiddenFromSidebar: 'サイドバーから非表示にしました',
   undoHide: '元に戻す',
   createFailed: 'プロジェクトを作成できませんでした',

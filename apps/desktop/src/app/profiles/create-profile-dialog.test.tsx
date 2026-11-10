@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { browserDefaultProjectDirKey } from '@/lib/browser-settings'
 import { browserStartupProfileKey } from '@/lib/browser-startup-profile'
 
@@ -20,9 +21,9 @@ it.each([true, false])(
     api.createProfile.mockResolvedValueOnce({ soul_set: applied })
     const created = vi.fn()
     render(<CreateProfileDialog onClose={vi.fn()} onCreated={created} open />)
-    fireEvent.change(screen.getByPlaceholderText('my-profile'), { target: { value: 'new-persona' } })
+    fireEvent.change(screen.getByRole('textbox', { name: en.profiles.nameLabel }), { target: { value: 'new-persona' } })
     fireEvent.change(screen.getByRole('textbox', { name: /SOUL.md/ }), { target: { value: 'A new persona' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create profile' }))
+    fireEvent.click(screen.getByRole('button', { name: en.profiles.createAction }))
     await waitFor(() => expect(created).toHaveBeenCalledWith('new-persona'))
     expect(api.createProfile).toHaveBeenCalledWith({
       name: 'new-persona',
@@ -51,8 +52,8 @@ it('does not let a new browser profile inherit the prefs a deleted one left unde
   try {
     const created = vi.fn()
     render(<CreateProfileDialog onClose={vi.fn()} onCreated={created} open />)
-    fireEvent.change(screen.getByPlaceholderText('my-profile'), { target: { value: 'work' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create profile' }))
+    fireEvent.change(screen.getByRole('textbox', { name: en.profiles.nameLabel }), { target: { value: 'work' } })
+    fireEvent.click(screen.getByRole('button', { name: en.profiles.createAction }))
     await waitFor(() => expect(created).toHaveBeenCalledWith('work'))
 
     expect(localStorage.getItem(folderKey)).toBeNull()

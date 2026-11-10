@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
 import { I18nProvider } from '@/i18n'
+import { en } from '@/i18n/en'
 import {
   $connectionRequests,
   applyOperationStatus,
@@ -201,7 +202,7 @@ describe('the catalog install card', () => {
 
     fireEvent.click(row('nvidia-app').getByRole('button', { name: 'Advanced' }))
     const dialog = within(screen.getByRole('dialog'))
-    fireEvent.click(dialog.getByRole('combobox', { name: 'Install for profile' }))
+    fireEvent.click(dialog.getByRole('combobox', { name: en.settings.plugins.installModal.profileLabel }))
     fireEvent.click(await screen.findByRole('option', { name: 'work' }))
     fireEvent.click(dialog.getByRole('switch', { name: /Force reinstall/ }))
     fireEvent.click(dialog.getByRole('button', { name: 'Install' }))

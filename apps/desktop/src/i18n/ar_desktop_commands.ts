@@ -37,9 +37,9 @@ export const arDesktopCommands = {
   savedTo: (path: string) => `تم حفظ المحادثة في ${path}`,
   saveCancelled: 'لم يتم الحفظ (أُلغي).',
   exportRemote:
-    'يحزم /export ملفًا شخصيًا من مضيف البوابة، وهو ليس هذا الجهاز. شغّل `hermes profile export` على ذلك المضيف.',
+    'يحزم /export وكيلاً من مضيف البوابة، وهو ليس هذا الجهاز. شغّل `hermes profile export` على ذلك المضيف.',
   importRemote:
-    'يثبّت /import ملفًا شخصيًا على مضيف البوابة، وهو ليس هذا الجهاز. شغّل `hermes profile import <archive>` على ذلك المضيف.',
+    'يثبّت /import وكيلاً على مضيف البوابة، وهو ليس هذا الجهاز. شغّل `hermes profile import <archive>` على ذلك المضيف.',
   timestampsUsage: 'الاستخدام: /timestamps [on|off|status]',
   timestampsOn: 'الطوابع الزمنية: مفعّلة (هذه النافذة فقط؛ اضبط display.timestamps في config.yaml للاحتفاظ بها)',
   timestampsOff: 'الطوابع الزمنية: معطّلة (هذه النافذة فقط؛ اضبط display.timestamps في config.yaml للاحتفاظ بها)'

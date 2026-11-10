@@ -90,7 +90,7 @@ export const zhHantArtifacts = {
     editing: '編輯中',
     unsavedChanges: '未儲存的變更',
     saveFailed: message => `無法儲存：${message}`,
-    saveScopeChanged: '請切換回原本的連線和設定檔以儲存此草稿。',
+    saveScopeChanged: '請切換回原本的連線和智慧體以儲存此草稿。',
     diskChangedTitle: '檔案已在磁碟上變更',
     diskChangedBody: '此檔案自開啟以來已變更。用你的版本覆寫，還是放棄你的編輯並重新載入？',
     overwrite: '覆寫',
@@ -120,7 +120,7 @@ export const zhHantArtifacts = {
       appFailedToBoot: '預覽應用程式啟動失敗',
       serverNotFound: '找不到伺服器',
       remoteLoopback:
-        '這個位址指向執行代理的那台機器，而不是本機。瀏覽器窗格會在本機載入頁面，因此遠端開發伺服器需要連接埠轉送或可連線的主機名稱。',
+        '這個位址指向執行智慧體的那台機器，而不是本機。瀏覽器窗格會在本機載入頁面，因此遠端開發伺服器需要連接埠轉送或可連線的主機名稱。',
       failedToLoad: '預覽載入失敗',
       tryAgain: '重試',
       restarting: 'Hermes 正在重新啟動...',

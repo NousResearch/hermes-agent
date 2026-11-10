@@ -11,14 +11,14 @@ export const jaDelegationRouting: DelegationRoutingTranslations = {
       description: 'いくつかのモデルに名前を付けます。エージェントがサブエージェントごとに 1 つを選びます。'
     },
     profile_routes: {
-      label: 'プロファイルルート',
-      description: 'サブエージェントがいずれかのプロファイルとして、そのモデル、スキル、キーで動作します。'
+      label: 'エージェントルート',
+      description: 'サブエージェントが選択したエージェントのモデル、スキル、キーを使って動作します。'
     }
   },
   inUse: '使用中',
   plugin: 'プラグイン',
-  pluginMissing: 'モデルルートとプロファイルルートは Advanced Delegation プラグインが提供します。',
-  pluginDisabled: 'Advanced Delegation はインストール済みですが、このプロファイルではオフです。',
+  pluginMissing: 'モデルルートとエージェントルートは Advanced Delegation プラグインが提供します。',
+  pluginDisabled: 'Advanced Delegation はインストール済みですが、このエージェントではオフです。',
   pluginNotLoaded:
     'Advanced Delegation はオンですが、Hermes がまだ読み込んでいません。完了するには Hermes を再起動してください。',
   installPlugin: 'プラグインをインストール',
@@ -31,7 +31,7 @@ export const jaDelegationRouting: DelegationRoutingTranslations = {
   blockedPill: '動作していません',
   blockedDetail: 'このモードが保存されているため、Hermes は黙って既定を使わず、すべてのサブエージェントを拒否します。',
   blockedMissing: 'Advanced Delegation をインストールするまで、サブエージェントは起動しません。',
-  blockedDisabled: 'このプロファイルで Advanced Delegation をオンにするまで、サブエージェントは起動しません。',
+  blockedDisabled: 'このエージェントで Advanced Delegation をオンにするまで、サブエージェントは起動しません。',
   blockedNotLoaded:
     'Hermes が Advanced Delegation を読み込むまで、サブエージェントは起動しません。Hermes を再起動して完了してください。',
   blockedUnavailable: label =>
@@ -86,22 +86,22 @@ export const jaDelegationRouting: DelegationRoutingTranslations = {
   saveRoute: 'ルートを保存',
   createRoute: 'ルートを追加',
 
-  profileRoutesTitle: 'サブエージェントが使えるプロファイル',
-  profileRoutesHint: 'チェックした各プロファイルは、それぞれのモデル、スキル、ペルソナ、キーを持ち込みます。',
+  profileRoutesTitle: 'サブエージェントとして使えるエージェント',
+  profileRoutesHint: '選択したエージェントのモデル、スキル、指示、キーを使います。',
   profileDescriptionPlaceholder: '使う場面（任意）',
   profileDefault: '既定',
-  profileEmpty: 'ほかのプロファイルはまだありません。プロファイルバーから作成してください。',
-  profileMissing: name => `${name}（プロファイルは存在しません）`,
+  profileEmpty: 'ほかのエージェントはまだありません。エージェントバーから作成してください。',
+  profileMissing: name => `${name}（エージェントは存在しません）`,
 
   inactiveTitle: 'このモードでは使われません',
   inactiveModelMap: route =>
     `モデルルートが各サブエージェントのモデルを選びます。ルートを選ばなかったサブエージェントは「${route}」を使います。`,
   inactiveProfiles: profile =>
-    `プロファイルルートが各サブエージェントのプロファイルを選びます。プロファイルを選ばなかったサブエージェントは「${profile}」として動作します。`,
+    `エージェントルートが各サブエージェントの設定元を選びます。エージェントを選ばなかったサブエージェントは「${profile}」として動作します。`,
   inactiveModelMapNoDefault:
     'モデルルートが各サブエージェントのモデルを選びます。ルートを選ばなかったサブエージェントはメインエージェントのモデルを使います。',
   inactiveProfilesNoDefault:
-    'プロファイルルートが各サブエージェントのプロファイルを選びます。プロファイルを選ばなかったサブエージェントはメインエージェントのモデルを使います。',
+    'エージェントルートが各サブエージェントの設定元を選びます。エージェントを選ばなかったサブエージェントはメインエージェントのモデルを使います。',
   inactivePlugin: label => `${label} が各サブエージェントのモデルを決めるため、この設定は適用されません。`,
   useDefault: '既定に切り替え'
 }

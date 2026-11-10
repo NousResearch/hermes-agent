@@ -712,7 +712,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   return (
     <Panel closeLabel={c.close} onClose={onClose}>
-      <PanelHeader simplifiedTitle={t.simplifiedAgents.routines} subtitle={c.count(totalCount)} title={c.title} />
+      <PanelHeader subtitle={c.count(totalCount)} title={c.title} />
 
       {loading && jobs.length === 0 ? (
         <PageLoader label={c.loading} />
@@ -1255,6 +1255,7 @@ export function DeliverCheckboxes({
 
 function focusCronName(event: Event) {
   const input = (event.target as HTMLElement).querySelector<HTMLInputElement>('#cron-name')
+
   if (input) {
     event.preventDefault()
     input.focus()

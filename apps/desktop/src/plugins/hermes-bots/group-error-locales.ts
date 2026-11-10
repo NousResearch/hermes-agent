@@ -12,7 +12,7 @@ export interface GroupChatErrorMessages {
 
 export const GROUP_CHAT_ERRORS = {
   'en': {
-    sendRouteRequired: "Sending to this group chat requires its connection, profile and group chat ID",
+    sendRouteRequired: "Sending to this group chat requires its connection, agent and group chat ID",
     savedMessagesUnreadable: "Saved group chat messages could not be read",
     savedMessageUnreadable: "A saved group chat message could not be read",
     sendNeedsUpdate: "Sending to this group chat needs an updated Desktop; restart Hermes Desktop",
@@ -21,7 +21,7 @@ export const GROUP_CHAT_ERRORS = {
     pastedImage: "pasted image"
   },
   'ja': {
-    sendRouteRequired: "このグループチャットへの送信には接続、プロファイル、グループチャットIDが必要です",
+    sendRouteRequired: "このグループチャットへの送信には接続、エージェント、グループチャットIDが必要です",
     savedMessagesUnreadable: "保存されたグループチャットのメッセージを読み込めませんでした",
     savedMessageUnreadable: "保存されたグループチャットのメッセージを読み込めませんでした",
     sendNeedsUpdate: "グループチャットへの送信にはDesktopの更新が必要です。Hermes Desktopを再起動してください",
@@ -39,7 +39,7 @@ export const GROUP_CHAT_ERRORS = {
     pastedImage: "粘贴的图片"
   },
   'zh-hant': {
-    sendRouteRequired: "向此群組聊天傳送訊息需要其連線、設定檔和群組聊天識別碼",
+    sendRouteRequired: "向此群組聊天傳送訊息需要其連線、智慧體和群組聊天識別碼",
     savedMessagesUnreadable: "無法讀取已儲存的群組聊天訊息",
     savedMessageUnreadable: "無法讀取一則已儲存的群組聊天訊息",
     sendNeedsUpdate: "群組聊天傳送需要新版 Desktop，請重新啟動 Hermes Desktop",
@@ -48,7 +48,7 @@ export const GROUP_CHAT_ERRORS = {
     pastedImage: "貼上的圖片"
   },
   'fr': {
-    sendRouteRequired: "L’envoi dans cette discussion de groupe nécessite sa connexion, son profil et son identifiant",
+    sendRouteRequired: "L’envoi dans cette discussion de groupe nécessite sa connexion, son agent et son identifiant",
     savedMessagesUnreadable: "Impossible de lire les messages enregistrés de la discussion de groupe",
     savedMessageUnreadable: "Impossible de lire un message enregistré de la discussion de groupe",
     sendNeedsUpdate: "L’envoi dans un groupe nécessite Desktop à jour ; redémarrez Hermes Desktop",
@@ -57,7 +57,7 @@ export const GROUP_CHAT_ERRORS = {
     pastedImage: "image collée"
   },
   'de': {
-    sendRouteRequired: "Zum Senden an diesen Gruppenchat werden Verbindung, Profil und Gruppenchat-ID benötigt",
+    sendRouteRequired: "Zum Senden an diesen Gruppenchat werden Verbindung, Agent und Gruppenchat-ID benötigt",
     savedMessagesUnreadable: "Gespeicherte Gruppenchat-Nachrichten konnten nicht gelesen werden",
     savedMessageUnreadable: "Eine gespeicherte Gruppenchat-Nachricht konnte nicht gelesen werden",
     sendNeedsUpdate: "Für das Senden an Gruppen wird ein aktuelles Desktop benötigt; starte Hermes Desktop neu",
@@ -66,7 +66,7 @@ export const GROUP_CHAT_ERRORS = {
     pastedImage: "eingefügtes Bild"
   },
   'es': {
-    sendRouteRequired: "Para enviar a este chat de grupo se necesitan su conexión, perfil e identificador",
+    sendRouteRequired: "Para enviar a este chat de grupo se necesitan su conexión, agente e identificador",
     savedMessagesUnreadable: "No se pudieron leer los mensajes guardados del chat de grupo",
     savedMessageUnreadable: "No se pudo leer un mensaje guardado del chat de grupo",
     sendNeedsUpdate: "El envío al grupo necesita una versión actualizada de Desktop; reinicia Hermes Desktop",
@@ -75,7 +75,7 @@ export const GROUP_CHAT_ERRORS = {
     pastedImage: "imagen pegada"
   },
   'ru': {
-    sendRouteRequired: "Для отправки нужны подключение, профиль и идентификатор группового чата",
+    sendRouteRequired: "Для отправки нужны подключение, агент и идентификатор группового чата",
     savedMessagesUnreadable: "Не удалось прочитать сохранённые сообщения группового чата",
     savedMessageUnreadable: "Не удалось прочитать сохранённое сообщение группового чата",
     sendNeedsUpdate: "Для отправки в группу нужна обновлённая версия Desktop; перезапустите Hermes Desktop",

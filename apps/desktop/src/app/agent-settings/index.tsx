@@ -416,7 +416,7 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
                   <SettingRow
                     detail={pending(jobs.isError, jobs.isPending, jobs.data?.filter(job => job.enabled).length)}
                     onClick={() => document.getElementById('agent-routines')?.scrollIntoView({ block: 'nearest' })}
-                    title={c.routines}
+                    title={t.cron.title}
                   />
                 </Section>
                 <AgentRoutines jobs={jobs} onEdit={setRoutine} />
@@ -490,7 +490,7 @@ function AgentRoutines({ jobs, onEdit }: AgentRoutinesProps) {
 
   return (
     <div id="agent-routines">
-      <Section title={c.routines}>
+      <Section title={t.cron.title}>
         {jobs.data?.map(job => (
           <SettingRow
             detail={job.schedule_display || job.schedule?.display || job.schedule?.expr}
@@ -501,13 +501,13 @@ function AgentRoutines({ jobs, onEdit }: AgentRoutinesProps) {
         ))}
         {!jobs.data?.length && (
           <p className="agent-overview-empty">
-            {jobs.isError ? c.unavailable : jobs.isPending ? t.sidebar.loading : c.noRoutines}
+            {jobs.isError ? c.unavailable : jobs.isPending ? t.sidebar.loading : t.cron.emptyTitleNew}
           </p>
         )}
         <div className="agent-overview-footer">
           <Button onClick={() => onEdit('new')} variant="textStrong">
             <Codicon name="add" />
-            {c.addRoutine}
+            {t.cron.newCron}
           </Button>
         </div>
       </Section>

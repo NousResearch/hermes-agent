@@ -15,14 +15,14 @@ export const esSharedMetrics = {
     'Calidad del agente: ediciones fallidas, llamadas a herramientas rotas, bucles atascados, coste por tarea',
   collectedMachine: 'Equipo: sistema operativo, rango de RAM, tipo de GPU, versión de Hermes, uso de modelos locales',
   sending:
-    'Si compartes, Hermes envía las estadísticas a Nous una vez al día con un ID aleatorio para este perfil. Salvo un aviso único de que Hermes se instaló, las estadísticas de antes de aceptar nunca se envían. Puedes cambiarlo cuando quieras en Configuración.',
+    'Si compartes, Hermes envía las estadísticas a Nous una vez al día con un ID aleatorio para este agente. Salvo un aviso único de que Hermes se instaló, las estadísticas de antes de aceptar nunca se envían. Puedes cambiarlo cuando quieras en Configuración.',
   readDocs: 'Leer todos los detalles',
   share: 'Compartir con Nous',
   off: 'No, gracias',
   saveFailed: 'No se pudo guardar tu elección',
   sendLabel: 'Compartir estadísticas de uso con Nous',
   sendDesc:
-    'Solo recuentos, enviados una vez al día con un ID aleatorio para este perfil. Nunca tus mensajes, archivos, rutas ni textos de error.',
+    'Solo recuentos, enviados una vez al día con un ID aleatorio para este agente. Nunca tus mensajes, archivos, rutas ni textos de error.',
   unavailable: 'Actualiza el backend de Hermes para cambiar este ajuste.',
   stripBody: 'Solo recuentos. Nunca tus mensajes ni archivos.',
   stripReaskBody:

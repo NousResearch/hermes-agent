@@ -10,6 +10,6 @@ export const zhAuxTasks: AuxTaskCopyMap = {
   voice_chat: { label: '语音聊天', hint: '语音模式回复' },
   triage_specifier: { label: '分类指定', hint: '看板任务规格补全' },
   kanban_decomposer: { label: '看板分解', hint: '任务拆解' },
-  profile_describer: { label: '配置描述', hint: '自动生成配置描述' },
+  profile_describer: { label: '智能体描述', hint: '自动生成智能体描述' },
   curator: { label: '维护器', hint: '技能使用审查' }
 }

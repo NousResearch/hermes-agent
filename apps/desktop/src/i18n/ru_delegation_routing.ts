@@ -11,14 +11,14 @@ export const ruDelegationRouting: DelegationRoutingTranslations = {
       description: 'Назовите несколько моделей. Агент выбирает одну для каждого субагента.'
     },
     profile_routes: {
-      label: 'Маршруты профилей',
-      description: 'Субагенты работают как один из ваших профилей — с его моделью, навыками и ключами.'
+      label: 'Маршруты агентов',
+      description: 'Субагенты работают от имени одного из ваших агентов — с его моделью, навыками и ключами.'
     }
   },
   inUse: 'Используется',
   plugin: 'Плагин',
-  pluginMissing: 'Маршруты моделей и маршруты профилей предоставляет плагин Advanced Delegation.',
-  pluginDisabled: 'Advanced Delegation установлен, но отключён для этого профиля.',
+  pluginMissing: 'Маршруты моделей и маршруты агентов предоставляет плагин Advanced Delegation.',
+  pluginDisabled: 'Advanced Delegation установлен, но отключён для этого агента.',
   pluginNotLoaded: 'Advanced Delegation включён, но Hermes ещё не загрузил его. Перезапустите Hermes, чтобы завершить.',
   installPlugin: 'Установить плагин',
   installUnavailable:
@@ -31,7 +31,7 @@ export const ruDelegationRouting: DelegationRoutingTranslations = {
   blockedDetail:
     'Этот режим сохранён, поэтому Hermes отклоняет каждого субагента, а не переходит молча на «По умолчанию».',
   blockedMissing: 'Субагенты не запустятся, пока не установлен Advanced Delegation.',
-  blockedDisabled: 'Субагенты не запустятся, пока Advanced Delegation не включён для этого профиля.',
+  blockedDisabled: 'Субагенты не запустятся, пока Advanced Delegation не включён для этого агента.',
   blockedNotLoaded:
     'Субагенты не запустятся, пока Hermes не загрузит Advanced Delegation. Перезапустите Hermes, чтобы завершить.',
   blockedUnavailable: label =>
@@ -86,22 +86,22 @@ export const ruDelegationRouting: DelegationRoutingTranslations = {
   saveRoute: 'Сохранить маршрут',
   createRoute: 'Добавить маршрут',
 
-  profileRoutesTitle: 'Профили, от имени которых могут работать субагенты',
-  profileRoutesHint: 'Каждый отмеченный профиль приносит свою модель, навыки, персону и ключи.',
+  profileRoutesTitle: 'Агенты, от имени которых могут работать субагенты',
+  profileRoutesHint: 'Каждый выбранный агент использует свою модель, навыки, инструкции и ключи.',
   profileDescriptionPlaceholder: 'Когда использовать (необязательно)',
   profileDefault: 'Основной',
-  profileEmpty: 'Других профилей пока нет. Создайте профиль на панели профилей.',
-  profileMissing: name => `${name} (профиль больше не существует)`,
+  profileEmpty: 'Других агентов пока нет. Создайте агента на панели агентов.',
+  profileMissing: name => `${name} (агент больше не существует)`,
 
   inactiveTitle: 'Не используется в этом режиме',
   inactiveModelMap: route =>
     `Маршруты моделей выбирают модель для каждого субагента. Субагенты, не выбравшие маршрут, используют «${route}».`,
   inactiveProfiles: profile =>
-    `Маршруты профилей выбирают профиль для каждого субагента. Субагенты, не выбравшие профиль, работают как «${profile}».`,
+    `Маршруты агентов выбирают агента для каждого субагента. Субагенты, не выбравшие агента, работают от имени «${profile}».`,
   inactiveModelMapNoDefault:
     'Маршруты моделей выбирают модель для каждого субагента. Субагенты, не выбравшие маршрут, используют модель основного агента.',
   inactiveProfilesNoDefault:
-    'Маршруты профилей выбирают профиль для каждого субагента. Субагенты, не выбравшие профиль, используют модель основного агента.',
+    'Маршруты агентов выбирают агента для каждого субагента. Субагенты, не выбравшие агента, используют модель основного агента.',
   inactivePlugin: label => `${label} выбирает модель для каждого субагента, поэтому эта настройка не применяется.`,
   useDefault: 'Переключить на «По умолчанию»'
 }

@@ -112,6 +112,22 @@ History, and Settings tabs, real configuration/session data, and the existing
 editors. Additional desktop settings remain accessible rather than being
 removed to mimic an incomplete design frame.
 
+User-facing identity copy uses **Agent / Agents**; scheduled automation uses
+**Schedule / Schedules**. Shared screens use these names in both layouts. Gateway
+terminology is unchanged pending a separate naming decision. Navigation, page
+headings, and plugin surfaces reuse `profiles.title` and `cron.title`; their nouns
+come from `src/i18n/desktop-terms.ts` for all nine bundled locales. Reuse the
+existing catalog actions and descriptions rather than introducing local synonyms.
+Actual Telegram/Discord bots, browser profiles, and user-authored names retain
+their meanings. Protocol fields, `/profiles` and `/cron` routes, CLI commands,
+cron expressions, plugin IDs, and the exact stored `Bot Chat` title are technical
+contracts, not copy to rename.
+
+Drift coverage exercises navigation into Agent and Schedule editors, cancellation,
+and return to the current view with the redesign enabled and disabled. Component
+tests use canonical translated controls while checking ownership, routing, and
+mutations; avoid source scans or snapshots that freeze incidental sentences.
+
 Owner actions preserve the roster's backend `targetProfile`, including aliases
 before Bot Mode has mounted. History uses bounded 25-row requests with offsets,
 deduplicates pinned backfills, and keeps earlier pages reachable past 500 sessions.

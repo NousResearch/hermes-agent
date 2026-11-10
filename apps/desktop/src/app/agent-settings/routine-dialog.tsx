@@ -78,7 +78,7 @@ export function RoutineDialog({ owner, job, onClose, onSaved }: RoutineDialogPro
     >
       <DialogContent showCloseButton={!saving}>
         <DialogHeader>
-          <DialogTitle>{job ? c.routines : c.addRoutine}</DialogTitle>
+          <DialogTitle>{job ? t.cron.editTitle : t.cron.createTitle}</DialogTitle>
           <DialogDescription>
             {owner.profile}
             {!job && ` · ${c.localDelivery}`}
@@ -87,7 +87,7 @@ export function RoutineDialog({ owner, job, onClose, onSaved }: RoutineDialogPro
         <form aria-busy={saving} onSubmit={save}>
           <fieldset className="grid gap-4" disabled={saving}>
             <label className="grid gap-1 text-xs">
-              {c.name}
+              {t.cron.nameLabel}
               <Input onChange={event => setName(event.target.value)} value={name} />
             </label>
             <label className="grid gap-1 text-xs">
@@ -103,7 +103,7 @@ export function RoutineDialog({ owner, job, onClose, onSaved }: RoutineDialogPro
               <p className="text-xs text-muted-foreground">{c.scriptRoutine}</p>
             ) : (
               <label className="grid gap-1 text-xs">
-                {c.prompt}
+                {t.cron.promptLabel}
                 <Textarea
                   onChange={event => setPrompt(event.target.value)}
                   required={!job?.skills?.some(skill => skill.trim()) && !job?.skill?.trim()}

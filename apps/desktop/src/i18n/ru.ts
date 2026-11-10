@@ -2,6 +2,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { desktopTerms } from './desktop-terms'
 import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
@@ -54,7 +55,7 @@ export const ruOverrides = {
     connect: 'Подключить',
     connecting: 'Подключение',
     continue: 'Продолжить',
-    bots: 'Боты',
+    bots: desktopTerms.ru.agents,
     copied: 'Скопировано',
     copy: 'Копировать',
     copyFailed: 'Не удалось скопировать',
@@ -103,7 +104,7 @@ export const ruOverrides = {
   boot: ruBoot.boot,
   notifications: {
     sharedProfileWarning:
-      'Другая установка Hermes использует этот профиль. Обе установки используют общие настройки и данные, поэтому изменения могут конфликтовать. Можно продолжить работу или закрыть другую установку перед внесением изменений.',
+      'Другая установка Hermes использует этого агента. Обе установки используют общие настройки и данные, поэтому изменения могут конфликтовать. Можно продолжить работу или закрыть другую установку перед внесением изменений.',
     region: 'Уведомления',
     hide: 'Скрыть',
     show: 'Показать',
@@ -179,8 +180,8 @@ export const ruOverrides = {
       rejectAction: 'Отклонить',
       inputTitle: 'Требуется ввод',
       inputTitleNamed: session => `Требуется ввод — ${session}`,
-      inputBody: 'Hermes ожидает ваш ответ.',
-      turnDoneTitle: 'Hermes завершил',
+      inputBody: 'Агент ожидает ваш ответ.',
+      turnDoneTitle: 'Агент завершил ответ',
       turnDoneBody: '',
       turnErrorTitle: 'Ход не удался',
       backgroundDoneTitle: 'Фоновая задача завершена',
@@ -223,7 +224,7 @@ export const ruOverrides = {
     conflictWith: label => `Также назначено на «${label}»`,
     categories: {
       composer: 'Композер',
-      profiles: 'Профили',
+      profiles: desktopTerms.ru.agents,
       session: 'Сеанс',
       navigation: 'Навигация',
       view: 'Вид'
@@ -233,12 +234,12 @@ export const ruOverrides = {
       'nav.commandPalette': 'Открыть палитру команд',
       'nav.commandCenter': 'Открыть центр команд',
       'nav.settings': 'Открыть настройки',
-      'nav.profiles': 'Открыть профили',
+      'nav.profiles': 'Открыть агентов',
       'nav.capabilities': 'Открыть навыки',
       'nav.messaging': 'Открыть мессенджеры',
       'nav.artifacts': 'Открыть артефакты',
-      'nav.cron': 'Открыть запланированные задачи',
-      'nav.agents': 'Открыть агенты',
+      'nav.cron': 'Открыть расписания',
+      'nav.agents': 'Открыть агентов',
       'session.new': 'Новый сеанс',
       'session.newTab': 'Новая вкладка сеанса',
       'session.newWindow': 'Новое окно',
@@ -271,7 +272,7 @@ export const ruOverrides = {
       'view.toggleReview': 'Показать / скрыть панель ревью',
       'view.toggleStatusbar': 'Показать / скрыть строку состояния',
       'view.toggleTabStrip': 'Показать / скрыть вкладки',
-      'view.toggleProfileRail': 'Показать / скрыть панель профилей',
+      'view.toggleProfileRail': 'Показать / скрыть панель агентов',
       'view.toggleSimpleMode': 'Переключить простой режим',
       'view.showFiles': 'Показать браузер файлов',
       'view.showBrowser': 'Переключить браузер',
@@ -292,29 +293,29 @@ export const ruOverrides = {
       'view.findNext': 'Следующее вхождение',
       'view.findPrevious': 'Предыдущее вхождение',
       'appearance.toggleMode': 'Сменить светлую / тёмную тему',
-      'profile.default': 'Переключить на профиль по умолчанию',
-      'profile.switch.1': 'Переключить на профиль 1',
-      'profile.switch.2': 'Переключить на профиль 2',
-      'profile.switch.3': 'Переключить на профиль 3',
-      'profile.switch.4': 'Переключить на профиль 4',
-      'profile.switch.5': 'Переключить на профиль 5',
-      'profile.switch.6': 'Переключить на профиль 6',
-      'profile.switch.7': 'Переключить на профиль 7',
-      'profile.switch.8': 'Переключить на профиль 8',
-      'profile.switch.9': 'Переключить на профиль 9',
-      'profile.switch.10': 'Переключить на профиль 10',
-      'profile.switch.11': 'Переключить на профиль 11',
-      'profile.switch.12': 'Переключить на профиль 12',
-      'profile.switch.13': 'Переключить на профиль 13',
-      'profile.switch.14': 'Переключить на профиль 14',
-      'profile.switch.15': 'Переключить на профиль 15',
-      'profile.switch.16': 'Переключить на профиль 16',
-      'profile.switch.17': 'Переключить на профиль 17',
-      'profile.switch.18': 'Переключить на профиль 18',
-      'profile.next': 'Следующий профиль',
-      'profile.prev': 'Предыдущий профиль',
-      'profile.toggleAll': 'Показать все профили',
-      'profile.create': 'Создать профиль',
+      'profile.default': 'Переключиться на агента по умолчанию',
+      'profile.switch.1': 'Переключиться на агента 1',
+      'profile.switch.2': 'Переключиться на агента 2',
+      'profile.switch.3': 'Переключиться на агента 3',
+      'profile.switch.4': 'Переключиться на агента 4',
+      'profile.switch.5': 'Переключиться на агента 5',
+      'profile.switch.6': 'Переключиться на агента 6',
+      'profile.switch.7': 'Переключиться на агента 7',
+      'profile.switch.8': 'Переключиться на агента 8',
+      'profile.switch.9': 'Переключиться на агента 9',
+      'profile.switch.10': 'Переключиться на агента 10',
+      'profile.switch.11': 'Переключиться на агента 11',
+      'profile.switch.12': 'Переключиться на агента 12',
+      'profile.switch.13': 'Переключиться на агента 13',
+      'profile.switch.14': 'Переключиться на агента 14',
+      'profile.switch.15': 'Переключиться на агента 15',
+      'profile.switch.16': 'Переключиться на агента 16',
+      'profile.switch.17': 'Переключиться на агента 17',
+      'profile.switch.18': 'Переключиться на агента 18',
+      'profile.next': 'Следующий агент',
+      'profile.prev': 'Предыдущий агент',
+      'profile.toggleAll': 'Показать всех агентов',
+      'profile.create': 'Создать агента',
       'composer.send': 'Отправить сообщение',
       'composer.newline': 'Вставить перенос строки',
       'composer.steer': 'Направить текущий ход',
@@ -347,7 +348,7 @@ export const ruOverrides = {
     billing: {
       keepGoingOnCredits: {
         title: 'Продолжать за кредиты',
-        description: 'Тратить кредиты, когда включённый объём закончится. Выключено: Hermes ждёт сброса.',
+        description: 'Тратить кредиты, когда включённый объём закончится. Выключено: агент ждёт сброса.',
         approveInBrowser:
           'Чтобы изменить это, одобрите удалённые траты в браузере. Изменение применится сразу после одобрения.',
         openAgain: 'Открыть снова',
@@ -567,7 +568,7 @@ export const ruOverrides = {
       modelPricingTitle: 'Цены моделей',
       modelPricingDesc: 'Показывать в выборе модели цены за миллион токенов: ввод, вывод и чтение из кэша.',
       reactionsTitle: 'Реакции на сообщения',
-      reactionsDesc: 'Эмодзи-тапбеки в стиле iMessage — реагируйте на сообщения, и Hermes сможет реагировать на ваши.',
+      reactionsDesc: 'Реакции на сообщения в стиле iMessage — реагируйте на сообщения, и агент сможет реагировать на ваши.',
       composerPopoutTitle: 'Плавающий композер',
       composerPopoutDesc:
         'Позволяет вытягивать композер из его док-зоны. Когда выключено, он остаётся закреплённым внизу.',
@@ -591,7 +592,7 @@ export const ruOverrides = {
       technicalDesc: 'Показывать сырые аргументы/результаты инструментов и низкоуровневые детали.',
       themeTitle: 'Тема',
       themeDesc: 'Только палитры для приложения. Выбранный режим применяется поверх.',
-      themeProfileNote: profile => `Сохранено для профиля ${profile} — у каждого профиля своя тема.`,
+      themeProfileNote: profile => `Сохранено для агента ${profile} — у каждого агента своя тема.`,
       installTitle: 'Установить из VS Code',
       installDesc:
         'Вставьте id расширения с Marketplace (напр. dracula-theme.theme-dracula), чтобы преобразовать его цветовую тему в палитру приложения.',
@@ -605,7 +606,7 @@ export const ruOverrides = {
       pet: {
         title: 'Питомец',
         intro:
-          'Заберите анимированного питомца из petdex, который парит над приложением и реагирует на действия Hermes — «бегает», пока выполняются инструменты, радуется успеху и хмурится при ошибках.',
+          'Заберите анимированного питомца из petdex, который парит над приложением и реагирует на действия агента — «бегает», пока выполняются инструменты, радуется успеху и хмурится при ошибках.',
         restartHint:
           'Питомцам нужен быстрый перезапуск — текущее приложение запустилось до появления этой функции. Выйдите из Hermes и откройте снова, затем вернитесь сюда.',
         scaleTitle: 'Размер',
@@ -830,7 +831,7 @@ export const ruOverrides = {
       timezone: 'Идентификатор часового пояса IANA. Пустое значение — системный часовой пояс.',
       agent: {
         imageInputMode: 'Управляет тем, как вложения изображений отправляются модели.',
-        maxTurns: 'Верхний предел ходов с вызовами инструментов, после которого Hermes останавливает запуск.'
+        maxTurns: 'Верхний предел ходов с вызовами инструментов, после которого агент останавливает запуск.'
       },
       terminal: {
         cwd: 'Папка проекта по умолчанию для инструментов и терминала.',
@@ -844,9 +845,9 @@ export const ruOverrides = {
       codeExecution: {
         mode: 'Насколько строго выполнение кода ограничено текущим проектом.'
       },
-      fileReadMaxChars: 'Максимальное число символов, которые Hermes может прочитать из одного запроса к файлу.',
+      fileReadMaxChars: 'Максимальное число символов, которые агент может прочитать из одного запроса к файлу.',
       approvals: {
-        mode: 'Как Hermes обрабатывает команды, требующие явного подтверждения.',
+        mode: 'Как агент обрабатывает команды, требующие явного подтверждения.',
         timeout: 'Как долго запросы подтверждения ждут перед тайм-аутом.'
       },
       security: {
@@ -1021,7 +1022,7 @@ export const ruOverrides = {
       intro:
         'Управляйте этим устройством и всеми шлюзами Hermes, до которых можно дотянуться через удалённые, SSH или Cloud-соединения.',
       stagedNote:
-        'Все шлюзы остаются подключёнными. Профили, чаты, мессенджеры и cron-задачи остаются за своим шлюзом, а «Сеансы» могут показывать их все сразу.',
+        'Все шлюзы остаются подключёнными. Агенты, чаты, мессенджеры и расписания остаются за своим шлюзом, а «Сеансы» могут показывать их все сразу.',
       launchModeTitle: 'При запуске возвращаться к «Сеансам» на последнем шлюзе',
       launchModeDesc: 'Если выключено, «Сеансы» открываются на основном шлюзе.',
       searchPlaceholder: 'Поиск шлюзов…',
@@ -1086,7 +1087,7 @@ export const ruOverrides = {
       title: 'Подключение шлюза',
       envOverride: 'переопределение переменными окружения',
       intro:
-        'По умолчанию — локальный. Используйте удалённый, когда приложение должно управлять бэкендом Hermes в другом месте. Соединения шлюзов — на уровне машины; профили обнаруживаются из подключённых шлюзов.',
+        'По умолчанию — локальный. Используйте удалённый, когда приложение должно управлять бэкендом Hermes в другом месте. Соединения шлюзов — на уровне машины; агенты обнаруживаются из подключённых шлюзов.',
       envOverrideTitle: 'Переменные окружения управляют этой сессией приложения.',
       envOverrideDesc:
         'Сбросьте HERMES_DESKTOP_REMOTE_URL и HERMES_DESKTOP_REMOTE_TOKEN, чтобы использовать сохранённую настройку ниже.',
@@ -1239,7 +1240,7 @@ export const ruOverrides = {
     },
     profileScope: {
       appliesTo: 'Применяется к',
-      editsProfile: profile => `Изменения на этой странице применяются к профилю «${profile}».`
+      editsProfile: profile => `Изменения на этой странице применяются к агенту «${profile}».`
     },
     mcp: {
       loading: 'Загрузка MCP-серверов…',
@@ -1312,7 +1313,7 @@ export const ruOverrides = {
       noKeysMatch: 'Провайдеры, подходящие под поиск, не найдены.',
       localEndpoint: {
         title: 'Локальный / свой эндпоинт',
-        description: 'Направьте Hermes на любой OpenAI-совместимый эндпоинт (Zyphra, vLLM, llama.cpp, Ollama и т. д.).'
+        description: 'Подключите агента к любому OpenAI-совместимому эндпоинту (Zyphra, vLLM, llama.cpp, Ollama и т. д.).'
       },
       loading: 'Загрузка провайдеров…'
     },
@@ -1452,7 +1453,7 @@ export const ruOverrides = {
     agentScopeHint:
       'Изменения применяются только к этому агенту. В существующих беседах сохраняются текущие инструменты.',
     toolSecretsHint:
-      'Ключи API, адреса подключения и провайдеры этого агента. Учётные данные не передаются другим профилям.',
+      'Ключи API, адреса подключения и провайдеры этого агента. Учётные данные не передаются другим агентам.',
     openAgentSettings: 'Настройки агента',
     openToolLibrary: 'Открыть библиотеку инструментов',
     remotePluginHint:
@@ -1586,7 +1587,7 @@ export const ruOverrides = {
     loadFailed: 'Не удалось загрузить граф памяти',
     loading: 'Загрузка…',
     emptyTitle: 'Пока ничего не изучено',
-    emptyDesc: 'По мере того как Hermes создаёт навыки и память для вашей работы, они появятся здесь.',
+    emptyDesc: 'По мере того как агент создаёт навыки и память для вашей работы, они появятся здесь.',
     share: 'Поделиться картой',
     shareHint:
       'Скопируйте код, чтобы поделиться этой картой, или вставьте код для загрузки. Включает только раскладку, а не вашу память или текст навыков.',
@@ -1753,9 +1754,9 @@ export const ruOverrides = {
     toggleBrowser: 'Переключить браузер',
     gatewayRestartFailed: 'Не удалось перезапустить шлюз.',
     sharedGatewayRestartTitle: 'Перезапустить общий шлюз?',
-    sharedGatewayRestartDescription: bots => `Все боты на этом устройстве переподключатся: ${bots}`,
+    sharedGatewayRestartDescription: bots => `Все агенты на этом устройстве переподключатся: ${bots}`,
     sharedGatewayRestartConfirm: 'Перезапустить все',
-    sharedGatewayRestarted: count => `Общий шлюз перезапущен (ботов: ${count})`,
+    sharedGatewayRestarted: count => `Общий шлюз перезапущен (агентов: ${count})`,
     updateHermes: 'Обновить Hermes',
     reloadWindow: 'Перезагрузить окно',
     actionRunning: 'выполняется',
@@ -1997,7 +1998,7 @@ export const ruOverrides = {
       },
       DISCORD_HOME_CHANNEL: {
         label: 'ID домашнего канала',
-        help: 'Канал, куда бот шлёт проактивные сообщения (результаты cron, напоминания).'
+        help: 'Канал, куда бот шлёт проактивные сообщения (результаты запусков по расписанию, напоминания).'
       },
       DISCORD_HOME_CHANNEL_NAME: {
         label: 'Название домашнего канала',
@@ -2010,7 +2011,7 @@ export const ruOverrides = {
       MATTERMOST_ALLOW_ALL_USERS: { label: 'Разрешить всех пользователей Mattermost' },
       MATTERMOST_HOME_CHANNEL: { label: 'Домашний канал' },
       QQ_ALLOW_ALL_USERS: { label: 'Разрешить всех пользователей QQ' },
-      QQBOT_HOME_CHANNEL: { label: 'Домашний канал QQ', help: 'Канал или группа по умолчанию для доставки cron.' },
+      QQBOT_HOME_CHANNEL: { label: 'Домашний канал QQ', help: 'Канал или группа по умолчанию для доставки результатов запусков по расписанию.' },
       QQBOT_HOME_CHANNEL_NAME: { label: 'Название домашнего канала QQ' },
       SLACK_BOT_TOKEN: {
         label: 'Токен бота Slack',
@@ -2127,28 +2128,28 @@ export const ruOverrides = {
     }
   },
   profiles: {
-    close: 'Закрыть профили',
+    close: 'Закрыть агентов',
     nameHint: 'Строчные буквы, цифры, дефисы и подчёркивания. Должно начинаться с буквы или цифры.',
-    title: 'Профили',
-    count: count => `${count} ${RU_PLURAL(count, 'профиль', 'профиля', 'профилей')}`,
-    search: 'Поиск профилей...',
-    loading: 'Загрузка профилей...',
-    newProfile: 'Новый профиль',
-    importProfile: 'Импортировать профиль…',
-    exportProfile: 'Экспортировать профиль…',
-    imported: 'Профиль импортирован',
-    exported: 'Профиль экспортирован',
-    failedImport: 'Не удалось импортировать профиль',
-    failedExport: 'Не удалось экспортировать профиль',
+    title: desktopTerms.ru.agents,
+    count: count => `${count} ${RU_PLURAL(count, 'агент', 'агента', 'агентов')}`,
+    search: 'Поиск агентов...',
+    loading: 'Загрузка агентов...',
+    newProfile: 'Новый агент',
+    importProfile: 'Импортировать агента…',
+    exportProfile: 'Экспортировать агента…',
+    imported: 'Агент импортирован',
+    exported: 'Агент экспортирован',
+    failedImport: 'Не удалось импортировать агента',
+    failedExport: 'Не удалось экспортировать агента',
     exportNeedsHost: name =>
-      `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
-    allProfiles: 'Все профили',
-    showAllProfiles: 'Показать все профили',
+      `Браузер не может сохранить архив агента. На хосте Hermes выполните: hermes profile export ${name}`,
+    allProfiles: 'Все агенты',
+    showAllProfiles: 'Показать всех агентов',
     notServedHere: 'Здесь не обслуживается',
     switchToProfile: name => `Переключиться на ${name}`,
     switchToConnection: name => `Переключиться на ${name}`,
     switchConnectionFailed: name => `Не удалось подключиться к ${name}`,
-    manageProfiles: 'Управлять профилями…',
+    manageProfiles: 'Управлять агентами…',
     connectGateway: 'Управлять шлюзами…',
     fleet: {
       localDevice: 'Это устройство (локальный бэкенд — установит Hermes, если его нет, иначе откроет новую сессию)',
@@ -2163,16 +2164,16 @@ export const ruOverrides = {
     colorFor: 'Цвет',
     openInNewWindow: 'Открыть в новом окне',
     setAsDefault: 'Сделать по умолчанию',
-    defaultProfile: 'Профиль по умолчанию',
+    defaultProfile: 'Агент по умолчанию',
     defaultSet: name => `${name} теперь используется по умолчанию`,
-    defaultDescription: 'Используется при запуске Hermes и для новых чатов. Профили существующих сессий не меняются.',
-    failedSetDefault: 'Не удалось установить профиль по умолчанию',
+    defaultDescription: 'Используется при запуске Hermes и для новых чатов. Агенты существующих чатов не меняются.',
+    failedSetDefault: 'Не удалось установить агента по умолчанию',
     setColor: color => `Установить цвет ${color}`,
     autoColor: 'Авто',
-    noProfiles: 'Профилей пока нет.',
-    selectPrompt: 'Выберите профиль, чтобы посмотреть его детали.',
-    refresh: 'Обновить профили',
-    refreshing: 'Обновление профилей',
+    noProfiles: 'Агентов пока нет.',
+    selectPrompt: 'Выберите агента, чтобы посмотреть его детали.',
+    refresh: 'Обновить агентов',
+    refreshing: 'Обновление агентов',
     default: 'по умолчанию',
     skills: count => `${count} ${RU_PLURAL(count, 'навык', 'навыка', 'навыков')}`,
     env: 'env',
@@ -2185,12 +2186,12 @@ export const ruOverrides = {
     modelLabel: 'Модель',
     skillsLabel: 'Навыки',
     notSet: 'Не задано',
-    soulDesc: 'Системный промпт и инструкции по персоне, встроенные в этот профиль.',
+    soulDesc: 'Системный промпт и инструкции этого агента.',
     soulMissing:
-      'В этом профиле ещё нет файла SOUL.md. Введите инструкции ниже и сохраните, чтобы создать его. Настройки персонажей в config.yaml управляются отдельно.',
+      'У этого агента ещё нет файла SOUL.md. Введите инструкции ниже и сохраните, чтобы создать его. Настройки персонажей в config.yaml управляются отдельно.',
     soulOptional: 'необязательно',
     soulPlaceholder: mode =>
-      `Системный промпт / персона этого профиля.\nОставьте пустым, чтобы сохранить ${mode} по умолчанию.`,
+      `Системный промпт / персона этого агента.\nОставьте пустым, чтобы сохранить ${mode} по умолчанию.`,
     soulPlaceholderCloned: 'склонированный',
     soulPlaceholderEmpty: 'пустой',
     unsavedChanges: 'Несохранённые изменения',
@@ -2198,43 +2199,43 @@ export const ruOverrides = {
     emptySoul: 'Пустой SOUL.md — начните писать персону...',
     saving: 'Сохранение...',
     saveSoul: 'Сохранить SOUL.md',
-    deleteTitle: 'Удалить профиль?',
+    deleteTitle: 'Удалить агента?',
     deleteDescPrefix: 'Это удалит ',
     deleteDescMid: ' и сотрёт его ',
     deleteDescSuffix: ' каталог. Это действие необратимо.',
     deleting: 'Удаление...',
-    createDesc: 'Профили — это независимые среды Hermes: отдельные настройки, навыки и SOUL.md.',
+    createDesc: 'У каждого агента свои инструкции, настройки, навыки и чаты.',
     nameLabel: 'Имя',
     cloneFrom: 'Клонировать из',
     cloneFromNone: 'Нет (пустой)',
-    cloneFromDesc: 'Копирует настройки, навыки и SOUL.md из выбранного исходного профиля.',
-    cloneFromDefault: 'Клонировать из профиля по умолчанию',
-    cloneFromDefaultDesc: 'Скопируйте настройки, навыки и SOUL.md из вашего профиля по умолчанию.',
+    cloneFromDesc: 'Копирует настройки, навыки и SOUL.md выбранного агента.',
+    cloneFromDefault: 'Клонировать агента по умолчанию',
+    cloneFromDefaultDesc: 'Скопируйте настройки, навыки и SOUL.md вашего агента по умолчанию.',
     invalidName: hint => `Некорректное имя. ${hint}`,
     nameRequired: 'Имя обязательно.',
     creating: 'Создание...',
-    createAction: 'Создать профиль',
-    renameTitle: 'Переименовать профиль',
-    renameDescPrefix: 'Переименование обновляет каталог профиля и все wrapper-скрипты в ',
+    createAction: 'Создать агента',
+    renameTitle: 'Переименовать агента',
+    renameDescPrefix: 'Переименование обновляет каталог агента и все wrapper-скрипты в ',
     renameDescSuffix: '.',
     displayNameTitle: 'Название этого агента',
     displayNameDesc:
-      'Устанавливает отображаемое имя, показываемое во всём приложении. Внутренний ID профиля остаётся «default».',
+      'Устанавливает отображаемое имя, показываемое во всём приложении. Внутренний ID агента остаётся «default».',
     displayNameLabel: 'Отображаемое имя',
     newNameLabel: 'Новое имя',
     renaming: 'Переименование...',
-    created: 'Профиль создан',
-    renamed: 'Профиль переименован',
-    deleted: 'Профиль удалён',
+    created: 'Агент создан',
+    renamed: 'Агент переименован',
+    deleted: 'Агент удалён',
     setupCopied: 'Команда установки скопирована',
     soulSaved: 'SOUL.md сохранён',
-    failedLoad: 'Не удалось загрузить профили',
-    failedDelete: 'Не удалось удалить профиль',
+    failedLoad: 'Не удалось загрузить агентов',
+    failedDelete: 'Не удалось удалить агента',
     failedCopy: 'Не удалось скопировать команду установки',
     failedLoadSoul: 'Не удалось загрузить SOUL.md',
     failedSaveSoul: 'Не удалось сохранить SOUL.md',
-    failedCreate: 'Не удалось создать профиль',
-    failedRename: 'Не удалось переименовать профиль'
+    failedCreate: 'Не удалось создать агента',
+    failedRename: 'Не удалось переименовать агента'
   },
   modelAssignment: {
     saveFailed: 'Hermes не сохранил это изменение модели.'
@@ -2242,11 +2243,11 @@ export const ruOverrides = {
 
   cron: {
     control: ruCronControl,
-    close: 'Закрыть cron',
-    title: 'Запланированные задачи',
-    count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,
-    search: 'Поиск cron-задач...',
-    loading: 'Загрузка cron-задач...',
+    close: 'Закрыть расписания',
+    title: desktopTerms.ru.schedules,
+    count: count => `${count} ${RU_PLURAL(count, 'расписание', 'расписания', 'расписаний')}`,
+    search: 'Поиск расписаний...',
+    loading: 'Загрузка расписаний...',
     states: {
       enabled: 'включено',
       scheduled: 'запланировано',
@@ -2298,11 +2299,11 @@ export const ruOverrides = {
     monthlyOnDayAt: (dayOfMonth, time) => `Ежемесячно ${dayOfMonth}-го числа в ${time}`,
     topOfHour: 'В начале каждого часа',
     everyHourAt: minute => `Каждый час на :${minute}`,
-    newCron: 'Новый cron',
+    newCron: 'Новое расписание',
     emptyDescNew:
-      'Запланируйте промпт, который будет выполняться по cron-выражению. Hermes выполнит его и доставит результаты в выбранное вами место.',
+      'Создайте расписание: агент автоматически выполнит ваши инструкции и доставит результаты в выбранное место.',
     emptyDescSearch: 'Попробуйте более широкий запрос.',
-    emptyTitleNew: 'Запланированных задач пока нет',
+    emptyTitleNew: 'Расписаний пока нет',
     emptyTitleSearch: 'Нет совпадений',
     last: 'Последний:',
     next: 'Следующий:',
@@ -2312,33 +2313,33 @@ export const ruOverrides = {
     showRuns: 'Показать запуски',
     hideRuns: 'Скрыть запуски',
     runHistory: 'История запусков',
-    actionsTitle: 'Действия с cron-задачей',
-    resume: 'Продолжить cron',
-    pause: 'Приостановить cron',
+    actionsTitle: 'Действия с расписанием',
+    resume: 'Возобновить расписание',
+    pause: 'Приостановить расписание',
     resumeTitle: 'Продолжить',
     pauseTitle: 'Приостановить',
     triggerNow: 'Запустить сейчас',
-    edit: 'Изменить cron',
-    deleteTitle: 'Удалить cron-задачу?',
+    edit: 'Изменить расписание',
+    deleteTitle: 'Удалить расписание?',
     deleteDescPrefix: 'Это навсегда удалит ',
-    deleteDescSuffix: '. Она перестанет срабатывать сразу.',
+    deleteDescSuffix: '. Автоматические запуски сразу прекратятся.',
     deleting: 'Удаление...',
-    resumed: 'Cron продолжен',
-    paused: 'Cron приостановлен',
-    triggered: 'Cron запущен',
-    deleted: 'Cron удалён',
-    created: 'Cron создан',
-    updated: 'Cron обновлён',
-    failedLoad: 'Не удалось загрузить cron-задачи',
-    failedUpdate: 'Не удалось обновить cron-задачу',
-    failedTrigger: 'Не удалось запустить cron-задачу',
-    failedDelete: 'Не удалось удалить cron-задачу',
-    failedSave: 'Не удалось сохранить cron-задачу',
-    editTitle: 'Изменить cron-задачу',
-    createTitle: 'Новая cron-задача',
+    resumed: 'Расписание возобновлено',
+    paused: 'Расписание приостановлено',
+    triggered: 'Запуск по расписанию начат',
+    deleted: 'Расписание удалено',
+    created: 'Расписание создано',
+    updated: 'Расписание обновлено',
+    failedLoad: 'Не удалось загрузить расписания',
+    failedUpdate: 'Не удалось обновить расписание',
+    failedTrigger: 'Не удалось запустить по расписанию',
+    failedDelete: 'Не удалось удалить расписание',
+    failedSave: 'Не удалось сохранить расписание',
+    editTitle: 'Изменить расписание',
+    createTitle: 'Новое расписание',
     editDesc: 'Обновите расписание, промпт или место доставки. Изменения вступят в силу при следующем запуске.',
     createDesc:
-      'Запланируйте промпт для автоматического выполнения. Используйте синтаксис cron или фразу вроде «каждые 15 минут».',
+      'Агент выполнит ваши инструкции автоматически по расписанию. Используйте синтаксис cron или фразу вроде «каждые 15 минут».',
     nameLabel: 'Имя',
     namePlaceholder: 'Утренний брифинг',
     promptLabel: 'Промпт',
@@ -2357,26 +2358,26 @@ export const ruOverrides = {
     promptRequired: 'Промпт обязателен.',
     promptScheduleRequired: 'Промпт и расписание обязательны.',
     scheduleRequired: 'Расписание обязательно.',
-    scriptOnlyEditHint: 'Задача только со скриптом (без AI-промпта). ID задачи:',
+    scriptOnlyEditHint: 'Расписание запускает только скрипт (без AI-промпта). ID расписания:',
     saveChanges: 'Сохранить изменения',
-    createAction: 'Создать cron',
+    createAction: 'Создать расписание',
     tabs: {
-      jobs: 'Задачи',
+      jobs: desktopTerms.ru.schedules,
       blueprints: 'Шаблоны'
     },
     blueprints: {
       tab: 'Шаблоны',
       startFrom: 'Начать с',
       custom: 'Свой',
-      subtitle: 'Готовые автоматизации',
+      subtitle: 'Готовые расписания',
       dialogDesc: 'Заполните детали и запланируйте.',
       scheduleIt: 'Запланировать',
       scheduling: 'Планирование...',
-      scheduled: 'Шаблон запланирован',
+      scheduled: 'Расписание создано из шаблона',
       loading: 'Загрузка шаблонов...',
       failedLoad: 'Не удалось загрузить шаблоны',
       emptyTitle: 'Шаблоны недоступны',
-      emptyDesc: 'На этом бэкенде нет шаблонов автоматизации.'
+      emptyDesc: 'На этом бэкенде нет шаблонов расписаний.'
     }
   },
   artifacts: {
@@ -2434,7 +2435,7 @@ export const ruOverrides = {
     missingBody: 'Этот артефакт больше нет в локальном реестре.'
   },
   sidebar: {
-    profileRail: 'Панель профилей',
+    profileRail: 'Панель агентов',
     filter: {
       grouping: 'Группировка',
       ordering: 'Сортировка',
@@ -2442,7 +2443,7 @@ export const ruOverrides = {
       inboxStyle: 'Стиль «Входящие»',
       status: 'Статус',
       pullRequest: 'Запрос на слияние',
-      profile: 'Профиль',
+      profile: desktopTerms.ru.agents,
       project: 'Проект',
       archived: 'Архивные',
       expandAll: 'Развернуть все',
@@ -2467,10 +2468,10 @@ export const ruOverrides = {
       noPR: 'Без PR'
     },
     gatewayGroups: {
-      grouping: 'Шлюз и профиль',
+      grouping: 'Шлюз и агент',
       rename: 'Переименовать группу',
       aliasLabel: 'Отображаемое имя',
-      aliasHint: 'Меняется только отображаемое имя; имена шлюза и профиля остаются прежними.',
+      aliasHint: 'Меняется только отображаемое имя; имена шлюза и агента остаются прежними.',
       resetName: 'Сбросить имя',
       moveUp: 'Переместить вверх',
       moveDown: 'Переместить вниз',
@@ -2482,7 +2483,7 @@ export const ruOverrides = {
       capabilities: 'Возможности',
       messaging: 'Сообщения',
       artifacts: 'Артефакты',
-      cron: 'Запланированные задачи'
+      cron: desktopTerms.ru.schedules
     },
     searchAria: 'Поиск сеансов',
     searchPlaceholder: 'Поиск сеансов…',
@@ -2495,7 +2496,7 @@ export const ruOverrides = {
     files: 'Файлы',
     review: 'Проверка',
     logs: 'Журналы',
-    cronJobs: 'Cron-задачи',
+    cronJobs: desktopTerms.ru.schedules,
     groupAriaGrouped: 'Показать сеансы одним списком',
     groupAriaUngrouped: 'Сгруппировать сеансы по рабочим пространствам',
     showProjects: 'Показать проекты',
@@ -2544,7 +2545,7 @@ export const ruOverrides = {
       backgroundRunning: 'Фоновая задача выполняется',
       draftSession: 'Черновик — ещё ничего не отправлено',
       handoffOrigin: platform => `Передано из ${platform}`,
-      ownedByProfile: profile => `Профиль: ${profile}`,
+      ownedByProfile: profile => `Агент: ${profile}`,
       renamed: 'Переименовано',
       renameFailed: 'Переименование не удалось',
       renameTitle: 'Переименовать сеанс',
@@ -2583,7 +2584,7 @@ export const ruOverrides = {
     placeholderFollowUp: 'Отправить продолжение',
     newSessionPlaceholders: [
       'Что будем делать?',
-      'Дайте Hermes задачу',
+      'Дайте агенту задачу',
       'О чём вы думаете?',
       'Опишите, что нужно',
       'Что обсудим?',
@@ -2654,8 +2655,8 @@ export const ruOverrides = {
       '/worktree': 'Показать, перечислить, создать или очистить изолированные рабочие деревья Git',
       '/compress': 'Сжать контекст текущей беседы',
       '/rollback': 'Показать или восстановить контрольные точки файлов, сохранив ручные правки',
-      '/export': 'Экспортировать профиль, настройки, навыки и тему в общий архив',
-      '/import': 'Импортировать архив как новый профиль',
+      '/export': 'Экспортировать агента, его настройки, навыки и тему в общий архив',
+      '/import': 'Импортировать архив как нового агента',
       '/stop': 'Остановить текущий ход и фоновые процессы',
       '/pause': 'Приостановить новую работу глобально; /pause off возобновляет её',
       '/bg': 'Выполнить запрос в отдельном фоновом сеансе',
@@ -2664,7 +2665,7 @@ export const ruOverrides = {
       '/journey': 'Открыть граф памяти — навыки и воспоминания во времени',
       '/queue': 'Добавить, просмотреть, изменить, удалить, переместить или очистить запросы в очереди',
       '/steer': 'Добавить сообщение после следующего вызова инструмента без прерывания',
-      '/goal': 'Задать постоянную цель, над которой Hermes работает до завершения',
+      '/goal': 'Задать постоянную цель, над которой агент работает до завершения',
       '/heartbeat': 'Задать повторяющийся запрос для этого сеанса в состоянии простоя',
       '/refine': 'Проанализировать беседу и сохранить выводы в памяти или навыках',
       '/review': 'Запустить независимого субагента для проверки обсуждаемой работы',
@@ -2676,7 +2677,7 @@ export const ruOverrides = {
       '/egress': 'Показать состояние исходящего прокси Docker',
       '/context': 'Показать использование контекста, категории, статистику сжатия и скорость обработки',
       '/whoami': 'Показать права доступа к слеш-командам',
-      '/profile': 'Переключить активный профиль Hermes',
+      '/profile': 'Переключить активного агента',
       '/codex-runtime': 'Переключить среду Codex app-server для моделей OpenAI/Codex',
       '/personality': 'Выбрать готовую личность',
       '/battery': 'Переключить цветной индикатор батареи в строке состояния',
@@ -2718,7 +2719,7 @@ export const ruOverrides = {
       'composer.history': 'переключать поповер / историю'
     },
     attachUrlTitle: 'Прикрепить URL',
-    attachUrlDesc: 'Hermes загрузит страницу и добавит её как контекст для этого хода.',
+    attachUrlDesc: 'Агент загрузит страницу и добавит её как контекст для этого хода.',
     urlPlaceholder: 'https://example.com/post',
     urlHintPre: 'Укажите полный URL, например ',
     attach: 'Прикрепить',
@@ -2939,7 +2940,7 @@ export const ruOverrides = {
       createPr: 'Создать PR',
       openPr: 'Открыть PR',
       ghMissing: 'Установите GitHub CLI (gh) и войдите, чтобы открывать PR',
-      agentShip: 'Попросить Hermes открыть PR',
+      agentShip: 'Попросить агента открыть PR',
       agentShipUnavailable: 'Чат, которому принадлежат эти изменения, не на экране.',
       agentShipPrompt:
         'Проверьте текущие изменения, закоммитьте их с ясным conventional-commit сообщением, запушьте ветку и создайте pull request.',
@@ -3075,7 +3076,7 @@ export const ruOverrides = {
     justNowSuffix: ' · только что',
     bundleOutOfSync: 'Сборка приложения устарела',
     bundleOutOfSyncDesc:
-      'Рантайм Hermes обновлён, но само приложение — ещё старая сборка: новые функции интерфейса (например, Bot Mode) не появятся до обновления. Запустите обновление ниже, чтобы пересобрать приложение. Если предупреждение не исчезнет, переустановите с последнего установщика.',
+      'Рантайм Hermes обновлён, но само приложение — ещё старая сборка: новые функции интерфейса (например, режим агента) не появятся до обновления. Запустите обновление ниже, чтобы пересобрать приложение. Если предупреждение не исчезнет, переустановите с последнего установщика.',
     bundleOutOfSyncAction: 'Скачать установщик',
     checkingShort: 'Проверка…'
   },
@@ -3320,8 +3321,8 @@ export const ruOverrides = {
       subagents: count => `${count} ${RU_PLURAL(count, 'субагент', 'субагента', 'субагентов')}`,
       failed: count => `${count} ${RU_NOUN(count, 'сбой', 'сбоя', 'сбоев')}`,
       running: count => `${count} ${RU_NOUN(count, 'выполняется', 'выполняются', 'выполняется')}`,
-      cron: 'Cron',
-      openCron: 'Открыть cron-задачи',
+      cron: desktopTerms.ru.schedules,
+      openCron: 'Открыть расписания',
       webhooks: 'Вебхуки',
       openWebhooks: 'Открыть вебхуки',
       starmap: 'Граф памяти',
@@ -3453,7 +3454,7 @@ export const ruOverrides = {
     editing: 'Изменение',
     unsavedChanges: 'Несохранённые изменения',
     saveFailed: message => `Не удалось сохранить: ${message}`,
-    saveScopeChanged: 'Чтобы сохранить этот черновик, вернитесь к исходному подключению и профилю.',
+    saveScopeChanged: 'Чтобы сохранить этот черновик, вернитесь к исходному подключению и агенту.',
     diskChangedTitle: 'Файл изменился на диске',
     diskChangedBody:
       'Этот файл изменился с момента открытия. Перезаписать его вашей версией или сбросить правки и перезагрузить?',
@@ -3484,12 +3485,12 @@ export const ruOverrides = {
   },
   interfaceMode: {
     title: 'Режим интерфейса',
-    hint: 'Меняет то, что показано, а не то, что умеет Hermes.',
+    hint: 'Меняет то, что показано, а не то, что умеет агент.',
     sessionNote:
       'Задано простым режимом. Изменение здесь действует до конца сеанса; переключитесь в расширенный, чтобы сделать его своим.',
     simple: {
       label: 'Простой',
-      description: 'Для общения с Hermes. Боковая панель и чат; без терминала, файлов и панелей diff.'
+      description: 'Для общения с агентом. Боковая панель и чат; без терминала, файлов и панелей diff.'
     },
     advanced: {
       label: 'Расширенный',
@@ -3593,7 +3594,7 @@ export const ruOverrides = {
       errorRateLimitResetBody: (provider, time) => `Вы достигли лимита запросов ${provider}. Он сбросится в ${time}.`,
       loadingSession: 'Загрузка сеанса',
       showEarlier: 'Показать ранние сообщения',
-      loadingResponse: 'Hermes загружает ответ',
+      loadingResponse: 'Агент загружает ответ',
       resumeWhenBackgroundDone: count =>
         count === 1
           ? 'Продолжится, когда фоновая задача завершится'
@@ -3648,7 +3649,7 @@ export const ruOverrides = {
       reject: 'Отклонить',
       alwaysTitle: 'Всегда разрешать эту команду?',
       alwaysDescription: pattern =>
-        `Это добавит паттерн «${pattern}» в ваш постоянный список разрешений (~/.hermes/config.yaml). Hermes больше не будет спрашивать о подобных командах — ни в этом сеансе, ни в будущем.`,
+        `Это добавит паттерн «${pattern}» в ваш постоянный список разрешений (~/.hermes/config.yaml). Агент больше не будет спрашивать о подобных командах — ни в этом сеансе, ни в будущем.`,
       alwaysAllow: 'Всегда разрешать'
     },
     clarify: ruClarify,
@@ -3667,7 +3668,7 @@ export const ruOverrides = {
       skill: name => `навык ${name}`,
       kind: { plugin: 'плагин', skill: 'навык' },
       tier: { official: 'официальный', verified: 'проверенный', community: 'сообщество' },
-      targetProfile: profile => `Установка в ваш профиль ${profile}`,
+      targetProfile: profile => `Установка для вашего агента ${profile}`,
       sendFailed: 'Не удалось отправить ответ. Попробуйте ещё раз.',
       commitLabel: 'Коммит',
       subdirLabel: 'Папка',
@@ -3781,7 +3782,7 @@ export const ruOverrides = {
         },
         browser_type: { done: 'Введено на странице', pending: 'Ввожу на странице', pendingAction: 'Ввожу' },
         clarify: { done: 'Задан вопрос', pending: 'Задаю вопрос', pendingAction: 'Задаю' },
-        cronjob: { done: 'Cron-задача', pending: 'Планирую cron-задачу', pendingAction: 'Планирую' },
+        cronjob: { done: 'Расписание', pending: 'Настраиваю расписание', pendingAction: 'Планирую' },
         edit_file: { done: 'Файл изменён', pending: 'Изменяю файл', pendingAction: 'Изменяю' },
         execute_code: { done: 'Код выполнен', pending: 'Скриптинг', pendingAction: 'Скриптинг' },
         image_generate: {
@@ -3821,10 +3822,10 @@ export const ruOverrides = {
       'Проверьте команду перед вводом пароля sudo. Пароль отправляется агенту, который её выполняет, и кэшируется на время сеанса.',
     sudoCommandUnavailable: 'Агент не предоставил команду. Отмените запрос, если не можете проверить её в разговоре.',
     sudoInstallDesc:
-      'Hermes нужен ваш пароль sudo, чтобы установить пакеты Bot Screen (TigerVNC + Xfce) на хосте шлюза. Он отправляется только на этот хост.',
+      'Нужен ваш пароль sudo, чтобы установить пакеты экрана агента (TigerVNC + Xfce) на хосте шлюза. Он отправляется только на этот хост.',
     sudoPlaceholder: 'пароль sudo',
     secretTitle: 'Требуется секрет',
-    secretDesc: 'Hermes нужны учётные данные, чтобы продолжить.',
+    secretDesc: 'Агенту нужны учётные данные, чтобы продолжить.',
     secretPlaceholder: 'значение секрета'
   },
   desktop: {
@@ -3844,11 +3845,11 @@ export const ruOverrides = {
     yoloTitle: 'YOLO',
     yoloToggleFailed: 'Не удалось переключить YOLO',
     profileStatus: current =>
-      `Профиль: ${current}. Используйте /profile <name> или выборку «Новый сеанс», чтобы начать чат в другом профиле.`,
-    unknownProfile: 'Неизвестный профиль',
-    noProfileNamed: (target, available) => `Нет профиля «${target}». Доступны: ${available}`,
-    newChatsProfile: name => `Новые чаты будут использовать профиль ${name}.`,
-    setProfileFailed: 'Не удалось установить профиль',
+      `Агент: ${current}. Используйте /profile <name> или меню «Новый сеанс», чтобы начать чат с другим агентом.`,
+    unknownProfile: 'Неизвестный агент',
+    noProfileNamed: (target, available) => `Нет агента «${target}». Доступны: ${available}`,
+    newChatsProfile: name => `Новые чаты будут использовать агента ${name}.`,
+    setProfileFailed: 'Не удалось выбрать агента',
     sttDisabled: 'Распознавание речи отключено в настройках.',
     stopFailed: 'Остановка не удалась',
     regenerateFailed: 'Повторная генерация не удалась',
@@ -3859,7 +3860,7 @@ export const ruOverrides = {
     resumeStrandedBody:
       'Соединение с этим сеансом оборвалось, и автоматические повторные попытки исчерпаны. Проверьте, что шлюз работает, и попробуйте снова.',
     poolSlotTimeoutBody:
-      'Все слоты локальных бэкендов профилей заняты. Увеличьте Warm Bot Backends в «Настройки» → «Дополнительно» или повторите попытку после освобождения неактивного бэкенда.',
+      'Все слоты локальных бэкендов агентов заняты. Увеличьте лимит готовых бэкендов агентов в «Настройки» → «Дополнительно» или повторите попытку после освобождения неактивного бэкенда.',
     poolSlotTimeoutOpenSettings: 'Открыть расширенные настройки',
     resumeRetry: 'Повторить',
     nothingToBranch: 'Нечего ветвить',

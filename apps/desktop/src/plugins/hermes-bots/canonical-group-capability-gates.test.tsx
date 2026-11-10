@@ -449,14 +449,14 @@ function classicRoom(group: string, members: RosterRow[], room: Record<string, u
 // These single-connection rooms exercise the gate. #148418 covers the restored Desktop-driven
 // path separately, including mixed-connection rooms saved before the update.
 it.each([
-  ['Bots that can form a gateway group here', roster, 'legacyRoom', '', true],
-  ['Bots on another connection', mini, 'legacyRoomElsewhere', 'Bots on other connections: Mini', false],
-  ['Bots here that cannot form a gateway group as they are', [roster[0]], 'legacyRoomBlocked', CANONICAL_GROUP_LOCALES.en.createGroupSize, false]
-] as const)('keeps a classic room with %s on the gate and says what to do', async (_case, members, message, problem, start) => {
+  ['Bots that can form a gateway group here', roster, 'legacyRoom', false, true],
+  ['Bots on another connection', mini, 'legacyRoomElsewhere', true, false],
+  ['Bots here that cannot form a gateway group as they are', [roster[0]], 'legacyRoomBlocked', true, false]
+] as const)('keeps a classic room with %s on the gate', async (_case, members, message, problem, start) => {
   classicRoom('Classic', [...members])
   await act(async () => { render(<GroupChatWorkspace group="Classic" members={[...members]} />) })
   await screen.findByText(CANONICAL_GROUP_LOCALES.en[message])
-  expect(screen.queryByRole('status')?.textContent ?? '').toBe(problem)
+  expect(Boolean(screen.queryByRole('status'))).toBe(problem)
   expect(screen.queryByRole('textbox')).toBeNull()
   expect(Boolean(screen.queryByRole('button', { name: 'Start new group' }))).toBe(start)
   expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()

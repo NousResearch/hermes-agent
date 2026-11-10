@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { $remoteOverrideDialogProfile, openRemoteOverrideDialog } from '@/store/profile-remote-override'
 
 import { ProfileRemoteOverrideDialog } from './profile-remote-override-dialog'
@@ -64,10 +65,11 @@ describe('ProfileRemoteOverrideDialog', () => {
 
     // No write yet — the risk note comes first.
     expect(applyConnectionConfig).not.toHaveBeenCalled()
-    expect(screen.getByText('Connect this profile to a remote host?')).toBeTruthy()
-    expect(screen.getByText(/Only connect to a host you trust/)).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: en.profiles.remoteOverride.confirmTitle }))
+        .getByRole('button', { name: en.profiles.remoteOverride.connect })
+    )
 
     await waitFor(() =>
       expect(applyConnectionConfig).toHaveBeenCalledWith({

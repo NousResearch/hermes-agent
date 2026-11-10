@@ -28,7 +28,7 @@ export const frDesktopCommands = {
   historyHeader: (count: string) => `Historique de la conversation (${count} messages) :`,
   historyEmpty: 'Aucun message pour l’instant.',
   historyYou: 'Vous',
-  historyHermes: 'Hermes',
+  historyHermes: 'Agent',
   saveUsage: 'utilisation : /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
     'Non enregistré : cette passerelle ne peut pas exporter de copie expurgée, nommée ou autre que JSON. Mettez à jour la passerelle, ou lancez /save sans option pour écrire le JSON brut sur l’hôte de la passerelle.',
@@ -39,9 +39,9 @@ export const frDesktopCommands = {
   savedTo: (path: string) => `Conversation enregistrée dans ${path}`,
   saveCancelled: 'Non enregistré (annulé).',
   exportRemote:
-    '/export empaquette un profil depuis l’hôte de la passerelle, qui n’est pas cette machine. Lancez `hermes profile export` sur cet hôte.',
+    '/export empaquette un agent depuis l’hôte de la passerelle, qui n’est pas cette machine. Lancez `hermes profile export` sur cet hôte.',
   importRemote:
-    '/import installe un profil sur l’hôte de la passerelle, qui n’est pas cette machine. Lancez `hermes profile import <archive>` sur cet hôte.',
+    '/import installe un agent sur l’hôte de la passerelle, qui n’est pas cette machine. Lancez `hermes profile import <archive>` sur cet hôte.',
   timestampsUsage: 'utilisation : /timestamps [on|off|status]',
   timestampsOn: 'Horodatage : activé (cette fenêtre ; définissez display.timestamps dans config.yaml pour le garder)',
   timestampsOff:

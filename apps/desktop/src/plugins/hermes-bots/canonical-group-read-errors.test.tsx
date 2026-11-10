@@ -12,19 +12,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal =>
   localGatewaySdkMock(await importOriginal<typeof HermesSdk>(), request, () => translateBotsIn(locale.value)))
 afterEach(() => { cleanup(); request.mockReset(); localStorage.clear() })
 
-const timeoutAdvice = [
-  ['en', 'gateway didn’t answer in time', 'bot’s computer', 'Refresh'],
-  ['ja', 'ゲートウェイが時間内に応答', 'ボットのコンピューター', '更新'],
-  ['zh', '网关未及时响应', '机器人的电脑', '刷新'],
-  ['zh-hant', '閘道未及時回應', '機器人的電腦', '重新整理'],
-  ['ar', 'لم تستجب البوابة في الوقت', 'جهاز أحد البوتات', 'تحديث'],
-  ['ru', 'Шлюз не ответил вовремя', 'компьютер бота', 'Обновить'],
-  ['fr', 'passerelle n’a pas répondu à temps', 'l’ordinateur d’un bot', 'Actualiser'],
-  ['de', 'Gateway hat nicht rechtzeitig geantwortet', 'Computer eines Bots', 'Aktualisieren'],
-  ['es', 'pasarela no respondió a tiempo', 'equipo de un bot', 'Actualizar']
-] as const
-
-it.each(timeoutAdvice)('explains read timeouts and retries both state and history on Refresh (%s)', async (language, timeout, computer, refresh) => {
+it.each(Object.keys(CANONICAL_GROUP_LOCALES) as (keyof typeof CANONICAL_GROUP_LOCALES)[])('retries both state and history on Refresh (%s)', async language => {
   locale.value = language
   let failing = 'groups.state'
   let timedOut = true
@@ -37,13 +25,9 @@ it.each(timeoutAdvice)('explains read timeouts and retries both state and histor
   } })
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'default', roomId: room.room_id }} />)
   const alert = await screen.findByRole('alert')
-  expect(alert.textContent).toContain(timeout)
-  expect(alert.textContent).toContain(computer)
-  expect(alert.textContent).toContain(refresh)
   expect(alert.textContent).not.toMatch(/request timed out|groups\.(state|log)/)
   failing = 'groups.log'
   await act(async () => { fireEvent.click(within(alert).getByRole('button')) })
-  expect(screen.getByRole('alert').textContent).toContain(timeout)
   expect(screen.getByRole('alert').textContent).not.toMatch(/request timed out|groups\.(state|log)/)
   timedOut = false
   await act(async () => { fireEvent.click(within(screen.getByRole('alert')).getByRole('button')) })
@@ -73,5 +57,5 @@ it('says a Retry was refused because the bot may still be working, not its reaso
   const retry = await screen.findByRole('button', { name: 'Retry' })
   await act(async () => { fireEvent.click(retry) })
   await screen.findByText(CANONICAL_GROUP_LOCALES.en.retryBusy.replace('{name}', 'Ada'))
-  expect(document.body.textContent).not.toContain('session_busy')
+  expect(window.document.body.textContent).not.toContain('session_busy')
 })

@@ -2,6 +2,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { desktopTerms } from './desktop-terms'
 import { introJa } from './intro-ja'
 import { jaBoot } from './ja_boot'
 import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
@@ -63,7 +64,7 @@ export const jaOverrides = {
     connect: '接続',
     connecting: '接続中',
     continue: '続ける',
-    bots: 'ボット',
+    bots: desktopTerms.ja.agents,
     copied: 'コピーしました',
     copy: 'コピー',
     copyFailed: 'コピーに失敗しました',
@@ -115,7 +116,7 @@ export const jaOverrides = {
 
   notifications: {
     sharedProfileWarning:
-      '別の Hermes インストールがこのプロファイルを使用しています。両方が設定とデータを共有しているため、変更が競合する可能性があります。このまま続けるか、変更する前にもう一方を終了してください。',
+      '別の Hermes インストールがこのエージェントを使用しています。両方が設定とデータを共有しているため、変更が競合する可能性があります。このまま続けるか、変更する前にもう一方を終了してください。',
     region: '通知',
     hide: '非表示',
     show: '表示',
@@ -312,7 +313,7 @@ export const jaOverrides = {
         full: {
           title: 'すべてアンインストール',
           description:
-            'アプリ、エージェント、すべてのユーザーデータ（設定、チャット、定期ジョブ、シークレット、ログ）を削除します。',
+            'アプリ、エージェント、すべてのユーザーデータ（設定、チャット、スケジュール、シークレット、ログ）を削除します。',
           consequence: 'すべて——Chat GUI、Hermes エージェント、およびすべての設定・チャット・シークレット・ログ'
         }
       }
@@ -602,7 +603,7 @@ export const jaOverrides = {
         'ワークスペースを開いているとき、チャットの横にファイルブラウザを表示します。タイトルバーのボタンでも切り替わります。',
       vibeHeartsTitle: 'バイブハート',
       vibeHeartsDesc:
-        'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',
+        '感謝や愛情を伝える言葉、ハート絵文字に反応して浮かぶハート。上のメッセージリアクションとは別です。',
       embedsTitle: 'インライン埋め込み',
       embedsDesc:
         'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',
@@ -620,7 +621,7 @@ export const jaOverrides = {
       themeTitle: 'テーマ',
       themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。',
       themeProfileNote: profile =>
-        `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`,
+        `エージェント「${profile}」に保存されます。エージェントごとに個別のテーマを保持します。`,
       installTitle: 'VS Code から導入',
       installDesc:
         'Marketplace の拡張機能 ID（例: dracula-theme.theme-dracula）を貼り付けると、その配色テーマをデスクトップ用パレットに変換します。',
@@ -1010,7 +1011,7 @@ export const jaOverrides = {
       title: 'ゲートウェイ接続',
       envOverride: 'env オーバーライド',
       intro:
-        'Hermes Desktop はデフォルトで独自のローカルゲートウェイを起動します。別のマシンや信頼できるプロキシの背後で既に動作している Hermes バックエンドをこのアプリで制御する場合は、リモートゲートウェイを使用してください。ゲートウェイ接続はマシン単位の設定で、プロファイルは接続したゲートウェイから検出されます。',
+        'Hermes Desktop はデフォルトで独自のローカルゲートウェイを起動します。別のマシンや信頼できるプロキシの背後で既に動作している Hermes バックエンドをこのアプリで制御する場合は、リモートゲートウェイを使用してください。ゲートウェイ接続はマシン単位の設定で、エージェントは接続したゲートウェイから検出されます。',
       envOverrideTitle: '環境変数がこのデスクトップセッションを制御しています。',
       envOverrideDesc:
         '保存された設定を使用するには HERMES_DESKTOP_REMOTE_URL と HERMES_DESKTOP_REMOTE_TOKEN の設定を解除してください。',
@@ -1132,7 +1133,7 @@ export const jaOverrides = {
     },
     profileScope: {
       appliesTo: '適用対象',
-      editsProfile: profile => `このページの変更は「${profile}」プロファイルに適用されます。`
+      editsProfile: profile => `このページの変更はエージェント「${profile}」に適用されます。`
     },
     mcp: {
       loading: 'MCP サーバーを読み込み中...',
@@ -1346,7 +1347,7 @@ export const jaOverrides = {
       '以下のインストール内容とアカウントは、選択したエージェントとゲートウェイに属し、すべてのエージェントで共有されるものではありません。有効化と個別設定はエージェント設定で管理します。',
     agentScopeHint: '変更はこのエージェントにのみ適用されます。既存の会話では現在のツールが維持されます。',
     toolSecretsHint:
-      'このエージェントの API キー、エンドポイント、プロバイダー。認証情報は他のプロファイルと共有されません。',
+      'このエージェントの API キー、エンドポイント、プロバイダー。認証情報は他のエージェントと共有されません。',
     openAgentSettings: 'エージェント設定',
     openToolLibrary: 'ツールライブラリを見る',
     remotePluginHint:
@@ -1585,9 +1586,9 @@ export const jaOverrides = {
     openBrowser: 'ブラウザを開く',
     gatewayRestartFailed: 'ゲートウェイの再起動に失敗しました。',
     sharedGatewayRestartTitle: '共有ゲートウェイを再起動しますか？',
-    sharedGatewayRestartDescription: bots => `このデバイス上のすべてのボットが再接続します: ${bots}`,
+    sharedGatewayRestartDescription: bots => `このデバイス上のすべてのエージェントが再接続します: ${bots}`,
     sharedGatewayRestartConfirm: 'すべて再起動',
-    sharedGatewayRestarted: count => `共有ゲートウェイを再起動しました（${count} ボット）`,
+    sharedGatewayRestarted: count => `共有ゲートウェイを再起動しました（エージェント ${count} 件）`,
     updateHermes: 'Hermes を更新',
     reloadWindow: 'ウィンドウを再読み込み',
     actionRunning: '実行中',
@@ -1771,7 +1772,7 @@ export const jaOverrides = {
       },
       DISCORD_HOME_CHANNEL: {
         label: 'ホームチャンネル ID',
-        help: 'ボットがプロアクティブなメッセージを送信するチャンネル（Cron 出力、リマインダー）。'
+        help: 'ボットがプロアクティブなメッセージを送信するチャンネル（スケジュールの実行結果、リマインダー）。'
       },
       DISCORD_HOME_CHANNEL_NAME: {
         label: 'ホームチャンネル名',
@@ -1784,7 +1785,7 @@ export const jaOverrides = {
       MATTERMOST_ALLOW_ALL_USERS: { label: 'すべての Mattermost ユーザーを許可' },
       MATTERMOST_HOME_CHANNEL: { label: 'ホームチャンネル' },
       QQ_ALLOW_ALL_USERS: { label: 'すべての QQ ユーザーを許可' },
-      QQBOT_HOME_CHANNEL: { label: 'QQ ホームチャンネル', help: 'Cron 配信のデフォルトチャンネルまたはグループ。' },
+      QQBOT_HOME_CHANNEL: { label: 'QQ ホームチャンネル', help: 'スケジュールの実行結果を配信するデフォルトのチャンネルまたはグループ。' },
       QQBOT_HOME_CHANNEL_NAME: { label: 'QQ ホームチャンネル名' },
       SLACK_BOT_TOKEN: {
         label: 'Slack ボットトークン',
@@ -1837,28 +1838,28 @@ export const jaOverrides = {
   },
 
   profiles: {
-    close: 'プロファイルを閉じる',
+    close: 'エージェントを閉じる',
     nameHint: '小文字、数字、ハイフン、アンダースコア。文字または数字で始める必要があります。',
-    title: 'プロファイル',
-    count: count => `${count} プロファイル`,
-    search: 'プロファイルを検索...',
-    loading: 'プロファイルを読み込み中...',
-    newProfile: '新しいプロファイル',
-    importProfile: 'プロファイルをインポート…',
-    exportProfile: 'プロファイルをエクスポート…',
-    imported: 'プロファイルをインポートしました',
-    exported: 'プロファイルをエクスポートしました',
-    failedImport: 'プロファイルのインポートに失敗しました',
-    failedExport: 'プロファイルのエクスポートに失敗しました',
+    title: desktopTerms.ja.agents,
+    count: count => `エージェント ${count} 件`,
+    search: 'エージェントを検索...',
+    loading: 'エージェントを読み込み中...',
+    newProfile: '新しいエージェント',
+    importProfile: 'エージェントをインポート…',
+    exportProfile: 'エージェントをエクスポート…',
+    imported: 'エージェントをインポートしました',
+    exported: 'エージェントをエクスポートしました',
+    failedImport: 'エージェントのインポートに失敗しました',
+    failedExport: 'エージェントのエクスポートに失敗しました',
     exportNeedsHost: name =>
-      `ブラウザーではプロファイルのアーカイブを保存できません。Hermes ホストで次を実行してください: hermes profile export ${name}`,
-    allProfiles: 'すべてのプロファイル',
-    showAllProfiles: 'すべてのプロファイルを表示',
+      `ブラウザーではエージェントのアーカイブを保存できません。Hermes ホストで次を実行してください: hermes profile export ${name}`,
+    allProfiles: 'すべてのエージェント',
+    showAllProfiles: 'すべてのエージェントを表示',
     notServedHere: 'ここでは提供されていません',
     switchToProfile: name => `${name} に切り替え`,
     switchToConnection: name => `${name} に切り替え`,
     switchConnectionFailed: name => `${name} に接続できませんでした`,
-    manageProfiles: 'プロファイルを管理…',
+    manageProfiles: 'エージェントを管理…',
     fleet: {
       localDevice:
         'このデバイス（ローカルバックエンド — Hermes が無ければインストールし、あれば新しいセッションを開きます）',
@@ -1872,7 +1873,7 @@ export const jaOverrides = {
       menuItem: 'リモートホストに接続…',
       badge: (host: string) => `${host} で実行中`,
       title: (profile: string) => `${profile} をリモートホストに接続`,
-      description: 'このプロファイルのセッションは、このパソコンではなく指定したリモートの Hermes で実行されます。',
+      description: 'このエージェントのセッションは、このパソコンではなく指定したリモートの Hermes で実行されます。',
       urlLabel: 'リモートアドレス',
       urlPlaceholder: 'https://hermes.example.com',
       urlInvalid: 'http:// または https:// で始まる完全なアドレスを入力してください',
@@ -1882,15 +1883,15 @@ export const jaOverrides = {
       plainTextOptIn:
         'このパソコンには安全な鍵ストレージがないため、トークンは暗号化されずにディスクへ保存されます。それでも保存する。',
       collisionWarning: (label: string) =>
-        `「${label}」という名前のゲートウェイが設定に既に存在します。このプロファイル接続は別物であり、それを変更しません。`,
-      confirmTitle: 'このプロファイルをリモートホストに接続しますか？',
+        `「${label}」という名前のゲートウェイが設定に既に存在します。このエージェントの接続は別物であり、それを変更しません。`,
+      confirmTitle: 'このエージェントをリモートホストに接続しますか？',
       confirmNote: (profile: string, host: string) =>
         `${profile} の新しいチャットは ${host} で実行されます。コマンドの実行やファイルの読み取りはこのパソコンではなくそのコンピュータで行われます。信頼できるホストにのみ接続してください。`,
       confirmBack: '戻る',
       connect: '接続',
       connecting: '接続中…',
       disconnect: 'リモート接続を解除',
-      savedTitle: 'プロファイルを接続しました',
+      savedTitle: 'エージェントを接続しました',
       savedMessage: (profile: string, host: string) => `${profile} は ${host} で実行されます`,
       removedTitle: 'リモート接続を解除しました',
       removedMessage: (profile: string) => `${profile} はこのパソコンで実行されます`,
@@ -1906,16 +1907,16 @@ export const jaOverrides = {
     colorFor: 'カラー',
     openInNewWindow: '新しいウィンドウで開く',
     setAsDefault: 'デフォルトに設定',
-    defaultProfile: 'デフォルトのプロファイル',
+    defaultProfile: 'デフォルトのエージェント',
     defaultSet: name => `${name} をデフォルトに設定しました`,
-    defaultDescription: 'Hermes の起動時と新しいチャットに使用します。既存のセッションのプロファイルは変わりません。',
-    failedSetDefault: 'デフォルトのプロファイルを設定できませんでした',
+    defaultDescription: 'Hermes の起動時と新しいチャットに使用します。既存のセッションのエージェントは変わりません。',
+    failedSetDefault: 'デフォルトのエージェントを設定できませんでした',
     setColor: color => `カラー ${color} に設定`,
     autoColor: '自動',
-    noProfiles: 'プロファイルが見つかりません。',
-    selectPrompt: '詳細を表示するにはプロファイルを選択してください。',
-    refresh: 'プロファイルを更新',
-    refreshing: 'プロファイルを更新中',
+    noProfiles: 'エージェントが見つかりません。',
+    selectPrompt: '詳細を表示するにはエージェントを選択してください。',
+    refresh: 'エージェントを更新',
+    refreshing: 'エージェントを更新中',
     default: 'デフォルト',
     skills: count => `${count} スキル`,
     env: 'env',
@@ -1929,12 +1930,12 @@ export const jaOverrides = {
     modelLabel: 'モデル',
     skillsLabel: 'スキル',
     notSet: '未設定',
-    soulDesc: 'このプロファイルに組み込まれたシステムプロンプトとペルソナの指示。',
+    soulDesc: 'このエージェントへの指示や振る舞いを設定します。',
     soulMissing:
-      'このプロファイルにはまだ SOUL.md がありません。下に指示を入力して保存すると作成できます。config.yaml のペルソナ設定は別途管理されます。',
+      'このエージェントにはまだ SOUL.md がありません。下に指示を入力して保存すると作成できます。config.yaml のペルソナ設定は別途管理されます。',
     soulOptional: '省略可能',
     soulPlaceholder: mode =>
-      `このプロファイルのシステムプロンプト / ペルソナ。\n空欄のままにすると ${mode} のデフォルトを使用します。`,
+      `このエージェントへの指示や振る舞い。\n空欄のままにすると ${mode} のデフォルトを使用します。`,
     soulPlaceholderCloned: 'クローン済み',
     soulPlaceholderEmpty: '空',
     unsavedChanges: '未保存の変更',
@@ -1942,24 +1943,24 @@ export const jaOverrides = {
     emptySoul: '空の SOUL.md — ペルソナの記述を始めてください...',
     saving: '保存中...',
     saveSoul: 'SOUL を保存',
-    deleteTitle: 'プロファイルを削除しますか？',
+    deleteTitle: 'エージェントを削除しますか？',
     deleteDescPrefix: 'これにより ',
     deleteDescMid: ' が削除され、その ',
     deleteDescSuffix: ' ディレクトリが削除されます。この操作は元に戻せません。',
     deleting: '削除中...',
-    createDesc: 'プロファイルは独立した Hermes 環境です：設定、スキル、SOUL.md が別々になります。',
+    createDesc: 'エージェントごとに独自の指示、設定、チャットを持ちます。',
     nameLabel: '名前',
     cloneFrom: '複製元',
     cloneFromNone: 'なし（空）',
-    cloneFromDesc: '選択したプロファイルから設定、スキル、SOUL.md をコピーします。',
-    cloneFromDefault: 'デフォルトプロファイルから設定を複製',
-    cloneFromDefaultDesc: 'デフォルトプロファイルから設定、スキル、SOUL.md をコピーします。',
-    invalidName: hint => `無効なプロファイル名。${hint}`,
+    cloneFromDesc: '選択したエージェントから設定、スキル、SOUL.md をコピーします。',
+    cloneFromDefault: 'デフォルトのエージェントから設定を複製',
+    cloneFromDefaultDesc: 'デフォルトのエージェントから設定、スキル、SOUL.md をコピーします。',
+    invalidName: hint => `無効なエージェント名。${hint}`,
     nameRequired: '名前は必須です',
     creating: '作成中...',
-    createAction: 'プロファイルを作成',
-    renameTitle: 'プロファイルの名前を変更',
-    renameDescPrefix: '名前を変更するとプロファイルディレクトリと ',
+    createAction: 'エージェントを作成',
+    renameTitle: 'エージェントの名前を変更',
+    renameDescPrefix: '名前を変更するとエージェントのディレクトリと ',
     renameDescSuffix: ' 内のラッパースクリプトが更新されます。',
     newNameLabel: '新しい名前',
     renaming: '名前を変更中...',
@@ -1968,13 +1969,13 @@ export const jaOverrides = {
     deleted: '削除しました',
     setupCopied: 'セットアップコマンドをコピーしました',
     soulSaved: 'SOUL.md を保存しました',
-    failedLoad: 'プロファイルの読み込みに失敗しました',
-    failedDelete: 'プロファイルの削除に失敗しました',
+    failedLoad: 'エージェントの読み込みに失敗しました',
+    failedDelete: 'エージェントの削除に失敗しました',
     failedCopy: 'セットアップコマンドのコピーに失敗しました',
     failedLoadSoul: 'SOUL.md の読み込みに失敗しました',
     failedSaveSoul: 'SOUL.md の保存に失敗しました',
-    failedCreate: 'プロファイルの作成に失敗しました',
-    failedRename: 'プロファイルの名前変更に失敗しました'
+    failedCreate: 'エージェントの作成に失敗しました',
+    failedRename: 'エージェントの名前変更に失敗しました'
   },
 
   modelAssignment: {
@@ -1987,11 +1988,11 @@ export const jaOverrides = {
 
   cron: {
     control: jaCronControl,
-    close: 'Cron を閉じる',
-    title: 'スケジュール済みジョブ',
-    count: count => `${count} 件のジョブ`,
-    search: 'Cron ジョブを検索...',
-    loading: 'Cron ジョブを読み込み中...',
+    close: 'スケジュールを閉じる',
+    title: desktopTerms.ja.schedules,
+    count: count => `スケジュール ${count} 件`,
+    search: 'スケジュールを検索...',
+    loading: 'スケジュールを読み込み中...',
     states: {
       enabled: '有効',
       scheduled: 'スケジュール済み',
@@ -2043,11 +2044,11 @@ export const jaOverrides = {
     monthlyOnDayAt: (dayOfMonth, time) => `毎月 ${dayOfMonth} 日 ${time} に`,
     topOfHour: '毎時 0 分',
     everyHourAt: minute => `毎時 :${minute} に`,
-    newCron: '新しい Cron',
+    newCron: '新しいスケジュール',
     emptyDescNew:
-      'Cron 式でプロンプトを実行するスケジュールを設定します。Hermes が実行して、選択した宛先に結果を送信します。',
+      'スケジュールを設定すると、エージェントがプロンプトを自動実行し、選択した宛先に結果を送信します。',
     emptyDescSearch: '検索キーワードを広げてください。',
-    emptyTitleNew: 'スケジュールされたジョブがまだありません',
+    emptyTitleNew: 'スケジュールがまだありません',
     emptyTitleSearch: '一致なし',
     last: '前回',
     next: '次回',
@@ -2058,30 +2059,30 @@ export const jaOverrides = {
     hideRuns: '実行履歴を隠す',
     runHistory: '実行履歴',
 
-    actionsTitle: 'Cron ジョブのアクション',
+    actionsTitle: 'スケジュールの操作',
     resume: '再開',
     pause: '一時停止',
     resumeTitle: '再開',
     pauseTitle: '一時停止',
     triggerNow: '今すぐ実行',
-    edit: 'Cron を編集',
-    deleteTitle: 'Cron ジョブを削除しますか？',
+    edit: 'スケジュールを編集',
+    deleteTitle: 'スケジュールを削除しますか？',
     deleteDescPrefix: 'これにより ',
     deleteDescSuffix: ' が完全に削除され、即座に実行が停止されます。',
     deleting: '削除中...',
-    resumed: 'Cron を再開しました',
-    paused: 'Cron を一時停止しました',
-    triggered: 'Cron をトリガーしました',
-    deleted: 'Cron を削除しました',
-    created: 'Cron を作成しました',
-    updated: 'Cron を更新しました',
-    failedLoad: 'Cron ジョブの読み込みに失敗しました',
-    failedUpdate: 'Cron ジョブの更新に失敗しました',
-    failedTrigger: 'Cron ジョブのトリガーに失敗しました',
-    failedDelete: 'Cron ジョブの削除に失敗しました',
-    failedSave: 'Cron ジョブの保存に失敗しました',
-    editTitle: 'Cron ジョブを編集',
-    createTitle: '新しい Cron ジョブ',
+    resumed: 'スケジュールを再開しました',
+    paused: 'スケジュールを一時停止しました',
+    triggered: 'スケジュールを実行しました',
+    deleted: 'スケジュールを削除しました',
+    created: 'スケジュールを作成しました',
+    updated: 'スケジュールを更新しました',
+    failedLoad: 'スケジュールの読み込みに失敗しました',
+    failedUpdate: 'スケジュールの更新に失敗しました',
+    failedTrigger: 'スケジュールの実行に失敗しました',
+    failedDelete: 'スケジュールの削除に失敗しました',
+    failedSave: 'スケジュールの保存に失敗しました',
+    editTitle: 'スケジュールを編集',
+    createTitle: '新しいスケジュール',
     editDesc: 'スケジュール、プロンプト、または配信先を更新します。変更は次回の実行時に適用されます。',
     createDesc:
       'プロンプトを自動実行するスケジュールを設定します。Cron 構文または「15 分ごと」などのフレーズを使用します。',
@@ -2103,18 +2104,18 @@ export const jaOverrides = {
     promptRequired: 'プロンプトは必須です。',
     promptScheduleRequired: 'プロンプトとスケジュールは必須です。',
     scheduleRequired: 'スケジュールは必須です。',
-    scriptOnlyEditHint: 'スクリプトのみのジョブ（AI プロンプトなし）。ジョブ ID:',
+    scriptOnlyEditHint: 'スクリプトのみを実行するスケジュール（AI プロンプトなし）。スケジュール ID:',
     saveChanges: '変更を保存',
-    createAction: 'Cron を作成',
+    createAction: 'スケジュールを作成',
     tabs: {
-      jobs: 'ジョブ',
+      jobs: desktopTerms.ja.schedules,
       blueprints: 'ブレーンプリント'
     },
     blueprints: {
       tab: 'ブレーンプリント',
       startFrom: '開始点',
       custom: 'カスタム',
-      subtitle: 'すぐに使える自動化',
+      subtitle: 'すぐに使えるスケジュール',
       dialogDesc: '詳細を入力してスケジュールします。',
       scheduleIt: 'スケジュールする',
       scheduling: 'スケジュール中...',
@@ -2122,7 +2123,7 @@ export const jaOverrides = {
       loading: 'ブレーンプリントを読み込み中...',
       failedLoad: 'ブレーンプリントの読み込みに失敗しました',
       emptyTitle: '利用できるブレーンプリントはありません',
-      emptyDesc: 'このバックエンドで利用できる自動化ブレーンプリントはありません。'
+      emptyDesc: 'このバックエンドで利用できるスケジュールのブレーンプリントはありません。'
     }
   },
 
@@ -2182,7 +2183,7 @@ export const jaOverrides = {
   },
 
   sidebar: {
-    profileRail: 'プロファイルバー',
+    profileRail: 'エージェントバー',
     markAllRead: 'すべて既読にする',
     filter: {
       grouping: 'グループ化',
@@ -2191,7 +2192,7 @@ export const jaOverrides = {
       filters: 'フィルター',
       status: 'ステータス',
       pullRequest: 'プルリクエスト',
-      profile: 'プロファイル',
+      profile: desktopTerms.ja.agents,
       project: 'プロジェクト',
       archived: 'アーカイブ',
       resetToDefaults: 'デフォルトに戻す',
@@ -2216,10 +2217,10 @@ export const jaOverrides = {
       noPR: 'PRなし'
     },
     gatewayGroups: {
-      grouping: 'ゲートウェイとプロファイル',
+      grouping: 'ゲートウェイとエージェント',
       rename: 'グループ名を変更',
       aliasLabel: '表示名',
-      aliasHint: '表示名のみ変更します。ゲートウェイ名とプロファイル名は変わりません。',
+      aliasHint: '表示名のみ変更します。ゲートウェイ名とエージェント名は変わりません。',
       resetName: '名前をリセット',
       moveUp: '上に移動',
       moveDown: '下に移動',
@@ -2231,7 +2232,7 @@ export const jaOverrides = {
       capabilities: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
-      cron: 'スケジュール済みジョブ'
+      cron: desktopTerms.ja.schedules
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',
@@ -2244,7 +2245,7 @@ export const jaOverrides = {
     files: 'ファイル',
     review: 'レビュー',
     logs: 'ログ',
-    cronJobs: 'Cronジョブ',
+    cronJobs: desktopTerms.ja.schedules,
     groupAriaGrouped: 'セッションを単一リストとして表示',
     groupAriaUngrouped: 'ワークスペースごとにセッションをグループ化',
     showProjects: 'プロジェクトを表示',
@@ -2290,7 +2291,7 @@ export const jaOverrides = {
       backgroundRunning: 'バックグラウンドタスク実行中',
       draftSession: '下書き — 未送信',
       handoffOrigin: platform => `${platform} から引き継ぎ`,
-      ownedByProfile: profile => `プロファイル: ${profile}`,
+      ownedByProfile: profile => `エージェント: ${profile}`,
       renamed: '名前を変更しました',
       renameFailed: '名前の変更に失敗しました',
       renameTitle: 'セッションの名前を変更',
@@ -2397,8 +2398,8 @@ export const jaOverrides = {
       '/worktree': '分離した Git ワークツリーを表示、一覧、作成、整理',
       '/compress': '会話コンテキストを圧縮',
       '/rollback': 'チェックポイントを一覧または復元',
-      '/export': 'プロファイルの設定、スキル、テーマを共有用アーカイブに書き出す',
-      '/import': '共有アーカイブを新しいプロファイルとして読み込む',
+      '/export': 'エージェントの設定、スキル、テーマを共有用アーカイブに書き出す',
+      '/import': '共有アーカイブを新しいエージェントとして読み込む',
       '/stop': '進行中のターンとバックグラウンドプロセスを停止',
       '/pause': '新しい処理を全体で一時停止（緊急停止）；/pause off で再開',
       '/bg': '別のバックグラウンドセッションでプロンプトを実行',
@@ -2419,7 +2420,7 @@ export const jaOverrides = {
       '/egress': 'Docker の送信プロキシの状態を表示',
       '/context': 'コンテキスト使用量、内訳、圧縮統計、処理速度を表示',
       '/whoami': 'スラッシュコマンドのアクセス権を表示',
-      '/profile': 'アクティブな Hermes プロファイルを切り替え',
+      '/profile': 'アクティブなエージェントを切り替え',
       '/codex-runtime': 'OpenAI/Codex モデルの Codex app-server ランタイムを切り替え',
       '/personality': 'このセッションの人格を切り替え',
       '/battery': 'ステータスバーのバッテリー表示を切り替え',
@@ -2438,8 +2439,8 @@ export const jaOverrides = {
       '/hatch': '新しいペットを生成',
       '/learn': 'ディレクトリ、URL、会話、メモから再利用可能なスキルを学ぶ',
       '/init': 'リポジトリを調べて AGENTS.md の指示を作成または更新',
-      '/suggestions': '提案された自動化を確認し、採用または却下',
-      '/blueprint': 'ブループリントから自動化を設定',
+      '/suggestions': '提案されたスケジュールを確認し、採用または却下',
+      '/blueprint': 'ブループリントからスケジュールを設定',
       '/browser': 'エージェントのブラウザーを管理 [connect|disconnect|status]',
       '/palette': 'コマンドパレットを開く',
       '/usage': 'このセッションのトークン使用量を表示',
@@ -2826,7 +2827,7 @@ export const jaOverrides = {
     justNowSuffix: ' · たった今',
     bundleOutOfSync: 'アプリのビルドが古くなっています',
     bundleOutOfSyncDesc:
-      'Hermes ランタイムは更新されましたが、デスクトップアプリ自体は古いビルドのままです。アプリを更新するまで、新しいインターフェース機能(Bot Mode など)は表示されません。下の更新を実行してアプリを再ビルドしてください。それでもこの警告が消えない場合は、最新のデスクトップインストーラーから再インストールしてください。',
+      'Hermes ランタイムは更新されましたが、デスクトップアプリ自体は古いビルドのままです。アプリを更新するまで、新しいインターフェース機能（エージェントモードなど）は表示されません。下の更新を実行してアプリを再ビルドしてください。それでもこの警告が消えない場合は、最新のデスクトップインストーラーから再インストールしてください。',
     bundleOutOfSyncAction: 'インストーラーを入手',
     checkingShort: '確認中…'
   },
@@ -3059,8 +3060,8 @@ export const jaOverrides = {
       subagents: count => `${count} サブエージェント`,
       failed: count => `${count} 失敗`,
       running: count => `${count} 実行中`,
-      cron: 'Cron',
-      openCron: 'Cron ジョブを開く',
+      cron: desktopTerms.ja.schedules,
+      openCron: 'スケジュールを開く',
       starmap: 'メモリグラフ',
       openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',
@@ -3207,7 +3208,7 @@ export const jaOverrides = {
     editing: '編集中',
     unsavedChanges: '未保存の変更',
     saveFailed: message => `保存できませんでした：${message}`,
-    saveScopeChanged: 'この下書きを保存するには、元の接続とプロファイルに戻ってください。',
+    saveScopeChanged: 'この下書きを保存するには、元の接続とエージェントに戻ってください。',
     diskChangedTitle: 'ファイルがディスク上で変更されました',
     diskChangedBody:
       'このファイルは開いてから変更されています。あなたの版で上書きするか、編集を破棄して再読み込みしますか？',
@@ -3344,7 +3345,7 @@ export const jaOverrides = {
       skill: name => `スキル ${name}`,
       kind: { plugin: 'プラグイン', skill: 'スキル' },
       tier: { official: '公式', verified: '認証済み', community: 'コミュニティ' },
-      targetProfile: profile => `${profile} プロファイルにインストールします`,
+      targetProfile: profile => `エージェント「${profile}」にインストールします`,
       sendFailed: '回答を送信できませんでした。もう一度お試しください。',
       commitLabel: 'コミット',
       subdirLabel: 'フォルダー',
@@ -3594,7 +3595,7 @@ export const jaOverrides = {
         },
         browser_type: { done: 'ページに入力しました', pending: 'ページに入力中', pendingAction: '入力中' },
         clarify: { done: '質問しました', pending: '質問中', pendingAction: '質問中' },
-        cronjob: { done: 'Cron ジョブ', pending: 'Cron ジョブをスケジュール中', pendingAction: 'スケジュール中' },
+        cronjob: { done: desktopTerms.ja.schedules, pending: 'スケジュールを設定中', pendingAction: '設定中' },
         edit_file: { done: 'ファイルを編集しました', pending: 'ファイルを編集中', pendingAction: '編集中' },
         execute_code: { done: 'コードを実行しました', pending: 'スクリプト作成中', pendingAction: 'スクリプト作成中' },
         image_generate: { done: '画像を生成しました', pending: '画像を生成中', pendingAction: '生成中' },
@@ -3644,7 +3645,7 @@ export const jaOverrides = {
     sudoCommandUnavailable:
       'エージェントからコマンドが提供されていません。会話で確認できない場合はキャンセルしてください。',
     sudoInstallDesc:
-      'Bot Screen のパッケージ（TigerVNC + Xfce）をゲートウェイホストにインストールするため、sudo パスワードが必要です。そのホストにのみ送信されます。',
+      'エージェント画面のパッケージ（TigerVNC + Xfce）をゲートウェイホストにインストールするため、sudo パスワードが必要です。そのホストにのみ送信されます。',
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',
@@ -3696,11 +3697,11 @@ export const jaOverrides = {
     yoloTitle: 'YOLO',
     yoloToggleFailed: 'YOLO を切り替えられませんでした',
     profileStatus: current =>
-      `プロファイル: ${current}。/profile <name> または「新しいセッション」ピッカーを使って別のプロファイルでチャットを始めてください。`,
-    unknownProfile: '不明なプロファイル',
-    noProfileNamed: (target, available) => `"${target}" という名前のプロファイルはありません。利用可能: ${available}`,
-    newChatsProfile: name => `新しいチャットはプロファイル ${name} を使用します。`,
-    setProfileFailed: 'プロファイルの設定に失敗しました',
+      `エージェント: ${current}。/profile <name> または「新しいセッション」ピッカーを使って別のエージェントでチャットを始めてください。`,
+    unknownProfile: '不明なエージェント',
+    noProfileNamed: (target, available) => `"${target}" という名前のエージェントはありません。利用可能: ${available}`,
+    newChatsProfile: name => `新しいチャットはエージェント「${name}」を使用します。`,
+    setProfileFailed: 'エージェントの設定に失敗しました',
     sttDisabled: '音声認識は設定で無効になっています。',
     stopFailed: '停止に失敗しました',
     regenerateFailed: '再生成に失敗しました',
@@ -3715,7 +3716,7 @@ export const jaOverrides = {
     resumeStrandedBody:
       'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
     poolSlotTimeoutBody:
-      'すべてのローカルプロファイルバックエンドスロットが使用中です。「設定」→「詳細設定」で「Warm Bot Backends」を増やすか、アイドル状態のバックエンドが解放された後に再試行してください。',
+      'すべてのローカルエージェントのバックエンドスロットが使用中です。「設定」→「詳細設定」で待機状態に保つエージェントのバックエンド数を増やすか、アイドル状態のバックエンドが解放された後に再試行してください。',
     poolSlotTimeoutOpenSettings: '詳細設定を開く',
     resumeRetry: '再試行',
     nothingToBranch: 'ブランチするものがありません',
@@ -3797,16 +3798,16 @@ export const jaOverrides = {
         text: '全セッションの画像・ファイル・リンクを一箇所にまとめています。'
       },
       cron: {
-        title: '自動で動く仕事',
-        text: 'プロンプトを毎時・毎晩、または cron 式で実行できます。'
+        title: 'スケジュールで自動実行',
+        text: 'プロンプトを毎時・毎晩などに自動実行できます。Cron 式で実行日時を指定することもできます。'
       },
       'command-palette': {
         title: 'すべてはこの一箇所から',
         text: 'セッション、設定、スキル、コマンドはすべてパレットから呼び出せます。'
       },
       profiles: {
-        title: 'プロファイルは独立しています',
-        text: 'それぞれが独自のキー・メモリ・セッションを持つ、別の Hermes です。'
+        title: 'エージェントごとに独立',
+        text: 'それぞれのエージェントが独自の指示、設定、チャットを持ちます。'
       },
       'composer-mentions': {
         title: 'ファイルとコマンド',

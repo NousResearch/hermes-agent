@@ -3,7 +3,7 @@ import type { TranslationOverrides } from './define-locale'
 export const zhHantDiagnostics = {
   notifications: {
     sharedProfileWarning:
-      '另一個 Hermes 安裝實例正在使用此設定檔。兩個實例共用此設定檔的設定和資料，因此變更可能發生衝突。你可以繼續使用，也可以在變更前關閉另一個實例。',
+      '另一個 Hermes 安裝實例正在使用此智慧體。兩個實例共用此智慧體的設定和資料，因此變更可能發生衝突。你可以繼續使用，也可以在變更前關閉另一個實例。',
     region: '通知',
     hide: '隱藏',
     show: '顯示',

@@ -1,7 +1,7 @@
 import type { Translations } from './types'
 
 export const enOnboarding: Translations['onboarding'] = {
-  headerTitle: "Let's get you setup with Hermes Agent",
+  headerTitle: "Let's set up your agent",
   headerDesc: 'Connect a model provider to start chatting. Most options take one click.',
   preparingInstall: 'Hermes is finishing install. This usually takes under a minute on first run.',
   starting: 'Starting Hermes…',

@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, expect, it, vi } from 'vitest'
 
 import * as client from '@/api/client'
+import { en } from '@/i18n/en'
 
 import { RoutineDialog } from './routine-dialog'
 
@@ -19,13 +20,13 @@ it('saves a new routine on the captured owner and leaves failures editable', asy
   const close = vi.fn()
   const saved = vi.fn()
   render(<RoutineDialog onClose={close} onSaved={saved} owner={{ connectionId: 'remote', profile: 'research' }} />)
-  fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Daily review' } })
-  fireEvent.change(screen.getByLabelText('Schedule'), { target: { value: '0 9 * * *' } })
-  fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Review my notes' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  fireEvent.change(screen.getByLabelText(en.cron.nameLabel), { target: { value: 'Daily review' } })
+  fireEvent.change(screen.getByPlaceholderText('0 9 * * *'), { target: { value: '0 9 * * *' } })
+  fireEvent.change(screen.getByLabelText(en.cron.promptLabel), { target: { value: 'Review my notes' } })
+  fireEvent.click(screen.getByRole('button', { name: en.common.save }))
   expect((await screen.findByRole('alert')).textContent).toContain('Invalid schedule')
   expect(close).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  fireEvent.click(screen.getByRole('button', { name: en.common.save }))
   await waitFor(() => expect(saved).toHaveBeenCalledOnce())
   expect(request).toHaveBeenLastCalledWith(
     expect.objectContaining({
@@ -50,8 +51,8 @@ it('edits script routine metadata without overwriting its script or resending a 
       owner={{ connectionId: 'alpha', profile: 'research' }}
     />
   )
-  fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  fireEvent.change(screen.getByLabelText(en.cron.nameLabel), { target: { value: 'Renamed' } })
+  fireEvent.click(screen.getByRole('button', { name: en.common.save }))
   await waitFor(() => expect(saved).toHaveBeenCalledOnce())
   expect(request).toHaveBeenCalledWith(
     expect.objectContaining({ body: { updates: { name: 'Renamed', enabled: true } } })
@@ -69,23 +70,23 @@ it('keeps an in-flight save visible and restores editing after failure', async (
   const close = vi.fn()
   const saved = vi.fn()
   render(<RoutineDialog onClose={close} onSaved={saved} owner={{ connectionId: 'remote', profile: 'research' }} />)
-  fireEvent.change(screen.getByLabelText('Schedule'), { target: { value: '0 9 * * *' } })
-  fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Review my notes' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-  expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(true)
-  expect(screen.getByLabelText('Prompt').closest('fieldset')?.disabled).toBe(true)
-  expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
-  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  fireEvent.change(screen.getByPlaceholderText('0 9 * * *'), { target: { value: '0 9 * * *' } })
+  fireEvent.change(screen.getByLabelText(en.cron.promptLabel), { target: { value: 'Review my notes' } })
+  fireEvent.click(screen.getByRole('button', { name: en.common.save }))
+  expect(screen.getByRole('button', { name: en.common.cancel }).hasAttribute('disabled')).toBe(true)
+  expect(screen.getByLabelText(en.cron.promptLabel).closest('fieldset')?.disabled).toBe(true)
+  expect(screen.queryByRole('button', { name: en.common.close })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: en.common.cancel }))
   fireEvent.keyDown(window.document, { key: 'Escape' })
   expect(close).not.toHaveBeenCalled()
   await act(async () => {
     reject(new Error('Save failed'))
   })
   expect(screen.getByRole('alert').textContent).toContain('Save failed')
-  expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false)
-  expect(screen.getByLabelText('Prompt').closest('fieldset')?.disabled).toBe(false)
+  expect(screen.getByRole('button', { name: en.common.cancel }).hasAttribute('disabled')).toBe(false)
+  expect(screen.getByLabelText(en.cron.promptLabel).closest('fieldset')?.disabled).toBe(false)
   expect(saved).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  fireEvent.click(screen.getByRole('button', { name: en.common.cancel }))
   expect(close).toHaveBeenCalledOnce()
 })
 
@@ -104,13 +105,13 @@ it.each([
       owner={{ connectionId: 'beta', profile: 'research' }}
     />
   )
-  fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed review' } })
-  const prompt = screen.getByLabelText('Prompt') as HTMLTextAreaElement
+  fireEvent.change(screen.getByLabelText(en.cron.nameLabel), { target: { value: 'Renamed review' } })
+  const prompt = screen.getByLabelText(en.cron.promptLabel) as HTMLTextAreaElement
 
   expect(prompt.value).toBe('')
   expect(prompt.validity.valueMissing).toBe(false)
   expect(prompt.form?.checkValidity()).toBe(true)
-  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  fireEvent.click(screen.getByRole('button', { name: en.common.save }))
   await waitFor(() => expect(saved).toHaveBeenCalledOnce())
   expect(request).toHaveBeenCalledWith(expect.objectContaining({
     connectionId: 'beta',
@@ -133,12 +134,12 @@ it.each([undefined, { skills: [] }, { skills: [' '], skill: ' ' }])(
         owner={{ connectionId: 'beta', profile: 'research' }}
       />
     )
-    fireEvent.change(screen.getByLabelText('Schedule'), { target: { value: '0 9 * * *' } })
-    const prompt = screen.getByLabelText('Prompt') as HTMLTextAreaElement
+    fireEvent.change(screen.getByPlaceholderText('0 9 * * *'), { target: { value: '0 9 * * *' } })
+    const prompt = screen.getByLabelText(en.cron.promptLabel) as HTMLTextAreaElement
 
     expect(prompt.validity.valueMissing).toBe(true)
     expect(prompt.form?.checkValidity()).toBe(false)
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    fireEvent.click(screen.getByRole('button', { name: en.common.save }))
     expect(request).not.toHaveBeenCalled()
   }
 )

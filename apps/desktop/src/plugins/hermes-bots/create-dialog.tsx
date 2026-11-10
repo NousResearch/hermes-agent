@@ -179,7 +179,7 @@ function discardDraftProfile(draft: string, target: string) {
 
   void Promise.resolve(discard)
     .then(() => host.notify({ kind: 'success', message: `Draft agent "${draft}" discarded` }))
-    .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
+    .catch(err => host.notifyError(err, `Could not clean up draft agent "${draft}"`))
 }
 
 /** The live Capabilities surface needs a real profile. Materialize it whenever

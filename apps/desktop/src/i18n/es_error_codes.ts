@@ -5,8 +5,8 @@ type ThreadCopy = Translations['assistant']['thread']
 // The error card's per-code title and body (lib/error-surface-copy.ts), keyed by error_surface.code.
 export const esErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   cron_session_read_only: {
-    title: 'Este chat pertenece a una tarea programada',
-    body: 'Solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
+    title: 'Este chat pertenece a una programación',
+    body: 'Solo ejecuta esa programación, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
   },
   session_read_only: {
     title: 'Este chat es de solo lectura',

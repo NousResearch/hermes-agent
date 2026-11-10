@@ -35,8 +35,8 @@ export const esAuxTasks: AuxTaskCopyMap = {
     hint: 'Descomposición de tareas'
   },
   profile_describer: {
-    label: 'Descriptor de perfiles',
-    hint: 'Descripciones automáticas de perfiles'
+    label: 'Descriptor de agentes',
+    hint: 'Descripciones automáticas de agentes'
   },
   curator: {
     label: 'Curador',

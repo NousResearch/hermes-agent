@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
+import { en } from '@/i18n/en'
 
 import { SimplifiedGlobalNav } from './simplified-global-nav'
 
@@ -28,10 +29,10 @@ function mount(route = '/') {
 }
 
 it.each([
-  ['Agent settings', '/profiles'],
-  ['Capabilities', '/capabilities'],
-  ['Library', '/artifacts'],
-  ['Routines', '/cron']
+  [en.profiles.title, '/profiles'],
+  [en.sidebar.nav.capabilities, '/capabilities'],
+  [en.simplifiedAgents.library, '/artifacts'],
+  [en.cron.title, '/cron']
 ])('opens %s using its existing destination', (label, route) => {
   const navigate = mount()
   fireEvent.click(screen.getByRole('button', { name: label }))
@@ -52,7 +53,7 @@ it.each(['skills', 'plugins', 'connectors', 'toolsets'])(
 )
 
 it.each([
-  ['/settings?agentProfile=research&panel=settings&tab=config:model', 'Agent settings'],
+  ['/settings?agentProfile=research&panel=settings&tab=config:model', en.profiles.title],
   ['/settings?tab=config:appearance', 'Settings']
 ])('marks the owning rail destination on %s', (route, label) => {
   mount(route)

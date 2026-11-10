@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteProfile, getProfileSoul, updateProfileSoul } from '@/hermes'
+import { en } from '@/i18n/en'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
@@ -140,7 +141,7 @@ describe('ProfilesView', () => {
 
     await renderProfilesView()
 
-    const missing = /No SOUL\.md file exists for this profile/
+    const missing = en.profiles.soulMissing
     expect(screen.getByText(missing)).toBeTruthy()
     fireEvent.change(screen.getByLabelText('SOUL.md'), { target: { value: '# My instructions' } })
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save SOUL.md' })))
@@ -171,7 +172,7 @@ describe('ProfilesView', () => {
 
     await renderProfilesView()
 
-    realClick(await screen.findByRole('button', { name: 'New profile' }))
+    realClick(await screen.findByRole('button', { name: en.profiles.newProfile }))
 
     const soul = await screen.findByLabelText(/SOUL\.md/i)
 

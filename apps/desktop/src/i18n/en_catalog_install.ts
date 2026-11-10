@@ -14,7 +14,7 @@ export const enCatalogInstall: CatalogInstallTranslations = {
   skill: name => `skill ${name}`,
   kind: { plugin: 'plugin', skill: 'skill' },
   tier: { official: 'official', verified: 'verified', community: 'community' },
-  targetProfile: profile => `Installs into your ${profile} profile`,
+  targetProfile: profile => `Installs for your ${profile} agent`,
   sendFailed: 'Could not send your answer. Try again.',
   commitLabel: 'Commit',
   subdirLabel: 'Folder',

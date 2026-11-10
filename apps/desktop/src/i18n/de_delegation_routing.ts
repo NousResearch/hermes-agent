@@ -11,14 +11,14 @@ export const deDelegationRouting: DelegationRoutingTranslations = {
       description: 'Benennen Sie einige Modelle. Der Agent wählt für jeden Subagenten eines aus.'
     },
     profile_routes: {
-      label: 'Profilrouten',
-      description: 'Subagenten laufen als eines Ihrer Profile, mit dessen eigenem Modell, Skills und Schlüsseln.'
+      label: 'Agentenrouten',
+      description: 'Subagenten laufen als einer Ihrer Agenten, mit dessen eigenem Modell, Skills und Schlüsseln.'
     }
   },
   inUse: 'Aktiv',
   plugin: 'Plugin',
-  pluginMissing: 'Modellrouten und Profilrouten stammen aus dem Plugin Advanced Delegation.',
-  pluginDisabled: 'Advanced Delegation ist installiert, aber für dieses Profil ausgeschaltet.',
+  pluginMissing: 'Modellrouten und Agentenrouten stammen aus dem Plugin Advanced Delegation.',
+  pluginDisabled: 'Advanced Delegation ist installiert, aber für diesen Agenten ausgeschaltet.',
   pluginNotLoaded:
     'Advanced Delegation ist eingeschaltet, wurde von Hermes aber noch nicht geladen. Starten Sie Hermes neu, um den Vorgang abzuschließen.',
   installPlugin: 'Plugin installieren',
@@ -32,7 +32,7 @@ export const deDelegationRouting: DelegationRoutingTranslations = {
   blockedDetail:
     'Dieser Modus ist gespeichert, daher lehnt Hermes jeden Subagenten ab, statt stillschweigend Standard zu verwenden.',
   blockedMissing: 'Subagenten starten erst, wenn Advanced Delegation installiert ist.',
-  blockedDisabled: 'Subagenten starten erst, wenn Advanced Delegation für dieses Profil eingeschaltet ist.',
+  blockedDisabled: 'Subagenten starten erst, wenn Advanced Delegation für diesen Agenten eingeschaltet ist.',
   blockedNotLoaded:
     'Subagenten starten erst, wenn Hermes Advanced Delegation geladen hat. Starten Sie Hermes neu, um den Vorgang abzuschließen.',
   blockedUnavailable: label =>
@@ -92,22 +92,22 @@ export const deDelegationRouting: DelegationRoutingTranslations = {
   saveRoute: 'Route speichern',
   createRoute: 'Route hinzufügen',
 
-  profileRoutesTitle: 'Profile, als die Subagenten laufen können',
-  profileRoutesHint: 'Jedes ausgewählte Profil bringt sein eigenes Modell, Skills, Persona und Schlüssel mit.',
-  profileDescriptionPlaceholder: 'Wann es genutzt wird (optional)',
+  profileRoutesTitle: 'Agenten, als die Subagenten laufen können',
+  profileRoutesHint: 'Jeder ausgewählte Agent bringt sein eigenes Modell, Skills, Anweisungen und Schlüssel mit.',
+  profileDescriptionPlaceholder: 'Wann er genutzt wird (optional)',
   profileDefault: 'Standard',
-  profileEmpty: 'Noch keine weiteren Profile. Erstellen Sie eines über die Profil-Leiste.',
-  profileMissing: name => `${name} (Profil existiert nicht mehr)`,
+  profileEmpty: 'Noch keine weiteren Agenten. Erstellen Sie einen über die Agenten-Leiste.',
+  profileMissing: name => `${name} (Agent existiert nicht mehr)`,
 
   inactiveTitle: 'In diesem Modus nicht verwendet',
   inactiveModelMap: route =>
     `Modellrouten wählen das Modell jedes Subagenten. Subagenten ohne gewählte Route verwenden „${route}“.`,
   inactiveProfiles: profile =>
-    `Profilrouten wählen das Profil jedes Subagenten. Subagenten ohne gewähltes Profil laufen als „${profile}“.`,
+    `Agentenrouten wählen den Agenten, als den jeder Subagent läuft. Subagenten ohne gewählten Agenten laufen als „${profile}“.`,
   inactiveModelMapNoDefault:
     'Modellrouten wählen das Modell jedes Subagenten. Subagenten ohne Route verwenden das Modell des Hauptagenten.',
   inactiveProfilesNoDefault:
-    'Profilrouten wählen das Profil jedes Subagenten. Subagenten ohne Profil verwenden das Modell des Hauptagenten.',
+    'Agentenrouten wählen den Agenten, als den jeder Subagent läuft. Subagenten ohne gewählten Agenten verwenden das Modell des Hauptagenten.',
   inactivePlugin: label => `${label} legt das Modell jedes Subagenten fest, daher gilt diese Einstellung nicht.`,
   useDefault: 'Zu Standard wechseln'
 }

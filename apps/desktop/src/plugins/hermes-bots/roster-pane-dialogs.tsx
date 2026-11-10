@@ -108,9 +108,9 @@ export function renderRosterDialogs({
         description={
           deleting ? (
             <span>
-              {'This will permanently delete the bot '}
+              {'This will permanently delete the agent '}
               <span className="font-medium text-foreground">{deleting.name}</span>
-              {' and its associated Hermes profile at '}
+              {' and its data at '}
               <span className="font-mono text-xs">{deleting.path}</span>. This cannot be undone.
             </span>
           ) : null
@@ -128,7 +128,7 @@ export function renderRosterDialogs({
           await refetch()
           host.notify({
             kind: 'success',
-            message: `Deleted profile ${name}`
+            message: `Deleted agent ${name}`
           })
         }}
         open={Boolean(deleting)}

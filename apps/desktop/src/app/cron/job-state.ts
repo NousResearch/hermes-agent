@@ -1,3 +1,4 @@
+import { translateNow } from '@/i18n'
 import type { CronJob } from '@/types/hermes'
 
 // Status-pip color per cron job state. Single source for the sidebar section and
@@ -36,7 +37,11 @@ export function jobTitle(job: CronJob): string {
   const pick = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
 
   return (
-    pick(job.name) || truncateText(pick(job.prompt), 60) || truncateText(pick(job.script), 60) || job.id || 'Cron job'
+    pick(job.name) ||
+    truncateText(pick(job.prompt), 60) ||
+    truncateText(pick(job.script), 60) ||
+    job.id ||
+    translateNow('cron.count', 1)
   )
 }
 

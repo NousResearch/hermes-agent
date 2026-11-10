@@ -8,7 +8,7 @@ export const enMemoryLayers: MemoryLayersTranslations = {
   builtinMemory: 'built-in memory only',
   noProvider: 'None — built-in memory only',
   noProviderDesc:
-    'Hermes uses only the built-in layer below. Choose an external provider under Settings › Memory & Context to add one.',
+    'The agent uses only the built-in layer below. Choose an external provider under Settings › Memory & Context to add one.',
   providerDesc: name => `${name} adds its own recall to every session, on top of the built-in layer.`,
   providerNotReadyDesc: name =>
     `${name} is the saved provider but adds no recall until it is ready. The built-in layer works either way.`,
@@ -28,5 +28,5 @@ export const enMemoryLayers: MemoryLayersTranslations = {
   off: 'Off',
   onlyFile: file => `${file} only`,
   builtinDesc:
-    'MEMORY.md and USER.md are Hermes’s own memory, separate from any external provider. Both load into sessions by default; the memory and user profile toggles in Settings › Memory & Context turn each off. A provider adds to this layer; it never replaces it.'
+    'MEMORY.md and USER.md are the agent’s own memory, separate from any external provider. Both load into sessions by default; the memory and user profile toggles in Settings › Memory & Context turn each off. A provider adds to this layer; it never replaces it.'
 }

@@ -39,9 +39,9 @@ export const esDesktopCommands = {
   savedTo: (path: string) => `Conversación guardada en ${path}`,
   saveCancelled: 'No guardado (cancelado).',
   exportRemote:
-    '/export empaqueta un perfil desde el host de la pasarela, que no es este equipo. Ejecuta `hermes profile export` en ese host.',
+    '/export empaqueta un agente desde el host de la pasarela, que no es este equipo. Ejecuta `hermes profile export` en ese host.',
   importRemote:
-    '/import instala un perfil en el host de la pasarela, que no es este equipo. Ejecuta `hermes profile import <archive>` en ese host.',
+    '/import instala un agente en el host de la pasarela, que no es este equipo. Ejecuta `hermes profile import <archive>` en ese host.',
   timestampsUsage: 'uso: /timestamps [on|off|status]',
   timestampsOn:
     'Marcas de tiempo: activadas (esta ventana; configura display.timestamps en config.yaml para conservarlo)',

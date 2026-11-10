@@ -1,6 +1,6 @@
 import { appendFileSync } from 'node:fs'
 
-import { chromium, expect, test } from '@playwright/test'
+import { chromium, expect, type Page, test } from '@playwright/test'
 
 import { composer, createCoreSandbox, freePort, webappLaunchLink, writeProviderHome } from './harness'
 import { startScriptedProvider } from './provider'
@@ -73,6 +73,7 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     }
 
     await page.setViewportSize({ width: 1280, height: 860 })
+    await exerciseManagementEntries(page, true)
 
     if (!await page.locator('.portal-sidebar').isVisible()) {
       await page.getByRole('button', { name: 'Show sidebar', exact: true }).tap()
@@ -94,6 +95,7 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     // share the redesigned sidebar's width rather than inherit classic sizes.
     await expect.poll(async () => {
       const railBounds = (await rail.boundingBox())!
+
       return (await settings.boundingBox())!.x - (railBounds.x + railBounds.width)
     }, { timeout: 5000 }).toBeCloseTo(0)
     await expect.poll(async () => (await settingsNav.boundingBox())!.width, { timeout: 5000 }).toBe(sidebarWidth)
@@ -113,6 +115,7 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await expect.poll(async () => {
       const railBounds = (await rail.boundingBox())!
       const settingsBounds = (await settings.boundingBox())!
+
       return railBounds.x - (settingsBounds.x + settingsBounds.width)
     }).toBeCloseTo(0)
     await rail.getByRole('button', { name: 'المحادثات', exact: true }).tap()
@@ -166,6 +169,7 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await page.getByRole('switch', { name: 'Redesigned interface', exact: true }).tap()
     await go('/')
     await expect(composer(page)).toBeVisible()
+    await exerciseManagementEntries(page, false)
     await page.screenshot({ path: test.info().outputPath('classic-desktop.png') })
   } finally {
     await browser.close()
@@ -173,3 +177,46 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await provider.close()
   }
 })
+
+// Exercise the same Agent/Schedule concepts from navigation through both editors.
+async function exerciseManagementEntries(page: Page, redesigned: boolean) {
+  const rail = page.locator('[data-slot="global-nav"]')
+
+  if (redesigned) {
+    await rail.getByRole('button', { name: 'Schedules', exact: true }).click()
+  } else {
+    await page.evaluate(() => { location.hash = '/cron' })
+  }
+
+  await expect(page).toHaveURL(/#\/cron/)
+  await page.getByRole('heading', { name: 'Schedules', exact: true }).first().waitFor({ state: 'visible' })
+  const newSchedule = page.getByRole('button', { name: 'New schedule', exact: true }).first()
+  await newSchedule.click()
+  const schedule = page.getByRole('dialog', { name: 'New schedule', exact: true })
+  await schedule.getByRole('textbox', { name: /^Name\b/ }).fill('Weekly briefing')
+  await schedule.getByRole('textbox', { name: 'Prompt', exact: true }).fill('Summarize the week.')
+  await schedule.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(schedule).not.toBeVisible()
+
+  if (redesigned) {await expect(newSchedule).toBeFocused()}
+
+  if (redesigned) {
+    await rail.getByRole('button', { name: 'Agents', exact: true }).click()
+    await page.getByRole('button', { name: 'Manage agents…', exact: true }).click()
+  } else {
+    await page.evaluate(() => { location.hash = '/profiles?manage=true' })
+  }
+
+  await page.getByRole('heading', { name: 'Agents', exact: true }).first().waitFor({ state: 'visible' })
+
+  const newAgent = page.getByRole('button', { name: 'New agent', exact: true }).first()
+  await newAgent.click()
+  const agent = page.getByRole('dialog', { name: 'New agent', exact: true })
+  await agent.getByRole('textbox', { name: /^Name\b/ }).fill('terminology-smoke')
+  await agent.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(agent).not.toBeVisible()
+
+  if (redesigned) {await expect(newAgent).toBeFocused()}
+  await page.evaluate(() => { location.hash = '/' })
+  await expect(composer(page)).toBeVisible()
+}

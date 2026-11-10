@@ -5,7 +5,7 @@ export const jaCronControl: CronControlCopy = {
   stopping: '停止中…',
   stopped: '実行をキャンセルしました',
   finishedFirst: '停止する前に実行が終了しました',
-  nothingToStop: '実行中のジョブはありません',
+  nothingToStop: '実行中のスケジュールはありません',
   failedStop: '実行を停止できませんでした',
   lastCancelled: (reason: string) => (reason ? `前回の実行はキャンセルされました: ${reason}` : '前回の実行はキャンセルされました'),
   catchUpLabel: '見逃した実行',

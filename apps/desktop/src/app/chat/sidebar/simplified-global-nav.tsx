@@ -49,7 +49,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
       active: view === 'chat'
     },
     {
-      label: t.simplifiedAgents.settings,
+      label: t.profiles.title,
       icon: 'robot',
       area: 'profiles',
       route: PROFILES_ROUTE,
@@ -69,7 +69,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
       route: ARTIFACTS_ROUTE,
       active: view === 'artifacts'
     },
-    { label: t.simplifiedAgents.routines, icon: 'watch', area: 'cron', route: CRON_ROUTE, active: view === 'cron' }
+    { label: t.cron.title, icon: 'watch', area: 'cron', route: CRON_ROUTE, active: view === 'cron' }
   ] as const
 
   const items = [

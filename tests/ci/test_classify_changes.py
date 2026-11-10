@@ -500,7 +500,7 @@ def test_every_slow_lane_path_matches_a_tracked_file():
     )
     if tracked.returncode != 0:
         pytest.skip("not a git checkout")
-    files = tracked.stdout.splitlines()
+    files = [_mod.original_path(f) for f in tracked.stdout.splitlines()]
     tables = {**_mod._E2E_LANES, "docker": _mod._DOCKER_PATHS, "nix": _mod._NIX_LANE_PATHS,
               "remote_backends": _mod._REMOTE_BACKEND_PATHS}
     dead = {
@@ -567,14 +567,14 @@ _DESKTOP_UPDATE_PATH_FILES = (
 
 @pytest.mark.parametrize("path", _UPDATE_PATH_FILES)
 def test_every_update_path_file_starts_the_real_update_suite(path):
-    assert (_REPO / path).is_file(), f"{path} moved: update the classifier and this table"
-    assert classify([path])["e2e_upgrade"], path
+    assert (_REPO / _mod.current_path(path)).is_file(), f"{path} is gone: update the classifier and this table"
+    assert classify([_mod.current_path(path)])["e2e_upgrade"], path
 
 
 @pytest.mark.parametrize("path", _DESKTOP_UPDATE_PATH_FILES)
 def test_every_desktop_update_path_file_starts_the_desktop_update_suite(path):
-    assert (_REPO / path).is_file(), f"{path} moved: update the classifier and this table"
-    assert classify([path])["e2e_desktop_update"], path
+    assert (_REPO / _mod.current_path(path)).is_file(), f"{path} is gone: update the classifier and this table"
+    assert classify([_mod.current_path(path)])["e2e_desktop_update"], path
 
 
 _REPO = Path(__file__).resolve().parents[2]

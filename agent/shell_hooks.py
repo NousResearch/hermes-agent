@@ -29,7 +29,7 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,11 @@ _skip_logged: set[tuple[str, str, str]] = set()
 
 
 def _home_key() -> str:
-    return str(get_hermes_home().expanduser().resolve())
+    # The registry key must match the one ``hermes_home_key`` produces for the same
+    # directory: that helper normalises the path (and lower-cases it on Windows), while
+    # a raw ``str(resolve())`` keeps the on-disk casing — the two spell the same home
+    # differently, so lookups by home key never matched on case-sensitive compares.
+    return hermes_home_key()
 
 
 def _forget_home_registrations(registry: set[tuple], lock: threading.Lock) -> None:

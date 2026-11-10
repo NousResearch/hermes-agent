@@ -1,18 +1,20 @@
 name: looprunner
 repo: https://github.com/itxLikhith/looprunner
-sha: fb4cf8415c8ceedd71a0b2f8ad6ec58672cc60ba
+sha: fb45865e9be371628d43bd176aeb497d87992c94
 description: >-
   Set-and-forget autonomous QA loop runner for any repository. Runs your verify
   command each round, diagnoses failures with the host LLM, applies a minimal fix
   on a branch, opens a PR, and stops itself when it stalls or runs out of budget.
-  Can watch a repository's issues and dispatch goal-mode kanban cards, gate PRs on
-  a security review, and checkpoint a stalled stage for a later retry.
+  Can watch a repository's issues and dispatch goal-mode kanban cards, checkpoint
+  a stalled stage for a later retry, and gate PRs on a security review.
 maintainer: itxLikhith
 tier: community
 category: automation
 requires_hermes: ">=0.22.0"
-version: "0.9.0"
+version: "0.10.0"
 tags: [automation, kanban, qa, testing, ci, security, issues]
+known_issues:
+  - "Optional: the heavy multi-agent security scan needs the hermes-security plugin installed. LoopRunner declares it as an advisory dependency and falls back to a built-in LLM review when it is absent."
 capabilities:
   provides_tools:
     - loop_start
@@ -26,6 +28,7 @@ capabilities:
     - loop_watch
     - loop_scan_issues
     - loop_security
+    - loop_security_card
     - loop_checkpoint
     - loop_recommend
     - loop_pause

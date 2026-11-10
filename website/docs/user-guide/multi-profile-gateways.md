@@ -1032,21 +1032,37 @@ to sleep when idle. Two patterns:
 
 ### macOS — `caffeinate`
 
-`caffeinate` is built into macOS and prevents sleep while it runs. No install.
+`caffeinate` is built into macOS. It holds power-management assertions while
+it runs; it does not change your saved sleep settings. `-i` prevents idle
+system sleep, while `-s` requests system-sleep prevention on AC power only.
+The display can still sleep unless you also add `-d`.
 
 ```bash
-caffeinate -dis                    # block display, idle, and system sleep
-caffeinate -dis -t 28800           # same, auto-exit after 8 hours
-caffeinate -i -w $(cat ~/.hermes/gateway.pid) &   # awake while default gateway runs
-
-# Persistent: run in background and forget
-nohup caffeinate -dis >/dev/null 2>&1 &
-disown
-
-# Inspect / stop
-pmset -g assertions | grep -iE 'caffeinate|prevent|user is active'
-pkill caffeinate
+caffeinate -is                    # foreground; Ctrl-C releases its assertions
+caffeinate -is -t 28800           # alternative: auto-exit after 8 hours
 ```
+
+For a background session that survives closing the terminal, keep its PID
+so you can stop only that session. This example still expires after eight
+hours and does not restart after a reboot:
+
+```bash
+nohup caffeinate -is -t 28800 >/dev/null 2>&1 &
+caffeinate_pid=$!
+printf 'caffeinate PID: %s\n' "$caffeinate_pid"
+pmset -g assertions | grep -iE 'caffeinate|prevent|user is active'
+```
+
+To stop it early in the same shell, while that session is still running:
+
+```bash
+kill "$caffeinate_pid"
+```
+
+Avoid `pkill caffeinate`: it also stops assertions owned by other sessions
+or applications. If you no longer have the original shell, inspect the
+recorded PID with `ps -p PID -o pid=,lstart=,command=` before stopping it;
+an exited process's PID may have been reused.
 
 | Flag   | Effect                                            |
 | ------ | ------------------------------------------------- |
@@ -1054,15 +1070,61 @@ pkill caffeinate
 | `-i`   | block idle system sleep (default)                 |
 | `-m`   | block disk sleep                                  |
 | `-s`   | block system sleep (AC-powered Macs only)         |
-| `-u`   | simulate user activity (prevents screen lock)     |
+| `-u`   | declare user activity (5 seconds by default)      |
 | `-t N` | auto-exit after `N` seconds                       |
 | `-w P` | exit when PID `P` exits                           |
 
-:::warning Lid-close still sleeps the Mac
-`caffeinate` cannot override the hardware-driven lid-close sleep on MacBooks.
-For lid-closed operation, change your Energy Saver / Battery preferences or
-use a third-party tool.
+:::warning Closing a MacBook's lid
+Preventing idle sleep is not the same as preventing lid-close sleep.
+`caffeinate -i` or `-d`, `pmset sleep 0`, and the Battery setting that prevents
+automatic sleeping when the display is off are not a guarantee of lid-closed
+operation. If the host sleeps, the gateway cannot process messages until the
+host wakes and connectivity resumes.
+
+- **On AC power, test `caffeinate -s`** (`-is` above includes it). It creates a
+  system-sleep assertion without root, active only on AC according to
+  `man caffeinate`. Apple's [system-sleep assertion documentation](https://developer.apple.com/documentation/iokit/kiopmassertiontypepreventsystemsleep)
+  explains that the OS may still sleep, for example during a thermal emergency.
+  An assertion is not a guarantee of lid-closed gateway availability across
+  Mac models or macOS versions; verify your own setup as described below.
+- **Gateway availability needs protection between turns.** An assertion held
+  only during an active agent turn cannot keep a sleeping gateway reachable
+  for the next message. Keep the host-level assertion running for the period
+  when you need the gateway available, not just while a reply is being generated.
+- **Closed-display mode with an external display** is another option. Check
+  Apple's [display requirements for your Mac](https://support.apple.com/en-us/102555)
+  and [accessory permissions for lid-closed use](https://support.apple.com/en-us/102282),
+  including power and external input devices, rather than assuming every
+  lid-closed configuration is supported.
+- **Do not use system-wide sleep overrides such as `pmset disablesleep` as a
+  routine workaround.** Prefer a bounded assertion and a verified setup over
+  changing global power-management settings. Stop your keep-awake session
+  before transporting the laptop; never put an awake laptop in a bag.
 :::
+
+#### Verify lid-closed availability
+
+1. With the lid open, confirm the gateway answers a fresh message from another
+   device. Record the power source (`pmset -g batt`), external displays and
+   any other keep-awake applications so the result has a clear scope.
+2. On AC, start the assertion and inspect `pmset -g assertions` for
+   `caffeinate` and `PreventSystemSleep`. This is supporting evidence, not
+   proof of message delivery.
+3. Record when you close the lid. Leave the gateway idle, then send a **new**
+   message from the other device. A pass requires a response **before** you
+   reopen the lid; a reply immediately after lid closure does not test
+   availability between turns.
+4. Test unplugging and reconnecting AC separately, keeping the lid closed.
+   `-s` is not active on battery. After reconnecting, send another **new**
+   message: processing a request queued during sleep does not prove that
+   fresh traffic works again.
+5. Afterwards, compare the message timestamps with sleep/wake entries in
+   `pmset -g log`. Separate wakes caused by opening the lid from recovery
+   that happened while it was closed. Stop only your test's assertion.
+
+If the setup cannot pass this test reliably, leave the lid open with idle
+sleep inhibited, use a supported closed-display setup, or use an always-on
+host. Do not infer gateway availability from process status alone.
 
 ### Linux — `systemd-inhibit` or `loginctl`
 

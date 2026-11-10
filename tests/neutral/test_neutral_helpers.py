@@ -200,9 +200,28 @@ def test_a_holder_is_dead_only_on_kernel_proof():
         assert process_identity.holder_process_is_dead(f"pid={child.pid}:pidns=1:turn=t") is False
 
 
-def test_the_option_tables_list_the_operand_taking_interpreter_options():
-    assert process_identity._PYTHON_SHORT_OPTIONS_WITH_OPERANDS == {"Q", "W", "X"}
-    assert process_identity._PYTHON_LONG_OPTIONS_WITH_OPERANDS == {"--check-hash-based-pycs", "--jit"}
+# Each interpreter option that takes an operand, as the next token or attached to the short option. An attached
+# operand holds a ``c`` and a separate one is a bare word, so a reader that does not know the option reads the operand
+# as more options (and finds ``-c``) or as the program.
+OPERAND_TAKING_OPTIONS = [
+    ["-Q", "new"],
+    ["-W", "ignore::DeprecationWarning"],
+    ["-Werror::DeprecationWarning"],
+    ["-X", "utf8"],
+    ["-Xtracemalloc=5"],
+    ["-Xc"],
+    ["--check-hash-based-pycs", "always"],
+    ["--jit", "on"],
+]
+
+
+@pytest.mark.parametrize("options", OPERAND_TAKING_OPTIONS)
+def test_an_operand_taking_option_is_read_past_to_the_program(options):
+    from gateway.status_inline_source import inline_source_flag_index
+
+    inline = ["python", *options, "-c", "import os", "14980", "hermes", "gateway", "run"]
+    assert inline_source_flag_index(inline) == len(options) + 1
+    assert inline_source_flag_index(["python", *options, "-m", "hermes_cli.main", "gateway", "run"]) is None
 
 
 def test_a_rescued_transcript_appends_under_the_callers_directory(tmp_path):

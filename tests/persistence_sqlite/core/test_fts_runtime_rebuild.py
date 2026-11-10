@@ -187,6 +187,25 @@ class TestRuntimeFtsRebuild:
     def test_uninspectable_hermes_process_remains_a_holder(self, argv):
         assert state_holders._looks_like_hermes(argv)
 
+    @pytest.mark.parametrize(
+        "options",
+        (
+            ("-Q", "new"),
+            ("-W", "ignore::DeprecationWarning"),
+            ("-Werror::DeprecationWarning",),
+            ("-X", "utf8"),
+            ("-Xtracemalloc=5",),
+            ("-Xc",),
+            ("--check-hash-based-pycs", "always"),
+            ("--jit", "on"),
+        ),
+    )
+    def test_operand_taking_interpreter_options_are_read_past_to_the_program(self, options):
+        module = ("/usr/bin/python3", *options, "-m", "hermes_cli.main", "gateway")
+        script = ("/usr/bin/python3", *options, "/opt/hermes-agent/run_agent.py", "--query", "hello")
+        assert state_holders._python_execution_target(module) == ("module", "hermes_cli.main")
+        assert state_holders._python_execution_target(script) == ("script", "/opt/hermes-agent/run_agent.py")
+
     @pytest.mark.platforms("linux")
     def test_foreign_holder_detection_proc_readlink_deleted_wal(
         self, db, tmp_path, monkeypatch

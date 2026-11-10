@@ -1,0 +1,36 @@
+name: local-fleet
+repo: https://github.com/humedini/local-fleet
+sha: e467a81f89571b2062ee64345895c0aeced25915
+title: Local Fleet
+description: 'Your local inference fleet, operated from Hermes Desktop: routing across your own boxes (DGX Spark /
+  GB10, Ollama, vLLM, LiteLLM, clusters behind one endpoint). Probes each box, makes the least busy healthy one the
+  primary model, falls back to smaller models on smaller boxes, then to your cloud model, and switches back when a box
+  recovers. Why-this-box inspector, flight recorder, outage rehearsal, drift detection, readiness, savings with its
+  working, doctor. Optional: subagents across boxes (delegation backend fleet), side tasks on the fleet
+  (auxiliary.<task>), keep the routed model loaded, private inference (primary, fallback chain, side tasks and
+  subagents held to your boxes, failing rather than using cloud; not air-gapping). Writes model.*, fallback_providers,
+  and on request delegation.backend and auxiliary.<task>; private on removes non-local fallback entries and puts them
+  back on off; hermes fleet restore puts the primary back. Network: HTTP only to the boxes you register. Observer hooks
+  record per-call endpoint, model, tokens and duration (never content) in its data dir. Read-only tools plus an
+  Ollama-only model pull; no remote command execution.'
+maintainer: humedini
+tier: community
+category: models
+version: "0.3.1"
+requires_hermes: ">=0.22"
+docs_url: https://github.com/humedini/local-fleet#readme
+readme: true
+image: https://raw.githubusercontent.com/humedini/local-fleet/e467a81f89571b2062ee64345895c0aeced25915/docs/img/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/humedini/local-fleet/e467a81f89571b2062ee64345895c0aeced25915/docs/img/fleet-page.png
+  - https://raw.githubusercontent.com/humedini/local-fleet/e467a81f89571b2062ee64345895c0aeced25915/docs/img/fleet-map.gif
+  - https://raw.githubusercontent.com/humedini/local-fleet/e467a81f89571b2062ee64345895c0aeced25915/docs/img/fleet-chip.png
+  - https://raw.githubusercontent.com/humedini/local-fleet/e467a81f89571b2062ee64345895c0aeced25915/docs/img/storyboard-1-local.png
+  - https://raw.githubusercontent.com/humedini/local-fleet/e467a81f89571b2062ee64345895c0aeced25915/docs/img/storyboard-2-cloud.png
+  - https://raw.githubusercontent.com/humedini/local-fleet/e467a81f89571b2062ee64345895c0aeced25915/docs/img/storyboard-3-recover.png
+platforms: []
+capabilities:
+  provides_tools: [fleet_status, fleet_list_nodes, fleet_pull_model]
+  provides_hooks: [on_session_start, post_api_request, api_request_error, post_auxiliary_call]
+  provides_middleware: []
+  requires_env: []

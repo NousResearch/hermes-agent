@@ -1,0 +1,23 @@
+name: lane-keeper
+repo: https://github.com/MindSproutStudios/hermes-lane-keeper
+sha: 4d906e910b906b88a582dd78a7a14e2d069505b1
+subdir: lane-keeper
+description: "Keeps your agent on a few active lanes (current commitments): new ideas the user mentions are saved as dormant markdown lanes instead of quietly becoming work, only the user can promote one (/lanes promote, cap-aware, forces choosing what to park), and stale or over-cap lanes are called out once. Status lives in a registry in the plugin's own data, so editing a lane file can't promote it; the hermes lanes CLI is read-only. Disclosure — no network calls, no subprocesses, no LLM calls of its own, no telemetry, no background work; never reads credential stores; reads/writes *.md files in lanes_dir (default <HERMES_HOME>/plugin-data/lane-keeper/lanes, or a top-level folder the user configures) and <HERMES_HOME>/plugin-data/lane-keeper/registry-<hash>.json (statuses, stale notices given, ≤300 session fingerprints); sends to the model provider a rules section plus active lane titles/next actions and up to 15 dormant titles once per session in the system prompt, and a one-line note in the user turn only when lanes change; its pre_tool_call hook reads tool names/arguments to block agent writes to lane data, status-changing CLI calls, Lane Keeper settings changes and disabling the plugin, and stores nothing."
+maintainer: MindSproutStudios
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/MindSproutStudios/hermes-lane-keeper#readme
+version: "0.2.0"
+platforms: []
+title: Lane Keeper
+capabilities:
+  provides_tools:
+    - lane_list
+    - lane_capture
+    - lane_checkpoint
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

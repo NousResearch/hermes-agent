@@ -19,8 +19,9 @@ import { catalogCategories } from './catalog-query'
 const MIN_SHELF = 3
 
 
-/** A shelf ranks by its most-starred entry, so the strongest categories lead. */
-const topStars = (items: CatalogEntry[]) => Math.max(-1, ...items.map(entry => entry.stars ?? -1))
+/** A shelf ranks by its most-starred entry, so the strongest categories lead.
+ *  Reduced entry by entry, because one category can outgrow an argument list. */
+const topStars = (items: CatalogEntry[]) => items.reduce((top, entry) => Math.max(top, entry.stars ?? -1), -1)
 
 /** Plugin tiers in page order; community keeps its category shelves. */
 const PLUGIN_TIERS: Exclude<PluginTier, 'community'>[] = ['official', 'verified']

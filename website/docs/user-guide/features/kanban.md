@@ -61,14 +61,30 @@ dashboard completion. It reads classic branch protection and active ruleset
 required contexts, paginates exact-head check runs and legacy statuses, then
 re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
 required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
-neutral **required** evidence cannot complete the card. Neither can zero-run
-acceptance, unreadable policy or GitHub API failures. A repository without required
-checks needs a local-only contract. `gh` must be authenticated with read access to
-the repository's checks and rules; no remote writes are performed by this gate.
+neutral **required** evidence cannot complete the card. Neither can unreadable
+policy or GitHub API failures. `gh` must be authenticated with read access to the
+repository's checks and rules; no remote writes are performed by this gate.
+Pagination decodes concatenated JSON documents instead of `--slurp`, so `gh` older
+than 2.57 (e.g. Ubuntu 24.04's 2.46) works; a private repository whose plan has no
+branch protection/rules answers the rules endpoint with `403 Upgrade to GitHub Pro`,
+which is treated as "no rules configured", not as an auth failure.
+
+An **already-merged** PR is accepted instead of being stranded: `state=MERGED`
+plus a `mergeCommit` is terminal evidence that cannot be fixed or retried, so the
+gate accepts it and records `state`, `merge_sha` and every observed required-check
+outcome in the receipt. Evidence is collected for the PR head SHA and, when it
+differs, for the merge commit (GitHub re-runs required checks there); head evidence
+still wins. A repository with no required checks at all (a fork PR) is accepted on
+`OPEN`/`MERGED` with a resolvable head. `merged_override=evidence-unavailable`
+marks a merged card accepted without usable required-check evidence, for audit.
+
 Acceptance reads run as the **assignee profile's** `gh` login — its `GH_TOKEN` /
 `GH_CONFIG_DIR` from the profile's own `.env`, never the ambient login of the
-process completing the card. On multi-profile hosts (one GitHub identity per
-org), sign `gh` in per profile (`GH_CONFIG_DIR` in that profile's `.env`). The
+process completing the card. When neither is set, the profile's own gh config dir
+is pinned: `<profile_home>/.config/gh` (where `gh auth login` actually writes
+`hosts.yml`) or, failing that, `<profile_home>/gh`. On multi-profile hosts (one
+GitHub identity per org), sign `gh` in per profile (`gh auth login` with
+`HOME=<profile_home>`, or `GH_CONFIG_DIR` in that profile's `.env`). The
 token must live in the profile's `.env` (or a configured secret source): a
 `GH_TOKEN` merely exported in the shell or a systemd unit is scrubbed from the
 `gh` child and never re-added. An assignee profile with no `gh` login of its
@@ -79,8 +95,8 @@ login. A login that cannot see the repository is rejected with
 retryable infra failure.
 
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
-store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
-instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
+store PR URL, SHA, state, merge commit, required contexts, check IDs/URLs,
+classifications and recovery instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
 infrastructure checks or wait, then retry completion. Use `kanban_block` when
 human action is needed. Generic GitHub `failure` cannot establish whether a test
 or artifact upload failed; inspect its retained URL. Explicit infrastructure

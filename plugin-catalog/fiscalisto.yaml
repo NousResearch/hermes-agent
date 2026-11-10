@@ -1,0 +1,18 @@
+name: fiscalisto
+title: Fiscalisto
+repo: https://github.com/RVP97/fiscalisto-hermes
+sha: f605adee76d3d1ba4ee9a6dfec226e3d91cd5bba
+version: "1.0.0"
+description: "Mexican electronic invoicing (CFDI 4.0) and SAT taxes through Fiscalisto's hosted MCP server (https://fiscalisto.com/mcp, OAuth sign-in with per-company grants and read / draft / stamp scopes, no keys in config): search issued and received CFDI, draft, stamp, email and cancel invoices, payment receipts, credit notes, advances, payroll receipts, the month's VAT and ISR estimate, SAT 69-B supplier checks, and SAT documents (constancia, opinión de cumplimiento, buzón tributario). Bundles an English overview skill and thirteen Spanish workflow skills. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only; OAuth uses pinned mcp-remote@0.1.49 over npx stdio, so Node.js 20.18.1+ and npm are required. Disclosure: every tool call goes to fiscalisto.com and acts on the companies the user approved, with their own role; stamping registers a CFDI with the SAT through Fiscalisto's PAC and uses a stamp from the user's plan, and the server refuses a stamp or cancellation without a confirmation token from a preview. The package marks the server untrusted, so Hermes asks before every tool not annotated read-only and refuses them in unattended runs. Sign-in opens a local callback port and stores OAuth tokens in ~/.mcp-auth. No telemetry. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Fiscalisto
+tier: community
+category: tools
+docs_url: https://fiscalisto.com/apps/chatgpt-y-claude
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

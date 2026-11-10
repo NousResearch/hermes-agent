@@ -10,8 +10,6 @@ model, provider.  Forum follow-ups pass ``message_thread_id=int(thread_id)``.
 """
 
 import asyncio
-import importlib.util
-import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -19,6 +17,7 @@ from typing import Any, Callable, Dict, List, Optional
 import hermes_yaml as yaml
 
 from hermes_cli.config import get_hermes_home
+from hermes_cli.plugin_isolation import import_user_code
 from hermes_constants import hermes_home_key
 
 
@@ -52,20 +51,12 @@ def _load_hook_dir(hook_dir: Path) -> Optional[tuple]:
     events = manifest.get("events", [])
     if not events:
         return _skip(hook_name, "no events declared")
-    # Register in sys.modules BEFORE exec_module so Pydantic/dataclass forward references
+    # Registered in sys.modules while the body runs so Pydantic/dataclass forward references
     # (``from __future__ import annotations``) resolve; otherwise a handler declaring a
     # BaseModel fails at first dispatch with "TypeAdapter ... is not fully defined".
-    module_name = f"hermes_hook_{hook_name}"
-    spec = importlib.util.spec_from_file_location(module_name, handler_path)
-    if spec is None or spec.loader is None:
+    module = import_user_code(handler_path, f"hermes_hook_{hook_name}")
+    if module is None:
         return _skip(hook_name, "could not load handler.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(module_name, None)
-        raise
     handle_fn = getattr(module, "handle", None)
     if handle_fn is None:
         return _skip(hook_name, "no 'handle' function found")
@@ -76,19 +67,15 @@ class HookRegistry:
     """Discovers, loads, and fires event hooks."""
 
     def __init__(self):
-        self._handlers: Dict[str, List[Callable]] = {}  # event_type -> handlers
-        self._loaded_hooks: List[dict] = []  # metadata for listing
+        self._handlers: dict[str, list[Callable]] = {}  # event_type -> handlers
+        self._loaded_hooks: list[dict] = []  # metadata for listing
 
     @property
-    def loaded_hooks(self) -> List[dict]:
+    def loaded_hooks(self) -> list[dict]:
         return list(self._loaded_hooks)
 
-    def _register_builtin_hooks(self) -> None:
-        """Extension point for always-on built-in hooks; currently none shipped."""
-
     def discover_and_load(self) -> None:
-        """Register built-in hooks, then load every valid hook dir under the active profile's ``hooks/``."""
-        self._register_builtin_hooks()
+        """Load every valid hook dir under the active profile's ``hooks/``."""
         hooks_dir = _resolve_hooks_dir()
         if not hooks_dir.exists():
             return
@@ -110,7 +97,7 @@ class HookRegistry:
             )
             print(f"[hooks] Loaded hook '{hook_name}' for events: {events}", flush=True)
 
-    def _resolve_handlers(self, event_type: str) -> List[Callable]:
+    def _resolve_handlers(self, event_type: str) -> list[Callable]:
         """Exact-match handlers first, then ``<base>:*`` wildcards.  A bare base type
         ("agent") does NOT fire for "agent:start" — only exact matches and explicit wildcards."""
         handlers = list(self._handlers.get(event_type, []))
@@ -118,16 +105,16 @@ class HookRegistry:
             handlers.extend(self._handlers.get(f"{event_type.split(':')[0]}:*", []))
         return handlers
 
-    async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
+    async def emit(self, event_type: str, context: Optional[dict[str, Any]] = None) -> None:
         """Fire all handlers for an event, discarding return values."""
         await self.emit_collect(event_type, context)
 
-    async def emit_collect(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> List[Any]:
+    async def emit_collect(self, event_type: str, context: Optional[dict[str, Any]] = None) -> list[Any]:
         """Fire handlers and return their non-None return values in order (decision-style
         hooks, e.g. ``command:<name>`` policies).  A failing handler is logged, not fatal."""
         if context is None:
             context = {}
-        results: List[Any] = []
+        results: list[Any] = []
         for fn in self._resolve_handlers(event_type):
             try:
                 result = fn(event_type, context)
@@ -151,7 +138,7 @@ class ProfileHookRegistries:
     """
 
     def __init__(self):
-        self._by_home: Dict[str, HookRegistry] = {}
+        self._by_home: dict[str, HookRegistry] = {}
         self._lock = threading.Lock()
 
     def _active(self) -> HookRegistry:
@@ -167,15 +154,15 @@ class ProfileHookRegistries:
         return registry
 
     @property
-    def loaded_hooks(self) -> List[dict]:
+    def loaded_hooks(self) -> list[dict]:
         return self._active().loaded_hooks
 
     def discover_and_load(self) -> None:
         """Load the active home's hooks now (startup, or a secondary profile's scoped startup)."""
         self._active()
 
-    async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
+    async def emit(self, event_type: str, context: Optional[dict[str, Any]] = None) -> None:
         await self._active().emit(event_type, context)
 
-    async def emit_collect(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> List[Any]:
+    async def emit_collect(self, event_type: str, context: Optional[dict[str, Any]] = None) -> list[Any]:
         return await self._active().emit_collect(event_type, context)

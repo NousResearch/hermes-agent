@@ -1,0 +1,20 @@
+name: contract-hunter
+repo: https://github.com/NathanOyewole/hermes-contract-hunter
+sha: e66266220cb4eef46f10f5ec05cad8119744eb1c
+description: "Scout-powered EVM contract vulnerability hunter. Radar → surface → prove → report pipeline for bounty programs. Disclosure — wraps the separately installed scout CLI (github.com/NathanOyewole/scout, installed at commit e2889e0), which contacts Immunefi, Sourcify, DexScreener and block explorers, and whose prove step runs forge tests on a local fork of a public RPC (SCOUT_RPC overrides; never broadcasts); /hunt serve starts a detached scout dashboard on 127.0.0.1 behind a random token that keeps running until the user stops it; an optional session-start Immunefi pull is off by default (auto_pull_immunefi); scout runs with only PATH, HOME, USER and SCOUT_RPC from the environment."
+version: "1.3.0"
+maintainer: NathanOyewole
+tier: community
+category: tools
+requires_hermes: ">=0.21.7"
+capabilities:
+  provides_tools:
+  - scout_radar
+  - scout_surface
+  - scout_prove
+  - scout_report
+  - scout_status
+  provides_hooks:
+  - on_session_start
+  provides_middleware: []
+  requires_env: []

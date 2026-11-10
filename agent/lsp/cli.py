@@ -62,7 +62,7 @@ def _all_servers() -> list:
     from hermes_cli.config import load_config_readonly
     try:
         lsp_cfg = load_config_readonly().get("lsp") or {}
-    except Exception:  # noqa: BLE001 — a broken config still lists the built-ins
+    except Exception:
         lsp_cfg = {}
     return [*custom_servers(lsp_cfg.get("servers") if isinstance(lsp_cfg, dict) else None), *SERVERS]
 

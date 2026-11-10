@@ -1,0 +1,45 @@
+name: agent-app
+repo: https://github.com/CraftOS-dev/Agent-App
+sha: fecfa424237cbaeb005eb7df773890837955cb9b
+subdir: harness-plugins/hermes
+title: Agent Apps
+description: "Build, evolve and operate Agent Apps from Hermes: full applications that you use in the browser and the agent uses through their own CLI (a CRM, a dashboard, an expense tracker). Adds the /agent-app command, `hermes agent-app`, the six framework skills, 22 agent_app_* tools to build, validate, launch, operate, install and export apps, and an Agent Apps tab in `hermes dashboard` and hermes-webui: one tab per app with its own Hermes session, a marketplace, an import panel, and Connect for an app that runs on another machine. Disclosure — needs the agent-app-framework npm CLIs and runs `agent-app` / `a2app` as subprocesses (never through a shell), including `agent-app skills --path` each time the plugin loads and `agent-app --version` on the first tool call, with only the environment the framework needs, so provider keys reach neither the CLIs nor the apps they serve; the skills are the ones that CLI ships, not a copy in the pinned tree. Installing, building or serving an app runs that app's toolkit commands (dependency install, build, server) on this machine. A pre_tool_call hook sends installs and inspects from any source but the default marketplace, operations the app holds for approval, and writes or app runs outside ~/.a2app/apps and the working directory to Hermes's approval prompt (refused by default where nobody can answer). The tab runs each app turn as a `hermes --cli chat -Q` child under your own model and approval policy (dangerous commands follow approvals.single_query_mode, default deny; the host's /yolo, session and gateway state are not inherited). Apps it builds, installs or launches keep serving on loopback ports until paused. Writes apps under ~/.a2app/apps and, on load, a `hermes` entry in ~/.a2app/harnesses.json (only when none exists) so a bridge you start yourself can run Hermes turns when an app queues work; reads and deletes its own app sessions in Hermes's session database. The Marketplace reads its catalogue from GitHub (CraftOS-dev/agent-app-collection), Import downloads the zip or git URL you give, and Connect calls the app address you enter and stores that app's credential in ~/.a2app/credentials.json. In hermes-webui a token-protected loopback backend serves the tab. No telemetry."
+maintainer: CraftOS
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/CraftOS-dev/Agent-App/tree/main/harness-plugins/hermes#readme
+version: "0.1.1"
+platforms: []
+known_issues:
+  - "Needs the framework CLIs on PATH first: npm i -g agent-app-framework@0.2.0, the release this was tested with (Node 20 or later)."
+  - "The hermes-webui tab is a web UI extension that a catalog install does not place; from a clone, run python harness-plugins/hermes/scripts/build.py --install --webui. Hermes Desktop loads no dashboard plugins, so the tab is not there; the tools, skills and command are."
+capabilities:
+  provides_tools:
+    - agent_app_describe
+    - agent_app_find
+    - agent_app_list
+    - agent_app_get
+    - agent_app_create
+    - agent_app_update
+    - agent_app_delete
+    - agent_app_run_operation
+    - agent_app_poll_tasks
+    - agent_app_next_task
+    - agent_app_task_progress
+    - agent_app_complete_task
+    - agent_app_build
+    - agent_app_validate
+    - agent_app_serve
+    - agent_app_stop
+    - agent_app_open
+    - agent_app_list_apps
+    - agent_app_catalogue
+    - agent_app_inspect
+    - agent_app_install
+    - agent_app_export
+  provides_hooks:
+    - pre_gateway_dispatch
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

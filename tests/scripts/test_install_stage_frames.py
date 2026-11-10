@@ -48,7 +48,7 @@ INSTALL_COMMIT=fixture
 run_stage "$STAGE"
 '''
     result = subprocess.run(["bash", "-c", script, "stage-test", SCRIPT.as_posix()],
-                            cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", timeout=30)
+                            cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
     frame = _frame(result)
     assert frame["stage"] == stage
     assert frame["ok"] is (result.returncode == 0)
@@ -69,7 +69,7 @@ def test_real_single_stage_cli_reports_admission_or_execution_failure(tmp_path, 
     result = subprocess.run([real_bash, "-c", 'exec "$0" "$1" --stage "$PROBE_STAGE" --json',
                              real_bash, SCRIPT.as_posix()],
                             cwd=tmp_path, env=env, capture_output=True,
-                            text=True, encoding="utf-8", timeout=30)
+                            text=True, encoding="utf-8", timeout=30, check=False)
     assert result.returncode != 0
     frame = _frame(result)
     assert frame["stage"] == stage and frame["ok"] is False
@@ -81,7 +81,7 @@ def test_manifest_accepts_the_desktop_home_argument(tmp_path, flag):
     home = tmp_path / "custom home"
     result = subprocess.run(["bash", str(SCRIPT), "--manifest", flag, str(home)],
                             cwd=tmp_path, env=_env(tmp_path), capture_output=True,
-                            text=True, encoding="utf-8", timeout=30)
+                            text=True, encoding="utf-8", timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     manifest = json.loads(result.stdout)
     assert any(row["name"] == "products" for row in manifest["stages"])
@@ -94,6 +94,6 @@ bash -c 'printf "%s\\n" "$HERMES_HOME"'
 '''
     resolved = subprocess.run(["bash", "-c", script, "home-test", SCRIPT.as_posix()],
                               cwd=tmp_path, env=env, capture_output=True,
-                              text=True, encoding="utf-8", timeout=30)
+                              text=True, encoding="utf-8", timeout=30, check=False)
     assert resolved.returncode == 0, resolved.stderr
     assert resolved.stdout.splitlines() == [(home / "hermes-agent").as_posix(), home.as_posix()]

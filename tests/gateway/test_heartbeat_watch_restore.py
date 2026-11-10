@@ -161,7 +161,7 @@ async def test_startup_arms_retry_poller_even_without_any_watches(monkeypatch):
     runner.hooks = SimpleNamespace(loaded_hooks=[], emit=AsyncMock())
     runner.adapters = {}
     runner._send_update_notification = AsyncMock(return_value=True)
-    runner.session_store = SimpleNamespace(list_sessions=lambda: [])
+    runner.session_store = SimpleNamespace(list_sessions=list)
     runner._run_in_executor_with_context = asyncio.to_thread
     monkeypatch.setattr('gateway.channel_directory.build_channel_directory', AsyncMock(return_value={}))
     await runner._start_post_connect_services(0)

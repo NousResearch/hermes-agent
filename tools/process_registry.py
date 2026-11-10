@@ -35,6 +35,7 @@ from hermes_cli.config import get_hermes_home
 from tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
+from tools.process_registry_env_scope import ProcessEnvScopeMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_ownership import ProcessOwnershipMixin
 from tools.process_registry_termination import ProcessTerminationMixin
@@ -640,14 +641,13 @@ class ProcessSession:
             self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
     def mark_exited(self, exit_code, reason: str = "exited", source: str = "") -> bool:
-        """Record an exit unless one is already recorded (an earlier observer may have published it,
-        and a raced kill keeps its own); returns whether this call recorded it. Callers hold _lock."""
-        recorded = not (self.exited or self.completion_reason == "killed")
-        self.exited = True
-        if recorded:
-            self.exit_code, self.completion_reason = exit_code, reason
-            self.termination_source = source or self.termination_source
-        return recorded
+        """Record an exit unless one is already recorded: the first observer's result (a raced kill,
+        an env-close settlement, a reconcile) stands. Returns whether it recorded. Hold ``self._lock``."""
+        if self.exited:
+            return False
+        self.exited, self.exit_code, self.completion_reason = True, exit_code, reason
+        self.termination_source = source or self.termination_source
+        return True
 
 
 # Watcher routing fields, in event-dict key order (``watcher_<key>`` on the session).
@@ -674,7 +674,7 @@ _WSL_CHAIN_NOTE = (
 )
 
 
-class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin, ProcessOwnershipMixin):
+class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin, ProcessOwnershipMixin, ProcessEnvScopeMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""

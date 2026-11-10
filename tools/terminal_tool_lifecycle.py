@@ -68,9 +68,9 @@ def _settle_env_processes(env: Any) -> None:
     Called only after a teardown that succeeded: a failed one (Modal's sync-back raising
     before terminate) may leave the sandbox and its processes running and reachable."""
     from tools.process_registry import process_registry
-    from tools.process_registry_env_scope import settle_env_closed
-    with _quiet("settling processes of a closed environment failed"):
-        settled = settle_env_closed(process_registry, env)
+    # WARNING, not _quiet's DEBUG: a failed settle leaves pollers spinning on a closed env.
+    with _quiet("settling processes of a closed environment failed", level=logging.WARNING):
+        settled = process_registry.settle_env_closed(env)
         if settled:
             logger.info("Marked %d background process(es) lost: their environment was closed", settled)
 
@@ -160,9 +160,8 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # a workspace digest or ``default``, while ``owner_task_id`` is the raw task id.
     try:
         from tools.process_registry import process_registry
-        from tools.process_registry_env_scope import has_running_in_env
         for task_id in list(_last_activity.keys()):
-            if has_running_in_env(process_registry, task_id, _active_environments.get(task_id)):
+            if process_registry.has_running_in_env(task_id, _active_environments.get(task_id)):
                 _last_activity[task_id] = current_time
     except ImportError:
         pass
@@ -343,6 +342,4 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
             if env is not None:
                 evicted.append(env)
     for env in evicted:
-        with _quiet("cleanup of degraded environment failed"):
-            env.cleanup()
-            _settle_env_processes(env)  # skipped when cleanup raised (see _settle_env_processes)
+        _teardown_env(env, task_id or "", done_msg="Evicted degraded environment for task: %s")

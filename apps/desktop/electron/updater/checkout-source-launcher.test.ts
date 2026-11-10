@@ -4,6 +4,8 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { resolveInstallationLauncherAsync } from '../updater-process'
+
 import { readSourceUpdate } from './checkout-source'
 
 // Every window that mounts runs the passive update check on Electron's main
@@ -60,6 +62,25 @@ function writeSlowLauncher(home: string, root: string, calls: string): string {
 
   return launcher
 }
+
+it('proves a user-bin launcher again after it is replaced in place to target another checkout', async (): Promise<void> => {
+  const root: string = path.join(base, 'checkout')
+  const other: string = path.join(base, 'other-checkout')
+  const home: string = path.join(base, 'home')
+  const calls: string = path.join(base, 'calls')
+  fs.mkdirSync(path.join(root, 'hermes_cli'), { recursive: true })
+  fs.mkdirSync(path.join(root, 'pm'))
+  fs.mkdirSync(other)
+  fs.writeFileSync(path.join(root, 'hermes_cli', '_launchers.py'), '')
+
+  const launcher: string = writeSlowLauncher(home, root, calls)
+
+  expect(await resolveInstallationLauncherAsync(root, process.platform === 'win32', home)).toBe(launcher)
+
+  writeSlowLauncher(home, other, calls)
+
+  expect(await resolveInstallationLauncherAsync(root, process.platform === 'win32', home)).toBeNull()
+}, 30000)
 
 /** Longest gap between 10 ms ticks while `work` runs: how long the event loop was blocked. */
 async function longestBlock<T>(work: () => Promise<T>): Promise<{ result: T; blockedMs: number }> {

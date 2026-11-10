@@ -214,11 +214,23 @@ export function launcherInstallRoot(launcher: string): Promise<string | undefine
 // the version refresh both ask it, and each `--version` costs a process start
 // (seconds when it runs its own update check). Memoized per launcher and root,
 // shared by concurrent callers; a miss is cached for LAUNCHER_ROOT_MISS_TTL_MS.
+// The key carries the launcher file's stamp, so a launcher replaced in place
+// (re-pointed at another checkout while Desktop stays open) is proved again.
 const launcherIdentities = new Map<string, Promise<string | null>>()
 const launcherIdentityMisses = new Map<string, number>()
 
+function launcherFileStamp(launcher: string): string {
+  try {
+    const { ino, mtimeMs, size } = statSync(launcher)
+
+    return `${ino}:${mtimeMs}:${size}`
+  } catch {
+    return 'missing'
+  }
+}
+
 function launcherIdentity(launcher: string, root: string): Promise<string | null> {
-  const key = `${launcher}\u0000${root}`
+  const key = `${launcher}\u0000${root}\u0000${launcherFileStamp(launcher)}`
   const missedAt = launcherIdentityMisses.get(key)
 
   if (missedAt !== undefined && Date.now() - missedAt < LAUNCHER_ROOT_MISS_TTL_MS) {

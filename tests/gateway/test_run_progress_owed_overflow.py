@@ -115,3 +115,14 @@ async def test_a_second_content_bubble_inside_the_window_keeps_the_carried_lines
     assert _shown_steps(bot) == {f"{i:03d}" for i in range(160)}
     assert len(bot.landed) == len(set(bot.landed))
 
+
+@pytest.mark.parametrize("error", [Exception("Bad Request: chat write forbidden"), ConnectionError("Connection reset")])
+@pytest.mark.asyncio
+async def test_a_non_flood_failure_of_the_carried_lines_is_retried(error):
+    bot = _bot(lambda text, attempt: error if attempt == 1 else False)
+    loop, st = _held_over_cap_bubble(bot)
+
+    await _idle_ticks(loop, st)
+
+    assert _shown_steps(bot) == {f"{i:03d}" for i in range(160)}
+    assert len(bot.landed) == len(set(bot.landed))

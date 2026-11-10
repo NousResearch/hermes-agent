@@ -1656,9 +1656,12 @@ def _activate_job_record(job: dict[str, Any]) -> None:
 
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
-    """Workdir -> absolute path, or None when empty. ``~`` expands; relative paths are rejected
-    (cron runs detached from any cwd); must be an existing dir now but is deliberately NOT
-    re-checked at run time (scheduler falls back with a warning). ValueError when invalid."""
+    """Preserve absolute workdir paths, including symlinks, after validating their targets.
+
+    ``~`` expands; relative paths are rejected (cron runs detached from any cwd).
+    The target must be an existing directory at create/edit time, but is deliberately
+    NOT re-checked at run time (scheduler falls back with a warning).
+    """
     if workdir is None:
         return None
     raw = str(workdir).strip()
@@ -1674,7 +1677,8 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
         raise ValueError(f"Cron workdir does not exist: {resolved}")
     if not resolved.is_dir():
         raise ValueError(f"Cron workdir is not a directory: {resolved}")
-    return str(resolved)
+    # A release's `current` symlink must follow future promotions at execution.
+    return str(expanded)
 
 
 def _normalize_job_optional_text(

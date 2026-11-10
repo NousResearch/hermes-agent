@@ -26,8 +26,11 @@ class SlackSocketLifecycleMixin:
 
         Bolt acks an envelope before the listener runs, so one received after the handler
         withdrawal is dropped and never redelivered. ``_running=False`` first keeps the watchdog and
-        the task-done callback from reconnecting; Web API clients (egress) stay open.
+        the task-done callback from reconnecting; the reconnect lock waits out a restart already past
+        its ``_running`` check, so its replacement socket is the one closed here. Web API clients
+        (egress) stay open.
         """
         self._running = False
         await self._cancel_socket_watchdog("[Slack] Watchdog task raised during stop_inbound")
-        await self._stop_socket_mode_handler()
+        async with self._socket_reconnect_lock:
+            await self._stop_socket_mode_handler()

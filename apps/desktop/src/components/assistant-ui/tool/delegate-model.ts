@@ -192,8 +192,7 @@ export function mergeDelegateRows(
   const sameShape = rows.length === live.length
 
   return rows.map((row, index) => {
-    const matched =
-      byGoal[index] ?? (sameShape ? claim(c => ours(row, c) && c.taskIndex === index) : undefined)
+    const matched = byGoal[index] ?? (sameShape ? claim(c => ours(row, c) && c.taskIndex === index) : undefined)
 
     return matched ? fromSubagent(matched, row.id, row.goal) : row
   })

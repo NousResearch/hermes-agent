@@ -6,17 +6,21 @@ export const GROUP_SURFACE_DE = {
   group: {
     ...GROUP_CHAT_LOCALES.de,
     newTitle: 'Neuer Gruppenchat',
-    manageDesc: 'Ein Bot kann mehreren Gruppenchats beitreten. Mitgliedschaften werden auf allen Computern synchronisiert.',
+    manageDesc:
+      'Ein Bot kann mehreren Gruppenchats beitreten. Mitgliedschaften werden auf allen Computern synchronisiert.',
     manageTitle: 'Gruppen verwalten',
     settingsTitle: 'Gruppeneinstellungen',
     settingsDesc: 'Benenne die Gruppe um oder wähle ein Gruppenbild. Mitglieder und Verlauf bleiben erhalten.',
     nameLabel: 'Gruppenname',
     holdDetection: 'Stoppanweisungen erkennen',
-    holdDetectionHint: 'Stoppanweisungen im Gruppenchat pausieren angesprochene Mitglieder, bis sie erneut erwähnt werden.',
+    holdDetectionHint:
+      'Stoppanweisungen im Gruppenchat pausieren angesprochene Mitglieder, bis sie erneut erwähnt werden.',
     compressHistory: 'Verlauf komprimieren',
-    compressHistoryHint: member => `Verborgenen Gruppenchat-Verlauf von ${member} komprimieren, um leere Antworten zu vermeiden`,
+    compressHistoryHint: member =>
+      `Verborgenen Gruppenchat-Verlauf von ${member} komprimieren, um leere Antworten zu vermeiden`,
     compressing: member => `Gruppenchat-Verlauf von ${member} wird komprimiert…`,
-    compressDone: (member, compressed, detail) => `${compressed} Gruppenchat-Sitzung${compressed === 1 ? '' : 'en'} für ${member} komprimiert${detail ? ` — ${detail}` : ''}`,
+    compressDone: (member, compressed, detail) =>
+      `${compressed} Gruppenchat-Sitzung${compressed === 1 ? '' : 'en'} für ${member} komprimiert${detail ? ` — ${detail}` : ''}`,
     compressNothing: member => `Nichts für ${member} zu komprimieren — noch keine Gruppenchat-Sitzung`,
     compressFailed: (member, error) => `Gruppenchat-Verlauf von ${member} konnte nicht komprimiert werden: ${error}`,
     searchToAdd: 'Bots zum Hinzufügen suchen',
@@ -26,7 +30,8 @@ export const GROUP_SURFACE_DE = {
     deleteTitle: 'Gruppenchat löschen?',
     deleteAction: 'Löschen',
     composerPlaceholder: 'Schreibe etwas — jeder Bot in diesem Gruppenchat sieht deine Nachricht.',
-    slashCommandsUnsupported: 'Slash-Befehle sind in Gruppenchats nicht verfügbar. Öffne dafür einen einzelnen Bot-Chat.',
+    slashCommandsUnsupported:
+      'Slash-Befehle sind in Gruppenchats nicht verfügbar. Öffne dafür einen einzelnen Bot-Chat.',
     attachHint: 'Dateien anhängen — jeder antwortende Bot sieht sie',
     newThread: 'Neuer Gesprächsfaden',
     reply: 'Antworten',
@@ -44,7 +49,8 @@ export const GROUP_SURFACE_DE = {
     heldMembersStatus: members => `Pausiert: ${members}`,
     holdReleaseHint: 'Erwähne einen pausierten Bot oder sende @all resume, um fortzufahren.',
     needsYourInput: 'Ein Bot in diesem Gruppenchat benötigt deine Eingabe',
-    noMembersToSend: group => `${group} hat keine Empfänger — füge einen Bot hinzu oder öffne den Gruppenchat erneut, falls die Mitglieder noch laden.`,
+    noMembersToSend: group =>
+      `${group} hat keine Empfänger — füge einen Bot hinzu oder öffne den Gruppenchat erneut, falls die Mitglieder noch laden.`,
     pictureGenerationFailed: 'Gruppenbild konnte nicht erstellt werden',
     nameTaken: name => `Eine Gruppe namens „${name}“ existiert bereits.`,
     you: 'Du',
@@ -73,108 +79,142 @@ export const GROUP_SURFACE_DE = {
     wantsToRunCommand: handle => `@${handle} möchte einen Befehl ausführen:`,
     asks: handle => `@${handle} fragt:`,
     answerTo: member => `@${member} antworten`
-
   },
   roster: {
     ...ROSTER_CHROME.de,
-    search: "Bots und Gruppenchats suchen",
-    searchPlaceholder: "Bots und Gruppenchats suchen…",
-    newBotOrGroup: "Neuer Bot oder Gruppenchat",
-    groupChats: "Gruppenchats",
-    emptyTitle: "Noch keine Bots",
-    emptyDesc: "Erstelle deinen ersten Bot.",
+    search: 'Bots und Gruppenchats suchen',
+    searchPlaceholder: 'Bots und Gruppenchats suchen…',
+    newBotOrGroup: 'Neuer Bot oder Gruppenchat',
+    groupChats: 'Gruppenchats',
+    emptyTitle: 'Noch keine Bots',
+    emptyDesc: 'Erstelle deinen ersten Bot.',
     noMatchQuery: query => `Keine Bots oder Gruppenchats für „${query}“ gefunden`,
     noMatchQueryOn: (query, gateway) => `Keine Bots oder Gruppenchats für „${query}“ auf ${gateway} gefunden`,
     noMatchFiltersOn: gateway => `Keine Bots oder Gruppenchats entsprechen diesen Filtern auf ${gateway}`,
-    noMatchFilters: "Keine Bots oder Gruppenchats entsprechen diesen Filtern.",
-    clearFilters: "Filter zurücksetzen",
-    allHidden: "Alle Bots sind ausgeblendet",
-    allHiddenDesc: "Sie arbeiten weiter und behalten ihren Verlauf.",
-    showHidden: "Ausgeblendete Bots anzeigen",
-    noHiddenMatch: "Keine ausgeblendeten Bots entsprechen diesen Filtern.",
-    hiddenFromRoster: "In der Liste ausgeblendet",
-    pinned: "Angeheftet",
-    needsAttention: "benötigt Aufmerksamkeit",
-    needsInput: "Benötigt deine Eingabe",
-    botsAndGroups: "Bots und Gruppenchats",
-    botsOnly: "Nur Bots",
-    groupsOnly: "Nur Gruppenchats",
-    anyActivity: "Jede Aktivität",
-    activeNow: "Jetzt aktiv",
-    recentlyActive: "Kürzlich aktiv",
-    older: "Älter",
-    gatewayRemoved: "Gateway entfernt",
-    onDemand: "Bei Bedarf",
-    ready: "Bereit",
-    statusUnknown: "Status unbekannt",
-    unavailable: "Nicht verfügbar",
-    retryNow: "Jetzt erneut versuchen",
-    rosterUnavailable: reason => `Liste nicht verfügbar: ${reason}. Falls dein Gateway profiles.list noch nicht unterstützt, aktualisiere Hermes und starte das Gateway neu.`,
-    waitingForGateway: "Warte auf die Gateway-Verbindung… (entfernte Gateways können einige Sekunden benötigen; automatischer neuer Versuch)"
+    noMatchFilters: 'Keine Bots oder Gruppenchats entsprechen diesen Filtern.',
+    clearFilters: 'Filter zurücksetzen',
+    allHidden: 'Alle Bots sind ausgeblendet',
+    allHiddenDesc: 'Sie arbeiten weiter und behalten ihren Verlauf.',
+    showHidden: 'Ausgeblendete Bots anzeigen',
+    noHiddenMatch: 'Keine ausgeblendeten Bots entsprechen diesen Filtern.',
+    hiddenFromRoster: 'In der Liste ausgeblendet',
+    pinned: 'Angeheftet',
+    needsAttention: 'benötigt Aufmerksamkeit',
+    needsInput: 'Benötigt deine Eingabe',
+    botsAndGroups: 'Bots und Gruppenchats',
+    botsOnly: 'Nur Bots',
+    groupsOnly: 'Nur Gruppenchats',
+    anyActivity: 'Jede Aktivität',
+    activeNow: 'Jetzt aktiv',
+    recentlyActive: 'Kürzlich aktiv',
+    older: 'Älter',
+    gatewayRemoved: 'Gateway entfernt',
+    onDemand: 'Bei Bedarf',
+    ready: 'Bereit',
+    statusUnknown: 'Status unbekannt',
+    unavailable: 'Nicht verfügbar',
+    retryNow: 'Jetzt erneut versuchen',
+    rosterUnavailable: reason =>
+      `Liste nicht verfügbar: ${reason}. Falls dein Gateway profiles.list noch nicht unterstützt, aktualisiere Hermes und starte das Gateway neu.`,
+    waitingForGateway:
+      'Warte auf die Gateway-Verbindung… (entfernte Gateways können einige Sekunden benötigen; automatischer neuer Versuch)'
   },
   sections: {
-    newSection: "Neuer Abschnitt",
-    newTitle: "Neuer Abschnitt",
-    renameTitle: "Abschnitt umbenennen",
-    nameLabel: "Abschnittsname",
-    namePlaceholder: "z. B. Kunden",
-    create: "Erstellen",
-    rename: "Umbenennen…",
-    moveUp: "Nach oben",
-    moveDown: "Nach unten",
-    unassigned: "Nicht zugeordnet",
+    newSection: 'Neuer Abschnitt',
+    newTitle: 'Neuer Abschnitt',
+    renameTitle: 'Abschnitt umbenennen',
+    nameLabel: 'Abschnittsname',
+    namePlaceholder: 'z. B. Kunden',
+    create: 'Erstellen',
+    rename: 'Umbenennen…',
+    moveUp: 'Nach oben',
+    moveDown: 'Nach unten',
+    unassigned: 'Nicht zugeordnet',
     options: name => `Optionen für den Abschnitt ${name}`,
-    headingTip: "Bots hier ablegen · zum Umbenennen doppelklicken",
-    emptyHint: "Bots hierher ziehen",
-    moveTo: "In Abschnitt verschieben",
-    newSectionEllipsis: "Neuer Abschnitt…",
-    removeFromSection: "Aus Abschnitt entfernen",
-    deleted: (name, count) => count === 0 ? `„${name}“ gelöscht` : `„${name}“ gelöscht — ${count} Bot${count === 1 ? '' : 's'} jetzt nicht zugeordnet`,
-    undo: "Rückgängig"
+    headingTip: 'Bots hier ablegen · zum Umbenennen doppelklicken',
+    emptyHint: 'Bots hierher ziehen',
+    moveTo: 'In Abschnitt verschieben',
+    newSectionEllipsis: 'Neuer Abschnitt…',
+    removeFromSection: 'Aus Abschnitt entfernen',
+    deleted: (name, count) =>
+      count === 0
+        ? `„${name}“ gelöscht`
+        : `„${name}“ gelöscht — ${count} Bot${count === 1 ? '' : 's'} jetzt nicht zugeordnet`,
+    undo: 'Rückgängig'
   },
   bot: {
-    newChatWith: "Neuer Chat mit diesem Bot",
-    newTitle: "Neuer Bot",
-    thisDevice: "Dieses Gerät",
-    removeFromAllGroups: "Aus allen Gruppen entfernen",
-    openBotChat: "Bot-Chat öffnen",
-    openBotChatInNewTab: "Bot-Chat in neuem Tab öffnen",
-    openingChat: "Chat wird geöffnet…",
-    pinToTop: "Oben anheften",
-    unpin: "Lösen",
+    newChatWith: 'Neuer Chat mit diesem Bot',
+    newTitle: 'Neuer Bot',
+    thisDevice: 'Dieses Gerät',
+    removeFromAllGroups: 'Aus allen Gruppen entfernen',
+    openBotChat: 'Bot-Chat öffnen',
+    openBotChatInNewTab: 'Bot-Chat in neuem Tab öffnen',
+    openingChat: 'Chat wird geöffnet…',
+    pinToTop: 'Oben anheften',
+    unpin: 'Lösen',
     pinnedToast: name => `${name} oben angeheftet`,
     unpinnedToast: name => `${name} gelöst`,
-    hide: "Ausblenden",
-    unhide: "Einblenden",
+    hide: 'Ausblenden',
+    unhide: 'Einblenden',
     hiddenToast: name => `${name} ausgeblendet — das Augensymbol über der Bot-Liste zeigt ausgeblendete Bots`,
     unhiddenToast: name => `${name} ist wieder in der Liste`,
     groupsMenu: groups => `Gruppen: ${groups}…`,
-    manageGroups: "Gruppen verwalten…",
-    metadataLoadFailed: "Bot-Metadaten konnten nicht geladen werden",
-    loadFailed: "Bot konnte nicht geladen werden",
-    groupsLoadFailed: "Bot-Gruppen konnten nicht geladen werden",
-    attentionFallback: "Benötigt Aufmerksamkeit",
-    attentionProviderAuth: "Für dieses Profil erneut anmelden",
-    attentionQuota: "Kontingent oder Guthaben aufgebraucht",
-    attentionMissingConfig: "Anbieter nicht eingerichtet — hermes model ausführen",
-    attentionBlocked: "Bot blockiert — letzte Nachricht ansehen",
-    editMenu: "Bearbeiten…",
-    duplicate: "Duplizieren",
-    duplicateFailed: "Duplizieren fehlgeschlagen"
+    manageGroups: 'Gruppen verwalten…',
+    metadataLoadFailed: 'Bot-Metadaten konnten nicht geladen werden',
+    loadFailed: 'Bot konnte nicht geladen werden',
+    groupsLoadFailed: 'Bot-Gruppen konnten nicht geladen werden',
+    attentionFallback: 'Benötigt Aufmerksamkeit',
+    attentionProviderAuth: 'Für dieses Profil erneut anmelden',
+    attentionQuota: 'Kontingent oder Guthaben aufgebraucht',
+    attentionMissingConfig: 'Anbieter nicht eingerichtet — hermes model ausführen',
+    attentionBlocked: 'Bot blockiert — letzte Nachricht ansehen',
+    editMenu: 'Bearbeiten…',
+    duplicate: 'Duplizieren',
+    duplicateFailed: 'Duplizieren fehlgeschlagen'
   },
   avatar: {
-    upload: "Hochladen",
-    generate: "Erstellen",
-    generating: "Wird erstellt…"
+    upload: 'Hochladen',
+    generate: 'Erstellen',
+    generating: 'Wird erstellt…'
   },
   screen: {
-    autoOpenMenu: "Bildschirm öffnen, wenn der Bot ihn verwendet",
+    autoOpenMenu: 'Bildschirm öffnen, wenn der Bot ihn verwendet',
     autoOpenOnToast: name => `Der Bildschirm von ${name} öffnet sich, sobald der Bot seinen Desktop verwendet`,
     autoOpenOffToast: name => `Der Bildschirm von ${name} bleibt geschlossen, bis du ihn öffnest`,
-    menu: "Bildschirm öffnen"
+    menu: 'Bildschirm öffnen'
   }
 } satisfies Pick<BotsMessages, 'group' | 'roster' | 'sections'> & {
-  bot: Pick<BotsMessages['bot'], 'newChatWith' | 'newTitle' | 'thisDevice' | 'removeFromAllGroups' | 'openBotChat' | 'openBotChatInNewTab' | 'openingChat' | 'pinToTop' | 'unpin' | 'pinnedToast' | 'unpinnedToast' | 'hide' | 'unhide' | 'hiddenToast' | 'unhiddenToast' | 'groupsMenu' | 'manageGroups' | 'metadataLoadFailed' | 'loadFailed' | 'groupsLoadFailed' | 'attentionFallback' | 'attentionProviderAuth' | 'attentionQuota' | 'attentionMissingConfig' | 'attentionBlocked' | 'editMenu' | 'duplicate' | 'duplicateFailed'>
+  bot: Pick<
+    BotsMessages['bot'],
+    | 'newChatWith'
+    | 'newTitle'
+    | 'thisDevice'
+    | 'removeFromAllGroups'
+    | 'openBotChat'
+    | 'openBotChatInNewTab'
+    | 'openingChat'
+    | 'pinToTop'
+    | 'unpin'
+    | 'pinnedToast'
+    | 'unpinnedToast'
+    | 'hide'
+    | 'unhide'
+    | 'hiddenToast'
+    | 'unhiddenToast'
+    | 'groupsMenu'
+    | 'manageGroups'
+    | 'metadataLoadFailed'
+    | 'loadFailed'
+    | 'groupsLoadFailed'
+    | 'attentionFallback'
+    | 'attentionProviderAuth'
+    | 'attentionQuota'
+    | 'attentionMissingConfig'
+    | 'attentionBlocked'
+    | 'editMenu'
+    | 'duplicate'
+    | 'duplicateFailed'
+  >
   avatar: Pick<BotsMessages['avatar'], 'upload' | 'generate' | 'generating'>
   screen: Pick<BotsMessages['screen'], 'menu' | 'autoOpenMenu' | 'autoOpenOnToast' | 'autoOpenOffToast'>
 }

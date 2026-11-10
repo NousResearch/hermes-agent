@@ -88,10 +88,22 @@ export const enCatalog: CatalogTranslations = {
     toolCount: (count: number) => `${count} ${count === 1 ? 'tool' : 'tools'}`,
     callCount: (count: string, calls: number) => `${count} ${calls === 1 ? 'call' : 'calls'}`,
     themes: {
-      work: { label: 'Browse, work and automate', blurb: 'Drive the browser and desktop, edit files, run code and schedule work.' },
-      create: { label: 'See, hear and create', blurb: 'Look at images and video, transcribe voice and generate media.' },
-      recall: { label: 'Memory and knowledge', blurb: 'What Hermes remembers, and the skills and history it can search.' },
-      connect: { label: 'Connect and reach out', blurb: 'Accounts, other agents, the smart home and search beyond the web.' },
+      work: {
+        label: 'Browse, work and automate',
+        blurb: 'Drive the browser and desktop, edit files, run code and schedule work.'
+      },
+      create: {
+        label: 'See, hear and create',
+        blurb: 'Look at images and video, transcribe voice and generate media.'
+      },
+      recall: {
+        label: 'Memory and knowledge',
+        blurb: 'What Hermes remembers, and the skills and history it can search.'
+      },
+      connect: {
+        label: 'Connect and reach out',
+        blurb: 'Accounts, other agents, the smart home and search beyond the web.'
+      },
       more: { label: 'More tools', blurb: 'Everything else this profile can switch on.' }
     }
   }

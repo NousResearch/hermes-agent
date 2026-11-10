@@ -231,7 +231,10 @@ export interface OpenRosterBotOptions {
   intent?: BotChatOpenIntent
 }
 
-export async function openRosterBot(bot: RosterRow, { intent = 'in-place' }: OpenRosterBotOptions = {}): Promise<boolean> {
+export async function openRosterBot(
+  bot: RosterRow,
+  { intent = 'in-place' }: OpenRosterBotOptions = {}
+): Promise<boolean> {
   const generation = bumpBotOpenGeneration()
   const key = botRosterKey(bot)
   const meta = botRosterMeta(bot, $botMeta.get())

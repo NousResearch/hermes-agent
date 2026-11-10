@@ -10,7 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.environments.file_sync import FileSyncManager, _FORCE_SYNC_ENV, iter_sync_files
+from tools.environments.file_sync import (
+    FileSyncManager,
+    _FORCE_SYNC_ENV,
+    iter_sync_files,
+    remote_parent_dir,
+)
 
 
 @pytest.fixture
@@ -465,3 +470,27 @@ class TestBulkUpload:
         mgr.sync(force=True)
         bulk_upload.assert_called_once()
         assert len(bulk_upload.call_args[0][0]) == 3
+
+
+class TestRemoteParentDir:
+    """Remote sandbox parent dirs must stay POSIX even on a Windows host."""
+
+    def test_posix_path_parent(self):
+        parent = remote_parent_dir("/home/user/.hermes/skills/a.py")
+        assert parent == "/home/user/.hermes/skills"
+
+    def test_nested_posix_path_parent(self):
+        parent = remote_parent_dir("/root/.hermes/credentials/b.json")
+        assert parent == "/root/.hermes/credentials"
+
+    def test_not_host_os_dependent(self):
+        # posixpath.dirname must not collapse to a backslash path. The remote
+        # path is always POSIX; str(Path(...).parent) would mangle it on Windows.
+        result = remote_parent_dir("/home/user/.hermes/skills/a.py")
+        assert "\\" not in result
+        assert result.startswith("/")
+
+    def test_does_not_resolve_dotdot(self):
+        # dirname must not normalize traversal away or into another root.
+        parent = remote_parent_dir("/root/.hermes/../../etc/cron.d/x")
+        assert parent == "/root/.hermes/../../etc/cron.d"

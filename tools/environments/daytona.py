@@ -10,12 +10,13 @@ import math
 import os
 import shlex
 import threading
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
-    FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
+    FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command,
+    remote_parent_dir, unique_parent_dirs)
 from tools.environments.remote_common import ensure_lazy_dep
 
 logger = logging.getLogger(__name__)
@@ -92,9 +93,8 @@ class DaytonaEnvironment(BaseEnvironment):
 
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via Daytona SDK."""
-        # remote_path is a POSIX path on the sandbox; never run it through the
-        # host's Path (Windows would mangle the separators into backslashes).
-        parent = str(PurePosixPath(remote_path).parent)
+        # POSIX parent: host Path() would emit backslashes on Windows.
+        parent = remote_parent_dir(remote_path)
         self._sandbox.process.exec(quoted_mkdir_command([parent]))
         self._sandbox.fs.upload_file(host_path, remote_path)
 

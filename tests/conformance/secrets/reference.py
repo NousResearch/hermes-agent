@@ -43,19 +43,36 @@ class MemorySecretStore(SecretStore):
     As the port's contract requires, a failed write holds no value on any error path: every
     check and validation that can fail (the placement checks, the fixture's pinned-key write
     lock) runs before the value (or record) is bound in any frame below the write method, and
-    the write itself is the only code that binds it. On any failure the write path records
-    only that the write failed — never reading the writer's exception — and once its except
-    block has dropped the failure and its traceback, it deletes the method's own value (or
-    record) binding and raises outside it with ``from None``: the port's own refusal as it
-    raised it, and any other failure as the fixed error
-    (:func:`hermes_secret_port.write_failure`) — so the error's traceback holds only this
-    frame and the caller's, and the frame that held the value is gone.
+    the write itself — the only code that binds it — runs through :meth:`_run_writer`, the
+    mirror of the local backend's writer boundary: the failure of a write step is caught
+    there, never read, and replaced by the port's fixed error
+    (:func:`hermes_secret_port.write_failure`) once the boundary has dropped its own bindings
+    of the writer and what it carried. The write method's own value (or record) binding
+    leaves its frame as the error unwinds it, so the error's traceback holds only the
+    boundary's frame, the write method's and the caller's, none of them binding anything.
     """
 
     levels = frozenset(LEVELS)
 
     def __init__(self, state: dict, agent: str, provider: MemorySecretStoreProvider) -> None:
         self.state, self.agent, self.provider = state, agent, provider
+
+    def _run_writer(self, operation: str, key: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """The one boundary every write's own step crosses (the local backend's writer runner,
+        mirrored): the step's failure is caught here — never read, gone with its traceback
+        when the block exits — and replaced by the port's fixed error once this frame has
+        dropped its own bindings of the step and what it carried."""
+        try:
+            result = fn(*args, **kwargs)
+        except Exception:  # health: allow BLE001 -- the step's failure is never inspected or kept
+            result = None
+            failed = True
+        else:
+            failed = False
+        del fn, args, kwargs
+        if failed:
+            raise write_failure(operation, key) from None
+        return result
 
     def _pin(self, *, administering: bool = False) -> Scope:
         scope = current_scope()
@@ -116,18 +133,16 @@ class MemorySecretStore(SecretStore):
                 raise ValueError("the key is pinned by an administrator; this store refuses to change it")
         except BaseException as exc:  # health: allow BLE001 -- the port's own refusal, re-raised below
             refusal = exc
-        failed = False
-        if refusal is None:
-            try:
-                self._write_secret(where, key, name, value)
-            except Exception:  # health: allow BLE001 -- the writer's failure is never inspected or kept
-                failed = True
-        del value
         del level
         if refusal is not None:
+            del value
             raise refusal
-        if failed:
-            raise write_failure("set", name) from None
+        try:
+            # The write itself — the only code that binds the value — inside the boundary,
+            # and this frame's own binding leaves it as any error unwinds it.
+            self._run_writer("set", name, self._write_secret, where, key, name, value)
+        finally:
+            del value
 
     def _write_secret(self, where, key, name: str, value: str) -> None:
         """The write itself — the only code that binds the value (see :meth:`set`), with the
@@ -144,7 +159,7 @@ class MemorySecretStore(SecretStore):
         # As set: the level is caller-supplied text that can alias a value, so it leaves this
         # frame before any error does.
         refusal = None
-        where = key = None
+        where, key = None, None
         try:
             where, key = self._place(level)
         except BaseException as exc:  # health: allow BLE001 -- re-raised below
@@ -152,6 +167,11 @@ class MemorySecretStore(SecretStore):
         del level
         if refusal is not None:
             raise refusal
+        return self._run_writer("delete", name, self._delete_secret, where, key, name)
+
+    def _delete_secret(self, where, key, name: str) -> bool:
+        """The delete's own write step (see :meth:`delete`): the removal from the store the
+        placement checks already resolved."""
         return self.state[where].setdefault(key, {}).pop(name, None) is not None
 
     def get_auth(self, provider: str) -> Optional[dict[str, Any]]:
@@ -171,17 +191,15 @@ class MemorySecretStore(SecretStore):
             key = self._pin(administering=True).agent
         except BaseException as exc:  # health: allow BLE001 -- the port's own refusal, re-raised below
             refusal = exc
-        failed = False
-        if refusal is None:
-            try:
-                self._write_auth_record(key, provider, record)
-            except Exception:  # health: allow BLE001 -- the writer's failure is never inspected or kept
-                failed = True
-        del record
         if refusal is not None:
+            del record
             raise refusal
-        if failed:
-            raise write_failure("set_auth", provider) from None
+        try:
+            # The write itself — the only code that binds the record — inside the boundary,
+            # and this frame's own binding leaves it as any error unwinds it.
+            self._run_writer("set_auth", provider, self._write_auth_record, key, provider, record)
+        finally:
+            del record
 
     def _write_auth_record(self, key, provider: str, record: dict[str, Any]) -> None:
         """The write itself — the only code that binds the record (see :meth:`set_auth`), with

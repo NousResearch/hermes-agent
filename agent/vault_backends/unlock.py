@@ -21,6 +21,7 @@ approvals take where nobody can answer.
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 from dataclasses import dataclass, field
@@ -45,17 +46,32 @@ def get_unlock_prompt_callback() -> Optional[UnlockPrompt]:
     return getattr(_callback_tls, "prompt", None)
 
 
-# (site, hint) -> the one-time code the user reads off their phone/email/app, "" when declined.
-CodePrompt = Callable[[str, str], str]
+# (site, hint, *, origin=...) -> the one-time code, "" when declined. Legacy (site, hint)
+# callbacks remain supported; origin-aware surfaces opt in with the named keyword or **kwargs.
+CodePrompt = Callable[..., str]
 
 
 def set_code_prompt_callback(cb: Optional[CodePrompt]) -> None:
-    """Register the surface's "enter the code {site} sent you" prompt, per thread."""
+    """Register the per-thread code prompt; optional ``origin`` is the exact page selected for filling.
+
+    A surface must use this origin rather than infer one from its session's page. Existing
+    two-argument callbacks and callbacks without an inspectable signature keep their legacy call.
+    """
     _callback_tls.code = cb
 
 
 def get_code_prompt_callback() -> Optional[CodePrompt]:
     return getattr(_callback_tls, "code", None)
+
+
+def invoke_code_prompt(prompt: CodePrompt, site: str, hint: str, *, origin: str) -> str:
+    """Pass the selected origin when supported, without retrying a failed human prompt."""
+    try:
+        inspect.signature(prompt).bind(site, hint, origin=origin)
+    except (TypeError, ValueError):
+        return prompt(site, hint)
+    # Only signature binding falls back: a TypeError inside the callback must not ask twice.
+    return prompt(site, hint, origin=origin)
 
 
 def set_save_login_prompt_callback(cb: Optional[SaveLoginPrompt]) -> None:

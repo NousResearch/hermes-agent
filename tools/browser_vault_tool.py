@@ -617,7 +617,7 @@ def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effec
     """Inspect the page for its code field (stamping under ``nonce``) and write the code (minted, else
     asked of the user)."""
     from agent.redact import register_vault_redaction_value
-    from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
+    from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback, invoke_code_prompt
     from agent.vault_login_classifier import (LoginControl, build_fill_js, build_inspection_js, build_otp_fills,
                                               classify_otp_controls)
 
@@ -660,7 +660,7 @@ def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effec
         return json.dumps({"success": False, "error_type": "prompt_unavailable",
                            "error": (f"{site} asks for a one-time code and this session cannot ask the user (headless/cron/API). "
                                      "Save an authenticator key for this login so codes can be generated automatically.")})
-    code = (prompt(site, "") or "").strip().replace(" ", "").replace("-", "")
+    code = (invoke_code_prompt(prompt, site, "", origin=origin) or "").strip().replace(" ", "").replace("-", "")
     if not code:
         return json.dumps({"success": False, "error_type": "code_declined",
                            "error": "The user did not enter a code. Do not ask again this turn."})

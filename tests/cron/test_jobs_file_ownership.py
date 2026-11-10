@@ -22,7 +22,7 @@ import threading
 
 import pytest
 
-import cron.jobs as jobs
+from cron import jobs
 
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX-only: uid/gid ownership semantics

@@ -71,6 +71,13 @@ vi.mock('@/hermes', async importOriginal => ({
   setApiRequestConnection: vi.fn()
 }))
 
+// Loaded once at collection, outside every test's budget: vi.resetModules() keeps each module's
+// transformed code, so the fresh copy a test imports only re-evaluates it. session-states is the
+// graph a reopened secondary imports lazily (store/gateway.ts). Top-level await rather than a static
+// import: the mock above reads FakeHermesGateway, which a hoisted import would reach before it exists.
+await import('@/store/gateway')
+await import('@/store/session-states')
+
 describe('branch owner routing (real router, faked transport)', () => {
   beforeEach(() => {
     dialed.length = 0
@@ -87,8 +94,7 @@ describe('branch owner routing (real router, faked transport)', () => {
         return { connectionId, mode: 'remote', profile }
       },
       getGatewayWsUrlFor: async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
-        `ws://${connectionId}/gateway?profile=${profile}`,
-      touchBackend: async () => undefined
+        `ws://${connectionId}/gateway?profile=${profile}`
     }
   })
 

@@ -53,7 +53,7 @@ def test_strips_g_and_double_dash(recorder: tuple[Path, Path]) -> None:
     r = _run_shim(recorder, ["-g", "--", "gateway", "run"])
     assert r.returncode == 0, r.stderr
     lines = [ln for ln in r.stdout.splitlines() if ln]
-    init, wrapper = recorder
+    _init, wrapper = recorder
     assert lines[0] == str(wrapper)
     assert lines[1:] == ["gateway", "run"]
     assert "-g" not in lines

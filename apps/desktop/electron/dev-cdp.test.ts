@@ -1,7 +1,7 @@
 /**
  * Tests for electron/dev-cdp.ts.
  *
- * Run with: npx vitest run --project electron electron/dev-cdp.test.ts
+ * Run with: pnpm exec vitest run --project electron electron/dev-cdp.test.ts
  */
 
 import assert from 'node:assert/strict'
@@ -12,7 +12,7 @@ import { DEFAULT_PORT, describeDevCdpDecision, resolveDevCdpPort } from './dev-c
 
 const DEV_SERVER = 'http://127.0.0.1:5174'
 
-/** The ordinary `npm run dev` / `hgui` run. */
+/** The ordinary `pnpm run dev` / `hgui` run. */
 const devRun = { env: {}, isPackaged: false, devServer: DEV_SERVER }
 
 test('a dev-server run opens the default port with no opt-in', () => {

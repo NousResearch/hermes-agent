@@ -14,10 +14,7 @@ import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/
 /** What the Electron main process said about this target's LOCAL filesystem
  * state (#101683). `null` keeps the stock card — remote-backend targets keep
  * Download, and a bridge-less dev server can't classify. */
-type LocalTargetState =
-  | { path: string; type: 'directory' | 'file' }
-  | { type: 'missing' }
-  | null
+type LocalTargetState = { path: string; type: 'directory' | 'file' } | { type: 'missing' } | null
 
 async function classifyLocalTarget(rawTarget: string, cwd?: string | null): Promise<LocalTargetState> {
   const bridge = window.hermesDesktop
@@ -53,7 +50,11 @@ export function PreviewAttachment({ target }: { target: string }) {
   const { t } = useI18n()
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
-  const cwd = useStore(useSessionView().$cwd)
+  const view = useSessionView()
+  const cwd = useStore(view.$cwd)
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const sessionId = storedId || runtimeId || ''
   const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -160,7 +161,7 @@ export function PreviewAttachment({ target }: { target: string }) {
     setOpening(true)
 
     try {
-      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined)
+      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined, { sessionId })
 
       if (
         !mountedRef.current ||
@@ -205,7 +206,7 @@ export function PreviewAttachment({ target }: { target: string }) {
       // Works in both modes: the Electron main process fetches the bytes
       // through the session's backend connection (local gateway or remote)
       // and prompts for a save location.
-      const result = await downloadGatewayMediaFile(target)
+      const result = await downloadGatewayMediaFile(target, sessionId ? { sessionId } : undefined)
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)

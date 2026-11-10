@@ -54,6 +54,8 @@ def _make_compressor():
     c._context_probed = False
     c._last_compression_savings_pct = 100.0
     c._ineffective_compression_count = 0
+    c._fallback_compression_streak = 0
+    c._fallback_probe_at = 0.0
     c._last_summary_error = None
     c._last_summary_dropped_count = 0
     c._last_summary_fallback_used = False

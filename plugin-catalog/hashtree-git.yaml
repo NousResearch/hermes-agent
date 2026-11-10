@@ -1,0 +1,17 @@
+name: hashtree-git
+title: Hashtree Git
+repo: https://github.com/mmalmi/hashtree
+sha: abaaf6975b0563019f0aa22505f898917eeaf79c
+subdir: plugins/hashtree-git
+description: "Git publishing and independent cloning using local Nostr keys and Hashtree. Instruction-only skill; requires separately installed htree and git-remote-htree, invokes shell commands, and can publish repository history. Disclosure — instruction-only skill: the agent runs git, htree and git-remote-htree in the terminal (installed separately by the user, or by the agent from the project's release binaries or an unpinned `cargo install hashtree-cli git-remote-htree`); a push publishes the repository's history and author metadata to Hashtree storage servers and Nostr relays, publicly unless a link-visible or private URL is used; the CLI creates and stores a local signing key, and an optional htree daemon keeps running until stopped."
+maintainer: Sirius Business Ltd
+tier: community
+category: tools
+version: "0.1.1"
+docs_url: https://github.com/mmalmi/hashtree/blob/abaaf6975b0563019f0aa22505f898917eeaf79c/plugins/hashtree-git/README.md
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

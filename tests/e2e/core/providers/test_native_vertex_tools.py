@@ -25,8 +25,8 @@ import pytest
 
 pytest.importorskip("google.auth", reason="Vertex minting needs google-auth (CI installs it)")
 
-from tests.e2e.core._pending_fixes import known_gate  # noqa: E402
-from tests.e2e.core.providers._native_helpers import (  # noqa: E402
+from tests.e2e.core._pending_fixes import known_gate
+from tests.e2e.core.providers._native_helpers import (
     ChatResult,
     KnownSymptom,
     NativeHome,
@@ -36,7 +36,7 @@ from tests.e2e.core.providers._native_helpers import (  # noqa: E402
     run_chat,
     tool_calls_of,
 )
-from tests.fakes.providers.vertex import (  # noqa: E402
+from tests.fakes.providers.vertex import (
     PROJECT,
     REGION,
     SA_EMBEDDED_PROJECT,
@@ -168,20 +168,22 @@ def test_tool_result_goes_back_paired_to_the_signed_call(results: dict[str, Any]
 
 def test_wire_scheme_bearer_and_single_token_mint(results: dict[str, Any]) -> None:
     """Every request hits the configured project/location path on the regional host with a bearer the
-    OAuth endpoint minted from a verified SA JWT; one mint per process, reused across API calls."""
+    OAuth endpoint minted from a verified SA JWT; one mint per agent process, reused across API
+    calls. Both turns run in the profile's gateway daemon (one process), so a still-valid token
+    is reused across the resume instead of re-minted."""
     res = results["session"]
     fake = res["fake"]
     _ok(res["turn1"], "turn 1")
     _ok(res["turn2"], "turn 2")
     assert all(r["claims"] for r in fake.token_requests), fake.token_requests
     assert [c["target"] for c in fake.connects if c["allowed"]], "no request reached Vertex through the proxy"
-    per_process = [fake.requests[: res["boundary"]], fake.requests[res["boundary"]:]]
     minted = fake.minted_tokens()
-    assert res["tokens_after_turn1"] == 1 and len(minted) == 2, (
-        f"expected one token exchange per process, saw {len(fake.token_requests)}: {fake.token_requests}")
-    for token, reqs in zip(minted, per_process):
+    assert res["tokens_after_turn1"] == 1 and len(minted) == 1, (
+        f"expected one token exchange for the serving process, saw {len(fake.token_requests)}: {fake.token_requests}")
+    per_turn = [fake.requests[: res["boundary"]], fake.requests[res["boundary"]:]]
+    for reqs in per_turn:
         assert len(reqs) >= 2
-        assert {r["auth"] for r in reqs} == {f"Bearer {token}"}, "bearer not the minted token / not reused"
+        assert {r["auth"] for r in reqs} == {f"Bearer {minted[0]}"}, "bearer not the minted token / not reused"
     expected_path = f"/v1beta1/projects/{PROJECT}/locations/{REGION}/endpoints/openapi/chat/completions"
     assert {(r["host"], r["path"]) for r in fake.requests} == {(f"{REGION}-aiplatform.googleapis.com", expected_path)}
     assert {r["body"]["model"] for r in fake.requests} == {"google/gemini-3-flash-preview"}

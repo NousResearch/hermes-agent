@@ -307,5 +307,5 @@ class TestToolCallsAlwaysReachATerminalStatus:
         with self._patch() as rcts:
             rcts.return_value = MagicMock(spec=Future)
             progress("tool.completed", "terminal", None, None, is_error=True,
-                     result="[Tool execution cancelled — terminal was skipped due to user interrupt]")
+                     result="[Tool execution cancelled — terminal was skipped. User sent a new message]")
         assert [c.args[1].status for c in mock_conn.session_update.call_args_list] == ["failed"]

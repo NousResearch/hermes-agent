@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from hermes_cli import lifecycle
 from hermes_cli.observability import relay_shared_metrics
-from tests.hermes_cli.test_relay_shared_metrics_runtime import (  # noqa: F401 - fixture
+from tests.hermes_cli.test_relay_shared_metrics_runtime import (
     _stored_values,
     direct_runtime,
 )
@@ -33,7 +33,7 @@ def _agent(provider, model):
     return SimpleNamespace(
         provider=provider, model=model, session_id="s1", tools=tools,
         valid_tool_names={"read_file", "todo"}, log_prefix="", _invalid_tool_retries=0, _invalid_json_retries=0,
-        _uniquify_tool_call_ids=lambda calls: None,
+        _uniquify_tool_call_ids=lambda calls, taken=(): None,
         _repair_tool_call=lambda name: "read_file" if name == "Read_File" else None,
         _vprint=lambda *a, **k: None, _buffer_vprint=lambda *a, **k: None, _flush_status_buffer=lambda: None,
         _build_assistant_message=lambda message, finish_reason: {"role": "assistant", "content": ""},
@@ -80,7 +80,7 @@ def test_every_emitted_tool_call_counts_once_with_its_issue(direct_runtime, tmp_
 
 
 def test_tool_call_quality_records_nothing_while_disabled(direct_runtime, tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", dict)
     _validate(_agent("openrouter", "anthropic/claude-sonnet"), [_tool_call("c1", "nope", "{")])
     assert not (tmp_path / "hermes-home" / "telemetry").exists() or not _stored_values(
         tmp_path, "hermes.model_tool_quality.count")

@@ -1,0 +1,17 @@
+name: session-find
+repo: https://github.com/djmango/session-find
+sha: caf185c59e62c56a6e4377b8fb08a0ce0e574301
+description: "A search window over your Hermes session history, opened with Cmd+Option+F, from the command palette, or from the glyph in the bottom bar whose hover shows the chord. Finds a session by an exact word, identifier or phrase through the gateway's own full text index, and by meaning as well when a session-find service answers on loopback; typed filters (in:, -in:, after:, before:, me:, repo: and quoted phrases) are mirrored as chips under the box. The empty box lists pinned then recent sessions, the preview pane shows the matching message with its neighbours, and the footer carries the round trip in whole milliseconds. It reads the session database read only, registers no agent tools, hooks or middleware, needs no credentials or environment variables; its only network calls are the loopback checks named below. The window half ships off by default and is switched on in the app's plugin inventory. Disclosure — while the search window is in use, the plugin's dashboard backend checks every 30 seconds for a separate session-find service at http://127.0.0.1:8474 (or the URL in SESSION_FIND_URL) and, when one answers, sends it your search text, preview requests and the ids of sessions you open, and shows the results it returns; otherwise it reads your Hermes session database read-only."
+maintainer: djmango
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/djmango/session-find#readme
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

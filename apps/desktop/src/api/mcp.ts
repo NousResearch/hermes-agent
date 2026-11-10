@@ -74,37 +74,6 @@ export function listMcpServers(): Promise<{ servers: McpServerSummary[] }> {
   })
 }
 
-/** Add one server to `mcp_servers` (validated + name-collision-checked
- *  server-side — the same endpoint the dashboard's add form uses). */
-export function addMcpServer(
-  body: {
-    name: string
-    url?: string
-    command?: string
-    args?: string[]
-    env?: Record<string, string>
-    auth?: string
-  },
-  profile?: ProfileScope
-): Promise<McpServerSummary> {
-  return window.hermesDesktop.api<McpServerSummary>({
-    ...capabilityScoped(profile),
-    path: '/api/mcp/servers',
-    method: 'POST',
-    body
-  })
-}
-
-/** Remove one server from `mcp_servers` (the inline setup card's rollback
- *  when a directory install is cancelled after the config write). */
-export function removeMcpServer(name: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean }>({
-    ...capabilityScoped(profile),
-    path: `/api/mcp/servers/${encodeURIComponent(name)}`,
-    method: 'DELETE'
-  })
-}
-
 export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
     ...profileScoped(),
@@ -114,11 +83,10 @@ export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ o
   })
 }
 
-export function getMcpCatalog(profile?: ProfileScope, detectApps = false): Promise<McpCatalogResponse> {
+export function getMcpCatalog(profile?: ProfileScope): Promise<McpCatalogResponse> {
   return window.hermesDesktop.api<McpCatalogResponse>({
     ...capabilityScoped(profile),
-    path: `/api/mcp/catalog${detectApps ? '?detect_apps=true' : ''}`,
-    ...(detectApps ? { timeoutMs: 5000 } : {})
+    path: '/api/mcp/catalog'
   })
 }
 

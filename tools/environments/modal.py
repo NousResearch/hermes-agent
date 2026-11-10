@@ -9,10 +9,10 @@ import shlex
 import tarfile
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
+from tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
@@ -30,8 +30,8 @@ def _load_snapshots() -> dict:
     return _load_json_store(_snapshot_store())
 
 
-def _save_snapshots(data: dict) -> None:
-    _save_json_store(_snapshot_store(), data)
+def _update_snapshots(update: Callable[[dict], None]) -> None:
+    _update_json_store(_snapshot_store(), update)
 
 
 def _get_snapshot_restore_candidate(task_id: str) -> tuple[str | None, bool]:
@@ -45,20 +45,21 @@ def _get_snapshot_restore_candidate(task_id: str) -> tuple[str | None, bool]:
 
 
 def _store_direct_snapshot(task_id: str, snapshot_id: str) -> None:
-    snapshots = _load_snapshots()
-    snapshots[f"direct:{task_id}"] = snapshot_id
-    snapshots.pop(task_id, None)
-    _save_snapshots(snapshots)
+    def update(snapshots: dict) -> None:
+        snapshots[f"direct:{task_id}"] = snapshot_id
+        snapshots.pop(task_id, None)
+
+    _update_snapshots(update)
 
 
 def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> None:
-    snapshots = _load_snapshots()
-    stale = [k for k in (f"direct:{task_id}", task_id)
-             if snapshots.get(k) is not None and snapshot_id in (None, snapshots[k])]
-    for key in stale:
-        snapshots.pop(key)
-    if stale:
-        _save_snapshots(snapshots)
+    def update(snapshots: dict) -> None:
+        stale = [k for k in (f"direct:{task_id}", task_id)
+                 if snapshots.get(k) is not None and snapshot_id in (None, snapshots[k])]
+        for key in stale:
+            snapshots.pop(key)
+
+    _update_snapshots(update)
 
 
 def _resolve_modal_image(image_spec: Any) -> Any:

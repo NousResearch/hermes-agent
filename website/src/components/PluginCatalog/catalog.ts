@@ -2,9 +2,6 @@
 // author pages (plugins/plugin-catalog-pages generates their routes). One definition of the entry
 // shape, the tier/category taxonomy and the link builders keeps the three surfaces from drifting.
 
-import { pluginCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
-import { PLUGIN_CATEGORIES } from "../../../../apps/shared/src/catalog-browse";
-
 export interface PluginCapabilities {
   providesTools?: string[];
   providesHooks?: string[];
@@ -43,6 +40,8 @@ export interface CatalogPlugin {
   /** ISO dates from git history (first listing / last re-pin); present once the dates extractor runs. */
   addedAt?: string | null;
   updatedAt?: string | null;
+  /** 1-based curated hero rank from catalog-curation.json; absent when uncurated. */
+  featured?: number | null;
   /** Lowercase pre-joined haystack for the search filter (built at load). */
   _search?: string;
 }
@@ -57,12 +56,12 @@ export interface CatalogMeta {
 }
 
 // Docs section describing the PR-based submission workflow.
-export const SUBMIT_PLUGIN_URL = "/user-guide/features/plugin-catalog#submitting-a-plugin-to-the-catalog";
+export const SUBMIT_PLUGIN_URL = "/developer-guide/plugins/catalog-submission";
 
 /** Deep link into the Desktop app's Install Plugin dialog, catalog mode: the app
  *  resolves the reviewed pin itself, so the page never hands it a repo URL. */
 export function desktopInstallLink(name: string): string {
-  return pluginCatalogInstallUrl({ name });
+  return `hermes://plugin/install?catalog=${encodeURIComponent(name)}`;
 }
 
 /** Site route of an entry's page (Docusaurus prefixes baseUrl/locale via <Link>). */
@@ -97,6 +96,13 @@ export const TIER_CONFIG: Record<
     border: "var(--plugin-catalog-official-border)",
     icon: "\u{2713}",
   },
+  verified: {
+    label: "Verified",
+    color: "var(--plugin-catalog-verified)",
+    bg: "var(--plugin-catalog-verified-bg)",
+    border: "var(--plugin-catalog-verified-border)",
+    icon: "\u{2714}",
+  },
   community: {
     label: "Community",
     color: "var(--plugin-catalog-community)",
@@ -106,8 +112,20 @@ export const TIER_CONFIG: Record<
   },
 };
 
-// Browse taxonomy, shared with Desktop. Its order is the order of the filter pills and grouped sections.
-export const CATEGORY_CONFIG = PLUGIN_CATEGORIES;
+// Browse taxonomy. Order here is the order of the filter pills and of the
+// grouped sections; keep it in sync with CATALOG_CATEGORIES in
+// hermes_cli/plugin_catalog.py and website/scripts/extract-plugins.py.
+export const CATEGORY_CONFIG: Record<string, { label: string; icon: string; blurb: string }> = {
+  desktop: { label: "Desktop", icon: "\u{1F5A5}\u{FE0F}", blurb: "Panes, tabs and views for Hermes Desktop" },
+  memory: { label: "Memory", icon: "\u{1F9E0}", blurb: "Memory providers and context engines" },
+  platform: { label: "Platforms", icon: "\u{1F4AC}", blurb: "Messaging and channel adapters" },
+  web: { label: "Web & Browser", icon: "\u{1F310}", blurb: "Search backends, extraction and browser control" },
+  tools: { label: "Tools", icon: "\u{1F6E0}\u{FE0F}", blurb: "New tools the agent can call" },
+  voice: { label: "Voice", icon: "\u{1F399}\u{FE0F}", blurb: "Speech, TTS and realtime audio" },
+  automation: { label: "Automation", icon: "\u{23F1}\u{FE0F}", blurb: "Hooks, wake triggers and session automation" },
+  models: { label: "Models", icon: "\u{2728}", blurb: "Model and inference providers" },
+  general: { label: "General", icon: "\u{1F4E6}", blurb: "Plugins that span several areas" },
+};
 export const CATEGORY_ORDER = Object.keys(CATEGORY_CONFIG);
 
 export function categoryOf(plugin: Pick<CatalogPlugin, "category">) {
@@ -161,9 +179,10 @@ export function formatDate(iso?: string | null): string | null {
 }
 
 /** Split a description into prose and its "Disclosure — …" sentences (catalog convention for
- *  behaviour a user opts into: auto-payments, vendor client identity, etc.). */
+ *  behaviour a user opts into: auto-payments, vendor client identity, etc.). Entries write the
+ *  marker with an em dash, en dash, hyphen or colon. */
 export function splitDisclosure(description: string): { prose: string; disclosures: string[] } {
-  const marker = /\bDisclosure\s*[—–-]\s*/g;
+  const marker = /\bDisclosure\s*[—–:-]\s*/g;
   const idx = description.search(marker);
   if (idx === -1) return { prose: description, disclosures: [] };
   const prose = description.slice(0, idx).trim();
@@ -173,4 +192,10 @@ export function splitDisclosure(description: string): { prose: string; disclosur
     .map((s) => s.trim())
     .filter(Boolean);
   return { prose, disclosures };
+}
+
+/** The one-line summary a card shows: the description minus its disclosure, or the whole
+ *  description when it opens with the disclosure and has no separate summary. */
+export function cardSummary(description: string): string {
+  return splitDisclosure(description).prose || description;
 }

@@ -10,11 +10,13 @@ graph change cannot silently empty a test.
 """
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
 import hermes_yaml
 
+from scripts.releases.desktop_targets import TARGETS
 from scripts.releases.job_groups import JOB_GROUPS
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,9 +25,10 @@ SMOKE_WORKFLOW = "./.github/workflows/desktop-bundle-smoke.yml"
 BUILD_CACHE_ACTION = "./.github/actions/desktop-build-cache"
 SHA = "a" * 40
 CANARY_TAG = "v0.28.0+canary.20260818T101010Z"
-PLATFORMS = ("darwin", "win32")
-ARCHES = ("arm64", "x64")
-NATIVE_TARGETS = tuple(f"{platform}-{arch}" for platform in PLATFORMS for arch in ARCHES)
+# Native build targets per platform, from the one release-side definition.
+PLATFORM_ARCHES = {platform: tuple(a for p, a in TARGETS if p == platform) for platform, _ in TARGETS}
+PLATFORMS = tuple(PLATFORM_ARCHES)
+NATIVE_TARGETS = tuple(f"{platform}-{arch}" for platform, arch in TARGETS)
 # The release branch may write the shared dependency cache; commit and channel
 # builds run unreviewed inputs and may only read it.
 _MODE_BY_CACHE = {"write": "release", "read": "commit"}
@@ -107,7 +110,7 @@ def updater_publishers(jobs: dict) -> dict[str, str]:
     smokes = smoke_callers(jobs)
     publishers = {}
     for platform in PLATFORMS:
-        own = {smokes[f"{platform}-{arch}"] for arch in ARCHES}
+        own = {smokes[f"{platform}-{arch}"] for arch in PLATFORM_ARCHES[platform]}
         publishers[platform] = _only(
             [name for name, job in jobs.items() if set(needs_of(job)) & set(smokes.values()) == own],
             f"{platform} updater publisher")
@@ -220,6 +223,8 @@ def evaluate(expression, inputs, needs, *, cancelled=False, failed=False, job_if
         'always': lambda: True, 'cancelled': lambda: cancelled,
         'success': lambda: not (cancelled or failed), 'failure': lambda: failed,
         'contains': lambda value, needle: needle in value,
+        # Expression strings reach eval already rewritten (true -> True), so read them as literals.
+        'fromJSON': ast.literal_eval,
     })
 
 

@@ -6,7 +6,7 @@
  * Provenance comes from CI, local git, or an explicit unknown-source stamp.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs"
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
 import { resolve, join, relative, posix } from "path"
 import productIdentity from "../product-identity.cjs"
 import { channelBuildRequest } from "../../../scripts/msix-shared.mjs"
@@ -115,7 +115,10 @@ export function isFallbackCommit(commit) {
 
 /** Qualify desktop CLI files before the immutable runtime paths are baked.
  * Canonical command keys remain stable for backend consumers; public aliases
- * come from the declared filenames, never those internal keys.
+ * come from the declared filenames, never those internal keys. The canonical
+ * files stay beside them: the agent's own terminal puts <payload>/bin first on
+ * PATH (pm.environments.activate_dependencies) and runs bare `hermes`, while
+ * only the qualified names are published (MSIX aliases, ~/.local/bin links).
  */
 export function stageDesktopLaunchers(root, identity = productIdentity) {
   const file = join(root, 'manifest.json')
@@ -127,7 +130,7 @@ export function stageDesktopLaunchers(root, identity = productIdentity) {
     const alias = name.replace(/^hermes(?=-|$)/, identity.cliName)
     const destination = posix.join(posix.dirname(source), `${alias}${windows ? '.exe' : ''}`)
     if (source !== destination && existsSync(join(root, source))) {
-      renameSync(join(root, source), join(root, destination))
+      copyFileSync(join(root, source), join(root, destination))
     }
     if (!existsSync(join(root, destination))) throw new Error(`Missing desktop launcher: ${destination}`)
     commands[name] = destination

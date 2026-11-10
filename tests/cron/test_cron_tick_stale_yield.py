@@ -234,7 +234,6 @@ class TestYieldedTickIsAFailedTick:
         ticked: list[str] = []
         per_home_beats: dict[str, list[bool]] = {home_a: [], home_b: []}
         per_home_errors: dict[str, list[str]] = {home_a: [], home_b: []}
-        state = {"cycles": 0}
         stop = threading.Event()
         prov = InProcessCronScheduler()
 

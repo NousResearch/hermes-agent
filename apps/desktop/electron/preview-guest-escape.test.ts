@@ -19,9 +19,7 @@ describe('previewGuestInputAction', () => {
   })
 
   it('also accepts the Cmd+Shift+W (macOS) form', () => {
-    expect(previewGuestInputAction({ meta: true, shift: true, key: 'W', type: 'keyDown' }, true)).toBe(
-      'close-preview'
-    )
+    expect(previewGuestInputAction({ meta: true, shift: true, key: 'W', type: 'keyDown' }, true)).toBe('close-preview')
   })
 
   it('leaves every other key for the page', () => {

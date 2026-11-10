@@ -37,8 +37,8 @@ _stt_leases: set = set()
 
 
 def warm_stt_provider(
-    stt_config: Optional[Dict[str, Any]] = None, provider: Optional[str] = None
-) -> Dict[str, Any]:
+    stt_config: Optional[dict[str, Any]] = None, provider: Optional[str] = None
+) -> dict[str, Any]:
     """Pre-load the configured STT engine so the next transcription starts hot.
 
     Blocking; never raises. Only the ``local`` (faster-whisper) provider has
@@ -54,7 +54,7 @@ def warm_stt_provider(
     if stt_config is None:
         stt_config = transcription_tools._load_stt_config()
     name = (provider or transcription_tools._get_provider(stt_config) or "").lower().strip()
-    result: Dict[str, Any] = {"provider": name, "warmed": False, "action": "noop"}
+    result: dict[str, Any] = {"provider": name, "warmed": False, "action": "noop"}
     if name not in {"local", "local_command"}:
         return result
     if name == "local_command":
@@ -80,6 +80,15 @@ def warm_stt_provider(
         # A just-warmed model counts as activity: the idle-unload watcher must
         # not treat the load itself as idle time and evict it immediately.
         transcription_tools._touch_transcription_time()
+        # Register with the idle-lifetime mechanism: a model loaded ONLY by
+        # warm-up (mic open → cancel, no transcription) would otherwise sit
+        # resident with no watcher, silently ignoring
+        # stt.local.unload_after_idle_seconds until some later successful
+        # transcription starts one. Also covers the reload-after-prior-eviction
+        # case (the previous watcher exited after unloading).
+        idle_timeout = transcription_tools._get_idle_unload_seconds(local_cfg)
+        if idle_timeout > 0:
+            transcription_tools._start_idle_unload_watcher(idle_timeout)
     except Exception as exc:  # engine missing, download failed, bad device…
         logger.warning("[STT] warm-up for local model '%s' failed: %s", model_name, exc)
         result.update(action="error", error=str(exc))
@@ -90,7 +99,7 @@ def warm_stt_provider(
     return result
 
 
-def acquire_stt_lease(lease: str, stt_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def acquire_stt_lease(lease: str, stt_config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Register ``lease`` (e.g. ``"desktop:voice-input:abcd1234"``) and warm the engine.
 
     Re-acquiring is idempotent but still re-warms (cheap on a cache hit; heals
@@ -102,7 +111,7 @@ def acquire_stt_lease(lease: str, stt_config: Optional[Dict[str, Any]] = None) -
     return {**warm_stt_provider(stt_config), "leases": holders}
 
 
-def release_stt_lease(lease: str) -> Dict[str, Any]:
+def release_stt_lease(lease: str) -> dict[str, Any]:
     """Drop ``lease``. A never-acquired lease is a no-op (still reports the
     holder count) so surfaces can call this unconditionally. Never unloads the
     model — see the module docstring for why this diverges from TTS leases."""
@@ -112,7 +121,7 @@ def release_stt_lease(lease: str) -> Dict[str, Any]:
     return {"leases": holders}
 
 
-def stt_lease_holders() -> List[str]:
+def stt_lease_holders() -> list[str]:
     """Snapshot of live lease names (diagnostics / tests)."""
     with _stt_lease_lock:
         return sorted(_stt_leases)

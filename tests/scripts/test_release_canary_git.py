@@ -1,11 +1,11 @@
 """Canary policy on real Git refs; GitHub publication stays an inert boundary."""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from types import SimpleNamespace
 import subprocess
 
 import pytest
 
-from tests.scripts.test_release_tags import release, release_repo  # noqa: F401
+from tests.scripts.test_release_tags import release, release_repo
 
 
 @pytest.fixture
@@ -142,7 +142,7 @@ def test_tag_shape_and_prune_use_canonical_receipts(canary_repo, monkeypatch, ca
     class Clock(datetime):
         @classmethod
         def now(cls, tz=None):
-            return cls(2026, 8, 18, tzinfo=timezone.utc)
+            return cls(2026, 8, 18, tzinfo=UTC)
 
     monkeypatch.setattr(release, "datetime", Clock)
     release.prune_old_canaries(SimpleNamespace(remote="origin", publish=False))
@@ -166,9 +166,11 @@ def test_stable_dispatch_and_failure(monkeypatch, tmp_path):
         lambda command, **kwargs: calls.append(command)
         or subprocess.CompletedProcess(command, 0, "", ""),
     )
+    monkeypatch.setattr(release, "_default_branch", lambda _repo: "main")
     assert release.dispatch_desktop_build("v1.2.3", "owner/repo")
+    # Stable dispatches the default-branch workflow, like canary; the tag is an input.
     assert calls == [[
-        "gh", "workflow", "run", "stable-release.yml", "--ref", "v1.2.3",
+        "gh", "workflow", "run", "stable-release.yml", "--ref", "main",
         "-f", "tag=v1.2.3", "--repo", "owner/repo",
     ]]
     with pytest.raises(ValueError):

@@ -1,6 +1,7 @@
 import { foldPersonalityName } from '@/lib/personalities'
 import { asText, normalize } from '@/lib/text'
-import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
+import { localShowReasoning } from '@/store/reasoning-disclosure'
+import type { ConfigFieldSchema, HermesConfig, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
 import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS, SECTIONS } from './constants'
 
@@ -256,6 +257,32 @@ export function setNested(obj: HermesConfigRecord, path: string, value: unknown)
   return clone
 }
 
+// Reasoning Blocks edits what local surfaces show, and they read the local key a local
+// `/reasoning show|hide` saves (`display.platforms.cli.show_reasoning`) before the global one.
+// The schema has no entry for that per-platform key, so the field stays on the global key and
+// shows the local value, and a change writes both.
+const LOCAL_SHOW_REASONING = 'display.platforms.cli.show_reasoning'
+
+/** The value a Settings field shows. A quoted Reasoning Blocks value reads as the gateway's `_norm_bool`. */
+export function configFieldValue(config: HermesConfigRecord, key: string): unknown {
+  if (key !== 'display.show_reasoning') {
+    return getNested(config, key)
+  }
+
+  const value = localShowReasoning((config as HermesConfig).display)
+
+  return typeof value === 'string' ? GATEWAY_TRUTHY.has(value.trim().toLowerCase()) : value
+}
+
+const GATEWAY_TRUTHY = new Set(['true', '1', 'yes', 'on', 'raw', 'verbose'])
+
+/** The config after a Settings field edit. */
+export function setConfigField(config: HermesConfigRecord, key: string, value: unknown): HermesConfigRecord {
+  const next = setNested(config, key, value)
+
+  return key === 'display.show_reasoning' ? setNested(next, LOCAL_SHOW_REASONING, value) : next
+}
+
 function personalityOptions(config: HermesConfigRecord): string[] {
   // The Python runtime (`hermes_cli.personality.available_personalities`) honours both
   // the root-level `personalities` block and `agent.personalities` (agent wins on a name
@@ -425,13 +452,10 @@ export function enumOptionsFor(
 
 // Built-in memory (MEMORY.md/USER.md) is controlled by memory_enabled, not
 // memory.provider — only a real external plugin name gets provider-shaped
-// affordances (config panel, OAuth connect). See #49513.
+// affordances (config panel, OAuth connect). See #49513. Mirrors
+// CORE_MEMORY_PROVIDER_SENTINELS in agent/memory_provider.py.
+const CORE_MEMORY_PROVIDER_SENTINELS = new Set(['', 'default', 'builtin', 'built-in', 'none'])
+
 export function isExternalMemoryProvider(value: unknown): value is string {
-  if (typeof value !== 'string') {
-    return false
-  }
-
-  const normalized = value.trim().toLowerCase()
-
-  return normalized !== '' && normalized !== 'builtin' && normalized !== 'built-in' && normalized !== 'none'
+  return typeof value === 'string' && !CORE_MEMORY_PROVIDER_SENTINELS.has(value.trim().toLowerCase())
 }

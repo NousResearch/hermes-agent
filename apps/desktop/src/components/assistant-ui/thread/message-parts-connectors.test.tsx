@@ -10,7 +10,6 @@ import { $connectionRequests, type ConnectionRequest, setConnectionRequest } fro
 import { $gateway } from '@/store/gateway'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 
-// jsdom has no preload bridge, so isOnboardingEnabled() is false here: the card must not depend on it.
 // Runtime id (events, operation store) and stored id (owner hints) differ in the app.
 const SESSION_ID = 'runtime-1'
 const STORED_ID = 'stored-1'

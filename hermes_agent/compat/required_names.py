@@ -125,6 +125,7 @@ REQUIRED_NAMES: dict[str, str] = {
     "hermes_cli.version_info": "module",  # v0.22.7..v0.23.0: hermes_cli/update_cmd_fleet.py:144@v0.23.0
     "hermes_bootstrap": "hand",  # v0.21.6..v0.23.0: every launcher script and inline launch command, -I, no finder: hermes_cli/_launchers.py:68,499@v0.23.0; it repairs a killed update that moved hermes_agent/ aside
     "hermes_constants": "module",  # v0.21.6..v0.23.0: launcher --print-runtime-command, before hermes_bootstrap: hermes_cli/_launchers.py:61,492,504@v0.23.0
+    "hermes_scope": "module",  # v0.23.1 canaries from 2026-11-12, rc.1-v0.23.2: imported inside functions, agent/secret_scope.py:102@rc.1-v0.23.2
     "hermes_state_common": "module",  # v0.22.7..v0.23.1: the updater reads its text, see REQUIRED_TEXT
     "model_tools": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "run_agent": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10

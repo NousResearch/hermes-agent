@@ -24,7 +24,7 @@ def _plugin_pkg(home, slug: str, command: str) -> None:
     (pkg / "__init__.py").write_text(
         "def register(ctx):\n"
         "    def _handler(args):\n"
-        "        import hermes_constants\n"
+        "        from hermes_agent import hermes_constants\n"
         "        from hermes_agent.agent.secret_scope import get_secret\n"
         "        try:\n"
         "            key = get_secret('PROBE_KEY')\n"

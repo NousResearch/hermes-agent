@@ -67,8 +67,9 @@ def payload_tree(tmp_path: Path):
     )
 
     # Exercise the real bootstrap before the fixture entry point.
-    for relative in ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py",
+    for relative in ("hermes_bootstrap.py", "hermes_cli/__init__.py",
                      "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py",
+                     "hermes_agent/hermes_bootstrap.py", "hermes_agent/hermes_constants.py",
                      "hermes_agent/compat/finder.py", "hermes_agent/compat/moves.py",
                      "hermes_agent/hermes_cli/__init__.py",
                      "pm/environments.py", "pm/filesystem.py", "hermes_agent/hermes_cli/runtime_state.py",

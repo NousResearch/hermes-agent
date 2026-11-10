@@ -13,7 +13,9 @@ def test_minimal_bootstrap_closure_reaches_pm_paths_and_locks(tmp_path):
     repo = Path(__file__).resolve().parents[2]
     stage = tmp_path / "stage"
     shutil.copytree(repo / "pm", stage / "pm", ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copy2(repo / "hermes_constants.py", stage / "hermes_constants.py")
+    for name in ("hermes_agent/__init__.py", "hermes_agent/hermes_constants.py"):
+        (stage / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repo / name, stage / name)
     (stage / "hermes_cli").mkdir()
     for name in ("__init__.py", "runtime_state.py"):
         shutil.copy2(repo / "hermes_cli" / name, stage / "hermes_cli" / name)
@@ -43,8 +45,10 @@ def _constants_stage(tmp_path, *, with_acl: bool) -> Path:
     repo = Path(__file__).resolve().parents[2]
     stage = tmp_path / "stage"
     stage.mkdir()
-    names = ["hermes_constants.py", "hermes_dir_acl.py"] if with_acl else ["hermes_constants.py"]
+    names = ["hermes_agent/__init__.py", "hermes_agent/hermes_constants.py"]
+    names += ["hermes_agent/hermes_dir_acl.py"] if with_acl else []
     for name in names:
+        (stage / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(repo / name, stage / name)
     return stage
 

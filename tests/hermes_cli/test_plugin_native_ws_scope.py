@@ -55,7 +55,7 @@ async def events(ws: WebSocket):
         return
     await ws.accept()
     from hermes_agent.agent.secret_scope import get_secret
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     while True:
         await ws.send_json({"home": str(get_hermes_home()), "secret": get_secret("PLG_WS_SENTINEL")})
         if await ws.receive_text() == "bye":

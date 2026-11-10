@@ -82,8 +82,8 @@ hermes-agent/
 │   ├── model_tools.py        # Tool orchestration, handle_function_call(); discovery in tools/registry.py
 │   ├── toolsets.py           # TOOLSETS dict, _HERMES_CORE_TOOLS
 │   ├── cli.py                # HermesCLI (REPL, slash dispatch) + hermes_cli/cli_*_mixin.py
-│   └── hermes_state.py       # SessionDB facade; hermes_state_*.py siblings
-├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
+│   ├── hermes_state.py       # SessionDB facade; hermes_state_*.py siblings
+│   └── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── scripts/              # check, run_tests.sh, code_health/, ci/
 ├── evals/                # live-model A/B and probe harnesses
 └── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)

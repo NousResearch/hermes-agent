@@ -61,7 +61,7 @@ async def test_sigusr1_handler_installed_by_start_gateway_logs_graceful_restart(
         ("hermes_agent.gateway.status.remove_pid_file", lambda: None),
         ("hermes_agent.gateway.status.release_gateway_runtime_lock", lambda: None),
         ("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None),
-        ("hermes_logging.setup_logging", lambda hermes_home, mode: None),
+        ("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: None),
         ("hermes_agent.tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None),
     ):
         monkeypatch.setattr(target, value)

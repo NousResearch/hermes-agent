@@ -111,7 +111,7 @@ def test_setting_saved_while_route_is_decided_survives(profile_config, monkeypat
 
     decide = route_identity.should_clear_context_pin
     writer = (
-        "import sys, utils\n"
+        "import sys\nfrom hermes_agent import utils\n"
         "utils.atomic_roundtrip_yaml_update(sys.argv[1], 'display.theme', 'dark')\n"
     )
     wrote = []

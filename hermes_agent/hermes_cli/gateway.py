@@ -1112,7 +1112,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         _stdio_target = subprocess.DEVNULL
         _stdio_fh = None
         try:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             from pathlib import Path
             _log_dir = Path(get_hermes_home()) / "logs"
             _log_dir.mkdir(parents=True, exist_ok=True)

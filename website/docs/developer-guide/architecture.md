@@ -52,13 +52,13 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 
 ```text
 hermes-agent/
-├── hermes_constants.py       # HERMES_HOME, profile-aware paths
 ├── hermes_agent/             # the Python package
 │   ├── run_agent.py              # AIAgent facade — loop lives in agent/conversation_loop.py + agent/turn_*.py
 │   ├── cli.py                    # HermesCLI facade — mixins in hermes_cli/cli_*_mixin.py
 │   ├── model_tools.py            # Tool discovery, schema collection, dispatch
 │   ├── toolsets.py               # Tool groupings and platform presets
 │   ├── hermes_state.py           # SQLite session/state database facade (+ hermes_state_*.py siblings)
+│   ├── hermes_constants.py       # HERMES_HOME, profile-aware paths
 │   ├── batch_runner.py           # Batch trajectory generation
 │   │
 │   ├── agent/                    # Agent internals

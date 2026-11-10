@@ -56,7 +56,7 @@ async function nativeProof() {
     'hermes_agent/hermes_cli/__init__.py',
     // desktop_prepare -> scripts.releases.versioning -> semver + hermes_cli.update_channel -> pm:
     // copy whole package trees so a new intra-package import cannot break the fixture.
-    'hermes_agent/hermes_cli/update_channel.py', 'hermes_constants.py', 'scripts/releases', 'pm',
+    'hermes_agent/hermes_cli/update_channel.py', 'hermes_agent/hermes_constants.py', 'scripts/releases', 'pm',
   ]
   for (const file of copied) {
     fs.mkdirSync(path.dirname(path.join(work, file)), { recursive: true })

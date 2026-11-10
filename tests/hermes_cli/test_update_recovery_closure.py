@@ -28,7 +28,7 @@ SOURCE = Path(__file__).resolve().parents[2]
 # What a minted launcher imports before the application entry.
 BOOT = ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
         "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py", "hermes_agent/compat/finder.py",
-        "hermes_agent/compat/moves.py",
+        "hermes_agent/compat/moves.py", "hermes_agent/hermes_bootstrap.py", "hermes_agent/hermes_constants.py",
         "hermes_agent/hermes_cli/__init__.py", "hermes_agent/hermes_cli/_launchers.py",
         "hermes_agent/hermes_cli/_early_recovery.py", "hermes_agent/hermes_cli/_parser.py",
         "hermes_agent/hermes_cli/runtime_state.py", "hermes_agent/hermes_cli/venv_sync.py",
@@ -117,7 +117,7 @@ def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None
     ("hermes_agent/hermes_cli/__init__.py", True, True),
     ("hermes_agent/hermes_cli/update_lock.py", True, True),
     # An updater that predates publication: the launcher reads the same files from git's objects.
-    ("hermes_bootstrap.py", True, False),
+    ("hermes_agent/hermes_bootstrap.py", True, False),
 ])
 def test_a_launch_repairs_a_move_killed_while_writing_the_repairs_own_code(tmp_path, rel, torn, published):
     root, env, original, launcher = _killed_mid_write(tmp_path, rel)

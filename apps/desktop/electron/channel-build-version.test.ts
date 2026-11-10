@@ -390,7 +390,7 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       'hermes_agent/hermes_cli/update_channel.py',
       'hermes_agent/hermes_cli/release_channels.py',
       'hermes_agent/hermes_cli/__init__.py',
-      'hermes_constants.py'
+      'hermes_agent/hermes_constants.py'
     ]) {
       const destination: string = path.join(root, file)
       fs.mkdirSync(path.dirname(destination), { recursive: true })

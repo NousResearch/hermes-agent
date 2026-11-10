@@ -35,7 +35,7 @@ import { attachPasskeyFlow, loadPasskeySigner } from './passkey_socket.js';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
-import { appendPassiveRecord, buildPassiveRecord, isPassiveTerminal } from './passive_capture.js';
+import { appendPassiveRecord, buildPassiveRecord, isOwnSelfChat, isPassiveTerminal } from './passive_capture.js';
 import {
   addMentions,
   buildPollPayload,
@@ -660,28 +660,36 @@ async function startSocket() {
           // customer chatId allowlist — without that gate, any contact
           // the owner replied to would leak into Hermes and trigger
           // implicit handover. See `owner_message_gate.js`.
-          const decision = classifyOwnerMessageGate({
-            fromMe: true,
-            fromOwnerEnabled: FORWARD_OWNER_MESSAGES,
-            recentlySent: recentlySentIds,
-            allowlistMatches: (id) => matchesAllowedUser(id, ALLOWED_USERS, SESSION_DIR),
-            messageId: msg.key.id,
-            chatId,
-          });
-          if (decision.action === 'drop_echo') continue;
-          if (decision.action === 'drop_disabled') continue;
-          if (decision.action === 'drop_allowlist') {
-            try {
-              writeJsonLine({
-                event: 'ignored',
-                reason: 'allowlist_mismatch_owner_chat',
-                chatId,
-                senderId,
-              });
-            } catch {}
-            continue;
+          if (PASSIVE_CAPTURE_ENABLED && isOwnSelfChat(chatId, sock.user)) {
+            // Passive mode: the owner's own "Message yourself" chat is the one
+            // command channel and reaches the agent as a normal message (not an
+            // [owner reply] handover).  Echoes of Hermes' own sends are still
+            // dropped by the recentlySentIds check below; owner messages in any
+            // other chat keep going through the owner gate (dropped by default).
+          } else {
+            const decision = classifyOwnerMessageGate({
+              fromMe: true,
+              fromOwnerEnabled: FORWARD_OWNER_MESSAGES,
+              recentlySent: recentlySentIds,
+              allowlistMatches: (id) => matchesAllowedUser(id, ALLOWED_USERS, SESSION_DIR),
+              messageId: msg.key.id,
+              chatId,
+            });
+            if (decision.action === 'drop_echo') continue;
+            if (decision.action === 'drop_disabled') continue;
+            if (decision.action === 'drop_allowlist') {
+              try {
+                writeJsonLine({
+                  event: 'ignored',
+                  reason: 'allowlist_mismatch_owner_chat',
+                  chatId,
+                  senderId,
+                });
+              } catch {}
+              continue;
+            }
+            fromOwner = true;
           }
-          fromOwner = true;
         } else {
           // Self-chat mode: only allow messages in the user's own self-chat.
           // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid

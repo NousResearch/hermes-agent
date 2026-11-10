@@ -72,3 +72,19 @@ export function appendPassiveRecord(file, record) {
   appendFileSync(file, `${prefix}${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
   chmodSync(file, 0o600);
 }
+
+function bareUser(jid) {
+  return String(jid || '').replace(/:.*@/, '@').replace(/@.*/, '');
+}
+
+/**
+ * True when chatId is the account's own "Message yourself" chat (phone or LID
+ * form).  Passive mode keeps exactly this chat as the owner's command channel.
+ */
+export function isOwnSelfChat(chatId, user) {
+  const chat = bareUser(chatId);
+  if (!chat || String(chatId || '').endsWith('@g.us')) return false;
+  const myNumber = bareUser(user?.id);
+  const myLid = bareUser(user?.lid);
+  return Boolean((myNumber && chat === myNumber) || (myLid && chat === myLid));
+}

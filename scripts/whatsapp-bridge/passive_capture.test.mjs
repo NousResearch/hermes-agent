@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { appendPassiveRecord, buildPassiveRecord, isPassiveTerminal } from './passive_capture.js';
+import { appendPassiveRecord, buildPassiveRecord, isOwnSelfChat, isPassiveTerminal } from './passive_capture.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const bridgeSrc = readFileSync(path.join(here, 'bridge.js'), 'utf8');
@@ -83,4 +83,28 @@ test('bridge.js: poll votes are not enqueued in passive mode', () => {
 test('bridge.js: /health exposes passiveCapture', () => {
   const health = bridgeSrc.slice(bridgeSrc.indexOf("app.get('/health'"));
   assert.match(health.slice(0, 600), /passiveCapture: PASSIVE_CAPTURE_ENABLED/);
+});
+
+test('isOwnSelfChat matches only the account\'s own chat (phone or LID)', () => {
+  const user = { id: '420603715271:46@s.whatsapp.net', lid: '162444404109355:46@lid' };
+  assert.equal(isOwnSelfChat('420603715271@s.whatsapp.net', user), true);
+  assert.equal(isOwnSelfChat('162444404109355@lid', user), true);
+  assert.equal(isOwnSelfChat('420111222333@s.whatsapp.net', user), false);
+  assert.equal(isOwnSelfChat('25838674292800@lid', user), false);
+  assert.equal(isOwnSelfChat('420603715271@g.us', user), false);
+  assert.equal(isOwnSelfChat('', user), false);
+  assert.equal(isOwnSelfChat('420603715271@s.whatsapp.net', undefined), false);
+});
+
+test('bridge.js: passive self-chat bypasses only the owner gate, echo filter still applies', () => {
+  const start = bridgeSrc.indexOf("sock.ev.on('messages.upsert'");
+  const handler = bridgeSrc.slice(start);
+  const selfChat = handler.indexOf('PASSIVE_CAPTURE_ENABLED && isOwnSelfChat(chatId, sock.user)');
+  const gate = handler.indexOf('classifyOwnerMessageGate({');
+  const echo = handler.indexOf('recentlySentIds.has(msg.key.id)');
+  const push = handler.indexOf('messageQueue.push(event)');
+  assert.ok(selfChat > 0 && gate > selfChat, 'self-chat branch must wrap the owner gate');
+  assert.ok(echo > selfChat && push > echo, 'echo filter must run before the agent queue');
+  const between = handler.slice(selfChat, gate);
+  assert.doesNotMatch(between, /fromOwner = true/);
 });

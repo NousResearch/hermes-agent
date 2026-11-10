@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { test, vi } from 'vitest'
 
 import {
+  ATTACHMENT_STAT_MAX_PATHS,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   ATTACHMENT_UPLOAD_MAX_TOTAL_BYTES,
   clampDataUrlReadMaxMb,
@@ -1183,4 +1184,24 @@ test('statFilesForAttachIpc sizes files without reading them and reports limits'
 test('statFilesForAttachIpc ignores non-array input and bounds the batch', async () => {
   assert.deepEqual((await statFilesForAttachIpc('nope')).files, [])
   assert.deepEqual((await statFilesForAttachIpc(undefined)).files, [])
+
+  // Paths past the bound are dropped, not reported: the renderer must treat a
+  // path missing from the report as unverified (attachment-upload-policy.ts).
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-attach-stat-bound-'))
+
+  try {
+    const paths = Array.from({ length: ATTACHMENT_STAT_MAX_PATHS + 1 }, (_, index) =>
+      path.join(tempDir, `${index}.bin`)
+    )
+    const report = await statFilesForAttachIpc(paths)
+
+    assert.equal(ATTACHMENT_STAT_MAX_PATHS, 256)
+    assert.equal(report.files.length, ATTACHMENT_STAT_MAX_PATHS)
+    assert.deepEqual(
+      report.files.map(file => file.path),
+      paths.slice(0, ATTACHMENT_STAT_MAX_PATHS)
+    )
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
 })

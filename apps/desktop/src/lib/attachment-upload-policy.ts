@@ -101,7 +101,8 @@ type StatFilesForAttach = (filePaths: string[]) => Promise<{
 
 /**
  * Size the given byte-upload candidates (stat only — no bytes are read) and
- * throw a user-facing Error when one file or the batch is over the limit.
+ * throw a user-facing Error when one file or the batch is over the limit, or
+ * when the report leaves a path out (too many files to size in one call).
  * Callers pass ONLY attachments that will actually cross as bytes. Older
  * shells without the stat bridge skip the batch check; the main-process
  * per-file cap on the attach reader still applies there.
@@ -122,6 +123,18 @@ export async function assertAttachmentUploadBudget(
 
   const report = await stat(sized.map(candidate => candidate.path as string))
   const sizeByPath = new Map(report.files.map(file => [file.path, file.size]))
+
+  // The main process sizes a bounded number of paths per call and drops the
+  // rest (ATTACHMENT_STAT_MAX_PATHS). A path with no entry at all was never
+  // checked, so it must fail closed — counting it as 0 would let enough small
+  // files slip past the per-message total. (A stat *error* is still an entry.)
+  const unchecked = sized.filter(candidate => !sizeByPath.has(candidate.path as string)).length
+
+  if (unchecked > 0) {
+    throw new Error(
+      `Could not check the size of ${unchecked} of ${sized.length} attachments before uploading. Send them in separate messages.`
+    )
+  }
 
   const verdict = checkAttachmentUploadBudget(
     sized.map(candidate => ({

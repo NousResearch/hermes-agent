@@ -46,9 +46,10 @@ describe('usePromptActions attachment upload size preflight (stat before any byt
     const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
     const readFileDataUrlForAttach = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
 
+    // Like the main process, size at most 256 paths per call and drop the rest.
     const statFilesForAttach = vi.fn(async (paths: string[]) => ({
       limits,
-      files: paths.map(path => ({ path, size: sizes[path] }))
+      files: paths.slice(0, 256).map(path => ({ path, size: sizes[path] }))
     }))
 
     Object.defineProperty(window, 'hermesDesktop', {
@@ -112,6 +113,22 @@ describe('usePromptActions attachment upload size preflight (stat before any byt
     const { calls, ok } = await submitWith([video('a.mp4'), video('b.mp4'), video('c.mp4')])
 
     expect(ok).toBe(false)
+    expect(bridge.readFileDataUrlForAttach).not.toHaveBeenCalled()
+    expect(calls).not.toContain('file.attach')
+    expect(calls).not.toContain('prompt.submit')
+  })
+
+  it('refuses a batch too large for one stat call instead of counting the unsized file as 0', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    // 257 x 512 KiB is over 128 MiB, but the 256 files the stat call sizes total exactly 128 MiB.
+    const files = Array.from({ length: 257 }, (_, index) => video(`clip-${index}.wav`))
+    const bridge = installBridge(Object.fromEntries(files.map(file => [file.path as string, MiB / 2])))
+
+    const { calls, ok } = await submitWith(files)
+
+    expect(ok).toBe(false)
+    expect(bridge.statFilesForAttach).toHaveBeenCalledTimes(1)
     expect(bridge.readFileDataUrlForAttach).not.toHaveBeenCalled()
     expect(calls).not.toContain('file.attach')
     expect(calls).not.toContain('prompt.submit')

@@ -160,6 +160,7 @@ def bind_prepared_dispatch(dispatch):
     slot = _slot.get()
     if slot is None:
         return dispatch
+    from agent import relay_runtime
     from agent.tool_executor import _registered_tool_worker
 
     owner_tid = threading.get_ident()
@@ -172,7 +173,18 @@ def bind_prepared_dispatch(dispatch):
             slot.check_cancelled()
             return dispatch(*args, **kwargs)
 
-    invoke = propagate_context_to_thread(tracked)
+    # The saved Context predates this managed Relay callback, so re-entering it drops
+    # ``_MANAGED_CALLBACK_DEPTH``. That marker is what keeps nested auxiliary calls (the
+    # smart-approval guardian) off the managed pipeline, whose Futures bind to the outer loop
+    # blocked inside this callback (#77244) — without it the guardian's sync call finds a
+    # running loop and escalates. Re-establish the guard inside the restored Context.
+    def invoke_in_saved_context(in_managed_callback, *args, **kwargs):
+        if in_managed_callback:
+            with relay_runtime.managed_callback_guard():
+                return tracked(*args, **kwargs)
+        return tracked(*args, **kwargs)
+
+    invoke = propagate_context_to_thread(invoke_in_saved_context)
     # Each batch slot has exactly one dispatch. Reject concurrent/replayed
     # continuations before entering its captured Context on another thread.
     lock = threading.Lock()
@@ -184,7 +196,8 @@ def bind_prepared_dispatch(dispatch):
             if claimed:
                 raise RuntimeError("Hermes tool execution callback invoked more than once")
             claimed = True
-        return invoke(*args, **kwargs)
+        # Read the live marker BEFORE the saved Context replaces this one.
+        return invoke(relay_runtime.in_managed_callback(), *args, **kwargs)
 
     return once
 

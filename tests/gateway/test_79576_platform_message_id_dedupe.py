@@ -75,6 +75,32 @@ class TestHasPlatformMessageIdVisibility:
         )
         assert db.has_platform_message_id("s1", "msg-1") is True
 
+    def test_observed_context_does_not_shadow_accepted_user_turn(self, tmp_path):
+        """A passively observed group-context row is not an accepted inbound turn.
+
+        The gateway's transient-failure dedupe guard (#47237) skips persisting
+        an accepted user turn when this probe reports the platform id as
+        already stored. An ``observed=1`` group-context row carrying the same
+        id is *not* accepted input, so it must not shadow the incoming turn —
+        the sibling ``has_gateway_input_owner`` already excludes observed rows.
+
+        Regression: before the fix the probe counted ANY live row with the id,
+        so the accepted turn was dropped and the user's message never reached
+        the transcript.
+        """
+        db = _make_db(tmp_path)
+        db.append_message(
+            session_id="s1", role="user", content="group context",
+            platform_message_id="msg-obs", observed=True,
+        )
+        assert db.has_platform_message_id("s1", "msg-obs") is False
+
+        db.append_message(
+            session_id="s1", role="user", content="accepted input",
+            platform_message_id="msg-obs",
+        )
+        assert db.has_platform_message_id("s1", "msg-obs") is True
+
     def test_absent_id_is_false(self, tmp_path):
         db = _make_db(tmp_path)
         db.append_message(

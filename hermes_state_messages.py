@@ -1071,9 +1071,15 @@ class SessionMessagesMixin:
         instead of being silently swallowed. Compaction-archived rows
         (``compacted=1``) DO count — re-inserting a summarized-away turn
         would resurrect it after in-place compaction.
+
+        Only an accepted user row can suppress the retry append. Passively
+        observed group-context rows (``observed=1``) are not accepted input:
+        letting one with the same platform id shadow the incoming turn made
+        the gateway's transient-failure guard drop the user's message.
         """
         return self._read_one(
             "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? "
+            "AND role = 'user' AND observed = 0 "
             "AND (active = 1 OR compacted = 1) LIMIT 1",
             (session_id, platform_message_id)) is not None
 

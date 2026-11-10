@@ -45,9 +45,10 @@ def launch_ctx_from_args(raw_args, trained: Optional[int] = None) -> Optional[in
     """``--ctx-size`` from a router child's launch args (a /models ``status.args`` list), capped by the model's
     *trained* window because llama-server caps each slot there, or None."""
     args = [str(a) for a in raw_args] if isinstance(raw_args, list) else []
+    cap = trained if type(trained) is int and trained > 0 else None  # a router's "unknown" (-1, true) is no cap
     for flag, value in pairwise(args):
         if flag in ("--ctx-size", "-c") and value.isdigit() and int(value) > 0:
-            return min(int(value), trained) if trained else int(value)
+            return min(int(value), cap) if cap else int(value)
     return None
 
 
@@ -55,7 +56,7 @@ def router_launch_ctx(client, server_url: str, model: str) -> Optional[int]:
     """``--ctx-size`` from the router's launch args for *model* (GET /models), or None."""
     import httpx
 
-    from agent.model_metadata import _model_id_matches, _positive_int
+    from agent.model_metadata import _model_id_matches
 
     try:
         resp = client.get(f"{server_url}/models")
@@ -68,8 +69,7 @@ def router_launch_ctx(client, server_url: str, model: str) -> Optional[int]:
         if not isinstance(entry, dict) or not _model_id_matches(str(entry.get("id", "")), model):
             continue
         status = entry.get("status")
-        ctx = launch_ctx_from_args(status.get("args") if isinstance(status, dict) else None,
-                                   _positive_int(entry.get("context_length")))
+        ctx = launch_ctx_from_args(status.get("args") if isinstance(status, dict) else None, entry.get("context_length"))
         if ctx:
             return ctx
     return None

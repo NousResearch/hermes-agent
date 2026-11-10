@@ -4,6 +4,8 @@ model served at --ctx-size 65536 was planned at 262,144, so it never compressed 
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
@@ -71,3 +73,19 @@ def test_loaded_router_child_reports_its_allocated_window(request, bare_props):
     assert result["qwen"]["context_length"] == 65536  # the slot the child allocated, not its launch args
     child_reads = [r for r in requests if r.url.params.get("model") == "qwen"]
     assert child_reads and all(r.url.params.get("autoload") == "false" for r in child_reads)
+
+
+@pytest.mark.parametrize("trained, planned", [(-1, 65536), (True, 65536), (None, 65536), (32768, 32768)])
+def test_local_probe_caps_launch_args_only_by_a_real_trained_window(trained, planned):
+    from agent.model_metadata_llamacpp import llamacpp_context
+
+    entry = {"id": "qwen", "status": {"value": "unloaded", "args": ["llama-server", "--ctx-size", "65536"]}}
+    if trained is not None:
+        entry["context_length"] = trained
+
+    def get(url):
+        if url.endswith("/models"):
+            return SimpleNamespace(status_code=200, json=lambda: {"data": [entry]})
+        return SimpleNamespace(status_code=400, json=lambda: {"error": {"message": "model is not loaded"}})
+
+    assert llamacpp_context(SimpleNamespace(get=get), "http://127.0.0.1:1", "qwen") == planned

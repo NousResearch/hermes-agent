@@ -14,8 +14,10 @@ from agent.image_routing import (
     _should_probe_ollama_vision,
     _supports_vision_override,
     build_native_content_parts,
+    build_path_mode_marker,
     decide_image_input_mode,
     extract_image_refs,
+    path_mode_message,
 )
 
 
@@ -33,6 +35,10 @@ class TestCoerceMode:
         assert _coerce_mode("") == "auto"
         assert _coerce_mode(None) == "auto"
         assert _coerce_mode(42) == "auto"
+
+    def test_path_mode_accepted(self):
+        assert _coerce_mode("path") == "path"
+        assert _coerce_mode("PATH") == "path"
 
 
 
@@ -87,6 +93,47 @@ class TestDecideImageInputMode:
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", None) == "native"
 
 
+class TestPathMode:
+    """agent.image_input_mode: path — attach local path/URL as an inert marker
+    with no vision call (the nico chat privacy route)."""
+
+    def test_explicit_path_passes_through_despite_aux_vision(self):
+        cfg = {
+            "agent": {"image_input_mode": "path"},
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "path"
+
+
+class TestPathModeMarker:
+    def test_local_path_marker(self):
+        assert build_path_mode_marker(["/tmp/a.png"]) == (
+            "[The user sent an image, not described automatically. Local path: /tmp/a.png]"
+        )
+
+    def test_url_marker(self):
+        assert build_path_mode_marker([], ["https://x/y.png"]) == (
+            "[The user sent an image from a URL, not described automatically: https://x/y.png]"
+        )
+
+    def test_mixed_paths_and_urls(self):
+        marker = build_path_mode_marker(["/tmp/a.png"], ["https://x/y.png"])
+        assert "[The user sent an image, not described automatically. Local path: /tmp/a.png]" in marker
+        assert "[The user sent an image from a URL, not described automatically: https://x/y.png]" in marker
+
+    def test_message_prepends_marker(self):
+        out = path_mode_message("describe this", ["/tmp/a.png"])
+        assert out.startswith("[The user sent an image, not described automatically. Local path: /tmp/a.png]")
+        assert out.endswith("describe this")
+
+    def test_message_marker_only_when_empty(self):
+        assert path_mode_message("", ["/tmp/a.png"]) == (
+            "[The user sent an image, not described automatically. Local path: /tmp/a.png]"
+        )
+
+    def test_message_no_paths_returns_text(self):
+        assert path_mode_message("plain text", [], []) == "plain text"
 
 
 # ─── _coerce_capability_bool ─────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 """Finite background tasks launched by the gateway /bg command."""
 
 from contextlib import suppress
+import asyncio
 import logging
 import os
 from typing import Optional
@@ -74,7 +75,19 @@ class GatewayBackgroundMixin:
             ]
             if image_paths:
                 try:
-                    enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths)
+                    _img_mode = await asyncio.to_thread(
+                        self._decide_image_input_mode, source=source, user_config=user_config,
+                    )
+                    if _img_mode == "path":
+                        from agent.image_routing import path_mode_message
+
+                        logger.info(
+                            "Image routing: path (mode=path). Attaching %d image path(s), no vision call.",
+                            len(image_paths),
+                        )
+                        enriched_prompt = path_mode_message(prompt, image_paths)
+                    else:
+                        enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths)
                 except Exception as e:
                     logger.warning("Background task vision enrichment failed: %s", e, exc_info=True)
 

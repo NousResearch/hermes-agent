@@ -1466,6 +1466,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 len(image_paths),
             )
             return message_text
+        if _img_mode == "path":
+            from agent.image_routing import path_mode_message
+
+            logger.info(
+                "Image routing: path (mode=path). Attaching %d image path(s), no vision call.",
+                len(image_paths),
+            )
+            return path_mode_message(message_text, image_paths)
         logger.info(
             "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
             _img_mode, len(image_paths),

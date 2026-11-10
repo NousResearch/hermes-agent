@@ -2,11 +2,14 @@
 
 ``native`` attaches images as OpenAI-style ``image_url`` parts; ``text`` runs
 ``vision_analyze`` up-front and prepends the lossy description (right for
-non-vision models). :func:`decide_image_input_mode` picks once per turn from
-``agent.image_input_mode`` (``auto`` | ``native`` | ``text``): in ``auto`` an
-explicit ``auxiliary.vision`` backend forces ``text`` even for vision-capable
-main models (``native`` is the absolute override); else ``supports_vision``
-(config override or catalog) decides. ``vision_analyze`` stays a tool regardless.
+non-vision models); ``path`` attaches the local path (or URL) only as inert
+marker text and makes no vision call, no base64, and no network request.
+:func:`decide_image_input_mode` picks once per turn from
+``agent.image_input_mode`` (``auto`` | ``native`` | ``text`` | ``path``): an
+explicit non-``auto`` mode passes through verbatim; in ``auto`` an explicit
+``auxiliary.vision`` backend forces ``text`` even for vision-capable main models
+(``native`` is the absolute override); else ``supports_vision`` (config override
+or catalog) decides. ``vision_analyze`` stays a tool regardless.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-_VALID_MODES = frozenset({"auto", "native", "text"})
+_VALID_MODES = frozenset({"auto", "native", "text", "path"})
 
 
 # Extensions extract_image_refs() auto-attaches. Documents/archives are excluded:
@@ -379,7 +382,7 @@ def decide_image_input_mode(
     *,
     requested_provider: str = "",
 ) -> str:
-    """Return ``"native"`` or ``"text"`` for the given turn (``cfg`` None behaves as
+    """Return ``"native"``, ``"text"`` or ``"path"`` for the given turn (``cfg`` None behaves as
     auto; ``requested_provider`` is the identity before runtime canonicalization)."""
     mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
     if mode_cfg != "auto":
@@ -530,6 +533,40 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
+# mode="path": attach local paths / remote URLs as inert marker text only — no
+# vision call, no base64, no network. The agent decides deliberately whether to
+# call hosted vision_analyze; intake never pre-describes.
+_LOCAL_PATH_MARKER = "[The user sent an image, not described automatically. Local path: {path}]"
+_URL_MARKER = "[The user sent an image from a URL, not described automatically: {url}]"
+
+
+def build_path_mode_marker(
+    image_paths: Iterable[str],
+    image_urls: Optional[list[str]] = None,
+) -> str:
+    """One marker line per local path, then one per URL (``mode="path"``).
+
+    The exact strings are load-bearing (the nico intake check greps them); keep
+    them in sync with any check that asserts the no-vision intake branch.
+    """
+    lines = [_LOCAL_PATH_MARKER.format(path=p) for p in image_paths if p]
+    lines += [_URL_MARKER.format(url=u) for u in (image_urls or []) if u]
+    return "\n".join(lines)
+
+
+def path_mode_message(
+    user_text: str,
+    image_paths: Iterable[str],
+    image_urls: Optional[list[str]] = None,
+) -> str:
+    """Prepend the ``mode="path"`` marker to ``user_text``; marker-only when empty."""
+    marker = build_path_mode_marker(image_paths, image_urls)
+    if not marker:
+        return user_text if isinstance(user_text, str) else ""
+    text = user_text if isinstance(user_text, str) else ""
+    return f"{marker}\n\n{text}" if text.strip() else marker
+
+
 def build_native_content_parts(
     user_text: str,
     image_paths: list[str],
@@ -563,4 +600,10 @@ def build_native_content_parts(
     return [{"type": "text", "text": combined_text}, *image_parts], skipped
 
 
-__all__ = ["build_native_content_parts", "decide_image_input_mode", "extract_image_refs"]
+__all__ = [
+    "build_native_content_parts",
+    "build_path_mode_marker",
+    "decide_image_input_mode",
+    "extract_image_refs",
+    "path_mode_message",
+]

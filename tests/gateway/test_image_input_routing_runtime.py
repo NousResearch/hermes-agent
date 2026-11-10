@@ -167,3 +167,33 @@ async def test_prepare_route_identity_check_keeps_event_loop_responsive(monkeypa
     assert result == "inspect @AGENTS.md"
     assert seen["event_loop_progressed"] is True
     assert seen["thread"] is not main_thread
+
+
+@pytest.mark.asyncio
+async def test_enrich_inbound_images_path_mode_marker_only_no_vision_call(monkeypatch):
+    """mode=path: intake attaches the local path as inert marker text and never
+    reaches the hosted vision tool (nico chat privacy)."""
+    from unittest.mock import patch
+
+    runner = _make_runner()
+    monkeypatch.setattr(runner, "_decide_image_input_mode", lambda **kwargs: "path")
+
+    enrich_calls = []
+
+    async def _fail_enrich(*args, **kwargs):
+        enrich_calls.append(1)
+        raise AssertionError("vision enrichment must not run in path mode")
+
+    monkeypatch.setattr(runner, "_enrich_message_with_vision", _fail_enrich)
+
+    with patch("tools.vision_tools.vision_analyze_tool") as vision_tool:
+        result = await runner._enrich_inbound_images(
+            _source(), "session-key", "what is this", ["/tmp/cashback.png"],
+        )
+
+    assert result.startswith(
+        "[The user sent an image, not described automatically. Local path: /tmp/cashback.png]"
+    )
+    assert "what is this" in result
+    assert enrich_calls == []
+    vision_tool.assert_not_called()

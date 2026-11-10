@@ -182,6 +182,15 @@ class CLIChatTurnMixin:
             logging.debug("image_routing decision failed, defaulting to text: %s", _img_exc)
             _img_mode = "text"
 
+        if _img_mode == "path":
+            from agent.image_routing import path_mode_message
+
+            logging.info(
+                "Image routing: path (mode=path). Attaching %d image path(s), no vision call.",
+                len(images),
+            )
+            return path_mode_message(text, [str(p) for p in images])
+
         if _img_mode == "native":
             try:
                 _img_str_paths = [str(p) for p in images]

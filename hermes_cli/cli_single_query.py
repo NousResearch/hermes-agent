@@ -348,6 +348,19 @@ def _route_single_query_images(cli, query, effective_query, single_query_images,
     except Exception:
         _img_mode = "text"
 
+    if _img_mode == "path":
+        from agent.image_routing import path_mode_message
+
+        logger.info(
+            "Image routing: path (mode=path). Attaching %d image path(s), no vision call.",
+            len(single_query_images),
+        )
+        return path_mode_message(
+            query if isinstance(query, str) else "",
+            [str(p) for p in single_query_images],
+            image_urls=list(single_query_image_urls) or None,
+        )
+
     def _text_fallback():
         # ``_preprocess_images_with_vision`` only knows local files; when only URLs
         # were supplied keep the original query text intact.

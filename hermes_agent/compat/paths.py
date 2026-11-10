@@ -7,7 +7,10 @@ directory. Both leave a path alone when nothing moved it, so with ``MOVES`` empt
 """
 from __future__ import annotations
 
+import ast
+import functools
 from fnmatch import fnmatch
+from pathlib import Path
 
 from hermes_agent.compat.finder import current_name
 from hermes_agent.compat.moves import MOVES
@@ -34,6 +37,15 @@ def _map(path: str, table: dict[str, str]) -> str:
     if "." in last:
         return f"{_directory(head, table)}/{last}" if head else path
     return _directory(path, table)
+
+
+def moves_from_source(source: str | None) -> dict[str, str]:
+    """The ``MOVES`` table in the text of a ``moves.py``, read without importing it (any tree's copy)."""
+    for node in ast.parse(source or "").body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        if any(isinstance(t, ast.Name) and t.id == "MOVES" for t in targets) and node.value is not None:
+            return dict(ast.literal_eval(node.value))
+    return {}
 
 
 class PathMoves:
@@ -70,6 +82,13 @@ class PathMoves:
                 same_name = new.rpartition("/")[2] == candidate.rpartition("/")[2]
                 found.add(f"{new.rpartition('/')[0]}/{tail}" if same_name else new)
         return (pattern, *sorted(found - {pattern}))
+
+
+@functools.cache
+def tree_moves(root: Path) -> PathMoves:
+    """``MOVES`` as the checkout at ``root`` holds it, for a guard that scans a tree other than its own."""
+    moves_file = root / "hermes_agent" / "compat" / "moves.py"
+    return PathMoves(moves_from_source(moves_file.read_text(encoding="utf-8-sig") if moves_file.is_file() else None))
 
 
 _DEFAULT = PathMoves(MOVES)

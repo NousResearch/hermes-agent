@@ -207,7 +207,8 @@ def test_a_non_admin_answers_only_where_they_could_type_the_command(path, admins
 
 @pytest.mark.parametrize(("approvers", "user_cmds", "who", "choice", "allowed"), [
     (["*"], ["approve"], MEMBER, "once", True),     # user_allowed_commands admits the member, as for /approve
-    (["*"], ["approve"], MEMBER, "deny", False),    # ...but only for the command it lists
+    (["*"], ["approve"], MEMBER, "deny", True),     # ...and may refuse what it may approve
+    (["*"], ["deny"], MEMBER, "once", False),       # deny alone never approves
     ([], [], MEMBER, "once", True),                 # narrowed approvers wins: the non-admin requester answers
     ([], ["approve"], "333", "once", False),        # ...and nobody else does, whatever user_allowed_commands says
     ([], [], ADMIN, "deny", True),                  # admins always answer

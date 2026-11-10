@@ -27,7 +27,7 @@ a name whose root is a moved *file* that other projects share (``utils.x``, ``cl
 (``agent.reasoning_effort``, ``plugins.enabled``, ``gateway.platforms.*`` outside an import); i18n keys
 (``t("gateway.status.*")``); tree-diagram lines; and the files in
 ``EXCLUDED`` (frozen surfaces, generated pages, third-party skill docs, locale values) and the shims
-``generate_shims.py`` wrote (their first line is its ``HEADER``).
+and byte copies ``generate_shims.py`` writes at old module paths.
 """
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ import argparse
 import ast
 import codecs
 import fnmatch
+import functools
 import io
 import json
 import re
@@ -46,7 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from generate_shims import HEADER as SHIM_HEADER
+from generate_shims import generated as generated_files
 from renames import config_keys, current_name, git, module_renames, renamed_paths
 
 #: Files and trees the rewrite never touches. Frozen surfaces keep the old names on purpose, generated pages
@@ -503,11 +504,17 @@ def _glob(path: str, pattern: str) -> bool:
     return re.fullmatch(regex, path) is not None
 
 
+@functools.cache
+def _generated() -> frozenset[str]:
+    """Repo-relative paths of the shims and byte copies at old module paths."""
+    return frozenset(generated_files())
+
+
 def rewrite_file(path: str, source: str, plan: Plan, stats: Stats) -> str:
     if excluded(path):
         stats.skips["excluded-file"] += 1
         return source
-    if source.startswith(SHIM_HEADER):
+    if path in _generated():
         stats.skips["generated-shim"] += 1
         return source
     if path.endswith(".py"):

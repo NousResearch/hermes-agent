@@ -226,11 +226,35 @@ class TestOn:
         _cli(tmp_path, monkeypatch, f'cat > /dev/null\necho "{msg}" >&2\nexit 1\n')
         assert _exec()["stderr"] == msg
 
+    @pytest.mark.parametrize("hint", [
+        'browser-harness: Chrome is asking "Allow remote debugging?" \u2014 run `BU_NAME=_live_default '
+        'browser-harness mac-approve` in another shell or click Allow to continue.',
+        'browser-harness: Chrome is asking "Allow remote debugging?" \u2014 run `browser-harness mac-approve` '
+        'or click Allow to continue.',
+    ])
+    def test_mac_approve_hint_is_rewritten_to_user_clicks_allow(self, tmp_path, monkeypatch, chrome_running, hint):
+        _cli(tmp_path, monkeypatch, f"cat > /dev/null\ncat >&2 <<'EOF'\n{hint}\nEOF\nexit 1\n")
+        stderr = _exec()["stderr"]
+        assert "mac-approve" not in stderr
+        assert stderr == ('browser-harness: Chrome is asking "Allow remote debugging?" \u2014 the user must '
+                          'click Allow to continue.')
 
-def _profile(tmp_path, *, running):
-    base = tmp_path / "Chrome"
+    def test_hint_not_rewritten_when_live_is_off(self, tmp_path, monkeypatch, config):
+        config["live_chrome"] = False
+        hint = "run `browser-harness mac-approve` or click Allow"
+        _cli(tmp_path, monkeypatch, f"cat > /dev/null\ncat >&2 <<'EOF'\n{hint}\nEOF\n")
+        assert hint in _exec()["stderr"]
+
+
+def _profile(tmp_path, *, running, toggle=True, port=True, name="Chrome"):
+    """A profile folder: Local State with the remote-debugging toggle, a DevToolsActivePort, and (running)
+    a SingletonLock held by this process's pid."""
+    base = tmp_path / name
     base.mkdir()
-    (base / "Local State").write_text("{}")
+    state = {"devtools": {"remote_debugging": {"user-enabled": toggle}}} if toggle is not None else {}
+    (base / "Local State").write_text(json.dumps(state))
+    if port:
+        (base / "DevToolsActivePort").write_text("9222\n/devtools/browser/x")
     if running:
         os.symlink(f"testhost-{os.getpid()}", base / "SingletonLock")
     return base
@@ -351,7 +375,7 @@ class TestNeverApproves:
         monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: argvs.append(cmd))
         hint = 'Chrome is asking "Allow remote debugging?" - run `browser-harness mac-approve`'
         _cli(tmp_path, monkeypatch, f'cat > /dev/null\necho \'{hint}\' >&2\n')
-        assert "mac-approve" in _exec()["stderr"]  # relayed to the model, never executed
+        assert "mac-approve" not in _exec()["stderr"]  # scrubbed from the model's view, never executed
         _cli(tmp_path, monkeypatch, "cat > /dev/null\nsleep 30\n")
         assert "click Allow" in _exec(timeout_s=5)["error"]
         assert not any("mac-approve" in " ".join(map(str, c)) for c in argvs)
@@ -414,3 +438,106 @@ class TestToggleDetaches:
         with bu_cli._driven_daemons_lock:
             assert theirs in bu_cli._driven_daemons and packaged in bu_cli._driven_daemons
             assert mine not in bu_cli._driven_daemons
+
+
+class TestPreflightRemoteDebugging:
+    """Discovery mode only attaches when a running browser has remote debugging on; otherwise the harness's
+    setup branch would open/launch Chrome (osascript on macOS), which Hermes never allows."""
+
+    @pytest.mark.parametrize("kwargs", [
+        {"toggle": False}, {"toggle": None}, {"port": False}, {"toggle": False, "port": False},
+    ], ids=["toggle-off", "toggle-unrecorded", "no-devtools-port", "neither"])
+    def test_running_browser_without_remote_debugging_is_refused(self, tmp_path, monkeypatch, kwargs):
+        monkeypatch.setattr(live, "_profile_dirs", lambda system: [_profile(tmp_path, running=True, **kwargs)])
+        err = live.preflight("Linux")
+        assert err and "chrome://inspect/#remote-debugging" in err and "no running Chrome" not in err
+
+    def test_other_browser_running_with_debugging_but_chrome_closed(self, tmp_path, monkeypatch):
+        """Chrome closed (no lock), Brave running with the toggle off: refused, so no Chrome launch."""
+        chrome = _profile(tmp_path, running=False, name="Chrome")
+        brave = _profile(tmp_path, running=True, toggle=False, name="Brave")
+        monkeypatch.setattr(live, "_profile_dirs", lambda system: [chrome, brave])
+        assert "chrome://inspect/#remote-debugging" in live.preflight("Linux")
+
+    def test_stale_port_file_of_a_dead_browser_is_not_enough(self, tmp_path, monkeypatch):
+        base = _profile(tmp_path, running=False)
+        os.symlink("testhost-999999999", base / "SingletonLock")
+        monkeypatch.setattr(live, "_profile_dirs", lambda system: [base])
+        assert "no running Chrome" in live.preflight("Linux")
+
+    def test_toggle_on_port_live_pid_alive_passes_even_if_another_profile_is_off(self, tmp_path, monkeypatch):
+        off = _profile(tmp_path, running=True, toggle=False, name="Brave")
+        on = _profile(tmp_path, running=True, name="Chrome")
+        monkeypatch.setattr(live, "_profile_dirs", lambda system: [off, on])
+        assert live.preflight("Linux") is None
+
+    def test_refused_call_never_runs_the_cli(self, tmp_path, monkeypatch, config, no_spawning):
+        config["live_chrome"] = True
+        monkeypatch.setattr(live, "_profile_dirs", lambda system: [_profile(tmp_path, running=True, toggle=False)])
+        ran = tmp_path / "cli-ran"
+        _cli(tmp_path, monkeypatch, f"touch {ran}\n")
+        assert "chrome://inspect/#remote-debugging" in _exec()["error"]
+        assert not ran.exists()
+
+
+class TestPreflightAccessErrorOrdering:
+    def _probe_denying(self, monkeypatch, denied):
+        real = live._read_probe
+
+        def probe(path):
+            if path.parent == denied:
+                raise PermissionError(1, "Operation not permitted", str(path))
+            real(path)
+
+        monkeypatch.setattr(live, "_read_probe", probe)
+
+    def test_denied_folder_does_not_mask_a_readable_running_chrome(self, tmp_path, monkeypatch):
+        denied = _profile(tmp_path, running=False, name="Brave")
+        ok = _profile(tmp_path, running=True, name="Chrome")
+        monkeypatch.setattr(live, "_profile_dirs", lambda system: [denied, ok])
+        self._probe_denying(monkeypatch, denied)
+        assert live.preflight("Darwin") is None
+
+    def test_denied_folder_reported_when_nothing_readable_runs(self, tmp_path, monkeypatch):
+        denied = _profile(tmp_path, running=False, name="Brave")
+        other = _profile(tmp_path, running=False, name="Chrome")
+        monkeypatch.setattr(live, "_profile_dirs", lambda system: [other, denied])
+        self._probe_denying(monkeypatch, denied)
+        err = live.preflight("Darwin")
+        assert str(denied) in err and "System Settings" in err
+
+
+class TestPreflightWithoutPsutil:
+    def test_missing_psutil_is_an_error_string_not_an_exception(self, tmp_path, monkeypatch, config):
+        config["live_chrome"] = True
+        monkeypatch.setitem(sys.modules, "psutil", None)  # import psutil -> ImportError
+        monkeypatch.setattr(live, "_profile_dirs", lambda system: [_profile(tmp_path, running=True)])
+        assert "psutil" in live.preflight("Linux")
+        _cli(tmp_path, monkeypatch)
+        assert "psutil" in _exec()["error"]
+
+
+class TestDescriptionFollowsRouting:
+    """The live description and approval refusal key off whether live mode is the selected route."""
+
+    @pytest.fixture(autouse=True)
+    def _on(self, config):
+        config["live_chrome"] = True
+
+    def test_shown_when_selected(self):
+        assert "LIVE CHROME" in bu_cli._dynamic_schema_overrides()["description"]
+
+    @pytest.mark.parametrize("override", ["http://127.0.0.1:9222", "wss://connect.example/x"])
+    def test_hidden_under_a_cdp_override(self, monkeypatch, override):
+        monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override_raw", lambda: override)
+        assert "LIVE CHROME" not in bu_cli._dynamic_schema_overrides()["description"]
+
+    def test_hidden_under_operator_bu_cdp_env(self, monkeypatch):
+        monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9222")
+        assert "LIVE CHROME" not in bu_cli._dynamic_schema_overrides()["description"]
+
+    def test_approval_guard_follows_selection(self, monkeypatch):
+        code = "subprocess.run(['browser-harness', 'mac-approve'])"
+        assert bu_cli._code_url_verdict(code).blocked
+        monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override_raw", lambda: "http://127.0.0.1:9222")
+        assert bu_cli._code_url_verdict(code).blocked is None  # live mode is not driving this call

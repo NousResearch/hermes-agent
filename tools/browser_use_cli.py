@@ -30,8 +30,9 @@ from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import (daemon_env, daemon_identity, fit_default_socket_dir, harness_pid_file,
                                         namespace_harness_dirs)
 from tools.browser_use_live_chrome import (DESCRIPTION, ENDPOINT_DESCRIPTION, LIVE_CHROME_SENTINEL,
-                                           approval_attempt, live_chrome_enabled, live_chrome_endpoint,
-                                           live_chrome_timeout_hint, own_tab_preamble)
+                                           LIVE_CLOSE_OWN_TAB_CODE, approval_attempt, live_chrome_enabled,
+                                           live_chrome_endpoint, live_chrome_timeout_hint, own_tab_preamble,
+                                           scrub_approval_hint)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -164,7 +165,7 @@ def _code_url_verdict(code: str) -> _CodeUrlVerdict:
     resolves DNS unmemoised, so a rebinding host evaluated twice could relax the private-address floor and
     still route to the cloud provider."""
     from tools.browser_url_policy import evaluate_url_safety, hybrid_routes_locally
-    if refused := approval_attempt(code):  # live Chrome: the user clicks Allow, never the model
+    if refused := approval_attempt(code, _live_chrome_selected()):  # live Chrome: the user clicks Allow, never the model
         return _CodeUrlVerdict(refused, False)
     local_sidecar = False
     for url in _URL_RE.findall(code or ""):
@@ -539,16 +540,20 @@ def _resolve_live_chrome(env: dict) -> Optional[str]:
         _set_cdp_env(env, endpoint)
     env[_BOT_DESKTOP_BROWSER_SENTINEL] = "local"
     env[LIVE_CHROME_SENTINEL] = "1"
-    env["BH_TAB_MARKER"] = "0"  # the harness would retitle the user's existing tab it attaches to first
+    env["BH_TAB_MARKER"] = "0"  # no horse emoji in the tab titles of the user's browser
     env.pop("BU_AUTOSPAWN", None)  # never fall back to a cloud browser behind the user's back
     return None
 
 
-def _live_chrome_selected(env: dict) -> bool:
+def _live_chrome_selected(env: Optional[dict] = None) -> bool:
     """``browser.live_chrome`` is on and no operator override (BU_CDP_* env, /browser connect,
-    BROWSER_CDP_URL, browser.cdp_url) owns the session."""
+    BROWSER_CDP_URL, browser.cdp_url) owns the session. ``env`` defaults to the call env's operator
+    part (the BU_CDP_* a browser child inherits)."""
+    if not live_chrome_enabled():
+        return False
+    from tools.browser_session import build_browser_env
     from tools.browser_session_cdp import get_cdp_override_raw
-    return live_chrome_enabled() and not _has_cdp_env(env) and not _quiet(get_cdp_override_raw, "")
+    return not _has_cdp_env(build_browser_env() if env is None else env) and not _quiet(get_cdp_override_raw, "")
 
 
 def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
@@ -732,12 +737,44 @@ def _own_harness_daemon_until_owned(env: dict) -> Optional[bool]:
     return None if _own_harness_daemon(env) is None else False
 
 
+def _live_daemon_running(env: dict) -> bool:
+    """Cheap pre-check: the daemon ``env`` drives published a pid that is a live ``browser_harness.daemon``,
+    so there is nothing to spawn a CLI run for otherwise. It does not prove the daemon is healthy (a hung or
+    stale one passes); ``_close_live_own_tab`` relies on ``BH_REQUIRE_EXISTING_DAEMON`` for that."""
+    pid = _published_daemon_pid(env)
+    if pid is None:
+        return False
+    try:
+        import psutil
+    except ImportError:
+        return False
+    try:
+        argv = psutil.Process(pid).cmdline()
+        return argv[argv.index("-m") + 1] == "browser_harness.daemon"  # as _own_harness_daemon
+    except (OSError, ValueError, IndexError, psutil.Error):
+        return False
+
+
+def _close_live_own_tab(cmd: list, env: dict) -> None:
+    """Best effort: close the one tab a live daemon's own-tab step opened (never any other), so stopping
+    the daemon leaves nothing of Hermes's in the user's browser. The harness CLI would otherwise run
+    ``ensure_daemon()`` first and could restart an unhealthy daemon (launching Chrome, opening
+    chrome://inspect or raising an Allow popup in discovery mode), so ``BH_REQUIRE_EXISTING_DAEMON=1`` makes
+    it fail instead of spawning or reconnecting (browser_harness ``require_existing_daemon``)."""
+    if _live_daemon_running(env):
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            _run_cli_killing_process_group(cmd, LIVE_CLOSE_OWN_TAB_CODE,
+                                           {**env, "BH_REQUIRE_EXISTING_DAEMON": "1"}, 10)
+
+
 def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with its own dirs
     cmd = _find_cli() if daemons else None
     if not cmd:
         return
     env = _base_subprocess_env()
     for daemon in daemons:
+        if str(daemon[-1]).startswith("_live_"):
+            _close_live_own_tab(cmd, daemon_env(env, daemon))
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             _run_cli_killing_process_group([*cmd, "--reload"], "", daemon_env(env, daemon), 15)
         with _owned_daemon_groups_lock:
@@ -973,6 +1010,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         result["session"] = session
     result.update(_take_real_profile_note(route_key))
     stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
+    if live_chrome:
+        stderr = scrub_approval_hint(stderr)  # the harness's mac-approve offer: only the user clicks Allow
     if len(stderr) > _STDERR_CAP_CHARS:
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:
@@ -1061,7 +1100,7 @@ def _description_header() -> str:
 
 def _dynamic_schema_overrides() -> dict:
     overrides: dict = {"description": _description_header() + _HELPERS_DIGEST}
-    if live_chrome_enabled():
+    if _live_chrome_selected():  # not while an operator override owns routing: live mode is not in play
         endpoint = live_chrome_endpoint()
         overrides["description"] += ENDPOINT_DESCRIPTION.format(endpoint=endpoint) if endpoint else DESCRIPTION
     # ``local`` exists ONLY when the user consented to real-profile browsing — everyone

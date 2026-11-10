@@ -462,15 +462,17 @@ browser:
 ```
 
 1. In Chrome, open `chrome://inspect/#remote-debugging` and tick **Allow remote debugging for this browser instance**.
-2. Ask Hermes to use the browser. Chrome shows an **"Allow remote debugging?"** popup and **you click Allow**. Chrome raises one popup for *each* connection, so expect one per new browser connection (for example after a Hermes daemon restart), not one per command. Hermes never clicks it for you, and the model is told not to try.
+2. Ask Hermes to use the browser. Chrome shows an **"Allow remote debugging?"** popup and **you click Allow**. Chrome raises one popup for *each* connection, so expect one per new browser connection (for example after a Hermes daemon restart), not one per command. Hermes never clicks it for you, and the model is told not to try: the harness's own hint to run `mac-approve` is rewritten to say only that you must click Allow, and code that names that helper is refused (a best-effort guard, not a sandbox).
 
 How it behaves:
 
-- **Your Chrome, not Hermes's.** Hermes never launches or closes it. If Chrome is not running, the call fails with a message asking you to open it and enable the toggle above.
-- **Own tab.** Each session opens a new tab and works only there; your existing tabs are not driven. If Hermes can't open that tab and confirm it is attached to it, the call stops before any of its code runs and is retried only on a later call. (Hermes also turns off the harness's tab-title marker so no existing tab is retitled.)
+- **Your Chrome, not Hermes's.** Hermes never launches or closes it. Hermes only attaches when a running browser has the toggle on (its `Local State` records it and it has published a `DevToolsActivePort`); otherwise the call fails with a message asking you to open Chrome and enable the toggle above, rather than letting the harness open `chrome://inspect` or launch Chrome for you.
+- **Own tab.** Each session opens a new tab and works only there; your existing tabs are not driven. If Hermes can't open that tab and confirm it is attached to it, the call stops before any of its code runs and is retried only on a later call. The tab is opened in the background so Chrome does not come to the front, and Hermes closes that tab (only that one) when it stops the daemon, best-effort: a Hermes that is killed outright cannot. (Hermes also turns off the harness's tab-title marker, and the harness's named daemons attach to a tab of their own rather than to an existing page.)
 - **One connection.** Hermes does not open a second CDP connection for dialog handling, so no second popup. `browser_vault` therefore reports `supervisor_required` while live mode discovers your Chrome (with a fixed endpoint below, the supervisor attaches there normally).
 - **Precedence.** An operator override (`BU_CDP_*`, `/browser connect`, `BROWSER_CDP_URL`, `browser.cdp_url`) wins. Otherwise live mode beats a cloud provider and `browser.use_real_profile` (and serves the `local` argument itself, so no profile snapshot is made). Private/LAN URLs still go to the [hybrid local sidecar](#cloud-browsers) when a cloud provider is configured, never into your signed-in Chrome.
 - **macOS permission.** macOS can block reading `~/Library/Application Support/Google/Chrome` with "Operation not permitted", depending on which app launched Hermes. Hermes then names the folder in its error; grant that app access under **System Settings → Privacy & Security** (Files and Folders or Full Disk Access) and restart it. Hermes does not work around the protection.
+- Chrome writes the toggle into `Local State` lazily, so right after you tick it the first call may still be refused; retry after a moment.
+- The live-Chrome description and the approval refusal apply only while live mode is the route in use, not while an operator override owns routing.
 - A harness daemon that is already running keeps the browser it started with; `live_chrome` takes effect when it next starts.
 
 ### A dedicated Chrome instead of yours

@@ -20,6 +20,7 @@ module keeps the harness inside four limits:
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
@@ -77,26 +78,39 @@ DESCRIPTION = (
 )
 
 
-# Live Chrome's own-tab step FAILS CLOSED: the attached page may be one of the user's signed-in tabs, so a
-# call that can't prove it is in a tab this daemon opened stops before the model's code runs. The marker is
-# written only after that proof, so a failure is retried on the next call instead of pinning the session to
-# the user's tab. (The shared-browser preamble in browser_use_cli stays best-effort.)
-LIVE_OWN_TAB_PREAMBLE = """\
-# hermes: live Chrome -- work only in a tab this daemon opened; stop if that can't be confirmed
-def _hermes_live_own_tab():
-    import os as _os, tempfile as _tf
+# The own-tab marker: one file per (user, BU_NAME, daemon pid) in the harness process's temp dir, holding the
+# id of the tab the preamble opened. Shared by the preamble (writes it) and the stop-time close (reads it) so
+# both name the same file. The pid file is JSON (``{"pid", "started"}``) or a bare pid: only the integer
+# goes into the name, which is then a valid file name on every platform.
+_MARKER_PATH_SRC = """\
+def _hermes_owntab_marker():
+    import json as _json, os as _os, tempfile as _tf
     _name = _os.environ.get("BU_NAME", "default")
     try:
         from browser_harness import _ipc as _bipc
-        _dpid = _bipc.pid_path(_name).read_text().strip() or "0"
+        _raw = _bipc.pid_path(_name).read_text(encoding="utf-8-sig").strip()
+        _dpid = str(int(_json.loads(_raw)["pid"] if _raw.startswith("{") else _raw.split()[0]))
     except Exception:
         _dpid = "0"
     _uid = _os.getuid() if hasattr(_os, "getuid") else 0
-    _marker = _os.path.join(_tf.gettempdir(), "hermes-bu-owntab-%s-%s-%s" % (_uid, _name, _dpid))
+    return _os.path.join(_tf.gettempdir(), "hermes-bu-owntab-%s-%s-%s" % (_uid, _name, _dpid))
+"""
+
+# Live Chrome's own-tab step FAILS CLOSED: a call that can't prove it is in a tab this daemon opened stops
+# before the model's code runs. (Named harness daemons already attach to their own dedicated background tab
+# rather than an existing page, but that is harness behaviour Hermes does not verify per call.) The marker is
+# written only after that proof, so a failure is retried on the next call instead of pinning the session to a
+# tab it did not open. (The shared-browser preamble in browser_use_cli stays best-effort.) The tab is created
+# with background=True so Chrome does not come to the front.
+LIVE_OWN_TAB_PREAMBLE = _MARKER_PATH_SRC + """\
+# hermes: live Chrome -- work only in a tab this daemon opened; stop if that can't be confirmed
+def _hermes_live_own_tab():
+    import os as _os
+    _marker = _hermes_owntab_marker()
     if _os.path.exists(_marker):
         return
     try:
-        _tid = (cdp("Target.createTarget", url="about:blank") or {}).get("targetId")
+        _tid = (cdp("Target.createTarget", url="about:blank", background=True) or {}).get("targetId")
         if not _tid:
             raise RuntimeError("Chrome returned no id for the new tab")
         switch_tab(_tid)
@@ -109,11 +123,32 @@ def _hermes_live_own_tab():
             "to keep the user's own tabs untouched. Tell the user; do not retry until they say so." % (_exc,)
         ) from None
     try:
-        open(_marker, "w").close()
+        with open(_marker, "w") as _fh:
+            _fh.write(_tid)
     except OSError:
         pass  # no marker: the next call opens and checks a fresh tab again
 _hermes_live_own_tab()
-del _hermes_live_own_tab
+del _hermes_live_own_tab, _hermes_owntab_marker
+"""
+
+# Run through the harness CLI when Hermes stops a live daemon: closes ONLY the tab recorded in this daemon's
+# marker (the one its preamble opened), then drops the marker. No marker, or a malformed one, closes nothing.
+LIVE_CLOSE_OWN_TAB_CODE = _MARKER_PATH_SRC + """\
+import os as _os, re as _re
+_marker = _hermes_owntab_marker()
+try:
+    _tid = open(_marker).read().strip()
+except OSError:
+    _tid = ""
+if _re.fullmatch(r"[A-Za-z0-9]+", _tid):
+    try:
+        cdp("Target.closeTarget", targetId=_tid)
+    except Exception:
+        pass
+try:
+    _os.remove(_marker)
+except OSError:
+    pass
 """
 
 ENDPOINT_DESCRIPTION = (
@@ -169,12 +204,26 @@ def endpoint_unreachable(url: str) -> Optional[str]:
                 "launches or closes Chrome. Ask the user to start that Chrome so it listens there, then retry.")
 
 
-def approval_attempt(code: str) -> Optional[str]:
-    """In live mode, an error when ``code`` reaches for the harness's Allow-clicking helper, else None."""
-    if live_chrome_enabled() and _APPROVE_RE.search(code or ""):
+def approval_attempt(code: str, live_selected: bool) -> Optional[str]:
+    """When live mode is the selected route, an error when ``code`` reaches for the harness's Allow-clicking
+    helper, else None. Best-effort: code can spell the helper in ways no pattern catches, so the consent
+    boundary is the tool description, this refusal and ``scrub_approval_hint`` together, not this alone."""
+    if live_selected and _APPROVE_RE.search(code or ""):
         return ("Refused: the user must click Allow on Chrome's \"Allow remote debugging?\" popup themselves. "
                 "Hermes never approves it for them. Ask the user to click Allow, then retry.")
     return None
+
+
+# The harness's own stderr hint, "run `BU_NAME=… browser-harness mac-approve` in another shell or click Allow".
+_APPROVE_HINT_RE = re.compile(r"run `[^`]*mac-approve[^`]*`(?: in another shell)? or click Allow", re.IGNORECASE)
+_APPROVE_CMD_RE = re.compile(r"`[^`]*mac-approve[^`]*`", re.IGNORECASE)
+
+
+def scrub_approval_hint(text: str) -> str:
+    """Live mode: the harness's stderr hint offers its mac-approve helper, which would have the model click
+    Allow. Rewrite it (and any other mention of that command) to say the user must click Allow."""
+    text = _APPROVE_HINT_RE.sub("the user must click Allow", text)
+    return _APPROVE_CMD_RE.sub("the user's own Allow click", text)
 
 
 def live_chrome_timeout_hint(live: bool, endpoint: str = "") -> str:
@@ -207,7 +256,7 @@ def _singleton_pid_alive(base: Path) -> bool:
         pid = int(os.readlink(base / "SingletonLock").rsplit("-", 1)[-1])
     except (FileNotFoundError, NotADirectoryError, ValueError):
         return False
-    import psutil  # lazy: not installed on every platform (pyproject marks it non-android)
+    import psutil
     return psutil.pid_exists(pid)
 
 
@@ -215,6 +264,19 @@ def _windows_browser_running() -> bool:
     import psutil
     return any((proc.info["name"] or "").lower() in _WINDOWS_BROWSER_EXES
                for proc in psutil.process_iter(["name"]))
+
+
+def _remote_debugging_toggled_on(base: Path) -> bool:
+    """``Local State`` records chrome://inspect's "Allow remote debugging" toggle as on (the harness reads
+    the same key). A privacy block raises PermissionError; any other unreadable file reads as off."""
+    try:
+        with open(base / "Local State", "rb") as fh:
+            state = json.load(fh)
+        return ((state.get("devtools") or {}).get("remote_debugging") or {}).get("user-enabled") is True
+    except PermissionError:
+        raise
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def _access_error(folder: Path, system: str) -> str:
@@ -225,27 +287,46 @@ def _access_error(folder: Path, system: str) -> str:
             "Hermes does not work around this protection. Ask the user to grant the access.")
 
 
+_NOT_RUNNING = ("Live Chrome: no running Chrome was found, and Hermes never launches or closes the user's "
+                "Chrome. Ask the user to open Chrome and turn on remote debugging at "
+                "chrome://inspect/#remote-debugging (tick \"Allow remote debugging for this browser "
+                "instance\"), then retry.")
+_TOGGLE_OFF = ("Live Chrome: a browser is running, but none of them has remote debugging turned on, and "
+               "Hermes never launches, closes or reconfigures the user's Chrome. Ask the user to turn it on "
+               "in Chrome at chrome://inspect/#remote-debugging (tick \"Allow remote debugging for this "
+               "browser instance\"), then retry.")
+_NO_PSUTIL = ("Live Chrome: the psutil package is not installed here, so Hermes cannot tell whether Chrome "
+              "is running. Live Chrome is unavailable on this install; tell the user.")
+
+
 def preflight(system: Optional[str] = None) -> Optional[str]:
-    """None when a supported browser is running and its profile folders are readable, else the error for
-    the model. Read-only: never starts, stops or signals a browser."""
+    """None when a running browser has remote debugging on (``Local State`` toggle and a
+    ``DevToolsActivePort``) and nothing needed to tell is blocked, else the error for the model. The
+    harness attaches to such a browser by itself; for anything else its setup branch would open or launch
+    Chrome, which Hermes never allows. Read-only: never starts, stops or signals a browser. A privacy
+    block on a browser's folder is reported only when no readable running browser was found."""
     system = system or platform.system()
+    try:
+        import psutil  # (not installed on every platform; pyproject marks it non-android)
+    except ImportError:
+        return _NO_PSUTIL
     running = False
+    denied: Optional[Path] = None
+    windows_running = system == "Windows" and _windows_browser_running()
     for base in _profile_dirs(system):
         try:
             if not base.is_dir():
                 continue
             for name in ("Local State", "DevToolsActivePort"):
                 _read_probe(base / name)
-            running = running or (system != "Windows" and _singleton_pid_alive(base))
+            alive = windows_running if system == "Windows" else _singleton_pid_alive(base)
+            running = running or alive
+            if alive and (base / "DevToolsActivePort").is_file() and _remote_debugging_toggled_on(base):
+                return None
         except PermissionError:
-            return _access_error(base, system)
+            denied = denied or base
         except OSError:
             continue
-    if system == "Windows":
-        running = _windows_browser_running()
-    if running:
-        return None
-    return ("Live Chrome: no running Chrome was found, and Hermes never launches or closes the user's "
-            "Chrome. Ask the user to open Chrome and turn on remote debugging at "
-            "chrome://inspect/#remote-debugging (tick \"Allow remote debugging for this browser instance\"), "
-            "then retry.")
+    if denied:
+        return _access_error(denied, system)
+    return _TOGGLE_OFF if running else _NOT_RUNNING

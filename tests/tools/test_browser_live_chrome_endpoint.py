@@ -123,7 +123,7 @@ class TestSet:
         assert "timed out" in err and "Allow" not in err
 
     def test_approval_guard_stays(self):
-        assert live.approval_attempt("subprocess.run(['browser-harness','mac-approve'])")
+        assert live.approval_attempt("subprocess.run(['browser-harness','mac-approve'])", True)
 
     def test_changed_value_never_reuses_old_daemon(self, tmp_path, monkeypatch, config):
         _cli(tmp_path, monkeypatch)

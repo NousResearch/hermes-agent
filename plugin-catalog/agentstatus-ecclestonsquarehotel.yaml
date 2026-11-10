@@ -1,0 +1,19 @@
+name: agentstatus-ecclestonsquarehotel
+title: "Eccleston Square Hotel - Luxury Boutique Hotel in London"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: dee3472e8587cc5986554e13e55950abfb3ab6c5
+subdir: plugins/ecclestonsquarehotel
+version: "1.0.0"
+description: "Public MCP for Eccleston Square Hotel - Luxury Boutique Hotel in London, hosted by AgentStatus at https://ecclestonsquarehotel.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://ecclestonsquarehotel.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

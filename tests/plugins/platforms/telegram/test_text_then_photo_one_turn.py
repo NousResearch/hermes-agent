@@ -136,3 +136,47 @@ async def test_observe_only_photo_does_not_hold_the_question():
         release.set()
         await photo
     assert adapter.handle_message.await_args_list[0].args[0].text == "Is this a real study?"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("album", [False, True], ids=["single", "album"])
+async def test_recovered_question_keeps_its_topic_when_a_newer_topic_binds_during_debounce(tmp_path, album):
+    """Topic-mode DM: the threadless question is recovered into topic 10. The photo absorbs it, and
+    while the photo debounces another topic (20) becomes the newest binding. The merged turn must
+    still run in topic 10, where the question was routed, not re-derive topic 20 at dispatch."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource, build_session_key
+    from hermes_state import SessionDB
+    from tests.gateway.test_telegram_topic_mode import _make_runner
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="100", user_id="1")
+
+    def bind(thread_id):
+        db.create_session(session_id=f"s-{thread_id}", source="telegram", user_id="1")
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="100", user_id="1", chat_type="dm", thread_id=thread_id)
+        db.bind_telegram_topic(chat_id="100", thread_id=thread_id, user_id="1",
+                               session_key=build_session_key(source), session_id=f"s-{thread_id}")
+    bind("10")
+    adapter = _adapter()
+    del adapter.handle_message  # real Telegram + base ingress, up to the session-processing seam
+    adapter.set_message_handler(AsyncMock())
+    adapter.set_topic_recovery_fn(_make_runner(session_db=db)._recover_telegram_topic_thread_id)
+    adapter._get_dm_topic_info = lambda *_a: {}
+    routed = []
+    adapter._start_session_processing = lambda event, _key: routed.append((event.text, event.source.thread_id, event.media_urls)) or True
+    release = asyncio.Event()
+    photo_msg = _slow_photo(release)
+    photo_msg.media_group_id = "album-1" if album else None
+    try:
+        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async", new=AsyncMock(return_value="/tmp/post.jpg")):
+            await adapter._handle_text_message(_update(_text("Is this a real study?")), MagicMock())
+            photo = asyncio.create_task(adapter._handle_media_message(_update(photo_msg), MagicMock()))
+            await asyncio.sleep(0.4)  # health: allow HX013 -- a download outlasting the 0.18 s text delay IS the race
+            release.set()
+            await photo
+            bind("20")  # another topic's turn refreshes the newest binding while the photo debounces
+            await async_wait_until(lambda: routed, timeout=5)
+    finally:
+        db.close()
+    assert routed == [("Is this a real study?", "10", ["/tmp/post.jpg"])]

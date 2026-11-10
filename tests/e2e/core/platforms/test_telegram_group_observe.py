@@ -109,8 +109,8 @@ def test_observed_group_photo_points_the_next_addressed_turn_at_the_cached_file(
         _await_turn(director, "p1")
         user = [m for m in director.requests["p1"][0]["messages"] if m.get("role") == "user"][-1]
         assert isinstance(user["content"], str), "observed media must not ride inline"
-        cached = re.search(r"saved at: (\S+\.png); not attached inline, to look at it use vision_analyze with this "
-                           r"path as image_url\]", user["content"])
+        cached = re.search(r"saved at: (\S+\.png)\] \(not attached inline; to look at it use vision_analyze with "
+                           r"this path as image_url\)", user["content"])
         assert cached, user["content"]
         assert open(cached[1], "rb").read() == _PNG
     finally:

@@ -1069,8 +1069,6 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     resolved = _translate_docker_container_media_path(expanded, session_key=session_key) or _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
         return None
-    from gateway.platforms.docker_media_paths import hand_back_unreadable_media
-    hand_back_unreadable_media(resolved)
     # Cache / operator allowlist is trusted unconditionally, regardless of mode.
     for root in _media_delivery_allowed_roots():
         resolved_root = _resolve_path(root, expand=True)
@@ -4352,6 +4350,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if not is_ephemeral_response:
                 local_files, text_content = self.extract_local_files(text_content)
                 local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
+            from gateway.platforms.docker_media_paths import hand_back_unreadable_media
+            await hand_back_unreadable_media([p for p, _ in media_files] + local_files)
         history = (await self._bounded_history_media_paths_for_session(session_key)
                    if local_files else None)
         if history:

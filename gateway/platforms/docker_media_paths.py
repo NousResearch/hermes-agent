@@ -7,6 +7,7 @@ gone, and scanning every ``*_ws_*`` directory would serve another session's file
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -163,14 +164,21 @@ def _default_docker_workspace_host_roots(
     return roots
 
 
-def hand_back_unreadable_media(path: Path) -> None:
-    """A MEDIA file a root Docker sandbox restricted (``chmod 600``) is unreadable to the gateway
-    while the container lives (teardown hands files back only on removal): give that one file to
-    the host user through the container itself; the sandbox keeps ``no-new-privileges``."""
+async def hand_back_unreadable_media(paths: list[str]) -> None:
+    """Validated MEDIA files a root Docker sandbox restricted (``chmod 600``) are unreadable to the
+    gateway while the container lives (teardown hands files back only on removal): give each one
+    to the host user through the container itself; the sandbox keeps ``no-new-privileges``. Docker
+    CLI calls block, so they run off the event loop (``to_thread`` carries the profile scope)."""
     from gateway.platforms.base import _docker_env_active
-    if os.access(path, os.R_OK) or not _docker_env_active():
+    if not (unreadable := [p for p in paths if not os.access(p, os.R_OK)]) or not _docker_env_active():
         return
+    await asyncio.to_thread(_hand_back_files, unreadable)
+
+
+def _hand_back_files(paths: list[str]) -> None:
     from tools.environments.docker import find_docker
     from tools.environments.docker_ownership import hand_back_media_file
-    if (docker_exe := find_docker()) and hand_back_media_file(docker_exe, str(path)):
-        logger.info("Handed Docker sandbox MEDIA file %s back to the gateway user", path.name)
+    docker_exe = find_docker()
+    for path in paths if docker_exe else []:
+        if hand_back_media_file(docker_exe, path):
+            logger.info("Handed Docker sandbox MEDIA file %s back to the gateway user", Path(path).name)

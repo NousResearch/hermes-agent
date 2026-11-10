@@ -43,7 +43,7 @@ def _decode_cursor(cursor, binding):
         tag, offset, *held = json.loads(base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)))
     except (TypeError, ValueError, binascii.Error):
         raise RuntimeStoreError('invalid_params', field='cursor') from None
-    if tag != _CURSOR_TAG or type(offset) is not int or offset < 0 or held != list(binding):
+    if tag != _CURSOR_TAG or type(offset) is not int or not 0 <= offset < 2**63 or held != list(binding):
         raise RuntimeStoreError('invalid_params', field='cursor')
     return offset
 

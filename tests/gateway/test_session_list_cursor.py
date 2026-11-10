@@ -1,4 +1,6 @@
 """``session.list``'s stored scope pages with ``cursor`` / ``next_cursor`` and filters by ``query`` (#141982)."""
+import base64
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -91,6 +93,10 @@ async def test_cursor_and_query_refusals(tmp_path, monkeypatch):
         cursor = page['next_cursor']
         assert isinstance(cursor, str)
         assert 'result' in await listing(scope='stored', query='needle', limit=3, cursor=cursor)
+        # The same cursor with an offset no store can hold: refused like any cursor the method did not issue.
+        held = json.loads(base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)))
+        held[1] = 2**63
+        too_large = base64.urlsafe_b64encode(json.dumps(held).encode()).decode().rstrip('=')
         refused = [
             {'scope': 'stored', 'query': 'other', 'cursor': cursor},
             {'scope': 'stored', 'cursor': cursor},
@@ -104,6 +110,7 @@ async def test_cursor_and_query_refusals(tmp_path, monkeypatch):
             {'scope': 'stored', 'query': 'x' * 201},
             {'scope': 'stored', 'cursor': 'not a cursor'},
             {'scope': 'stored', 'cursor': cursor[:-4]},
+            {'scope': 'stored', 'query': 'needle', 'cursor': too_large},
         ]
         for params in refused:
             reply = await listing(**params)

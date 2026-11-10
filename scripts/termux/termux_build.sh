@@ -284,13 +284,13 @@ from concurrent.futures import ThreadPoolExecutor
 # platform_system-gated deps. windows/darwin markers exclude it as before.
 TARGET_ENV = {
     "implementation_name": "cpython",
-    "implementation_version": "3.14.6",
+    "implementation_version": "3.14.8",
     "os_name": "posix",
     "platform_machine": "aarch64",
     "platform_release": "",
     "platform_system": "Linux",
     "platform_version": "",
-    "python_full_version": "3.14.6",
+    "python_full_version": "3.14.8",
     "python_version": "3.14",
     "sys_platform": "android",
 }

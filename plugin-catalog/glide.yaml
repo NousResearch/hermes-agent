@@ -1,0 +1,17 @@
+name: glide
+title: Glide
+repo: https://github.com/kvnloo/glide
+sha: 535e5fe07c8a3b0be4e0d6c0e1e520390cd2bd4c
+description: "One install gives Hermes a native Tern UI plus `/glide`, a guided path that makes Hermes learn from you. `hermes tern` draws the chat as real Tern UI (transcript, tool cards, approvals, subagents, pull requests, ephemeral answer cards, a work dock and the thinking-orbs indicator); outside Tern it starts the regular TUI. `/glide` (and `hermes glide onboard`) detects the machine and local runtimes, builds a corrections memory from your past local sessions (\"no, …\", \"actually, …\", \"correction: …\"), and when on quotes up to three matching corrections into each new turn through a pre_llm_call hook, current instructions still winning; recall is deterministic BM25, no embeddings or model calls. In Tern every /glide step is a card with an approve button. Derived from hermes-tern (alt-glitch): adds the /glide onboarding and corrections memory, which the original lacks. Disclosure — network: GitHub's API with the optional GITHUB_TOKEN for the pull request view, and the user's own auxiliary model for live process charts; /glide itself makes no network calls; no telemetry. Commands: runs the `tern` CLI to open files and splits; the `/glide` overview runs `nvidia-smi` and, if installed, `z0int doctor --json`, each with a 20 s timeout; nothing is installed. Reads outside its data: the profile's Hermes session database, read-only (local sessions only; cron, delegated and hidden sessions skipped), and the session's background-process output. Writes only under the profile (`<profile>/glide/` for the memory). No background processes of its own. Install this or hermes-tern, not both: both register `hermes tern`."
+maintainer: kvnloo
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/kvnloo/glide#readme
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools: [link_pull_request, unlink_pull_request, list_pull_requests]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

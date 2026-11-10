@@ -99,6 +99,21 @@ describe('parseMarkdownIntoBlocksCached', () => {
     expect(blocks.join('')).toBe(LONG_CORPUS)
   })
 
+  it('keeps one streamed prefix per lineage, not every prefix (memory bound)', () => {
+    // Each flush is a new full-length string; retaining all of them in the
+    // exact LRU held ~256 x N bytes per stream. The live tip keeps its array
+    // identity (Streamdown re-renders against it); superseded prefixes go.
+    const base = `retention ${LONG_CORPUS}`
+    const first = parseMarkdownIntoBlocksCached(base)
+    const tip = `${base}\n\nnext paragraph`
+    const tipBlocks = parseMarkdownIntoBlocksCached(tip)
+
+    expect(parseMarkdownIntoBlocksCached(tip)).toBe(tipBlocks)
+    const again = parseMarkdownIntoBlocksCached(base)
+    expect(again).not.toBe(first)
+    expect(again).toEqual(first)
+  })
+
   it('falls back to a full lex for non-append rewrites (edit / branch swap)', () => {
     const grown = `${LONG_CORPUS}\n\nappended tail paragraph`
     parseMarkdownIntoBlocksCached(grown)

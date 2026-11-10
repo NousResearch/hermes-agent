@@ -1,0 +1,19 @@
+name: print-tools
+title: "CUPS Print Tools"
+description: "Printer-agnostic Linux CUPS printing for Hermes: queue status, files, wrapped text, and styled one-page letters."
+repo: https://github.com/alxspiker/hermes-print-tools
+sha: bf5dffa3e21a993e2f4f221cad043cff16475937
+version: "1.0.0"
+maintainer: alxspiker
+tier: community
+category: tools
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - printer_status
+    - print_file
+    - print_text
+    - print_letter
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

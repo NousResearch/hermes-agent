@@ -1,0 +1,39 @@
+name: loshify
+title: Loshify
+repo: https://github.com/iHeavyShoes/loshify
+sha: "dd2d13d54d78eb671be6d0c6724765401d02e39c"
+description: >-
+  A Spotify curator that knows you: it learns your taste from your listening and your reactions,
+  builds playlists with a reason for every track, and remembers what you loved and what you never
+  want again. Desktop remote with 👎 👌 ❤️, rotations, and a chat curator. Connect in about two
+  minutes; the Desktop card walks you through it one step at a time with copy buttons, and the
+  agent walks the same steps in chat.
+  First install with hermes plugins install iHeavyShoes/loshify --enable (once listed,
+  hermes plugins install loshify). Then in Hermes Desktop open
+  Capabilities → Plugins and turn on Loshify's Desktop switch (the Desktop half starts off and
+  config.yaml does not turn it on).
+  (1) Open developer.spotify.com/dashboard and press Create app.
+  (2) App name Loshify, Redirect URI http://127.0.0.1:43828/callback, tick only Web API, Save.
+  Your own key to Spotify; 127.0.0.1 means this computer, nothing leaves it.
+  (3) Add yourself under User Management (new Spotify apps only let in listed accounts).
+  (4) Paste the Client ID into the Loshify card; it is saved in the plugin's setting.
+  (5) Run hermes auth add loshify:spotify once in a terminal (Windows: Start → PowerShell) and
+  press Agree.
+  (6) The card checks with one real call to Spotify and turns green.
+  Disclosure: data is stored locally in plugin-data/loshify/data.db. The plugin calls Spotify API
+  and accounts hosts, and the Desktop loads Spotify image CDN artwork. Hermes sends taste facts
+  (artist names, track titles, and notes) to your configured model provider for portraits and picks.
+  The plugin never sees a token. Edits or removes tracks only from playlists Loshify created.
+  Playback control needs Spotify Premium. No shell commands, background processes or telemetry.
+maintainer: iHeavyShoes
+tier: community
+version: "1.0.0"
+category: desktop
+docs_url: https://github.com/iHeavyShoes/loshify#readme
+requires_hermes: ">=0.23.0"
+platforms: []
+capabilities:
+  provides_tools: [loshify_setup, loshify_taste, loshify_reactions, loshify_curate, loshify_react, loshify_rotation, loshify_onboard]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,40 @@
+name: blind-accessibility-reader
+title: Blind Accessibility Video and Image Reader
+repo: https://github.com/ella0333/hermes-blind-accessibility-reader
+sha: 746019123a18eb142941a805d3911f417d755f6a
+description: >-
+  Describes the images and videos on any website for blind and low vision
+  people, through their screen reader or an AI voice. A bundled Chrome
+  extension outlines the image or video you're on, and Hermes sends it to a
+  vision model through OpenRouter. Auto mode describes as you scroll and
+  narrates videos as they play; manual mode waits for a shortcut. A daily
+  limit and a per-video limit keep the cost in check. Disclosure: runs a
+  local server on 127.0.0.1:47823 that answers only the bundled extension;
+  sends downscaled images and video frames to the vision model configured for
+  its auxiliary task (OpenRouter by default) using the key held by Hermes;
+  may download an image from its page address; fetches OpenRouter's public
+  price list with no key. No shell commands, telemetry, stored credentials
+  or self-updater.
+maintainer: ella0333
+tier: community
+category: web
+requires_hermes: ">=0.22.7"
+version: "0.2.0"
+docs_url: https://github.com/ella0333/hermes-blind-accessibility-reader#readme
+readme: true
+platforms: []
+known_issues:
+  - Needs Google Chrome with the bundled extension loaded unpacked; run /describe extension to see where it was saved.
+  - Needs an OpenRouter key added to Hermes.
+  - Hermes must stay open while you browse.
+  - On YouTube playlists, the page may need a refresh to pick up the next video.
+  - Streaming services protected by DRM return black frames and can't be described.
+capabilities:
+  provides_tools:
+    - describe_view
+    - reader_settings
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

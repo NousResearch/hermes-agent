@@ -103,3 +103,30 @@ def test_persisted_agent_still_fires_session_and_turn_lifecycle_hooks():
     ]
     assert context == "plugin context"
     assert output_calls == ["transform_llm_output", "post_llm_call"]
+
+
+def test_pre_llm_call_payload_includes_resolved_route_metadata():
+    agent = _agent(persist_disabled=False)
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+
+    with (
+        patch("hermes_cli.lifecycle.invoke_hook") as lifecycle_hook,
+        patch("agent.credits_tracker.seed_credits_at_session_start"),
+    ):
+        lifecycle_hook.side_effect = lambda name, **_kwargs: (
+            [{"context": "plugin context"}] if name == "pre_llm_call" else []
+        )
+        _restore_or_build_system_prompt(agent, None, [])
+        _collect_pre_llm_call_context(
+            agent,
+            effective_task_id="task-1",
+            turn_id="turn-1",
+            original_user_message="hello",
+            messages=[{"role": "user", "content": "hello"}],
+            conversation_history=None,
+        )
+
+    pre_call = next(call for call in lifecycle_hook.call_args_list if call.args[0] == "pre_llm_call")
+    assert pre_call.kwargs["provider"] == "openai-codex"
+    assert pre_call.kwargs["api_mode"] == "codex_responses"

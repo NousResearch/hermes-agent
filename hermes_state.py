@@ -273,7 +273,7 @@ class _SessionDB:
         include_archived: "bool" = False, archived_only: "bool" = False, id_query: "Optional[str]" = None,
         search_query: "Optional[str]" = None, compact_rows: "bool" = False, include_pinned: "bool" = False,
         session_key: "Optional[str]" = None, include_hidden: "bool" = False, include_subagents: "bool" = False,
-        local_created_sources: "Optional[list[str]]" = None,
+        local_created_sources: "Optional[list[str]]" = None, workspace_key: "Optional[str]" = None,
     ) -> "list[dict[str, Any]]":
         from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
 
@@ -286,7 +286,8 @@ class _SessionDB:
             include_archived=include_archived, archived_only=archived_only, id_query=id_query,
             search_text=search_query, include_pinned=include_pinned, session_key=session_key,
             include_hidden=include_hidden, include_subagents=include_subagents,
-            local_created_sources=tuple(local_created_sources) if local_created_sources else None)
+            local_created_sources=tuple(local_created_sources) if local_created_sources else None,
+            workspace_key=workspace_key)
         entries = self._store.sessions.list_sessions(query, SessionWindow(limit=limit, offset=offset),
                                                      compact_rows=compact_rows)
         return [entry.as_list_row() for entry in entries]

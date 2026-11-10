@@ -86,7 +86,7 @@ export function OverlayView({
         // since the card top already sits below them, the left needs no extra
         // inset — keeping all sides equal so the card is ~full-width at any size.
         page
-          ? 'bottom-0 left-(--global-nav-width) right-0 top-(--titlebar-height) bg-background'
+          ? 'bottom-0 start-(--global-nav-width) end-0 top-(--titlebar-height) bg-background'
           : 'inset-0 bg-black/22 p-[calc(var(--titlebar-height)+0.625rem)] backdrop-blur-[0.125rem] sm:p-[calc(var(--titlebar-height)+0.875rem)]'
       )}
       // Every OverlayView-based overlay (settings, command-center, agents, cron,

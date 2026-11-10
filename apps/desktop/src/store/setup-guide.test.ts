@@ -103,3 +103,108 @@ it('does not open a guide when managed policy refuses an explicit restart', asyn
   expect($setupGuidePhase.get()).toBe('idle')
   expect(run.$guideRequest.get()).toBeNull()
 })
+
+it('never writes a stale automatic-resume snapshot over a peer window', async () => {
+  const run = await import('./setup-guide')
+  const snapshot = Promise.withResolvers<unknown>()
+  let durable = { run: true, eligible: false, started: true, step: 'preferences' }
+  const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'onboarding.state') {
+      return snapshot.promise
+    }
+    durable = { ...durable, ...params }
+    return durable
+  })
+
+  const deciding = run.decideOnboarding(request as never)
+  const stale = { ...durable }
+  durable = { ...durable, step: 'model' }
+  snapshot.resolve(stale)
+  await deciding
+
+  expect(durable.step).toBe('model')
+  expect(request.mock.calls.map(([method]) => method)).toEqual(['onboarding.state'])
+  request.mockImplementation(async () => durable)
+  await run.reconcileOnboarding()
+  expect(run.$guideStep.get()).toBe('model')
+})
+
+it.each([
+  ['old schema', 'Invalid params: sessionless Extra inputs are not permitted [type=extra_forbidden]', true],
+  ['version skew', 'App and backend out of sync (different versions)', true],
+  ['network failure', 'Gateway disconnected', false]
+])('offers explicit recovery for %s without falling back to a setup chat', async (_name, message, upgradeRequired) => {
+  const run = await import('./setup-guide')
+  const { $setupGuidePhase } = await import('./onboarding-phase')
+  const request = vi.fn().mockRejectedValue(new Error(message))
+
+  await run.decideOnboarding(request as never)
+  expect(run.$guideRecovery.get()).toMatchObject({ message, upgradeRequired })
+  expect($setupGuidePhase.get()).toBe('idle')
+  expect(request).toHaveBeenCalledOnce()
+  expect(request).toHaveBeenCalledWith('onboarding.state', { sessionless: true }, 0, undefined)
+
+  request.mockResolvedValue({ run: true, eligible: false, started: true, step: 'model' })
+  await run.$guideRecovery.get()!.retry()
+  expect(run.$guideRecovery.get()).toBeNull()
+  expect($setupGuidePhase.get()).toBe('shown')
+  expect(request.mock.calls.every(([method]) => method === 'onboarding.state')).toBe(true)
+})
+
+it('offers recovery for Run again and keeps classic mode free of guide recovery', async () => {
+  const run = await import('./setup-guide')
+  const { $agentSidebarChoice } = await import('./simplified-agent-mode')
+  const request = vi.fn().mockRejectedValue(new Error('sessionless: extra_forbidden'))
+  expect(await run.startOnboarding(request as never)).toBe(false)
+  expect(run.$guideRecovery.get()?.upgradeRequired).toBe(true)
+
+  run.$guideRecovery.set(null)
+  $agentSidebarChoice.set(false)
+  await run.decideOnboarding(request as never)
+  expect(run.$guideRecovery.get()).toBeNull()
+})
+
+it('uses the atomic fresh latch and displays progress advanced by a peer since the snapshot', async () => {
+  const run = await import('./setup-guide')
+  const snapshot = Promise.withResolvers<unknown>()
+  const request = vi.fn(async (method: string) => {
+    if (method === 'onboarding.state') {
+      return snapshot.promise
+    }
+    // The atomic latch returns the peer's current state, not the stale read.
+    return { run: true, eligible: true, started: true, step: 'model' }
+  })
+  const deciding = run.decideOnboarding(request as never)
+  snapshot.resolve({ run: true, eligible: true, started: false, step: 'preferences' })
+  await deciding
+  expect(request).toHaveBeenCalledWith('onboarding.set_run', { run: true, sessionless: true }, undefined, undefined)
+  expect(run.$guideStep.get()).toBe('model')
+})
+
+it('pins recovery retries to the failed gateway and profile, not the new foreground owner', async () => {
+  const gateway = await import('./gateway')
+  const api = await import('@/api/client')
+  vi.spyOn(gateway, 'activeGateway').mockReturnValue({} as never)
+  const routed = vi.spyOn(gateway, 'requestGatewayForAgent')
+    .mockRejectedValueOnce(new Error('sessionless: extra_forbidden'))
+    .mockResolvedValue({ run: true, eligible: false, started: true, step: 'model' })
+  api.setApiRequestConnection('alpha')
+  api.setApiRequestProfile('research')
+
+  try {
+    const run = await import('./setup-guide')
+    await run.decideOnboarding(vi.fn() as never)
+    api.setApiRequestConnection('beta')
+    api.setApiRequestProfile('default')
+    await run.$guideRecovery.get()!.retry()
+    expect(routed.mock.calls.map(call => call.slice(0, 3))).toEqual([
+      ['alpha', 'research', 'onboarding.state'],
+      ['alpha', 'research', 'onboarding.state']
+    ])
+    expect(run.$guideScope.get()).toEqual({ connectionId: 'alpha', profile: 'research' })
+  } finally {
+    vi.restoreAllMocks()
+    api.setApiRequestConnection(null)
+    api.setApiRequestProfile(null)
+  }
+})

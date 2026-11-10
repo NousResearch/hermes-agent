@@ -1,6 +1,6 @@
 import { $apiRequestScope } from '@/api/client'
 
-import { $desktopMetricsGate, type DesktopActionVia, recordAction } from './desktop-metrics'
+import { $desktopMetricsGate, type DesktopActionVia, desktopMetricsEnabled, recordAction } from './desktop-metrics'
 import type { IaAction } from './ia-metrics-contract'
 import { $simplifiedAgentMode } from './simplified-agent-mode'
 
@@ -24,7 +24,7 @@ export function recordIaAction(action: IaAction, via: DesktopActionVia = 'click'
 export function captureIaRecorder(): (action: IaAction) => void {
   const scope = $apiRequestScope.get()
   const generation = consentGeneration
-  const enabled = $desktopMetricsGate.get() === 'on' && $simplifiedAgentMode.get()
+  const enabled = desktopMetricsEnabled() && $simplifiedAgentMode.get()
 
   return action => {
     const current = $apiRequestScope.get()

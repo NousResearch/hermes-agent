@@ -52,7 +52,7 @@ it.each(['skills', 'plugins', 'connectors', 'toolsets'])(
 )
 
 it.each([
-  ['/settings?agent=research&panel=settings&tab=config:model', 'Agent settings'],
+  ['/settings?agentProfile=research&panel=settings&tab=config:model', 'Agent settings'],
   ['/settings?tab=config:appearance', 'Settings']
 ])('marks the owning rail destination on %s', (route, label) => {
   mount(route)

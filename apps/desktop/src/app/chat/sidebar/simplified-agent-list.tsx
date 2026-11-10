@@ -78,7 +78,7 @@ export function SimplifiedAgentList({
       }
 
       setSettingsScope(agent.profile)
-      const params = new URLSearchParams({ agent: agent.profile })
+      const params = new URLSearchParams({ agentProfile: agent.profile })
 
       if (agent.connectionId) {params.set('connection', agent.connectionId)}
       navigate(`${SETTINGS_ROUTE}?${params}`)

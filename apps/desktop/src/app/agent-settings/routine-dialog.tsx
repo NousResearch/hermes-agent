@@ -104,7 +104,11 @@ export function RoutineDialog({ owner, job, onClose, onSaved }: RoutineDialogPro
             ) : (
               <label className="grid gap-1 text-xs">
                 {c.prompt}
-                <Textarea onChange={event => setPrompt(event.target.value)} required value={prompt} />
+                <Textarea
+                  onChange={event => setPrompt(event.target.value)}
+                  required={!job?.skills?.some(skill => skill.trim()) && !job?.skill?.trim()}
+                  value={prompt}
+                />
               </label>
             )}
             {job && (

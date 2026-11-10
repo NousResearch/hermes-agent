@@ -69,7 +69,7 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
   const [scopeReady, setScopeReady] = useState(false)
 
   const matches =
-    (!props.owner.connectionId || props.owner.connectionId === (apiScope.connectionId ?? active)) &&
+    (props.owner.connectionId ?? null) === (apiScope.connectionId ?? active) &&
     profile === props.owner.profile
 
   useEffect(() => {
@@ -87,7 +87,7 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
     try {
       if (props.owner.connectionId && registry?.connections.some(item => item.id === props.owner.connectionId)) {
         await selectConnection(props.owner.connectionId, { profile: props.owner.profile })
-      } else if (!props.owner.connectionId || props.owner.connectionId === (apiScope.connectionId ?? active)) {
+      } else if ((props.owner.connectionId ?? null) === (apiScope.connectionId ?? active)) {
         await ensureGatewayProfile(props.owner.profile)
       } else {
         throw new Error(c.unavailable)
@@ -251,7 +251,7 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
 
   function openPanel(next: string | null, tab?: string, page?: string) {
     setSettingsScope(owner.profile)
-    const query = new URLSearchParams({ agent: owner.profile })
+    const query = new URLSearchParams({ agentProfile: owner.profile })
 
     if (owner.connectionId) {
       query.set('connection', owner.connectionId)

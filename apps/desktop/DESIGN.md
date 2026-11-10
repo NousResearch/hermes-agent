@@ -57,6 +57,8 @@ one-off at the call site.
 - **Panes are working context.** Preview, files, review, and terminal remain
   attached to the current task. Their state survives temporary hiding and chat
   switches where the underlying tool is meant to persist.
+  Activating a tool tab also restores its open state; hiding a stacked terminal
+  must not leave a visible tab pointing at an inert shell.
 - **One action, one home.** A command may have keyboard, palette, and visible
   affordances, but they invoke the same action and state. Do not fork behavior
   per entry point.
@@ -113,6 +115,18 @@ removed to mimic an incomplete design frame.
 Owner actions preserve the roster's backend `targetProfile`, including aliases
 before Bot Mode has mounted. History uses bounded 25-row requests with offsets,
 deduplicates pinned backfills, and keeps earlier pages reachable past 500 sessions.
+Session lists capture their serving connection before awaiting the response;
+cached rows never inherit a newly selected foreground gateway. Selection follows
+the focused conversation's owner. Explicit owners survive tab and window opens.
+The current per-window runtime caches cannot host identical stored IDs from two
+owners simultaneously: conflicting opens fail visibly without reassigning the
+existing chat; use separate windows for those conversations.
+Tile identity comparisons live in `src/store/session-tile-identity.ts`; strip
+ordering and close-to-next selection live in `src/store/session-tile-order.ts`.
+
+Agent-profile settings use `agentProfile` in the URL; the plugin settings
+contract keeps `agent` for the plugin key. Settings pin the complete gateway and
+profile on entry, including links that omit an explicit connection.
 Page toolbars occupy the native titlebar band with an opaque surface so open
 chat/tool tabs cannot bleed through; controls remain outside the drag region.
 
@@ -124,7 +138,8 @@ fill and stronger secondary copy for readability. Agent-management tiles
 use the translucent treatment; conversation-sidebar tiles remain solid.
 The global rail tracks the owning agent even inside its settings editor.
 Shared rail/sidebar geometry lives at the document root while the redesign is
-enabled, so sibling route overlays use the same widths without covering the rail.
+enabled. Sibling route overlays reserve the rail with logical inline offsets
+in both LTR and RTL layouts.
 Checked switches use the brand-blue track and light thumb across settings
 and the capability catalog; unchecked tracks are neutral 10% fills.
 
@@ -143,11 +158,19 @@ root `onboarding.run` / `onboarding.step`, retains a working provider, and offer
 the free model only when the backend reports eligibility. Finishing opens an
 ordinary draft; no setup transcript is created. Explicit sessionless migration
 retires legacy setup metadata/cards without deleting conversation history.
+Resuming an existing guide is read-only; the first-start latch preserves newer
+peer progress and cannot reopen completed setup. Older runtimes show an explicit
+upgrade/retry offer rather than silently dropping setup or creating a setup chat.
+Local-model configuration releases the modal and leaves a **Resume setup** action.
 
 Global Capabilities is the inventory/catalog entry; agent settings owns
 enablement. Agent Tools groups On/Off switches and puts credentials/endpoints
 under Advanced. Installation and account APIs retain their actual
 profile/gateway ownership rather than implying machine-wide sharing.
+
+Usage collection belongs to a consenting connection/profile, not merely the
+foreground UI. Changing scope revokes the old metrics binding immediately;
+events during rebinding are discarded, never replayed under later consent.
 
 The redesigned composer follows the 480 × 148 reference with model/effort above
 the input and attachment, microphone, and labeled Send controls below.

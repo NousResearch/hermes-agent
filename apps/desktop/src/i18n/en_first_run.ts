@@ -3,6 +3,9 @@ import type { FirstRunCopy } from './types_first_run'
 export const enFirstRun: FirstRunCopy = {
   guide: {
     title: 'Set up Hermes',
+    resume: 'Resume setup',
+    upgradeRequired:
+      'This gateway needs an update for sessionless setup. On its host, run hermes update, restart the gateway, then retry. Your chats are unchanged.',
     intro: 'A few optional preferences, then your normal chat. Setup never creates a conversation.',
     appearance: 'Appearance',
     model: 'Choose a model',

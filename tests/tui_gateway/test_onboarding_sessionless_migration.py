@@ -110,3 +110,21 @@ def test_state_withdraws_a_legacy_card_waiting_in_a_compute_host_child(db, monke
     assert _call("onboarding.state")["run"] is True
     assert forwarded == [(sid, {"cancel": {"method": "setup_beat", "reason": "resolved"}})]
     assert onboarding_record.active_session_id(db) is None
+
+
+def test_initial_latch_keeps_peer_progress_and_completion(db):
+    fresh = _call("onboarding.state")
+    assert fresh["started"] is False
+    started = _call("onboarding.set_run", {"run": True})
+    assert started["started"] is True and started["step"] == "preferences"
+
+    _call("onboarding.set_run", {"run": True, "step": "model"})
+    # The window that saw `fresh` above latches after another window advances.
+    resumed = _call("onboarding.set_run", {"run": True})
+    assert resumed["run"] is True and resumed["step"] == "model"
+
+    _call("onboarding.set_run", {"run": False, "mark_profile_offered": True})
+    completed = _call("onboarding.set_run", {"run": True})
+    assert completed["run"] is False and completed["step"] == "model"
+    restarted = _call("onboarding.set_run", {"run": True, "step": "preferences", "restart": True})
+    assert restarted["run"] is True and restarted["step"] == "preferences"

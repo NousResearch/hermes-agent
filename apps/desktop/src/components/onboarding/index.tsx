@@ -37,13 +37,14 @@ import {
 } from '@/store/onboarding'
 import { $setupGuidePhase } from '@/store/onboarding-phase'
 import { $onboardingSurfaces, onboardingSurfaceActive } from '@/store/onboarding-presence'
+import { $guideRecovery, $guideSuspended, suspendOnboarding } from '@/store/setup-guide'
 import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import type { OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
 import { FreeTierSetupNotice } from './free-tier-setup-notice'
 import { DecodedLabel } from './glyph'
-import { SetupGuide } from './guide'
+import { SetupGuide, SetupGuideOffer } from './guide'
 import {
   FeaturedProviderRow,
   FireworksProviderRow,
@@ -211,6 +212,8 @@ export function DesktopOnboardingOverlay({
   const boot = useStore($desktopBoot)
   useStore($onboardingSurfaces)
   const guidePhase = useStore($setupGuidePhase)
+  const guideSuspended = useStore($guideSuspended)
+  const guideRecovery = useStore($guideRecovery)
   const redesign = useStore($simplifiedAgentMode)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
@@ -362,8 +365,8 @@ export function DesktopOnboardingOverlay({
     }
   }, [ctx, onboarding.flow.status, onboarding.manual, onboarding.providers])
 
-  if (redesign && guidePhase === 'shown' && !onboarding.manual) {
-    return <SetupGuide ctx={ctx} />
+  if (redesign && !onboarding.manual && (guidePhase === 'shown' || guideRecovery)) {
+    return guideRecovery || guideSuspended ? <SetupGuideOffer /> : <SetupGuide ctx={ctx} />
   }
 
   if (!onboarding.manual && onboardingSurfaceActive()) {
@@ -643,12 +646,10 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const collapsible = Boolean(featured)
   const showRest = !collapsible || showAll
 
-  // "Run models locally" leaves the picker for Settings -> Providers ->
-  // Local Models, where install/download live. First-run: persist the skip
-  // (same contract as ChooseLaterLink) so the blocking overlay never
-  // re-nags; manual mode just closes. window.location keeps this picker
-  // router-independent (it renders outside the route tree on first run).
+  // Release the guide before closing its picker, but retain durable progress.
+  // The standing resume offer lets the user finish configuring local models first.
   const openLocalModels = () => {
+    suspendOnboarding()
     if (manual) {
       closeManualOnboarding()
     } else {

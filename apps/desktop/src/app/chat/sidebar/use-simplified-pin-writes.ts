@@ -71,14 +71,13 @@ export function useSimplifiedPinWrites(owner: string | null, refresh: () => void
     []
   )
 
-  const keyFor = (row: SessionInfo) =>
-    sessionRowKey({ ...row, connection_id: row.connection_id || owner || undefined }, sessionPinId(row))
+  const keyFor = (row: SessionInfo) => sessionRowKey(row, sessionPinId(row))
 
   useEffect(() => {
     const next = new Map(retained)
 
     for (const row of [...sessions, ...cron, ...messaging]) {
-      const key = sessionRowKey({ ...row, connection_id: row.connection_id || owner || undefined }, sessionPinId(row))
+      const key = sessionRowKey(row, sessionPinId(row))
 
       if (!writes.has(key) && (row.pinned === false || row.hidden || row.archived)) {
         next.delete(key)
@@ -88,7 +87,7 @@ export function useSimplifiedPinWrites(owner: string | null, refresh: () => void
     if (next.size !== retained.size) {
       $simplifiedPinnedRows.set(next)
     }
-  }, [sessions, cron, messaging, writes, retained, owner])
+  }, [sessions, cron, messaging, writes, retained])
 
   const rows = useMemo(
     () =>
@@ -144,7 +143,7 @@ export function useSimplifiedPinWrites(owner: string | null, refresh: () => void
 
     const record = captureIaRecorder()
     const previous = writes.get(key)
-    const capturedRow = { ...row, connection_id: row.connection_id || owner || undefined }
+    const capturedRow = row
     const removal = captureSessionTombstoneGenerations()
     superseded.current.delete(key)
     inflight.current.add(key)
@@ -156,7 +155,7 @@ export function useSimplifiedPinWrites(owner: string | null, refresh: () => void
         'PATCH',
         { pinned: value },
         {
-          connectionId: row.connection_id || owner || undefined,
+          connectionId: row.connection_id || undefined,
           profile: row.profile || 'default'
         }
       )

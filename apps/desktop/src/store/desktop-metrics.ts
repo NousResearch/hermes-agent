@@ -32,6 +32,7 @@
 import { randomUuid } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { $apiRequestScope } from '@/api/client'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { KEYBIND_ACTION_IDS, KEYBIND_READONLY } from '@/lib/keybinds/actions'
 import { readJson, writeJson } from '@/lib/storage'
@@ -377,7 +378,8 @@ export const $desktopMetricsGate = atom<DesktopMetricsGate>(null)
 const LAUNCH_ID = randomUuid()
 
 /** Hash of the bound `connection|profile`: names the local record and main's crash consent. */
-let scope = scopeKey('|default')
+let owner: string | null = currentOwner()
+let scope = scopeKey(owner)
 let request: SharedMetricsRequester | null = null
 let queue: [string, Record<string, unknown>][] = []
 let flushingDays = false
@@ -391,6 +393,16 @@ const openFlows = new Map<DesktopFlowId, boolean>()
 let pendingDrop: { detail: BackendDisconnectDetail; timer: ReturnType<typeof setTimeout> } | null = null
 let lastBackendExitAt = 0
 const recentClicks = new Map<string, number[]>()
+
+function currentOwner(): string {
+  const { connectionId, profile } = $apiRequestScope.get()
+
+  return `${connectionId ?? ''}|${profile?.trim() || 'default'}`
+}
+
+export function desktopMetricsEnabled(): boolean {
+  return owner === currentOwner() && $desktopMetricsGate.get() === 'on'
+}
 
 /** FNV-1a: the local key never carries a profile name. */
 function scopeKey(value: string): string {
@@ -490,7 +502,7 @@ function rollDay(current: MetricsState, now = Date.now()): boolean {
 /** Run `fn` on this profile's stored record and write it back — only while collection is on.
  *  Read fresh each time (peer windows share it); never nest (the inner write would be lost). */
 function withState<T>(fn: (current: MetricsState) => T): T | undefined {
-  if ($desktopMetricsGate.get() !== 'on') {
+  if (!desktopMetricsEnabled()) {
     return undefined
   }
 
@@ -505,7 +517,7 @@ function withState<T>(fn: (current: MetricsState) => T): T | undefined {
 }
 
 function send(method: string, params: Record<string, unknown>): void {
-  if ($desktopMetricsGate.get() !== 'on') {
+  if (!desktopMetricsEnabled()) {
     return
   }
 
@@ -570,6 +582,10 @@ export function trackArea(area: DesktopFeatureArea, open: boolean, now = Date.no
 /** A flow/dialog opened (true) or closed (false). Closing one that never
  *  reached `completeFlow` is a `cancelled` dislike. */
 export function trackFlow(flow: DesktopFlowId, open: boolean): void {
+  if (!desktopMetricsEnabled()) {
+    return
+  }
+
   if (open) {
     openFlows.set(flow, false)
 
@@ -597,7 +613,7 @@ export function completeFlow(flow: DesktopFlowId): void {
  *  gateway switch starting in the window (Restart Hermes recycles the backend
  *  before the switch flag rises) cancels it. */
 export function noteBackendDrop(reason: 'timeout' | null, now = Date.now()): void {
-  if (pendingDrop || $desktopMetricsGate.get() !== 'on') {
+  if (pendingDrop || !desktopMetricsEnabled()) {
     return
   }
 
@@ -710,7 +726,7 @@ export function recordAction(rawAction: string, via: DesktopActionVia, now = Dat
     current.today.actions[key] = (current.today.actions[key] ?? 0) + 1
   })
 
-  if (via !== 'click' || $desktopMetricsGate.get() !== 'on') {
+  if (via !== 'click' || !desktopMetricsEnabled()) {
     return
   }
 
@@ -727,6 +743,10 @@ export function recordAction(rawAction: string, via: DesktopActionVia, now = Dat
 /** A user interaction (pointer/key/wheel): active time accrues to the current
  *  Desktop mode for every gap up to ACTIVE_IDLE_GAP_MS; a longer gap was idle. */
 export function noteInteraction(now = Date.now(), mode: DesktopMode = $workspaceMode.get()): void {
+  if (!desktopMetricsEnabled()) {
+    return
+  }
+
   const gap = lastInteractionAt ? now - lastInteractionAt : 0
 
   lastInteractionAt = now
@@ -765,6 +785,10 @@ export function setDesktopBotCount(count: number): void {
 
 /** Hold a first-run transition until the consent answer: true when held (or dropped: no is known). */
 function heldForConsent(replay: () => void): boolean {
+  if (owner !== currentOwner()) {
+    return true
+  }
+
   if ($desktopMetricsGate.get() === 'on') {
     return false
   }
@@ -863,7 +887,7 @@ async function flushPendingDays(): Promise<void> {
             .map(mode => ({ active_ms: day.modes[mode]!.activeMs, messages_sent: day.modes[mode]!.messages, mode }))
         },
         () =>
-          $desktopMetricsGate.get() === 'on' &&
+          desktopMetricsEnabled() &&
           consentGeneration === generation &&
           scope === owner &&
           request === requester
@@ -889,11 +913,18 @@ async function flushPendingDays(): Promise<void> {
 /** Renderer crashes main persisted while this renderer (or its predecessor) was gone. */
 async function drainRendererCrashes(): Promise<void> {
   const bridge = window.hermesDesktop?.desktopMetrics
+  const generation = consentGeneration
 
   try {
     const pending = await bridge?.takeRendererCrashes?.()
 
     if (!pending) {
+      return
+    }
+
+    if (generation !== consentGeneration || !desktopMetricsEnabled()) {
+      await bridge?.ackRendererCrashes?.(false)
+
       return
     }
 
@@ -904,7 +935,7 @@ async function drainRendererCrashes(): Promise<void> {
         recordFriction('renderer_crash', reason)
       }
 
-      sent = $desktopMetricsGate.get() === 'on'
+      sent = desktopMetricsEnabled()
     } finally {
       await bridge?.ackRendererCrashes?.(sent)
     }
@@ -915,7 +946,7 @@ async function drainRendererCrashes(): Promise<void> {
 
 /** Send everything waiting: queued events, finished days, abandoned steps, crashes. */
 export function flushDesktopMetrics(): void {
-  if ($desktopMetricsGate.get() !== 'on' || !request) {
+  if (!desktopMetricsEnabled() || !request) {
     return
   }
 
@@ -947,12 +978,17 @@ function forgetInMemory(): void {
   areaOpenedAt.clear()
   openFlows.clear()
   recentClicks.clear()
+  lastInteractionAt = 0
   cancelPendingBackendDrop()
 }
 
 /** Apply the focused profile's collection switch. Off purges everything local. `decided` false
  *  (first-run offer unanswered) keeps the pre-consent onboarding transitions for a later yes. */
 export function setDesktopMetricsGate(next: DesktopMetricsGate, decided = true): void {
+  if (owner !== currentOwner()) {
+    return
+  }
+
   if (next === 'off' && decided) {
     preConsent = null
   }
@@ -985,10 +1021,17 @@ export function setDesktopMetricsGate(next: DesktopMetricsGate, decided = true):
  *  `profileScope` (`connection|profile`) other than the bound one forgets the gate until that
  *  profile's switch is read. */
 export function bindDesktopMetrics(next: SharedMetricsRequester | null, profileScope?: string): void {
-  const nextScope = profileScope === undefined ? scope : scopeKey(profileScope)
+  const nextOwner = profileScope ?? currentOwner()
 
-  if (nextScope !== scope) {
+  if (nextOwner !== currentOwner()) {
+    return
+  }
+
+  const nextScope = scopeKey(nextOwner)
+
+  if (nextOwner !== owner) {
     forgetInMemory()
+    owner = nextOwner
     scope = nextScope
     preConsent = []
     $desktopMetricsGate.set(null)
@@ -998,6 +1041,21 @@ export function bindDesktopMetrics(next: SharedMetricsRequester | null, profileS
   flushDesktopMetrics()
 }
 
+// React effects rebind later. Revoke the previous owner's authority at publication,
+// before any newly rendered recorder can borrow its consent or transport.
+$apiRequestScope.listen((next, previous) => {
+  if (next.connectionId === previous.connectionId && next.profile === previous.profile) {
+    return
+  }
+
+  owner = null
+  request = null
+  preConsent = null
+  forgetInMemory()
+  $desktopMetricsGate.set(null)
+  tellMain(false)
+})
+
 /** Periodic/visibility tick: roll the day over and send what finished. */
 export function tickDesktopMetrics(now = Date.now()): void {
   withState(current => void rollDay(current, now))
@@ -1006,7 +1064,8 @@ export function tickDesktopMetrics(now = Date.now()): void {
 
 /** Test-only: forget in-memory state (localStorage is the test's to clear). */
 export function resetDesktopMetricsForTests(): void {
-  scope = scopeKey('|default')
+  owner = currentOwner()
+  scope = scopeKey(owner)
   preConsent = []
   request = null
   queue = []

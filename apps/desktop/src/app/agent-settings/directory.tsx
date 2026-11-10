@@ -45,7 +45,7 @@ export function AgentNavigation({ profile, connectionId }: AgentNavigationProps)
             className="agent-management-nav-row"
             key={agent.id}
             onClick={() => {
-              const params = new URLSearchParams({ agent: agent.profile })
+              const params = new URLSearchParams({ agentProfile: agent.profile })
 
               if (agent.connectionId) {params.set('connection', agent.connectionId)}
               navigate(`${SETTINGS_ROUTE}?${params}`)
@@ -98,7 +98,7 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
                 className="group flex min-w-0 items-center gap-4 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-card) p-5 text-left hover:bg-(--chrome-action-hover)"
                 key={agent.id}
                 onClick={() => {
-                  const params = new URLSearchParams({ agent: agent.profile })
+                  const params = new URLSearchParams({ agentProfile: agent.profile })
 
                   if (agent.connectionId) {params.set('connection', agent.connectionId)}
                   navigate(`${SETTINGS_ROUTE}?${params}`)

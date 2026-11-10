@@ -3,6 +3,9 @@ import type { FirstRunCopy } from './types_first_run'
 export const esFirstRun: FirstRunCopy = {
   guide: {
     title: 'Configura Hermes',
+    resume: 'Reanudar la configuración',
+    upgradeRequired:
+      'Esta puerta de enlace necesita una actualización para configurar sin sesión. Ejecuta hermes update en su equipo, reinicia la puerta de enlace y vuelve a intentarlo. Tus chats no han cambiado.',
     intro: 'Unas preferencias opcionales y luego tu chat habitual. La configuración nunca crea una conversación.',
     appearance: 'Apariencia',
     model: 'Elige un modelo',

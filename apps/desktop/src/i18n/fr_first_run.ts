@@ -3,6 +3,9 @@ import type { FirstRunCopy } from './types_first_run'
 export const frFirstRun: FirstRunCopy = {
   guide: {
     title: 'Configurer Hermes',
+    resume: 'Reprendre la configuration',
+    upgradeRequired:
+      'Cette passerelle doit être mise à jour pour la configuration sans session. Sur son hôte, exécutez hermes update, redémarrez la passerelle, puis réessayez. Vos conversations restent inchangées.',
     intro:
       'Quelques préférences facultatives, puis votre chat habituel. La configuration ne crée jamais de conversation.',
     appearance: 'Apparence',

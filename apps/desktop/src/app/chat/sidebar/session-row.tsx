@@ -33,7 +33,8 @@ import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
-import { $openStoredSessionIds } from '@/store/session-states'
+import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
+import { $openStoredSessionIds, canOpenSessionOwner } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 import { $todoProgressBySession } from '@/store/todos'
 
@@ -152,18 +153,16 @@ function SidebarSessionRowImpl({
   const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
   const density = useStore($sessionListDensity)
-  const fmt = t.sidebar
 
   const details = sessionRowDetails(session, {
-    messageCount: fmt.messageCount,
-    toolCallCount: fmt.toolCallCount
+    messageCount: t.sidebar.messageCount,
+    toolCallCount: t.sidebar.toolCallCount
   })
 
   const timestamp = session.last_active || session.started_at
   const age = formatAge(timestamp, r)
   const timestampDate = new Date(timestamp * 1000)
   const absoluteAge = formatMessageTimestamp(timestampDate, t.assistant.thread)
-  const handleLabel = `Reorder ${title}`
   // Opt-in row metadata from the sidebar's filter menu. Read from the store
   // rather than threaded as props: the subscription re-renders past the memo
   // below, and a toggle should repaint every row at once anyway.
@@ -332,6 +331,7 @@ function SidebarSessionRowImpl({
         onDelete={onDelete}
         onPin={onPin}
         onToggleUnread={onToggleUnread}
+        ownerRoute={sessionOwnerRouteFromRow(session)}
         pinned={isPinned}
         profile={session.profile}
         sessionId={session.id}
@@ -363,6 +363,7 @@ function SidebarSessionRowImpl({
       onDelete={onDelete}
       onPin={onPin}
       onToggleUnread={onToggleUnread}
+      ownerRoute={sessionOwnerRouteFromRow(session)}
       pinned={isPinned}
       profile={session.profile}
       sessionId={session.id}
@@ -460,7 +461,9 @@ function SidebarSessionRowImpl({
           // Middle-click = open in a new tab (browser muscle memory).
           {...middleClickHandlers(() => {
             triggerHaptic('selection')
-            openSession(session.id, () => undefined, 'tab')
+            openSession(session.id, () => undefined, 'tab', {
+              workspaceMode: 'sessions', ownerRoute: sessionOwnerRouteFromRow(session)
+            })
           })}
           onClick={event => {
             // Modifier-click gestures on a row (see `resolveSessionRowClick`):
@@ -476,7 +479,9 @@ function SidebarSessionRowImpl({
             const action = resolveSessionRowClick(event, { canOpenWindow: true })
 
             if (action === 'resume') {
-              onResume()
+              if (canOpenSessionOwner(session.id, sessionOwnerRouteFromRow(session))) {
+                onResume()
+              }
 
               return
             }
@@ -490,15 +495,19 @@ function SidebarSessionRowImpl({
             } else if (action === 'pin') {
               onPin()
             } else if (action === 'newTab') {
-              openSession(session.id, () => undefined, 'tab')
+              openSession(session.id, () => undefined, 'tab', {
+                workspaceMode: 'sessions', ownerRoute: sessionOwnerRouteFromRow(session)
+              })
             } else {
-              openSession(session.id, () => undefined, 'window')
+              openSession(session.id, () => undefined, 'window', {
+                workspaceMode: 'sessions', ownerRoute: sessionOwnerRouteFromRow(session)
+              })
             }
           }}
         >
           {(() => {
             const leadNode = reorderable ? (
-              <SidebarRowGrab ariaLabel={handleLabel} dragging={dragging} dragHandleProps={dragHandleProps}>
+              <SidebarRowGrab ariaLabel={`Reorder ${title}`} dragging={dragging} dragHandleProps={dragHandleProps}>
                 {lead ?? (
                   <SessionStatusDot
                     branchStem={branchStem}

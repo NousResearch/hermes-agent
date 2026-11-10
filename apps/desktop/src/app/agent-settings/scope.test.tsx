@@ -50,7 +50,7 @@ it('sets the profile before mounting a deep-linked editor and unmounts it when t
   $apiRequestScope.set({ profile: 'research', connectionId: 'alpha' })
   $settingsScopeOverride.set('other')
   render(
-    <MemoryRouter initialEntries={['/settings?agent=research&connection=alpha&panel=settings']}>
+    <MemoryRouter initialEntries={['/settings?agentProfile=research&connection=alpha&panel=settings']}>
       <AgentSettingsView onClose={() => {}} owner={{ connectionId: 'alpha', profile: 'research' }} />
     </MemoryRouter>
   )
@@ -65,12 +65,12 @@ it('opens Plugins for the selected agent and removes its editor when the owner c
   $activeGatewayProfile.set('research')
   $apiRequestScope.set({ profile: 'research', connectionId: 'alpha' })
   render(
-    <MemoryRouter initialEntries={['/settings?agent=research&connection=alpha']}>
+    <MemoryRouter initialEntries={['/settings?agentProfile=research&connection=alpha']}>
       <AgentSettingsView onClose={() => {}} owner={{ connectionId: 'alpha', profile: 'research' }} />
     </MemoryRouter>
   )
   fireEvent.click(screen.getByRole('button', { name: 'Plugins' }))
-  expect(screen.getByText('Capabilities alpha/research ?agent=research&connection=alpha&panel=capabilities&tab=plugins')).toBeTruthy()
+  expect(screen.getByText('Capabilities alpha/research ?agentProfile=research&connection=alpha&panel=capabilities&tab=plugins')).toBeTruthy()
   act(() => $activeGatewayProfile.set('default'))
   expect(screen.queryByText(/Capabilities alpha/)).toBeNull()
   expect(screen.getByRole('button', { name: 'Open agent' })).toBeTruthy()
@@ -92,7 +92,7 @@ it('keeps the canonical chat and history sessions on the selected owner', async 
   ]
   const onClose = vi.fn()
   render(
-    <MemoryRouter initialEntries={['/settings?agent=research&connection=alpha']}>
+    <MemoryRouter initialEntries={['/settings?agentProfile=research&connection=alpha']}>
       <AgentSettingsView onClose={onClose} owner={{ connectionId: 'alpha', profile: 'research' }} />
     </MemoryRouter>
   )

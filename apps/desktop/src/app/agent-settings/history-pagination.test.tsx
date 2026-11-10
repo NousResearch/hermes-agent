@@ -64,7 +64,7 @@ it('keeps earlier history reachable while loading beyond the server’s 500-sess
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/settings?agent=research&connection=alpha&panel=history']}>
+      <MemoryRouter initialEntries={['/settings?agentProfile=research&connection=alpha&panel=history']}>
         <AgentSettingsView onClose={() => {}} owner={{ connectionId: 'alpha', profile: 'research' }} />
       </MemoryRouter>
     </QueryClientProvider>

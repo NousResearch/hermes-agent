@@ -10,8 +10,8 @@ import type {
 } from '@/types/hermes'
 
 import {
+  ambientOwnerConnectionId,
   connectionScoped,
-  getApiRequestConnection,
   hermesApi,
   profileScoped,
   STARTUP_REQUEST_TIMEOUT_MS
@@ -48,6 +48,8 @@ export function getCronJob(jobId: string): Promise<CronJob> {
 }
 
 export async function getCronJobRuns(jobId: string, limit = 20): Promise<SessionInfo[]> {
+  const owner = ambientOwnerConnectionId()
+
   const { runs } = await hermesApi<{ runs: SessionInfo[] }>({
     ...profileScoped(),
     ...connectionScoped(),
@@ -63,7 +65,7 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
   // id-only resume and the transcript never loaded (#82527). The backend
   // stamps `profile` (the job's owning profile); this adds the connection
   // half, exactly as /api/sessions and the sidebar slices do.
-  return stampRowsWithOwningConnection(runs ?? [], getApiRequestConnection())
+  return stampRowsWithOwningConnection(runs ?? [], owner, true)
 }
 
 // The single source of truth for cron delivery targets (local + configured

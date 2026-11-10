@@ -35,7 +35,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
   const { pathname, search } = useLocation()
   const sessionId = useStore($focusedStoredSessionId)
   const focusedSessionIsTile = useStore($focusedSessionIsTile)
-  const routeView = pathname === SETTINGS_ROUTE && new URLSearchParams(search).get('agent') ? 'profiles' : appViewForPath(pathname)
+  const routeView = pathname === SETTINGS_ROUTE && new URLSearchParams(search).get('agentProfile') ? 'profiles' : appViewForPath(pathname)
   const view = focusedSessionIsTile ? 'chat' : routeView
   const pluginPages = useSimplifiedPluginPages()
   useIaNavigationMetrics(view)

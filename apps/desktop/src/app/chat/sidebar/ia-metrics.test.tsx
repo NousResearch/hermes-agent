@@ -2,7 +2,12 @@ import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-li
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
-import { DESKTOP_METRICS_STATE_KEY, resetDesktopMetricsForTests, setDesktopMetricsGate } from '@/store/desktop-metrics'
+import {
+  bindDesktopMetrics,
+  DESKTOP_METRICS_STATE_KEY,
+  resetDesktopMetricsForTests,
+  setDesktopMetricsGate
+} from '@/store/desktop-metrics'
 import { $fleetRoster } from '@/store/fleet-roster'
 import * as profile from '@/store/profile'
 import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
@@ -27,6 +32,7 @@ beforeEach(() => {
   resetDesktopMetricsForTests()
   $agentSidebarChoice.set(true)
   $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  bindDesktopMetrics(null, '|default')
   setDesktopMetricsGate('on')
   $fleetRoster.set(null)
   profile.$profiles.set([{ name: 'default', is_default: true }, { name: 'research' }] as typeof profile.$profiles.value)
@@ -101,6 +107,49 @@ it('counts settled search outcomes once, excludes stale searches and query text'
   expect(actions()['ia.search.results|state']).toBe(1)
   expect(actions()['ia.search.early|state']).toBe(1)
   expect(JSON.stringify(actions())).not.toContain('private')
+})
+
+it('does not attribute a newly settled search to the previous profile while metrics rebind', () => {
+  vi.useFakeTimers()
+  const { rerender } = renderHook(({ query }) => useIaSearchMetrics(query, false, false, 3), {
+    initialProps: { query: 'alpha search' }
+  })
+
+  act(() => {
+    vi.advanceTimersByTime(500)
+  })
+  expect(actions()['ia.search.results|state']).toBe(1)
+
+  act(() => {
+    $apiRequestScope.set({ connectionId: null, profile: 'beta' })
+  })
+  rerender({ query: 'beta search before binding' })
+  act(() => {
+    vi.advanceTimersByTime(500)
+  })
+  expect(actions()['ia.search.results|state']).toBe(1)
+
+  act(() => {
+    bindDesktopMetrics(null, '|beta')
+    setDesktopMetricsGate('off')
+  })
+  rerender({ query: 'beta opted out' })
+  act(() => {
+    vi.advanceTimersByTime(500)
+  })
+  expect(actions()['ia.search.results|state']).toBe(1)
+
+  act(() => {
+    setDesktopMetricsGate('on')
+  })
+  rerender({ query: 'beta consenting search' })
+  act(() => {
+    vi.advanceTimersByTime(500)
+  })
+  const records = Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i) ?? '')
+    .filter(key => key.startsWith(DESKTOP_METRICS_STATE_KEY))
+    .map(key => JSON.parse(window.localStorage.getItem(key)!))
+  expect(records.map(record => record.today.actions['ia.search.results|state']).sort()).toEqual([1, 1])
 })
 
 it('distinguishes a default selection from dismissing the new-session picker', () => {

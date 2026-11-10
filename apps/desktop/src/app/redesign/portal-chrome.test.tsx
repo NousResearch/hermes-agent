@@ -61,7 +61,7 @@ it('opens the viewed tile’s agent settings, never the ambient agent', () => {
   )
   expect(screen.getByRole('heading', { name: 'Research notes' })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
-  expect(screen.getByRole('status').textContent).toBe('?agent=research&connection=remote')
+  expect(screen.getByRole('status').textContent).toBe('?agentProfile=research&connection=remote')
 })
 
 it('fails closed for unknown session owners, and resolves cron owners after loading', () => {
@@ -75,7 +75,7 @@ it('fails closed for unknown session owners, and resolves cron owners after load
   expect(screen.getByRole('button', { name: 'Agent settings' }).hasAttribute('disabled')).toBe(true)
   act(() => $cronSessions.set([makeSessionInfo({ id: 'scheduled-chat', connection_id: 'jobs', profile: 'reports' })]))
   fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
-  expect(screen.getByRole('status').textContent).toBe('?agent=reports&connection=jobs')
+  expect(screen.getByRole('status').textContent).toBe('?agentProfile=reports&connection=jobs')
 })
 
 it('only replaces conversation chrome in Portal, leaving settings and tools alone', () => {
@@ -162,5 +162,5 @@ it('keeps an unlisted tile’s explicit owner alias when opening its settings', 
     </MemoryRouter>
   )
   fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
-  expect(screen.getByRole('status').textContent).toBe('?agent=research&connection=remote')
+  expect(screen.getByRole('status').textContent).toBe('?agentProfile=research&connection=remote')
 })

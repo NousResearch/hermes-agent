@@ -15,6 +15,10 @@ test('redesigned web app stays usable on touch screens and restores the classic 
 
   try {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+    // An unrelated release notification must not cover the touch-sized rail.
+    await context.addInitScript(() => {
+      localStorage.setItem('hermes:update-toast-snooze-until', String(Date.now() + 86_400_000))
+    })
     const page = await context.newPage()
     page.setDefaultTimeout(12_000)
     await page.goto(webappLaunchLink(sandbox))
@@ -84,7 +88,7 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await go('/settings?tab=config:safety&page=approvals')
     await expect(page.getByRole('radio', { name: /^Smart/ })).toBeVisible()
     const settings = page.locator('[data-page-surface]')
-    const rail = page.getByRole('navigation', { name: 'Hermes', exact: true })
+    const rail = page.locator('[data-slot="global-nav"]')
     const settingsNav = settings.locator('[data-tour="overlay-nav"]')
     // Settings is a sibling of the shell: it must still clear the rail and
     // share the redesigned sidebar's width rather than inherit classic sizes.
@@ -101,6 +105,23 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await page.screenshot({ path: test.info().outputPath('redesign-safety-dark.png') })
     await page.emulateMedia({ colorScheme: 'light' })
     await expect(page.locator('html')).not.toHaveClass(/dark/)
+    await go('/settings?tab=config:appearance')
+    await page.getByRole('button', { name: 'Switch language', exact: true }).tap()
+    await page.getByRole('combobox').fill('العربية')
+    await page.getByRole('combobox').press('Enter')
+    await expect(page.locator('html')).toHaveAttribute('dir', 'rtl')
+    await expect.poll(async () => {
+      const railBounds = (await rail.boundingBox())!
+      const settingsBounds = (await settings.boundingBox())!
+      return railBounds.x - (settingsBounds.x + settingsBounds.width)
+    }).toBeCloseTo(0)
+    await rail.getByRole('button', { name: 'المحادثات', exact: true }).tap()
+    await expect(composer(page)).toBeVisible()
+    await go('/settings?tab=config:appearance')
+    await page.getByRole('button', { name: 'تغيير اللغة', exact: true }).tap()
+    await page.getByRole('combobox').fill('English')
+    await page.getByRole('combobox').press('Enter')
+    await expect(page.locator('html')).toHaveAttribute('dir', 'ltr')
     await go('/')
 
     if (!await page.locator('.portal-sidebar').isVisible()) {

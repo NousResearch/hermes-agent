@@ -67,7 +67,7 @@ export function PortalConversationHeader({ paneId, title }: { paneId: string; ti
 
   function openSettings() {
     if (!ownerProfile) {return}
-    const params = new URLSearchParams({ agent: ownerProfile })
+    const params = new URLSearchParams({ agentProfile: ownerProfile })
 
     if (connectionId) {params.set('connection', connectionId)}
     navigateToWorkspacePage(navigate, `${SETTINGS_ROUTE}?${params}`)

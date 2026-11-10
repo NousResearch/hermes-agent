@@ -1,6 +1,7 @@
 import type { OnboardingRunStateResult } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { isMissingRpcMethod, isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import type { GatewayRequester } from '@/lib/yolo-session'
 
 import { activeGateway, requestGatewayForAgent } from './gateway'
@@ -23,16 +24,28 @@ export const $guideRequest = atom<OnboardingRequest | null>(null)
 export const $guideScope = atom<OnboardingScope | null>(null)
 export const $decideExit = atom<(() => void) | null>(null)
 export const $onboardingSettleFrom = atom<number | null>(null)
+export const $guideSuspended = atom(false)
+export const $guideRecovery = atom<{
+  message: string
+  upgradeRequired: boolean
+  scope: OnboardingScope
+  retry: () => Promise<unknown>
+} | null>(null)
 let generation = 0
 $simplifiedAgentMode.listen(() => {
   generation += 1
 })
 
-computed([$onboardingPhase, $simplifiedAgentMode], (phase, redesign) => redesign && phase === 'shown').subscribe(
-  active => setOnboardingSurfaceActive('setup-guide', active)
-)
+computed([$onboardingPhase, $simplifiedAgentMode, $guideRecovery], (phase, redesign, recovery) =>
+  redesign && (phase === 'shown' || recovery !== null)
+).subscribe(active => setOnboardingSurfaceActive('setup-guide', active))
 
 function show(state: OnboardingRunStateResult, request: OnboardingRequest, scope: OnboardingScope): void {
+  $guideRecovery.set(null)
+  const previousScope = $guideScope.get()
+  if (previousScope?.connectionId !== scope.connectionId || previousScope?.profile !== scope.profile) {
+    $guideSuspended.set(false)
+  }
   $guideRequest.set(request)
   $guideScope.set(scope)
   $guideStep.set(state.step ?? 'preferences')
@@ -59,29 +72,65 @@ function pinRequest(request: OnboardingRequest, scope: OnboardingScope): Onboard
   }
 }
 
-export async function startOnboarding(request: OnboardingRequest): Promise<boolean> {
-  const current = ++generation
-  const scope = captureOnboardingScope()
-  request = pinRequest(request, scope)
-  await request('onboarding.state')
-
-  if (current !== generation || !$simplifiedAgentMode.get()) {
-    return false
-  }
-
-  const state = await request<OnboardingRunStateResult>('onboarding.set_run', {
-    run: true,
-    step: 'preferences',
-    restart: true
+function offerRecovery(error: unknown, scope: OnboardingScope, retry: () => Promise<unknown>): void {
+  const message = error instanceof Error ? error.message : String(error)
+  $guideRecovery.set({
+    message,
+    upgradeRequired:
+      isMissingRpcMethod(error) ||
+      isOutOfSyncRpcParams(message) ||
+      (/sessionless/i.test(message) && /extra_forbidden|extra inputs are not permitted|unexpected/i.test(message)),
+    scope,
+    retry
   })
+}
 
-  if (current !== generation || !$simplifiedAgentMode.get() || !state.run) {
+export async function startOnboarding(
+  request: OnboardingRequest,
+  scope = captureOnboardingScope()
+): Promise<boolean> {
+  const current = ++generation
+  const pinned = pinRequest(request, scope)
+
+  try {
+    await pinned('onboarding.state')
+
+    if (current !== generation || !$simplifiedAgentMode.get()) {
+      return false
+    }
+
+    const state = await pinned<OnboardingRunStateResult>('onboarding.set_run', {
+      run: true,
+      step: 'preferences',
+      restart: true
+    })
+
+    if (current !== generation || !$simplifiedAgentMode.get() || !state.run) {
+      return false
+    }
+    $guideSuspended.set(false)
+    show(state, pinned, scope)
+    markOnboardingDecided()
+
+    return true
+  } catch (error) {
+    if (current === generation && $simplifiedAgentMode.get()) {
+      offerRecovery(error, scope, () => startOnboarding(request, scope))
+    }
+
     return false
   }
-  show(state, request, scope)
-  markOnboardingDecided()
+}
 
-  return true
+export function suspendOnboarding(): void {
+  if ($simplifiedAgentMode.get() && $onboardingPhase.get() === 'shown') {
+    $guideSuspended.set(true)
+  }
+}
+
+export async function resumeOnboarding(): Promise<void> {
+  await reconcileOnboarding()
+  $guideSuspended.set(false)
 }
 
 export async function saveGuideStep(step: GuideStep): Promise<void> {
@@ -105,6 +154,8 @@ export async function saveGuideStep(step: GuideStep): Promise<void> {
 }
 
 function settleGuide(outcome: 'done' | 'skipped'): void {
+  $guideSuspended.set(false)
+  $guideRecovery.set(null)
   // Dismissing provider setup never claims readiness; a real credential wall still opens it.
   dismissFirstRunOnboarding()
   clearFreeTierIntro()
@@ -160,10 +211,12 @@ export function decideOnboarding(request: OnboardingRequest, revisit = false): P
   return decision
 }
 
-async function readAndStart(request: OnboardingRequest): Promise<void> {
-  const current = generation
-  const scope = captureOnboardingScope()
-  request = pinRequest(request, scope)
+async function readAndStart(
+  request: OnboardingRequest,
+  scope = captureOnboardingScope()
+): Promise<void> {
+  const current = ++generation
+  const pinned = pinRequest(request, scope)
   let released = false
   let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -184,35 +237,39 @@ async function readAndStart(request: OnboardingRequest): Promise<void> {
   })
 
   try {
-    const state = await request<OnboardingRunStateResult>(
+    const state = await pinned<OnboardingRunStateResult>(
       'onboarding.state',
       window.hermesDesktop?.assumeFreshInstall ? { assume_fresh: true } : {},
       0
     )
 
-    if (
-      !released &&
-      current === generation &&
-      $simplifiedAgentMode.get() &&
-      state.run &&
-      (state.eligible || state.started)
-    ) {
-      // Latch before another boot step makes the install no longer look fresh.
-      const saved = await request<OnboardingRunStateResult>('onboarding.set_run', {
-        run: true,
-        step: state.step ?? 'preferences'
-      })
-
-      if (!released && current === generation && $simplifiedAgentMode.get() && saved.run) {
-        show(saved, request, scope)
-      }
+    if (released || current !== generation || !$simplifiedAgentMode.get()) {
+      return
     }
+    $guideRecovery.set(null)
 
-    if (current === generation && $simplifiedAgentMode.get() && !state.run && $onboardingPhase.get() === 'shown') {
-      settleGuide('done')
+    if (!state.run) {
+      if ($onboardingPhase.get() === 'shown') {
+        settleGuide('done')
+      }
+      return
+    }
+    if (!state.eligible && !state.started) {
+      return
+    }
+    // Resuming is read-only: a peer may have advanced since this snapshot.
+    // Only a fresh guide needs the initial durable latch.
+    const saved = state.started
+      ? state
+      : await pinned<OnboardingRunStateResult>('onboarding.set_run', { run: true })
+
+    if (!released && current === generation && $simplifiedAgentMode.get() && saved.run) {
+      show(saved, pinned, scope)
     }
   } catch (error) {
-    console.warn('[onboarding] state could not be read', error)
+    if (!released && current === generation && $simplifiedAgentMode.get()) {
+      offerRecovery(error, scope, () => readAndStart(request, scope))
+    }
   } finally {
     unlisten()
     clearTimeout(timer)

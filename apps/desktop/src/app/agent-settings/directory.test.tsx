@@ -22,7 +22,7 @@ function Route() {
 it('opens the selected gateway/profile identity even when agent names match', () => {
   render(<MemoryRouter><AgentDirectory onClose={vi.fn()} /><Route /></MemoryRouter>)
   fireEvent.click(screen.getByRole('button', { name: 'Agent settings: Research · Studio' }))
-  expect(screen.getByLabelText('route').textContent).toBe('/settings?agent=research&connection=beta')
+  expect(screen.getByLabelText('route').textContent).toBe('/settings?agentProfile=research&connection=beta')
 })
 
 it('filters by gateway and retains the profile management destination', () => {

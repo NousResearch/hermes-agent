@@ -88,3 +88,57 @@ it('keeps an in-flight save visible and restores editing after failure', async (
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
   expect(close).toHaveBeenCalledOnce()
 })
+
+it.each([
+  { skills: ['daily-review'] },
+  { skill: 'daily-review' },
+  { skills: [], skill: 'daily-review' }
+])('saves metadata for a skill-only routine without inventing a prompt (%j)', async skills => {
+  const request = vi.spyOn(client, 'hermesApi').mockResolvedValue({})
+  const saved = vi.fn()
+  render(
+    <RoutineDialog
+      job={{ id: 'skill-job', enabled: true, prompt: '', schedule: { expr: '0 9 * * *' }, ...skills }}
+      onClose={() => {}}
+      onSaved={saved}
+      owner={{ connectionId: 'beta', profile: 'research' }}
+    />
+  )
+  fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed review' } })
+  const prompt = screen.getByLabelText('Prompt') as HTMLTextAreaElement
+
+  expect(prompt.value).toBe('')
+  expect(prompt.validity.valueMissing).toBe(false)
+  expect(prompt.form?.checkValidity()).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(saved).toHaveBeenCalledOnce())
+  expect(request).toHaveBeenCalledWith(expect.objectContaining({
+    connectionId: 'beta',
+    profile: 'research',
+    method: 'PUT',
+    path: '/api/cron/jobs/skill-job?profile=research',
+    body: { updates: { name: 'Renamed review', enabled: true, prompt: '' } }
+  }))
+})
+
+it.each([undefined, { skills: [] }, { skills: [' '], skill: ' ' }])(
+  'requires a prompt when neither an existing skill nor a script supplies the task (%j)',
+  async skills => {
+    const request = vi.spyOn(client, 'hermesApi').mockResolvedValue({})
+    render(
+      <RoutineDialog
+        job={skills ? { id: 'empty-job', enabled: true, schedule: { expr: '0 9 * * *' }, ...skills } : undefined}
+        onClose={() => {}}
+        onSaved={() => {}}
+        owner={{ connectionId: 'beta', profile: 'research' }}
+      />
+    )
+    fireEvent.change(screen.getByLabelText('Schedule'), { target: { value: '0 9 * * *' } })
+    const prompt = screen.getByLabelText('Prompt') as HTMLTextAreaElement
+
+    expect(prompt.validity.valueMissing).toBe(true)
+    expect(prompt.form?.checkValidity()).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(request).not.toHaveBeenCalled()
+  }
+)

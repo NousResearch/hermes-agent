@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { createContext, useContext } from 'react'
 
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
@@ -10,7 +10,13 @@ import { $simplifiedAgentMode, setSimplifiedAgentMode } from '@/store/simplified
 
 import { ListRow, ToggleRow } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
-import { SimplifiedAgentFeedback } from './simplified-agent-feedback'
+
+interface InterfaceModeFeedbackState {
+  showFeedback: boolean
+  setShowFeedback: (show: boolean) => void
+}
+
+export const InterfaceModeFeedbackContext = createContext<InterfaceModeFeedbackState | null>(null)
 
 export function InterfaceModeSettings() {
   const { t } = useI18n()
@@ -18,7 +24,7 @@ export function InterfaceModeSettings() {
   const simplified = useStore($simplifiedAgentMode)
   const ids = SETTING_IDS.appearance
   const metricsGate = useStore($desktopMetricsGate)
-  const [showFeedback, setShowFeedback] = useState(false)
+  const { setShowFeedback } = useContext(InterfaceModeFeedbackContext)!
 
   return (
     <>
@@ -32,7 +38,6 @@ export function InterfaceModeSettings() {
           setShowFeedback(simplified && !enabled && metricsGate === 'on')
         }}
       />
-      {showFeedback && metricsGate === 'on' && <SimplifiedAgentFeedback />}
       <ListRow
         action={
           <SegmentedControl

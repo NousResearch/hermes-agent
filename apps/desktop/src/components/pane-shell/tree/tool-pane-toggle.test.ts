@@ -376,6 +376,25 @@ describe('a terminal that owns its own zone (Default / Terminal deck / Quad)', (
     expect($terminalTakeover.get()).toBe(true)
   })
 
+  it('reopens a hidden terminal when its surviving workspace-stack tab is selected', () => {
+    $layoutTree.set(group(['workspace', 'terminal'], { active: 'workspace', id: 'g-chat' }))
+    bindToolPaneCollapse(
+      'terminal',
+      $terminalTakeover,
+      () => setTerminalTakeover(false),
+      () => setTerminalTakeover(true)
+    )
+    setTerminalTakeover(true)
+    setTerminalTakeover(false)
+    expect(isPaneVisible('workspace')).toBe(true)
+    expect($terminalTakeover.get()).toBe(false)
+
+    activateTreePane('g-chat', 'terminal')
+
+    expect(isPaneVisible('terminal')).toBe(true)
+    expect($terminalTakeover.get()).toBe(true)
+  })
+
   it('survives a restart with a clickable, mountable terminal tab', () => {
     $layoutTree.set(group(['workspace', 'files', 'review', 'terminal'], { active: 'terminal', id: 'g-focus' }))
 

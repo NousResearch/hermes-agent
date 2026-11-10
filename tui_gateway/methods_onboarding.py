@@ -22,7 +22,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4002, "onboarding.set_run requires a boolean 'run'")
     try:
         set_run(params["run"], mark_profile_offered=bool(params.get("mark_profile_offered")),
-                **({"step": params.get("step"), "restart": bool(params.get("restart"))}
+                **({"step": params.get("step"), "restart": bool(params.get("restart")), "sessionless": True}
                    if params.get("sessionless") else {}))
     except Exception as e:
         logger.exception("onboarding.set_run failed")

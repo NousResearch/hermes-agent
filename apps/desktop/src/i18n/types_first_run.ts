@@ -3,6 +3,8 @@
 export interface FirstRunCopy {
   guide: {
     title: string
+    resume: string
+    upgradeRequired: string
     intro: string
     appearance: string
     model: string

@@ -69,7 +69,7 @@ export function ToolsetDetail({
                 const query = new URLSearchParams({ tab: 'config:model', aux: 'vision' })
 
                 if (profile) {
-                  query.set('agent', typeof profile === 'string' ? profile : (profile.profile ?? 'default'))
+                  query.set('agentProfile', typeof profile === 'string' ? profile : (profile.profile ?? 'default'))
                   query.set('panel', 'settings')
 
                   if (typeof profile === 'object' && profile.connectionId) {

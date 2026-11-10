@@ -255,7 +255,7 @@ function useCapabilityAgentSettings(scope: CapabilityScope, mode: CapabilityMode
     activeGatewayConnectionId() ??
     'local'
 
-  const ownerQuery = new URLSearchParams({ agent: ownerProfile, panel: 'capabilities', tab: mode })
+  const ownerQuery = new URLSearchParams({ agentProfile: ownerProfile, panel: 'capabilities', tab: mode })
 
   if (ownerConnection) {
     ownerQuery.set('connection', ownerConnection)

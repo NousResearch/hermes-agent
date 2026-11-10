@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $apiRequestScope } from '@/api/client'
 import * as apiClient from '@/api/client'
 import * as sessionsApi from '@/api/sessions'
+import { useSessionListActions } from '@/app/session/hooks/use-session-list-actions'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
@@ -36,8 +37,10 @@ import {
   $sessionsLoadError,
   $sessionsLoading
 } from '@/store/session'
+import { $sessionTiles } from '@/store/session-states'
 import { $settingsScopeProfile } from '@/store/settings-scope'
 import { setSimplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { deferred } from '@/test/deferred'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { PortalSidebar } from './portal/portal-sidebar'
@@ -95,6 +98,7 @@ describe('Portal sidebar', () => {
     $apiRequestScope.set({ connectionId: null, profile: null })
     $gatewayState.set('idle')
     $selectedStoredSessionId.set(null)
+    $sessionTiles.set([])
     $openBotChat.set(null)
     $pendingBotOpen.set(null)
     vi.mocked(openRosterBot).mockClear()
@@ -121,12 +125,17 @@ describe('Portal sidebar', () => {
     navigate.mockClear()
     resume.mockClear()
   })
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
+    // Radix restores focus on the next task; finish before JSDOM is torn down.
+    const { promise, resolve } = Promise.withResolvers<void>()
+    setTimeout(resolve, 0)
+    await promise
     $simplifiedPinnedRows.set(new Map())
     vi.restoreAllMocks()
     setSimplifiedAgentMode(false)
     $sessions.set([])
+    $sessionTiles.set([])
     $apiRequestScope.set({ connectionId: null, profile: null })
     $gatewayState.set('idle')
     $selectedStoredSessionId.set(null)
@@ -199,7 +208,7 @@ describe('Portal sidebar', () => {
     mount()
     fireEvent.click(screen.getByRole('button', { name: /Agent settings: Research/ }))
     await waitFor(() => expect($settingsScopeProfile.get()).toBe('research'))
-    await waitFor(() => expect(screen.getByTestId('route').textContent).toBe('?agent=research'))
+    await waitFor(() => expect(screen.getByTestId('route').textContent).toBe('?agentProfile=research'))
     expect(openRosterBot).not.toHaveBeenCalled()
   })
   it('rolls back profile browsing without changing conversations, pins or active identity', () => {
@@ -284,13 +293,72 @@ describe('Portal sidebar', () => {
     ])
   })
 
-  it('loads older messaging chats when recents are exhausted', async () => {
+  it('keeps fetched native rows owned by local while the remote replacement is pending', async () => {
+    const pending = deferred<sessionsApi.SidebarSessionsResponse>()
+    const local = makeSessionInfo({ id: 'cached', title: 'Cached local', profile: 'default' })
+    const mutate = vi.spyOn(sessionsApi, 'mutateSessionHttp').mockResolvedValue({})
+    let switched = false
+    $apiRequestScope.set({ connectionId: 'local', profile: 'default' })
+    vi.spyOn(apiClient, 'hermesApi').mockImplementation(request => {
+      if (request.path.includes('/api/profiles/sessions/sidebar')) {
+        return (switched ? pending.promise : Promise.resolve({
+          recents: { sessions: [local] }, cron: { sessions: [] }, messaging: { sessions: [] }
+        })) as never
+      }
+
+      return Promise.resolve([]) as never
+    })
+    const actions = renderHook(() => useSessionListActions({ profileScope: ALL_PROFILES }))
+    await act(async () => { await actions.result.current.refreshSessions() })
+    mount()
+    switched = true
+    act(() => $apiRequestScope.set({ connectionId: 'remote-b', profile: 'default' }))
+    let refresh!: Promise<void>
+    act(() => { refresh = actions.result.current.refreshSessions() })
+    fireEvent.click(screen.getByText('Cached local'))
+    expect(resume).toHaveBeenCalledWith('cached', expect.objectContaining({ connection_id: 'local' }))
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Session actions: Cached local' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Pin$/ }))
+    await waitFor(() => expect(mutate).toHaveBeenCalledWith(
+      'cached', 'PATCH', { pinned: true }, { connectionId: 'local', profile: 'default' }
+    ))
+    await act(async () => {
+      pending.resolve({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
+      await refresh
+    })
+  })
+
+  it.each<Record<string, number>>([{}, { 'all:telegram': 160 }])('loads real messaging sources with totals %j', async totals => {
     $messagingTruncated.set(true)
-    $messagingPlatformTotals.set({ telegram: 50 })
+    $messagingSessions.set([makeSessionInfo({ id: 'tg', source: 'telegram' })])
+    $messagingPlatformTotals.set(totals)
     const loadMessaging = vi.fn()
     mount({ onLoadMoreMessaging: loadMessaging })
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
     await waitFor(() => expect(loadMessaging).toHaveBeenCalledWith('telegram'))
+  })
+
+  it('pages messaging through the real totals writer without sending composite keys as sources', async () => {
+    const telegram = makeSessionInfo({ id: 'tg', source: 'telegram', connection_id: 'local' })
+    $messagingSessions.set([telegram])
+    $messagingTruncated.set(true)
+    const request = vi.spyOn(apiClient, 'hermesApi').mockResolvedValue({ sessions: [telegram], total: 160 })
+    const actions = renderHook(() => useSessionListActions({ profileScope: ALL_PROFILES }))
+    mount({ onLoadMoreMessaging: actions.result.current.loadMoreMessagingForPlatform })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
+    await waitFor(() => expect($messagingPlatformTotals.get()).toEqual({ 'all:telegram': 160 }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more' }).hasAttribute('disabled')).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
+    await waitFor(() => expect(request.mock.calls.filter(([call]) => call.path.includes('/api/profiles/sessions?'))).toHaveLength(2))
+
+    for (const [call] of request.mock.calls.filter(([call]) => call.path.includes('/api/profiles/sessions?'))) {
+      expect(new URL(call.path, 'https://example.test').searchParams.get('source')).toBe('telegram')
+    }
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more' }).hasAttribute('disabled')).toBe(false))
+    act(() => $messagingPlatformTotals.set({ 'all:telegram': 1 }))
+    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
   })
 
   it('starts a separate chat from an agent row without opening its canonical chat or settings', () => {
@@ -452,6 +520,28 @@ describe('Portal sidebar', () => {
     fireEvent.click(research)
     fireEvent.click(screen.getByText('Pinned plan'))
     expect(research.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('opens a real cross-gateway search-only result with its immutable tab owner', async () => {
+    $apiRequestScope.set({ connectionId: 'local', profile: 'default' })
+    $profiles.set([])
+    $sessionTiles.set([])
+    $fleetRoster.set({
+      sources: [{ connectionId: 'remote-b', kind: 'remote', label: 'Beta', reachable: true }],
+      agents: [{ connectionId: 'remote-b', connectionKind: 'remote', connectionLabel: 'Beta', profile: 'research', handle: 'research' }]
+    })
+    vi.spyOn(apiClient, 'hermesApi').mockResolvedValue({
+      results: [{ session_id: 'search-only-remote', title: 'Remote search result', snippet: 'remote', session_started: 1 }]
+    })
+    mount()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'remote' } })
+    fireEvent.click(await screen.findByText('Remote search result'), { ctrlKey: true })
+    expect($sessions.get().some(row => row.id === 'search-only-remote')).toBe(false)
+    expect($sessionTiles.get()).toMatchObject([{
+      storedSessionId: 'search-only-remote',
+      ownerRoute: { connectionId: 'remote-b', profile: 'research' },
+      workspaceMode: 'sessions'
+    }])
   })
 
   it('shows loading rather than no matches while a search is pending', () => {

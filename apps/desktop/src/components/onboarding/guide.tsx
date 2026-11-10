@@ -17,13 +17,70 @@ import {
 import { captureOnboardingScope, requestOnboardingGateway } from '@/store/onboarding-scope'
 import { newSessionInAgent, newSessionInProfile } from '@/store/profile'
 import { requestRoute } from '@/store/recovery-requests'
-import { $guideScope, $guideStep, finishOnboarding, reconcileOnboarding, saveGuideStep } from '@/store/setup-guide'
+import {
+  $guideRecovery,
+  $guideScope,
+  $guideStep,
+  finishOnboarding,
+  reconcileOnboarding,
+  resumeOnboarding,
+  saveGuideStep
+} from '@/store/setup-guide'
 import { answerSharedMetricsOffer, type SharedMetricsChoice, type SharedMetricsConsent } from '@/store/shared-metrics'
 import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import { useTheme } from '@/themes/context'
 import type { FreeTierStatus } from '@/types/hermes'
 
 import { setupFailureCopy } from './free-tier-setup-notice'
+
+/** A standing offer, not a modal: settings must stay usable during recovery or handoff. */
+export function SetupGuideOffer() {
+  const { t } = useI18n()
+  const recovery = useStore($guideRecovery)
+  const guideScope = useStore($guideScope)
+  const scope = recovery?.scope ?? guideScope
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const retry = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await (recovery ? recovery.retry() : resumeOnboarding())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section
+      aria-label={t.firstRun.guide.title}
+      className="fixed bottom-4 end-4 z-(--z-onboarding) grid max-w-sm gap-3 rounded-xl bg-popover p-4 text-popover-foreground shadow-nous"
+    >
+      <h2 className="font-medium">{t.firstRun.guide.title}</h2>
+      {scope && (
+        <p className="text-xs text-muted-foreground">
+          {[scope.connectionId, scope.profile].filter(Boolean).join(' / ')}
+        </p>
+      )}
+      {recovery && (
+        <p className="text-sm" role="alert">
+          {recovery.upgradeRequired ? t.firstRun.guide.upgradeRequired : recovery.message}
+        </p>
+      )}
+      {error && (
+        <p className="text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+      <Button disabled={busy} onClick={() => void retry()}>
+        {recovery ? t.common.retry : t.firstRun.guide.resume}
+      </Button>
+    </section>
+  )
+}
 
 export function SetupGuide({ ctx }: { ctx: OnboardingContext }) {
   const { t } = useI18n()

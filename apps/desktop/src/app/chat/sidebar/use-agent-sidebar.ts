@@ -1,13 +1,14 @@
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, useMemo, useState } from 'react'
 
-import { ambientOwnerConnectionId } from '@/api/client'
 import { mutateSessionHttp } from '@/api/sessions'
 import { type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionMatchesSearch } from '@/lib/session-search'
+import { MESSAGING_SESSION_SOURCE_IDS, normalizeSessionSource } from '@/lib/session-source'
 import { $pinnedSessionIds } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import { $sessionListProfileScope, messagingTotalsKey, sidebarProfileForScope } from '@/store/profile'
 import {
   $cronSessions,
   $messagingPlatformTotals,
@@ -49,6 +50,15 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const truncated = useStore($sessionProfilesTruncated)
   const messagingTruncated = useStore($messagingTruncated)
   const messagingTotals = useStore($messagingPlatformTotals)
+  const messagingProfile = sidebarProfileForScope(useStore($sessionListProfileScope))
+  const pageableMessaging = useMemo(() => MESSAGING_SESSION_SOURCE_IDS.filter(platform => {
+    const loaded = messaging.filter(row =>
+      normalizeSessionSource(row.source) === platform &&
+      (messagingProfile === 'all' || (row.profile || 'default') === messagingProfile)
+    ).length
+    const total = messagingTotals[messagingTotalsKey(messagingProfile, platform)]
+    return loaded > 0 && (total === undefined ? messagingTruncated : loaded < total)
+  }), [messaging, messagingProfile, messagingTotals, messagingTruncated])
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [revealSession, setRevealSession] = useState<{ key: string } | null>(null)
@@ -59,13 +69,12 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
       [
         ...new Map(
           [...pinWrites.rows, ...cron, ...messaging, ...sessions]
-            .map(row => ({ ...row, connection_id: row.connection_id || owner || undefined }))
             .map(row => [sessionRowKey(row, sessionPinId(row)), row])
         ).values()
       ]
         .filter(row => !row.hidden && !row.archived && !removed.has(row.id) && !removed.has(sessionRowKey(row)))
         .sort((a, b) => (b.last_active ?? b.started_at) - (a.last_active ?? a.started_at)),
-    [sessions, messaging, cron, removed, pinWrites.rows, owner]
+    [sessions, messaging, cron, removed, pinWrites.rows]
   )
 
   const matches = (row: SessionInfo) =>
@@ -104,7 +113,7 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
   }
 
   async function updateRow(row: SessionInfo, field: 'pinned' | 'unread', value: boolean) {
-    const scope = { connectionId: row.connection_id || ambientOwnerConnectionId(), profile: row.profile || 'default' }
+    const scope = { connectionId: row.connection_id || undefined, profile: row.profile || 'default' }
 
     try {
       if (field === 'pinned') {
@@ -126,8 +135,8 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
     try {
       await Promise.all([
         props.onLoadMoreSessions(),
-        ...(messagingTruncated && props.onLoadMoreMessaging
-          ? Object.keys(messagingTotals).map(platform => props.onLoadMoreMessaging!(platform))
+        ...(props.onLoadMoreMessaging
+          ? pageableMessaging.map(platform => props.onLoadMoreMessaging!(platform))
           : [])
       ])
     } catch (error) {
@@ -169,6 +178,6 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
     loadMore,
     resumePinned,
     pinned: pinned.filter(matches),
-    hasMore: Object.values(truncated).some(Boolean) || Boolean(messagingTruncated && props.onLoadMoreMessaging)
+    hasMore: Object.values(truncated).some(Boolean) || Boolean(pageableMessaging.length && props.onLoadMoreMessaging)
   }
 }

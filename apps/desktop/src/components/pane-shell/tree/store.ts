@@ -1857,9 +1857,9 @@ export function mergeTreeZones(groupIds: string[], paneId: string | readonly str
 
 export function activateTreePane(groupId: string, paneId: string) {
   const tree = $layoutTree.get()
-
   if (tree) {
     commit(setActivePaneOp(tree, groupId, paneId))
+    paneOpeners[paneId]?.()
   }
 }
 

@@ -644,21 +644,16 @@ export function mergeSessionPage(
 ): SessionInfo[] {
   const keep = keepIds instanceof Set ? keepIds : new Set(keepIds)
 
-  // Rows are identified by (profile, id), never bare id: two profiles can
-  // hold sessions with the SAME stored id (restored backups, copied
-  // state.dbs, cross-profile imports — #92454). Keyed by bare id, the twins
-  // collapse into one sidebar row whose title/preview carry can stitch one
-  // profile's content onto the other profile's route — the user clicks a row
-  // previewing profile A and the resume dials profile B. Same-profile rows
-  // (including untagged ones, which normalize together) keep the exact
-  // carry behavior below.
-  // (Local normalize: importing @/store/profile here would be circular —
-  // same '' → 'default' rule as normalizeProfileKey.)
+  // Rows and compression lineages belong to a connection AND profile. Bare
+  // primary-pool rows retain their legacy local identity; registry rows never
+  // borrow titles/activity from a same-id conversation on another gateway.
   const profileKeyOf = (session: SessionInfo) => (session.profile ?? '').trim() || 'default'
-  const identity = (session: SessionInfo) => `${profileKeyOf(session)}::${session.id}`
+  const ownerKeyOf = (session: SessionInfo) =>
+    JSON.stringify([session.connection_id?.trim() || 'local', profileKeyOf(session)])
+  const identity = (session: SessionInfo) => `${ownerKeyOf(session)}::${session.id}`
 
   const lineageIdentity = (session: SessionInfo) =>
-    `${profileKeyOf(session)}::${session._lineage_root_id ?? session.id}`
+    `${ownerKeyOf(session)}::${session._lineage_root_id ?? session.id}`
 
   // Carry a known title onto a row that arrives title-less, so a freshly
   // submitted session (e.g. a branch draft) holds its placeholder instead of
@@ -725,7 +720,7 @@ export function mergeSessionPage(
   // are only unique per-profile (#92454), so a bare-id match would evict a
   // kept twin in another profile whose id merely coincides with a lineage.
   const incomingLineageIdMembers = new Set(
-    merged.flatMap(session => (session._lineage_ids ?? []).map(id => `${profileKeyOf(session)}::${id}`))
+    merged.flatMap(session => (session._lineage_ids ?? []).map(id => `${ownerKeyOf(session)}::${id}`))
   )
 
   // The tombstone set is re-read here, not at the caller: optimistic removal
@@ -1019,6 +1014,7 @@ export function messagingListServerForFetch(
   }
 }
 
+
 /** Keep a non-primary list's connection on messaging rows that arrived without
  *  one. Does not invent a profile and does not tag the primary pool — a bare
  *  primary row already routes through the profile door, and a `local` tag
@@ -1048,8 +1044,8 @@ export function stampMessagingRowsWithListServer(
   return changed ? next : (rows as SessionInfo[])
 }
 
-// Exact per-platform conversation totals, keyed by source id. Empty until a
-// per-platform "load more" fetch resolves it (the combined seed fetch only
+// Exact per-platform conversation totals, keyed by messagingTotalsKey(profile, source).
+// Empty until a per-platform "load more" fetch resolves it (the combined seed fetch only
 // knows the aggregate), so sections fall back to their loaded count.
 export const $messagingPlatformTotals = atom<Record<string, number>>({})
 // True when the combined seed fetch hit MESSAGING_SECTION_LIMIT, so at least

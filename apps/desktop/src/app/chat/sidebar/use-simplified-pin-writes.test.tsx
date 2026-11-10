@@ -10,7 +10,7 @@ import { makeSessionInfo } from '@/test/session-info'
 import { simplifiedPins } from './simplified-session-model'
 import { $simplifiedPinnedRows, useSimplifiedPinWrites } from './use-simplified-pin-writes'
 
-const row = makeSessionInfo({ id: 'chat', profile: 'research', pinned: false })
+const row = makeSessionInfo({ id: 'chat', connection_id: 'gateway-a', profile: 'research', pinned: false })
 
 afterEach(() => {
   cleanup()
@@ -115,8 +115,19 @@ it('keeps owner identity across gateway changes and does not roll back an acknow
   expect(result.current.value(row)).toBe(true)
   expect(result.current.value({ ...row, profile: 'other' })).toBeUndefined()
   rerender({ owner: 'gateway-b' })
-  expect(result.current.value(row)).toBeUndefined()
-  expect(result.current.value({ ...row, connection_id: 'gateway-a' })).toBe(true)
+  expect(result.current.value(row)).toBe(true)
+  expect(result.current.value({ ...row, connection_id: 'gateway-b' })).toBeUndefined()
+})
+
+it('does not assign the foreground registry owner to a legacy untagged row', async () => {
+  const write = vi.spyOn(sessionsApi, 'mutateSessionHttp').mockResolvedValue({ ok: true })
+  const legacy = { ...row, connection_id: undefined }
+  const { result } = renderHook(() => useSimplifiedPinWrites('gateway-b', vi.fn()))
+  await act(async () => { await result.current.setPinned(legacy, true) })
+  expect(write).toHaveBeenCalledWith('chat', 'PATCH', { pinned: true }, {
+    connectionId: undefined, profile: 'research'
+  })
+  expect(result.current.value({ ...legacy, connection_id: 'gateway-b' })).toBeUndefined()
 })
 
 it('restores the last acknowledged pin if a quick unpin fails before the list catches up', async () => {

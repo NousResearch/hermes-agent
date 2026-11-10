@@ -3,6 +3,9 @@ import type { FirstRunCopy } from './types_first_run'
 export const ruFirstRun: FirstRunCopy = {
   guide: {
     title: 'Настройте Hermes',
+    resume: 'Продолжить настройку',
+    upgradeRequired:
+      'Для настройки без сессии необходимо обновить этот шлюз. На его хосте выполните hermes update, перезапустите шлюз и повторите попытку. Ваши чаты не изменены.',
     intro: 'Несколько необязательных настроек, затем обычный чат. Настройка никогда не создаёт беседу.',
     appearance: 'Внешний вид',
     model: 'Выберите модель',

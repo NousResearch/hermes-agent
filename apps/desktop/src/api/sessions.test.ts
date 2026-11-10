@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { SessionInfo } from '@/hermes'
+import { deferred } from '@/test/deferred'
+import { makeSessionInfo } from '@/test/session-info'
+
 import type { SidebarSessionsResponse } from './sessions'
 
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
@@ -26,13 +30,16 @@ const {
   setSessionArchived,
   setSessionPinnedRemote,
   setSessionUnreadRemote,
-  listSidebarSessions
+  listSidebarSessions,
+  listAllProfileSessions,
+  listSessions
 } = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(client.ambientOwnerConnectionId).mockReturnValue('prometheus')
   vi.mocked(client.getApiRequestConnection).mockReturnValue('prometheus')
   vi.mocked(client.getApiRequestProfile).mockReturnValue(null)
   // Session writes scope through the same helper as reads: a named owner is
@@ -40,6 +47,52 @@ beforeEach(() => {
   vi.mocked(client.capabilityScoped).mockImplementation(scope =>
     typeof scope === 'string' && scope.trim() ? { profile: scope.trim() } : {}
   )
+})
+
+describe('immutable list source ownership', () => {
+  it.each([listSessions, listAllProfileSessions])('pins a delayed list to its requesting local owner', async list => {
+    const pending = deferred<{ sessions: SessionInfo[] }>()
+    vi.mocked(client.ambientOwnerConnectionId).mockReturnValue('local')
+    vi.mocked(client.getApiRequestConnection).mockReturnValue(null)
+    hermesApi.mockReturnValueOnce(pending.promise as never)
+    const request = list()
+    vi.mocked(client.ambientOwnerConnectionId).mockReturnValue('remote-b')
+    vi.mocked(client.getApiRequestConnection).mockReturnValue('remote-b')
+    pending.resolve({ sessions: [makeSessionInfo({ id: 'same', profile: 'default' })] })
+
+    expect((await request).sessions[0].connection_id).toBe('local')
+  })
+
+  it('pins every sidebar slice before foreground changes and preserves explicit remote rows', async () => {
+    const pending = deferred<SidebarSessionsResponse>()
+    vi.mocked(client.ambientOwnerConnectionId).mockReturnValue('local')
+    hermesApi.mockReturnValueOnce(pending.promise as never)
+
+    const request = listSidebarSessions({
+      recentsProfile: 'all', recentsLimit: 50, recentsExclude: [],
+      cronLimit: 50, messagingLimit: 100, messagingExclude: []
+    })
+
+    vi.mocked(client.ambientOwnerConnectionId).mockReturnValue('remote-b')
+    const local = makeSessionInfo({ id: 'same' })
+    const remote = makeSessionInfo({ id: 'same', connection_id: 'remote-a' })
+    pending.resolve({
+      recents: { sessions: [local, remote] },
+      cron: { sessions: [{ ...local, source: 'cron' }] },
+      messaging: { sessions: [{ ...local, source: 'telegram' }] }
+    })
+    const result = await request
+    expect(result.recents.sessions.map(row => row.connection_id)).toEqual(['local', 'remote-a'])
+    expect(result.cron.sessions[0].connection_id).toBe('local')
+    expect(result.messaging.sessions[0].connection_id).toBe('local')
+  })
+
+  it('keeps connectionless legacy remote-primary lists on their profile-only route', async () => {
+    vi.mocked(client.ambientOwnerConnectionId).mockReturnValue(undefined)
+    vi.mocked(client.getApiRequestConnection).mockReturnValue(null)
+    hermesApi.mockResolvedValueOnce({ sessions: [makeSessionInfo({ id: 'legacy' })] })
+    expect((await listSessions()).sessions[0].connection_id).toBeUndefined()
+  })
 })
 
 describe('deleteSession profile scoping', () => {

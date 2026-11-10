@@ -43,20 +43,19 @@ def _state(connection, assume_fresh=False):
 
 
 async def state(connection, ref, params):
+    _authorize(connection)
     if not params.get('sessionless'):
         from tui_gateway.server import _run_state
         return await asyncio.to_thread(_run_state, assume_fresh=bool(params.get('assume_fresh')))
-    _authorize(connection)
     await _retire(connection)
     return await asyncio.to_thread(_state, connection, bool(params.get('assume_fresh')))
 
 
 async def set_run(connection, ref, params):
+    _authorize(connection)
     from hermes_cli.onboarding_run import set_run as persist
     from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import OnboardingSetRunParams
     from pydantic import ValidationError
-    if params.get('sessionless'):
-        _authorize(connection)
     try:
         request = OnboardingSetRunParams.model_validate(params)
     except ValidationError as exc:
@@ -66,5 +65,5 @@ async def set_run(connection, ref, params):
         await asyncio.to_thread(persist, request.run, mark_profile_offered=request.mark_profile_offered)
         return await asyncio.to_thread(_run_state)
     await asyncio.to_thread(persist, request.run, step=request.step, restart=request.restart,
-                            mark_profile_offered=request.mark_profile_offered)
+                            mark_profile_offered=request.mark_profile_offered, sessionless=True)
     return await asyncio.to_thread(_state, connection)

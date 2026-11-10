@@ -3,6 +3,9 @@ import type { FirstRunCopy } from './types_first_run'
 export const jaFirstRun: FirstRunCopy = {
   guide: {
     title: 'Hermes を設定',
+    resume: 'セットアップを再開',
+    upgradeRequired:
+      'セッションなしのセットアップには、このゲートウェイの更新が必要です。ホストで hermes update を実行し、ゲートウェイを再起動してから再試行してください。チャットは変更されません。',
     intro: '任意の設定をいくつか選ぶと、いつものチャットを使えます。セットアップで会話が作成されることはありません。',
     appearance: '外観',
     model: 'モデルを選択',

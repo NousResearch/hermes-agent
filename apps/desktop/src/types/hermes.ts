@@ -1110,6 +1110,8 @@ export interface CronJob {
   schedule?: CronJobSchedule
   schedule_display?: null | string
   script?: null | string
+  skill?: null | string
+  skills?: null | string[]
   state?: null | string
 }
 

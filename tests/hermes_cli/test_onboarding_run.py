@@ -108,3 +108,33 @@ def test_named_profile_launch_uses_the_root_file(root, monkeypatch):
     (work / "config.yaml").write_text("onboarding:\n  run: true\n", encoding="utf-8")
     onboarding_run.set_run(False)
     assert onboarding_run.should_run() is False
+
+
+@pytest.mark.parametrize("step", [None, "invalid", "preferences", "model"])
+@pytest.mark.parametrize("run", [True, False])
+def test_sessionless_initial_latch_preserves_peer_state(root, step, run):
+    from hermes_cli.config import atomic_config_write
+
+    section = {"run": run}
+    if step is not None:
+        section["step"] = step
+    atomic_config_write(root / "config.yaml", {"onboarding": section, "model": {"default": "keep"}})
+    before = (root / "config.yaml").read_bytes()
+
+    onboarding_run.set_run(True, sessionless=True)
+
+    config = read_user_config_raw(root / "config.yaml")
+    if run:
+        expected_step = step if step in ("preferences", "model") else "preferences"
+        assert config["onboarding"] == {"run": True, "step": expected_step}
+    else:
+        assert (root / "config.yaml").read_bytes() == before
+    assert config["model"] == {"default": "keep"}
+
+
+def test_classic_run_again_still_reopens_without_starting_the_guide(root):
+    onboarding_run.set_run(False)
+    onboarding_run.set_run(True)
+
+    assert onboarding_run.should_run() is True
+    assert onboarding_run.guide_progress() == {"step": "preferences", "started": False}

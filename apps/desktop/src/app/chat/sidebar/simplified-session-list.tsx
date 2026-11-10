@@ -17,7 +17,10 @@ import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $activeSessionId, knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
+import { $focusedSessionIsTile } from '@/store/session-focus'
 import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
+import { $sessionTiles, canOpenSessionOwner, runtimeSessionOwner } from '@/store/session-states'
 
 import { SessionStatusDot } from '../session-status-dot'
 
@@ -45,6 +48,17 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
   const navigate = useNavigate()
   const activeProfile = useStore($activeGatewayProfile)
   const activeScope = useStore($apiRequestScope)
+  const focusedIsTile = useStore($focusedSessionIsTile)
+  const tiles = useStore($sessionTiles)
+  const activeRuntime = useStore($activeSessionId)
+  const focusedTile = focusedIsTile ? tiles.find(tile => tile.storedSessionId === props.activeSessionId) : undefined
+
+  const focusedOwner = focusedTile?.ownerRoute ??
+    runtimeSessionOwner(focusedIsTile ? focusedTile?.runtimeId : activeRuntime) ??
+    knownSessionOwner(ownerLookupSessionRows(), props.activeSessionId)
+
+  const focusedProfile = typeof focusedOwner === 'string' ? focusedOwner : focusedOwner?.profile
+  const focusedConnection = focusedOwner && typeof focusedOwner === 'object' ? focusedOwner.connectionId : activeScope.connectionId
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     if (props.showAgent) {
@@ -67,8 +81,8 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
 
     const selected =
       row.id === props.activeSessionId &&
-      (row.profile || 'default') === activeProfile &&
-      (!row.connection_id || row.connection_id === activeScope.connectionId)
+      (row.profile || 'default') === (focusedProfile || activeProfile) &&
+      (row.connection_id || activeScope.connectionId) === focusedConnection
 
     return (
       <div
@@ -100,7 +114,7 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
                 workspaceMode: 'sessions',
                 ownerRoute: sessionOwnerRouteFromRow(row)
               })
-            } else {
+            } else if (canOpenSessionOwner(row.id, sessionOwnerRouteFromRow(row))) {
               props.onResumeSession(row.id, row)
             }
           }}

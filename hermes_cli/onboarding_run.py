@@ -52,8 +52,8 @@ def latch_first_install() -> bool:
 
 
 def set_run(value: bool, *, mark_profile_offered: bool = False, step: str | None = None,
-            restart: bool = False) -> None:
-    """Persist the guide's due flag and optional step together, preserving unrelated settings."""
+            restart: bool = False, sessionless: bool = False) -> None:
+    """Persist setup state; sessionless first-start latches preserve another window's progress."""
     if step is not None and step not in ("preferences", "model"):
         raise ValueError("Unknown setup step")
     from agent.onboarding import PROFILE_BUILD_FLAG
@@ -63,9 +63,12 @@ def set_run(value: bool, *, mark_profile_offered: bool = False, step: str | None
     with config_mod._CONFIG_LOCK:
         config = config_mod.read_user_config_raw(path)
         section = config_mod._ensure_dict(config, "onboarding")
-        # A late Next/Back from another window must not reopen a completed guide.
-        if value and step is not None and section.get("run") is False and not restart:
+        # Late first-start and Next/Back requests must not reopen a completed guide.
+        if value and (sessionless or step is not None) and section.get("run") is False and not restart:
             return
+        if sessionless and value and step is None and not restart:
+            saved_step = section.get("step")
+            step = saved_step if saved_step in ("preferences", "model") else "preferences"
         section["run"] = value
         if step is not None:
             section["step"] = step

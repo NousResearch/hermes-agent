@@ -3,6 +3,9 @@ import type { FirstRunCopy } from './types_first_run'
 export const arFirstRun: FirstRunCopy = {
   guide: {
     title: 'إعداد Hermes',
+    resume: 'استئناف الإعداد',
+    upgradeRequired:
+      'تحتاج هذه البوابة إلى تحديث للإعداد دون جلسة. شغّل hermes update على الجهاز المضيف، وأعد تشغيل البوابة، ثم أعد المحاولة. محادثاتك لم تتغير.',
     intro: 'بعض التفضيلات الاختيارية، ثم محادثتك المعتادة. لا يؤدي الإعداد إلى إنشاء محادثة.',
     appearance: 'المظهر',
     model: 'اختر نموذجًا',

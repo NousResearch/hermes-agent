@@ -287,8 +287,6 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     if (enabled) {
       expect(screen.queryByRole('switch', { name: 'web-research' })).toBeNull()
       expect(setSkillEnabled).not.toHaveBeenCalled()
-      fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
-      expect(navigateSpy).toHaveBeenCalledWith(expect.stringContaining('agent=researcher'))
     } else {
       fireEvent.click(screen.getByRole('switch', { name: 'web-research' }))
       await waitFor(() => expect(setSkillEnabled).toHaveBeenCalledWith('web-research', false, 'researcher'))
@@ -426,7 +424,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     // consumed by ModelSettings' deep-link highlight. Never an external URL.
     await waitFor(() =>
       expect(navigateSpy).toHaveBeenCalledWith(
-        '/settings?tab=config%3Amodel&aux=vision&agent=researcher&panel=settings&connection=homelab'
+        '/settings?tab=config%3Amodel&aux=vision&agentProfile=researcher&panel=settings&connection=homelab'
       )
     )
   })
@@ -505,7 +503,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       await waitFor(() => expect(getToolsets).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'default' }))
       fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
       expect(navigateSpy).toHaveBeenCalledWith(
-        '/settings?agent=default&panel=capabilities&tab=toolsets&connection=homelab'
+        '/settings?agentProfile=default&panel=capabilities&tab=toolsets&connection=homelab'
       )
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop

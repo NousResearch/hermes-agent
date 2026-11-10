@@ -216,3 +216,9 @@ move-generate:
     scripts/gen_serve_handler_ledger.py
     scripts/gen_plugin_api_docs.py
     scripts/gen_gateway_command_parity.py --check
+
+# Build commit A (git mv + MOVES) and commit B (generated) of one chunk: NN-name ROOT... [--log-dir D] [--only-a] [--from-a]
+[group('move')]
+[positional-arguments]
+move-chunk *args:
+    python3 scripts/move/build_chunk.py "$@"

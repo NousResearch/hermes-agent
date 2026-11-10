@@ -126,6 +126,28 @@ def test_noop_when_parent_has_no_session_id(db):
 
     assert _usage_rows(db, "sess-parent") == []
 
+def test_the_fork_records_its_usage_after_the_stop_closed_the_parents_handle(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import persistence_assembly
+    scope = persistence_assembly.profile_scope(home=tmp_path)
+    handle = persistence_assembly.open_persistence(scope)
+    seed_session(handle, "sess-parent", "cli")
+    parent = SimpleNamespace(_session_db=handle, persistence=handle, session_id="sess-parent")
+
+    def fork(agent, task_cfg=None, *, max_iterations, write_origin="background_review"):
+        def run_conversation(**kwargs):
+            handle.close()  # the gateway's stop closes the parent's handle while the review is answering
+        return SimpleNamespace(model="test-model", provider="test-provider", base_url=None, session_api_calls=1,
+                               session_input_tokens=3, run_conversation=run_conversation, _session_messages=[]), {}, False
+    monkeypatch.setattr(background_review, "_parent_can_emit_tool_calls", lambda agent: True)
+    monkeypatch.setattr(background_review, "build_cache_parity_fork", fork)
+    monkeypatch.setattr(background_review, "_review_tool_whitelist", lambda *args: (set(), set()))
+    monkeypatch.setattr(background_review, "_track_review_fork", lambda *args, **kwargs: None)
+    background_review._run_review_in_thread(parent, [], "review")
+    with persistence_assembly.open_persistence(scope) as store:
+        rows = _usage_rows(store, "sess-parent")
+    assert [(r["task"], r["api_call_count"], r["input_tokens"]) for r in rows] == [("background_review", 1, 3)]
+
 def test_survives_accounting_failure():
     class _BoomDB:
         read_only = False

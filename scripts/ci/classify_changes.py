@@ -95,7 +95,7 @@ import subprocess
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from hermes_agent.compat.paths import original_path
+from hermes_agent.compat.paths import current_path, original_path
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
 # Shipped page outside those packages, exercised by the desktop Electron suite. The desktop cache
@@ -547,10 +547,11 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
 def _with_package_inits(paths: tuple[str, ...]) -> tuple[str, ...]:
     """Importing a/b/c.py runs a/__init__.py and a/b/__init__.py first, so a routed module
     routes the package inits above it. A shared hub's inits run whenever the hub is imported, so
-    they are routed too; only an init that is itself a hub stays out."""
-    inits = [f"{'/'.join(parts[:i])}/__init__.py"
+    they are routed too; only an init that is itself a hub stays out. A moved module also runs the
+    inits above where it lives now; each init is listed by its original path, as classify() reads it."""
+    inits = [original_path(f"{'/'.join(parts[:i])}/__init__.py")
              for p in (*paths, *sorted(_SHARED_HUBS)) if p.endswith(".py")
-             for parts in [p.split("/")[:-1]] for i in range(1, len(parts) + 1)]
+             for parts in [current_path(p).split("/")[:-1]] for i in range(1, len(parts) + 1)]
     return tuple(dict.fromkeys([*paths, *(i for i in inits if i not in _SHARED_HUBS)]))
 
 

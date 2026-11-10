@@ -5617,7 +5617,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # The bare ts too: stored without a team id, clicked with one.
         approval_key = msg_ts if msg_ts in self._approval_resolved else self._workspace_message_marker(team_id, msg_ts)
         if await self._refuse_other_requester(approval_refusal(
-                session_key, user_id, extra=self.config.extra, request_id=self._approval_request_ids.get(approval_key)), body):
+                session_key, user_id, extra=self.config.extra, request_id=self._approval_request_ids.get(approval_key),
+                choice=choice), body):
             return
         if self._approval_resolved.pop(approval_key, True):  # double-click guard (atomic pop)
             return

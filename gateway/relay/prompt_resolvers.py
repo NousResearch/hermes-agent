@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 
-def prompt_refusal(state: dict, actor: dict) -> Optional[str]:
+def prompt_refusal(state: dict, actor: dict, option_id: Optional[str] = None) -> Optional[str]:
     """The localized refusal when *actor* (``actor_id`` + ``admin_ids``) may not answer the pending
     prompt *state*, else None: the requester / approvers / admins rule of ``gateway.approval_actor``."""
     from gateway import approval_actor
@@ -18,7 +18,7 @@ def prompt_refusal(state: dict, actor: dict) -> Optional[str]:
     kind = state.get("kind")
     if kind == "exec_approval":
         requester = approval_actor.approval_refusal(session_key, actor["actor_id"], admin_ids=actor["admin_ids"],
-                                                    request_id=state.get("request_id"))
+                                                    request_id=state.get("request_id"), choice=option_id)
     elif kind == "slash_confirm":
         requester = approval_actor.slash_confirm_refusal(session_key, str(state.get("confirm_id") or ""),
                                                          actor["actor_id"], admin_ids=actor["admin_ids"])

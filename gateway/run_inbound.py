@@ -451,8 +451,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return refusal_text(requester) if requester else None
 
     def _prompt_admin_ids(self, event: MessageEvent):
+        """The answer policy of the chat *event* arrived in (admins + its slash floor)."""
         from gateway.slash_access import policy_for_runner_source
-        return policy_for_runner_source(self, event.source).admin_user_ids
+        return policy_for_runner_source(self, event.source)
 
     async def _release_pending_clarify(self, pending, source) -> bool:
         """Withdraw *pending* as CANCELLED and retire its card; False if it already settled.
@@ -1676,9 +1677,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # must still tell the agent the file exists.
             display_name, agent_path = cls._inbound_attachment_display_name(
                 path, names[i] if i < len(names) else "")
+            # Only an adapter that injected the text says so; an unflagged file (LINE, Signal, ...) is not inlined.
             inline_flag = inline_flags[i] if i < len(inline_flags) else None
             context_note = _build_document_context_note(
-                display_name, agent_path, mtype, content_inlined=inline_flag is not False,
+                display_name, agent_path, mtype, content_inlined=inline_flag is True,
             )
             message_text = f"{context_note}\n\n{message_text}"
         return message_text

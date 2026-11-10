@@ -331,6 +331,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         must leave the normal completion send as the fallback, or the user gets nothing. A connector
         DECLINE returns True: that destination is not approved and must not be re-sent."""
         from gateway.run import _strip_response_attachments_for_direct_send
+        if text_already_delivered and session_key and getattr(stream_consumer, "delivery_uncertain", False) is True:
+            # The stream counted a timed-out send as shown. The follow-up's result replaces this
+            # turn's, so the completion path never sees the flag: ledger it now under THIS turn's
+            # inbound id, through the same adapter-owned bracket the completion path uses.
+            await self._ledger_uncertain_streamed_final(
+                MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
+                session_key, response, adapter)
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
             if text_content:

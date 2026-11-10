@@ -2738,6 +2738,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         app.add_handler(TelegramMessageHandler((filters.TEXT | rich_message_filter(filters)) & ~filters.COMMAND, self._handle_text_message))
         app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
         app.add_handler(TelegramMessageHandler(filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
+        from plugins.platforms.telegram.telegram_dice import handle_dice_message  # #78719
+        app.add_handler(TelegramMessageHandler(filters.Dice.ALL, lambda u, c: handle_dice_message(self, u, c)))
         app.add_handler(TelegramMessageHandler(filters.CONTACT, self._handle_contact_message))  # #98598
         media = filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL
         app.add_handler(TelegramMessageHandler(media, self._handle_media_message))
@@ -3509,28 +3511,28 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     @staticmethod
     def _with_partial_send(
         result: SendResult, undelivered: list[str], delivered: list[str], *, tail_certain: bool = True) -> SendResult:
-        """Mark a split-send failure that happened after earlier chunks landed with the ``partial_overflow``
-        contract (the same key ``_edit_overflow_split`` sets and the stream consumer reads), so no caller
-        re-sends the already-visible head. ``undelivered`` (the formatted remainder, for
-        :meth:`_resume_partial_send`) is attached only when ``tail_certain``. No-op when nothing landed."""
-        if not delivered:
-            return result
+        """Mark a split-send failure after earlier chunks landed with the ``partial_overflow`` contract (the key
+        ``_edit_overflow_split`` sets and the stream consumer reads), so no caller re-sends the visible head;
+        ``undelivered`` (for :meth:`_resume_partial_send`) is attached only when ``tail_certain``. An uncertain
+        failure reports ``unattempted_chunks``: the messages after the one in flight, which never left."""
         raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
-        raw.update({
-            "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
-            "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
-        if tail_certain and undelivered:
-            raw["undelivered_chunks"] = tuple(undelivered)
-            raw["delivered_message_ids"] = tuple(delivered)
-        result.raw_response = raw
+        if not tail_certain and len(undelivered) > 1:
+            raw["unattempted_chunks"] = tuple(undelivered[1:])
+        if delivered:
+            raw.update({
+                "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
+                "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
+            if tail_certain and undelivered:
+                raw["undelivered_chunks"], raw["delivered_message_ids"] = tuple(undelivered), tuple(delivered)
+        result.raw_response = raw or result.raw_response
         return result
 
     async def _resume_partial_send(
         self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> Optional[SendResult]:
-        """Send only the chunks a partial ``send()`` could not deliver (``raw_response["undelivered_chunks"]``),
-        continuing the message-id sequence; ``None`` when the tail was not certain-undelivered."""
+        """Send only the chunks a partial ``send()`` could not deliver (``undelivered_chunks``, or the never-attempted
+        ``unattempted_chunks``), continuing the message-id sequence; ``None`` when no tail is certain-undelivered."""
         raw = result.raw_response if isinstance(result.raw_response, dict) else {}
-        undelivered = raw.get("undelivered_chunks")
+        undelivered = raw.get("undelivered_chunks") or raw.get("unattempted_chunks")
         if not undelivered or not self._bot:
             return None
         delivered = list(raw.get("delivered_message_ids") or ())
@@ -4432,7 +4434,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         from gateway.approval_actor import approval_refusal, refusal_text
         request_id = self._approval_request_ids.get(approval_id)
-        if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra, request_id=request_id):
+        if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra, request_id=request_id, choice=choice):
             return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
         if not self._approval_state.pop(approval_id, None):  # a concurrent tap claimed it first
             return await answer_callback(query, resolved)

@@ -156,6 +156,27 @@ def lift_data_use(message: MutableMapping[str, Any]) -> None:
         message[DATA_USE] = list(metadata[DATA_USE])
 
 
+# Reasoning tokens the provider billed for an assistant turn (``usage.*_tokens_details.reasoning_tokens``),
+# kept inside ``display_metadata`` so it rides every writer, branch and compaction copy without a column.
+# Encrypted reasoning (Codex/xAI ``encrypted_content``, Claude ``signature``) cannot be sized from its
+# bytes, but the provider bills its replay as input at almost exactly this count (live A/B: gpt-5.6-sol
+# 2,765 reported -> +2,767 billed; claude-opus-5.5 3,959 -> +3,959 while its summary text was ~1,016).
+REPLAYED_REASONING_TOKENS = "reasoning_tokens"
+
+
+def stamp_reasoning_tokens(message: MutableMapping[str, Any], tokens: Any) -> None:
+    """Record *tokens* as the provider-reported reasoning size of assistant *message*."""
+    if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0:
+        _set_display_metadata_key(message, REPLAYED_REASONING_TOKENS, tokens)
+
+
+def stamped_reasoning_tokens(message: Any) -> int:
+    """The provider-reported reasoning size stamped on *message*, else 0."""
+    metadata = message.get("display_metadata") if isinstance(message, Mapping) else None
+    value = metadata.get(REPLAYED_REASONING_TOKENS) if isinstance(metadata, Mapping) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
 # Replay carriers the preflight estimate prices at 0, exactly as the compaction tail walk does (opaque signatures,
 # duplicate reasoning copies, ordered sidecars); a mismatch between the two estimates loops compaction.
 _UNPRICED_CORE_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",

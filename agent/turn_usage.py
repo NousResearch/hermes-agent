@@ -84,6 +84,7 @@ def record_response_usage(
     # must remain observable.
     agent.session_api_calls += 1
     if not (hasattr(response, 'usage') and response.usage):
+        agent._last_response_reasoning_tokens = 0
         if getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage -> cannot adjudicate the prior compaction; consume the
             # pending verdict so later readings aren't charged to it and
@@ -163,6 +164,9 @@ def record_response_usage(
 
     # Stash canonical usage for on_turn_complete(); keep the latest call's.
     agent._last_turn_usage = dict(usage_dict)
+    # build_assistant_message stamps this onto the row the response becomes: the replay price of its
+    # encrypted reasoning (replayed_reasoning.py). Aggregator usage only: MoA advisors' thinking never replays.
+    agent._last_response_reasoning_tokens = aggregator_usage.reasoning_tokens
     # The parent's CURRENT prompt size for headroom math (delegate summary budgets): the
     # aggregator's own prompt, never the MoA-folded total (advisor prompts are not in this context).
     agent._last_prompt_size_tokens = int(context_prompt_tokens or aggregator_usage.prompt_tokens or 0)

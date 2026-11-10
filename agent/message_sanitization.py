@@ -791,22 +791,26 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     return bool(route.carriers & {RC, R})
 
 
-def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[str, ...]]:
-    """Return the native Anthropic wire shadow plus readable replay thinking out-of-band.
+def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[int, ...]]:
+    """Return the native Anthropic wire shadow plus each assistant turn's replayed-thinking token cost.
 
     Canonical history may retain storage-only reasoning alongside signed replay carriers.
     Native conversion prefers ordered anthropic_content_blocks over reasoning_details and
     never sends reasoning itself. The generic message estimator therefore receives only
-    ordinary wire-shaped fields, while readable thinking is returned separately for the
-    explicit Anthropic accounting seam. Opaque signature/data bytes are never priced.
+    ordinary wire-shaped fields, while thinking is priced separately here. Signature/data bytes
+    are never priced as text: the server re-expands the FULL thinking from a signature, so a
+    signed carrier costs the turn's provider-reported thinking count
+    (``replayed_reasoning.signed_thinking_replay_tokens``), not its readable summary.
     """
     if not isinstance(messages, list):
         return messages, ()
 
     from agent.anthropic_message_convert import assistant_replay_carrier
+    from agent.model_metadata import estimate_tokens_rough
+    from agent.replayed_reasoning import signed_thinking_replay_tokens
 
     projected = []
-    replayed_thinking: list[str] = []
+    replayed_thinking: list[int] = []
     for message in messages:
         if not isinstance(message, dict) or message.get("role") != "assistant":
             projected.append(message)
@@ -834,11 +838,16 @@ def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[st
         if carrier:
             shadow.pop("reasoning_content", None)
 
-        replayed_thinking.extend(
-            block["thinking"]
+        readable = sum(
+            estimate_tokens_rough(block["thinking"])
             for block in carrier
             if block.get("type") == "thinking" and isinstance(block.get("thinking"), str) and block["thinking"]
         )
+        signed = any(
+            block.get("type") == "redacted_thinking" or (block.get("type") == "thinking" and block.get("signature"))
+            for block in carrier
+        )
+        replayed_thinking.append(signed_thinking_replay_tokens(message, readable) if signed else readable)
         projected.append(shadow)
     return projected, tuple(replayed_thinking)
 

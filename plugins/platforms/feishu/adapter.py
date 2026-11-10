@@ -94,6 +94,7 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
+from plugins.platforms.feishu.adapter_identity import SenderIdentityCache, resolve_sender_profile
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -1322,6 +1323,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         # inbound messages cannot land their writes out of order.
         self._dedup_persist_lock = asyncio.Lock()
         self._sender_name_cache: dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
+        self._sender_identities = SenderIdentityCache()
         self._webhook_rate_counts: dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: dict[str, float] = {}  # token → first_seen_time
@@ -2287,6 +2289,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         open_id = str(getattr(operator, "open_id", "") or "")
         user_id = str(getattr(operator, "user_id", "") or "")
         union_id = str(getattr(operator, "union_id", "") or "")
+        user_id, union_id = self._sender_identities.resolve(open_id, user_id, union_id)
         callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
         expected_chat_id = str(state.get("chat_id", "") or "")
         if not self._is_interactive_operator_authorized(
@@ -2308,11 +2311,11 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         state = self._approval_state.get(approval_id)
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
-            return self._card_response()
+            return self._card_toast(t("platform.shared.approval_expired"))
         choice = _APPROVAL_CHOICE_MAP.get(action_value.get("hermes_action"), "deny")
         checked = self._validate_card_action(event=event, state=state, label="approval", ident=approval_id)
         if checked is None:
-            return self._card_response()
+            return self._card_toast(t("platform.shared.not_authorized"))
         open_id, chat_id, user_name, user_id, union_id = checked
         from gateway.approval_actor import approval_refusal, refusal_text
         # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
@@ -2340,7 +2343,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             return self._card_response()
         checked = self._validate_card_action(event=event, state=state, label="update prompt", ident=prompt_id)
         if checked is None:
-            return self._card_response()
+            return self._card_toast(t("platform.shared.not_authorized"))
         open_id, chat_id, user_name, user_id, union_id = checked
         coro = self._resolve_update_prompt(
             prompt_id, answer, user_name, open_id=open_id, chat_id=chat_id, user_id=user_id, union_id=union_id,
@@ -3283,15 +3286,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         return "dm" if event_chat_type == "p2p" else "group"
 
     async def _resolve_sender_profile(self, sender_id: Any, *, is_bot: bool = False) -> dict[str, Optional[str]]:
-        """Map Feishu's ID tiers onto SessionSource: user_id (tenant) > open_id (app) as primary,
-        union_id (developer-scoped, cross-app stable) as user_id_alt — session keys prefer the alt."""
-        open_id = getattr(sender_id, "open_id", None) or None
-        user_id = getattr(sender_id, "user_id", None) or None
-        union_id = getattr(sender_id, "union_id", None) or None
-        primary_id = user_id or open_id
-        name_lookup_id = open_id if is_bot else (primary_id or union_id)  # bots/basic_batch only takes open_id
-        display_name = await self._resolve_sender_name_from_api(name_lookup_id, is_bot=is_bot)
-        return {"user_id": primary_id, "user_name": display_name, "user_id_alt": union_id}
+        return await resolve_sender_profile(self, sender_id, is_bot=is_bot)
 
     def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:
         """Return a cached sender name only while its TTL is still valid."""

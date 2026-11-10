@@ -1,0 +1,19 @@
+name: rich-paste
+repo: https://github.com/ZhenningLang/rich-paste
+sha: 8eb0753c36345382bd00ca4849826ca229b8c9bb
+description: "Paste web pages, screenshots and Finder files into Hermes Desktop with their structure, and send each image to the model where it sits in your text. Web HTML becomes Markdown (headings, links, lists, tables, code) with its images downloaded and attached; an llm_request middleware moves each image block next to its label instead of after all the text (kimi-k3, several images per paragraph: 18/30 today, 30/30 interleaved). Also: screenshot chips at the caret, Finder files and folders as Desktop blocks, TIFF/HEIC/BMP/AVIF sent as PNG, pasted audio transcribed with Hermes's own STT, Markdown preview. Disclosure: network calls only to download the images of pages you paste (http/https; loopback, private, link-local and reserved addresses refused on every redirect; at most 50 images per paste and 20 MB each); no telemetry. Runs /usr/bin/osascript once per file paste to read file URLs on the macOS clipboard. Reads image attachments you add (hashes them, converts TIFF/HEIC/BMP/AVIF to PNG) and Desktop's saved long-paste files. Writes only under its cache folder. Transcription uses Hermes's tools.transcription_tools."
+maintainer: ZhenningLang
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.2.0"
+title: Rich Paste
+platforms: []
+known_issues:
+  - "Tested on macOS only. Pasting Finder files needs macOS; elsewhere, drag files into the composer."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - llm_request
+  requires_env: []

@@ -22,7 +22,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RESULTS = Path(os.environ.get("DG_RESULTS") or HERE / "results")
-TASKS = ["all_join_ids", "all_slowest", "all_summary_file", "each_write_as_lands", "each_stream_to_user", "single_control"]
+TASKS = ["all_join_ids", "all_slowest", "all_summary_file", "all_implicit_table", "each_write_as_lands", "each_stream_to_user", "single_control"]
 KINDS = {"all": "answer after all (1 unit expected)", "each": "act on each (3 units expected)", "single": "single task (control)"}
 
 
@@ -132,7 +132,7 @@ def schema(tree, mode):
             "delegation:\n  independent_completions: %s\n" % ("true" if mode == "on" else "false"), encoding="utf-8")
         env = {"HOME": home, "HERMES_HOME": home, "PATH": os.environ.get("PATH", ""), "HERMES_PLATFORM": "cli"}
         out = subprocess.run([os.environ.get("DG_PYTHON") or sys.executable, "-c", code, tree], capture_output=True,
-                             text=True, env=env, cwd=home, check=True).stdout
+                             text=True, env=env, cwd=home, check=True, timeout=120).stdout
     print(out.strip().splitlines()[-1])
 
 

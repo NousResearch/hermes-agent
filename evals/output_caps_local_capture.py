@@ -55,7 +55,7 @@ config = {"model": {"default": "fixture", "provider": "fixture-local", "max_toke
 (home / "config.yaml").write_text(json.dumps(config))
 os.environ["HERMES_MAX_TOKENS"] = "13"
 from gateway.run import _resolve_runtime_agent_kwargs
-from gateway.platforms.api_server import _resolve_request_runtime_agent_kwargs
+from gateway.platforms.api_server_provider_runtime import _resolve_request_runtime_agent_kwargs
 from hermes_cli.runtime_provider import resolve_runtime_provider
 from hermes_cli.moa_config import _normalize_preset
 from agent.transports.chat_completions import ChatCompletionsTransport

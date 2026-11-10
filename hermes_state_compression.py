@@ -246,11 +246,20 @@ class SessionCompressionMixin:
             return None
 
         def _do(conn):
-            row = conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()
+            row = conn.execute(
+                "SELECT ended_at, end_reason, source FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
             if row is None or row["ended_at"] is None:
                 return None
             reason = row["end_reason"]
-            if is_automatic_end_reason(reason) or reason == "compression" or reason in _BOUNDARY_END_REASONS:
+            from hermes_state_common import CRON_FINALIZED_END_REASONS
+            if (
+                is_automatic_end_reason(reason)
+                or (row["source"] == "cron" and reason in CRON_FINALIZED_END_REASONS)
+                or reason == "compression"
+                or reason in _BOUNDARY_END_REASONS
+            ):
                 return None
             superseded = conn.execute(
                 "SELECT 1 FROM sessions WHERE parent_session_id = ?"

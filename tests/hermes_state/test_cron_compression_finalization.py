@@ -36,7 +36,7 @@ def project(monkeypatch, path, sid, job):
 
     monkeypatch.setattr(cron, "_job_owner_profile", lambda *args: None)
     monkeypatch.setattr(cron, "_open_session_db_for_profile", open_db)
-    monkeypatch.setattr(cron, "_list_cron_output_runs", lambda *args: [])
+    monkeypatch.setattr(cron, "_list_cron_output_runs", lambda *args: ([], []))
     monkeypatch.setattr(sessions, "_open_session_db_for_profile", open_db)
     monkeypatch.setattr(sessions, "_serving_profile", lambda *args: "default")
     history = next(row for row in cron._list_cron_job_runs_sync(job)["runs"] if row["id"] == sid)

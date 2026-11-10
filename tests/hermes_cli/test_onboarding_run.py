@@ -33,7 +33,7 @@ def _add_chat(home: Path) -> None:
 
 def _launch_under(monkeypatch, root: Path, name: str) -> Path:
     """A pooled backend launched under ``-p <name>``: HERMES_HOME is the profile's home."""
-    home = profiles.create_profile(name, no_alias=True)
+    home = profiles.create_profile(name)
     monkeypatch.setenv("HERMES_HOME", str(home))
     assert onboarding_run.get_default_hermes_root() == root
     return home
@@ -61,7 +61,7 @@ def test_root_with_a_chat_does_not_run(root):
 
 
 def test_a_user_profile_is_history(root):
-    profiles.create_profile("work", no_alias=True)
+    profiles.create_profile("work")
     assert onboarding_run.should_run() is False
 
 

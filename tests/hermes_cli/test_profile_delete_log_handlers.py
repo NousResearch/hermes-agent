@@ -30,7 +30,7 @@ def routed_profile(tmp_path, monkeypatch):
     monkeypatch.setattr(profiles, "_maybe_unregister_gateway_service", lambda *_: None)
     monkeypatch.setattr(profiles, "_stop_profile_backends", lambda *_: None)
     monkeypatch.setattr(profiles, "_notify_multiplexer", lambda *_: None)
-    profile = profiles.create_profile("routed-log-delete", no_alias=True)
+    profile = profiles.create_profile("routed-log-delete")
     hermes_logging.setup_logging(hermes_home=home, force=True)
     try:
         yield home, profile

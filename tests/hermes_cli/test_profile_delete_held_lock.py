@@ -30,7 +30,7 @@ def profile(tmp_path, monkeypatch):
     for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service", "_stop_profile_backends",
                  "_notify_multiplexer", "_stop_gateway_process", "_maybe_register_gateway_service"):
         monkeypatch.setattr(profiles, name, lambda *_a, **_k: None)
-    return profiles.create_profile("owned-delete", no_alias=True)
+    return profiles.create_profile("owned-delete")
 
 
 def _hold(profile_dir):
@@ -67,7 +67,7 @@ def test_profile_home_waits_for_the_live_owner_to_release_it(profile, monkeypatc
             if op == "rename":
                 profiles.rename_profile("owned-delete", "owned-renamed")
             elif op == "recreate":  # the tombstoned, marker-less shell an owner's reserve() re-made
-                profiles.create_profile("owned-delete", no_alias=True)
+                profiles.create_profile("owned-delete")
             else:
                 profiles.delete_profile("owned-delete", yes=True)
             outcome["ok"] = True

@@ -30,7 +30,7 @@ def test_rename_preserves_profile_local_checkpoint_history(profile_env, tmp_path
     absolute workdir path. Renaming ``profiles/old`` to ``profiles/new`` moves the
     checkpoint store itself, but it also changes every profile-local workdir key.
     """
-    old_dir = create_profile("oldname", no_alias=True)
+    old_dir = create_profile("oldname")
     workdir = old_dir / "project"
     workdir.mkdir()
     outside = tmp_path / "outside-project"  # control: not under the profile dir, same store
@@ -87,7 +87,7 @@ def test_retry_after_partial_rekey_keeps_checkpoints_taken_under_new_name(profil
     Between the failed rename and the retry the user keeps working under the new profile, so the
     new ref already carries checkpoints (and ledger entries) the old identity never saw.
     """
-    old_dir = create_profile("oldname", no_alias=True)
+    old_dir = create_profile("oldname")
     workdir = old_dir / "project"
     workdir.mkdir()
     (workdir / "pyproject.toml").write_text("[project]\nname = 'retry'\n", encoding="utf-8")

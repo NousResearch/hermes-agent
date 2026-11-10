@@ -21,7 +21,7 @@ def test_delete_profile_after_stdio_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_: None)
     monkeypatch.setattr(profiles, "_stop_profile_backends", lambda *_: None)
     monkeypatch.setattr(profiles, "_notify_multiplexer", lambda *_: None)
-    profile = profiles.create_profile("mcp-probe-delete", no_alias=True)
+    profile = profiles.create_profile("mcp-probe-delete")
     server = tmp_path / "stdio_server.py"
     server.write_text('''import json
 import sys

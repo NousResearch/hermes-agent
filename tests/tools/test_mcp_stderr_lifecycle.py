@@ -52,7 +52,7 @@ def test_rename_profile_releases_cached_log_handle(tmp_path, monkeypatch):
     monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_: None)
     monkeypatch.setattr(profiles, "_notify_multiplexer", lambda *_: None)
     monkeypatch.setattr(profiles, "_live_default_multiplexer", lambda: False)
-    old_dir = profiles.create_profile("mcp-log-old", no_alias=True)
+    old_dir = profiles.create_profile("mcp-log-old")
     token = set_hermes_home_override(old_dir)
     try:
         handle = _get_mcp_stderr_log()

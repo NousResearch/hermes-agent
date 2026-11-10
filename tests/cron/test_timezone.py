@@ -109,6 +109,16 @@ class TestGetTimezone:
         monkeypatch.setenv("HERMES_HOME", str(first_home))
         assert str(hermes_time.get_timezone()) == "Asia/Tokyo"
 
+    def test_config_edit_takes_effect_without_cache_reset(self, tmp_path, monkeypatch):
+        """A long-lived process follows `hermes config set timezone ...` on its next read."""
+        monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config = tmp_path / "config.yaml"
+        config.write_text("timezone: Asia/Tokyo\n", encoding="utf-8")
+        assert str(hermes_time.now().tzinfo) == "Asia/Tokyo"
+        config.write_text("timezone: America/New_York\n", encoding="utf-8")
+        assert str(hermes_time.now().tzinfo) == "America/New_York"
+
     def test_multiplex_prefers_routed_profile_config_over_env(self, tmp_path, monkeypatch):
         """Under the multiplexed gateway HERMES_TIMEZONE holds only the DEFAULT profile's value
         (bridged at startup), so a routed profile must resolve from its own config.yaml."""

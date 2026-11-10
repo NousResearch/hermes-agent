@@ -1343,7 +1343,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
 
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
-    no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
+    no_skills: bool = False, description: Optional[str] = None,
     clone_channels: bool = False, sync_imports: bool = False, soul: Optional[str] = None,
 ) -> Path:
     """Create a new profile directory and return its path.
@@ -2270,7 +2270,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
             raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
         old_dir.rename(new_dir)
-    except Exception:
+    except BaseException:
         if live_mux:
             clear_named_profile_deleted(old_dir)
             _notify_multiplexer(old_canon)

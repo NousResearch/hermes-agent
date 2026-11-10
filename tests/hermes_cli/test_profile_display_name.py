@@ -113,7 +113,7 @@ class TestRenameDefault:
         assert read_profile_meta(profile_env)["display_name"] == "Harumesu"
 
     def test_rename_to_default_still_reserved(self, profile_env):
-        create_profile("worker", no_alias=True)
+        create_profile("worker")
         with pytest.raises(ValueError, match="reserved"):
             rename_profile("worker", "default")
 
@@ -123,7 +123,7 @@ class TestRenameDefault:
         monkeypatch.setattr(
             "hermes_cli.profiles.check_alias_collision", lambda name: "skip"
         )
-        create_profile("oldname", no_alias=True)
+        create_profile("oldname")
         write_profile_meta(get_profile_dir("oldname"), display_name="Old Friend")
         new_dir = rename_profile("oldname", "newname")
         assert not (profile_env / "profiles" / "oldname").is_dir()

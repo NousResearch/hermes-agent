@@ -72,7 +72,7 @@ def test_clone_strips_every_channel_credential_but_keeps_model_and_tool_keys(hom
     source_claims = _fingerprints(home)
     assert {p for p, _ in source_claims} >= {"telegram", "discord"}
 
-    profile_dir = create_profile("bot2", clone_config=True, no_alias=True)
+    profile_dir = create_profile("bot2", clone_config=True)
 
     assert _fingerprints(profile_dir).isdisjoint(source_claims)
     assert shared_channel_credentials(profile_dir, home) == []
@@ -94,7 +94,7 @@ def test_clone_strips_every_channel_credential_but_keeps_model_and_tool_keys(hom
 
 
 def test_clone_channels_opt_in_keeps_the_source_channels(home):
-    profile_dir = create_profile("twin", clone_config=True, no_alias=True, clone_channels=True)
+    profile_dir = create_profile("twin", clone_config=True, clone_channels=True)
     assert _fingerprints(profile_dir) == _fingerprints(home)
     assert set(shared_channel_credentials(profile_dir, home)) >= {"telegram", "discord"}
     assert set(channel_platforms_configured(profile_dir)) >= {"telegram", "discord", "whatsapp", "api_server"}
@@ -108,7 +108,7 @@ def test_clone_all_drops_pairing_and_platform_state(home):
     (home / "memories").mkdir()
     (home / "memories" / "MEMORY.md").write_text("remember", encoding="utf-8")
 
-    profile_dir = create_profile("full", clone_all=True, no_alias=True)
+    profile_dir = create_profile("full", clone_all=True)
 
     assert not (profile_dir / "platforms").exists() and not (profile_dir / "discord_threads.json").exists()
     assert (profile_dir / "memories" / "MEMORY.md").read_text(encoding="utf-8") == "remember"
@@ -155,7 +155,7 @@ def test_clone_all_never_writes_through_a_symlinked_source_env(home, tmp_path):
     (home / ".env").unlink()
     (home / ".env").symlink_to(shared)
 
-    profile_dir = create_profile("full", clone_all=True, no_alias=True)
+    profile_dir = create_profile("full", clone_all=True)
 
     assert shared.read_text(encoding="utf-8") == _SOURCE_ENV
     assert not (profile_dir / ".env").is_symlink()
@@ -176,7 +176,7 @@ def test_clone_is_published_atomically_after_stripping(home, monkeypatch):
         return real_strip(profile_dir, **kw)
 
     monkeypatch.setattr(profile_channels, "strip_channel_settings", _observing_strip)
-    profile_dir = create_profile("bot2", clone_config=True, no_alias=True)
+    profile_dir = create_profile("bot2", clone_config=True)
 
     assert seen == {"final_exists": False, "served": ["default"], "work_dir_hidden": True}
     assert profile_dir.is_dir() and [n for n, _ in profiles.profiles_to_serve(multiplex=True)] == ["default", "bot2"]
@@ -189,12 +189,12 @@ def test_clone_channels_refusal_lives_in_create_profile(home, monkeypatch):
     from hermes_cli import gateway_multiplex_served as served_mod
     monkeypatch.setattr(served_mod, "recorded_served_profiles", lambda root=None: ["default", "other"])
     with pytest.raises(ValueError, match="already serves"):
-        create_profile("twin", clone_config=True, no_alias=True, clone_channels=True)
+        create_profile("twin", clone_config=True, clone_channels=True)
     assert not (home / "profiles" / "twin").exists()
     with pytest.raises(ValueError, match="only applies to a clone"):
-        create_profile("plain", no_alias=True, clone_channels=True)
+        create_profile("plain", clone_channels=True)
     # Without --clone-channels the same clone succeeds (the refusal is about the copy, not the clone).
-    assert create_profile("twin", clone_config=True, no_alias=True).is_dir()
+    assert create_profile("twin", clone_config=True).is_dir()
 
 
 _SHARED_ENV = (
@@ -218,7 +218,7 @@ def test_ownership_inventory_strips_policy_relay_and_aliases_but_keeps_tool_cred
                         "platforms": {"sms": {"enabled": False}}}),
         encoding="utf-8")
 
-    profile_dir = create_profile("bot3", clone_config=True, no_alias=True)
+    profile_dir = create_profile("bot3", clone_config=True)
 
     keys = {line.split("=", 1)[0] for line in (profile_dir / ".env").read_text(encoding="utf-8").splitlines()
             if "=" in line and not line.startswith("#")}
@@ -238,7 +238,7 @@ def test_left_core_platform_keeps_channel_ownership_while_its_plugin_is_absent(h
         yaml.safe_dump({"model": {"default": "gpt-5", "provider": "openai"}, **config}), encoding="utf-8")
     assert not (home / "plugins" / "homeassistant").exists()
 
-    profile_dir = create_profile(f"ha{len(config)}{int(stripped)}", clone_config=True, no_alias=True)
+    profile_dir = create_profile(f"ha{len(config)}{int(stripped)}", clone_config=True)
 
     keys = {line.split("=", 1)[0] for line in (profile_dir / ".env").read_text(encoding="utf-8").splitlines()
             if "=" in line and not line.startswith("#")}
@@ -269,7 +269,7 @@ def test_plugin_platform_shared_env_prefixes_follow_the_ownership_rule(home, ena
                         "platforms": {"sharedplat": {"enabled": enabled}}}),
         encoding="utf-8")
 
-    profile_dir = create_profile(f"shp{int(enabled)}", clone_config=True, no_alias=True)
+    profile_dir = create_profile(f"shp{int(enabled)}", clone_config=True)
 
     keys = {line.split("=", 1)[0] for line in (profile_dir / ".env").read_text(encoding="utf-8").splitlines()
             if "=" in line and not line.startswith("#")}
@@ -279,5 +279,5 @@ def test_plugin_platform_shared_env_prefixes_follow_the_ownership_rule(home, ena
 def test_clone_all_drops_directory_shaped_channel_state(home):
     (home / "google_chat_user_tokens").mkdir()
     (home / "google_chat_user_tokens" / "u@x.json").write_text("{}", encoding="utf-8")
-    profile_dir = create_profile("full", clone_all=True, no_alias=True)
+    profile_dir = create_profile("full", clone_all=True)
     assert not (profile_dir / "google_chat_user_tokens").exists()

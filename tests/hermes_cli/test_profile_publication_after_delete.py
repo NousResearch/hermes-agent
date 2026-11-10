@@ -24,14 +24,14 @@ def profile_env(tmp_path, monkeypatch):
 
 
 def _create_and_delete(name: str) -> None:
-    profiles.create_profile(name, no_alias=True)
+    profiles.create_profile(name)
     with patch("hermes_cli.profiles._cleanup_gateway_service"), \
          patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
         profiles.delete_profile(name, yes=True)
 
 
 def _publish_by_import(tmp_path: Path, name: str) -> None:
-    profiles.create_profile("source", no_alias=True)
+    profiles.create_profile("source")
     archive = profiles.export_profile("source", str(tmp_path / "source.tar.gz"))
     profiles.import_profile(str(archive), name=name)
 
@@ -46,7 +46,7 @@ def _publish_by_install(tmp_path: Path, name: str) -> None:
 
 
 def _publish_by_rename(tmp_path: Path, name: str) -> None:
-    profiles.create_profile("source", no_alias=True)
+    profiles.create_profile("source")
     with patch("hermes_cli.profiles._cleanup_gateway_service"):
         profiles.rename_profile("source", name)
 

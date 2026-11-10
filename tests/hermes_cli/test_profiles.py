@@ -143,7 +143,7 @@ class TestCreateProfile:
         writes are profile-scoped from day one instead of falling through
         to the shell environment / root install."""
         import stat
-        profile_dir = create_profile("coder", no_alias=True)
+        profile_dir = create_profile("coder")
         env_path = profile_dir / ".env"
         assert env_path.exists()
         content = env_path.read_text(encoding="utf-8-sig")
@@ -168,7 +168,7 @@ class TestCreateProfile:
             "model:\n  provider: nous\n  default: some/model\n", encoding="utf-8"
         )
 
-        profile_dir = create_profile("coder", no_alias=True)
+        profile_dir = create_profile("coder")
 
         cfg = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8-sig"))
         assert cfg["model"]["provider"] == "nous"
@@ -188,7 +188,7 @@ class TestCreateProfile:
             "  unrelated:\n    api: https://other.example.com/v1\n", encoding="utf-8"
         )
 
-        profile_dir = create_profile("coder", no_alias=True)
+        profile_dir = create_profile("coder")
 
         cfg = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8-sig"))
         assert cfg["model"] == {"provider": "my-gateway", "default": "my-finetune"}
@@ -204,7 +204,7 @@ class TestCreateProfile:
         (default_home / "config.yaml").write_text(
             "model:\n  provider: nous\n  default: some/model\n", encoding="utf-8"
         )
-        profile_dir = create_profile("coder", no_alias=True)
+        profile_dir = create_profile("coder")
 
         (default_home / "config.yaml").write_text(
             "model:\n  provider: other\n  default: changed/model\n", encoding="utf-8"
@@ -225,7 +225,7 @@ class TestCreateProfile:
         (default_home / ".env").write_text("KEY=val", encoding="utf-8")
         (default_home / "SOUL.md").write_text("Be helpful.", encoding="utf-8")
 
-        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        profile_dir = create_profile("coder", clone_config=True)
 
         cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8-sig"))
         assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
@@ -245,7 +245,7 @@ class TestCreateProfile:
         (default_home / "hindsight" / "config.json").write_text(payload)
         (default_home / "mem0.json").write_text('{"agent_id": "hermes"}')
 
-        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        profile_dir = create_profile("coder", clone_config=True)
 
         cloned = profile_dir / "hindsight" / "config.json"
         assert cloned.read_text() == payload
@@ -260,7 +260,7 @@ class TestCreateProfile:
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "plugin.yaml").write_text("name: example-plugin\n")
 
-        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        profile_dir = create_profile("coder", clone_config=True)
 
         assert (
             profile_dir
@@ -281,7 +281,7 @@ class TestCreateProfile:
         (plugins / ".install-metadata.json").write_text(record)
         (profile_env / ".hermes" / "config.yaml").write_text("memory:\n  provider: acme-memory\n")
 
-        cloned = create_profile("coder", clone_config=True, no_alias=True) / "plugins"
+        cloned = create_profile("coder", clone_config=True) / "plugins"
 
         assert (cloned / ".install-metadata.json").read_text() == record
         assert (cloned / "acme-memory" / "plugin.yaml").is_file()
@@ -300,7 +300,7 @@ class TestCreateProfile:
         (default_home / "a" / "b").mkdir()
         (default_home / "a" / "b" / "config.json").write_text("{}")
 
-        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        profile_dir = create_profile("coder", clone_config=True)
 
         assert not (profile_dir / "a").exists()
         assert not (profile_dir.parent / "outside").exists()
@@ -316,10 +316,10 @@ class TestCreateProfile:
             "last_import": 1, "imported_skills": ["s1"]}}}
         (default_home / "import-sync.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-        plain = create_profile("plain", clone_config=True, no_alias=True)
+        plain = create_profile("plain", clone_config=True)
         assert not (plain / "import-sync.json").exists()
 
-        synced = create_profile("synced", clone_config=True, sync_imports=True, no_alias=True)
+        synced = create_profile("synced", clone_config=True, sync_imports=True)
         assert json.loads((synced / "import-sync.json").read_text(encoding="utf-8")) == manifest
         # Editing the source afterwards does not reach the clone: still an independent island.
         (default_home / "config.yaml").write_text("model: changed", encoding="utf-8")
@@ -357,7 +357,7 @@ class TestCreateProfile:
             os.symlink(target, dst, target_is_directory=True)
         monkeypatch.setitem(sys.modules, "_winapi", types.SimpleNamespace(CreateJunction=_create_junction))
 
-        clone = create_profile("clone", no_alias=True, **clone_kwargs)
+        clone = create_profile("clone", **clone_kwargs)
         foo = clone / "skills" / "foo"
         assert foo.is_symlink() and foo.resolve() == (external / "foo").resolve()
         assert (foo / "SKILL.md").read_text(encoding="utf-8-sig") == "# external foo\n"
@@ -372,7 +372,7 @@ class TestCreateProfile:
         default_home, external = self._home_with_linked_skill(profile_env)
         _winapi.CreateJunction(str(external / "foo"), str(default_home / "skills" / "foo"))
 
-        clone = create_profile("clone", clone_config=True, no_alias=True)
+        clone = create_profile("clone", clone_config=True)
         foo = clone / "skills" / "foo"
         assert os.lstat(foo).st_reparse_tag == profiles.stat.IO_REPARSE_TAG_MOUNT_POINT
         assert foo.resolve() == (external / "foo").resolve()
@@ -381,7 +381,7 @@ class TestCreateProfile:
 
     def test_sync_imports_requires_a_clone_source(self, profile_env):
         with pytest.raises(ValueError, match="--sync-imports requires"):
-            create_profile("lonely", sync_imports=True, no_alias=True)
+            create_profile("lonely", sync_imports=True)
 
     def test_clone_all_does_not_copy_cron_jobs(self, profile_env):
         # Cron jobs are scheduled work bound to the source profile + origin channel; a clone
@@ -392,7 +392,7 @@ class TestCreateProfile:
         (default_home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "abc123def456"}]}), encoding="utf-8")
         (default_home / "cron" / "output").mkdir()
 
-        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+        profile_dir = create_profile("coder", clone_all=True)
 
         assert (profile_dir / "cron").is_dir()
         assert not any((profile_dir / "cron").iterdir())
@@ -413,7 +413,7 @@ class TestCreateProfile:
         for process_marker in process_markers:
             (browser_profile / process_marker).write_text("source-process", encoding="utf-8")
 
-        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+        profile_dir = create_profile("coder", clone_all=True)
         cloned_browser = profile_dir / "bot-desktop" / "browser-profile"
 
         for runtime_file in ("launcher.pid", "env", "lease.json"):
@@ -453,7 +453,7 @@ class TestCreateProfile:
             (browser_profile / "SingletonLock").symlink_to(f"host-{os.getpid()}")
             assert running_instance(str(browser_profile))[0] == port
 
-            profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+            profile_dir = create_profile("coder", clone_all=True)
             cloned_browser = profile_dir / "bot-desktop" / "browser-profile"
 
             assert running_instance(str(cloned_browser)) is None
@@ -473,7 +473,7 @@ class TestCreateProfile:
         (browser_dir / "state.json").write_text("{}", encoding="utf-8")
         os.mkfifo(browser_dir / "control")
 
-        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+        profile_dir = create_profile("coder", clone_all=True)
 
         assert (profile_dir / "home" / ".agent-browser" / "state.json").is_file()
         assert not (profile_dir / "home" / ".agent-browser" / "control").exists()
@@ -490,7 +490,7 @@ class TestNoSkillsOptOut:
     """Tests for `hermes profile create --no-skills` and the opt-out marker."""
 
     def test_no_skills_writes_marker_and_skips_seeding(self, profile_env):
-        profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
+        profile_dir = create_profile("orchestrator", no_skills=True)
 
         # Marker file is present
         marker = profile_dir / NO_BUNDLED_SKILLS_MARKER
@@ -520,8 +520,8 @@ class TestBackfillProfileEnvs:
         import stat
         tmp_path = profile_env
         (tmp_path / ".hermes" / ".env").write_text("OPENROUTER_API_KEY=root-key\n", encoding="utf-8")
-        p1 = create_profile("old1", no_alias=True)
-        p2 = create_profile("old2", no_alias=True)
+        p1 = create_profile("old1")
+        p2 = create_profile("old2")
         # Simulate pre-#44792 profiles: no .env
         (p1 / ".env").unlink()
         (p2 / ".env").unlink()
@@ -535,7 +535,7 @@ class TestBackfillProfileEnvs:
 
 
     def test_placeholder_when_default_has_no_env(self, profile_env):
-        p = create_profile("noroot", no_alias=True)
+        p = create_profile("noroot")
         (p / ".env").unlink()
 
         backfilled = backfill_profile_envs(quiet=True)
@@ -560,7 +560,7 @@ class TestDeleteProfile:
 
 
     def test_rmtree_failure_raises(self, profile_env):
-        profile_dir = create_profile("coder", no_alias=True)
+        profile_dir = create_profile("coder")
         set_active_profile("coder")
 
         with patch("hermes_cli.profiles._cleanup_gateway_service"), \
@@ -584,8 +584,8 @@ class TestDeleteProfile:
         import time
 
         tmp_path = profile_env
-        create_profile("gone", no_alias=True)
-        create_profile("keepme", no_alias=True)
+        create_profile("gone")
+        create_profile("keepme")
         scope = str(tmp_path / ".hermes" / "sessions")
         db = SessionDB(tmp_path / ".hermes" / "state.db")
         db.save_gateway_routing_entry(
@@ -635,7 +635,7 @@ class TestDeleteProfile:
         from hermes_cli.profiles import ProfileIdentitySettlementPending
 
         tmp_path = profile_env
-        create_profile("gone", no_alias=True)
+        create_profile("gone")
         scope = str(tmp_path / ".hermes" / "sessions")
         db = SessionDB(tmp_path / ".hermes" / "state.db")
         db.save_gateway_routing_entry(
@@ -668,7 +668,7 @@ class TestDeleteProfile:
 
     def test_backend_scan_only_matches_this_profile(self, profile_env, monkeypatch):
         """The backend PID scan binds by --profile selector and skips self."""
-        create_profile("coder", no_alias=True)
+        create_profile("coder")
         profile_dir = get_profile_dir("coder")
 
         class FakeProc:
@@ -717,7 +717,7 @@ class TestDeleteProfile:
         profile delete doesn't leave a zombie Desktop-spawned backend behind
         (issue: deleting a Desktop profile kept reappearing after relaunch).
         """
-        create_profile("coder", no_alias=True)
+        create_profile("coder")
         profile_dir = get_profile_dir("coder")
 
         class FakeProc:
@@ -765,7 +765,7 @@ class TestDeleteProfile:
         and argv[1]'s basename starts with "hermes" -- only the actual known
         console-script entry points (hermes, hermes-agent, hermes-acp) count.
         """
-        create_profile("coder", no_alias=True)
+        create_profile("coder")
         profile_dir = get_profile_dir("coder")
 
         class FakeProc:
@@ -810,7 +810,7 @@ class TestDeleteProfile:
         recognized via the shebang-exec path, not just the primary "hermes"
         shim.
         """
-        create_profile("coder", no_alias=True)
+        create_profile("coder")
         profile_dir = get_profile_dir("coder")
 
         class FakeProc:
@@ -861,8 +861,8 @@ class TestListProfiles:
         assert "default" in names
 
     def test_includes_named_profiles(self, profile_env):
-        create_profile("alpha", no_alias=True)
-        create_profile("beta", no_alias=True)
+        create_profile("alpha")
+        create_profile("beta")
         profiles = list_profiles()
         names = [p.name for p in profiles]
         assert "alpha" in names
@@ -981,7 +981,7 @@ class TestActiveProfile:
 
     def test_set_to_default_removes_file(self, profile_env):
         tmp_path = profile_env
-        create_profile("coder", no_alias=True)
+        create_profile("coder")
         set_active_profile("coder")
         active_path = tmp_path / ".hermes" / "active_profile"
         assert active_path.exists()
@@ -1000,7 +1000,7 @@ class TestGetActiveProfileName:
 
     def test_profile_path_returns_profile_name(self, profile_env, monkeypatch):
         tmp_path = profile_env
-        create_profile("coder", no_alias=True)
+        create_profile("coder")
         profile_dir = tmp_path / ".hermes" / "profiles" / "coder"
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         assert get_active_profile_name() == "coder"
@@ -1143,7 +1143,7 @@ class TestFindAliasForProfile:
             create_wrapper_script,
             list_profiles,
         )
-        create_profile("steve", no_alias=True)
+        create_profile("steve")
         create_wrapper_script("qiaobusi", target="steve")
         info = next(p for p in list_profiles() if p.name == "steve")
         assert info.alias_name == "qiaobusi"
@@ -1160,7 +1160,7 @@ class TestRenameProfile:
 
     def test_renames_directory(self, profile_env):
         tmp_path = profile_env
-        create_profile("oldname", no_alias=True)
+        create_profile("oldname")
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
         assert old_dir.is_dir()
 
@@ -1178,7 +1178,7 @@ class TestRenameProfile:
         refused instead of resurrecting a ghost served profile (#109267)."""
         from hermes_constants import mkdir_under_hermes_home
         tmp_path = profile_env
-        create_profile("oldname", no_alias=True)
+        create_profile("oldname")
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
         new_dir = tmp_path / ".hermes" / "profiles" / "newname"
 
@@ -1206,7 +1206,7 @@ class TestRenameProfile:
     def test_unmultiplexed_rename_does_not_signal_multiplexer(self, profile_env):
         """No live multiplexer → rename must neither tombstone nor ping (single-profile installs)."""
         tmp_path = profile_env
-        create_profile("oldname", no_alias=True)
+        create_profile("oldname")
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
@@ -1224,7 +1224,7 @@ class TestRenameProfile:
         chats resolve to a nonexistent profile and flood errors.log)."""
         from hermes_state import SessionDB
         tmp_path = profile_env
-        create_profile("oldname", no_alias=True)
+        create_profile("oldname")
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
         # Seed a session owned by the old profile in the profile's own store + the root routing index.
         pdb = SessionDB(old_dir / "state.db")
@@ -1261,7 +1261,7 @@ class TestRenameProfile:
     def test_rename_delegates_identity_migration_to_live_gateway(self, profile_env):
         """Under a live multiplexer the CLI must NOT rewrite the routing DB directly (the gateway holds
         it in memory and would clobber the write); it delegates to the control verb instead."""
-        create_profile("oldname", no_alias=True)
+        create_profile("oldname")
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
              patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
@@ -1286,7 +1286,7 @@ class TestRenameProfile:
         from hermes_state import SessionDB
         from argparse import Namespace
         tmp_path = profile_env
-        create_profile("oldname", no_alias=True)
+        create_profile("oldname")
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
         pdb = SessionDB(old_dir / "state.db")
         pdb.create_session(
@@ -1335,7 +1335,7 @@ class TestRenameProfile:
 
 
     def test_rename_accumulates_previous_names(self, profile_env):
-        create_profile("firstname", no_alias=True)
+        create_profile("firstname")
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
             rename_profile("firstname", "secondname")
@@ -1345,7 +1345,7 @@ class TestRenameProfile:
         assert info.previous_names == ["firstname", "secondname"]
 
     def test_rename_succeeds_when_previous_name_write_fails(self, profile_env):
-        create_profile("oldname", no_alias=True)
+        create_profile("oldname")
 
         # The history write is best-effort: it must never fail the rename.
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
@@ -1467,7 +1467,7 @@ class TestInternalHelpers:
         docker_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(docker_home))
-        result = create_profile("orchestrator", no_alias=True)
+        result = create_profile("orchestrator")
         expected = docker_home / "profiles" / "orchestrator"
         assert result == expected
         assert expected.is_dir()
@@ -1645,12 +1645,12 @@ class TestEdgeCases:
     def test_clone_from_named_profile(self, profile_env):
         """Clone config from a named (non-default) profile."""
         # Create source profile with config
-        source_dir = create_profile("source", no_alias=True)
+        source_dir = create_profile("source")
         (source_dir / "config.yaml").write_text("model: cloned", encoding="utf-8")
         (source_dir / ".env").write_text("SECRET=yes", encoding="utf-8")
 
         target_dir = create_profile(
-            "target", clone_from="source", clone_config=True, no_alias=True,
+            "target", clone_from="source", clone_config=True,
         )
         cloned_config = yaml.safe_load((target_dir / "config.yaml").read_text(encoding="utf-8-sig"))
         assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
@@ -1666,7 +1666,7 @@ class TestProfilesToServe:
     def test_off_returns_only_active_named(self, profile_env, monkeypatch):
         # A named profile's gateway runs with HERMES_HOME pointing at the
         # profile dir; get_active_profile_name() infers the name from there.
-        create_profile("coder", no_alias=True)
+        create_profile("coder")
         monkeypatch.setenv("HERMES_HOME", str(get_profile_dir("coder")))
         serve = profiles_to_serve(multiplex=False)
         assert len(serve) == 1
@@ -1674,8 +1674,8 @@ class TestProfilesToServe:
         assert serve[0][1] == get_profile_dir("coder")
 
     def test_on_returns_default_plus_all_named(self, profile_env):
-        create_profile("coder", no_alias=True)
-        create_profile("writer", no_alias=True)
+        create_profile("coder")
+        create_profile("writer")
         serve = dict(profiles_to_serve(multiplex=True))
         assert set(serve) == {"default", "coder", "writer"}
         assert serve["default"] == _get_default_hermes_home()
@@ -1688,8 +1688,8 @@ class TestProfilesToServe:
     def test_standalone_profile_excluded_unless_included(self, profile_env):
         """A named profile that sets `gateway.standalone: true` is not served by the
         host multiplexer, but callers that enumerate INSTALLED profiles still see it."""
-        create_profile("solo", no_alias=True)
-        create_profile("member", no_alias=True)
+        create_profile("solo")
+        create_profile("member")
         (get_profile_dir("solo") / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
         serve = dict(profiles_to_serve(multiplex=True))
         assert set(serve) == {"default", "member"}
@@ -1713,7 +1713,7 @@ class TestProfilesToServe:
 
     @pytest.mark.parametrize("content", ["gateway: [", "[]\n", "null\n", "", "gateway: false\n"])
     def test_standalone_malformed_config_does_not_break_roster(self, profile_env, caplog, content):
-        create_profile("solo", no_alias=True)
+        create_profile("solo")
         home = get_profile_dir("solo")
         (home / "config.yaml").write_text(content, encoding="utf-8")
         for _ in range(2):
@@ -1726,7 +1726,7 @@ class TestProfilesToServe:
     def test_standalone_io_failure_is_bounded_and_recovers(self, profile_env, monkeypatch, caplog, failure_at):
         from hermes_cli import config
 
-        create_profile("solo", no_alias=True)
+        create_profile("solo")
         home = get_profile_dir("solo")
         cfg = home / "config.yaml"
         cfg.write_text("gateway:\n  standalone: true\n", encoding="utf-8")
@@ -1755,8 +1755,8 @@ class TestProfilesToServe:
 
     def test_standalone_answer_is_per_home_and_memo_invalidates_on_replacement(self, profile_env):
         """A->B->A: signatures never cross homes; atomic replacement invalidates the memo."""
-        create_profile("alpha", no_alias=True)
-        create_profile("beta", no_alias=True)
+        create_profile("alpha")
+        create_profile("beta")
         alpha, beta = get_profile_dir("alpha"), get_profile_dir("beta")
         (alpha / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
         assert profiles.profile_is_standalone(alpha) is True
@@ -1841,7 +1841,7 @@ def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op
     import time
     from tools.bot_desktop import runtime
 
-    profile_dir = create_profile("coder", no_alias=True)
+    profile_dir = create_profile("coder")
     proc = _live_bot_desktop_launcher(profile_dir)
     # A human held the screen when the op ran. lease.json moves with a rename; left human-held it would
     # fence the agent out of the renamed profile's next screen for a viewer that no longer exists.
@@ -1871,7 +1871,7 @@ def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op
 def test_export_leaves_the_bot_desktop_browser_profile_out(profile_env, tmp_path, name):
     """bot-desktop/ holds the screen's persistent Chromium profile (Cookies, Login Data: the bot's live web
     sessions) plus sockets and X state. None of it belongs in an export archive meant to move a persona."""
-    profile_dir = create_profile(name, no_alias=True) if name != "default" else get_profile_dir("default")
+    profile_dir = create_profile(name) if name != "default" else get_profile_dir("default")
     (profile_dir / "config.yaml").write_text("model: test", encoding="utf-8")
     cookies = profile_dir / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
     cookies.parent.mkdir(parents=True)
@@ -1923,7 +1923,7 @@ class TestCloneAllExcludesRuntimeTrees:
 
         # Gated on the default profile: a named profile that really has a
         # models/ dir of its own must not have it dropped when used as source.
-        source = create_profile("source", no_alias=True)
+        source = create_profile("source")
         for tree in self.RUNTIME_TREES:
             (source / tree).mkdir()
         assert not _clone_all_copytree_ignore(source)(str(source), [*self.RUNTIME_TREES, "SOUL.md"])
@@ -1933,7 +1933,7 @@ class TestCloneAllExcludesRuntimeTrees:
         default_home = profile_env / ".hermes"
         self._seed(default_home)
 
-        clone = create_profile("clone", clone_all=True, no_alias=True)
+        clone = create_profile("clone", clone_all=True)
 
         for name in self.RUNTIME_TREES:
             assert not (clone / name).exists(), name

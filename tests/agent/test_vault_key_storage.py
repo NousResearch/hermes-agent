@@ -207,7 +207,7 @@ def test_clone_all_owns_its_key_before_the_source_ever_migrates(home, keychain, 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     source = home(".hermes", key_storage="keychain")
     item = _add(VaultStore())
-    clone = create_profile("vault-clone", clone_from="default", clone_all=True, no_alias=True)
+    clone = create_profile("vault-clone", clone_from="default", clone_all=True)
 
     assert VaultStore().migrate_key("file") == "file"  # the clone has not opened its vault yet
     assert VaultStore(source / "vault").resolve_secret(item)["password"] == _LOGIN["password"]
@@ -226,7 +226,7 @@ def test_clone_all_without_a_reachable_keychain_is_refused_not_published_sharing
     _add(VaultStore())
     keyring.set_keyring(fail.Keyring())  # e.g. an SSH session that cannot reach the login keychain
     with pytest.raises(ValueError, match="OS keychain"):
-        create_profile("vault-clone", clone_from="default", clone_all=True, no_alias=True)
+        create_profile("vault-clone", clone_from="default", clone_all=True)
     assert not get_profile_dir("vault-clone").exists()
 
 
@@ -244,7 +244,7 @@ def test_a_clone_that_fails_to_publish_leaves_no_keychain_entry_behind(home, key
 
     monkeypatch.setattr(profiles_initialization, "finish_profile_layout", fail_layout)
     with pytest.raises(RuntimeError):
-        create_profile("vault-clone", clone_from="default", clone_all=True, no_alias=True)
+        create_profile("vault-clone", clone_from="default", clone_all=True)
     assert not get_profile_dir("vault-clone").exists()
     assert len(keychain.entries) == 1, "the unpublished clone's entry is removed; the source's is kept"
     assert VaultStore(source / "vault").resolve_secret(item)["password"] == _LOGIN["password"]
@@ -268,7 +268,7 @@ def test_a_clone_failing_before_custody_never_deletes_the_source_entry(home, key
 
     monkeypatch.setattr(auth, "strip_cloned_single_use_oauth_grants", fail_mid_copy)
     with pytest.raises(RuntimeError):
-        create_profile("vault-clone", clone_from="default", clone_all=True, no_alias=True)
+        create_profile("vault-clone", clone_from="default", clone_all=True)
     assert len(keychain.entries) == 1
     assert VaultStore(moved).resolve_secret(item)["password"] == _LOGIN["password"]
 

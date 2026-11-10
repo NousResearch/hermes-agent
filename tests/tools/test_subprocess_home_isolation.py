@@ -275,7 +275,7 @@ class TestProfileBootstrap:
         monkeypatch.setenv("HERMES_HOME", str(home))
 
         from hermes_cli.profiles import create_profile
-        profile_dir = create_profile("testbot", no_alias=True)
+        profile_dir = create_profile("testbot")
         assert (profile_dir / "home").is_dir()
 
 

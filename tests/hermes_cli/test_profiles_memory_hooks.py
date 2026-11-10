@@ -52,8 +52,8 @@ def test_create_and_rename_call_the_selected_providers_hooks_with_its_home_bound
     monkeypatch.setattr(memory_pkg, "load_memory_provider",
                         lambda name, **kw: Recorder() if name == "recorder" else None)
     _select(profile_env, "recorder")
-    create_profile("plain", no_alias=True)  # fresh: no memory.provider, so no hook
-    created = create_profile("ssi_health", clone_config=True, no_alias=True)  # the clone carries it
+    create_profile("plain")  # fresh: no memory.provider, so no hook
+    created = create_profile("ssi_health", clone_config=True)  # the clone carries it
     with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
         renamed = rename_profile("ssi_health", "heimdall")
 
@@ -80,7 +80,7 @@ def test_the_hook_reads_the_new_profiles_secrets_not_the_callers(profile_env, mo
     monkeypatch.setenv("PROBE_PROFILE_KEY", "caller-value")
     _select(profile_env, "reader")
     (profile_env / ".env").write_text("PROBE_PROFILE_KEY=clone-value\n", encoding="utf-8")
-    create_profile("work", clone_config=True, no_alias=True)  # --clone copies the .env
+    create_profile("work", clone_config=True)  # --clone copies the .env
     assert seen == ["clone-value"]
 
 
@@ -93,7 +93,7 @@ def test_the_hook_follows_the_effective_selection_including_env_refs(profile_env
     monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: loaded.append(name))
     (profile_env / "config.yaml").write_text("memory:\n  provider: ${PROBE_MEMORY_PROVIDER}\n", encoding="utf-8")
     (profile_env / ".env").write_text("PROBE_MEMORY_PROVIDER=recorder\n", encoding="utf-8")
-    create_profile("work", clone_config=True, no_alias=True)
+    create_profile("work", clone_config=True)
     assert loaded == ["recorder"]
 
 
@@ -108,7 +108,7 @@ def test_an_unreadable_config_backend_never_fails_create(profile_env, monkeypatc
     monkeypatch.setattr(config_mod, "load_config_readonly", boom)
     _select(profile_env, "recorder")  # an external provider, so the hook reaches the effective-config read
     with caplog.at_level("WARNING", logger="hermes_cli.profile_memory_config"):
-        assert create_profile("work", clone_config=True, no_alias=True).is_dir()
+        assert create_profile("work", clone_config=True).is_dir()
     assert "profile hook failed" in caplog.text
 
 
@@ -128,7 +128,7 @@ def test_a_missing_profile_secret_never_falls_back_to_the_callers_env(profile_en
     monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: Reader())
     monkeypatch.setenv("PROBE_PROFILE_KEY", "caller-value")
     _select(profile_env, "reader")
-    create_profile("work", clone_config=True, no_alias=True)  # the cloned .env has no such key
+    create_profile("work", clone_config=True)  # the cloned .env has no such key
     assert seen == ["unset"]
 
 
@@ -152,7 +152,7 @@ def test_a_provider_hook_that_exits_never_fails_create_or_rename(profile_env, mo
     calls = []
     monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: Exits())
     _select(profile_env, "exits")
-    assert create_profile("work", clone_config=True, no_alias=True).is_dir()
+    assert create_profile("work", clone_config=True).is_dir()
     with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
         assert rename_profile("work", "play").is_dir()
     assert calls == ["created", "renamed"]
@@ -179,7 +179,7 @@ def test_a_failing_provider_hook_never_fails_create_or_rename(profile_env, monke
 
     monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: Broken())
     _select(profile_env, "broken")
-    create_profile("work", clone_config=True, no_alias=True)
+    create_profile("work", clone_config=True)
     with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
         assert rename_profile("work", "play").is_dir()
     assert calls == ["created", "renamed"]
@@ -193,8 +193,8 @@ def test_a_profile_without_an_external_provider_binds_no_secret_scope(profile_en
     built = []
     monkeypatch.setattr(secret_scope, "build_profile_secret_scope", lambda *a, **k: built.append(a) or {})
     (profile_env / "config.yaml").write_text("memory:\n  provider: builtin\n", encoding="utf-8")
-    assert create_profile("work", clone_config=True, no_alias=True).is_dir()
-    assert create_profile("fresh", no_alias=True).is_dir()
+    assert create_profile("work", clone_config=True).is_dir()
+    assert create_profile("fresh").is_dir()
     assert built == []  # recorded, not raised: the hook's guard would swallow a raise
 
 
@@ -207,7 +207,7 @@ def test_the_hook_sees_the_new_profiles_configured_secret_sources(profile_env, m
     monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", lambda home: hydrated.append(Path(home)) or {})
     monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: None)
     _select(profile_env, "recorder")
-    work = create_profile("work", clone_config=True, no_alias=True)
+    work = create_profile("work", clone_config=True)
     assert hydrated == [work]
 
 

@@ -26,7 +26,7 @@ def test_backfill_never_copies_default_credentials(profile_env):
     (profile_env / ".hermes" / ".env").write_text(
         "OPENROUTER_API_KEY=root-key\nTELEGRAM_BOT_TOKEN=123:abc\nDISCORD_BOT_TOKEN=d1\n", encoding="utf-8"
     )
-    p = create_profile("legacy", no_alias=True, no_skills=True)
+    p = create_profile("legacy", no_skills=True)
     (p / ".env").unlink()
 
     assert backfill_profile_envs(quiet=True) == ["legacy"]

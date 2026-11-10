@@ -45,7 +45,7 @@ def test_settle_pending_delete_reports_partial_success(client, monkeypatch):
     # A live multiplexer owns the routing index and none is reachable here, so the settlement
     # stays pending — the exact state delete_profile reports after the directory is gone.
     monkeypatch.setattr(profiles_mod, "_live_default_multiplexer", lambda: True)
-    profiles_mod.create_profile("gone", no_alias=True)
+    profiles_mod.create_profile("gone")
     gone_dir = profiles_mod.get_profile_dir("gone")
 
     resp = client.delete("/api/profiles/gone")
@@ -71,7 +71,7 @@ def test_filesystem_remove_failure_still_reports_500(client, monkeypatch):
         raise OSError("device busy")
 
     monkeypatch.setattr(profiles_mod, "_rmtree_with_retry", boom)
-    profiles_mod.create_profile("gone", no_alias=True)
+    profiles_mod.create_profile("gone")
 
     resp = client.delete("/api/profiles/gone")
 

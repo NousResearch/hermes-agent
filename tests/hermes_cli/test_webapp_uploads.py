@@ -369,7 +369,7 @@ def test_browser_uploads_to_a_profile_do_not_queue_behind_the_skills_lock(
     hermes_home = tmp_path / "hermes-home"
     hermes_home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    profile_home = profiles.create_profile("worker", no_alias=True, no_skills=True)
+    profile_home = profiles.create_profile("worker", no_skills=True)
     holding, release = threading.Event(), threading.Event()
 
     def hold_skills_lock():

@@ -362,7 +362,7 @@ def test_sessions_repair_targets_the_scoped_profile_store(_isolate_hermes_home, 
     from hermes_state import SessionDB
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
-    profile_home = create_profile("b", no_alias=True, no_skills=True)
+    profile_home = create_profile("b", no_skills=True)
     SessionDB(profile_home / "state.db").close()
 
     with _profile_scope("b"):

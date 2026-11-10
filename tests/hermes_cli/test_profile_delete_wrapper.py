@@ -31,7 +31,7 @@ def _delete_and_check(profile_dir, wrapper):
 
 @pytest.mark.platforms("any")  # the wrapper name differs per host (.bat on Windows)
 def test_delete_removes_the_profile_wrapper(home):
-    profile_dir = create_profile("imported", no_alias=True)
+    profile_dir = create_profile("imported")
     wrapper = create_wrapper_script("imported")
     assert wrapper is not None
     _delete_and_check(profile_dir, wrapper)
@@ -39,7 +39,7 @@ def test_delete_removes_the_profile_wrapper(home):
 
 @pytest.mark.platforms("windows")
 def test_delete_removes_a_pre_bat_windows_wrapper(home):
-    profile_dir = create_profile("imported", no_alias=True)
+    profile_dir = create_profile("imported")
     wrapper = home / ".local" / "bin" / "imported"
     wrapper.parent.mkdir(parents=True, exist_ok=True)
     wrapper.write_text("@echo off\r\nhermes -p imported %*\r\n", encoding="utf-8")

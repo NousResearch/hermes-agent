@@ -190,7 +190,7 @@ def test_an_approved_row_installs_into_the_chats_profile_and_lists_the_live_tool
     from hermes_cli.profiles import create_profile
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    b_home = Path(create_profile("b", no_alias=True))
+    b_home = Path(create_profile("b"))
     installer = FakeInstaller([_entry("blender")])
     card = _card(_approve(), profile_home=str(b_home))
     token = set_hermes_home_override(str(b_home))
@@ -210,7 +210,7 @@ def test_an_approved_row_installs_into_the_chats_profile_and_lists_the_live_tool
 def test_advanced_values_pick_the_profile_force_and_pin(tmp_path):
     from hermes_cli.profiles import create_profile
 
-    work = create_profile("work", no_alias=True)
+    work = create_profile("work")
     installer = FakeInstaller([_entry("blender")])
     pin = "c" * 40
     out = _install([{"kind": "plugin", "id": "blender"}], installer,

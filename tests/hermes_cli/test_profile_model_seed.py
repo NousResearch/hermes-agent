@@ -28,7 +28,7 @@ def create_from_launch(tmp_path, monkeypatch):
             home / "config.yaml",
             {**source, "_config_version": DEFAULT_CONFIG["_config_version"]},
         )
-        profile = create_profile("sample-bot", no_alias=True, no_skills=True)
+        profile = create_profile("sample-bot", no_skills=True)
         return read_user_config_raw(profile / "config.yaml")
 
     return _create

@@ -53,7 +53,7 @@ class TestProfileCopyExclusions:
             path.write_text("install state", encoding="utf-8")
 
         if operation == "clone":
-            target = profiles.create_profile("clone", clone_from="default", clone_all=True, no_alias=True)
+            target = profiles.create_profile("clone", clone_from="default", clone_all=True)
         elif operation == "distribution":
             profile_distribution.write_manifest(home, profile_distribution.DistributionManifest(name="copy", version="1.0.0"))
             profile_distribution.install_distribution(str(home), name="copy", create_alias=False)

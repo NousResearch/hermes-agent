@@ -310,7 +310,7 @@ def test_clone_all_does_not_share_the_source_webapp_browser_credential(profile_e
     (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
     source_token = browser_session_token(default_home)
 
-    profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+    profile_dir = create_profile("coder", clone_all=True)
 
     assert not (profile_dir / TOKEN_PATH).exists()
     assert browser_session_token(profile_dir) != source_token
@@ -334,7 +334,7 @@ def test_clone_all_leaves_the_source_gateways_webapp_sign_in_state_behind(profil
         '{"portal": "https://portal.example.test", "client_id": "c1", '
         '"callback": "http://192.168.1.50:9120/auth/callback"}\n', encoding="utf-8")
 
-    profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+    profile_dir = create_profile("coder", clone_all=True)
 
     assert not (profile_dir / "webapp").exists(), sorted(p.name for p in (profile_dir / "webapp").iterdir())
     assert (default_home / RECORD_PATH).exists()

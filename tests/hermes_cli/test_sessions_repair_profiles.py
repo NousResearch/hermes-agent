@@ -31,7 +31,7 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(root))
     from hermes_cli.profiles import create_profile
     for name in ("acme", "beta"):
-        create_profile(name, no_alias=True, no_skills=True)
+        create_profile(name, no_skills=True)
     return {"default": root, "acme": root / "profiles" / "acme", "beta": root / "profiles" / "beta"}
 
 

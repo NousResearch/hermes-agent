@@ -20,7 +20,7 @@ def launched_under_work(tmp_path, monkeypatch) -> tuple[Path, Path]:
     root.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(root))
-    work = profiles.create_profile("work", no_alias=True)
+    work = profiles.create_profile("work")
     monkeypatch.setenv("HERMES_HOME", str(work))
     return root, work
 

@@ -663,7 +663,7 @@ class TestUpdate:
     def test_update_missing_manifest_errors(self, profile_env):
         # Make a profile without a manifest; update must refuse
         from hermes_cli.profiles import create_profile
-        create_profile(name="plain", no_alias=True)
+        create_profile(name="plain")
         with pytest.raises(DistributionError, match="not a distribution"):
             update_distribution("plain")
 
@@ -867,7 +867,7 @@ class TestProfileInfoDistribution:
 
     def test_malformed_manifest_does_not_break_list(self, profile_env):
         from hermes_cli.profiles import create_profile, list_profiles, get_profile_dir
-        create_profile(name="brokenmeta", no_alias=True)
+        create_profile(name="brokenmeta")
         # Write a distribution.yaml that isn't a valid mapping
         (get_profile_dir("brokenmeta") / "distribution.yaml").write_text(
             "not: [a, valid, mapping\n"  # broken YAML

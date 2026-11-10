@@ -15,7 +15,6 @@ from hermes_constants import (
     get_hermes_home,
     get_process_hermes_home,
     is_container,
-    node_tool_runnable,
     parse_reasoning_effort,
     reset_hermes_home_override,
     secure_parent_dir,
@@ -161,14 +160,6 @@ class TestGetProcessHermesHome:
 
 
 
-
-
-class TestNodeToolRunnable:
-    """Empty executable paths cannot be probed."""
-
-    def test_none_and_empty_rejected(self):
-        assert node_tool_runnable(None) is False
-        assert node_tool_runnable("") is False
 
 
 class TestIsContainer:

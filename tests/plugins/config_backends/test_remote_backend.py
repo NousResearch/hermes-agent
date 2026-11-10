@@ -1207,7 +1207,7 @@ def test_fresh_profile_creation_succeeds_against_a_healthy_plane(profile_plane):
     from hermes_cli.profiles import create_profile
     before = len(profile_plane.requests)
 
-    path = create_profile("fresh", no_alias=True, no_skills=True)
+    path = create_profile("fresh", no_skills=True)
 
     assert path.is_dir() and (path / ".env").exists()
     assert not list(path.parent.glob(".fresh.staging-*"))

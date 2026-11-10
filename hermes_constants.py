@@ -528,42 +528,11 @@ def _candidate_node_command_names(command: str) -> list[str]:
     # Prefer npm.cmd: PowerShell may block npm.ps1 by policy; CreateProcess cannot launch a bare .ps1.
     return _WINDOWS_NODE_SHIMS.get(base.lower(), [f"{base}.cmd", f"{base}.exe", base])
 
-def _run_version_probe(argv: list[str], **kwargs):
-    """Run a hidden ``--version`` probe; ``None`` when it cannot run."""
-    import subprocess
-    try:
-        from hermes_cli._subprocess_compat import windows_hide_flags
-        return subprocess.run(  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
-            argv, capture_output=True, timeout=10, creationflags=windows_hide_flags(), **kwargs,
-        
-        )
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        return None
-
-
-def _version_probe_ok(path: str) -> bool:
-    """True when ``<path> --version`` exits 0 under the Hermes-managed Node PATH."""
-    result = _run_version_probe([path, "--version"], env=with_hermes_node_path())
-    return result is not None and result.returncode == 0
-
 
 # Install tree root (this file lives at <install_root>/hermes_constants.py). Used by secure_parent_dir() to
 # skip chmod on the install dir — chmodding it 0700 breaks hermes-user traversal in Docker (UID 10000). See
 # #25821, #93050.
 _INSTALL_ROOT = Path(__file__).resolve().parent
-
-
-def _is_executable_file(path: str) -> bool:
-    """``exists()`` follows symlinks, so a dangling link never spawns a probe."""
-    return os.path.exists(path) and os.access(path, os.X_OK)
-
-
-def node_tool_runnable(path: str | None) -> bool:
-    """True only when *path* is a Node/npm/npx binary that actually runs (``--version`` probe)."""
-    if not path:
-        return False
-    present = Path(path).is_file() if sys.platform == "win32" else _is_executable_file(path)
-    return present and _version_probe_ok(path)
 
 
 def hermes_managed_node_tree_present(home: Path | None = None) -> bool:

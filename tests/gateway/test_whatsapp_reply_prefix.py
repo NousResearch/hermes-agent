@@ -6,7 +6,6 @@ Covers:
 - Bridge subprocess receiving WHATSAPP_REPLY_PREFIX env var
 - config.yaml whatsapp.send_read_receipts bridging into PlatformConfig.extra
 - WhatsAppAdapter parsing send_read_receipts as a boolean
-- Config version covers all ENV_VARS_BY_VERSION keys (regression guard)
 """
 
 from types import SimpleNamespace
@@ -121,17 +120,3 @@ class TestReadReceiptPolicyOrdering:
 
         assert session.post.call_args.kwargs["json"] == {"key": key}
         assert session.post.call_args.args[0].endswith("/read")
-
-
-# ---------------------------------------------------------------------------
-# Config version regression guard
-# ---------------------------------------------------------------------------
-
-
-class TestConfigVersionCoverage:
-    """Ensure _config_version covers all ENV_VARS_BY_VERSION keys."""
-
-    def test_default_config_version_covers_env_var_versions(self):
-        """_config_version must be >= the highest ENV_VARS_BY_VERSION key."""
-        from hermes_cli.config import DEFAULT_CONFIG, ENV_VARS_BY_VERSION
-        assert DEFAULT_CONFIG["_config_version"] >= max(ENV_VARS_BY_VERSION)

@@ -134,7 +134,7 @@ def test_only_the_local_desktop_backend_opens_onboarding_by_itself(portal, root,
 
 def test_eligible_follows_the_default_profile_not_the_launch_profile(portal, root, monkeypatch):
     from hermes_cli import profiles
-    work = profiles.create_profile("work", no_alias=True)
+    work = profiles.create_profile("work")
     monkeypatch.setenv("HERMES_HOME", str(work))
     monkeypatch.setattr(server, "_hermes_home", str(work))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

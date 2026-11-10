@@ -129,7 +129,7 @@ def test_a_refused_save_crosses_the_host_as_a_400_with_no_secret_saved(hosted_ho
 def test_a_profile_hook_runs_in_the_host_and_its_host_is_stopped(hosted_home):
     from hermes_cli.profiles import create_profile
 
-    work = create_profile("work", clone_config=True, no_alias=True)
+    work = create_profile("work", clone_config=True)
 
     seen = json.loads((work / "hook.json").read_text())
     assert seen["name"] == "work" and seen["pid"] != os.getpid()
@@ -162,7 +162,7 @@ def test_a_host_already_running_for_that_profile_is_left_alone(hosted_home):
     from hermes_cli.profiles import create_profile, rename_profile
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    create_profile("work", clone_config=True, no_alias=True)
+    create_profile("work", clone_config=True)
 
     from hermes_cli import profile_memory_config as pmc  # rename late-imports notify from here
     calls = []

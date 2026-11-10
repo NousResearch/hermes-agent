@@ -204,7 +204,7 @@ def _profile_create(args):
     try:
         profile_dir = create_profile(
             name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
-            no_alias=no_alias, no_skills=no_skills, description=getattr(args, "description", None),
+            no_skills=no_skills, description=getattr(args, "description", None),
             clone_channels=clone_channels, sync_imports=sync_imports,
         )
     except (ValueError, FileExistsError, FileNotFoundError) as e:

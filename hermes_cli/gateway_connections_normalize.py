@@ -12,6 +12,8 @@ import re
 from typing import Any, Iterable, Optional
 from urllib.parse import urlsplit
 
+from hermes_constants import PROFILE_ID_RE
+
 REGISTRY_VERSION = 2
 LOCAL_CONNECTION_ID = "local"
 REGISTRY_QUARANTINE_CAP = 20
@@ -23,7 +25,6 @@ _FORBIDDEN_HEADERS = {
     "authorization", "connection", "content-length", "content-type", "cookie", "host", "origin",
     "referer", "te", "trailer", "transfer-encoding", "upgrade", "x-hermes-session-token",
 }
-_PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class ConnectionStoreError(ValueError):
@@ -230,7 +231,7 @@ def normalize_ssh_config(entry: Any) -> Optional[dict]:
         if value:
             out[field] = value
     remote_profile = js_str(entry.get("remoteProfile")).strip()
-    if _PROFILE_RE.match(remote_profile) and remote_profile not in _RESERVED_REMOTE_PROFILES:
+    if PROFILE_ID_RE.match(remote_profile) and remote_profile not in _RESERVED_REMOTE_PROFILES:
         out["remoteProfile"] = remote_profile
     return out
 

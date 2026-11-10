@@ -41,7 +41,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 from hermes_constants import (
     _IGNORED_MANAGED_VALUES, _LEGACY_MANAGED_SYSTEM, _MANAGED_FALSE_VALUES, _MANAGED_TRUE_VALUES,
     _chown_to_hermes_uid, _container_or_chmod_skipped, _resolve_hermes_uid_gid,
-    apply_secure_dir_policy, get_managed_system)
+    apply_secure_dir_policy, get_managed_system, is_container)
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
@@ -285,7 +285,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
         return method
 
     method = _install_method_stamp(get_hermes_home() / ".install_method")
-    if method and not (method == "docker" and not _running_in_container()):
+    if method and not (method == "docker" and not is_container()):
         return method
 
     managed = get_managed_system()
@@ -308,16 +308,6 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     except OSError:
         pass
     return "unknown"
-
-
-def _running_in_container() -> bool:
-    """Import-safe wrapper around ``hermes_constants.is_container``."""
-    try:
-        from hermes_constants import is_container
-
-        return is_container()
-    except Exception:
-        return False
 
 
 def is_nix_install_method(method: str) -> bool:
@@ -615,16 +605,6 @@ from hermes_cli.config_version_stamp import (
 
 
 # ---- Config Migration System ----
-
-# Env vars introduced per config version; migration only mentions vars new since the user's
-# previous version.
-ENV_VARS_BY_VERSION: dict[int, list[str]] = {
-    3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
-    4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
-    5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
-        "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
-    10: ["TAVILY_API_KEY"],
-    11: ["TERMINAL_MODAL_MODE"]}
 
 # Intentionally empty: the LLM provider is required but handled by the setup wizard's provider
 # selection step, so no single env var is universally required.
@@ -1230,9 +1210,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, A
                 results["warnings"].append(f"Skipped {var['name']} - some features may not work")
             print()
 
-    if interactive and not quiet:
-        _offer_new_optional_env_vars(current_ver, latest_ver, results)
-
     # New default keys are NOT materialised to disk (load_config() deep-merges DEFAULT_CONFIG at
     # read time); this list only feeds the "N new config option(s)" display.
     results["config_added"].extend(field["key"] for field in get_missing_config_fields())
@@ -1305,28 +1282,6 @@ def _offer_list(heading: str, items: list[str], question: str) -> bool:
         return False
     print()
     return True
-
-
-def _offer_new_optional_env_vars(current_ver: int, latest_ver: int, results: dict[str, Any]) -> None:
-    """Interactively offer env vars that are NEW since the user's previous config version."""
-    new_var_names: set = set()
-    for ver in range(current_ver + 1, latest_ver + 1):
-        new_var_names.update(ENV_VARS_BY_VERSION.get(ver, []))
-    new_and_unset = [
-        (name, OPTIONAL_ENV_VARS[name])
-        for name in sorted(new_var_names)
-        if not get_env_value(name) and name in OPTIONAL_ENV_VARS]
-    if not new_and_unset or not _offer_list(
-        f"\n  {len(new_and_unset)} new optional key(s) in this update:",
-        [f"{name} — {info.get('description', '')}" for name, info in new_and_unset],
-        "  Configure new keys? [y/N]: "):
-        return
-    for name, info in new_and_unset:
-        print(f"  {info.get('description', name)}")
-        if info.get("url"):
-            print(f"  Get your key at: {info['url']}")
-        _prompt_and_save_env(name, info, f"  {info.get('prompt', name)} (Enter to skip): ", results)
-        print()
 
 
 def _offer_skill_config_vars(missing_skill_config: list[dict[str, Any]], results: dict[str, Any]) -> None:

@@ -56,7 +56,7 @@ def _delete(name: str) -> None:
 
 class TestDeletedProfileTombstone:
     def test_delete_then_logging_setup_does_not_recreate_home(self, profile_env, monkeypatch):
-        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        profile_dir = create_profile("worker", no_skills=True)
         with patch("hermes_cli.profiles._cleanup_gateway_service"), patch(
             "hermes_cli.profiles._stop_profile_backends"
         ):
@@ -77,7 +77,7 @@ class TestDeletedProfileTombstone:
         """A daemon retaining a deleted profile context must not recreate its cache tree."""
         from hermes_cli import models_reasoning_caps
 
-        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        profile_dir = create_profile("worker", no_skills=True)
         _delete("worker")
 
         token = set_hermes_home_override(profile_dir)
@@ -94,7 +94,7 @@ class TestDeletedProfileTombstone:
     def test_atomic_cache_write_allows_live_profile_home(self, profile_env):
         from hermes_cli.models import _write_json_cache
 
-        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        profile_dir = create_profile("worker", no_skills=True)
         cache_path = profile_dir / "cache" / "models.json"
 
         _write_json_cache(cache_path, {"cached": True})
@@ -111,7 +111,7 @@ class TestDeletedProfileTombstone:
         assert cache_path.read_text(encoding="utf-8") == '{\n  "cached": true\n}'
 
     def test_empty_shell_after_delete_is_not_listed_or_served(self, profile_env):
-        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        profile_dir = create_profile("worker", no_skills=True)
         with patch("hermes_cli.profiles._cleanup_gateway_service"), patch(
             "hermes_cli.profiles._stop_profile_backends"
         ):
@@ -131,7 +131,7 @@ class TestDeletedProfileTombstone:
         assert f"{BOT_CHAT_PLATFORM}:worker" not in [t["id"] for t in cron_delivery_targets()]
 
     def test_tombstoned_home_is_not_bootstrapped(self, profile_env, monkeypatch):
-        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        profile_dir = create_profile("worker", no_skills=True)
         with patch("hermes_cli.profiles._cleanup_gateway_service"), patch(
             "hermes_cli.profiles._stop_profile_backends"
         ):
@@ -144,26 +144,26 @@ class TestDeletedProfileTombstone:
         assert not (profile_dir / "sessions").exists()
 
     def test_create_after_delete_clears_tombstone(self, profile_env):
-        create_profile("worker", no_alias=True, no_skills=True)
+        create_profile("worker", no_skills=True)
         with patch("hermes_cli.profiles._cleanup_gateway_service"), patch(
             "hermes_cli.profiles._stop_profile_backends"
         ):
             delete_profile("worker", yes=True)
 
-        recreated = create_profile("worker", no_alias=True, no_skills=True)
+        recreated = create_profile("worker", no_skills=True)
         assert recreated.is_dir()
         assert "worker" in _named_homes(profile_env)
 
     def test_delete_releases_this_process_session_db(self, profile_env):
         import hermes_state_registry as registry
 
-        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        profile_dir = create_profile("worker", no_skills=True)
         held = registry.acquire(profile_dir / "state.db")
         assert held._conn is not None
         try:
             _delete("worker")
             assert held._conn is None
-            recreated = create_profile("worker", no_alias=True, no_skills=True)
+            recreated = create_profile("worker", no_skills=True)
             again = registry.acquire(recreated / "state.db")
             assert again._conn is not None
             registry.release(again)
@@ -171,7 +171,7 @@ class TestDeletedProfileTombstone:
             registry.close_all()
 
     def test_profile_exists_is_false_for_tombstoned_shell(self, profile_env):
-        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        profile_dir = create_profile("worker", no_skills=True)
         assert profile_exists("worker") is True
         _delete("worker")
         profile_dir.mkdir(parents=True)
@@ -183,7 +183,7 @@ class TestDeletedProfileTombstone:
             resolve_profile_env("worker")
 
     def test_backfill_skips_tombstoned_directory(self, profile_env):
-        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        profile_dir = create_profile("worker", no_skills=True)
         _delete("worker")
         profile_dir.mkdir(parents=True)
         (profile_env / ".hermes" / ".env").write_text(
@@ -225,7 +225,7 @@ class TestDeletedProfileTombstone:
         (shell / "skills" / "my-skill").mkdir(parents=True)
         (shell / "skills" / "my-skill" / "SKILL.md").write_text("# mine\n", encoding="utf-8")
         with pytest.raises(FileExistsError, match=str(shell)):
-            create_profile("ghost", no_alias=True, no_skills=True)
+            create_profile("ghost", no_skills=True)
         assert (shell / "skills" / "my-skill" / "SKILL.md").exists()
         assert "ghost" not in _named_homes(profile_env)
 
@@ -239,12 +239,12 @@ class TestDeletedProfileTombstone:
         assert Path(resolve_profile_env("legacy")) == legacy
 
     def test_create_after_delete_replaces_empty_shell(self, profile_env):
-        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        profile_dir = create_profile("worker", no_skills=True)
         _delete("worker")
         profile_dir.mkdir(parents=True)
         (profile_dir / "logs").mkdir()
 
-        recreated = create_profile("worker", no_alias=True, no_skills=True)
+        recreated = create_profile("worker", no_skills=True)
         assert recreated.is_dir()
         assert "worker" in _named_homes(profile_env)
 
@@ -252,14 +252,14 @@ class TestDeletedProfileTombstone:
     def test_create_after_delete_refuses_when_identity_files_remain(
         self, profile_env, leftover
     ):
-        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        profile_dir = create_profile("worker", no_skills=True)
         _delete("worker")
         profile_dir.mkdir(parents=True)
         leftover_path = profile_dir / leftover
         leftover_path.write_text("keep-me\n", encoding="utf-8")
 
         with pytest.raises(FileExistsError, match="already exists"):
-            create_profile("worker", no_alias=True, no_skills=True)
+            create_profile("worker", no_skills=True)
 
         assert leftover_path.read_text(encoding="utf-8") == "keep-me\n"
         assert leftover_path.exists()

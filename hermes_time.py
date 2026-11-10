@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 # profile-scoped work (e.g. the desktop multiplex cron ticker persisting another profile's
 # ``next_run_at``). Entries are published atomically under ``_cache_lock`` as one
 # ``identity -> (name, ZoneInfo | None)`` value, so racing resolvers can never publish a mixed
-# identity/value pair. Call reset_cache() after in-place config changes.
+# identity/value pair. A config identity carries the file's version signature, so an edit re-resolves.
 _cache_lock = threading.Lock()
-_tz_cache: dict[tuple[str, str], tuple[str, Optional[ZoneInfo]]] = {}
+_tz_cache: dict[tuple, tuple[str, Optional[ZoneInfo]]] = {}
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 # ASCII plus surrogateescape'd bytes only: the shape of native text decoded with the wrong codec.
@@ -75,9 +75,14 @@ def _env_timezone() -> str:
     return os.getenv("HERMES_TIMEZONE", "").strip()
 
 
-def _timezone_cache_identity() -> tuple[str, str]:
+def _timezone_cache_identity() -> tuple:
     tz_env = _env_timezone()
-    return ("environment", tz_env) if tz_env else ("config", str(get_config_path()))
+    if tz_env:
+        return ("environment", tz_env)
+    from hermes_cli.config_backend import config_version_or_none
+
+    config_path = get_config_path()
+    return ("config", str(config_path), config_version_or_none(config_path))
 
 
 def _resolve_timezone_name() -> str:
@@ -124,6 +129,8 @@ def _timezone_entry() -> tuple[str, Optional[ZoneInfo]]:
         except Exception as exc:
             logger.warning("Invalid timezone '%s': %s. Falling back to server local time.", name, exc)
     with _cache_lock:
+        for stale in [key for key in _tz_cache if key[:2] == cache_identity[:2] and key != cache_identity]:
+            del _tz_cache[stale]
         return _tz_cache.setdefault(cache_identity, (name, tz))
 
 

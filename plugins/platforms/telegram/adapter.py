@@ -4434,7 +4434,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         from gateway.approval_actor import approval_refusal, refusal_text
         request_id = self._approval_request_ids.get(approval_id)
-        if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra, request_id=request_id):
+        if requester := approval_refusal(session_key, getattr(query.from_user, "id", ""), extra=self.config.extra, request_id=request_id, choice=choice):
             return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
         if not self._approval_state.pop(approval_id, None):  # a concurrent tap claimed it first
             return await answer_callback(query, resolved)

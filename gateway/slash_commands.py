@@ -1195,9 +1195,11 @@ class GatewaySlashCommandsMixin(
         return "\n".join(lines + ["", t("gateway.bundles.invoke_hint")])
 
     def _blocking_approval_or_stale(self, event: MessageEvent, stale_key: str, none_key: str,
-                                    resolve_all: bool = False):
+                                    resolve_all: bool = False, choice: str = "once"):
         """``(session_key, None, request_ids)`` when an agent thread is blocked on approval and the
-        sender may answer the approvals this command selects, else ``(session_key, reply, [])``.
+        sender may answer the approvals this command selects (*choice* names its ``/approve`` or
+        ``/deny`` for the chat's slash policy: the bare-word "always" lands here without dispatch's
+        gate), else ``(session_key, reply, [])``.
         A pending-approvals entry with no blocked thread is a stale prompt: drop it and say so."""
         from tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
@@ -1205,8 +1207,8 @@ class GatewaySlashCommandsMixin(
             from gateway.approval_actor import answerable_request_ids, refusal_text
             from gateway.slash_access import policy_for_runner_source
             ids, requester = answerable_request_ids(
-                session_key, event.sender_id(), resolve_all=resolve_all,
-                admin_ids=policy_for_runner_source(self, event.source).admin_user_ids)
+                session_key, event.sender_id(), resolve_all=resolve_all, choice=choice,
+                admin_ids=policy_for_runner_source(self, event.source))
             return (session_key, refusal_text(requester), []) if requester else (session_key, None, ids)
         _approval_state = self._peek_session_state(session_key)
         if _approval_state is not None and _approval_state.persistent.approvals is not None:
@@ -1248,7 +1250,7 @@ class GatewaySlashCommandsMixin(
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
         session_key, stale, request_ids = self._blocking_approval_or_stale(
-            event, "gateway.deny.stale", "gateway.deny.no_pending", resolve_all=resolve_all)
+            event, "gateway.deny.stale", "gateway.deny.no_pending", resolve_all=resolve_all, choice="deny")
         if stale:
             return stale
         reason = (raw_args[len(tokens[0]):].strip() if resolve_all else raw_args)[:280].strip()

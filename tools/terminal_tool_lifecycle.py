@@ -340,6 +340,6 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
             env = _active_environments.pop(key, None)
             _last_activity.pop(key, None)
             if env is not None:
-                evicted.append(env)
-    for env in evicted:
-        _teardown_env(env, task_id or "", done_msg="Evicted degraded environment for task: %s")
+                evicted.append((key, env))
+    for key, env in evicted:
+        _teardown_env(env, key, done_msg="Evicted degraded environment for task: %s")

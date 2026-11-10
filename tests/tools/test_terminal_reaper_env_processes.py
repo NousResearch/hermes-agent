@@ -267,36 +267,20 @@ def test_poller_seeing_exit_after_teardown_settled_the_process_keeps_the_settled
     assert _receipt(session) == lost
 
 
-class _ReleaseHook:
-    """Wraps a lock; runs ``hook`` once, right after the next release."""
-
-    def __init__(self, lock, hook):
-        self._inner, self._hook = lock, hook
-
-    def __enter__(self):
-        return self._inner.__enter__()
-
-    def __exit__(self, *exc):
-        result = self._inner.__exit__(*exc)
-        hook, self._hook = self._hook, None
-        if hook is not None:
-            hook()
-        return result
-
-
 def test_settlement_keeps_a_success_published_after_its_snapshot(registry, env):
     """The process exits on its own between settlement's snapshot of running sessions and its
     finish call. The success is published and durable; settlement must not turn it into lost."""
     session = _background(registry, env)
-    lock = registry._lock
+    real_finish = registry._finish_exited
     natural = []
 
-    def natural_exit():
-        registry._lock = lock
-        registry._finish_exited(session, 0)
-        natural.append(session.id in registry._finished)
+    def finish_after_natural_exit(s, *args, **kwargs):
+        if not natural:  # the process exits on its own right before settlement's finish call
+            real_finish(s, 0)
+            natural.append(s.id in registry._finished)
+        return real_finish(s, *args, **kwargs)
 
-    registry._lock = _ReleaseHook(lock, natural_exit)
+    registry._finish_exited = finish_after_natural_exit
     settled = registry.settle_env_closed(env)
 
     success = (0, "exited", "")

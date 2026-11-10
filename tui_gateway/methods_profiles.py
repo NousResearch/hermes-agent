@@ -328,7 +328,7 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5062, str(e))
     return _ok(rid, {"ok": True, "name": name, "path": str(result.path), "soul_written": soul is not None,
-                     "model_set": result.model_set, "mirrored": result.mirrored})
+                     "model_set": result.model_set, "mirrored": result.mirrored, "warnings": result.warnings})
 
 
 @_profile_handler("profiles.describe", 5063)

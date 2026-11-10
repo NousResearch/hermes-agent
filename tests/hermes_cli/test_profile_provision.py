@@ -91,6 +91,9 @@ def test_a_named_launch_profiles_subscription_login_is_not_copied_and_says_so(la
     result = provision_profile(ProfileCreateRequest(name="child"))
     assert "anthropic" not in (result.path / "auth.json").read_text()
     assert any("subscription logins not carried over (anthropic)" in w for w in result.warnings)
+    from tui_gateway import server
+    rpc = server._methods["profiles.create"](1, {"name": "child2", "no_alias": True})["result"]
+    assert any("anthropic" in w for w in rpc["warnings"])
 
 
 def test_shared_logins_with_no_launch_auth_json_still_report_shared(launch):
@@ -234,4 +237,8 @@ def test_the_cli_does_not_say_no_keys_when_it_copied_them(launch, capsys):
     # --clone-from without --clone clones the source's .env, so it has keys too.
     profile_cmd._profile_create(_cli_args("cf", "--no-alias", "--clone-from", "keys"))
     assert "no API keys yet" not in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        profile_cmd._profile_create(_cli_args("cn", "--no-alias", "--clone", "--no-credentials"))
+    assert "cannot be combined" in capsys.readouterr().err
+    assert not (launch / "profiles" / "cn").exists()
 

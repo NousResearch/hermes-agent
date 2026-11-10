@@ -220,6 +220,7 @@ class ProfilesCreateResult(Result):
     soul_written: bool = False
     model_set: bool = False
     mirrored: ProfileMirrored
+    warnings: list[str] = []  # best-effort steps that did not fully apply (create still succeeded)
 
 
 method("profiles.create", params=ProfilesCreateParams, result=ProfilesCreateResult,

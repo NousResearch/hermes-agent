@@ -2473,6 +2473,8 @@ export const csOverrides = {
       updateTitle: 'Dostupná aktualizace motoru',
       updateDetail: (next, current) =>
         `Nejnovější sestavení llama.cpp (${next}) je připraveno k instalaci; používáte ${current}. Modely lze používat i během stahování.`,
+      updateSameBuildDetail: tag =>
+        `Hermes teď přibalí llama.cpp ${tag} včetně souborů, které potřebuje ke spuštění. Aktualizace stáhne motor znovu; modely fungují i během stahování.`,
       updateAction: 'Aktualizovat motor',
       updating: 'Aktualizace motoru…',
       upToDateTitle: 'Motor je aktuální',
@@ -3008,7 +3010,8 @@ export const csOverrides = {
         signinsImportedTitle: 'Přihlášení v prohlížeči aplikace',
         signinsImported: count =>
           `Prohlížeč aplikace byl přihlášen pomocí ${count} ${count === 1 ? 'souboru' : 'souborů'} cookie z vašeho profilu prohlížeče.`,
-        signinsRemote: 'Tento backend běží na jiném počítači, takže se jeho profil prohlížeče do prohlížeče aplikace neimportuje.',
+        signinsRemote:
+          'Tento backend běží na jiném počítači, takže se jeho profil prohlížeče do prohlížeče aplikace neimportuje.',
         signinsFailed: 'Přihlášení se nepodařilo importovat do prohlížeče aplikace',
         prompt: {
           title: 'Zůstaňte přihlášeni na svých stránkách',
@@ -6950,6 +6953,7 @@ export const csOverrides = {
     moreToExplore: 'Další k objevování',
     moreToExploreBlurb: 'Menší kouty katalogu na jednom místě.',
     mostStarred: 'Nejvíce hvězd',
+    mostUsed: 'Nejpoužívanější',
     newest: 'Nejnovější',
     nextSlide: 'Další doporučený',
     noResults: 'Žádné výsledky',
@@ -7023,6 +7027,8 @@ export const csOverrides = {
     },
     tryAnother: 'Zkuste jiné hledání, nebo zrušte filtry.',
     updatedDate: 'Aktualizováno',
+    updateAvailable: 'Aktualizace',
+    updatesAvailable: count => `Aktualizace · ${count}`,
     version: 'Verze',
     install: 'Nainstalovat'
   },

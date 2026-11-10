@@ -1,7 +1,7 @@
 name: fledge
 title: Fledge
 repo: https://github.com/12burb/hermes-fledge
-sha: ac65b416d34381acba8642133cfa1d286e052028
+sha: 4fa935b5bd3dce420c8266c4b2ebce3c13414fec
 version: "0.1.0"
 description: >-
   Skills have to earn their wings. Before Hermes saves or rewrites a skill, Fledge checks what actually
@@ -21,7 +21,7 @@ description: >-
   for approval on skill_manage only and lets the write through on its own errors (a write already queued
   for review stays held); reads hook payloads (tool statuses
   and error text, the first 280 characters of the next user message) and skill folders to fingerprint
-  them; writes its own SQLite under plugin-data/fledge (skill names, fingerprints, verdict reasons,
+  them; writes its own SQLite under each profile's plugin-data/fledge (skill names, fingerprints, verdict reasons,
   session/turn ids; reasons quote the matched correction phrase and up to 80 characters of a tool error,
   hold summaries the skill's one-line description; no other message text, no skill bodies), held writes
   into pending/skills/, and archives
@@ -29,11 +29,11 @@ description: >-
   and tools.skill_usage (the functions behind /skills pending and hermes curator archive/lock) because no
   public seam exists yet, each guarded; no network, no model calls, no credentials, no shell commands,
   never approves anything. Needs plugins.isolation in_process to tell background-review writes from
-  foreground ones. Measured on 2026-11-05: 150 tests passed on Python 3.14 and 3.11; `hermes plugins validate`
-  passes on Hermes 0.23.0 and 0.22.7 with only the private-import warnings above; live sessions with a real
+  foreground ones. Measured on 2026-11-10: 153 tests passed on Python 3.14 and 3.11; `hermes plugins validate`
+  passes on Hermes 0.23.1, 0.23.0 and 0.22.7 with only the private-import warnings above; live sessions with a real
   model in isolated HERMES_HOMEs (bad-run hold, approve onto probation, grounding after a correction,
   hand-edit proposal and approval prompt, watch mode, 13 clean writes with 0 holds, fail-open under a locked
-  database) in VALIDATION.md, raw output in tests/smoke-2026-11-05.txt.
+  database) in VALIDATION.md, raw output in tests/smoke-2026-11-05.txt and tests/profiles-2026-11-10.txt.
 maintainer: 12burb
 tier: community
 category: tools

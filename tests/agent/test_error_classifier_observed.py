@@ -62,6 +62,17 @@ OBSERVED = [
     ("router-no-workers", "custom", _status(openai.InternalServerError, 500, {"error": {
         "message": "No available workers (all circuits open or unhealthy)"}}),
      FailoverReason.server_error, True, False),
+    # DashScope stamps its per-minute token throttle with the billing code ``insufficient_quota`` (#151622);
+    # OpenAI's own ``insufficient_quota`` 429 is a real billing wall and stays one.
+    ("dashscope-429-tpm-throttle", "alibaba-token-plan-cn", _status(openai.RateLimitError, 429, {"error": {
+        "message": "Allocated quota exceeded, please increase your quota limit. For details, see: "
+                   "https://www.alibabacloud.com/help/en/model-studio/error-code#token-limit",
+        "type": "insufficient_quota", "code": "insufficient_quota"}}),
+     FailoverReason.rate_limit, True, True),
+    ("openai-429-insufficient-quota", "openai", _status(openai.RateLimitError, 429, {"error": {
+        "message": "You exceeded your current quota, please check your plan and billing details.",
+        "type": "insufficient_quota", "param": None, "code": "insufficient_quota"}}),
+     FailoverReason.billing, False, True),
 ]
 
 

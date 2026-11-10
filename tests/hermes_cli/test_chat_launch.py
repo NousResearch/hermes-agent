@@ -1,6 +1,9 @@
 """``hermes_cli.chat_launch``: what a plugin's own chat launcher calls around its client process."""
+import json
 import os
 import subprocess
+
+import pytest
 
 from hermes_cli.main import PROJECT_ROOT
 
@@ -40,3 +43,29 @@ def test_hermes_command_runs_this_install_without_pythonpath(tmp_path):
     assert child.returncode == 0, child.stderr
     assert child.stdout.startswith('Hermes Agent v')
     assert f'Install directory: {PROJECT_ROOT}\n' in child.stdout
+
+
+@pytest.mark.platforms('windows')  # only Windows publishes the launcher as hermes.exe or hermes.cmd
+def test_hermes_command_starts_with_a_file_windows_can_start(tmp_path, monkeypatch):
+    from hermes_cli import main
+    from hermes_cli.chat_launch import hermes_command
+    store = tmp_path / 'store'
+    python = store / 'py' / 'python.exe'
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b'')
+    (store / 'facts.json').write_text(json.dumps({'packages': {'python': {'entry': 'py'}}}), encoding='utf-8')
+    monkeypatch.setenv('HERMES_RUNTIME_DIR', str(store))
+    launchers = tmp_path / 'install' / '.hermes' / 'bin'
+    launchers.mkdir(parents=True)
+    monkeypatch.setattr(main, 'PROJECT_ROOT', tmp_path / 'install')
+
+    # Only the batch fallback is published: no child process starts it without a shell.
+    (launchers / 'hermes.cmd').write_text('@echo off\r\n', encoding='utf-8')
+    command = hermes_command(['--version'])
+    assert os.path.samefile(command[0], python)
+    assert command[-1] == '--version'
+
+    (launchers / 'hermes.exe').write_bytes(b'MZ')
+    command = hermes_command(['--version'])
+    assert os.path.samefile(command[0], launchers / 'hermes.exe')
+    assert command[1:] == ['--version']

@@ -1166,31 +1166,58 @@ Three imports do what the Hermes terminal client's launcher does around its own 
 
 - `hermes_cli.gateway_chat.shell_client_env()` returns the allowlisted variables of the shell that ran your command, as a dict. Call it in the launcher, before you change the environment, and send the dict as `client_env` on `session.create`. The session's commands then run with the user's `PATH`, virtual environment and toolchain variables. Names that look like credentials are left out, and the gateway filters the dict again by its own rules.
 - `hermes_cli.chat_launch.hermes_command(args)` returns the argv that runs this Hermes install with `args`. It needs no `PYTHONPATH`; the child serves the profile named by the inherited `HERMES_HOME`. Give it to your frontend for `hermes gateway attach`, instead of `hermes` from `PATH` (which may be another install) or `sys.executable` (which an update may replace).
-- `hermes_cli.chat_launch.print_exit_summary(session_id, command=...)` prints the lines Hermes shows when a chat ends: how to resume the session, its id, title, message count and tokens. Call it after your frontend exits, with your own command name. It prints nothing for a session with no messages.
+- `hermes_cli.chat_launch.print_exit_summary(session_id, command=...)` prints the lines Hermes shows when a chat ends: how to resume the session, its id, title, message count and tokens. Call it after your frontend exits, with your own command name. It prints nothing for a session with no messages. The lines name two ways to resume, `--resume <id>` (a short id) and `-c "<title>"`, so your command must accept both.
 
 ```python
 import json
 import os
 import subprocess
+import tempfile
+
+
+def _arguments(parser):
+    # The exit summary prints `hermes my-client --resume <id>` and `hermes my-client -c "<title>"`.
+    parser.add_argument("--resume", "-r", metavar="ID")
+    parser.add_argument("--continue", "-c", dest="title", metavar="TITLE")
+
+
+def _session_to_resume(args):
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+    try:
+        if args.resume:
+            return db.resolve_session_id(args.resume)  # the summary prints a short id
+        return db.resolve_session_by_title(args.title) if args.title else None
+    finally:
+        db.close()
 
 
 def _run_chat(args):
     from hermes_cli.chat_launch import hermes_command, print_exit_summary
     from hermes_cli.gateway_chat import shell_client_env
-    from hermes_constants import get_hermes_home
 
     env = dict(os.environ)
     env["MY_CLIENT_ENV"] = json.dumps(shell_client_env())
     env["MY_ATTACH_COMMAND"] = json.dumps(hermes_command(["gateway", "attach", "--json", "--start"]))
-    session_file = str(get_hermes_home() / "my-client-session.json")
-    env["MY_SESSION_FILE"] = session_file  # the frontend writes {"session_id": ...} here
-    subprocess.run(["my-client"], env=env)
-    with open(session_file, encoding="utf-8") as f:
-        print_exit_summary(json.load(f)["session_id"], command="hermes my-client")
+    env["MY_RESUME"] = _session_to_resume(args) or ""  # the frontend sends it with session.resume
+    # One file for this launch: the frontend writes {"session_id": ...} there for the session it shows.
+    fd, session_file = tempfile.mkstemp(prefix="my-client-", suffix=".json")
+    os.close(fd)
+    env["MY_SESSION_FILE"] = session_file
+    try:
+        subprocess.run(["my-client"], env=env)
+        with open(session_file, encoding="utf-8") as f:
+            shown = f.read()
+    finally:
+        os.unlink(session_file)
+    if shown:  # empty when the client left before it opened a session
+        print_exit_summary(json.loads(shown)["session_id"], command="hermes my-client")
 
 
 def register(ctx):
-    ctx.register_cli_command("my-client", "Chat in my client", lambda parser: None, _run_chat)
+    ctx.register_cli_command("my-client", "Chat in my client", _arguments, _run_chat)
 ```
 
 ## Calling MCP servers from plugins

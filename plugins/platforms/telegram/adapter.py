@@ -4416,15 +4416,22 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             if data.startswith(prefixes):
                 chat_id = str(query.message.chat_id) if query.message else None
                 # One auth gate for every chat-id picker: strangers in a shared group must not drive the owner's picker.
-                if chat_id and await self._callback_authorized(query, cb, _unauthorized()):
-                    await handler(query, data, chat_id)
+                if chat_id:
+                    from gateway.run import _async_profile_runtime_scope
+                    async with _async_profile_runtime_scope(self._update_receipt_dir):
+                        if await self._callback_authorized(query, cb, _unauthorized()):
+                            await handler(query, data, chat_id)
                 return
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
             ("update_prompt:", self._handle_update_prompt_callback)):
             if data.startswith(prefix):
-                await handler(query, data, cb)
+                # Callback rendering (especially Approved/Denied labels) belongs
+                # to this Telegram bot, not the multiplexer launch profile.
+                from gateway.run import _async_profile_runtime_scope
+                async with _async_profile_runtime_scope(self._update_receipt_dir):
+                    await handler(query, data, cb)
                 return
         logger.debug("[%s] unhandled callback query (data=%r)", self.name, data[:64])
         await answer_callback(query)  # no handler owns it (stale build, data-less game tap): ack anyway or it spins (#78788)

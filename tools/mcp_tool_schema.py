@@ -103,8 +103,10 @@ def _repair_object_shape(node, *, _object_root=False, _branch=False):
         if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
             # A schema map (entry name -> schema), never a schema node itself: recursing over
             # the whole map would inject a bogus ``"type": "object"`` *entry* when one of its
-            # keys is literally named ``properties``/``required`` (#110530).
-            repaired[key] = {name: _repair_object_shape(schema) for name, schema in value.items()}
+            # keys is literally named ``properties``/``required`` (#110530). ``dependentSchemas``
+            # entries constrain the same instance as their parent, so they are branches.
+            repaired[key] = {name: _repair_object_shape(schema, _branch=key == "dependentSchemas")
+                             for name, schema in value.items()}
         else:
             repaired[key] = _repair_object_shape(value, _branch=key in _BRANCH_KEYS)
     # Constraint fragments are returned untouched: repairing them is what destroys them.

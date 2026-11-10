@@ -34,6 +34,7 @@ def _adapter() -> TelegramAdapter:
 def _text(text: str, user_id: int = 1):
     msg = _make_message()
     msg.text, msg.caption, msg.from_user.id = text, None, user_id
+    msg.reply_to_message = None  # a MagicMock attribute reads as a reply with undownloadable media
     return msg
 
 
@@ -46,6 +47,7 @@ def _slow_photo(release: asyncio.Event, user_id: int = 1):
     file_obj.download_as_bytearray = AsyncMock(side_effect=download)
     msg = _make_message(photo=[_make_photo(file_obj)])
     msg.from_user.id = user_id
+    msg.reply_to_message = None
     return msg
 
 

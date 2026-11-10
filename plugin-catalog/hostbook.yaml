@@ -2,14 +2,7 @@ name: hostbook
 title: hostbook
 repo: https://github.com/Timidan/hostbook
 sha: 4d4630f0a60254ac6941103c3d028b2c1f994985
-description: >-
-  A dashboard for the machines and services on your home network, inside Hermes, plus tools so
-  Hermes can check and fix them from chat under a rule per machine (read only, asks before
-  changes, open). Disclosure: connects over SSH, with the user's existing keys or ssh-agent,
-  only to machines the user adds, and stores key paths, never keys. Runs scripts there when
-  asked in chat, after hostbook's per-machine rules and Hermes's approvals. Fixed read-only
-  scans run from the dashboard and as a no-agent Hermes cron job (hostbook-scan). One model
-  call only when the user clicks "Get AI help". No telemetry.
+description: "A dashboard for the machines and services on your home network, inside Hermes, plus tools so Hermes can check and fix them from chat under a rule per machine (read only, asks before changes, open). Disclosure — Connects over SSH (your existing keys or ssh-agent, accepting a new machine's host key on first connect) only to machines you add, and runs scripts there when asked in chat, after hostbook's per-machine rules and Hermes's approvals; can create a no-agent Hermes cron job (hostbook-scan) for scheduled read-only scans when you turn scheduling on; its pre_tool_call hook can block or require approval for other tools that use ssh or touch hostbook's files; keeps the last 20 chat sender ids locally for the setup page; one model call only when you click \"Get AI help\". No telemetry."
 maintainer: Timidan
 tier: community
 category: tools

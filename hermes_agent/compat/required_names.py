@@ -15,6 +15,9 @@ their canaries. Kinds:
 
 Comments: the releases that reach the name, and one caller. Plain literals, importable on Python 3.11.
 
+Two names are here for people, not releases: the documentation tells users to run ``python cli.py``
+and to drop a provider file into ``providers/``.
+
 ``REQUIRED_TEXT``: text a release searches for in the file at the old path. The shim carries it in a
 comment. The text is fixed by the releases that read it.
 """
@@ -30,6 +33,7 @@ REQUIRED_NAMES: dict[str, str] = {
     "hermes_cli.local_runtime": "package",  # parent of hermes_cli.local_runtime.processes
     "hermes_cli.observability": "package",  # parent of hermes_cli.observability.shared_metrics_disabled
     "plugins": "package",  # fresh processes: -m, launchers, service units
+    "providers": "package",  # fresh processes: `import providers`; documented drop-in folder providers/<name>.py
     "tools": "package",  # fresh processes: -m, launchers, service units
     "tui_gateway": "package",  # fresh processes: -m, launchers, service units
     "agent.delegation_context": "module",  # v0.22.7..v0.23.0: tools/environments/local.py:307@v0.23.0
@@ -41,6 +45,7 @@ REQUIRED_NAMES: dict[str, str] = {
     "agent.shell_hooks": "module",  # v0.21.6..v0.22.6: hermes_cli/plugins.py:1260@v0.22.6
     "agent.skill_utils": "module",  # v0.22.7..v0.23.0: hermes_cli/profiles.py:812@v0.23.0
     "agent.terminal_env_registry": "module",  # v0.22.7..v0.23.0: tools/environments/local_env_policy.py:405@v0.23.0
+    "cli": "module",  # documented user command: `python cli.py` (README, /toolsets help text)
     "gateway.config": "module",  # v0.22.7..v0.23.0: hermes_cli/gateway_multiplex_mode.py:64@v0.23.0
     "gateway.config_env": "module",  # v0.21.6..v0.23.0: gateway/config.py:891@v0.23.0
     "gateway.config_loader": "module",  # v0.21.6..v0.23.0: gateway/config.py:831@v0.23.0

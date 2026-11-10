@@ -1,0 +1,25 @@
+ame: hermes-tv
+title: Hermes TV
+repo: https://github.com/helenn-szn/hermes-tv
+sha: 0423785699fb856bceb2beed1b49e451f3cc97a9
+version: "0.1.2"
+description: "Give Hermes your smart TV: from any chat, show messages, photos, charts, videos and web pages full-screen, make announcements out loud, play YouTube (from a link or just a description), pop up notifications, and control volume, apps and power on webOS TVs (LG and webOS Hub TVs) on your Wi-Fi. Includes /tv commands, a Desktop status-bar chip and a TV remote page. Disclosure — talks to the TV over the local network (WebSocket on ports 3001/3000, accepting the TV's self-signed certificate) and finds it with SSDP multicast; one internet request only when asked to play a described video (YouTube's public search page, search words only); no telemetry, no accounts; stores the TV's pairing key, address and model in HERMES_HOME/plugin-data/hermes-tv/tv.json (/tv forget deletes it); runs a temporary local web server (default port 8765, LAN) that serves only items Hermes was asked to show, under random paths, and stops after idle_minutes (default 15); runs the computer's built-in text-to-speech (PowerShell System.Speech on Windows, say on macOS, espeak-ng on Linux) with text passed via an environment variable; background threads only for that server and the optional notify_on_finish pop-up (off by default); TV requests time out after 10s and pairing after 60s."
+maintainer: helenn-szn
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/helenn-szn/hermes-tv#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - tv_show
+    - tv_say
+    - tv_youtube
+    - tv_notify
+    - tv_control
+    - tv_status
+  provides_hooks:
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

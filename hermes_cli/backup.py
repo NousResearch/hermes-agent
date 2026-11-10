@@ -2022,7 +2022,11 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     def _publish_path() -> Optional[Path]:
         # Decide clean/salvage/discard once; the post-publish stat and return reuse it.
         nonlocal published
-        if not errors and len(vanished) <= vanish_budget:
+        if len(errors) + len(vanished) >= len(files_to_add):
+            # Nothing survived the read (all failed, or all vanished inside the churn budget):
+            # publishing here would replace the last good backup with an empty archive.
+            published = None
+        elif not errors and len(vanished) <= vanish_budget:
             published = out_path
         elif len(errors) < len(files_to_add):
             published = salvage_path
@@ -2043,7 +2047,8 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         return None
 
     if published is None:
-        logger.warning("Full-zip backup: every entry failed, nothing salvaged: %s", _capped_errors())
+        logger.warning("Full-zip backup: nothing survived the read, previous archive kept: "
+                       "errors=%s vanished=%d", _capped_errors(), len(vanished))
         return None
     zip_size = published.stat().st_size
     if published != out_path:

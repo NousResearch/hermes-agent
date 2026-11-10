@@ -196,3 +196,29 @@ def test_automatic_backup_salvages_when_too_many_files_vanish(tmp_path, monkeypa
     assert backup_mod._write_full_zip_backup(archive, home) is None
     assert not archive.exists()
     assert (tmp_path / "automatic.incomplete.zip").exists()
+
+
+def test_automatic_backup_keeps_previous_archive_when_every_entry_vanishes(
+        tmp_path, monkeypatch) -> None:
+    """The allowance is about churn, not about archiving nothing at all.
+
+    `vanish_allowance(n)` is at least 5, so a small tree whose every entry disappears between
+    the scan and the read stays inside the budget. Publishing that run at `out_path` would
+    replace the last good backup with an empty archive — the failure must stay a no-op.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    for i in range(3):
+        (home / f"gone-{i}.txt").write_text("x", encoding="utf-8")
+    archive = tmp_path / "automatic.zip"
+    archive.write_bytes(b"previous-good-backup")
+
+    def vanish_everything(zf, path, arcname):
+        raise FileNotFoundError(2, "No such file or directory", str(path))
+
+    monkeypatch.setattr(backup_zip_mod, "_write_zip_file", vanish_everything)
+
+    assert backup_mod._write_full_zip_backup(archive, home) is None
+    assert archive.read_bytes() == b"previous-good-backup"
+    assert not (tmp_path / "automatic.incomplete.zip").exists()
+    assert list(tmp_path.glob(".*.partial")) == []

@@ -53,6 +53,8 @@ class LiveSession:
     # The messaging ingress tells the platform user once per pause episode (unknown head,
     # preflight refusal), not per message; the drain clears it when the FIFO moves again.
     pause_notified: bool = False
+    # Failed-delegation wakes run in a row with no viewer (session_completion_notes.UNATTENDED_WAKE_LIMIT).
+    unattended_wakes: int = 0
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Held by the FIFO claim and by compress across its summarization (which runs outside
     # ``mutation_lock``, so admissions are not parked behind an LLM call): no turn is claimed

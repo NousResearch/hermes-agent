@@ -1,6 +1,6 @@
 """``resolve-profile``: the control socket names the gateway that serves a profile home and how to dial it.
 
-Part of the public local control-socket contract (``website/docs/developer-guide/gateway-internals.md``,
+Part of the public local control-socket contract (``apps/docs/content/en/developer-guide/gateway-internals.md``,
 "Local control socket"). The answer is built from the discovery primitives ``hermes gateway attach``
 runs, applied to the descriptor this gateway's ``identify`` verb answers with, so a client that asks
 here gets the verdict ``discover_gateway_endpoint`` gives. It carries no credential: the ticket comes

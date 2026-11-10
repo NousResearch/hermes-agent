@@ -159,7 +159,7 @@ def test_plugin_guide_session_identity_example_validates_clean(tmp_path):
     import ast
     import re
 
-    guide = Path(__file__).resolve().parents[2] / "website/docs/developer-guide/plugins/index.md"
+    guide = Path(__file__).resolve().parents[2] / "apps/docs/content/en/developer-guide/plugins/index.md"
     blocks = [b for b in re.findall(r"```python\n(.*?)```", guide.read_text(encoding="utf-8"), re.DOTALL)
               if "get_session_env" in b]
     assert blocks, "plugins/index.md shows no code example importing get_session_env"
@@ -226,4 +226,4 @@ def test_public_api_docs_page_is_generated_from_the_data_file():
     gen = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gen)
 
-    assert gen.check() == 0, "website/docs/developer-guide/plugins/public-api.md is stale"
+    assert gen.check() == 0, "apps/docs/content/en/developer-guide/plugins/public-api.md is stale"

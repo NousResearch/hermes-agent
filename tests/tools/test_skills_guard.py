@@ -1,6 +1,7 @@
 """Tests for tools/skills_guard.py - security scanner for skills."""
 
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -485,7 +486,9 @@ class TestScanSkill:
             'load_dotenv(hermes_home_env_path)\n'
             # A Hermes name after the call's closing paren is not one of its arguments.
             'load_dotenv("./project.env")  # independent of HERMES_HOME\n'
-            'load_dotenv("./project.env"); home = get_hermes_home()\n', encoding="utf-8")
+            'load_dotenv("./project.env"); home = get_hermes_home()\n'
+            # A paren inside a string argument does not end the call's arguments early.
+            'load_dotenv("./project(.env")  # independent of HERMES_HOME\n', encoding="utf-8")
         result = scan_skill(skill_dir, source="community")
         hits = {(fi.file, fi.line, fi.severity) for fi in result.findings if fi.pattern_id == "hermes_env_dotenv"}
         # Prose that quotes the call is flagged too: a caution the user confirms, not a hard block.
@@ -511,7 +514,16 @@ class TestScanSkill:
             'g = os.getenv("CLAUDE_CODE_OAUTH_TOKEN")\n'
             # A call-shaped provider read in a trailing comment or inside a string is not a read.
             'h = os.getenv("TENOR_API_KEY")  # Unlike os.getenv("OPENAI_API_KEY")\n'
-            'i, doc = os.getenv("TENOR_API_KEY"), "see os.getenv(\'OPENAI_API_KEY\')"\n', encoding="utf-8")
+            'i, doc = os.getenv("TENOR_API_KEY"), "see os.getenv(\'OPENAI_API_KEY\')"\n'
+            # An f-string's replacement field is code, so the usual auth-header form is a read; the same
+            # text in a plain string is not.
+            'header = f"Bearer {os.getenv(\'OPENAI_API_KEY\')}"\n'
+            'j, doc = os.getenv("TENOR_API_KEY"), "Bearer {os.getenv(\'OPENAI_API_KEY\')}"\n', encoding="utf-8")
+        # A script that does not tokenize falls back to the whole line.
+        (skill_dir / "broken.py").write_text('k = os.getenv("OPENROUTER_API_KEY")\nx = (\n', encoding="utf-8")
+        # Outside .py files the whole line counts: Python run from a shell string is still a read.
+        (skill_dir / "run.sh").write_text(
+            'python3 -c "import os; print(os.getenv(\'OPENROUTER_API_KEY\'))"\n', encoding="utf-8")
         result = scan_skill(skill_dir, source="community")
         by_line = {fi.line: (fi.pattern_id, fi.severity) for fi in result.findings if fi.file == "run.py"}
         assert by_line[1] == ("provider_key_env_read", "high")
@@ -519,13 +531,33 @@ class TestScanSkill:
         assert by_line[3] == ("python_getenv_secret", "medium")
         assert by_line[4] == by_line[5] == ("python_getenv_secret", "medium")
         assert by_line[6] == ("python_environ_get_secret", "medium")
-        assert by_line[7] == by_line[8] == by_line[9] == ("python_getenv_secret", "medium")
+        assert by_line[7] == by_line[8] == by_line[9] == by_line[11] == ("python_getenv_secret", "medium")
+        assert by_line[10] == ("provider_key_env_read", "high")
+        assert {(fi.line, fi.pattern_id, fi.severity) for fi in result.findings if fi.file == "run.sh"} == {
+            (1, "provider_key_env_read", "high")}
+        assert [(fi.line, fi.pattern_id) for fi in result.findings if fi.file == "broken.py"] == [
+            (1, "provider_key_env_read")]
         assert result.verdict == "caution"
         # The rules are skill-only: a plain file scan (what plugin_guard uses) keeps the medium read.
         plain = {fi.line: fi.pattern_id for fi in scan_file(skill_dir / "run.py", "run.py")}
         assert plain == {1: "python_getenv_secret", 2: "python_environ_get_secret", 3: "python_getenv_secret",
                          4: "python_getenv_secret", 5: "python_getenv_secret", 6: "python_environ_get_secret",
-                         7: "python_getenv_secret", 8: "python_getenv_secret", 9: "python_getenv_secret"}
+                         7: "python_getenv_secret", 8: "python_getenv_secret", 9: "python_getenv_secret",
+                         10: "python_getenv_secret", 11: "python_getenv_secret"}
+
+    def test_provider_key_scan_is_linear_in_line_length(self, tmp_path):
+        """A script is tokenized once, so a long line of reads (under the 256 KB file cap) scans fast
+        instead of re-walking the line from column 0 for every read."""
+        skill_dir = tmp_path / "long-line-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
+        (skill_dir / "run.py").write_text(
+            "import os\n" + 'k = os.getenv("OPENROUTER_API_KEY"); ' * 5000 + "\n", encoding="utf-8")
+        start = time.perf_counter()
+        result = scan_skill(skill_dir, source="community")
+        assert time.perf_counter() - start < 2
+        assert {(fi.line, fi.pattern_id) for fi in result.findings if fi.file == "run.py"} == {
+            (2, "provider_key_env_read")}
 
 
 # ---------------------------------------------------------------------------

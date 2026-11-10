@@ -17,7 +17,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
-from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, raise_provider_key_reads
+from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 
 
 SCANNER_VERSION = "skills-guard-v11"
@@ -713,9 +713,11 @@ def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> li
     traversal_lines = _mask_prose_link_destinations(lines) if file_path.suffix.lower() == ".md" else lines
     suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
     patterns = _COMPILED_THREAT_PATTERNS + (SKILL_ONLY_PATTERNS if skill else [])
+    views = code_views(lines) if skill and suffix == ".py" else None  # tokenized: code vs comment/string
     for pattern, pid, severity, category, description in patterns:
         for i, line in enumerate(lines, start=1):
-            scan_line = traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS else line
+            scan_line = (traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS
+                         else views[0][i - 1] if views and pid == "hermes_env_dotenv" else line)
             if i not in docstring_lines and pattern.search(scan_line):
                 text = line.strip()
                 line_severity, line_description = _demote_inert_path_reference(
@@ -723,7 +725,7 @@ def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> li
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))
     if skill:
-        raise_provider_key_reads(findings, lines)
+        raise_provider_key_reads(findings, lines, views[1] if views else None)
     for i, line in enumerate(lines, start=1):
         if (char := next((c for c in INVISIBLE_CHARS if c in line), None)) is not None:
             name = _unicode_char_name(char)

@@ -89,7 +89,17 @@ def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
             return None
         return pending if isinstance(pending, str) and pending.strip() else None
 
-def interrupt_subagent(subagent_id: str) -> bool:
+def request_subagent_stop(agent: Any, subagent_id: str, *, by: str = "user") -> bool:
+    """Hard-interrupt one live child on purpose and stamp who asked (``user``: Stop button, /agents overlay,
+    subagent.interrupt RPC; ``parent``: the owning model's delegate_task(action='stop')). Without the cause a
+    parent reads the bare ``interrupted`` entry as a failed task and spawns a replacement for work the user just
+    cancelled (kilocode#14701 measured 7/7 re-dispatches without it, 0/5 with it). The stamp lives on the child,
+    not the interrupt state (which the loop clears on every exit path), so ``_build_result_entry`` always sees it."""
+    agent._delegate_stopped_by = by
+    return bool(request_hard_interrupt(agent, f"Interrupted via TUI ({subagent_id})"))
+
+
+def interrupt_subagent(subagent_id: str, *, by: str = "user") -> bool:
     """Request that one running subagent stop at its next iteration boundary
     (cooperative: the flag propagates to in-flight tools and recurses into
     grandchildren via AIAgent.interrupt()). True iff a matching subagent was found."""
@@ -99,7 +109,7 @@ def interrupt_subagent(subagent_id: str) -> bool:
     if agent is None:
         return False
     try:
-        return bool(request_hard_interrupt(agent, f"Interrupted via TUI ({subagent_id})"))
+        return request_subagent_stop(agent, subagent_id, by=by)
     except Exception as exc:
         logger.debug("interrupt_subagent(%s) failed: %s", subagent_id, exc)
         return False
@@ -285,7 +295,7 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
     if outcome is None:
         return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, or stop.")
     status, note, failure = outcome
-    ok = interrupt_subagent(sid) if action == "stop" else steer_subagent(sid, message.strip())
+    ok = interrupt_subagent(sid, by="parent") if action == "stop" else steer_subagent(sid, message.strip())
     if ok:
         return json.dumps({"action": action, "subagent_id": sid, "status": status, "note": note}, ensure_ascii=False)
     return tool_error(failure.format(sid=sid))

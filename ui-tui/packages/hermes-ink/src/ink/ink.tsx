@@ -2540,6 +2540,11 @@ export default class Ink {
 
     if (this.options.stdout.isTTY) {
       if (this.altScreenActive) {
+        // The kitty keyboard stack is per screen: pop it while the alt screen
+        // is still active. Popping after leaving it lands on the main screen
+        // and leaves the alt screen's flags behind (#56759).
+        writeSync(1, DISABLE_KITTY_KEYBOARD)
+
         // <AlternateScreen>'s unmount effect won't run during signal-exit.
         // Exit alt screen FIRST so other cleanup sequences go to the main screen.
         writeSync(1, EXIT_ALT_SCREEN)

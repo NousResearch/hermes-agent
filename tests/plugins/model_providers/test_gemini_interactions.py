@@ -241,6 +241,66 @@ def test_stream_error_event_raises(gemini, config):
     assert raised.value.status_code == 503
 
 
+def _message_signatures(chunks):
+    """Message-level (text) signatures a stream carried, in order."""
+    return [c.choices[0].delta.extra_content["google"]["thought_signature"] for c in chunks if c.choices[0].delta.extra_content]
+
+
+THOUGHT_TEXT_THOUGHT_CALL = [
+    {"type": "thought", "signature": SIG_A}, {"type": "model_output", "content": [{"type": "text", "text": "checking"}]},
+    {"type": "thought", "signature": SIG_B}, {"type": "function_call", "id": "c1", "name": "read", "arguments": {"p": 1}},
+]
+
+
+def test_each_signature_stays_with_the_output_it_preceded(gemini, config):
+    """A thought before the text and another before the call: the text keeps the first, the call the second."""
+    _, wire = gemini
+    out = wire.translate_interaction([{"id": "i", "status": "requires_action", "steps": THOUGHT_TEXT_THOUGHT_CALL}], "m").choices[0].message
+    assert out.extra_content == {"google": {"thought_signature": SIG_A}}
+    assert out.tool_calls[0].extra_content == {"google": {"thought_signature": SIG_B}}
+    stored = {"role": "assistant", "content": out.content, "extra_content": out.extra_content, "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "read", "arguments": '{"p": 1}'}, "extra_content": out.tool_calls[0].extra_content}]}
+    steps, _ = wire.build_input_steps([stored])
+    assert [(s["type"], s.get("signature")) for s in steps] == [("thought", SIG_A), ("model_output", None), ("thought", SIG_B), ("function_call", None)]
+
+    # The same turn streamed: only the text's signature is sent at message level.
+    config["providers"] = {"gemini": {"gemini_api": "interactions"}}
+    events = [{"event_type": "interaction.created", "interaction": {}},
+              {"event_type": "step.start", "index": 0, "step": {"type": "thought"}},
+              {"event_type": "step.delta", "index": 0, "delta": {"type": "thought_signature", "signature": SIG_A}},
+              {"event_type": "step.start", "index": 1, "step": {"type": "model_output"}},
+              {"event_type": "step.delta", "index": 1, "delta": {"type": "text", "text": "checking"}},
+              {"event_type": "step.start", "index": 2, "step": {"type": "thought", "signature": SIG_B}},
+              {"event_type": "step.start", "index": 3, "step": {"type": "function_call", "id": "c1", "name": "read", "arguments": {"p": 1}}},
+              {"event_type": "interaction.completed", "interaction": {"status": "requires_action", "usage": {}}}]
+    chunks = list(_client(gemini, lambda r: httpx.Response(200, content=_sse(*events))).chat.completions.create(
+        model="gemini-3.8-flash", messages=[{"role": "user", "content": "hi"}], stream=True))
+    assert _message_signatures(chunks) == [SIG_A]
+    assert _collect(chunks)[2][0]["extra"] == {"google": {"thought_signature": SIG_B}}
+
+
+def test_signature_on_the_thought_step_itself_reaches_a_text_only_stream(gemini, config):
+    config["providers"] = {"gemini": {"gemini_api": "interactions"}}
+    events = [{"event_type": "step.start", "index": 0, "step": {"type": "thought", "signature": SIG_A}},
+              {"event_type": "step.start", "index": 1, "step": {"type": "model_output", "content": [{"type": "text", "text": "hi"}]}},
+              {"event_type": "interaction.completed", "interaction": {"status": "completed", "usage": {}}}]
+    chunks = list(_client(gemini, lambda r: httpx.Response(200, content=_sse(*events))).chat.completions.create(
+        model="gemini-3.8-flash", messages=[{"role": "user", "content": "hi"}], stream=True))
+    assert _message_signatures(chunks) == [SIG_A] and _collect(chunks)[0] == "hi"
+
+
+def test_context_size_fields_are_set_only_for_a_multi_hop_usage(gemini):
+    """Google reports ``initial_input_tokens`` on every response; alone it would make ``turn_usage`` read the
+    turn's context as uncached. A multi-hop usage carries the first hop's prompt and its cached part."""
+    _, wire = gemini
+    single = wire.usage_namespace({"total_input_tokens": 100, "total_cached_tokens": 80, "initial_input_tokens": 100})
+    assert not hasattr(single, "initial_prompt_tokens") and single.prompt_tokens_details.cached_tokens == 80
+    merged = wire.usage_namespace(wire.merge_usage([{"total_input_tokens": 100, "total_cached_tokens": 80},
+                                                    {"total_input_tokens": 110, "total_cached_tokens": 90}]))
+    assert (merged.prompt_tokens, merged.prompt_tokens_details.cached_tokens) == (210, 170)
+    assert (merged.initial_prompt_tokens, merged.initial_cached_tokens) == (100, 80)
+
+
 def _hop(i, status, text, token=None):
     return {"id": f"int_{i}", "status": status, **({"continuation_token": token} if token else {}),
             "steps": [{"type": "model_output", "content": [{"type": "text", "text": text}]}],
@@ -391,14 +451,28 @@ def test_a_checkpoint_that_keeps_dropping_ends_in_an_error(gemini, config):
     assert {b.get("previous_interaction_id") for b in bodies[1:]} == {"h1"}
 
 
+AI_STUDIO, VERTEX = "https://generativelanguage.googleapis.com/v1beta", "https://aiplatform.googleapis.com/v1beta1/publishers/google"
+
+
 @pytest.mark.parametrize(("settings", "model", "base", "expected"), [
-    ({}, "gemini-3.8-flash", "https://generativelanguage.googleapis.com/v1beta", "generate"),
-    ({"gemini_api": "interactions"}, "gemini-3.8-flash", "https://generativelanguage.googleapis.com/v1beta", "interactions"),
-    ({"gemini_api": "interactions", "models": {"gemini-3.8-flash": {"gemini_api": "generate_content"}}},
-     "gemini-3.8-flash", "https://generativelanguage.googleapis.com/v1beta", "generate"),
-    ({"gemini_api": "interactions", "models": {"gemini-3.8-flash": {"gemini_api": "auto"}}},
-     "gemini-3.8-flash", "https://generativelanguage.googleapis.com/v1beta", "generate"),
-    ({"gemini_api": "interactions"}, "gemini-3.8-flash", "https://aiplatform.googleapis.com/v1beta1/publishers/google", "generate"),
+    # auto (the default): Gemini 3 and later, and the -latest aliases, use Interactions.
+    ({}, "gemini-3.8-flash", AI_STUDIO, "interactions"),
+    ({}, "google/gemini-4-argon", AI_STUDIO, "interactions"),
+    ({}, "gemini-3-flash-preview", AI_STUDIO, "interactions"),
+    ({}, "gemini-flash-latest", AI_STUDIO, "interactions"),
+    ({}, "gemini-2.5-flash", AI_STUDIO, "generate"),  # thinkingBudget has no Interactions field
+    ({}, "gemma-4-31b-it", AI_STUDIO, "generate"),
+    # An explicit setting wins, per model over provider-wide; a per-model auto restores the default.
+    ({"gemini_api": "generate_content"}, "gemini-3.8-flash", AI_STUDIO, "generate"),
+    ({"gemini_api": "interactions"}, "gemini-2.5-flash", AI_STUDIO, "interactions"),
+    ({"models": {"gemini-3.8-flash": {"gemini_api": "generate_content"}}}, "gemini-3.8-flash", AI_STUDIO, "generate"),
+    ({"gemini_api": "generate_content", "models": {"gemini-3.8-flash": {"gemini_api": "auto"}}}, "gemini-3.8-flash", AI_STUDIO, "interactions"),
+    # A per-model setting matches the id as configured or its bare form.
+    ({"models": {"google/gemini-3.8-flash": {"gemini_api": "generate_content"}}}, "google/gemini-3.8-flash", AI_STUDIO, "generate"),
+    ({"models": {"gemini-3.8-flash": {"gemini_api": "generate_content"}}}, "google/gemini-3.8-flash", AI_STUDIO, "generate"),
+    # Interactions exists only on the AI Studio host.
+    ({}, "gemini-3.8-flash", VERTEX, "generate"),
+    ({"gemini_api": "interactions"}, "gemini-3.8-flash", VERTEX, "generate"),
 ])
 def test_per_model_routing(gemini, config, settings, model, base, expected):
     config["providers"] = {"gemini": settings}
@@ -406,22 +480,23 @@ def test_per_model_routing(gemini, config, settings, model, base, expected):
     assert client_mod.uses_interactions(model, base) is (expected == "interactions")
 
 
-def test_auto_routes_listed_models_to_interactions(gemini, config, monkeypatch):
-    client_mod, _ = gemini
-    monkeypatch.setattr(client_mod, "INTERACTIONS_MODELS", frozenset({"gemini-next-flash"}))
-    assert client_mod.uses_interactions("google/gemini-next-flash", "https://generativelanguage.googleapis.com/v1beta")
-    assert not client_mod.uses_interactions("gemini-3.8-flash", "https://generativelanguage.googleapis.com/v1beta")
-
-
-def test_generate_content_path_is_unchanged(gemini, config):
+@pytest.mark.parametrize(("settings", "model", "path"), [
+    ({}, "gemini-3.8-flash", "/v1beta/interactions"),
+    ({}, "gemini-2.5-flash", "/v1beta/models/gemini-2.5-flash:generateContent"),
+    ({"gemini_api": "generate_content"}, "gemini-3.8-flash", "/v1beta/models/gemini-3.8-flash:generateContent"),
+])
+def test_default_api_per_model_on_the_wire(gemini, config, settings, model, path):
+    config["providers"] = {"gemini": settings}
     seen = []
 
     def handler(request):
         seen.append(request.url.path)
+        if request.url.path.endswith("/interactions"):
+            return httpx.Response(200, json={"id": "i", "status": "completed", "steps": [{"type": "model_output", "content": [{"type": "text", "text": "ok"}]}]})
         return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}]})
 
-    out = _client(gemini, handler).chat.completions.create(model="gemini-3.8-flash", messages=[{"role": "user", "content": "hi"}])
-    assert seen == ["/v1beta/models/gemini-3.8-flash:generateContent"] and out.choices[0].message.content == "ok"
+    out = _client(gemini, handler).chat.completions.create(model=model, messages=[{"role": "user", "content": "hi"}])
+    assert seen == [path] and out.choices[0].message.content == "ok"
 
 
 def test_profile_supplies_the_client_only_on_the_native_surface(gemini):

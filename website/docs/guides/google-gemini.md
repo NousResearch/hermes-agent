@@ -6,7 +6,7 @@ description: "Use Hermes Agent with Google Gemini — native AI Studio API, API-
 
 # Google Gemini
 
-Hermes Agent supports Google Gemini as a native provider using the **Google AI Studio / Gemini API** — not the OpenAI-compatible endpoint. This lets Hermes translate its internal OpenAI-shaped message and tool loop into Gemini's native `generateContent` API while preserving tool calling, streaming, multimodal inputs, and Gemini-specific response metadata.
+Hermes Agent supports Google Gemini as a native provider using the **Google AI Studio / Gemini API** — not the OpenAI-compatible endpoint. This lets Hermes translate its internal OpenAI-shaped message and tool loop into Gemini's native APIs (the [Interactions API](#interactions-api) for Gemini 3 and later, `generateContent` for older models) while preserving tool calling, streaming, multimodal inputs, and Gemini-specific response metadata.
 
 ## Prerequisites
 
@@ -95,7 +95,7 @@ Google also exposes an OpenAI-compatible endpoint:
 https://generativelanguage.googleapis.com/v1beta/openai/
 ```
 
-For Hermes agent sessions, prefer the native Gemini endpoint above. Hermes includes a native Gemini adapter so it can map multi-turn tool use, tool-call results, streaming, multimodal inputs, and Gemini response metadata directly onto Gemini's `generateContent` API. The OpenAI-compatible endpoint is still useful when you specifically need OpenAI API compatibility.
+For Hermes agent sessions, prefer the native Gemini endpoint above. Hermes includes a native Gemini adapter so it can map multi-turn tool use, tool-call results, streaming, multimodal inputs, and Gemini response metadata directly onto Gemini's native APIs. The OpenAI-compatible endpoint is still useful when you specifically need OpenAI API compatibility.
 
 If you previously set `GEMINI_BASE_URL` to the `/openai` URL, remove it or change it:
 
@@ -115,30 +115,36 @@ another host is treated as an OpenAI-compatible endpoint, so configure it with i
 
 ### Interactions API
 
-Hermes can also send Gemini requests through Google's
-[Interactions API](https://aistudio.google.com/docs/interactions-overview) instead of
-`generateContent`. The choice is per model:
+On Google AI Studio, Hermes sends Gemini 3 and later models (and the `gemini-*-latest`
+aliases) through Google's
+[Interactions API](https://aistudio.google.com/docs/interactions-overview), the API Google
+recommends for them. Gemini 2.x and Gemma models use `generateContent`.
+
+You can choose the API yourself, for every model or per model:
 
 ```yaml
 providers:
   gemini:
-    gemini_api: interactions        # every Gemini model
+    gemini_api: generate_content    # every Gemini model
     models:
       gemini-3.8-flash:
-        gemini_api: generate_content  # except this one
+        gemini_api: interactions    # except this one
 ```
 
-Each setting takes `interactions`, `generate_content` or `auto` (the default). A per-model
-setting wins over the provider-wide one. `auto` uses Interactions only for models Google
-serves there exclusively, and `generateContent` for everything else.
+Each setting takes `interactions`, `generate_content` or `auto` (the default, described
+above). A per-model setting wins over the provider-wide one. A change applies to the next
+request; no restart is needed. Gemini 2.x steers thinking with a token budget, which the
+Interactions API has no setting for, so forcing a 2.x model onto `interactions` drops that
+budget.
 
 Hermes calls Interactions statelessly (`store: false`): it sends the whole conversation on
-every request, the same as `generateContent`, so Google keeps no copy of the conversation.
-The exception is long decode (Gemini 4 at `xhigh` effort and above): Google continues
-those multi-request answers only from a stored interaction, so those requests set
-`store: true`. Interactions is only available on the AI Studio host
-(`generativelanguage.googleapis.com`). A Vertex AI express or proxy base URL always uses
-`generateContent`.
+every request, the same as `generateContent`, so Google keeps no copy of the conversation
+and prompt caching works the same way. The exception is long decode (Gemini 4 at `xhigh`
+effort and above): Google continues those multi-request answers only from a stored
+interaction, so those requests set `store: true`, and Google retains them for its standard
+period (55 days on the paid tier, 1 day on the free tier). Interactions is only available on
+the AI Studio host (`generativelanguage.googleapis.com`). A Vertex AI express or proxy base
+URL always uses `generateContent`.
 
 ### Vertex AI Express Mode Keys
 

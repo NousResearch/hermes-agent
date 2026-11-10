@@ -2,9 +2,10 @@
 
 Which one is per model. ``providers.gemini.models.<model>.gemini_api`` wins over
 ``providers.gemini.gemini_api``; each is ``interactions``, ``generate_content`` or ``auto`` (the default).
-``auto`` uses Interactions for the models listed in ``INTERACTIONS_MODELS`` and ``generateContent`` for the
-rest. Interactions exists only on the AI Studio host, so a Vertex express or proxy base always stays on
-``generateContent``.
+``auto`` uses Interactions for Gemini 3 and later (and the ``gemini-*-latest`` aliases), Google's recommended
+API for them. Gemini 2.x stays on ``generateContent``: it steers thinking with ``thinkingBudget``, which
+Interactions has no field for. So do non-Gemini ids (Gemma). Interactions exists only on the AI Studio host,
+so a Vertex express or proxy base always stays on ``generateContent``.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from agent.gemini_native_adapter import (
     GeminiNativeClient,
     _iter_sse_events,
     bare_gemini_model_id,
+    gemini_uses_thinking_level,
 )
 
 from . import interactions as wire
@@ -30,8 +32,6 @@ logger = logging.getLogger(__name__)
 
 PROVIDER_ID = "gemini"
 API_INTERACTIONS, API_GENERATE_CONTENT, API_AUTO = "interactions", "generate_content", "auto"
-# Models ``auto`` sends to Interactions (empty: every model stays on generateContent unless configured).
-INTERACTIONS_MODELS: frozenset[str] = frozenset()
 _INTERACTIONS_HOST = "generativelanguage.googleapis.com"
 
 
@@ -60,7 +60,8 @@ def uses_interactions(model: str, base_url: str) -> bool:
         return False
     bare = bare_gemini_model_id(model)
     choice = _configured_api((model or "").strip(), bare)
-    return choice == API_INTERACTIONS or (choice == API_AUTO and bare.lower() in INTERACTIONS_MODELS)
+    # ``auto``: the models that take ``thinking_level`` (Gemini 3+ and the ``-latest`` aliases).
+    return choice == API_INTERACTIONS or (choice == API_AUTO and gemini_uses_thinking_level(bare))
 
 
 class GeminiClient(GeminiNativeClient):

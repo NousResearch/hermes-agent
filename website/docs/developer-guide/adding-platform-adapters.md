@@ -381,12 +381,15 @@ an attached adapter with no session can still list configured providers. It does
 a session or agent, rehydrate an override, or change conversation settings.
 
 Core passes the **raw effective endpoint**, current model/provider, configured `providers`,
-`custom_providers`, and `model_catalog.excluded_providers` to its picker catalog implementation.
+custom providers (the same merged view the built-in `/model` picker uses), and
+`model_catalog.excluded_providers` to its picker catalog implementation.
 The owning profile scope remains bound throughout the catalog call, including when this
 method is invoked through `asyncio.to_thread`. Do not feed the display URL into discovery.
 Custom endpoint live probes are disabled: those probes can save discovered models to config.
 Configured and cached custom model lists still participate, including raw endpoint matching.
-Other catalog reads may block on the network and maintain catalog caches, so **run this method
+Catalogs use the built-in `/model` picker's non-blocking path: remote catalogs come from the disk
+cache and stale ones refresh in the background under the owning profile. File reads and a short
+local LM Studio probe (1.5 s timeout) remain, so **run this method
 off the event loop**. `max_models` is the catalog's per-provider hint, not a hard total cap;
 curated/aggregator providers may be uncapped. `include_moa` includes the synthetic MoA row.
 

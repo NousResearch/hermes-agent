@@ -66,6 +66,7 @@ def test_raw_override_and_profile_catalog_config_stay_inside_core(settings_env, 
         "custom_providers": [{"name": "custom", "base_url": "https://custom.example/v1"}],
         "excluded_providers": ["excluded"], "max_models": 23, "include_moa": False,
         "probe_custom_providers": False, "probe_current_custom_provider": False,
+        "non_blocking_catalogs": True,
     }]
     assert runner._session_model_overrides[key] is override
     assert override["base_url"] == raw
@@ -152,6 +153,35 @@ async def test_thread_hop_binds_owning_profile_for_catalog(settings_env, catalog
     assert "_sessions" not in vars(runner)
 
 
+def test_catalog_fetches_stay_in_the_owning_profile_scope(settings_env, monkeypatch):
+    """With more than three keyed providers, blocking catalogs prefetch in a thread pool that does not
+    carry the profile scope; cache-only catalogs keep every fetch in the owning profile."""
+    from agent.secret_scope import get_secret
+    from gateway.session_identity import RoutingIdentity
+    from hermes_cli import models
+    from hermes_constants import get_hermes_home
+
+    adapter, _, source, home = settings_env
+    secondary = home / "secondary"
+    secondary.mkdir()
+    keys = ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "XAI_API_KEY", "MISTRAL_API_KEY", "GEMINI_API_KEY"]
+    (secondary / ".env").write_text("".join(f"{k}=secondary-{k.lower()}\n" for k in keys))
+    (secondary / "config.yaml").write_text("model:\n  default: some-model\n  provider: deepseek\n")
+    source._identity = RoutingIdentity(
+        transport_profile="default", runtime_profile="secondary", authorization_home=home, runtime_home=secondary,
+    )
+    seen = []
+
+    def fetch(slug, *args, **kwargs):
+        seen.append((get_hermes_home(), get_secret("DEEPSEEK_API_KEY")))
+        return []
+
+    monkeypatch.setattr(models, "cached_provider_model_ids", fetch)
+    adapter.list_session_model_picker_providers(source, include_moa=False)
+    assert seen
+    assert set(seen) == {(secondary, "secondary-deepseek_api_key")}
+
+
 def test_persisted_pick_reaches_catalog_without_rehydration(settings_env, catalog):
     from gateway.session import SessionStore
     from gateway.config import GatewayConfig
@@ -167,3 +197,16 @@ def test_persisted_pick_reaches_catalog_without_rehydration(settings_env, catalo
     assert catalog[0][0]["current_provider"] == "saved-provider"
     assert catalog[0][0]["current_model"] == "saved-model"
     assert runner._peek_session_state(key) is None
+
+
+def test_v12_custom_endpoint_is_listed_once_like_the_model_command(settings_env):
+    """``providers:`` entries reach the catalog through the same compat view ``/model`` uses, so the
+    current endpoint is not listed a second time as a synthetic custom row."""
+    adapter, _, source, home = settings_env
+    (home / "config.yaml").write_text(
+        "model:\n  default: local-model\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n"
+        "providers:\n  mylocal:\n    name: My Local\n    base_url: http://127.0.0.1:9/v1\n"
+        "    models: [local-model, other-model]\n"
+    )
+    rows = adapter.list_session_model_picker_providers(source, include_moa=False)
+    assert [row["slug"] for row in rows if row["is_current"]] == ["mylocal"]

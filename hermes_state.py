@@ -15,7 +15,7 @@ import sqlite3
 import sys
 import threading
 import weakref
-from collections import deque
+import queue
 from pathlib import Path
 from hermes_dir_acl import make_user_dir
 
@@ -312,19 +312,30 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]
     return path
 
 
-# The references of handles collected unclosed. The cyclic GC can run a finalizer on a thread that holds a registry
-# lock, so the finalizer only queues the holder; the next holder-less open or any close returns it, outside any lock.
-_collected_references: deque = deque()
+# The references of handles collected unclosed. A finalizer runs on whatever thread the collector does, which can hold
+# a lock the release takes (the registry's, a path's lifecycle lock, the read budget's, the WAL guard's), so it only
+# puts the holder here (SimpleQueue.put is safe in a finalizer) and the reaper thread returns it, holding no lock.
+_collected_references: queue.SimpleQueue = queue.SimpleQueue()
+_reaper: Optional[threading.Thread] = None
+_reaper_lock = threading.Lock()
 
 
-def _return_collected_references() -> None:
-    """Return every queued reference of a handle collected unclosed, logging (never raising) a failed close."""
-    while _collected_references:
-        try:
-            holder = _collected_references.popleft()
-        except IndexError:
-            return
+def _reap_collected_references() -> None:
+    """The reaper: return each queued reference as it arrives, logging (never raising) a failed close."""
+    while True:
+        holder = _collected_references.get()
         _holders._close_quietly(holder, "Returning a collected SessionDB's reference failed")
+        del holder  # never pin a returned holder while waiting for the next one
+
+
+def _ensure_reaper() -> None:
+    """Start the reaper at the first holder-less writable open, or again whenever it isn't running."""
+    global _reaper
+    with _reaper_lock:
+        if _reaper is None or not _reaper.is_alive():
+            # health: allow HX012 -- the reaper returns references for every profile's files and reads no profile state
+            _reaper = threading.Thread(target=_reap_collected_references, name="sessiondb-reaper", daemon=True)
+            _reaper.start()
 
 
 # Process-wide shared registry (#90837): every writable SessionDB serves through the ONE store holder the backend's
@@ -421,14 +432,14 @@ class SessionDB(
             del caller
         self._reference: Optional[weakref.finalize] = None
         if holder is None:
-            _return_collected_references()
             path = db_path or _default_db_path()
             if read_only:
                 holder = StoreHolder(path, read_only=True, creation_site=creation_site)
             else:
+                _ensure_reaper()
                 holder = _holders.acquire(path)
-                # This handle's own reference: returned at close(), or queued when the handle is collected unclosed.
-                self._reference = weakref.finalize(self, _collected_references.append, holder)
+                # This handle's own reference: returned at close(), or by the reaper when it is collected unclosed.
+                self._reference = weakref.finalize(self, _collected_references.put, holder)
                 self._reference.atexit = False
                 _register_test_instance(self)
         self._holder = holder
@@ -456,7 +467,6 @@ class SessionDB(
         only closes a connection the holder reopened after the registry closed it. When the last release leaves the
         holder open (its close failed, as when a lost WAL generation could not be captured), the close is retried
         here so the error reaches the caller; a handle collected unclosed only logs it."""
-        _return_collected_references()
         reference = self._reference
         if reference is not None and reference.detach() is not None:
             self._holder.close()

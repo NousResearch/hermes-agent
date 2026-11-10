@@ -17,9 +17,10 @@ export const TERMINAL_MODE_RESET =
   '\x1b[?2004l' + // bracketed paste
   // The kitty keyboard stack is per screen (main vs alternate): pop it while
   // the alternate screen is still active. Popping after `1049l` lands on the
-  // main stack and leaves the alt screen's flags behind (#56759).
+  // main stack and leaves the alt screen's flags behind (#56759). `CSI = 0u`
+  // is not a substitute here: it overwrites the flags without popping, so a
+  // stale entry stays on the stack and the next pop restores it.
   '\x1b[<u' + // kitty keyboard (alt screen stack)
-  '\x1b[=0u' + // zero the flags regardless of stack depth (older builds stacked pushes)
   '\x1b[?1049l' + // alternate screen
   '\x1b[>4m' + // modifyOtherKeys
   '\x1b[0m' + // attributes

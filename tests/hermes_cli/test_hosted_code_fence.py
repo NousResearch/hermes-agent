@@ -1,22 +1,35 @@
 """The hosted code fence: one process-wide audit-hook enforcement point for code loading.
 
-Every mechanism that can put executable code into the process — a source import, a
-``.pyc``-only import (even one whose marshalled code forges an allowed ``co_filename``: the
-read of the bytecode file is refused by its own realpath), a zip member, an extension module,
-``runpy``, ``exec(compile(...))``, a dotted entry point's parent package, discovery and warm-up
-paths that call private loaders — is refused when the file it would execute resolves outside
-the deployment image, and the home code never runs. The positive controls: the bundled tree,
-an installed package's entry point, the stdlib, the interpreter's own bytecode caches and the
-core tools load exactly as before. Locally the fence is never armed by a boot or a start
-command; and once armed it cannot be disarmed — no verdict edit, no later config record flips
-it off — which the immutability tests below pin.
+Every mechanism that can put executable code into the process through a loader or an
+import the interpreter performs — a source import, a ``.pyc``-only import (even one whose
+marshalled code forges an allowed ``co_filename``: the read of the bytecode file is refused
+by its own realpath), a zip archive put on the search path, an extension module,
+``runpy``, ``exec(compile(...))`` of a file, a dotted entry point's parent package,
+discovery and warm-up paths that call private loaders — is refused when the file it would
+execute resolves outside the deployment image, and the home code never runs. The positive
+controls: the bundled tree, an installed package's entry point, the stdlib, the
+interpreter's own bytecode caches and the core tools load exactly as before — and so do
+the stdlib's own serialization consumers (``marshal`` data roundtrips, ``modulefinder``
+reading image bytecode), which is why ``marshal`` is not filtered at all. Locally the fence
+is never armed by a boot or a start command; and once armed it cannot be disarmed — no
+verdict edit, no later config record flips it off — which the immutability tests below pin.
 
-Which audit event carries a code file's path was established empirically on this interpreter
-(CPython 3.14) and is asserted by the tests: ``compile`` for every source load, ``exec`` on the
-code object, ``open`` for a sourceless bytecode read (judged by the file's own realpath, the
-one thing a forged header cannot choose), ``marshal.loads`` by its caller (only importlib's
-own frozen readers may unmarshal), and ``import`` for dynamically loaded extension modules
-(whose ``.so`` path it carries). See the fence module's docstring.
+Which audit event carries a code file's path was established empirically on this
+interpreter (CPython 3.14) and is asserted by the tests: ``compile`` for every source load,
+``open`` for a sourceless bytecode read (judged by the file's own realpath, the one thing
+a forged header cannot choose), and ``import`` — which carries the extension ``.so`` path
+and the live ``sys.path``/``sys.meta_path``/``sys.path_hooks`` the import system consults,
+so an import is refused while the search path holds a data directory or zip archive
+outside the image, or a finder defined outside it. See the fence module's docstring.
+
+The fence's contract (asserted below, and documented in the fence module's docstring):
+in hosted mode no Hermes loader, and no import the interpreter performs, executes code
+whose file lies outside the image roots. Code the image itself runs — ``marshal.load``,
+``ctypes.CDLL``, ``exec`` of in-memory strings — is trusted image code and explicitly out
+of scope: it is already running in the process and could rewrite the fence's own policy,
+so the fence cannot and does not defend against it. The boundary tests port the probes
+that demonstrated exactly that, asserting the documented contract instead of a refusal the
+fence can no longer promise.
 """
 
 from __future__ import annotations
@@ -25,8 +38,10 @@ import ast
 import importlib
 import importlib.metadata
 import importlib.util
+import json
 import logging
 import marshal
+import os
 import runpy
 import shutil
 import subprocess
@@ -201,22 +216,34 @@ def test_a_forged_pyc_spec_load_is_refused(tmp_path, hosted):
     assert not marker.exists()
 
 
-def test_a_direct_marshal_of_home_bytes_then_exec_is_refused(tmp_path, hosted):
-    """The other half of the gap: ``marshal.loads`` of bytes read from a home file, then
-    ``exec`` — the forged ``co_filename`` survives the ``exec`` check, so the refusal must
-    come from the unmarshal itself: only importlib's own frozen readers may unmarshal, and
-    this caller is not them (nothing in the image needs to be)."""
-    home = tmp_path / "home"
-    home.mkdir()
-    marker = home / "executed"
-    allowed = Path(sysconfig.get_paths()["stdlib"])
-    code = compile(f"from pathlib import Path\nPath({str(marker)!r}).write_text('marshal ran')\n",
-                   str(allowed / "neither_is_this.py"), "exec")
-    payload = home / "payload.bin"
-    payload.write_bytes(marshal.dumps(code))  # dumps is not a load; nothing executes
-    with pytest.raises(HostedCodeRefused, match="marshal"), open(payload, "rb") as fh:
-        marshal.loads(fh.read())  # the unmarshal itself is refused: the caller is not importlib
-    assert not marker.exists()
+def test_ordinary_marshal_data_roundtrips_under_the_fence(hosted):
+    """``marshal`` is not filtered at all: ordinary serialization — the roundtrip every
+    data file in a hosted deployment may do — works exactly as locally, because the fence
+    judges loaders and imports, not calls made by code already running in the process."""
+    payload = marshal.dumps({"a": [1, 2], "b": "text"})
+    assert marshal.loads(payload) == {"a": [1, 2], "b": "text"}
+    import io
+    with io.BytesIO(payload) as stream:
+        assert marshal.load(stream) == {"a": [1, 2], "b": "text"}
+
+
+def test_modulefinder_reads_image_bytecode_under_the_fence(tmp_path, hosted):
+    """The stdlib's own bytecode consumer works in hosted mode: ``modulefinder`` reads the
+    interpreter's own ``.pyc`` cache for a stdlib leaf module (inside the roots) and
+    unmarshals it through its own code path — image code the fence trusts by contract.
+    This is the exact read the old caller-based marshal refusal used to break."""
+    import modulefinder
+
+    source = Path(sysconfig.get_paths()["stdlib"]) / "colorsys.py"
+    assert source.exists()
+    cache = Path(importlib.util.cache_from_source(str(source)))
+    if not cache.exists():
+        _build_pyc(source, cache)
+    assert cache.exists()
+    with open(cache, "rb") as bytecode:
+        module = modulefinder.ModuleFinder().load_module(
+            "colorsys", bytecode, str(cache), (".pyc", "rb", modulefinder._PY_COMPILED))
+    assert module is not None  # read, unmarshalled and loaded: nothing refused
 
 
 def _build_zip_with_pyc_member(archive: Path, member_name: str, co_filename: str,
@@ -248,10 +275,11 @@ def _build_zip_with_pyc_member(archive: Path, member_name: str, co_filename: str
 
 
 def test_a_forged_pyc_inside_a_home_zip_member_is_refused(tmp_path, monkeypatch, hosted):
-    """A forged ``.pyc`` member inside a zip archive under the home: the archive's read is not
-    a bytecode-file open, so the fence answers the member at the unmarshal — zipimport's own
-    read is allowed as importlib's frozen reader, and the ``exec`` then judges the code object
-    against the archive's realpath, which is outside the image. Refused before it runs."""
+    """A forged ``.pyc`` member inside a zip archive under the home: the archive is outside
+    the image, so the package's parent source compiles with the ``<archive>/<member>``
+    pseudo-path whose realpath is the archive — refused before the bytecode member is ever
+    reached. A parent-free bytecode-only archive is answered at the import's search-path
+    check (the test below it)."""
     home = tmp_path / "home"
     home.mkdir()
     marker = home / "executed"
@@ -270,10 +298,163 @@ def test_a_forged_pyc_inside_a_home_zip_member_is_refused(tmp_path, monkeypatch,
         sys.modules.pop("zipforged.inner", None)
 
 
+def _build_zip_with_root_pyc(archive: Path, co_filename: str, source: str) -> None:
+    """A zip archive holding ONLY a root-level forged ``.pyc`` — no package parent whose
+    source compile could answer first — built in a separate process exactly as a tenant
+    would (reading its own bytecode as data, outside the fence)."""
+    subprocess.run(
+        [sys.executable, "-c", textwrap.dedent("""
+            import importlib.util, marshal, pathlib, py_compile, sys, tempfile, zipfile
+            co_filename, source, archive = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3])
+            with tempfile.TemporaryDirectory() as tmp:
+                dummy = pathlib.Path(tmp) / "header_probe.py"
+                dummy.write_text("X = 1\\n", encoding="utf-8")
+                pyc = pathlib.Path(tmp) / "header_probe.pyc"
+                py_compile.compile(str(dummy), cfile=str(pyc), doraise=True)
+                data = pyc.read_bytes()
+            assert data[:4] == importlib.util.MAGIC_NUMBER
+            forged = data[:16] + marshal.dumps(compile(source, co_filename, "exec"))
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("evil.pyc", forged)
+        """), co_filename, source, str(archive)],
+        check=True, capture_output=True)
+
+
+def test_a_root_level_forged_pyc_zip_on_sys_path_is_refused_at_the_import(
+        tmp_path, monkeypatch, hosted):
+    """The bytecode-only zip a review reproduced running: an archive with nothing but a
+    root-level forged ``.pyc`` — no source compile ever fires for it, its unmarshal is
+    image code the fence trusts, and its forged ``co_filename`` names no file. The import
+    statement's audit event carries the live search path, so the import is refused there,
+    naming the archive entry — no member needs inspecting, whatever loader would read it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    marker = home / "executed"
+    allowed = Path(sysconfig.get_paths()["stdlib"])
+    archive = home / "evil.zip"
+    _build_zip_with_root_pyc(archive, str(allowed / "zip_root_forger.py"),
+                             f"from pathlib import Path\nPath({str(marker)!r}).write_text('zip root ran')\n")
+    monkeypatch.setattr(sys, "path", [*sys.path, str(archive)])
+    try:
+        with pytest.raises(HostedCodeRefused, match="evil.zip"):
+            exec("import evil")  # a real import statement: the event the check rides on
+        assert not marker.exists()
+        assert "evil" not in sys.modules
+    finally:
+        monkeypatch.undo()
+        sys.modules.pop("evil", None)
+
+
+def test_a_data_directory_on_sys_path_is_refused_at_the_import(tmp_path, monkeypatch, hosted):
+    """The same search-path check for a plain directory: a data directory placed on
+    ``sys.path`` after boot names itself in the refusal, even when the import inside it
+    would have been refused at its compile anyway — the check answers the search path
+    itself, so a directory of bytecode-only modules never gets that far."""
+    home = tmp_path / "home"
+    home.mkdir()
+    marker = home / "executed"
+    _home_module(home, "fence_dir_mod", marker)
+    monkeypatch.setattr(sys, "path", [*sys.path, str(home)])
+    try:
+        with pytest.raises(HostedCodeRefused, match=str(home)):
+            exec("import fence_dir_mod")
+        assert not marker.exists()
+    finally:
+        monkeypatch.undo()
+        sys.modules.pop("fence_dir_mod", None)
+
+
+def _marshal_built_object(tmp_path, name: str, source: str):
+    """A Python object whose defining module's file is a data-directory path, built the way
+    the documented contract scopes out: the code is marshalled outside the fence (a plain
+    data file) and exec'd by image code, which the fence trusts. Its ``__module__`` resolves
+    to a module registered with the data path as ``__file__`` — the one thing the import
+    event's finder check can judge."""
+    home = tmp_path / "home"
+    home.mkdir()
+    module_path = home / f"{name}.py"
+    module_path.write_text(source, encoding="utf-8")
+    marshalled_hex = subprocess.run(
+        [sys.executable, "-c",
+         "import marshal, sys; "
+         "print(marshal.dumps(compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')).hex())",
+         str(module_path)],
+        check=True, capture_output=True, text=True).stdout.strip()
+    import types
+    module = types.ModuleType(f"fence_evil_{name}")
+    module.__file__ = str(module_path)
+    sys.modules[f"fence_evil_{name}"] = module
+    exec(marshal.loads(bytes.fromhex(marshalled_hex)), module.__dict__)
+    return module
+
+
+def test_a_meta_path_finder_defined_outside_the_image_is_refused(tmp_path, hosted):
+    """A finder on ``sys.meta_path`` whose defining module's file is outside the roots is
+    named by the import event and the import is refused — before the finder's spec ever
+    runs, so its target code never executes."""
+    marker = tmp_path / "executed"
+    module = _marshal_built_object(tmp_path, "finder", textwrap.dedent(f"""
+        import importlib.abc, importlib.util
+        class EvilFinder(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == "fence_evil_target":
+                    from pathlib import Path
+                    Path({str(marker)!r}).write_text("evil finder ran")
+                    raise SystemExit("never reached: the import is refused first")
+                return None
+    """))
+    finder = module.EvilFinder()
+    sys.meta_path.insert(0, finder)
+    try:
+        with pytest.raises(HostedCodeRefused, match="finder.py"):
+            exec("import fence_evil_target")
+        assert not marker.exists()
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("fence_evil_finder", None)
+
+
+def test_a_path_hook_defined_outside_the_image_is_refused(tmp_path, hosted):
+    """The same judgment for ``sys.path_hooks``: a hook whose defining module's file is
+    outside the roots refuses the import at its event, before PathFinder ever calls the
+    hook for a fresh search entry."""
+    marker = tmp_path / "executed"
+    module = _marshal_built_object(tmp_path, "hook", textwrap.dedent(f"""
+        def evil_hook(path):
+            from pathlib import Path
+            Path({str(marker)!r}).write_text("evil hook ran")
+            return None
+    """))
+    import sysconfig as _sysconfig
+
+    hook = module.evil_hook
+    sys.path_hooks.append(hook)
+    sys.path_importer_cache.pop(str(Path(_sysconfig.get_paths()["purelib"])), None)
+    try:
+        with pytest.raises(HostedCodeRefused, match="hook.py"):
+            exec("import charset_normalizer")
+        assert not marker.exists()
+    finally:
+        sys.path_hooks.remove(hook)
+        sys.modules.pop("fence_evil_hook", None)
+
+
+def test_the_fence_documents_its_contract_about_code_already_running_in_the_process():
+    """The contract is written in the fence module's docstring, and stays there: the fence
+    judges loaders and imports, and trusts the image's own running code — which is what the
+    out-of-scope boundary tests below assert behaviourally."""
+    doc = " ".join((hosted_code_fence.__doc__ or "").split())  # line-wrapping is not the contract
+    assert ("in hosted mode no Hermes loader, and no import the interpreter performs, "
+            "executes code whose file lies outside the image roots") in doc
+    assert ("Code the image itself runs (calls to marshal, ctypes, exec of in-memory "
+            "strings) is trusted and out of scope") in doc
+
+
 def test_the_images_own_bytecode_caches_still_load(hosted):
     """The positive control for the read-side rules: importlib's own ``__pycache__`` reads of
     image packages (an installed package in this interpreter's site-packages) still work —
-    the ``open`` is inside the roots and the unmarshal's caller is importlib's frozen reader."""
+    the ``open`` is inside the roots, so nothing is refused."""
     for candidate in ("certifi", "yaml", "dotenv"):
         if candidate in sys.modules:
             module = importlib.import_module(candidate)
@@ -622,30 +803,40 @@ def test_a_platform_declaration_symlinked_into_the_bundled_tree_is_refused(tmp_p
 
 def test_a_real_preflight_refuses_a_dotted_home_entrypoint_without_importing_the_parent(
         tmp_path, monkeypatch, start_flag):
-    """End to end against the real preflight: a home ``.dist-info`` with an enabled dotted
-    entry point reaches ``hosted_boot_preflight``, which refuses the boot naming the plugin —
-    and the parent package's module-level code never runs on the way there."""
+    """End to end against the real preflight: a ``.dist-info`` an image-side site directory
+    would discover, with an enabled dotted entry point whose parent package files are
+    symlinks into the deployment home — the provenance lie the entry point's metadata
+    tells. It reaches ``hosted_boot_preflight``, which refuses the boot naming the plugin,
+    and the parent package's module-level code never runs on the way there (its compile is
+    refused by the file the symlink resolves to)."""
     from hermes_constants import get_hermes_home
     from hermes_cli.plugins_bundled import get_bundled_plugins_dir as real_root
 
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
-    src = home / "src"
-    parent = src / "fence_real_parent"
-    parent.mkdir(parents=True)
+    home_parent = home / "src" / "fence_real_parent"
+    home_parent.mkdir(parents=True)
     marker = home / "executed"
-    (parent / "__init__.py").write_text(
+    (home_parent / "__init__.py").write_text(
         "from pathlib import Path\n"
         "from hermes_cli.hosted_mode import hosted_verdict_frozen\n"
         f"Path({str(marker)!r}).write_text(str(hosted_verdict_frozen()))\n",
         encoding="utf-8")
-    (parent / "child.py").write_text("def register(ctx): pass\n", encoding="utf-8")
-    dist = src / "fence-real-1.0.dist-info"
+    (home_parent / "child.py").write_text("def register(ctx): pass\n", encoding="utf-8")
+    image_site = tmp_path / "image-site-packages"
+    site_parent = image_site / "fence_real_parent"
+    site_parent.mkdir(parents=True)
+    (site_parent / "__init__.py").symlink_to(home_parent / "__init__.py")
+    (site_parent / "child.py").symlink_to(home_parent / "child.py")
+    dist = image_site / "fence-real-1.0.dist-info"
     dist.mkdir()
     (dist / "METADATA").write_text("Name: fence-real\nVersion: 1.0\n", encoding="utf-8")
     (dist / "entry_points.txt").write_text(
         "[hermes_agent.plugins]\nfence-real = fence_real_parent.child:register\n", encoding="utf-8")
-    monkeypatch.syspath_prepend(str(src))
+    real_get_paths = sysconfig.get_paths
+    monkeypatch.setattr(sysconfig, "get_paths", lambda *a, **k: {
+        **real_get_paths(), "purelib": str(image_site), "platlib": str(image_site)})
+    monkeypatch.syspath_prepend(str(image_site))
     monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(home / "fake-bundled"))
     (home / "config.yaml").write_text(
         "hosted:\n  enabled: true\nplugins:\n  enabled: [fence-real]\n", encoding="utf-8")
@@ -667,43 +858,71 @@ def test_a_real_preflight_refuses_a_dotted_home_entrypoint_without_importing_the
 # sys.path pruning: nothing outside the image stays searchable
 
 
-def test_preflight_prunes_out_of_image_sys_path_and_records_it(tmp_path, monkeypatch, caplog,
-                                                               start_flag):
-    """A ``.pth`` file inside an allowed site root can still add the home to ``sys.path`` at
-    interpreter startup; the preflight removes such entries, records what it removed in the
-    boot log, and afterwards the home's modules cannot even be found."""
-    import site
-
-    from hermes_constants import get_hermes_home
-
+def test_a_pth_added_home_is_pruned_at_the_arm_and_recorded_in_the_boot_log(tmp_path):
+    """A ``.pth`` file processed at interpreter startup can add the deployment home to
+    ``sys.path`` before any Hermes code runs. In a real hosted start the fence's arm —
+    process entry, before any application import — prunes such entries and records what
+    it removed in the boot log; the preflight that follows passes, and afterwards the
+    home's modules cannot even be found."""
     home = tmp_path / "home"
     home.mkdir()
-    _home_module(home, "fence_pth_mod", home / "executed", text="raise AssertionError('must never import')")
+    _home_module(home, "fence_pth_mod", home / "executed",
+                 text="raise AssertionError('must never import')")
     image_site = tmp_path / "image-site"
     image_site.mkdir()
     (image_site / "fence.pth").write_text(f"{home}\n", encoding="utf-8")
-    real_get_paths = sysconfig.get_paths
-    monkeypatch.setattr(sysconfig, "get_paths", lambda *a, **k: {
-        **real_get_paths(), "purelib": str(image_site), "platlib": str(image_site)})
-    before = sys.path[:]
-    (get_hermes_home() / "config.yaml").write_text("hosted:\n  enabled: true\n", encoding="utf-8")
-    monkeypatch.setattr(hosted_mode, "_VERDICT",
-                        {"hosted": None, "config": None, "plugins_permitted": False})
-    try:
-        site.addsitedir(str(image_site))
-        importlib.invalidate_caches()
-        assert str(home) in sys.path  # the .pth added it
-        with caplog.at_level(logging.INFO):
-            hosted_mode.hosted_boot_preflight(env={"PATH": "/usr/bin"})
-        assert str(home) not in sys.path  # the boot pruned it
-        assert "fence.pth" in " ".join(caplog.messages) or str(home) in " ".join(caplog.messages)
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module("fence_pth_mod")
-        assert not (home / "executed").exists()
-    finally:
-        sys.path[:] = before
-        importlib.invalidate_caches()
-        sys.modules.pop("fence_pth_mod", None)
+    probe_home = tmp_path / "probe-home"
+    probe_home.mkdir()
+    (probe_home / "config.yaml").write_text("_config_version: 12\nhosted:\n  enabled: true\n",
+                                            encoding="utf-8")
+    code = textwrap.dedent(f"""
+        import logging, sys
+        logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+        import site
+        site.addsitedir({str(image_site)!r})  # what the .pth's site dir does at startup
+        assert {str(home)!r} in sys.path
+        sys.argv = [sys.argv[0], "--hosted"]
+        import gateway.run  # arms at entry: the prune runs BEFORE the fence installs
+        assert {str(home)!r} not in sys.path
+        from hermes_cli.hosted_mode import hosted_boot_preflight, hosted_verdict_frozen
+        hosted_boot_preflight(env={{"PATH": "/usr/bin:/bin"}})
+        assert hosted_verdict_frozen() is True
+        try:
+            import fence_pth_mod
+        except ModuleNotFoundError:
+            pass
+        else:
+            raise AssertionError("the pth-added home module was still importable")
+        print("PTH-PRUNED-OK")
+    """)
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HERMES_HOME": str(probe_home),
+           "HERMES_RUNTIME_DIR": str(tmp_path / "run"), "UV_OFFLINE": "1",
+           "PYTHONPATH": str(Path(__file__).resolve().parents[2])}
+    result = subprocess.run([sys.executable, "-c", code],
+                            cwd=str(Path(__file__).resolve().parents[2]), env=env,
+                            capture_output=True, text=True, check=False, timeout=180)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PTH-PRUNED-OK" in result.stdout
+    assert ("Hosted start removed sys.path entries outside the deployment image" in result.stderr
+            and str(home) in result.stderr)  # the boot log records what was removed
+    assert not (home / "executed").exists()
+
+
+def test_the_late_prune_removes_and_names_an_out_of_image_entry(tmp_path, monkeypatch, hosted):
+    """The frozen-verdict prune, exercised directly: a home entry that appears after the
+    fence exists is removed and named in what the prune returns, and afterwards the home's
+    modules cannot even be found. (The entry can also never serve an import while present:
+    the import event refuses on it — the search-path test above.)"""
+    home = tmp_path / "home"
+    home.mkdir()
+    _home_module(home, "fence_late_prune_mod", home / "executed")
+    monkeypatch.setattr(sys, "path", [*sys.path, str(home)])
+    pruned = prune_sys_path_outside_image()
+    assert str(home) in pruned
+    assert str(home) not in sys.path
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("fence_late_prune_mod")
+    assert not (home / "executed").exists()
 
 
 def test_pruning_keeps_the_images_own_paths(hosted):
@@ -887,6 +1106,116 @@ def test_record_boot_config_refuses_to_flip_the_frozen_hosted_verdict(tmp_path, 
         hosted_mode.record_boot_config({"hosted": {"enabled": False}})
     assert hosted_mode.hosted_verdict_frozen() is True  # unchanged, still enforcing
     assert hosted_mode.is_hosted() is True
+
+
+# --------------------------------------------------------------------------------------------------
+# The contract's boundary through a REAL hosted startup: the fence's own arm, a real
+# preflight with hosted config, then the probe — proving where each answer comes from
+
+
+def _run_hosted_startup_probe(tmp_path, action: str) -> str:
+    """Run *action* in a fresh process that booted hosted exactly as a deployment does:
+    ``--hosted`` on the start command (the fence arms at the entry module's first
+    statement), a real ``hosted_boot_preflight`` against a hosted config in the probe's
+    home, and only then the action — under the installed, irremovable fence. Returns the
+    action's outcome: ``"ALLOWED"`` or ``"<ExceptionType>: <message>"``."""
+    home = tmp_path / "probe-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("_config_version: 12\nhosted:\n  enabled: true\n",
+                                      encoding="utf-8")
+    code = textwrap.dedent(f"""
+        import json, sys
+        sys.argv = [sys.argv[0], "--hosted"]
+        import gateway.run
+        from hermes_cli import hosted_code_fence
+        assert hosted_code_fence.hosted_fence_installed()
+        assert hosted_code_fence.armed_by_start_flag()
+        from hermes_cli.hosted_mode import hosted_boot_preflight, hosted_verdict_frozen
+        hosted_boot_preflight(env={{"PATH": "/usr/bin:/bin"}})
+        assert hosted_verdict_frozen() is True
+        try:
+            exec({action!r})
+            result = "ALLOWED"
+        except Exception as error:
+            result = type(error).__name__ + ": " + str(error)
+        print("PROBE " + json.dumps({{"result": result}}))
+    """)
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HERMES_HOME": str(home),
+           "HERMES_RUNTIME_DIR": str(tmp_path / "run"), "UV_OFFLINE": "1",
+           "PYTHONPATH": str(Path(__file__).resolve().parents[2])}
+    outcome = subprocess.run([sys.executable, "-c", code],
+                             cwd=str(Path(__file__).resolve().parents[2]), env=env,
+                             capture_output=True, text=True, check=False, timeout=180)
+    lines = [line[6:] for line in outcome.stdout.splitlines() if line.startswith("PROBE ")]
+    assert lines, outcome.stdout + outcome.stderr
+    return json.loads(lines[-1])["result"]
+
+
+def test_a_real_hosted_boot_refuses_a_root_level_forged_pyc_zip(tmp_path):
+    """The reviewer's zip probe, ported: a data-directory archive holding ONLY a root-level
+    forged ``.pyc`` (no parent package whose compile could answer) placed on ``sys.path``
+    after a real hosted boot. The import statement's audit event carries the search path,
+    so the fence refuses the import naming the archive — the marker file never appears."""
+    marker = tmp_path / "executed"
+    allowed = Path(sysconfig.get_paths()["stdlib"])
+    archive = tmp_path / "evil.zip"
+    _build_zip_with_root_pyc(archive, str(allowed / "startup_zip_forger.py"),
+                             f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n")
+    result = _run_hosted_startup_probe(tmp_path, f"sys.path.insert(0, {str(archive)!r}); import evil")
+    assert result.startswith("HostedCodeRefused"), result
+    assert "evil.zip" in result, result
+    assert not marker.exists()
+
+
+def _build_marshalled_code_payload(payload: Path, marker: Path) -> None:
+    """A data file holding marshalled code that writes *marker* when exec'd — built by a
+    separate process, as a tenant would (this process's fence would refuse nothing here
+    anyway: ``marshal.dumps`` of code builds bytes, it executes nothing)."""
+    subprocess.run(
+        [sys.executable, "-c",
+         "import marshal, sys; from pathlib import Path\n"
+         "code = compile('from pathlib import Path\\nPath(%r).write_text(%r)\\n' "
+         "% (sys.argv[2], 'ran'), sys.argv[2], 'exec')\n"
+         "Path(sys.argv[1]).write_bytes(marshal.dumps(code))",
+         str(payload), str(marker)],
+        check=True, capture_output=True)
+
+
+def _build_native_marker_library(library: Path, marker: Path) -> None:
+    """A shared library whose constructor writes *marker* when loaded — the reviewer's
+    native probe, built with the host toolchain."""
+    source = library.with_suffix(".c")
+    source.write_text(
+        '#include <stdio.h>\n'
+        '__attribute__((constructor)) static void init(void)\n'
+        '{FILE *f = fopen("' + str(marker) + '", "w");\n'
+        'if (f) {fputs("NATIVE RAN", f); fclose(f);}}\n',
+        encoding="utf-8")
+    subprocess.run(["cc", "-shared", "-fPIC", str(source), "-o", str(library)],
+                    check=True, capture_output=True)
+
+
+@pytest.mark.parametrize("kind", ["marshal_load", "ctypes"])
+def test_inprocess_calls_the_image_itself_makes_are_out_of_scope(tmp_path, kind):
+    """The reviewer's marshal and native probes, ported to the contract: ``marshal.load``
+    of a data file and ``ctypes.CDLL`` of a data-directory library are calls made by code
+    already running in the process — trusted image code the fence documents as out of
+    scope (it could rewrite the fence's own policy), NOT a loader or an import. Both run;
+    the fence's documented contract (asserted above) is the defence's boundary, not these
+    checks. A data-directory path reaching either one through a Hermes loader is instead
+    answered by the shared predicate the boot consults."""
+    marker = tmp_path / "executed"
+    if kind == "marshal_load":
+        payload = tmp_path / "payload.bin"
+        _build_marshalled_code_payload(payload, marker)
+        action = f"import marshal; exec(marshal.load(open({str(payload)!r}, 'rb')))"
+    else:
+        library = tmp_path / "evil.so"
+        _build_native_marker_library(library, marker)
+        action = f"import ctypes; ctypes.CDLL({str(library)!r})"
+    result = _run_hosted_startup_probe(tmp_path, action)
+    assert result == "ALLOWED", result
+    assert marker.exists()
 
 
 # --------------------------------------------------------------------------------------------------

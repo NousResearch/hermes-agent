@@ -1,0 +1,31 @@
+name: rung
+repo: https://github.com/miguelangeloazevedo/rung
+sha: 3928b7aef7c150d69f63c52c348182b1eb41df44
+title: Rung
+description: 'Stops an agent from marking its own work done until the tests you approved pass. Tests are approved
+  before any code; when an agent reports claimed work done (rung_report, kanban_complete or a todo item), a deterministic
+  pre_tool_call hook blocks the report until those tests pass on the current code and names the ones that fail.
+  No model is asked. A Desktop pane and dock hold the ladder from need to test result; manual checks stay with a
+  person, and milestones verify whole user journeys. Local SQLite, no network calls of its own.'
+maintainer: miguelangeloazevedo
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+version: "1.2.0"
+docs_url: https://github.com/miguelangeloazevedo/rung
+screenshots:
+  - https://raw.githubusercontent.com/miguelangeloazevedo/rung/3928b7aef7c150d69f63c52c348182b1eb41df44/docs/media/pane.png
+  - https://raw.githubusercontent.com/miguelangeloazevedo/rung/3928b7aef7c150d69f63c52c348182b1eb41df44/docs/media/milestone.png
+platforms: []
+capabilities:
+  provides_tools:
+    - rung_status
+    - rung_propose
+    - rung_check
+    - rung_run_tests
+    - rung_claim
+    - rung_report
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

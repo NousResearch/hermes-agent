@@ -1,7 +1,7 @@
 name: hive-intelligence
 title: Hive Intelligence
 repo: https://github.com/hive-intel/hive-sdk
-sha: 22cfd73d05b889f264fcb031f42215a04a707f36
+sha: 201990311caf94a8520d8360b3ce5343a70f0949
 description: >-
   Crypto data for AI agents through Hive's hosted MCP server (Streamable HTTP at
   https://mcp.hiveintelligence.xyz/mcp, OAuth sign-in, no keys in config): find a token, get its
@@ -19,7 +19,7 @@ maintainer: hive-intel
 tier: community
 category: tools
 docs_url: https://docs.hiveintelligence.xyz
-version: "1.20.1"
+version: "1.20.2"
 readme: true
 platforms: []
 known_issues:

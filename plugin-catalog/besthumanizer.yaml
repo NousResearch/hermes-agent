@@ -1,0 +1,19 @@
+name: besthumanizer
+repo: https://github.com/shagghiesuperstar/hermes-besthumanizer
+sha: de54228e2bd5c1dd1585a1e326de3b5f6cd1bdb5
+description: "Humanize and measure text: three tools over MCP — score_text (0-100 human-probability with the patterns and spans that fired, deterministic, free), humanize_text (tell removal plus a constrained model pass, guaranteed never to return text scoring lower than the input), and score_x_account (median and per-post scores for a public X account). Disclosure — every tool call is a JSON-RPC request to the hosted MCP endpoint at https://besthumanizer.app/mcp, authenticated with your BESTHUMANIZER_API_KEY; the passage you score or rewrite is sent to that server, and humanize_text debits its input word count from the account's monthly allowance while scoring debits nothing; the plugin ships no local scoring code and makes no other network calls; it also registers one transform_tool_result hook that scores text on post/send-shaped tool calls and appends a one-line verdict, annotating the result rather than rewriting it."
+maintainer: shagghiesuperstar
+tier: community
+category: tools
+version: "0.1.0"
+docs_url: https://github.com/shagghiesuperstar/hermes-besthumanizer#readme
+capabilities:
+  provides_tools:
+  - humanize_text
+  - score_text
+  - score_x_account
+  provides_hooks:
+  - transform_tool_result
+  provides_middleware: []
+  requires_env:
+  - BESTHUMANIZER_API_KEY

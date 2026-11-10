@@ -1186,6 +1186,7 @@ A provider can also accept **peer passes** (`supports_peer_pass = True` + `verif
 - Each path needs a permission the pass carries.
   `agents:message` covers what `hermes peer` uses, in the agent's Bot Chat only (the one session every peer message lands in): health, capabilities, finding and creating the Bot Chat, reading it, chat turns (plain and streaming), runs in it (start, status, events, stop).
   Each turn runs with the agent's tools, terminal included, so a messaging pass lets its holder have the agent carry out tasks.
+  A messaging turn carries only its message (and, for a run, the Bot Chat's session id); choosing the model, the system prompt or the history needs `agents:control`.
   `agents:control` includes messaging in any session and adds the rest of the user-facing API: run approvals, clarify, steer and resolve-unknown; session listing, fork, messages, model, rename and delete; scheduled jobs, which keep running after the pass expires; models, skills and toolsets; chat completions and responses.
   Only `agents:control` may set or receive `X-Hermes-Session-Key`, which picks the API server's memory scope.
 - Every chat turn and run is credited to the pass holder: the turn author's id is set to the verified holder, whatever the request body says.

@@ -143,11 +143,16 @@ class CLIInfoMixin:
             for line in lines:
                 self._console_print(line)
 
-    def show_banner(self):
-        """Display the welcome banner in Claude Code style."""
+    def show_banner(self, from_last_row: bool = False):
+        """Display the welcome banner in Claude Code style. ``from_last_row`` (interactive startup)
+        starts it on the terminal's last row so banner and prompt end pinned to the bottom (#4412):
+        the clear homes the cursor, undoing the scroll startup did before it."""
         from cli import _build_compact_banner, get_tool_definitions, logger
         from hermes_cli.banner import build_welcome_banner
+        from hermes_cli.cli_render import _scroll_to_last_row
         self.console.clear()
+        if from_last_row:
+            _scroll_to_last_row(self.console.file)
         store, gateway_inventory, ctx_len, banner_kw = banner_plan(self, self.console)
         on_gateway = store is not None  # its tools come from the gateway: never enumerated here
 

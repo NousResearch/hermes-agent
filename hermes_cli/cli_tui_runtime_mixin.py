@@ -9,7 +9,6 @@ import errno
 import logging
 import os
 import queue
-import shutil
 import sys
 import threading
 import time
@@ -278,11 +277,9 @@ class CLITuiRuntimeMixin:
         _show_vscode_images_hint = False
         with suppress(Exception):  # VS Code image probe: same pre-pt window, cached, ~10 ms
             _show_vscode_images_hint = vscode_images_hint(self._inline_images_mode)
-        # Scroll the cursor to the last row so banner, responses and prompt pin to the bottom.
-        with suppress(Exception):
-            _term_lines = shutil.get_terminal_size().lines
-            if _term_lines > 2:
-                print("\n" * (_term_lines - 1), end="", flush=True)
+        # Scroll what the shell left on screen into scrollback before show_banner clears it.
+        from hermes_cli.cli_render import _scroll_to_last_row, _set_chrome_floor
+        _scroll_to_last_row()
 
         from hermes_cli.gateway_client import GatewayClientError
         try:
@@ -291,7 +288,10 @@ class CLITuiRuntimeMixin:
             # A refused open (a changed launch flag on --resume) is a startup error, not a traceback.
             print(f"Error: {exc}", file=sys.stderr)
             raise SystemExit(2) from None
-        self.show_banner()
+        self.show_banner(from_last_row=True)
+        # Banner and prompt start on the last row. With CPR off, prompt_toolkit only learns the rows
+        # down to the bottom from the chrome floor; armed, each print keeps the footer there.
+        _set_chrome_floor(1)
         self._show_security_advisories()
 
         # First-run: an unconfigured install routes into provider onboarding instead of

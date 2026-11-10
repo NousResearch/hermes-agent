@@ -690,6 +690,16 @@ def _chrome_floor():
     return _CHROME_FLOOR
 
 
+def _scroll_to_last_row(stream=None) -> None:
+    """Print enough newlines to put the cursor on the terminal's last row."""
+    with suppress(Exception):
+        rows = shutil.get_terminal_size().lines
+        if rows > 2:
+            stream = stream or sys.stdout
+            stream.write("\n" * (rows - 1))
+            stream.flush()
+
+
 # Rows output scrolled into scrollback while the terminal's width changed under it: a terminal
 # that does not reflow may have truncated them first, if it resized before reading all of that
 # output. The next refill repaints them too — twice rather than truncated for good (#95375).

@@ -1,0 +1,25 @@
+name: apple-keychain
+title: Apple Keychain
+repo: https://github.com/robbiemu/hermes-agent
+sha: 6b573f8f2f31ac0f5254c99b6f64d97e674ff569
+subdir: plugins/apple-keychain
+description: >-
+  Load Hermes secrets from macOS Keychain, with interactive setup, safe rotation
+  and recovery. Reads explicitly configured Keychain items; operator commands
+  can write items and manage recovery copies. Does not read or edit .env files.
+  Compiles the included C helper locally with Apple developer tools and uses
+  Security.framework and local macOS commands. Imports some private Hermes
+  configuration helpers.
+maintainer: robbiemu
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+version: "0.1.1"
+platforms:
+  - macos
+docs_url: https://github.com/robbiemu/hermes-agent/blob/6b573f8f2f31ac0f5254c99b6f64d97e674ff569/plugins/apple-keychain/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

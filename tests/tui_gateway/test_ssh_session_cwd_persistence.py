@@ -106,7 +106,7 @@ def test_hermes_owned_cwd(tmp_path):
     home = server.get_hermes_home()
     assert server._is_hermes_owned_cwd(str(home), None)
     assert server._is_hermes_owned_cwd(_hermes_home_subdir("home"), None)
-    assert server._is_hermes_owned_cwd(str(server.Path(server.__file__).resolve().parent.parent), None)
+    assert server._is_hermes_owned_cwd(str(server.Path(server.__file__).resolve().parents[2]), None)
     assert not server._is_hermes_owned_cwd("/home/me/proj", None)
     assert not server._is_hermes_owned_cwd(str(tmp_path), None)
 

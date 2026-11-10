@@ -71,7 +71,7 @@ export class RealSessionBuilder {
   private closed = false
 
   private constructor(hermesHome: string) {
-    this.child = spawn('uv', ['run', '--active', '--no-sync', 'python', '-m', 'tui_gateway.entry'], {
+    this.child = spawn('uv', ['run', '--active', '--no-sync', 'python', '-m', 'hermes_agent.tui_gateway.entry'], {
       cwd: REPO_ROOT,
       env: {
         ...process.env,

@@ -319,7 +319,7 @@ class TuiGateway:
         self.home = home
         self._stderr = open(home / "tui_gateway.stderr.log", "w", encoding="utf-8")
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "tui_gateway.entry"], cwd=str(home), env=hermetic_env(home, proxy=proxy),
+            [sys.executable, "-m", "hermes_agent.tui_gateway.entry"], cwd=str(home), env=hermetic_env(home, proxy=proxy),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr, text=True, bufsize=1,
             start_new_session=True,
         )

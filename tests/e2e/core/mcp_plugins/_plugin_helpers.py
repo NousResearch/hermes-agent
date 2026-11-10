@@ -74,7 +74,7 @@ class TuiHost:
 @contextlib.contextmanager
 def tui_host(eh: E2EHome, env: dict[str, str] | None = None) -> Iterator[TuiHost]:
     """``python -m hermes_agent.tui_gateway.entry`` exactly as the Ink TUI spawns it, in the fake home."""
-    proc = subprocess.Popen([sys.executable, "-m", "tui_gateway.entry"], cwd=eh.project, env=eh.env(env),
+    proc = subprocess.Popen([sys.executable, "-m", "hermes_agent.tui_gateway.entry"], cwd=eh.project, env=eh.env(env),
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, bufsize=1)
     cap = StreamCapture().start(proc)

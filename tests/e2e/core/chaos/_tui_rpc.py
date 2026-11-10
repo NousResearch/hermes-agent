@@ -30,7 +30,7 @@ class TuiGatewayProcess:
         self._stderr_fh = open(stderr_path, "wb")
         self.stderr_path = stderr_path
         self.proc = subprocess.Popen(
-            [python_exe(), "-X", "faulthandler", "-m", "tui_gateway.entry"],
+            [python_exe(), "-X", "faulthandler", "-m", "hermes_agent.tui_gateway.entry"],
             cwd=str(cwd),
             env=env,
             stdin=subprocess.PIPE,

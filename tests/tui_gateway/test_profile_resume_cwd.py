@@ -75,7 +75,7 @@ def test_resume_lands_in_the_profiles_own_home(resume, profile, stored):
     root = server.get_hermes_home()
     sibling = root / "profiles" / "jordan"
     sibling.mkdir(parents=True, exist_ok=True)
-    install = server.Path(server.__file__).resolve().parent.parent
+    install = server.Path(server.__file__).resolve().parents[2]
     path = {"root": str(root), "sibling": str(sibling), "install": str(install), None: None}[stored]
 
     live = resume(path)

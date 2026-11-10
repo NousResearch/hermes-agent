@@ -34,7 +34,7 @@ _REPO = Path(__file__).resolve().parents[2]
 _OWNER = r'''
 import json, os, sys, threading
 from pathlib import Path
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 out = Path(sys.argv[1])
 worker = server._SlashWorker("owned-worker-test", "")
 if sys.argv[2] == "quick":

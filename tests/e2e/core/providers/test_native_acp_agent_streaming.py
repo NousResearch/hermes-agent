@@ -164,7 +164,7 @@ def _tui_gateway(root: Path) -> Observed:
         done = rpc.until(event("message.complete"))
         return str((done["params"].get("payload") or {}).get("text") or "")
 
-    return _run_child([sys.executable, "-m", "tui_gateway.entry"], nh, fake, drive)
+    return _run_child([sys.executable, "-m", "hermes_agent.tui_gateway.entry"], nh, fake, drive)
 
 
 def _nested_acp(root: Path) -> Observed:

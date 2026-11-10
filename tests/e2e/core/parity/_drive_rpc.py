@@ -141,7 +141,7 @@ class StreamCapture:
 
 def spawn_tui_gateway(ph: ParityHome) -> tuple[subprocess.Popen, StreamCapture]:
     proc = subprocess.Popen(
-        [sys.executable, "-m", "tui_gateway.entry"], cwd=ph.project, env=ph.env(),
+        [sys.executable, "-m", "hermes_agent.tui_gateway.entry"], cwd=ph.project, env=ph.env(),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
     )
     return proc, StreamCapture().start(proc)

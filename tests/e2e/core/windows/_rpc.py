@@ -21,7 +21,7 @@ READY_TIMEOUT = 120.0
 class StdioGateway:
     def __init__(self, home: WinHome) -> None:
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "tui_gateway.entry"], cwd=home.project, env=home.env(),
+            [sys.executable, "-m", "hermes_agent.tui_gateway.entry"], cwd=home.project, env=home.env(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         self._frames: queue.Queue[bytes | None] = queue.Queue()

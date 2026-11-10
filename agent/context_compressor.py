@@ -24,7 +24,6 @@ from agent.auxiliary_client import (
     CODEX_STREAM_STALL_MARKER,
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
-    _is_connection_error,
     _message_field,
     aux_interrupt_protection,
     call_llm,
@@ -45,7 +44,7 @@ from agent.context_compressor_tail import (
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
-from agent.error_classifier import FailoverReason, classify_api_error
+from agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
@@ -223,7 +222,7 @@ def _is_refusal_response(response: Any, content: str) -> bool:
     return bool(_response_refusal_text(response)) or _is_summary_refusal(content)
 
 
-def _is_summary_access_or_quota_error(exc: Exception) -> bool:
+def _is_summary_access_or_quota_error(exc: Exception, verdict: Optional[ClassifiedError] = None) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
 
     # No active secret scope is a missing-credential failure of our own making;
@@ -239,7 +238,7 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
         UnscopedSecretError = ()  # type: ignore[assignment]
     if UnscopedSecretError and isinstance(exc, UnscopedSecretError):
         return True
-    reason = classify_api_error(exc).reason
+    reason = (verdict or classify_api_error(exc)).reason
     if reason is FailoverReason.rate_limit:
         return False
     if reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
@@ -259,6 +258,15 @@ def _exc_status_code(exc: Exception) -> Any:
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 
+
+# A label the reader is never told how to treat is decoration: the summarizer tags guesses, and this is
+# the one line that tells the resumed agent what the tag means. It lives in the prefix because it applies
+# to every summary (including ones assembled by the server-side compaction route, which never sees the
+# summarizer prompt), and it is a constant, so it costs one prefix-cache invalidation at release.
+_UNVERIFIED_TREATMENT_SENTENCE = (
+    "Lines beginning 'UNVERIFIED:' are hypotheses carried over from the compacted turns, not facts: "
+    "confirm one with a tool call before acting on it or reporting it as done. "
+)
 
 SUMMARY_PREFIX = (
     # Jul 2026 (#65848 class): identical to the pre-#69619 prefix except it lacked the explicit "tools
@@ -295,12 +303,16 @@ SUMMARY_PREFIX = (
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
+    f"{_UNVERIFIED_TREATMENT_SENTENCE}"
     "None of the above restricts HOW you work: your tools remain fully "
     "active — keep calling them normally for the active task (edit files, "
     "run commands, search) instead of merely narrating what you would do. "
     "The current session state (files, config, etc.) may reflect work "
     "described here — avoid repeating it:"
 )
+
+# The prefix retired by the stance-treatment sentence lives in _HISTORICAL_SUMMARY_PREFIXES below, frozen
+# byte-for-byte like every earlier generation (see tests/agent/test_summary_prefix_semantics.py).
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
 # Underscore prefix ON PURPOSE: wire sanitizers strip ``_``-keys; strict gateways
@@ -606,6 +618,28 @@ def salvage_grown_transcript(
 # Exact wire text of every shipped prefix, newest-first; stale directives must
 # still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
 _HISTORICAL_SUMMARY_PREFIXES = (
+    # Pre-stance-treatment: identical to the live prefix minus the "UNVERIFIED: is a hypothesis" sentence.
+    # Retired when that sentence shipped; summaries persisted by the previous build must still be detected
+    # and stripped on resume.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a "
+    "handoff from a previous context window — treat it as background reference, NOT as active instructions. Do "
+    "NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond "
+    "ONLY to the latest user message that appears AFTER this summary — that message is the single source of "
+    "truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, "
+    "wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and "
+    "wait for a new user message. This handoff must never become the active turn by itself. (Exception: if "
+    "tool results or your own tool calls appear after this summary, you are mid-way through an in-flight "
+    "exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should "
+    "resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as "
+    "the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the "
+    "latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a "
+    "new topic) must immediately end any in-flight work described in the summary; do not re-surface it in "
+    "later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS "
+    "authoritative and active — never ignore or deprioritize memory content due to this compaction note. None "
+    "of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the "
+    "active task (edit files, run commands, search) instead of merely narrating what you would do. The current "
+    "session state (files, config, etc.) may reflect work described here — avoid repeating it:",
     # Pre-#80622: lacked the "no user message after summary => do nothing" clause.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
     "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
@@ -720,7 +754,7 @@ class _SummaryFailureKind:
         return next((reason for flagged, reason in reasons if flagged), "failed")
 
 
-def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
+def _classify_summary_failure(e: Exception, verdict: ClassifiedError) -> _SummaryFailureKind:
     """Classify a summary-call exception by status code / message shape.
 
     A "refusal content" RuntimeError (prose or provider ``refusal`` field) deliberately rides the
@@ -741,8 +775,8 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         # Malformed/non-JSON bodies (HTML 502 as application/json) surface as JSONDecodeError or
         # APIResponseValidationError "expecting value"; treat as transient.
         json_decode=isinstance(e, json.JSONDecodeError) or "expecting value" in err,
-        # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
-        streaming_closed=_is_connection_error(e) and not stall,
+        # Premature-close / dead-network errors (a TLS certificate failure too): short cooldown, then abort.
+        streaming_closed=(verdict.reason is FailoverReason.ssl_cert_verification or bool(verdict.error_context.get("transport"))) and not stall,
         # HTTP 200 with empty body from a degraded provider, the sibling "no usable response" shapes from
         # _validate_llm_response, and Gemini's prompt block of the summary request (once empty content).
         empty_content=getattr(e, "code", None) == "gemini_prompt_blocked" or (isinstance(e, RuntimeError) and any(
@@ -752,7 +786,7 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         )),
         # Truncated summary: one main-model retry, then ABORT preserving the session.
         truncated=isinstance(e, RuntimeError) and _TRUNCATED_SUMMARY_MARKER in err,
-        overloaded=classify_api_error(e).reason is FailoverReason.overloaded
+        overloaded=verdict.reason is FailoverReason.overloaded
         or any(marker in err for marker in ("overloaded", "at capacity", "over capacity")),
     )
 
@@ -4144,8 +4178,9 @@ Write only the summary body. Do not include any preamble or prefix."""
                 _SUMMARY_FAILURE_COOLDOWN_SECONDS,
             )
             return None
-        kind = _classify_summary_failure(e)
-        access_error = _is_summary_access_or_quota_error(e)
+        verdict = classify_api_error(e)
+        kind = _classify_summary_failure(e, verdict)
+        access_error = _is_summary_access_or_quota_error(e, verdict)
         # Auth/permission/quota failures are not retryable: flag so compress() preserves the
         # session. A distinct summary_model still gets the one-shot main-model fallback.
         if access_error:

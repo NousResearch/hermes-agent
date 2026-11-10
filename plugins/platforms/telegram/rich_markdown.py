@@ -1,7 +1,7 @@
 """Normalization for Telegram's permissive Rich Markdown block parser."""
 
 import re
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 
 # An email-shaped token (incl. provider-prefixed ``openai:user@example.com``): Telegram's rich entity
 # detection can auto-link it into an invalid email entity and reject the whole message
@@ -19,13 +19,18 @@ RICH_EMAIL_TOKEN_RE = re.compile(
 # Literal code/math regions: a block fence (opened only at a line start, after any quote/list
 # prefixes, and unfinished in a streaming draft), an inline code span (which also owns inline
 # ```x```), or display math. Both transforms below consume these first so their contents survive.
-# An inline span is a backtick run closed by the next run of exactly its length. A regex
-# ``(`+).*?\1`` rescans to the end of the text for every unclosed run (6.5 s on a 32 KB draft of
-# distinct-length runs), so the regex only spots a backtick and the closer comes from an index of
-# runs by length: one pass, then a bisect per backtick.
+# A fence closes as CommonMark closes it: on a line of its own holding the opener's character at
+# least as many times and then only whitespace (so ``text ``` trailing`` inside it is code), or
+# where the quote/list item that holds it ends. An inline span is a backtick run (an escaped first
+# tick is literal) closed by the next run of exactly its length inside the same paragraph; a run
+# with no such closer is literal text. A regex ``(`+).*?\1`` rescans to the end of the text for
+# every unclosed run (6.5 s on a 32 KB draft of distinct-length runs), so the regex only spots a
+# backtick and the closer comes from an index of runs by length, and a fence body is walked once:
+# the whole scan stays linear.
 _BLOCK_PREFIX = r"[ \t]*(?:(?:>[ \t]*|[-+*][ \t]+|\d+[.)][ \t]+))*"
+_FENCE_OPEN = r"(?P<fence>`{3,}(?=[^`\n]*$)|~{3,})"
 _RICH_LITERAL_REGION = (
-    r"^" + _BLOCK_PREFIX + r"(?P<fence>`{3,}(?=[^`\n]*\n)|~{3,})[^\n]*\n.*?(?:(?P=fence)(?![`~])|\Z)"
+    r"^(?P<fence_prefix>" + _BLOCK_PREFIX + r")" + _FENCE_OPEN + r"[^\n]*"
     r"|(?P<tick>`)"
     r"|\$\$.*?(?:\$\$|\Z)"
 )
@@ -35,12 +40,91 @@ _LITERAL_HASH_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 _BACKTICK_RUN_RE = re.compile(r"`+")
+# Line ends a code span cannot cross: a blank line, a one-line ATX heading, a list item or a fence
+# opener ends the paragraph first (an ordered item interrupts only at 1).
+_PARAGRAPH_BREAK_RE = re.compile(
+    r"\n(?=[ \t]*\n| {0,3}#{1,6}(?:[ \t]|$)| {0,3}(?:>[ \t]*)*(?:[-+*]|1[.)])[ \t]+\S"
+    r"| {0,3}(?:(?:>[ \t]*|[-+*][ \t]+|1[.)][ \t]+))*(?:`{3,}[^`\n]*$|~{3,}))"
+    r"|(?<=\n) {0,3}#{1,6}(?:[ \t][^\n]*)?(?=\n)|\A {0,3}#{1,6}(?:[ \t][^\n]*)?(?=\n)", re.MULTILINE)
+_CONTAINER_MARKER_RE = re.compile(r"[ \t]*(?:(?P<quote>>)[ \t]?|(?:[-+*]|\d+[.)])[ \t]+)")
+_QUOTE_MARKER_RE = re.compile(r" {0,3}> ?")
+_LIST_ITEM_RE = re.compile(r" *(?:[-+*]|\d{1,9}[.)])(?:[ \t]+(?=\S)|[ \t]*$)")  # an empty item's content sits one column past its marker
+_FENCE_CLOSE_RE = re.compile(r"( *)(`{3,}|~{3,})[ \t]*")
+
+
+def _container_markers(prefix: str) -> tuple[list[int], int]:
+    """Containers a fence's line prefix opens (-1 = a quote marker each line repeats; n = a list
+    item's content indent) and the opener's own indent past them."""
+    containers: list[int] = []
+    pos = 0
+    while (marker := _CONTAINER_MARKER_RE.match(prefix, pos)) and marker.end() > pos:
+        containers.append(-1 if marker.group("quote") else len(marker.group(0).expandtabs(4)))
+        pos = marker.end()
+    return containers, len(prefix[pos:].expandtabs(4))
+
+
+def _previous_line(text: str, pos: int) -> str | None:
+    """The last non-blank line before the line starting at *pos* (``None`` at the top)."""
+    end = pos - 1
+    while end > 0:
+        start = text.rfind("\n", 0, end) + 1
+        if text[start:end].strip():
+            return text[start:end].expandtabs(4)
+        end = start - 1
+    return None
+
+
+def _fence_layout(text: str, match: re.Match[str]) -> tuple[list[int], int] | None:
+    """Containers holding the fence *match* opens and the most a closer may be indented past
+    them, or ``None`` when the line is not a fence. An indented opener with no markers of its
+    own is the content of the list item on the line above (it closes where that item ends); one
+    indented 4+ columns past every container is paragraph text or an indented code block."""
+    containers, indent = _container_markers(match.group("fence_prefix"))
+    if containers or not indent:
+        return (containers, 3) if indent < 4 else None
+    line = _previous_line(text, match.start())
+    item = _LIST_ITEM_RE.match(line) if line is not None else None
+    width = (len(item.group(0)) if item.end() < len(line) else len(item.group(0).rstrip()) + 1) if item else 0
+    if item and width <= indent:
+        indent -= width
+        containers = [width]
+    elif line is not None and indent >= 4 and len(line) - len(line.lstrip(" ")) >= 2:
+        return [], indent  # deeper continuation of a list item: closes at its own indent
+    return (containers, 3) if indent < 4 else None
+
+
+def _fence_end(text: str, match: re.Match[str], layout: tuple[list[int], int]) -> int:
+    """End of the fenced block *match* opens: its closing line, the end of the quote/list item
+    holding it, or the end of an unfinished streaming draft."""
+    fence = match.group("fence")
+    containers, max_indent = layout
+    line_end = match.end()
+    while line_end < len(text):
+        line_start = line_end + 1
+        line_end = text.find("\n", line_start)
+        line_end = len(text) if line_end < 0 else line_end
+        rest = text[line_start:line_end]
+        for need in containers:
+            if need < 0:
+                quote = _QUOTE_MARKER_RE.match(rest)
+                if quote is None:
+                    return line_start - 1
+                rest = rest[quote.end():]
+            elif rest.strip():
+                rest = rest.expandtabs(4)
+                if len(rest) - len(rest.lstrip(" ")) < need:
+                    return line_start - 1
+                rest = rest[need:]
+        close = _FENCE_CLOSE_RE.fullmatch(rest.expandtabs(4))
+        if (close and close.group(2)[0] == fence[0] and len(close.group(2)) >= len(fence)
+                and len(close.group(1)) <= max_indent):
+            return line_end
+    return len(text)
 
 
 def _iter_literal_tokens(pattern: re.Pattern[str], text: str):
     """Yield ``(start, end, match)`` for each *pattern* token in order; ``match`` is ``None`` for
-    an inline code span. Like the regex it replaces, an opener may be the tail of a longer run
-    (each later start is retried when a run has no closer) and an unclosed run is plain text."""
+    an inline code span."""
     run_starts: list[int] = []
     run_ends: list[int] = []
     starts_by_len: dict[int, list[int]] = {}
@@ -48,21 +132,35 @@ def _iter_literal_tokens(pattern: re.Pattern[str], text: str):
         run_starts.append(run.start())
         run_ends.append(run.end())
         starts_by_len.setdefault(run.end() - run.start(), []).append(run.start())
+    breaks = [brk.end() if brk.group(0) else brk.start() for brk in _PARAGRAPH_BREAK_RE.finditer(text)]
     pos = 0
     while (m := pattern.search(text, pos)) is not None:
+        if m.group("fence") is not None:
+            layout = _fence_layout(text, m)
+            if layout is None:
+                pos = m.start("fence")  # paragraph or indented-code line: its backticks are inline runs
+                continue
+            pos = _fence_end(text, m, layout)
+            yield m.start(), pos, m
+            continue
         if m.group("tick") is None:
             yield m.start(), m.end(), m
             pos = m.end()
             continue
         start = m.start()
         end = run_ends[bisect_right(run_starts, start) - 1]
-        same_len = starts_by_len[end - start] if end - start in starts_by_len else []
+        slash = start
+        while slash and text[slash - 1] == "\\":
+            slash -= 1
+        start += (start - slash) % 2  # an escaped first tick is literal: ``\``x`` is ` then a span
+        same_len = starts_by_len.get(end - start, [])
         i = bisect_right(same_len, end)
-        if i < len(same_len):
+        b = bisect_left(breaks, end)
+        if start < end and i < len(same_len) and (b == len(breaks) or same_len[i] < breaks[b]):
             pos = same_len[i] + end - start
             yield start, pos, None
         else:
-            pos = start + 1
+            pos = end
 
 
 def escape_literal_hash_prefixes(text: str) -> str:
@@ -96,7 +194,6 @@ _RICH_PROTECTED_REGION_RE = re.compile(
 # the paragraph and reach Telegram as literal text with no list layout (#124552).
 _RICH_INTERRUPTING_ORDERED_ITEM_RE = re.compile(r" {0,3}(?!1[.)])\d{1,9}[.)][ \t]+\S")
 _RICH_CONTAINER_LINE_RE = re.compile(r" {0,3}(?:>|[-+*][ \t]|\d{1,9}[.)][ \t])")
-_RICH_FENCE_LINE_RE = re.compile(r" {0,3}(?:```|~~~)")
 _RICH_THEMATIC_BREAK_RE = re.compile(r"(?:[-*_][ \t]*){3,}")
 
 
@@ -108,23 +205,21 @@ def _rich_separate_ordered_lists(text: str) -> str:
     blockquote continuations, indented lines, fences (closed, or unclosed in a streaming draft)
     and lists starting at ``1`` are left untouched, and the pass is idempotent.
     """
-    # Inline code / display math spanning lines is literal text; block fences keep the line scan below.
-    # A backtick span cannot cross a blank line (CommonMark ends the paragraph first).
-    spans = [(start, end) for start, end, m in _iter_literal_tokens(_RICH_LITERAL_REGION_RE, text)
-             if not (m.group("fence") if m else "\n\n" in text[start:end])]
+    # Code spans, math and fences come from the shared literal-region scan, so a fence closes only
+    # where the hash pass and CommonMark close it; a line starting inside one is never a list item.
+    spans = [(start, end, bool(m and m.group("fence")))
+             for start, end, m in _iter_literal_tokens(_RICH_LITERAL_REGION_RE, text)]
     out: list[str] = []
-    state = None  # None, "paragraph", "container", or "fence" — the block the previous line built
+    state = None  # None, "paragraph", or "container": the block the previous line built
     offset = span_idx = 0
     for line in text.split("\n"):
         start, offset = offset, offset + len(line) + 1
         while span_idx < len(spans) and spans[span_idx][1] <= start:
             span_idx += 1
         if span_idx < len(spans) and spans[span_idx][0] < start:
-            pass  # continuation inside a multiline code span or math block: never a list item
-        elif _RICH_FENCE_LINE_RE.match(line):
-            state = None if state == "fence" else "fence"
-        elif state == "fence":
-            pass
+            if spans[span_idx][2]:
+                state = None  # inside a fence; the block after it starts fresh
+            # else: continuation inside a multiline code span or math block keeps the block
         elif not line.strip():
             state = None
         elif state == "paragraph" and _RICH_INTERRUPTING_ORDERED_ITEM_RE.match(line):

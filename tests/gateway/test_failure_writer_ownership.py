@@ -565,3 +565,66 @@ def test_turn_built_without_a_session_db_still_reaches_state_db(tmp_path):
         db.close()
 
     asyncio.run(check())
+
+
+def test_failed_agent_flush_with_handle_falls_back_to_gateway_writer(tmp_path):
+    """#140823: a live agent DB handle does not prove its SQLite flush succeeded."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import _agent_persisted_flag
+    from gateway.session import SessionSource, SessionStore
+
+    # The normal agent reported a failed SQLite write. A non-null handle still
+    # used to claim persistence, suppressing the gateway's retryable user row.
+    failed_flush = {"failure_reason": "session_persistence_failed:locked"}
+    agent = SimpleNamespace(_session_db=object())
+    assert _agent_persisted_flag(failed_flush, agent) is False
+    # An explicit runtime receipt (Codex app-server) remains authoritative.
+    assert _agent_persisted_flag({**failed_flush, "agent_persisted": True}, agent) is True
+    assert _agent_persisted_flag({}, agent) is True
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._session_db = object()
+
+        async def noop(*args, **kwargs):
+            return None
+
+        runner._refresh_agent_cache_message_count = noop
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="failed-flush", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        result = {
+            "failed": True,
+            "failure_reason": "session_persistence_failed:locked",
+            "final_response": "",
+            "messages": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "agent_persisted": _agent_persisted_flag(failed_flush, agent),
+        }
+        await runner._hmwa_persist_turn_transcript(
+            event=MessageEvent(text="please remember", source=source, message_id="m-locked"),
+            source=source, session_entry=entry, session_key=entry.session_key,
+            agent_result=result, agent_messages=[],
+            prepared=runner._PreparedTurn(
+                [], "", "please remember", None, None, None, sid, "owner-locked",
+            ),
+            response="", agent_failed_early=True, hidden_reasoning_incomplete=False,
+            is_context_overflow_failure=False,
+        )
+        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        assert [m["role"] for m in rows] == ["user", "assistant"]
+        assert rows[0]["content"] == "please remember"
+        assert rows[0]["platform_message_id"] == "m-locked"
+        assert rows[1]["display_kind"] == FAILED_TURN_DISPLAY_KIND
+        db.close()
+
+    asyncio.run(check())

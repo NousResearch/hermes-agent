@@ -1,0 +1,24 @@
+name: workbench-link
+title: Workbench Link
+repo: https://github.com/dotmantissa/workbench_link
+sha: 657bfda03bef3e47a2a89652ecf2bdbcfdf5a839
+description: Route Hermes native file, terminal and code tools to one explicitly selected Linux/Docker project worker.
+maintainer: dotmantissa
+tier: community
+category: tools
+requires_hermes: ">=0.23.0,<0.24.0"
+version: "0.1.0"
+docs_url: https://github.com/dotmantissa/workbench_link/blob/657bfda03bef3e47a2a89652ecf2bdbcfdf5a839/README.md
+readme: true
+platforms:
+  - linux
+known_issues:
+  - Requires plugins.isolation=in_process, one foreground CLI session per profile, and explicit broker/worker startup.
+  - Linux/Docker worker only; gateway multiplexing, PTY/background stdin and persist_on_release are unsupported.
+  - Physical WAN behavior and live-model conversations have not been verified.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

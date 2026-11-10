@@ -2,7 +2,7 @@ name: clearvoice
 repo: https://github.com/thebangarang/clearvoice-hermes-plugin
 # Full 40-character commit SHA of the reviewed tree.
 sha: d4bc366ec72d4f2af1a1772b3a94f48bd0e0b156
-description: Local push-to-talk speech bridge — your words on screen and spoken clearly in 17 languages, with no account, no cloud and no audio on disk.
+description: "Local push-to-talk speech bridge — your words on screen and spoken clearly in 17 languages, with no account, no cloud and no audio on disk. Disclosure — downloads Whisper and Piper voice models from Hugging Face on first use (Piper pinned to a fixed revision and checksum-verified); the transcribe and say-back tools read any absolute audio file path the agent names (up to 25 MB) and transcribe it on-device; with \"Allow cloud speech\" and a Gradium key set, audio and text are sent to api.gradium.ai; a tool can only queue a sentence, which is spoken aloud only after you press Speak it in the ClearVoice pane."
 maintainer: thebangarang
 tier: community
 category: voice

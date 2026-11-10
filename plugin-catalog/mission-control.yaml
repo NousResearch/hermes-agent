@@ -1,0 +1,27 @@
+name: mission-control
+title: Mission Control
+repo: https://github.com/rohitdanda/hermes-mission-control
+sha: 4f00f075df9199f2ef59551dfad15e898471045c
+description: Live mission-control dashboard for Hermes Desktop — tool waterfall, parallel subagent cards, token and estimated-cost meters with a prompt-cache badge, plus budget and possible-loop alerts, streamed in real time. Read-only; nothing leaves the machine.
+maintainer: rohitdanda
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+version: "1.0.0"
+image: https://raw.githubusercontent.com/rohitdanda/hermes-mission-control/4f00f075df9199f2ef59551dfad15e898471045c/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/rohitdanda/hermes-mission-control/4f00f075df9199f2ef59551dfad15e898471045c/assets/dashboard.png
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_api_request
+    - api_request_error
+    - subagent_start
+    - subagent_stop
+    - pre_approval_request
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

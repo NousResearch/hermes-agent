@@ -1114,6 +1114,14 @@ The report includes system info (OS, Python version, Hermes version), recent age
 
 Default uploads use public paste services tried in order: paste.rs, dpaste.com. `--nous` uploads the same debug bundle to private Nous diagnostics storage instead; the returned viewer link is for the Nous team and auto-deletes after 14 days.
 
+:::tip Which debug-share option should I use?
+
+For Nous support, use `hermes debug share --nous`: the bundle goes to private, staff-only storage and auto-deletes after 14 days. This also avoids the public paste services if their uploads fail. Use `hermes debug share --local` to inspect the report without uploading anything. The default `hermes debug share` uploads to public paste services.
+
+Secret redaction is on by default, but logs can still contain conversation content, tool output and file paths. Review the privacy notice before confirming an upload. Do not use `--no-redact` when sharing a support bundle.
+
+:::
+
 ### Examples
 
 ```bash

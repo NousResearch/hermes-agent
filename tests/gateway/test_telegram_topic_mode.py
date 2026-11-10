@@ -151,7 +151,6 @@ def _make_runner(session_db=None):
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
     runner._invalidate_session_run_generation = MagicMock()
     runner._begin_session_run_generation = MagicMock(return_value=1)
@@ -793,6 +792,46 @@ async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_topic_restore_renames_topic_to_restored_session_title(
+    tmp_path, monkeypatch
+):
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.set_session_title("old-session", "Quarterly Tax Planning")
+    session_db.append_message("old-session", "user", "help with taxes")
+    session_db.append_message("old-session", "assistant", "Sure, happy to help.")
+    runner = _make_runner(session_db=session_db)
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/topic restore must not enter the agent loop")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("/topic old-session", thread_id="17585")
+    )
+
+    # The restored topic must be renamed to the session title rather than
+    # keeping Telegram's default (the raw "/topic <id>" command text).
+    assert "Session restored: Quarterly Tax Planning" in result
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="17585",
+        name="Quarterly Tax Planning",
+    )
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_first_message_inside_topic_records_topic_binding(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
@@ -852,6 +891,7 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
         return "handoff ok"
 
     runner._handle_message = AsyncMock(side_effect=fake_handle_message)
+    runner.session_store.peek_session_id.return_value = "cli-session"  # the route the handoff switched
 
     await runner._process_handoff({
         "id": "cli-session",
@@ -867,6 +907,36 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
     assert captured["source"].chat_type == "dm"
     assert captured["source"].user_id == "208214988"
     assert captured["source"].thread_id == "17585"
+
+
+@pytest.mark.asyncio
+async def test_handoff_into_bound_dm_topic_rebinds_the_topic(tmp_path):
+    """A handoff into an already-bound DM topic moves the topic binding to the handed-off session;
+    else the next message's binding heal switches the topic straight back to its old session."""
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    topic_key = build_session_key(_make_source(thread_id="42"))
+    session_db.create_session("old-topic-session", source="telegram", user_id="208214988")
+    session_db.create_session("cli-session", source="cli")
+    session_db.bind_telegram_topic(chat_id="208214988", thread_id="42", user_id="208214988",
+                                   session_key=topic_key, session_id="old-topic-session")
+    runner = _make_runner(session_db=session_db)
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="208214988", name="Tester DM", thread_id="42")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.create_handoff_thread = AsyncMock(return_value=None)
+    adapter.send.return_value = SimpleNamespace(success=True)
+    runner.session_store.switch_session.side_effect = lambda key, sid, **_kw: SessionEntry(
+        session_key=key, session_id=sid, created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.TELEGRAM, chat_type="dm")
+    runner.session_store.peek_session_id.return_value = "cli-session"  # the route the handoff switched
+    runner._handle_message = AsyncMock(return_value="handoff ok")
+
+    await runner._process_handoff({"id": "cli-session", "title": "CLI work", "handoff_platform": "telegram"})
+
+    binding = session_db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["session_id"] == "cli-session"
+    assert binding["session_key"] == topic_key
 
 
 @pytest.mark.asyncio

@@ -24,12 +24,18 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "observers", "reason", "result", "settle")
+    __slots__ = ("acknowledged", "authority", "cancelled", "card_deny_only", "data", "event", "expired", "observers",
+                 "reason", "result", "settle")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
+        # True: a card tap may only deny until a renderer proves its card shows the whole command (#62359).
+        self.card_deny_only = False
+        # Who may answer (gateway.approval_actor): the turn's actor, approvers and admins. Kept off
+        # ``data`` so the prompt and replay payloads sent to clients stay exactly what was raised.
+        self.authority = _ctx.prompt_authority()
         self.acknowledged = False
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
@@ -43,6 +49,15 @@ class _ApprovalEntry:
         self.cancelled: str | None = None
         # The prompt timed out unanswered; followers woken by its event adopt that timeout.
         self.expired = False
+
+
+def _same_answerers(leader: dict, follower: dict) -> bool:
+    """A follower adopts its leader's answer only when the same people may give it: the default
+    (``approvers: ["*"]``, anyone admitted) or the same requester. Otherwise another requester's
+    deny (or grant) would answer this wait without its own requester's say."""
+    if "*" in (follower.get("approvers") or []) and "*" in (leader.get("approvers") or []):
+        return True
+    return leader.get("requester_id") == follower.get("requester_id") and leader.get("approvers") == follower.get("approvers")
 
 
 def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str,
@@ -164,7 +179,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         "session_key": session_key, "surface": surface,
     }
     keys = list(approval_data.get("pattern_keys") or [])
+    # Born Deny-only: the mark exists before the entry is published, so no tap can approve it in the window
+    # before its renderer has decided whether the card shows the whole command.
     entry = _ApprovalEntry(approval_data)
+    entry.card_deny_only = True
     # Captured before the entry is published: a coalesced follower can find it while the pre-request
     # hooks still run, and must wait this same timeout rather than re-read a since-edited config.
     timeout_s = entry.data["timeout_s"] = _ctx._get_approval_timeout()
@@ -183,7 +201,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             if not preparing_terminal_approval():
                 leader = next((e for e in _approval._gateway_queues.get(session_key, [])
                                if e.data.get("command") == approval_data.get("command")
-                               and list(e.data.get("pattern_keys") or []) == keys), None)
+                               and list(e.data.get("pattern_keys") or []) == keys
+                               and _same_answerers(e.authority, entry.authority)), None)
             if leader is None:
                 _enqueue()
                 break

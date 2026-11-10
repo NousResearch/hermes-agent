@@ -221,10 +221,12 @@ jobs:
     # secret is injected into admission; downstream jobs consume its outputs.
     environment: release-signing
     # The archive step re-downloads every pinned input from R2 to verify its
-    # sha256 (several GB: Chromium, llama.cpp CUDA builds). ~20 s on a normal
+    # sha256 (several GB: Chromium, llama.cpp CUDA builds). ~3 min on a normal
     # day; v0.22.4 rc.1 hit slow R2 reads and the old 5-minute cap cancelled
-    # both Windows chains. The standalone archive job it replaced had 60.
-    timeout-minutes: 30
+    # both Windows chains, and v0.23.1 rc.1 took 28 min on x64 and was
+    # cancelled at 30 on arm64 (single files stalling 5-8 min). 60 matches the
+    # standalone archive job it replaced.
+    timeout-minutes: 60
     permissions:
       contents: read
     outputs:

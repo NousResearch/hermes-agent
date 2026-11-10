@@ -3,18 +3,7 @@ repo: https://github.com/xMannixx/Agent-Security-Guard
 sha: b1b923e6733f2a3dd7f0a79318d452ad395d8340
 subdir: plugin
 title: Agent Security Guard
-description: 'Deterministic guard against prompt injection turning into actions. Results of web, search
-  and browser tools reach the model wrapped as untrusted data; every planned tool call is checked
-  against fixed action and sequence rules before it runs. After outside content entered a turn, a
-  shell command, file write, install, config change or external send goes to Hermes''s approval
-  prompt; a secret is not sent out through web, e-mail, upload or push tools; the agent does not
-  rewrite its own guard or skills on its own initiative. No model decides; every decision is recorded
-  in a hash-chained audit trail. Disclosure — no network calls, no shell commands, no background
-  process, no credentials, no Python dependencies. Reads its policy from
-  /etc/agent-security-guard/guard.yaml or guard.yaml in the Hermes home; for file tools it resolves the named
-  path (realpath, stat) without reading the file; writes its audit trail (mode 0600) to
-  $XDG_STATE_HOME/agent-security-guard. Sees tool calls, not what runs inside a shell command; not a
-  sandbox.'
+description: "Deterministic guard against prompt injection turning into actions. Results of web, search and browser tools reach the model wrapped as untrusted data; every planned tool call is checked against fixed action and sequence rules before it runs. After outside content entered a turn, a shell command, file write, install, config change or external send goes to Hermes's approval prompt; a secret is not sent out through web, e-mail, upload or push tools; the agent does not rewrite its own guard or skills on its own initiative. No model decides; every decision is recorded in a hash-chained audit trail. Disclosure — no network calls, no shell commands, no background process, no credentials, no Python dependencies. Reads its policy from /etc/agent-security-guard/guard.yaml or guard.yaml in the Hermes home; loads its rule engine from /usr/local/lib/agent-security-guard/src or agent-security-guard/src in the Hermes home ahead of the pinned copy when an operator installed one there; for file tools it resolves the named path (realpath, stat) without reading the file; writes its audit trail (mode 0600) to $XDG_STATE_HOME/agent-security-guard. Sees tool calls, not what runs inside a shell command; not a sandbox."
 maintainer: xMannixx
 tier: community
 category: tools

@@ -1,0 +1,25 @@
+name: hermes-stage
+repo: https://github.com/davidpgil/hermes-stage
+sha: 47ad71d0e057053cbdcdb59416376543a9c9c12c
+description: >-
+  A multi-profile terminal bot room for Hermes with one shared transcript,
+  profile lens tabs, public @name/@everyone routing, and Stage-specific status,
+  tool, and inline diff cards.
+maintainer: David Philipe Gil
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+version: "0.50.34"
+readme: true
+platforms:
+  - linux
+  - macos
+title: Hermes Stage
+known_issues:
+  - Approval UI is implemented but needs a pending approval to exercise end to end.
+  - The room is plugin-owned, not Hermes Desktop's hosted group-room engine.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

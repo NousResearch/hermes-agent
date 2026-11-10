@@ -1,6 +1,6 @@
-"""Re-attach user images on turns whose history was rebuilt from the session DB.
+"""Re-attach images on turns whose history was rebuilt from the session DB.
 
-The DB stores user rows as text (``session_persistence._durable_content``): an image part becomes a
+The DB stores rows as text (``session_persistence._durable_content``): an image part becomes a
 ``[screenshot]`` line at its position (``[screenshot detail=low]`` when the caller chose a detail).
 A turn rebuilt from the DB (every API-server request, ``--resume``, a gateway restart) therefore
 showed the model that placeholder instead of the photo the user asked about one message earlier.
@@ -8,6 +8,10 @@ The bytes are not gone: the session-authority attach paths (CLI, the shared-gate
 gateway, API server) commit them under the profile's content-addressed ``native-inputs/<sha256>/<name>``
 and name that path in the same row (``[Image attached at: <path>]``,
 written by ``image_routing.build_native_content_parts`` / ``session_api_media.restore_api_images``).
+A native embed in a tool result (``vision_analyze``, the browser screenshot twin) is history too:
+``retain_tool_image`` commits the bytes the model saw as ``tool_<sha256[:32]><ext>`` in the same
+store and the tool names that path in its text part, so the tool row replays like a user row.
+Tool images have no admission to hold them; ``sweep_settled_media`` ages them out the same way.
 
 On the WIRE COPY only, when this turn sends images natively, the ``vision.replay_recent_images``
 newest images (default 3, 0 = off) go back as ``image_url`` parts; older ones drop in whole
@@ -22,9 +26,12 @@ every later turn), missing files (the gateway's settled-media sweep collects the
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -35,6 +42,51 @@ _HINT_RE = re.compile(r"^\[Image attached(?P<local> at)?: (?P<ref>.+)\]$")
 # ``session_persistence._image_marker``: the live part's ``detail`` rides on its marker.
 _MARKER_RE = re.compile(r"^\[screenshot(?: detail=(?P<detail>low|high|auto))?\]$")
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
+_REPLAY_ROLES = ("user", "tool")
+_TOOL_IMAGE_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}
+
+
+def retain_tool_image(data_url: str) -> tuple[str, Optional[str]]:
+    """Keep an image a tool hands the model so a turn rebuilt from the session DB can send it again.
+
+    Commits the bytes as ``native-inputs/<sha256>/tool_<sha256[:32]><ext>`` and returns the data URL
+    to send plus the ``[Image attached at: <path>]`` hint for the tool's text part. The URL is
+    re-encoded from the committed file by the same ``_file_to_data_url`` the replay uses, so the live
+    request and every replay carry the same bytes. Bytes that are no supported image, or a store that
+    cannot be written, return the URL unchanged and no hint: the row then stays text on rebuilt turns."""
+    from agent.image_routing import _file_to_data_url
+    from gateway.session_ingress_media import native_inputs_root, native_inputs_store, sniff_image_mime
+    from hermes_dir_acl import make_user_dir
+
+    header, _, encoded = data_url.partition(",")
+    try:
+        data = base64.b64decode(encoded, validate=True) if header.lower().endswith(";base64") else b""
+    except ValueError:
+        data = b""
+    ext = _TOOL_IMAGE_EXT.get(sniff_image_mime(data) or "")
+    if ext is None:
+        return data_url, None
+    digest = hashlib.sha256(data).hexdigest()
+    temporary = None
+    try:
+        make_user_dir(native_inputs_store() / digest, mode=0o700, parents=True, exist_ok=True)
+        path = native_inputs_root() / digest / f"tool_{digest[:32]}{ext}"
+        if path.is_file() and not path.is_symlink():
+            os.utime(path)  # shown again: restart its retention age (sweep_settled_media)
+        else:
+            fd, temporary = tempfile.mkstemp(prefix=".tool-", dir=path.parent)
+            with os.fdopen(fd, "wb") as output:
+                output.write(data)
+            os.replace(temporary, path)
+            temporary = None
+    except OSError as exc:
+        logger.warning("image_replay: could not keep a tool image for later turns: %s", exc)
+        return data_url, None
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+    url = _file_to_data_url(path)
+    return (url, f"[Image attached at: {path}]") if url else (data_url, None)
 
 
 def resolve_replay_recent_images(cfg: dict) -> int:
@@ -102,17 +154,28 @@ def replay_frontier(total: int, keep: int) -> int:
     return (total - keep) // keep * keep if total > keep else 0
 
 
+def _live_image_count(content: Any) -> Optional[int]:
+    """Image parts a row still carries (a part list, or a tool's ``_multimodal`` envelope); ``None``
+    for a text row."""
+    if isinstance(content, dict) and content.get("_multimodal"):
+        content = content.get("content")
+    if not isinstance(content, list):
+        return None
+    return sum(1 for p in content if isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)
+
+
 def replay_recent_images(api_messages: list[dict[str, Any]], keep: int) -> int:
     """Rebuild retained images at or after ``replay_frontier`` in place on ``api_messages`` (wire
     copies); images still live in the conversation hold slots too. Returns the number re-attached."""
     slots = 0
     rows: list[tuple[dict[str, Any], list[tuple[str, Any]], int]] = []
     for msg in api_messages:
-        if msg.get("role") != "user":
+        if msg.get("role") not in _REPLAY_ROLES:
             continue
         content = msg.get("content")
-        if isinstance(content, list):
-            slots += sum(1 for p in content if isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)
+        live = _live_image_count(content)
+        if live is not None:
+            slots += live
             continue
         parts = _split_rebuilt_row(content) if isinstance(content, str) else None
         if parts is None:
@@ -163,7 +226,7 @@ def _turn_replay_window(agent: Any) -> int:
 
 def replay_for_agent(agent: Any, api_messages: list[dict[str, Any]]) -> None:
     """``build_api_messages`` hook: replay only when this turn's model takes images natively."""
-    if not any(m.get("role") == "user" and isinstance(m.get("content"), str)
+    if not any(m.get("role") in _REPLAY_ROLES and isinstance(m.get("content"), str)
                and "[screenshot" in m["content"] for m in api_messages):
         return
     if (keep := _turn_replay_window(agent)) <= 0:

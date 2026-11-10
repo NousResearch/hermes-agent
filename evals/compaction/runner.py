@@ -348,10 +348,10 @@ def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
     for m in compressed:
         c = m.get("content")
         if isinstance(c, str) and c:
-            surviving.add(c[:200])
+            surviving.add(c)
     archive = [
         m for m in before
-        if isinstance(m.get("content"), str) and (m.get("content") or "")[:200] not in surviving
+        if isinstance(m.get("content"), str) and (m.get("content") or "") not in surviving
     ]
 
     context_text = serialize_for_exam(compressed, char_cap=700_000)

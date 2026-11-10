@@ -293,10 +293,12 @@ class BaseEnvironment(ABC):
     # scanner flags in plugin code.
     _passwordless_sudo_probe_supported: bool = False
 
-    # Whether cleanup() ends the background processes spawned through this env. When it does,
-    # teardown settles them as lost so their pollers stop; a backend whose processes outlive
-    # cleanup() and stay reachable through the same env object (SSH reconnects) sets False so
-    # the poller keeps collecting the real result.
+    # Whether background processes spawned through this env are gone, for this env object, once
+    # cleanup() returns: ended with the sandbox, or no longer reachable through it (persist-mode
+    # Docker drops its container id, so the old object can't poll the job). Teardown then
+    # settles them as lost so their pollers stop. A backend whose processes outlive cleanup()
+    # and stay reachable through the same object (SSH reconnects) sets False so the poller keeps
+    # collecting the real result. Plugin contract: website/docs/developer-guide/terminal-environment-plugin.md.
     cleanup_stops_processes: bool = True
 
     # Local and Docker override this because they resolve allowlisted values

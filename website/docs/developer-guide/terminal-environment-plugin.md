@@ -134,6 +134,28 @@ interface as `tools.environments.base.BaseEnvironment`:
 Subclassing `BaseEnvironment` is recommended (you inherit the shared file-sync
 and background-process plumbing) but not required.
 
+## Background processes and `cleanup()`
+
+A background command (`terminal(background=true)`) on a non-local backend is
+polled through the environment object that spawned it. When Hermes tears that
+environment down (`cleanup()` on session close, idle reaping, or eviction after
+a connection failure), it marks those processes `lost` so their pollers stop.
+It does that only after `cleanup()` returned without raising, because a failed
+cleanup may leave the sandbox running.
+
+If your `cleanup()` only drops a connection and the jobs keep running where the
+same environment object can still reach them (the built-in SSH backend
+reconnects on the next `execute()`), declare it so the poller keeps collecting
+the real exit code:
+
+```python
+class AcmeEnvironment(BaseEnvironment):
+    cleanup_stops_processes = False  # cleanup() disconnects; jobs survive and stay reachable
+```
+
+The default is `True` (cleanup ends the sandbox and its processes), which also
+applies to duck-typed environments that don't declare the attribute.
+
 ## File tools and the host filesystem
 
 `read_file`, `write_file`, `patch` and `search_files` go through your

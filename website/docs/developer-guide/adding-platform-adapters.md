@@ -327,11 +327,12 @@ result by identity with the entry your card was rendered for before acting on a 
 `BasePlatformAdapter.get_session_model_settings(source)` is a synchronous, read-only
 accessor for native settings sheets. The named consumer is the **Inline platform plugin**:
 its agent settings sheet currently reads the runner's private session-model override map
-and combines it with configured defaults. This accessor supports a **partial migration**:
-model, provider, and session-key display can use it. Inline also passes its unsanitized
-configured/override endpoint to `list_picker_providers` for provider matching and custom-provider
-discovery. That operational picker path still needs a separate appropriate seam; the sanitized
-display URL below cannot replace it. Inline cannot remove its private read wholesale with this API.
+and combines it with configured defaults. Together with `list_session_model_picker_providers`
+below, it supports migrating both the settings-sheet model/provider/session-key display and
+picker catalog off that private map read. The raw endpoint stays in core for catalog matching;
+the sanitized display URL is not an operational input. This does not migrate model switching:
+Inline still calls the private `GatewayRunner._handle_model_command` to apply settings-sheet
+model selections. No plugin source or installed copy is changed by these additive seams.
 
 ```python
 # In a BasePlatformAdapter subclass, using the SessionSource built for this conversation:
@@ -349,7 +350,7 @@ directions: editing it cannot change the conversation, and later model switches 
 change a previously returned result. An unattached adapter or rejected profile route
 returns `None`. An attached adapter with **no session** still returns configured defaults.
 
-For each setting, a nonempty in-memory session override wins over the channel default
+For each setting, a nonempty in-memory session override (or, if absent, the persisted pick) wins over the channel default
 (model/provider), then the owning profile's configured model settings. Channel model and
 provider defaults apply independently, including provider-only overrides. The display `base_url`
 falls back independently to the global configured endpoint even when the selected provider changes;
@@ -367,8 +368,61 @@ Only the four named fields are returned: keys, tokens, credential pools and head
 never copied. Endpoint userinfo, query and fragment are omitted (unparseable URLs become
 `""`); the endpoint path is retained, so do not put credentials in endpoint paths. Do not
 use this display URL to construct provider requests. This is an in-process platform
-adapter API, not a hosted-plugin RPC. It adds no setters or reasoning/model-catalog API,
+adapter API, not a hosted-plugin RPC. It adds no setters or reasoning API,
 and leaves the legacy override view and all existing model-switch behavior unchanged.
+
+### List a conversation's model picker providers
+
+`BasePlatformAdapter.list_session_model_picker_providers(source, *, max_models=100,
+include_moa=True)` is the synchronous catalog counterpart. It shares the display accessor's
+source canonicalization, owning-profile config scope, session > channel > config precedence,
+and persisted-pick fallback. It returns `None` without a runner or for a rejected route;
+an attached adapter with no session can still list configured providers. It does not create
+a session or agent, rehydrate an override, or change conversation settings.
+
+Core passes the **raw effective endpoint**, current model/provider, configured `providers`,
+`custom_providers`, and `model_catalog.excluded_providers` to its picker catalog implementation.
+The owning profile scope remains bound throughout the catalog call, including when this
+method is invoked through `asyncio.to_thread`. Do not feed the display URL into discovery.
+Custom endpoint live probes are disabled: those probes can save discovered models to config.
+Configured and cached custom model lists still participate, including raw endpoint matching.
+Other catalog reads may block on the network and maintain catalog caches, so **run this method
+off the event loop**. `max_models` is the catalog's per-provider hint, not a hard total cap;
+curated/aggregator providers may be uncapped. `include_moa` includes the synthetic MoA row.
+
+The return value is a detached list of fresh `SessionModelPickerProvider` dictionaries
+(type import: `from gateway.platforms.session_model import SessionModelPickerProvider`),
+with exactly these allowlisted fields:
+
+| Field | Type | Inline use |
+| --- | --- | --- |
+| `slug` | `str` | Model selection identity and provider grouping |
+| `name` | `str` | Provider buttons and model-page heading |
+| `models` | `list[str]` | Model options; list copied independently |
+| `total_models` | `int` | Provider/group counts and pagination text |
+| `is_current` | `bool` | Current-provider marker |
+
+No endpoint fields, API keys, tokens, credential pools, headers, or unlisted future metadata
+are returned. Editing rows or model lists cannot change catalog/config/session objects, and
+later catalog changes cannot change an earlier result. This is presentation data, not runtime
+credentials or a setter. Catalog errors propagate for the adapter to handle.
+
+```python
+import asyncio
+
+# Feature-detect for older Hermes: leave model selection unavailable (or retain an
+# explicitly supported legacy implementation) when the seam is absent. Never replace
+# the raw endpoint with get_session_model_settings()["base_url"].
+list_providers = getattr(self, "list_session_model_picker_providers", None)
+providers = None
+if callable(list_providers):
+    providers = await asyncio.to_thread(list_providers, source, max_models=100, include_moa=True)
+```
+
+The seams enable an Inline migration; they do not deploy it. Updating a catalog entry does
+not upgrade an already-installed plugin. Inline must adopt the methods and users must
+separately update their installed plugin; its private model-switch command remains outside
+this read-only contract.
 
 ## Standalone send-path extensions
 

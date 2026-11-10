@@ -69,14 +69,16 @@ payload.write_text("from pathlib import Path\\nPath(" + repr({str(marker)!r}) + 
 """
 
 
-@pytest.mark.parametrize("variant", ["direct", "bootstrap", "start_command"])
+@pytest.mark.parametrize("variant", ["direct", "bootstrap", "start_command", "frozen_only"])
 def test_a_data_side_dependency_environment_never_runs_its_pth(tmp_path, variant):
     """PM's dependency activation must judge the selected site directory against the
     deployment image before processing it. ``direct`` calls the activation with the fence
     armed and the hosted verdict frozen; ``bootstrap`` performs a real ``import
     gateway.run`` with the verdict frozen (the fence inside that import arms AFTER the
     bootstrap's activation); ``start_command`` is the real boot order — the hosted flag
-    alone, no recorded verdict, no armed fence before the activation runs."""
+    alone, no recorded verdict, no armed fence before the activation runs;
+    ``frozen_only`` is an in-process host that froze a hosted verdict and armed the fence
+    but whose argv carries no start flag — either hosted signal alone must guard."""
     home = tmp_path / "home"
     home.mkdir()
     marker = home / "executed"
@@ -89,6 +91,16 @@ from hermes_cli.hosted_code_fence import arm_from_start_argv, hosted_code_refusa
 arm_from_start_argv()
 from hermes_cli import hosted_mode
 hosted_mode.record_boot_config({"hosted": {"enabled": True}})
+assert hosted_code_refusal(site)  # the control: the predicate refuses this directory
+e.activate_dependencies(root)
+"""
+    elif variant == "frozen_only":
+        script += """
+sys.argv = ["embedded-host"]
+from hermes_cli import hosted_mode
+from hermes_cli.hosted_code_fence import install_hosted_code_fence, hosted_code_refusal
+hosted_mode.record_boot_config({"hosted": {"enabled": True}})
+install_hosted_code_fence()
 assert hosted_code_refusal(site)  # the control: the predicate refuses this directory
 e.activate_dependencies(root)
 """

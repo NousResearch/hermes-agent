@@ -1,0 +1,26 @@
+name: svault
+title: Secrets Vault
+description: >-
+  Field-level secrets protection: encrypt sensitive fields in a database at
+  rest, redact them automatically when the agent reads the data, and reveal a
+  single value only with human approval. Disclosure: reads/writes the files
+  you point it at; stores agent private keys in ~/.svault/agents/.
+repo: https://github.com/Nifemi0/svault
+sha: 58f76490e4146dbfcc1ad4bcd1fc107b376aff7b
+tier: community
+category: tools
+maintainer: Sky
+capabilities:
+  tools:
+    - svault_agent_new
+    - svault_agent_list
+    - svault_encrypt
+    - svault_protect_db
+    - svault_read_db
+    - svault_decrypt
+    - svault_reveal
+    - svault_list
+  hooks:
+    - pre_tool_call
+requires_hermes: ">=0.22.0"
+version: "1.1.0"

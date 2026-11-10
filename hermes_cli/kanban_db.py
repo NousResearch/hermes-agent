@@ -498,8 +498,6 @@ def board_exists(board: Optional[str] = None) -> bool:
     return _dir_holds_board(board_dir(slug))
 
 
-
-
 def _explicit_board_slug(board: Optional[str]) -> Optional[str]:
     """Explicit caller intent: a direct ``board=`` argument, else the scoped
     ``--board`` context (CLI ``hermes kanban --board``, dashboard plugin_api);
@@ -1185,9 +1183,9 @@ def create_task(
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
-    from hermes_cli.kanban_pr_acceptance import validate_contract
+    from hermes_cli.kanban_pr_acceptance import contract_and_declaration
 
-    completion_contract = validate_contract(completion_contract)
+    completion_contract, raw_contract = contract_and_declaration(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1300,6 +1298,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "completion_contract": raw_contract,
                     },
                 )
                 if task_status == "blocked":
@@ -4229,3 +4228,4 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )
+from hermes_cli.kanban_db_pr_guard import unguard_task

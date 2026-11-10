@@ -956,6 +956,7 @@ hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived
         [--json]
 hermes kanban show <id> [--json]
 hermes kanban assign <id> <profile>                    # or 'none' to unassign
+hermes kanban unguard <id>                             # lift the active_pr respawn guard after the PR is merged/closed
 hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to a profile
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
         [--priority N]
@@ -1015,6 +1016,7 @@ All commands are also available as a slash command in the interactive CLI and in
 | `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When the key is present, this home's dispatcher only claims cards whose assignee is listed — fail-closed: an empty list, `null` or a bare `dispatch_profiles:` claims nothing, and a config read that fails logs a warning and claims nothing; other assignees land in `skipped_nonspawnable`. Only omitting the key means "any existing profile". `hermes kanban diagnostics` prints the resolved value for this home (`any`, the listed names, or `none (fail-closed: …)`). See [Shared boards across homes](#shared-boards-across-homes). |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
+| `kanban.respawn_guard_pr_window_seconds` | `86400` | Window (seconds) in which a GitHub PR URL in a task comment holds a `ready` card back from re-spawning (`active_pr`) so a worker cannot open a duplicate PR. `0` disables the guard. The guard applies only to cards that can publish a PR — `completion_contract` other than `local-only`, or a `local-only` card with a run that recorded `published_pr`; report/notify cards are exempt and cost no `gh` lookup. It lifts automatically once every referenced PR is merged or closed, and an unresolved lookup fails closed. `HERMES_KANBAN_RESPAWN_GUARD_PR_WINDOW_SECONDS` overrides it per process. |
 
 ```yaml
 kanban:
@@ -1039,6 +1041,13 @@ The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 err
 To see why a ready card is not spawning, run `hermes kanban dispatch --dry-run` — the output lists `Guarded (<reason>): <task id>` per held card (and `respawn_guarded`, `rate_limited`, `skipped_locked`, `memory_pressure` with `--json`). The gateway's and the standalone daemon's "dispatcher stuck" warning also names what the last tick held back, e.g. `Last tick held back: active_pr=1`.
 
 `recent_success` and `active_pr` hold the **ready** lane only — they are the inputs to a review handoff, not signals against one. To have a reviewer, closer or other recovery profile pick up a card whose PR is already open, either move it to the review lane with `hermes kanban request-review <id>` (accepted from `ready` as well as `running`; the review-lane spawn is not subject to either guard) or hand the ready card to that profile with `hermes kanban assign <id> <profile>`: a handoff recorded *after* the PR comment — an operator reassign, a reviewer's changes-requested verdict, or a review reopen — lifts `active_pr` for the profile now named on the card, because that PR is exactly what it must work on. Only a change to a *different* profile counts: re-assigning the same profile, unassigning, or the dispatcher's own `kanban.default_assignee` fill-in does not lift the guard, so the assignee that opened the PR is still not re-spawned against it after a crash, reclaim or no-op reassign, and a newer PR comment posted after the handoff guards again. A deliberate re-queue after a success (drag `done→ready`, `unblock`, re-promotion) also lifts `recent_success`, so a manual re-run is never silently held for the whole window.
+
+`active_pr` is also PR-state and lane aware, because a merged PR or a card that never opens one is not duplicate work:
+
+- The dispatcher looks up each distinct PR URL in the window (one cached `gh api` call per URL per 300 s, failures included) and lifts the guard automatically once **every** referenced PR is merged or closed. An unresolved lookup (no `gh`, no auth, timeout, deleted PR) fails closed — the card stays guarded.
+- Only cards that can publish a PR are guarded. `completion_contract` is the card's declaration: a repo slug or PR URL is implementer work; an unset contract stays guarded for compatibility with legacy cards; an explicit `local-only` card is a report/notify card and the guard does not apply at all — it costs no `gh` lookup. A `local-only` card that actually published a PR (a run recorded `published_pr`) is implementer work after all and stays guarded.
+- Single-owner and report cards cannot be handed to another profile, so the operator escape hatch is `hermes kanban unguard <id>`: it records an `unguarded` event, which lifts `active_pr` exactly like a handoff (and, like a handoff, only until a newer PR comment arrives). Workers cannot run it — it is denied to `delegate_task` children.
+- `kanban.respawn_guard_pr_window_seconds` (default `86400`, `0` disables the step entirely) sets the window; `HERMES_KANBAN_RESPAWN_GUARD_PR_WINDOW_SECONDS` overrides it for one process (tests, or a one-off dispatcher run).
 
 ### Drag-to-delete and bulk delete (dashboard)
 

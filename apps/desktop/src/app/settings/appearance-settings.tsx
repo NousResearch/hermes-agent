@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import { useDebounced } from '@/app/hooks/use-debounced'
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -71,6 +72,7 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { AppearanceExtraSlot } from './appearance-contrib'
+import { AppearanceOverview } from './appearance-overview'
 import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
@@ -406,6 +408,16 @@ interface AppearanceSettingsProps {
 }
 
 export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
+  const redesign = usePortalRedesign()
+
+  if (redesign && (subpage === undefined || subpage === 'general')) {
+    return <AppearanceOverview advanced={<AppearanceSettingsDetail advanced />} />
+  }
+
+  return <AppearanceSettingsDetail subpage={subpage} />
+}
+
+function AppearanceSettingsDetail({ subpage, advanced = false }: AppearanceSettingsProps & { advanced?: boolean }) {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
@@ -465,7 +477,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const [query, setQuery] = useState('')
   const show = (id: AppearanceSubpageId) => subpage === undefined || subpage === id
 
-  useSettingDeepLink('config:appearance', page => page !== undefined && show(page as AppearanceSubpageId))
+  useSettingDeepLink('config:appearance', page => !advanced && page !== undefined && show(page as AppearanceSubpageId))
 
   // One box does double duty: filter installed themes live (below), and run a
   // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
@@ -534,10 +546,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
   const matchedScalePreset = matchUiScalePreset(zoomPercent)
 
-  return (
-    <SettingsContent>
+  const content = (
+    <>
       <div>
-        {subpage === undefined && (
+        {!advanced && subpage === undefined && (
           <>
             <SectionHeading icon={Palette} title={a.title} />
             <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
@@ -547,7 +559,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
         )}
 
         <div className={subpage === undefined ? 'mt-2' : undefined}>
-          {show('general') && (
+          {!advanced && show('general') && (
             <ListRow
               action={<LanguageSwitcher />}
               description={isSavingLocale ? t.language.saving : t.language.description}
@@ -684,7 +696,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   />
                 }
                 description={a.chatTextScaleDesc}
-                id={settingElementId(ids.chatTextScale)}
+                id={advanced ? undefined : settingElementId(ids.chatTextScale)}
                 title={a.chatTextScaleTitle}
               />
 
@@ -1068,6 +1080,8 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           a deep-link subpage shows one built-in section, and a plugin card is
           not that section. */}
       {subpage === undefined && <AppearanceExtraSlot />}
-    </SettingsContent>
+    </>
   )
+
+  return advanced ? content : <SettingsContent>{content}</SettingsContent>
 }

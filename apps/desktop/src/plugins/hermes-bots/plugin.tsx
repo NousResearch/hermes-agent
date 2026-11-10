@@ -82,7 +82,7 @@ import {
 } from './roster-pane'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { startScreenAutoRaise } from './screen-autoraise'
-import { ProfileGroupScreenPortal } from './screen-portal'
+import { ProfileGroupScreenPortal, profileScreenCommand } from './screen-portal'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
 import type { GroupChat, RosterRow } from './types'
@@ -435,12 +435,39 @@ export default {
     // the meta/room storage hydrates above have landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
     startHideSweepScheduler(ctx)
-    // Sessions sidebar: each gateway/profile group gets the profile's Screen portal
-    // above its sessions, so the bot's computer is reachable from either mode.
+    // Classic sidebar access stays in profile groups; redesigned conversations
+    // leave Screen in the tool palette instead.
     ctx.register({
       id: 'screen-portal',
       area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
       data: { render: (route: ProfileGroupRoute) => <ProfileGroupScreenPortal route={route} /> }
+    })
+
+    let disposeScreenCommand: (() => void) | undefined
+
+    const syncScreenCommand = () => {
+      disposeScreenCommand?.()
+      disposeScreenCommand = undefined
+      const owner = $focusedBotOwner.get()
+
+      // Unresolved/ambiguous focus must never open another connection's Screen.
+      if (!owner?.connectionId) {return}
+
+      disposeScreenCommand = ctx.register({
+        id: 'open-screen',
+        area: PALETTE_AREA,
+        data: {
+          id: `${ID}.open-screen`,
+          ...profileScreenCommand({ connectionId: owner.connectionId, profile: owner.profile })
+        }
+      })
+    }
+
+    syncScreenCommand()
+    const stopScreenCommand = $focusedBotOwner.listen(syncScreenCommand)
+    ctx.onDispose?.(() => {
+      stopScreenCommand()
+      disposeScreenCommand?.()
     })
 
     const registerBotsPane = () =>

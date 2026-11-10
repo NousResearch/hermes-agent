@@ -81,7 +81,36 @@ The redesigned Sessions sidebar groups the active gateway and its agents in
 one rounded, neutral-tinted surface: a stronger header above a subtler body.
 The active agent name uses the primary foreground; other names use secondary
 foreground. Agent emphasis is scoped to the active connection and profile, not
-the display name. These highlights do not change expansion or navigation.
+the display name. The group uses the finished Desktop 10 Figma hierarchy
+(`147:7470`): 20px agent tiles, names and session titles aligned 38px from the
+group edge, and a guide 20px from that edge. The robot is the exported Figma
+vector, not a replacement codicon; each profile retains its chosen tile color.
+
+The agent name/avatar opens that owner's canonical **Bot Chat** (profile plus
+exact title), without a redundant child row. Collapse, new session, and agent
+settings remain separate controls, visible on hover/focus and touch. Screen is
+a tool rather than a conversation: use **Open Screen** in the command palette
+for the focused owner; classic/Bot Mode entry points remain available.
+
+Finished settings and management frames use bundled, OFL-licensed Oswald for
+display headings and Mona Sans for body text. The Figma trial navigation font
+is not redistributed. Redesigned geometry is root-scoped because route
+overlays render outside the shell: 60px rails, navigation up to 320px, and a
+640px conversation/settings reading column. Native titlebar sizing,
+user-controlled panes, themes, and the classic layout remain functional.
+
+Appearance starts with working Light/Dark/System previews, text size,
+language, and tips controls. Advanced retains the full settings and theme
+gallery, including deep links. Agent management uses owner-scoped Overview,
+History, and Settings tabs, real configuration/session data, and the existing
+editors. Additional desktop settings remain accessible rather than being
+removed to mimic an incomplete design frame.
+
+Owner actions preserve the roster's backend `targetProfile`, including aliases
+before Bot Mode has mounted. History uses bounded 25-row requests with offsets,
+deduplicates pinned backfills, and keeps earlier pages reachable past 500 sessions.
+Page toolbars occupy the native titlebar band with an opaque surface so open
+chat/tool tabs cannot bleed through; controls remain outside the drag region.
 
 ## Surfaces & elevation
 

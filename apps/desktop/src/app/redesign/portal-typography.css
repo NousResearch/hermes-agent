@@ -1,0 +1,42 @@
+/* Bundled SIL OFL fonts from Figma; no Rules or trial-licensed fonts. */
+@font-face {
+  font-family: 'Oswald';
+  font-style: normal;
+  font-weight: 200 700;
+  font-display: swap;
+  src: url('../../fonts/Oswald.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Mona Sans';
+  font-style: normal;
+  font-weight: 200 900;
+  font-stretch: 75% 125%;
+  font-display: swap;
+  src: url('../../fonts/MonaSans.ttf') format('truetype');
+}
+
+:root:has([data-portal-redesign='true']) {
+  --portal-font-display: 'Oswald', var(--dt-font-sans);
+  --portal-font-body: 'Mona Sans', var(--dt-font-sans);
+}
+
+:root:has([data-portal-redesign='true']) :is([data-portal-redesign], [data-page-surface]) {
+  font-family: var(--portal-font-body);
+}
+
+:root:has([data-portal-redesign='true']) [data-page-surface] h1 {
+  font-family: var(--portal-font-display);
+  font-size: 2.5rem;
+  line-height: 1.1;
+  font-weight: 300;
+  letter-spacing: -0.01em;
+}
+
+.portal-sidebar .portal-sidebar-wordmark {
+  font-family: var(--portal-font-display);
+  font-size: 1.875rem;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+}

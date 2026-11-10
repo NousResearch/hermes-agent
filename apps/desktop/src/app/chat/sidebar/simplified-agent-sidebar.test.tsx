@@ -9,6 +9,8 @@ import * as apiClient from '@/api/client'
 import * as sessionsApi from '@/api/sessions'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
+import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
+import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { $pinnedSessionIds, $sidebarPinsOpen, $sidebarRecentsOpen } from '@/store/layout'
@@ -40,6 +42,8 @@ import { makeSessionInfo } from '@/test/session-info'
 
 import { PortalSidebar } from './portal/portal-sidebar'
 import { $simplifiedPinnedRows } from './use-simplified-pin-writes'
+
+vi.mock('@/plugins/hermes-bots/roster-actions', () => ({ openRosterBot: vi.fn(async () => true) }))
 
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<typeof ProfileModule>()),
@@ -91,6 +95,9 @@ describe('Portal sidebar', () => {
     $apiRequestScope.set({ connectionId: null, profile: null })
     $gatewayState.set('idle')
     $selectedStoredSessionId.set(null)
+    $openBotChat.set(null)
+    $pendingBotOpen.set(null)
+    vi.mocked(openRosterBot).mockClear()
     $connectionsRegistry.set(null)
     $fleetRoster.set(null)
     $profiles.set([
@@ -123,6 +130,8 @@ describe('Portal sidebar', () => {
     $apiRequestScope.set({ connectionId: null, profile: null })
     $gatewayState.set('idle')
     $selectedStoredSessionId.set(null)
+    $openBotChat.set(null)
+    $pendingBotOpen.set(null)
     $fleetRoster.set(null)
   })
   it('keeps server-pinned chats reachable and resumes the exact session', () => {
@@ -140,10 +149,9 @@ describe('Portal sidebar', () => {
       .getByRole('button', { name: /Agent settings: default/ })
       .closest('[role=group]') as HTMLElement
 
-    const botChat = within(agentGroup).getByRole('button', { name: 'Bot Chat' })
-    const regularChat = within(agentGroup).getByText('Regular chat')
-    expect(botChat.compareDocumentPosition(regularChat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(within(research).getAllByRole('button', { name: 'Bot Chat' })).toHaveLength(1)
+    expect(within(agentGroup).getAllByRole('button', { name: 'default' })).toHaveLength(1)
+    expect(within(research).getAllByRole('button', { name: 'Research' })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: 'Bot Chat' })).toBeNull()
     expect(within(agentGroup).queryByText('Pinned plan')).toBeNull()
     expect(screen.queryByText('Chats', { exact: true })).toBeNull()
     expect(within(agentGroup).queryByLabelText('Agents: default')).toBeNull()
@@ -169,11 +177,30 @@ describe('Portal sidebar', () => {
     act(() => $sessions.set([makeSessionInfo({ id: 'pinned', title: 'Pinned plan', pinned: true })]))
     expect(guidance()).toBeNull()
   })
+  it('opens the agent canonical chat even while its side chats are collapsed', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse: Research' }))
+    const agent = screen.getByRole('button', { name: 'Research' })
+    fireEvent.click(agent)
+    expect(openRosterBot).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'research', targetProfile: 'research', sourceScoped: false })
+    )
+    expect(screen.getByRole('button', { name: 'Expand: Research' }).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByTestId('route').textContent).toBe('')
+    act(() => {
+      $selectedStoredSessionId.set('canonical-tip')
+      $openBotChat.set({ key: 'legacy::research', openedRegistryId: 'canonical-root', openedSessionId: 'canonical-tip' })
+    })
+    expect(agent.getAttribute('aria-current')).toBe('page')
+    act(() => $selectedStoredSessionId.set('side-chat'))
+    expect(agent.hasAttribute('aria-current')).toBe(false)
+  })
   it('opens the clicked agent settings, including agents with no chats', async () => {
     mount()
     fireEvent.click(screen.getByRole('button', { name: /Agent settings: Research/ }))
     await waitFor(() => expect($settingsScopeProfile.get()).toBe('research'))
     await waitFor(() => expect(screen.getByTestId('route').textContent).toBe('?agent=research'))
+    expect(openRosterBot).not.toHaveBeenCalled()
   })
   it('rolls back profile browsing without changing conversations, pins or active identity', () => {
     $showAllProfiles.set(false)
@@ -266,11 +293,12 @@ describe('Portal sidebar', () => {
     await waitFor(() => expect(loadMessaging).toHaveBeenCalledWith('telegram'))
   })
 
-  it('starts a chat directly from an agent row without opening its settings', () => {
+  it('starts a separate chat from an agent row without opening its canonical chat or settings', () => {
     mount()
     fireEvent.click(screen.getByRole('button', { name: 'New session in Research' }))
     expect(newSessionInProfile).toHaveBeenCalledWith('research')
     expect(screen.getByTestId('route').textContent).toBe('')
+    expect(openRosterBot).not.toHaveBeenCalled()
   })
 
   it('offers Unpin under the agent as well as in Pinned, keeping the owning profile', async () => {
@@ -375,7 +403,6 @@ describe('Portal sidebar', () => {
     mount()
     const alpha = screen.getByRole('group', { name: 'Alpha' })
     const beta = screen.getByRole('group', { name: 'Beta' })
-    expect(within(alpha).getByText('alpha.example:9137')).toBeTruthy()
     expect(alpha.textContent).not.toContain('secret')
     expect(alpha.textContent).not.toContain('hidden')
     expect(alpha.getAttribute('aria-current')).toBe('true')

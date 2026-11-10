@@ -26,10 +26,10 @@ export function getAgentMessaging(owner: AgentSettingsOwner): Promise<MessagingP
   })
 }
 
-export function getAgentRecentSessions(owner: AgentSettingsOwner): Promise<PaginatedSessions> {
+export function getAgentRecentSessions(owner: AgentSettingsOwner, limit = 5, offset = 0): Promise<PaginatedSessions> {
   return hermesApi({
     ...capabilityScoped(owner),
-    path: `/api/profiles/sessions?profile=${encodeURIComponent(owner.profile)}&limit=5&offset=0&archived=exclude&order=recent`
+    path: `/api/profiles/sessions?profile=${encodeURIComponent(owner.profile)}&limit=${limit}&offset=${offset}&archived=exclude&order=recent`
   })
 }
 

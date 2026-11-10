@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { ProfileGlyph } from '@/components/ui/profile-glyph'
+import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { useI18n } from '@/i18n'
@@ -15,6 +15,50 @@ import { useFleetRoster } from '../chat/sidebar/use-fleet-roster'
 import { useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
 import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../routes'
+
+interface AgentNavigationProps {
+  profile: string
+  connectionId: string
+}
+
+/** Keep the selected agent's neighbours reachable while inspecting its settings. */
+export function AgentNavigation({ profile, connectionId }: AgentNavigationProps) {
+  const { t } = useI18n()
+  const navigate = useNavigate()
+  const colors = useStore($profileColors)
+  useFleetRoster(true)
+  const { agents } = useSimplifiedAgents([])
+
+  if (agents.length < 2) {return null}
+
+  return (
+    <aside aria-label={t.simplifiedAgents.agents} className="agent-management-nav">
+      <h2 className="page-nav-title">{t.simplifiedAgents.agents}</h2>
+      <Button onClick={() => navigate(`${PROFILES_ROUTE}?manage=true`)} variant="secondary">
+        <Codicon name="add" />
+        {t.profiles.manageProfiles}
+      </Button>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {agents.map(agent => (
+          <RowButton
+            aria-current={agent.profile === profile && (agent.connectionId ?? 'local') === connectionId ? 'page' : undefined}
+            className="agent-management-nav-row"
+            key={agent.id}
+            onClick={() => {
+              const params = new URLSearchParams({ agent: agent.profile })
+
+              if (agent.connectionId) {params.set('connection', agent.connectionId)}
+              navigate(`${SETTINGS_ROUTE}?${params}`)
+            }}
+          >
+            <FigmaAgentIcon color={resolveProfileColor(agent.profile, colors)} />
+            <span className="min-w-0 flex-1 truncate">{agent.label}</span>
+          </RowButton>
+        ))}
+      </div>
+    </aside>
+  )
+}
 
 export function AgentDirectory({ onClose }: { onClose: () => void }) {
   const { t } = useI18n()
@@ -60,11 +104,7 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
                   navigate(`${SETTINGS_ROUTE}?${params}`)
                 }}
               >
-                <ProfileGlyph
-                  color={resolveProfileColor(agent.profile, colors)}
-                  isDefault={agent.profile === 'default'}
-                  name={agent.label}
-                />
+                <FigmaAgentIcon color={resolveProfileColor(agent.profile, colors)} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-base font-medium text-foreground">{agent.label}</span>
                   <span className="mt-1 block truncate text-xs text-muted-foreground">{agent.gateway}</span>

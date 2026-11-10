@@ -18,7 +18,7 @@ export const SettingsBreadcrumbContext = createContext(false)
 // surface (e.g. the boot-failure recovery card owns its own padding).
 export function SettingsContent({ children, bare = false }: { children: ReactNode; bare?: boolean }) {
   return (
-    <section className="min-h-0 overflow-hidden">
+    <section className="min-h-0 overflow-hidden" data-slot={bare ? undefined : 'settings-content'}>
       <div className={cn('h-full min-h-0 overflow-y-auto', bare ? 'px-5 pb-6' : cn('pb-20', PAGE_INSET_X))}>
         {children}
       </div>

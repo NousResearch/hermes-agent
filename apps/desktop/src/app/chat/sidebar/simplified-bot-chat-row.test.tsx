@@ -33,8 +33,7 @@ afterEach(() => {
 it('only opens on click and preserves the exact gateway and target profile', () => {
   render(<SimplifiedBotChatRow agent={agent} />)
   expect(openRosterBot).not.toHaveBeenCalled()
-  const row = screen.getByRole('button', { name: 'Bot Chat' })
-  expect(row.querySelector('.codicon-robot')).not.toBeNull()
+  const row = screen.getByRole('button', { name: 'Alpha' })
   fireEvent.click(row)
   expect(openRosterBot).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -54,7 +53,7 @@ it('shows progress and selection only on the matching owner and focused canonica
       <SimplifiedBotChatRow agent={{ ...agent, connectionId: 'other' }} />
     </>
   )
-  const [row, other] = screen.getAllByRole('button', { name: 'Bot Chat' })
+  const [row, other] = screen.getAllByRole('button', { name: 'Alpha' })
   act(() => $pendingBotOpen.set({ generation: 1, key: 'remote::alpha' }))
   expect(row.getAttribute('aria-busy')).toBe('true')
   expect(other.hasAttribute('disabled')).toBe(false)
@@ -82,9 +81,9 @@ it('highlights a canonical tab after its temporary open claim is released', () =
   ])
   render(<SimplifiedBotChatRow agent={agent} />)
   act(() => $selectedStoredSessionId.set('canonical-tip'))
-  expect(screen.getByRole('button', { name: 'Bot Chat' }).getAttribute('aria-current')).toBe('page')
+  expect(screen.getByRole('button', { name: 'Alpha' }).getAttribute('aria-current')).toBe('page')
   act(() => $selectedStoredSessionId.set('other'))
-  expect(screen.getByRole('button', { name: 'Bot Chat' }).hasAttribute('aria-current')).toBe(false)
+  expect(screen.getByRole('button', { name: 'Alpha' }).hasAttribute('aria-current')).toBe(false)
   act(() => $selectedStoredSessionId.set('canonical-tip'))
-  expect(screen.getByRole('button', { name: 'Bot Chat' }).getAttribute('aria-current')).toBe('page')
+  expect(screen.getByRole('button', { name: 'Alpha' }).getAttribute('aria-current')).toBe('page')
 })

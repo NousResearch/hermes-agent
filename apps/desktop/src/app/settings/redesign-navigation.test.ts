@@ -57,8 +57,8 @@ it('highlights exactly the category containing the active child', () => {
     group('providers', [group('pview:accounts', undefined, true), group('pview:keys')], true)
   ])
 
-  expect(result.find(link => link.id === 'config:appearance')?.children?.[0].id).toBe('notifications')
-  expect(result.find(link => link.id === 'config:appearance')?.active).toBe(true)
+  expect(result.find(link => link.id === 'notifications')?.active).toBe(true)
+  expect(result.find(link => link.id === 'config:appearance')?.active).toBe(false)
   expect(result.find(link => link.id === 'providers')?.active).toBe(false)
   expect(result.find(link => link.id === 'pview:accounts')?.active).toBe(true)
 })

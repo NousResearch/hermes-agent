@@ -103,6 +103,7 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
         PAGE_MAX_W,
         className
       )}
+      data-slot="overlay-main"
     >
       {children}
     </main>
@@ -187,7 +188,7 @@ export interface OverlayNavGroup extends OverlayNavLink {
 // dropdown in PageSearchShell), so every OverlaySplitLayout pane degrades the
 // same way instead of stacking its whole sidebar. Drop it in as the first
 // child of an OverlaySplitLayout, before OverlayMain.
-export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: OverlayNavGroup[] }) {
+export function OverlayNav({ footer, groups, title }: { footer?: ReactNode; groups: OverlayNavGroup[]; title?: string }) {
   const { t } = useI18n()
   const navId = useId()
   const [disclosures, setDisclosures] = useState<Record<string, boolean>>({})
@@ -217,6 +218,7 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
   return (
     <>
       <OverlaySidebar className={RAIL_HIDDEN}>
+        {title && <h2 className="page-nav-title">{title}</h2>}
         {groups.map(group => {
           const hasChildren = Boolean(group.children?.length)
           const expanded = disclosures[group.id] ?? group.active

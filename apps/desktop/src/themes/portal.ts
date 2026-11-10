@@ -57,12 +57,18 @@ export const portalTheme: DesktopTheme = {
     userBubbleBorder: '#303038'
   },
   typography: {
-    fontSans: 'system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", emoji',
+    fontSans: '"Mona Sans", system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", emoji',
     fontUrl: '',
     lineHeight: '1.5',
     letterSpacing: '0'
   },
   customCSS: `
+    :root {
+      --portal-brand-blue: #0000f2;
+      --portal-brand-hover: #2020ff;
+      --portal-on-brand: #f2f2f2;
+    }
+
     :is(
       [data-slot="dropdown-menu-content"],
       [data-slot="dropdown-menu-sub-content"],

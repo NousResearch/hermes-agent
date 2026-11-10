@@ -110,6 +110,14 @@ export function OverlayView({
       // the edges. Re-pin the real height at the overlay root.
       style={{ '--titlebar-height': `${TITLEBAR_HEIGHT}px` } as CSSProperties}
     >
+      {page && (
+        <div className="absolute inset-x-0 bottom-full h-(--titlebar-height) bg-background [-webkit-app-region:drag]" data-slot="page-toolbar">
+          <PageToolbar actions={titlebarActions} onBack={closeOverlay}>
+            {headerContent}
+            {edgeBadge}
+          </PageToolbar>
+        </div>
+      )}
       <div className="relative h-full min-h-0">
         <div
           className={cn(
@@ -122,12 +130,7 @@ export function OverlayView({
           // (see the [data-glass-raised] rules in styles.css). Inert otherwise.
           data-glass-raised=""
         >
-          {page ? (
-            <PageToolbar actions={titlebarActions} onBack={closeOverlay}>
-              {headerContent}
-              {edgeBadge}
-            </PageToolbar>
-          ) : (
+          {!page && (
             <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)] [-webkit-app-region:drag]">
               {headerContent && (
                 <div className="pointer-events-auto absolute left-1/2 top-[calc(0.5rem+var(--titlebar-height)/2)] -translate-x-1/2 -translate-y-1/2 [-webkit-app-region:no-drag]">

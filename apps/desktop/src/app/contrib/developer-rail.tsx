@@ -79,6 +79,7 @@ function DeveloperTools() {
     <nav
       aria-label={t.rightSidebar.panelsAria}
       className="relative z-40 mt-(--titlebar-height) flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto border-l border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) py-2"
+      data-slot="developer-rail"
       style={{ '--titlebar-height': `${titlebarHeight}px` } as CSSProperties}
     >
       {tools.map(tool => (

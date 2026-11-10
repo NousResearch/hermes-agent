@@ -45,14 +45,16 @@ export function redesignSettingsNavigation(groups: OverlayNavGroup[]): OverlayNa
   }
 
   append('billing')
-  append('gateway', ['web-access'])
-  append('providers', ['keys', 'config:model'])
-  append('config:appearance', ['notifications'])
-  append('config:voice')
+  append('config:appearance')
+  append('notifications')
   append('keybinds')
+  append('gateway', ['web-access'])
+  append('sessions')
+  append('providers', ['keys', 'config:model'])
+  append('config:voice')
   append('config:safety', ['vault'])
   // Chat and memory deserve direct destinations even where the mock is silent.
-  append('config:chat', ['sessions'])
+  append('config:chat')
   append('config:memory')
   append('config:advanced', ['config:workspace', 'config:browser'])
   append('plugins')

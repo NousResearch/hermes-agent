@@ -479,6 +479,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
   const activeGroup = navGroups.find(group => group.active)
   const activeChild = activeGroup?.children?.find(child => child.active)
+  const appearanceLanding = simplified && activeView === 'config:appearance' && subpage === 'general'
+
+  const displayedGroups = simplified
+    ? redesignSettingsNavigation(navGroups).map(group =>
+        group.id === 'config:appearance' && appearanceLanding ? { ...group, children: undefined } : group
+      )
+    : navGroups
 
   // Type-to-search: printable keystrokes on the Settings surface (outside any
   // field) open the settings-scoped palette, seeded with the character — same
@@ -607,11 +614,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   return (
     <OverlayView closeLabel={t.settings.closeSettings} edgeBadge={searchPill} onClose={onClose}>
       <OverlaySplitLayout>
-        <OverlayNav footer={navFooter} groups={simplified ? redesignSettingsNavigation(navGroups) : navGroups} />
+        <OverlayNav footer={navFooter} groups={displayedGroups} title={simplified ? t.commandCenter.settings : undefined} />
 
         <OverlayMain className="px-0 pb-0">
           <SettingsBreadcrumbContext.Provider value>
-            {activeGroup && <SettingsSubpageHeader child={activeChild} group={activeGroup} />}
+            {activeGroup && <SettingsSubpageHeader child={appearanceLanding ? undefined : activeChild} group={activeGroup} />}
             {needsSubpageRedirect ? (
               <Navigate replace to={{ hash, pathname, search: `?${subpageSearch}` }} />
             ) : (

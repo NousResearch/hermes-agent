@@ -69,14 +69,9 @@ export function SimplifiedGatewayHeader({
         </Tip>
       )}
       <span className="min-w-0 flex-1">
-        <span className="block truncate font-medium text-(--ui-text-primary)" title={label}>
+        <span className="block truncate font-medium text-(--ui-text-primary)" title={address ? `${label} · ${address}` : label}>
           {label}
         </span>
-        {address && address !== label && (
-          <span className="block truncate text-[0.6875rem] text-(--ui-text-tertiary)" title={address}>
-            {address}
-          </span>
-        )}
       </span>
       <span
         className={cn(

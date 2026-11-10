@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { ProfileGlyph } from '@/components/ui/profile-glyph'
+import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
@@ -167,13 +167,7 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
                 ) : (
                   selected && (
                     <span className="rounded-sm bg-background p-0.5" data-slot="new-session-avatar">
-                      <ProfileGlyph
-                        aria-hidden
-                        className="size-5 text-[0.625rem]"
-                        color={resolveProfileColor(selected.profile, colors)}
-                        isDefault={selected.profile === 'default'}
-                        name={selected.label}
-                      />
+                      <FigmaAgentIcon color={resolveProfileColor(selected.profile, colors)} />
                     </span>
                   )
                 )}
@@ -194,14 +188,7 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
                   value={agent.id}
                 >
                   <span className="flex items-center gap-2">
-                    <ProfileGlyph
-                      aria-hidden
-                      className="size-6 text-[0.625rem]"
-                      color={resolveProfileColor(agent.profile, colors)}
-                      data-slot="new-session-option-avatar"
-                      isDefault={agent.profile === 'default'}
-                      name={agent.label}
-                    />
+                    <FigmaAgentIcon color={resolveProfileColor(agent.profile, colors)} />
                     <span className="flex min-w-0 flex-col">
                       <span className="truncate">{agent.label}</span>
                       <span className="truncate text-xs text-(--ui-text-tertiary)">{agent.gateway}</span>

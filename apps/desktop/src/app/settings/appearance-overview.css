@@ -1,0 +1,191 @@
+.appearance-overview {
+  display: grid;
+  gap: 36px;
+  min-width: 0;
+  font-family: var(--portal-font-body);
+  container-type: inline-size;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.appearance-overview-intro,
+.appearance-overview-description {
+  color: var(--ui-text-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 400;
+}
+
+.appearance-overview-intro {
+  margin-bottom: 0;
+}
+
+.appearance-mode-section {
+  min-width: 0;
+}
+
+.appearance-mode-section legend {
+  margin-bottom: 2px;
+}
+
+.appearance-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.appearance-mode-card {
+  display: flex;
+  min-width: 0;
+  min-height: 188px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-text-primary) 3%, transparent);
+  cursor: pointer;
+}
+
+.appearance-mode-card:has(input:checked) {
+  border-color: var(--portal-brand-blue);
+  background: color-mix(in srgb, var(--portal-brand-blue) 10%, transparent);
+}
+
+.appearance-mode-card:has(input:focus-visible) {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: 3px;
+}
+
+.appearance-mode-preview {
+  display: block;
+  height: 72px;
+  flex: 0 0 72px;
+  border: 1px solid var(--ui-stroke-secondary);
+  border-radius: 2px;
+}
+
+.appearance-mode-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.appearance-mode-default {
+  color: var(--ui-green);
+  background: color-mix(in srgb, var(--ui-green) 12%, transparent);
+  font-size: 9px;
+  line-height: 13px;
+  text-transform: uppercase;
+}
+
+.appearance-reading-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.appearance-reading-rows,
+.appearance-advanced {
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-text-primary) 3%, transparent);
+}
+
+.appearance-reading-rows > div {
+  padding-inline: 16px;
+}
+
+.appearance-reading-rows > div + div {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+
+.appearance-reading-rows > div > div {
+  min-height: 64px;
+  padding-block: 12px;
+}
+
+.appearance-reading-rows button[aria-pressed] {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.appearance-reading-rows button[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--portal-brand-blue) 25%, transparent);
+}
+
+.appearance-reading-rows [role='switch'][data-state='checked'] {
+  background: var(--portal-brand-blue);
+}
+
+.appearance-reading-rows [data-slot='switch-thumb'][data-state='checked'] {
+  background: var(--portal-on-brand);
+}
+
+.appearance-reading-rows > div > div > div:first-child > div:first-child {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+}
+
+.appearance-reading-rows > div > div > div:first-child > div:nth-child(2) {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.appearance-advanced > summary {
+  display: flex;
+  min-height: 68px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.appearance-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.appearance-advanced > summary:focus-visible {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: 3px;
+}
+
+.appearance-advanced > summary > span:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.appearance-advanced-content {
+  padding: 0 16px 16px;
+}
+
+@container (max-width: 28rem) {
+  .appearance-mode-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .appearance-mode-card {
+    min-height: 0;
+  }
+}
+
+@container (min-width: 32rem) {
+  .appearance-reading-rows > div > div {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .appearance-reading-rows > div > div > div:last-child {
+    justify-self: end;
+  }
+}

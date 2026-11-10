@@ -29,9 +29,9 @@ export function OverlayBreadcrumbHeader({
   const simplified = useStore($simplifiedAgentMode)
 
   return (
-    <header className={cn('shrink-0', simplified ? 'mb-6' : 'mb-3', PAGE_INSET_X)}>
+    <header className={cn('shrink-0', simplified ? 'mb-6' : 'mb-3', PAGE_INSET_X)} data-slot="page-heading">
       <div className="flex items-start justify-between gap-3">
-        <nav aria-label={group.label} className="flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)">
+        <nav aria-label={group.label} className={cn('flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)', simplified && !child && 'hidden')}>
           <span className="shrink-0">{rootLabel}</span>
           <ChevronRight aria-hidden className="size-3 shrink-0" />
           {child ? (

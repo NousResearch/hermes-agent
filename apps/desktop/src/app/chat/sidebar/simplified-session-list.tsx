@@ -105,10 +105,10 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
             }
           }}
         >
-          <span className="grid size-4 shrink-0 place-items-center">
+          <span className="grid size-4 shrink-0 place-items-center" data-slot="session-status">
             <SessionStatusDot session={row} storedSessionId={row.id} />
           </span>
-          <span className="min-w-0 flex-1 truncate" title={title}>
+          <span className="min-w-0 flex-1 truncate" data-slot="session-title" title={title}>
             {title}
           </span>
           <span
@@ -118,6 +118,7 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
                 ? 'min-w-6 max-w-[30%] truncate text-right'
                 : 'grid grid-cols-[1rem_2rem] items-center gap-1'
             )}
+            data-slot="session-meta"
           >
             {!props.showAgent && (
               <span className="grid size-4 place-items-center">

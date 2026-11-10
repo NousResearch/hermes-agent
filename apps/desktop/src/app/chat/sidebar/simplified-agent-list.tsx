@@ -7,22 +7,20 @@ import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { FadeScroll } from '@/components/ui/fade-scroll'
-import { ProfileGlyph } from '@/components/ui/profile-glyph'
-import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { resolveProfileColor } from '@/lib/profile-color'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
 import { recordAction } from '@/store/desktop-metrics'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { recordIaAction } from '@/store/ia-metrics'
 import { notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, $profileColors, ensureGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, ensureGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 import { setSettingsScope } from '@/store/settings-scope'
 
+import { SimplifiedBotChatRow } from './simplified-bot-chat-row'
 import { SimplifiedGatewayHeader } from './simplified-gateway-header'
 import { startSimplifiedAgentSession } from './simplified-new-session-model'
 import { useFleetRoster } from './use-fleet-roster'
@@ -45,7 +43,6 @@ export function SimplifiedAgentList({
 }) {
   const { t } = useI18n()
   const navigate = useNavigate()
-  const colors = useStore($profileColors)
   const registry = useStore($connectionsRegistry)
   const activeConnection = useStore($activeConnectionId)
   const activeProfile = useStore($activeGatewayProfile)
@@ -164,7 +161,12 @@ export function SimplifiedAgentList({
 
                   return (
                     <div aria-label={`${agent.label} · ${agent.gateway}`} data-slot="agent-group" key={agent.id} role="group">
-                      <div className="grid min-h-8.5 grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center gap-1 px-2" data-slot="agent-heading">
+                      <div
+                        className="grid min-h-8.5 grid-cols-[minmax(0,1fr)_1.5rem_1.5rem_1.5rem] items-center gap-1 px-2"
+                        data-active-agent={selected && agent.profile === activeProfile ? '' : undefined}
+                        data-slot="agent-heading"
+                      >
+                        <SimplifiedBotChatRow agent={agent} />
                         {group.length > 1 ? (
                           <Tip label={toggleLabel}>
                             <Button
@@ -183,20 +185,6 @@ export function SimplifiedAgentList({
                         ) : (
                           <span aria-hidden />
                         )}
-                        <RowButton
-                          aria-current={selected && agent.profile === activeProfile ? 'true' : undefined}
-                          aria-label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}
-                          className="flex min-h-7.5 min-w-0 items-center gap-2 rounded-sm px-2 text-left text-xs font-medium hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
-                          disabled={pending !== null}
-                          onClick={() => void openAgent(agent)}
-                        >
-                          <ProfileGlyph
-                            color={resolveProfileColor(agent.profile, colors)}
-                            isDefault={agent.profile === 'default'}
-                            name={agent.label}
-                          />
-                          <span className="truncate">{agent.label}</span>
-                        </RowButton>
                         <Tip label={t.sidebar.newSessionIn(agent.label)}>
                           <Button
                             aria-label={t.sidebar.newSessionIn(agent.label)}
@@ -209,6 +197,18 @@ export function SimplifiedAgentList({
                             variant="ghost"
                           >
                             <Codicon name="edit" size={14} />
+                          </Button>
+                        </Tip>
+                        <Tip label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}>
+                          <Button
+                            aria-busy={pending === agent.id || undefined}
+                            aria-label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}
+                            disabled={pending !== null}
+                            onClick={() => void openAgent(agent)}
+                            size="icon-xs"
+                            variant="ghost"
+                          >
+                            <Codicon name="gear" size={14} />
                           </Button>
                         </Tip>
                       </div>

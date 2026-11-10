@@ -641,7 +641,7 @@ import {
   resolveVenvDir,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
-  userLauncherInstallRoot
+  userLauncherInstallRootAsync
 } from './updater-process'
 import { AppInstallerStrategy } from './updater/app-installer'
 import { createChannelAppInstallerStrategy } from './updater/app-installer'
@@ -4938,7 +4938,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
   //    bootstrap when the runtime itself is unusable.
   //    HERMES_DESKTOP_IGNORE_EXISTING=1 skips this rung (see backend-resolution).
   const activeBackend: SourceBackend | null = await installedRuntimeGate.resolve(ACTIVE_HERMES_ROOT, () =>
-    resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, backendArgs, { hermesHome: HERMES_HOME })
+    resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, backendArgs, { hermesHome: HERMES_HOME, log: rememberLog })
   )
 
   const activeRuntime: ActiveRuntimeState = activeRuntimeState(activeBackend)
@@ -4961,11 +4961,12 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
     //    fixed user-bin location: a Finder/Dock launch inherits a PATH without
     //    ~/.local/bin. The reported root is then resolved and probed like any
     //    installed runtime; HERMES_DESKTOP_IGNORE_EXISTING=1 skips it too.
-    const userInstall: ReturnType<typeof userLauncherInstallRoot> = userLauncherInstallRoot(IS_WINDOWS, HERMES_HOME)
+    const userInstall: Awaited<ReturnType<typeof userLauncherInstallRootAsync>> =
+      await userLauncherInstallRootAsync(IS_WINDOWS, HERMES_HOME)
 
     if (userInstall) {
       const userBackend: SourceBackend | null = await installedRuntimeGate.resolve(userInstall.root, () =>
-        resolveSourceInstallationBackend(userInstall.root, backendArgs, { hermesHome: HERMES_HOME })
+        resolveSourceInstallationBackend(userInstall.root, backendArgs, { hermesHome: HERMES_HOME, log: rememberLog })
       )
 
       if (userBackend) {
@@ -4980,7 +4981,33 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
     }
   }
 
-  // 6. Nothing usable yet -- signal the bootstrap runner that we need to
+  // 6. Presence-only fallback. Both rungs above proved the install two ways:
+  //    the root and a launcher are on disk, and only the bounded `--version`
+  //    health probe came back empty. A probe that times out on an install that
+  //    IS there is a stall, not an absence -- resolving it as "not installed"
+  //    is what opened the first-run setup card over a healthy install
+  //    (desktop.log 2026-11-07 11:49:45 and 2026-11-08 01:00:50, both during
+  //    8-25s main-process stalls). Keep the install and let the backend's own
+  //    start report a real failure; the operator's HERMES_DESKTOP_IGNORE_EXISTING
+  //    request for the first-run choice still wins.
+  if (!bootstrapRepairRequested && !installedRuntimeGate.skipsInstalledRuntimes()) {
+    const presentBackend: SourceBackend | null = await resolveSourceInstallationBackend(
+      ACTIVE_HERMES_ROOT,
+      backendArgs,
+      { hermesHome: HERMES_HOME, skipProbe: true, log: rememberLog }
+    )
+
+    if (presentBackend) {
+      rememberLog(
+        `[bootstrap] Hermes install at ${ACTIVE_HERMES_ROOT} is present but its --version probe failed; ` +
+          'starting it instead of first-run setup'
+      )
+
+      return presentBackend
+    }
+  }
+
+  // 7. Nothing usable yet -- signal the bootstrap runner that we need to
   //    clone+install. Phase 1D's bootstrap-runner consumes this sentinel
   //    and drives install.ps1 stages with a progress UI. Until 1D lands,
   //    callers see the sentinel and surface it as a user-facing error

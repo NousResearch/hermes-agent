@@ -6,7 +6,7 @@ import path from 'node:path'
 import { afterEach, test, vi } from 'vitest'
 
 import { resolveSourceInstallationBackend } from './source-backend'
-import { userLauncherInstallRoot } from './updater-process'
+import { userLauncherInstallRoot, userLauncherInstallRootAsync } from './updater-process'
 
 afterEach((): void => {
   vi.unstubAllEnvs()
@@ -83,6 +83,37 @@ test('a user-bin launcher is ignored when it reports no Hermes source tree', ():
 
     sourceTree(notSource)
     assert.equal(userLauncherInstallRoot(process.platform === 'win32', hermesHome)?.root, notSource)
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true })
+  }
+})
+
+// The resolver runs again on every gateway restart; a blocking 15s `--version`
+// probe there froze the main thread (desktop.log 2026-11-07: 25.6s lag).
+test('the async launcher resolution reaches the same install without blocking the caller', async (): Promise<void> => {
+  const base: string = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'user-launcher-')))
+
+  try {
+    const home: string = path.join(base, 'home')
+    const hermesHome: string = path.join(home, '.hermes')
+    const root: string = path.join(base, 'src', 'hermes-agent')
+    sourceTree(root)
+    const launcher: string = publishLauncher(path.join(hermesHome, 'bin'), root)
+    vi.stubEnv('HOME', home)
+    vi.stubEnv('USERPROFILE', home)
+    vi.stubEnv('LOCALAPPDATA', path.join(home, 'AppData', 'Local'))
+
+    assert.deepEqual(await userLauncherInstallRootAsync(process.platform === 'win32', hermesHome), {
+      launcher,
+      root
+    })
+
+    fs.rmSync(root, { recursive: true, force: true })
+    assert.equal(
+      await userLauncherInstallRootAsync(process.platform === 'win32', hermesHome),
+      null,
+      'a launcher whose install is gone resolves nothing'
+    )
   } finally {
     fs.rmSync(base, { recursive: true, force: true })
   }

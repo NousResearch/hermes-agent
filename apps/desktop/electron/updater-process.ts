@@ -155,6 +155,27 @@ export function userLauncherInstallRoot(
   return null
 }
 
+/**
+ * userLauncherInstallRoot without blocking Electron's main thread. The probe
+ * runs a real `--version` (seconds, and unbounded under load), and the resolver
+ * runs again on every gateway restart, so a synchronous probe here is what
+ * turns a backend restart into a multi-second frozen window.
+ */
+export async function userLauncherInstallRootAsync(
+  isWindows: boolean = process.platform === 'win32',
+  hermesHome: string = process.env.HERMES_HOME ?? ''
+): Promise<{ launcher: string; root: string } | null> {
+  for (const launcher of userBinLaunchers(isWindows, hermesHome)) {
+    const root: string | null = await launcherInstallDirectoryAsync(launcher)
+
+    if (root && existsSync(path.join(root, 'hermes_cli', 'main.py'))) {
+      return { launcher, root }
+    }
+  }
+
+  return null
+}
+
 export function launcherTargetsInstallation(launcher: string, root: string): boolean {
   try {
     const reported: string | null = launcherInstallDirectory(launcher, root)

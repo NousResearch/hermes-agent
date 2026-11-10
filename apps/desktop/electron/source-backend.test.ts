@@ -211,6 +211,47 @@ test.skipIf(process.platform === 'win32')(
   150_000
 )
 
+test('a present install whose --version probe fails stays resolvable presence-only', async (): Promise<void> => {
+  const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-present-install-'))
+  const root: string = path.join(temp, 'hermes-agent')
+  const staged: string = path.join(root, '.hermes', 'bin')
+  const options = { hermesHome: temp, env: {} }
+
+  try {
+    fs.mkdirSync(path.join(root, 'hermes_cli'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'hermes_cli', 'main.py'), '')
+    fs.mkdirSync(staged, { recursive: true })
+    // Present but not runnable: the probe fails on every platform (EACCES/ENOEXEC).
+    for (const name of ['hermes.exe', 'hermes']) {
+      fs.writeFileSync(path.join(staged, name), 'not a launcher')
+    }
+
+    assert.equal(
+      await resolveSourceInstallationBackend(root, SERVE_ARGS, options),
+      null,
+      'a failed probe is still a failed probe for the normal rung'
+    )
+
+    const present: SourceBackend | null = await resolveSourceInstallationBackend(root, SERVE_ARGS, {
+      ...options,
+      skipProbe: true
+    })
+
+    assert.ok(present, 'a present install must stay resolvable when only its health probe failed')
+    assert.equal(present.bootstrap, false)
+    assert.match(present.command, /[\\/]\.hermes[\\/]bin[\\/]hermes(\.exe)?$/)
+
+    fs.rmSync(staged, { recursive: true, force: true })
+    assert.equal(
+      await resolveSourceInstallationBackend(root, SERVE_ARGS, { ...options, skipProbe: true }),
+      null,
+      'no launcher on disk is still no installation'
+    )
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true })
+  }
+})
+
 test('Windows console selection uses only the selected interpreter directory', (): void => {
   const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-console-policy-'))
   const root: string = path.join(temp, 'repo')

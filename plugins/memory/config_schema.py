@@ -107,8 +107,16 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
         if host is not None:  # plugins.isolation: host — a user schema file is user code too
             schema = _schema_from_record(host.config_schema(path))
         else:
-            # A schema file under the deployment home is the provider's own code: a hosted
-            # process's code fence refuses its import, so the panel simply has no schema.
+            # A schema file under the deployment home is the provider's own code: the one
+            # shared predicate refuses it in hosted mode before it is read, so the panel
+            # simply has no schema.
+            from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+            refusal = hosted_code_refusal(path)
+            if refusal:
+                _log.error("Memory provider %r config schema refused in hosted mode: %s",
+                           name, refusal)
+                return None
             spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)

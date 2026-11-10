@@ -123,7 +123,19 @@ def read_plugin_description(plugin_dir: Path) -> str:
 
 
 def _new_module(name: str, file: Path, search_locations: Optional[list[str]] = None) -> Optional[Any]:
-    """spec -> module -> sys.modules[name] (NOT executed); None if no spec."""
+    """spec -> module -> sys.modules[name] (NOT executed); None if no spec.
+
+    The one choke point every plugin-file load here goes through, so the shared hosted
+    predicate answers every one of them (the directory, its parents and its siblings)
+    before a spec — and any code — exists."""
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    refusal = hosted_code_refusal(file)
+    if refusal:
+        # Fail-soft like every other load failure here (one bad file never blocks the
+        # rest), but LOUD: a hosted process never builds a module for this file.
+        _log.warning("Refusing to load %s in hosted mode: %s", file, refusal)
+        return None
     spec = importlib.util.spec_from_file_location(
         name, str(file), submodule_search_locations=search_locations)
     if not spec:

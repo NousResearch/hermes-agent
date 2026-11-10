@@ -684,6 +684,12 @@ def _exec_plugin_module(plugin_dir: Path, source: str, module_name: str) -> None
     if module_name in sys.modules:
         return  # already imported
 
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    refusal = hosted_code_refusal(plugin_dir)
+    if refusal:
+        logger.error("Provider plugin %s refused in hosted mode: %s", plugin_dir.name, refusal)
+        return
     _current_source = source
     try:
         spec = importlib.util.spec_from_file_location(

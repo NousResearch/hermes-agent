@@ -572,8 +572,15 @@ def discover_plugin_cli_commands() -> list[dict]:
         from hermes_cli.plugin_isolation import in_process_import_refusal
         if in_process_import_refusal(f"memory provider {active_provider!r} CLI commands"):
             return []
-        # A hosted process's code fence refuses a home cli.py at its import; the CLI
-        # surface is simply absent, so nothing more to check here.
+        # A hosted process never imports a home cli.py: the one shared predicate refuses
+        # the provider directory before the file is read, so the CLI surface is absent.
+        from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+        refusal = hosted_code_refusal(plugin_dir)
+        if refusal:
+            logger.error("Memory provider %s CLI commands refused in hosted mode: %s",
+                         active_provider, refusal)
+            return []
     try:
         cli_mod = sys.modules.get(module_name)
         if cli_mod is None:

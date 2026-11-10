@@ -390,6 +390,16 @@ def hosted_boot_preflight(*, profile_homes: tuple[Path, ...] = (),
             "The flag is what arms the process-wide code fence before any application "
             "import — a boot that arms it only here would import the application first; "
             "add --hosted to the hosted gateway's start command")
+    from hermes_cli.hosted_code_fence import startup_isolation_refusal
+
+    isolation_refusal = startup_isolation_refusal()
+    if isolation_refusal:
+        _refuse(
+            f"a hosted boot requires an interpreter that started isolated from user and "
+            f"data site paths, and this one did not: {isolation_refusal}",
+            "Start the image's python with -I or -s plus PYTHONNOUSERSITE, from site "
+            "directories the image owns — the fence can verify isolation, never retrofit "
+            "it onto a start whose site initialization already ran")
     if config is None:
         config = _boot_or_effective_config()
     record_boot_config(config)  # also the config-versus-frozen-verdict confirmation

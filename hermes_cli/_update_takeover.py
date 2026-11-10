@@ -15,6 +15,18 @@ _SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     """Provision the new graph before entering its application interpreter."""
     root = Path(request["root"])
+    # A hosted process never pulls a foreign tree onto its import path: the predicate
+    # answers the new root BEFORE the insert. This file also runs as a standalone -I -S
+    # bootstrap and inside stripped-down update trees, where the Hermes application
+    # modules (and any hosted verdict) are absent: there the guard stands down — the
+    # in-process callers with a full installation get the refusal.
+    try:
+        from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+        refusal = hosted_code_refusal(root)
+    except ImportError:
+        HostedCodeRefused, refusal = None, ""
+    if refusal:
+        raise HostedCodeRefused(refusal)
     sys.path.insert(0, str(root))
     # The old shim's UI has been frozen since the pull; from here the new
     # tree can publish stages (and pop the panel the old shim couldn't).
@@ -137,6 +149,18 @@ def _record_failure(request: dict, result: Path, code: int, detail: str) -> None
 def main() -> int:
     context, result = map(Path, sys.argv[1:3])
     request = json.loads(context.read_text(encoding="utf-8-sig"))
+    # A hosted process never pulls a foreign tree onto its import path: the predicate
+    # answers the new root BEFORE the insert. This file also runs as a standalone -I -S
+    # bootstrap and inside stripped-down update trees, where the Hermes application
+    # modules (and any hosted verdict) are absent: there the guard stands down — the
+    # in-process callers with a full installation get the refusal.
+    try:
+        from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+        refusal = hosted_code_refusal(request["root"])
+    except ImportError:
+        HostedCodeRefused, refusal = None, ""
+    if refusal:
+        raise HostedCodeRefused(refusal)
     sys.path.insert(0, request["root"])
     if "stopped_serves" in request:
         # Historical atexit cleanup may run after the update's result is fixed.

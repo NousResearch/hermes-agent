@@ -42,6 +42,14 @@ def _skip(name: str, reason: str) -> None:
 
 def _load_hook_dir(hook_dir: Path) -> Optional[tuple]:
     """``(name, events, handle_fn, description)`` for a valid hook dir, else None (reason printed)."""
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    refusal = hosted_code_refusal(hook_dir)
+    if refusal:
+        # A hosted process never runs a hook whose handler lives outside the deployment
+        # image: hooks under the deployment home are tenant-writable code, so the one
+        # shared predicate refuses the directory before its handler.py is ever read.
+        return _skip(hook_dir.name, refusal)
     manifest_path, handler_path = hook_dir / "HOOK.yaml", hook_dir / "handler.py"
     if not manifest_path.exists() or not handler_path.exists():
         return None

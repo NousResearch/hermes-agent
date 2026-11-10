@@ -105,9 +105,24 @@ def package_definitions(names: list[str] | None = None) -> list[dict[str, Any]]:
 
 def load_package_definitions(definitions: list[dict[str, Any]]) -> None:
     """Restore explicit registrations after built-ins, without plugin discovery."""
+    # The wire is not provenance: a definition names a module and a file, and a hosted
+    # process loads in-process code only from what its image ships, so the one shared
+    # predicate answers each definition before anything imports it. PM also runs in
+    # stripped-down runtimes with no Hermes application modules (and no hosted verdict
+    # to refuse with): there the guard stands down rather than break the restore.
+    try:
+        from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+    except ImportError:
+        HostedCodeRefused = hosted_code_refusal = None
     restored = {}
     for definition in definitions:
         module_name = definition["module"]
+        if hosted_code_refusal is not None:
+            refusal = hosted_code_refusal(definition.get("path"))
+            if not refusal:
+                refusal = hosted_code_refusal(None, module=module_name)
+            if refusal:
+                raise HostedCodeRefused(refusal)
         try:
             # Directory plugins use synthetic package parents. Their explicit
             # search paths preserve relative imports without exposing app deps.

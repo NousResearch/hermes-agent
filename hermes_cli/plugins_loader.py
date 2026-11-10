@@ -818,6 +818,14 @@ class PluginLoaderMixin:
         init_file = plugin_dir / "__init__.py"
         if not init_file.exists():
             raise FileNotFoundError(f"No __init__.py in {plugin_dir}")
+        from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+
+        refusal = hosted_code_refusal(plugin_dir)
+        if refusal:
+            # A hosted process loads in-process code only from what its deployment image
+            # ships; a plugin directory outside it (the deployment home, a data mount) is
+            # refused before its package body can run.
+            raise HostedCodeRefused(refusal)
         if _NS_PARENT not in sys.modules:
             ns_pkg = types.ModuleType(_NS_PARENT)
             ns_pkg.__path__ = []  # type: ignore[attr-defined]

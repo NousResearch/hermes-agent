@@ -305,6 +305,11 @@ class HostRuntime:
     def op_asgi(self, params: dict[str, Any]) -> Any:
         """Serve one dashboard API request with the plugin's FastAPI ``router`` (loaded once)."""
         api_path = Path(str(params["dashboard_dir"])) / str(params["api_file"])
+        from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+
+        refusal = hosted_code_refusal(api_path)
+        if refusal:
+            raise HostedCodeRefused(refusal)
         app = self.asgi_apps.get(str(api_path))
         if app is None:
             from fastapi import FastAPI
@@ -377,6 +382,11 @@ class HostRuntime:
     def op_config_schema(self, params: dict[str, Any]) -> Any:
         """A memory provider's ``config_schema.py`` ``CONFIG_SCHEMA`` (user code: it runs here)."""
         path = Path(str(params["path"]))
+        from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+
+        refusal = hosted_code_refusal(path)
+        if refusal:
+            raise HostedCodeRefused(refusal)
         spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{path.parent.name}", path)
         if spec is None or spec.loader is None:
             raise ImportError(f"cannot load {path}")
@@ -448,6 +458,11 @@ class _CapturingContext(RemotePluginContext):
 
 def _import_base(ref: str) -> type:
     module, attr = ref.split(":")
+    from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+
+    refusal = hosted_code_refusal(None, module=module)
+    if refusal:
+        raise HostedCodeRefused(refusal)
     return getattr(importlib.import_module(module), attr)
 
 
@@ -485,6 +500,13 @@ def _import_plugin(params: dict[str, Any]) -> Any:
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         raise FileNotFoundError(f"No __init__.py in {plugin_dir}")
+    from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+
+    refusal = hosted_code_refusal(plugin_dir)
+    if refusal:
+        # The wire the parent speaks is not provenance: a hosted host process loads
+        # in-process code only from what its deployment image ships, whatever asked.
+        raise HostedCodeRefused(refusal)
     module_name = str(params["module_name"])
     parts = module_name.split(".")[:-1]
     for i in range(1, len(parts) + 1):  # synthetic parent packages (hermes_plugins, _hermes_user_memory)

@@ -137,6 +137,13 @@ export interface Translations {
     featured: string
     explorePlugins: string
     exploreSkills: string
+    pageTitleSkills: string
+    pageTitlePlugins: string
+    pageSubtitleSkills: string
+    pageSubtitlePlugins: string
+    builtIn: string
+    searchShortcut: string
+    showingCount: (shown: number, total: number) => string
     mostStarred: string
     newest: string
     recentlyUpdated: string
@@ -292,6 +299,12 @@ export interface Translations {
       }
     }
     page: {
+      subtitle: string
+      addConnector: string
+      emptyConnectedTitle: string
+      emptyConnectedBody: string
+      availableCount: (count: number) => string
+      showingCount: (count: number) => string
       loading: string
       emptyTitle: string
       noMatchTitle: string
@@ -1318,6 +1331,8 @@ export interface Translations {
       voiceShortcutHintTitle: string
       voiceShortcutHintDesc: string
       showOptions: string
+      behaviorDesc: string
+      attachmentsDesc: string
     }
     hudModifier: {
       title: string
@@ -1654,6 +1669,7 @@ export interface Translations {
       moaReferenceToggle: (enabled: boolean, index: number) => string
       moaReferenceTitle: (index: number) => string
       moaAddReference: string
+      moaReferenceModels: string
       loading: string
       appliesDesc: string
       provider: string
@@ -1679,8 +1695,12 @@ export interface Translations {
       autoUseMain: string
       inheritMainEffort: string
       providerDefault: string
+      fallbackTitle: string
+      fallbackDesc: string
       fallbackAdd: string
       fallbackEmpty: string
+      fallbackEmptyTitle: string
+      fallbackEmptyDesc: string
       notInCatalog: string
       moaTitle: string
       moaPreset: string
@@ -2193,6 +2213,13 @@ export interface Translations {
     all: string
     searchSkills: string
     searchToolsets: string
+    searchTools: string
+    toolsPageSubtitle: string
+    enabled: string
+    disabled: string
+    functions: string
+    leastUsed: string
+    toolsCount: (count: number) => string
     refresh: string
     refreshing: string
     loading: string

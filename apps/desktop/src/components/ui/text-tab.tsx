@@ -8,23 +8,47 @@ function TextTabMeta({ className, ...props }: React.ComponentProps<'span'>) {
 
 interface TextTabProps extends React.ComponentProps<'button'> {
   active?: boolean
+  /** `underline` (default) for chrome rows; `pill` for marketplace page tabs. */
+  variant?: 'underline' | 'pill'
 }
 
-function TextTab({ active = false, children, className, type = 'button', ...props }: TextTabProps) {
+function TextTab({
+  active = false,
+  children,
+  className,
+  type = 'button',
+  variant = 'underline',
+  ...props
+}: TextTabProps) {
+  const pill = variant === 'pill'
+
   return (
     <button
       className={cn(
-        'group/text-tab inline-flex h-7 items-center gap-1 bg-transparent px-1 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary) transition-colors hover:bg-transparent hover:text-foreground focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring disabled:pointer-events-none disabled:opacity-50',
-        active && 'text-foreground',
+        'group/text-tab inline-flex items-center gap-1 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring disabled:pointer-events-none disabled:opacity-50',
+        pill
+          ? cn(
+              'h-8 rounded-full px-3.5 text-sm',
+              active
+                ? 'bg-[color-mix(in_srgb,var(--ui-blue)_16%,transparent)] text-[color:var(--ui-blue)]'
+                : 'bg-transparent text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+            )
+          : cn(
+              'h-7 bg-transparent px-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) hover:bg-transparent hover:text-foreground focus-visible:text-foreground',
+              active && 'text-foreground'
+            ),
         className
       )}
       data-active={active}
+      data-variant={variant}
       type={type}
       {...props}
     >
       {React.Children.map(children, child =>
         React.isValidElement(child) && child.type === TextTabMeta ? (
           child
+        ) : pill ? (
+          <span>{child}</span>
         ) : (
           <span
             className={cn(

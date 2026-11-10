@@ -1,59 +1,103 @@
-import { compactNumber } from '@hermes/shared'
-import { useStore } from '@nanostores/react'
-import { useCallback, useMemo, useState } from 'react'
+import './tools.css'
 
-import { CountSkeleton } from '@/components/ui/skeleton'
+import { useStore } from '@nanostores/react'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
+
+import { SearchField } from '@/components/ui/search-field'
+import { Switch } from '@/components/ui/switch'
 import { type ProfileScope, setToolsetEnabled } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
+import { cn } from '@/lib/utils'
 import { $brandSession, capabilitiesUnlocked } from '@/store/brand-session'
 import { notify, notifyError } from '@/store/notifications'
 import type { ToolsetInfo } from '@/types/hermes'
 
-import {
-  CapRow,
-  DetailColumn,
-  ListColumn,
-  ListStrip,
-  ListStripMenu,
-  type ListStripMenuToggle,
-  MasterDetail
-} from '../../master-detail'
+import { RowButton } from '@/components/ui/row-button'
+
 import { asText, toolNames, toolsetDisplayLabel } from '../../settings/helpers'
-import { FREE_LOCK_MESSAGE, freeListAllowed } from '../free-tier'
+import { brandingLockedSlice, FREE_LOCK_MESSAGE, freeListAllowed } from '../free-tier'
 import { LockFog, useLockFogTop } from '../lock-fog'
-import { CapabilityEmpty, SortButton } from '../primitives'
+import { CapabilityEmpty } from '../primitives'
 
 import { useToolCalls } from './tool-calls'
 import { ToolsetDetail } from './toolset-detail'
-import { filteredToolsets, toolsetCalls, TOOLSETS_QUERY_KEY, toolsetsQueryKey } from './toolsets-data'
+import { filteredToolsets, TOOLSETS_QUERY_KEY, toolsetsQueryKey } from './toolsets-data'
 
-// Sort direction for the Tools list — persisted so the tab remembers
-// most/least-used across navigations and restarts.
 const $toolsetsSortDesc = persistentAtom('hermes.desktop.capabilities.toolsetsSortDesc', true, Codecs.bool)
 
 interface ToolsetsTabProps {
-  /** The scope's toolset list, straight from the shell's query. */
   toolsets: ToolsetInfo[]
-  /** The (connection, profile) scope every read and write routes to. */
   profile: ProfileScope
   query: string
+  onQueryChange?: (value: string) => void
 }
 
-/** THE Tools tab: the toolset list with its usage badges, and the inspector
- *  that mounts each toolset's settings panels. */
-export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
+function ToolsRow({
+  active,
+  busy,
+  enabled,
+  locked,
+  meta,
+  onSelect,
+  onToggle,
+  subtitle,
+  title,
+  toggleLabel
+}: {
+  active: boolean
+  busy?: boolean
+  enabled: boolean
+  locked?: boolean
+  meta: ReactNode
+  onSelect: () => void
+  onToggle?: (checked: boolean) => void
+  subtitle?: string
+  title: string
+  toggleLabel?: string
+}) {
+  return (
+    <div
+      className={cn(
+        'flex w-full items-center justify-between gap-3 px-4 py-3.5',
+        locked && 'pointer-events-none opacity-60'
+      )}
+      data-active={active ? '' : undefined}
+      data-tools-row
+    >
+      <RowButton className="min-w-0 flex-1 text-left" onClick={onSelect}>
+        <span className="block truncate text-[15px] font-semibold text-[#0f172a] dark:text-foreground">{title}</span>
+        {subtitle ? (
+          <span className="mt-1 line-clamp-2 text-[13px] leading-normal text-[#475569]">{subtitle}</span>
+        ) : null}
+      </RowButton>
+      <div className="flex shrink-0 items-center gap-3">
+        <span className="whitespace-nowrap text-[12px] font-medium text-[#64748b]">{meta}</span>
+        {onToggle ? (
+          <Switch
+            aria-label={toggleLabel ?? title}
+            checked={enabled}
+            className="h-[22px] w-10 shrink-0 data-[state=checked]:bg-[#7c3aed] data-[state=checked]:border-transparent [&_[data-slot=switch-thumb]]:size-[18px] data-[state=checked]:[&_[data-slot=switch-thumb]]:translate-x-[18px]"
+            disabled={busy || locked}
+            onCheckedChange={onToggle}
+            size="default"
+          />
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+/** Tools tab — Figma node 315:3972 marketplace layout. */
+export function ToolsetsTab({ onQueryChange, profile, query, toolsets }: ToolsetsTabProps) {
   const { t } = useI18n()
   const toolsetsSortDesc = useStore($toolsetsSortDesc)
   const toolCalls = useToolCalls(profile)
-  const [bulkBusy, setBulkBusy] = useState(false)
   const [selectedToolset, setSelectedToolset] = useState<string | null>(null)
 
-  // Optimistic write-through against the scoped Tools key: toggles repaint
-  // instantly; the next background refetch reconciles.
   const setToolsets = useCallback(
     (fn: (cur: ToolsetInfo[] | undefined) => ToolsetInfo[] | undefined) =>
       queryClient.setQueryData<ToolsetInfo[]>(toolsetsQueryKey(profile), prev => fn(prev) ?? prev),
@@ -64,20 +108,11 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
     void queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY })
   }, [])
 
-  // Absent counts sort the list A–Z until the analytics scan lands.
   const visibleToolsets = useMemo(
     () => filteredToolsets(toolsets, query, toolCalls ?? {}, toolsetsSortDesc),
     [query, toolCalls, toolsets, toolsetsSortDesc]
   )
 
-  // Bulk actions and the master-switch state target the WHOLE tab, never the
-  // search-filtered view — a tab-wide control that silently scoped to the
-  // current query would be a lie.
-  const bulkToolsets = useMemo(() => toolsets.filter(ts => isDesktopToolsetVisible(ts.name)), [toolsets])
-
-  // Single toggles are optimistic and silent on success (the row repaints
-  // immediately — a toast per flip would spam rapid customization). Errors
-  // revert and notify.
   const unlocked = capabilitiesUnlocked(useStore($brandSession))
   const allNames = useMemo(() => toolsets.map(row => row.name), [toolsets])
   const isRowLocked = useCallback(
@@ -96,12 +131,12 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
   const { freeAnchor, fogTop } = useLockFogTop(lockedBehind, `${freeToolsets.length}:${query}`)
   const selectableToolsets = lockedBehind ? freeToolsets : visibleToolsets
 
-  // Keep a valid selection: fall back to the first visible row when the
-  // current selection is filtered out (or nothing is selected yet).
   const activeToolset = useMemo(
     () => selectableToolsets.find(ts => ts.name === selectedToolset) ?? selectableToolsets[0] ?? null,
     [selectedToolset, selectableToolsets]
   )
+
+  const totalVisible = toolsets.filter(ts => isDesktopToolsetVisible(ts.name)).length
 
   async function handleToggleToolset(toolset: ToolsetInfo, enabled: boolean) {
     if (enabled && isRowLocked(toolset.name)) {
@@ -116,6 +151,7 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
 
     try {
       await setToolsetEnabled(toolset.name, enabled, profile)
+      invalidateSlashCompletions()
     } catch (err) {
       setToolsets(
         current =>
@@ -126,161 +162,123 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
     }
   }
 
-  // Sequential on purpose: each toggle is a config read-modify-write on the
-  // backend; parallel calls would race the disabled-list save.
-  async function bulkApply(targets: ToolsetInfo[], enabled: boolean) {
-    if (bulkBusy || targets.length === 0) {
-      return
-    }
-
-    setBulkBusy(true)
-
-    let done = 0
-
-    try {
-      for (const row of targets) {
-        await setToolsetEnabled(row.name, enabled, profile)
-        setToolsets(cur => cur?.map(r => (r.name === row.name ? { ...r, enabled, available: enabled } : r)) ?? cur)
-        done += 1
-      }
-
-      notify({ kind: 'success', title: t.skills.bulkUpdated(done), message: '' })
-    } catch (err) {
-      notifyError(err, t.skills.failedToUpdate(t.skills.tabToolsets))
-    } finally {
-      invalidateSlashCompletions()
-      setBulkBusy(false)
-    }
-  }
-
-  // One switch line covering enable-all/disable-all.
-  const bulkSwitch: ListStripMenuToggle = {
-    checked: bulkToolsets.length > 0 && bulkToolsets.every(ts => ts.enabled || isRowLocked(ts.name)),
-    disabled: bulkBusy,
-    label: t.skills.all,
-    onToggle: checked =>
-      void bulkApply(
-        bulkToolsets.filter(row => row.enabled !== checked && (!checked || !isRowLocked(row.name))),
-        checked
-      )
-  }
-
   if (visibleToolsets.length === 0) {
-    return <CapabilityEmpty noun="tools" query={query} />
+    return (
+      <div className="@container/tools flex h-full min-h-0 flex-col" data-tools-page>
+        <ToolsPageHeader onQueryChange={onQueryChange} query={query} />
+        <CapabilityEmpty noun="tools" query={query} />
+      </div>
+    )
+  }
+
+  const renderRow = (toolset: ToolsetInfo, locked = false) => {
+    const label = toolsetDisplayLabel(toolset)
+
+    return (
+      <ToolsRow
+        active={!locked && activeToolset?.name === toolset.name}
+        enabled={toolset.enabled}
+        key={toolset.name}
+        locked={locked}
+        meta={t.skills.toolsCount(toolNames(toolset).length)}
+        onSelect={() => {
+          if (!locked) {
+            setSelectedToolset(toolset.name)
+          }
+        }}
+        onToggle={locked ? undefined : checked => void handleToggleToolset(toolset, checked)}
+        subtitle={asText(toolset.description)}
+        title={label}
+        toggleLabel={t.skills.toggleToolset(label, !toolset.enabled)}
+      />
+    )
   }
 
   return (
-    <MasterDetail resizeId="capabilities-split" split="wide">
-      <ListColumn
-        header={
-          <ListStrip
-            left={<SortButton desc={toolsetsSortDesc} onFlip={() => $toolsetsSortDesc.set(!$toolsetsSortDesc.get())} />}
-            right={<ListStripMenu label={t.skills.tabToolsets} toggle={bulkSwitch} />}
-          />
-        }
-      >
-        {lockedBehind ? (
-          <div className="relative min-h-full">
-            <div ref={freeAnchor}>
-              {freeToolsets.map(toolset => {
-                const label = toolsetDisplayLabel(toolset)
-                const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
+    <div className="@container/tools flex h-full min-h-0 flex-col" data-tools-page>
+      <ToolsPageHeader onQueryChange={onQueryChange} query={query} />
 
-                return (
-                  <CapRow
-                    active={activeToolset?.name === toolset.name}
-                    busy={bulkBusy}
-                    enabled={toolset.enabled}
-                    key={toolset.name}
-                    meta={
-                      calls === null ? (
-                        <CountSkeleton />
-                      ) : calls > 0 ? (
-                        `×${compactNumber(calls)}`
-                      ) : (
-                        `${toolNames(toolset).length} tools`
-                      )
-                    }
-                    onSelect={() => setSelectedToolset(toolset.name)}
-                    onToggle={checked => void handleToggleToolset(toolset, checked)}
-                    subtitle={asText(toolset.description)}
-                    title={label}
-                    toggleLabel={t.skills.toggleToolset(label, !toolset.enabled)}
-                  />
-                )
-              })}
-            </div>
-            {lockedToolsets.map(toolset => {
-              const label = toolsetDisplayLabel(toolset)
-              const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 px-7 pb-5 @[64rem]/tools:flex-row">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-tools-list>
+          <header className="flex shrink-0 items-center justify-between gap-3 px-4 pb-2 pt-4">
+            <button
+              className="text-[13px] font-semibold text-[#64748b] hover:text-[#0f172a] dark:hover:text-foreground"
+              onClick={() => $toolsetsSortDesc.set(!$toolsetsSortDesc.get())}
+              type="button"
+            >
+              {toolsetsSortDesc ? t.skills.sortMostUsed : t.skills.leastUsed}
+            </button>
+            <span className="text-[12px] font-medium text-[#64748b]">
+              {visibleToolsets.length} of {totalVisible}
+            </span>
+          </header>
 
-              return (
-                <CapRow
-                  active={false}
-                  busy
-                  enabled={false}
-                  key={toolset.name}
-                  meta={
-                    calls === null ? (
-                      <CountSkeleton />
-                    ) : calls > 0 ? (
-                      `×${compactNumber(calls)}`
-                    ) : (
-                      `${toolNames(toolset).length} tools`
-                    )
-                  }
-                  onSelect={() => undefined}
-                  subtitle={asText(toolset.description)}
-                  title={label}
-                />
-              )
-            })}
-            {fogTop > 0 ? (
-              <div className="absolute inset-x-0 bottom-0" style={{ top: fogTop }}>
-                <LockFog label={FREE_LOCK_MESSAGE} />
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 pb-4">
+            {lockedBehind ? (
+              <div className="relative min-h-full space-y-2">
+                <div className="space-y-2" ref={freeAnchor}>
+                  {freeToolsets.map(toolset => renderRow(toolset))}
+                </div>
+                {brandingLockedSlice(lockedToolsets).map(toolset => renderRow(toolset, true))}
+                {fogTop > 0 ? (
+                  <div className="absolute inset-x-0 bottom-0" style={{ top: fogTop }}>
+                    <LockFog label={FREE_LOCK_MESSAGE} />
+                  </div>
+                ) : null}
               </div>
-            ) : null}
+            ) : (
+              visibleToolsets.map(toolset => renderRow(toolset))
+            )}
           </div>
-        ) : (
-          visibleToolsets.map(toolset => {
-            const label = toolsetDisplayLabel(toolset)
-            const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
+        </section>
 
-            return (
-              <CapRow
-                active={activeToolset?.name === toolset.name}
-                busy={bulkBusy}
-                enabled={toolset.enabled}
-                key={toolset.name}
-                meta={
-                  calls === null ? (
-                    <CountSkeleton />
-                  ) : calls > 0 ? (
-                    `×${compactNumber(calls)}`
-                  ) : (
-                    `${toolNames(toolset).length} tools`
-                  )
-                }
-                onSelect={() => setSelectedToolset(toolset.name)}
-                onToggle={checked => void handleToggleToolset(toolset, checked)}
-                subtitle={asText(toolset.description)}
-                title={label}
-                toggleLabel={t.skills.toggleToolset(label, !toolset.enabled)}
-              />
-            )
-          })
-        )}
-      </ListColumn>
-      <DetailColumn footer={t.skills.changesApplyNewSessions}>
-        {activeToolset && (
-          <ToolsetDetail
-            onConfiguredChange={refreshToolsets}
-            profile={profile}
-            toolCalls={toolCalls ?? {}}
-            toolset={activeToolset}
-          />
-        )}
-      </DetailColumn>
-    </MasterDetail>
+        <aside
+          className="flex min-h-0 w-full shrink-0 flex-col overflow-y-auto @[64rem]/tools:w-[400px]"
+          data-tools-detail
+        >
+          {activeToolset ? (
+            <ToolsetDetail
+              enabled={activeToolset.enabled}
+              onConfiguredChange={refreshToolsets}
+              onToggle={checked => void handleToggleToolset(activeToolset, checked)}
+              profile={profile}
+              toolCalls={toolCalls ?? {}}
+              toolset={activeToolset}
+            />
+          ) : null}
+        </aside>
+      </div>
+    </div>
+  )
+}
+
+function ToolsPageHeader({
+  onQueryChange,
+  query
+}: {
+  onQueryChange?: (value: string) => void
+  query: string
+}) {
+  const { t } = useI18n()
+
+  return (
+    <header className="shrink-0 space-y-4 px-7 pb-4 pt-5">
+      <div className="min-w-0 space-y-2">
+        <h1 className="text-[40px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+          {t.skills.tabToolsets}
+        </h1>
+        <p className="max-w-2xl text-[15px] text-[#475569] dark:text-(--ui-text-tertiary)">
+          {t.skills.toolsPageSubtitle}
+        </p>
+      </div>
+      <SearchField
+        containerClassName="w-full min-w-0"
+        onChange={value => onQueryChange?.(value)}
+        placeholder={t.skills.searchTools}
+        shortcutHint={t.catalog.searchShortcut}
+        value={query}
+        variant="box"
+      />
+    </header>
   )
 }

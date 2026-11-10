@@ -1,0 +1,104 @@
+/* Settings → Model → Main model — Figma node 351:7250 */
+
+[data-model-main] [data-slot='select-trigger'] {
+  box-shadow: none;
+}
+
+[data-model-main] [data-model-select-row] [data-slot='select-trigger'],
+[data-model-main] [data-model-select-row] input {
+  height: 3rem;
+  border-radius: 0.75rem;
+  border-color: #e2e8f0;
+  background: #f7f9fc;
+  padding-inline: 1rem;
+  font-size: 15px;
+  font-weight: 600;
+  color: #0f172a;
+  box-shadow: none;
+}
+
+:root.dark [data-model-main] [data-model-select-row] [data-slot='select-trigger'],
+:root.dark [data-model-main] [data-model-select-row] input {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-bg-quinary);
+  color: var(--ui-text-primary);
+}
+
+/* Settings → Model → Auxiliary models — Figma node 351:8630 */
+
+[data-model-auxiliary-card] {
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(38, 64, 140, 0.06);
+}
+
+:root.dark [data-model-auxiliary-card] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-bubble-background);
+  box-shadow: none;
+}
+
+[data-model-auxiliary-row] + [data-model-auxiliary-row] {
+  border-top: 1px solid #e2e8f0;
+}
+
+:root.dark [data-model-auxiliary-row] + [data-model-auxiliary-row] {
+  border-top-color: var(--ui-stroke-tertiary);
+}
+
+/* Settings → Model → Mixture of Agents — Figma node 351:9414 */
+
+[data-model-moa-card] {
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(38, 64, 140, 0.06);
+}
+
+:root.dark [data-model-moa-card] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-bubble-background);
+  box-shadow: none;
+}
+
+[data-model-moa-slot] {
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: #f7f9fc;
+}
+
+:root.dark [data-model-moa-slot] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-bg-quinary);
+}
+
+[data-model-moa] [data-slot='select-trigger'],
+[data-model-moa] input {
+  height: 2.5rem;
+  border-radius: 0.75rem;
+  border-color: #e2e8f0;
+  background: #f7f9fc;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  box-shadow: none;
+}
+
+:root.dark [data-model-moa] [data-slot='select-trigger'],
+:root.dark [data-model-moa] input {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-bg-quinary);
+  color: var(--ui-text-primary);
+}
+
+[data-model-moa-slot] [data-slot='select-trigger'],
+[data-model-moa-card='aggregator'] [data-slot='select-trigger'] {
+  background: #fff;
+}
+
+:root.dark [data-model-moa-slot] [data-slot='select-trigger'],
+:root.dark [data-model-moa-card='aggregator'] [data-slot='select-trigger'] {
+  background: var(--ui-chat-bubble-background);
+}

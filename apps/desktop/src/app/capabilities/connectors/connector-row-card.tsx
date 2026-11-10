@@ -79,45 +79,46 @@ export function ConnectorRowCard({
 
   return (
     <div
-      className={cn(
-        'relative flex items-center gap-3 rounded-lg border p-3 transition-colors duration-100',
-        selected
-          ? 'border-(--theme-primary) bg-(--ui-row-active-background)'
-          : 'border-(--ui-stroke-quaternary) bg-(--ui-bg-elevated) hover:bg-(--chrome-action-hover)'
-      )}
+      className="relative flex items-center justify-between gap-3 p-4 transition-colors duration-100"
       data-connector={card.slug}
+      data-connectors-card
+      data-selected={selected ? '' : undefined}
       data-slot="connector-row-card"
       onFocus={onPrefetch}
       onPointerEnter={onPrefetch}
     >
-      <ConnectorLogo
-        className="size-9 shrink-0 rounded-[9px]"
-        connector={{ iconUrl: local ? undefined : connectorIconUrl(card.slug), name: card.slug, title: card.name }}
-      />
+      <div className="flex min-w-0 flex-1 items-center gap-3.5">
+        <ConnectorLogo
+          className="size-11 shrink-0 rounded-xl"
+          connector={{ iconUrl: local ? undefined : connectorIconUrl(card.slug), name: card.slug, title: card.name }}
+        />
 
-      <div className="grid min-w-0 flex-1 gap-0.5">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
-          <button
-            className="min-w-0 truncate text-[0.8125rem] font-semibold text-(--ui-text-primary) outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:ring-[0.1875rem] focus-visible:after:ring-ring/50"
-            onClick={onOpen}
-            type="button"
-          >
-            {card.name}
-            <span className="sr-only">{` — ${copy.open(card.name)}`}</span>
-          </button>
+        <div className="grid min-w-0 flex-1 gap-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <button
+              className="min-w-0 truncate text-[15px] font-semibold text-[#0f172a] outline-none after:absolute after:inset-0 after:rounded-2xl focus-visible:after:ring-[0.1875rem] focus-visible:after:ring-ring/50 dark:text-foreground"
+              onClick={onOpen}
+              type="button"
+            >
+              {card.name}
+              <span className="sr-only">{` — ${copy.open(card.name)}`}</span>
+            </button>
 
-          <span className="shrink-0 text-[0.6875rem] text-(--ui-text-tertiary)">{connectorKindWord(card, copy)}</span>
+            <span className="shrink-0 rounded-lg border border-[#e2e8f0] bg-[#f1f5f9] px-2 py-[3px] text-[11px] font-medium text-[#64748b]">
+              {connectorKindWord(card, copy)}
+            </span>
 
-          {showsCatalogMark(card) ? <CatalogMark /> : null}
+            {showsCatalogMark(card) ? <CatalogMark /> : null}
 
-          {twin ? (
-            <Badge className="shrink-0" size="xs" variant="muted">
-              {twin === 'hostedTwin' ? copy.hostedTwin : copy.alsoLocal}
-            </Badge>
-          ) : null}
+            {twin ? (
+              <Badge className="shrink-0" size="xs" variant="muted">
+                {twin === 'hostedTwin' ? copy.hostedTwin : copy.alsoLocal}
+              </Badge>
+            ) : null}
+          </div>
+
+          <SecondLine card={card} reason={reason} />
         </div>
-
-        <SecondLine card={card} reason={reason} />
       </div>
 
       <CardLane
@@ -155,13 +156,8 @@ function CardLane({
   const showVerb = Boolean(card.verb && onVerb)
 
   return (
-    <div
-      className={cn(
-        'relative z-10 flex shrink-0 flex-col items-end gap-1',
-        showSwitch && showVerb ? 'w-auto' : 'w-[7.75rem]'
-      )}
-    >
-      <span className="flex items-center gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)">
+    <div className="relative z-10 flex shrink-0 flex-col items-end gap-2">
+      <span className="flex items-center gap-1.5 text-[12px] font-medium text-[#64748b]">
         {withDot ? (
           <span aria-hidden className={cn('size-[5px] shrink-0 rounded-full', STATE_DOT[card.state])} />
         ) : null}
@@ -181,7 +177,7 @@ function CardLane({
       )}
 
       {card.verb === undefined && fact !== null ? (
-        <span className="truncate text-[0.6875rem] text-(--ui-text-tertiary)">{fact}</span>
+        <span className="truncate text-[12px] text-[#94a3b8]">{fact}</span>
       ) : null}
     </div>
   )
@@ -202,6 +198,7 @@ function ServerSwitch({
     <Switch
       aria-label={server?.serverEnabled ? copy.turnServerOff(card.name) : copy.turnServerOn(card.name)}
       checked={server?.serverEnabled ?? false}
+      className="data-[state=checked]:border-transparent data-[state=checked]:bg-[#7c3aed]"
       onCheckedChange={onServerToggle}
       size="xs"
     />
@@ -221,6 +218,10 @@ function VerbButton({
 }) {
   return (
     <Button
+      className={cn(
+        card.state === 'available' &&
+          'rounded-full border border-[#e2e8f0] bg-white px-3.5 py-2 text-[13px] font-semibold text-[#0f172a] shadow-none hover:bg-[#f8fafc]'
+      )}
       disabled={busy}
       loading={busy}
       onClick={onVerb}
@@ -234,10 +235,10 @@ function VerbButton({
 
 function SecondLine({ card, reason }: { card: ConnectorCardModel; reason?: string }) {
   if (reason) {
-    return <p className={cn('truncate text-[0.72rem]', REASON_TONE[card.state])}>{reason}</p>
+    return <p className={cn('line-clamp-2 text-[13px] leading-normal', REASON_TONE[card.state])}>{reason}</p>
   }
 
   return card.description ? (
-    <p className="line-clamp-2 text-[0.72rem] leading-snug text-(--ui-text-secondary)">{card.description}</p>
+    <p className="line-clamp-2 text-[13px] leading-normal text-[#475569]">{card.description}</p>
   ) : null
 }

@@ -191,7 +191,13 @@ export function CapabilitiesView({
       />
     ),
     toolsets: () => (
-      <ToolsetsTab key={`toolsets-${scope.key}`} profile={scope.profile} query={query} toolsets={toolsets ?? []} />
+      <ToolsetsTab
+        key={`toolsets-${scope.key}`}
+        onQueryChange={setQuery}
+        profile={scope.profile}
+        query={query}
+        toolsets={toolsets ?? []}
+      />
     )
   } satisfies Record<CapabilityMode, () => React.ReactNode>
 
@@ -201,18 +207,19 @@ export function CapabilitiesView({
       activeTab={mode}
       onSearchChange={setQuery}
       onTabChange={id => setMode(id as CapabilityMode)}
-      // Catalogs keep search beside their results; Connectors owns its field too.
-      searchHidden={mode !== 'toolsets'}
+      // Each tab owns its search field (Skills/Tools/Plugins catalog chrome; Connectors too).
+      searchHidden
       searchHints={searchHints}
       searchPlaceholder={
         mode === 'plugins'
           ? t.catalog.searchPlugins
           : mode === 'skills'
             ? t.catalog.searchSkills
-            : t.skills.searchToolsets
+            : t.skills.searchTools
       }
       searchValue={query}
       leading={embedded ? undefined : <ReturnToChatButton />}
+      tabVariant="pill"
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
@@ -221,7 +228,7 @@ export function CapabilitiesView({
       ]}
     >
       <div className="flex h-full flex-col">
-        {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
+        {/* Skills/Tools/Connectors match Figma without a scope strip on top. */}
         <div className="flex min-h-0 flex-1 flex-col">{loadGate ?? tabContent[mode]()}</div>
       </div>
     </PageSearchShell>

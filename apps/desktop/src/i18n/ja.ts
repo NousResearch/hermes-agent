@@ -1117,7 +1117,9 @@ export const ja = defineLocale({
       keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
       voiceShortcutHintTitle: '音声録音ショートカット',
       voiceShortcutHintDesc:
-        '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。'
+        '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。',
+      behaviorDesc: '新しいチャットセッションの振る舞いを決めるデフォルト設定です。',
+      attachmentsDesc: 'チャットに添付するファイルと画像の上限と既定値です。'
     },
     hudModifier: {
       title: 'キーをタップして HUD を呼び出す',
@@ -1381,6 +1383,7 @@ export const ja = defineLocale({
       moaReferenceToggle: (enabled, index) => `参照 ${index} を${enabled ? '無効化' : '有効化'}`,
       moaReferenceTitle: index => `参照 ${index}`,
       moaAddReference: '参照モデルを追加',
+      moaReferenceModels: '参照モデル',
       loading: 'モデル設定を読み込み中...',
       appliesDesc:
         '新しいセッションに適用されます。コンポーザーのモデルピッカーを使ってアクティブなチャットをホットスワップできます。',

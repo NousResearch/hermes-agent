@@ -51,7 +51,7 @@ export function ToolsFilterBar({
   const chips = facets.length + hints.length + categories.length + quickActions.length
 
   return (
-    <div className="grid shrink-0 gap-2 border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-chrome) px-3.5 py-2">
+    <div className="grid shrink-0 gap-2 border-b border-[#e2e8f0] bg-[#f7f9fc] px-5 py-2.5 dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-bg-chrome)">
       <div className="flex items-center gap-3">
         <span className="shrink-0 text-xs font-medium text-(--ui-text-primary)">{copy.title}</span>
         <span className="shrink-0 tabular-nums text-[0.7rem] text-(--ui-text-tertiary)">{total}</span>

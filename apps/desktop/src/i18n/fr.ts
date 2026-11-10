@@ -1729,7 +1729,9 @@ export const frOverrides = {
         "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 16. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",
       attachmentSizeUnit: 'Mo',
       attachmentSizeLabel: 'Taille maximale de chargement des aperçus / images en mégaoctets',
-      showOptions: 'Afficher les options'
+      showOptions: 'Afficher les options',
+      behaviorDesc: 'Paramètres par défaut qui façonnent le comportement des nouvelles sessions de chat.',
+      attachmentsDesc: 'Limites et valeurs par défaut pour les fichiers et images joints au chat.'
     },
     hudModifier: {
       title: 'Toucher pour afficher le HUD',
@@ -2116,6 +2118,7 @@ export const frOverrides = {
       moaReferenceToggle: (enabled, index) => `${enabled ? 'Désactiver' : 'Activer'} la référence ${index}`,
       moaReferenceTitle: index => `Référence ${index}`,
       moaAddReference: 'Ajouter un modèle de référence',
+      moaReferenceModels: 'Modèles de référence',
       loading: 'Chargement de la configuration du modèle...',
       appliesDesc:
         "S'applique aux nouvelles sessions. Utilisez le sélecteur de modèle dans le compositeur pour changer à chaud la conversation active.",
@@ -2144,8 +2147,13 @@ export const frOverrides = {
       autoUseMain: 'auto · utiliser le modèle principal',
       inheritMainEffort: 'hériter · effort du modèle principal',
       providerDefault: '(par défaut du fournisseur)',
+      fallbackTitle: 'Modèles de secours',
+      fallbackDesc: 'Entrées provider:model de secours si le modèle par défaut échoue.',
       fallbackAdd: 'Ajouter un secours',
       fallbackEmpty: "Aucun modèle de secours — le modèle par défaut est utilisé sauf en cas d'échec.",
+      fallbackEmptyTitle: 'Aucun modèle de secours',
+      fallbackEmptyDesc:
+        "Le modèle par défaut est utilisé sauf en cas d'échec. Ajoutez des secours pour que les sessions continuent si le modèle principal est indisponible.",
       notInCatalog:
         "n'est pas dans la liste des modèles de ce fournisseur — les appels peuvent basculer sur un secours.",
       moaTitle: "Mélange d'agents",

@@ -1723,7 +1723,9 @@ export const esOverrides = {
         'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 16. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Tamaño máximo de vista previa / carga de imagen en megabytes',
-      showOptions: 'Mostrar opciones'
+      showOptions: 'Mostrar opciones',
+      behaviorDesc: 'Valores predeterminados que definen cómo se comportan las nuevas sesiones de chat.',
+      attachmentsDesc: 'Límites y valores predeterminados para archivos e imágenes adjuntos al chat.'
     },
     hudModifier: {
       title: 'Pulsar para mostrar el HUD',
@@ -2104,6 +2106,7 @@ export const esOverrides = {
       moaReferenceToggle: (enabled, index) => `${enabled ? 'Desactivar' : 'Activar'} la referencia ${index}`,
       moaReferenceTitle: index => `Referencia ${index}`,
       moaAddReference: 'Añadir modelo de referencia',
+      moaReferenceModels: 'Modelos de referencia',
       loading: 'Cargando configuración de modelo...',
       appliesDesc:
         'Se aplica a sesiones nuevas. Usa el selector de modelo en el compositor para cambiar el chat activo.',
@@ -2132,8 +2135,13 @@ export const esOverrides = {
       autoUseMain: 'auto · usar modelo principal',
       inheritMainEffort: 'heredar · esfuerzo del modelo principal',
       providerDefault: '(predeterminado del proveedor)',
+      fallbackTitle: 'Modelos de respaldo',
+      fallbackDesc: 'Entradas provider:model de reserva si falla el modelo predeterminado.',
       fallbackAdd: 'Añadir respaldo',
       fallbackEmpty: 'No hay modelos de respaldo; se usa el modelo predeterminado salvo que falle.',
+      fallbackEmptyTitle: 'No hay modelos de respaldo',
+      fallbackEmptyDesc:
+        'Se usa el modelo predeterminado salvo que falle. Añade respaldos para que las sesiones sigan cuando el modelo principal no esté disponible.',
       notInCatalog: 'no está en la lista de modelos de este proveedor; las llamadas pueden recurrir a un respaldo.',
       moaTitle: 'Mixture of Agents',
       moaPreset: 'Preajuste',

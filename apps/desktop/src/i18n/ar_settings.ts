@@ -529,7 +529,9 @@ export const arSettings = {
       invalidJson: 'JSON غير صالح',
       voiceShortcutHintTitle: 'اختصار تسجيل الصوت',
       voiceShortcutHintDesc:
-        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.'
+        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.',
+      behaviorDesc: 'إعدادات افتراضية تشكّل سلوك جلسات الدردشة الجديدة.',
+      attachmentsDesc: 'حدود وإعدادات افتراضية للملفات والصور المرفقة بالدردشة.'
     },
     hudModifier: {
       title: 'استدعاء HUD بضغطة',
@@ -718,6 +720,7 @@ export const arSettings = {
       moaReferenceToggle: (enabled, index) => `${enabled ? 'تعطيل' : 'تفعيل'} المرجع ${index}`,
       moaReferenceTitle: index => `المرجع ${index}`,
       moaAddReference: 'إضافة نموذج مرجعي',
+      moaReferenceModels: 'النماذج المرجعية',
       loading: 'جار تحميل إعدادات النموذج...',
       appliesDesc: 'ينطبق على الجلسات الجديدة. استخدم منتقي النموذج في صندوق الإنشاء لتبديل المحادثة النشطة فورا.',
       provider: 'المزوّد',

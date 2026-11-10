@@ -1,0 +1,120 @@
+/* Connectors marketplace — Figma node 319:3511 */
+
+[data-connectors-page] {
+  background: linear-gradient(180deg, #e6effb 0%, #f7f9fc 45%);
+}
+
+:root.dark [data-connectors-page] {
+  background: var(--ui-chat-surface-background);
+}
+
+[data-connectors-empty],
+[data-connectors-card] {
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(38, 64, 140, 0.06);
+}
+
+:root.dark [data-connectors-empty],
+:root.dark [data-connectors-card] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-bubble-background);
+  box-shadow: none;
+}
+
+[data-connectors-card] {
+  border-color: rgba(228, 234, 244, 0.5);
+  border-radius: 16px;
+  box-shadow: none;
+}
+
+[data-connectors-card][data-selected] {
+  border-color: #9db7f0;
+  background: #e3ecfd;
+}
+
+:root.dark [data-connectors-card][data-selected] {
+  border-color: color-mix(in srgb, var(--ui-blue) 40%, var(--ui-stroke-tertiary));
+  background: color-mix(in srgb, var(--ui-blue) 14%, transparent);
+}
+
+[data-connectors-cta] {
+  background-image: linear-gradient(90deg, #4361ee 0%, #c04de2 100%);
+  color: #fff;
+}
+
+[data-connectors-cta]:hover {
+  filter: brightness(1.05);
+}
+
+[data-connectors-notice] {
+  border: 1px solid #fde68a;
+  border-radius: 12px;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+:root.dark [data-connectors-notice] {
+  border-color: color-mix(in srgb, #fde68a 40%, var(--ui-stroke-tertiary));
+  background: color-mix(in srgb, #fffbeb 12%, transparent);
+  color: #fbbf24;
+}
+
+/* Connector detail dialog — match Skills/Plugins marketplace chrome */
+[data-connector-dialog] {
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 20px !important;
+  background: #fff !important;
+  box-shadow: 0 16px 48px rgba(38, 64, 140, 0.12) !important;
+}
+
+:root.dark [data-connector-dialog] {
+  border-color: var(--ui-stroke-tertiary) !important;
+  background: var(--ui-chat-bubble-background) !important;
+  box-shadow: none !important;
+}
+
+[data-connector-dialog-header] {
+  border-bottom: 1px solid #e2e8f0;
+  background: linear-gradient(180deg, #eef4fc 0%, #fff 100%);
+}
+
+:root.dark [data-connector-dialog-header] {
+  border-bottom-color: var(--ui-stroke-tertiary);
+  background: transparent;
+}
+
+[data-connector-alert] {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f7f9fc;
+}
+
+:root.dark [data-connector-alert] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-bg-quinary);
+}
+
+[data-connector-panel] {
+  overflow: hidden;
+  border: 1px solid #e4eaf4;
+  border-radius: 16px;
+  background: #fff;
+}
+
+:root.dark [data-connector-panel] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-bubble-background);
+}
+
+[data-connector-panel] [data-slot='json-document-header'],
+[data-connector-panel] > div > div:first-child {
+  border-bottom: 1px solid #eef2f7;
+  background: #f8fafc;
+}
+
+:root.dark [data-connector-panel] > div > div:first-child {
+  border-bottom-color: var(--ui-stroke-tertiary);
+  background: transparent;
+}

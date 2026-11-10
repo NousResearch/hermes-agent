@@ -11,6 +11,8 @@ import { connectorIconUrl } from '@/lib/connector-tools'
 import { X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
+import './connectors.css'
+
 import { CatalogMark } from './catalog-mark'
 import { connectorKindWord, showsCatalogMark } from './connector-kind'
 import { type InstallField, LocalInstall } from './local-server-control'
@@ -79,7 +81,8 @@ export function ConnectorDialog({ card, onOpenChange, open, tools, ...rest }: Co
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
         bodyClassName="gap-0 overflow-hidden p-0"
-        className="max-h-[85vh] max-w-lg"
+        className="max-h-[85vh] max-w-xl"
+        data-connector-dialog=""
         onOpenAutoFocus={event => {
           event.preventDefault()
           titleRef.current?.focus()
@@ -88,7 +91,7 @@ export function ConnectorDialog({ card, onOpenChange, open, tools, ...rest }: Co
       >
         <Header card={card} titleRef={titleRef} {...rest} />
 
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col bg-[#f7f9fc] dark:bg-transparent">
           {card.ways.hosted ? <HostedLead card={card} {...rest} /> : <LocalLead card={card} {...rest} />}
 
           {tools}
@@ -110,28 +113,46 @@ function Header({ card, titleRef, ...rest }: PartProps & { titleRef: RefObject<H
   const local = card.residency === 'local'
 
   return (
-    <header className="flex shrink-0 items-center gap-2.5 border-b border-(--ui-stroke-tertiary) px-5 py-3">
+    <header
+      className="flex shrink-0 items-center gap-3 px-5 py-4"
+      data-connector-dialog-header=""
+    >
       <ConnectorLogo
-        className="size-9 shrink-0 rounded-[9px]"
+        className="size-11 shrink-0 rounded-[12px] border border-[#e2e8f0] shadow-[0_4px_12px_rgba(38,64,140,0.08)]"
         connector={{ iconUrl: local ? undefined : connectorIconUrl(card.slug), name: card.slug, title: card.name }}
       />
 
-      <div className="grid min-w-0 flex-1 gap-0.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <DialogTitle className="truncate text-base font-semibold outline-none" ref={titleRef} tabIndex={-1}>
+      <div className="grid min-w-0 flex-1 gap-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <DialogTitle
+            className="truncate text-[18px] font-bold leading-none text-[#0f172a] outline-none dark:text-foreground"
+            ref={titleRef}
+            tabIndex={-1}
+          >
             {card.name}
           </DialogTitle>
 
-          <span className="shrink-0 text-[0.6875rem] text-(--ui-text-tertiary)">{connectorKindWord(card, copy)}</span>
+          <span className="shrink-0 text-[12px] font-medium text-[#64748b]">{connectorKindWord(card, copy)}</span>
 
           {showsCatalogMark(card) ? <CatalogMark /> : null}
 
-          <Badge className="shrink-0" size="xs" variant={STATE_BADGE[card.state]}>
+          <Badge
+            className={cn(
+              'shrink-0 rounded-lg px-2 py-[3px] text-[11px] font-semibold',
+              card.state === 'broken'
+                ? 'border border-[#fecaca] bg-[#fef2f2] text-[#dc2626]'
+                : card.state === 'connected'
+                  ? 'border border-[#9db7f0] bg-[#e3ecfd] text-[#2f5bea]'
+                  : undefined
+            )}
+            size="xs"
+            variant={STATE_BADGE[card.state]}
+          >
             {copy.state[card.stateWord]}
           </Badge>
         </div>
 
-        <DialogDescription className="truncate text-[0.72rem] text-(--ui-text-secondary)">
+        <DialogDescription className="truncate text-[13px] text-[#475569] dark:text-(--ui-text-secondary)">
           {card.description ?? localTarget(card) ?? copy.state[card.stateWord]}
         </DialogDescription>
       </div>
@@ -180,8 +201,9 @@ function HeaderActions({
         <Switch
           aria-label={localWay.serverEnabled === true ? copy.turnServerOff(card.name) : copy.turnServerOn(card.name)}
           checked={localWay.serverEnabled ?? false}
+          className="h-[22px] w-10 data-[state=checked]:border-transparent data-[state=checked]:bg-[#7c3aed] [&_[data-slot=switch-thumb]]:size-[18px] data-[state=checked]:[&_[data-slot=switch-thumb]]:translate-x-[18px]"
           onCheckedChange={onServerToggle}
-          size="xs"
+          size="default"
         />
       ) : null}
 
@@ -189,9 +211,10 @@ function HeaderActions({
         <Switch
           aria-label={t.connectorsPage.dialog.appSwitch(card.name)}
           checked={hosted.state !== 'off'}
+          className="h-[22px] w-10 data-[state=checked]:border-transparent data-[state=checked]:bg-[#7c3aed] [&_[data-slot=switch-thumb]]:size-[18px] data-[state=checked]:[&_[data-slot=switch-thumb]]:translate-x-[18px]"
           disabled={card.offBy === 'org' || togglePending || rulesReadOnly}
           onCheckedChange={onToggleForMe}
-          size="xs"
+          size="default"
         />
       ) : null}
 
@@ -292,12 +315,12 @@ function HostedLead({
   }
 
   return (
-    <div className="grid shrink-0 gap-3 border-b border-(--ui-stroke-tertiary) px-3.5 py-3">
+    <div className="grid shrink-0 gap-3 border-b border-[#e2e8f0] bg-white px-5 py-3 dark:border-(--ui-stroke-tertiary) dark:bg-transparent">
       {connectElement}
 
       {showsReason ? (
-        <div className="flex items-center gap-3">
-          <p className="min-w-0 flex-1 text-[0.72rem] text-(--ui-text-secondary)">{reason}</p>
+        <div className="flex items-center gap-3 px-3 py-2" data-connector-alert="">
+          <p className="min-w-0 flex-1 text-[13px] text-[#475569]">{reason}</p>
           {waiting ? (
             <Button onClick={waiting} size="inline" variant="textStrong">
               {t.connectorsPage.card.verb.stopWaiting}
@@ -342,7 +365,7 @@ function LocalLead({ card, installFields = [], installing, onInstall }: PartProp
   }
 
   return (
-    <div className="shrink-0 border-b border-(--ui-stroke-tertiary) px-3.5 py-2.5">
+    <div className="shrink-0 border-b border-[#e2e8f0] bg-white px-5 py-3 dark:border-(--ui-stroke-tertiary) dark:bg-transparent">
       <LocalInstall installFields={installFields} installing={installing} onInstall={install} />
     </div>
   )
@@ -358,9 +381,9 @@ function LocalFoot({ advanced, cost }: PartProps) {
   }
 
   return (
-    <div className="grid shrink-0 gap-3 border-t border-(--ui-stroke-tertiary) px-3.5 py-2.5">
+    <div className="grid shrink-0 gap-3 border-t border-[#e2e8f0] bg-white px-5 py-4 dark:border-(--ui-stroke-tertiary) dark:bg-transparent">
       {metrics ? (
-        <p className="text-[0.7rem] text-(--ui-text-tertiary)">
+        <p className="text-[12px] font-medium text-[#64748b]">
           {[
             cost?.usesPerMonth ? `${cost.usesPerMonth} ${copy.usesPerMonth}` : null,
             cost?.tokensPerCall ? `${cost.tokensPerCall} ${copy.tokensPerCall}` : null
@@ -371,17 +394,17 @@ function LocalFoot({ advanced, cost }: PartProps) {
       ) : null}
 
       {advanced ? (
-        <details className="group grid gap-2">
-          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-(--ui-text-primary)">
+        <details className="group grid gap-3">
+          <summary className="flex cursor-pointer list-none items-center gap-2 text-[13px] font-semibold text-[#0f172a] dark:text-foreground">
             <Codicon
-              className={cn('shrink-0 transition-transform duration-100 group-open:rotate-90')}
+              className={cn('shrink-0 text-[#64748b] transition-transform duration-100 group-open:rotate-90')}
               name="chevron-right"
-              size="0.75rem"
+              size="0.8rem"
             />
             <span className="shrink-0">{copy.advanced}</span>
-            <span className="min-w-0 truncate font-normal text-(--ui-text-quaternary)">{copy.advancedHint}</span>
+            <span className="min-w-0 truncate font-medium text-[#94a3b8]">{copy.advancedHint}</span>
           </summary>
-          <div className="pt-2">{advanced}</div>
+          <div className="pt-1">{advanced}</div>
         </details>
       ) : null}
     </div>
@@ -390,7 +413,7 @@ function LocalFoot({ advanced, cost }: PartProps) {
 
 function FootLine({ children }: { children: string }) {
   return (
-    <p className="shrink-0 border-t border-(--ui-stroke-tertiary) px-3.5 py-2 text-[0.7rem] text-(--ui-text-tertiary)">
+    <p className="shrink-0 border-t border-[#e2e8f0] bg-white px-5 py-3 text-[12px] text-[#64748b] dark:border-(--ui-stroke-tertiary) dark:bg-transparent">
       {children}
     </p>
   )
@@ -405,10 +428,10 @@ function OrgNote({ count, onOpenAdmin }: { count: number; onOpenAdmin?: () => vo
   }
 
   return (
-    <div className="grid gap-1 rounded-md bg-(--ui-orange)/8 p-2.5">
-      <p className="text-[0.7rem] text-(--ui-text-secondary)">{copy.orgNote(count)}</p>
+    <div className="grid gap-1.5 rounded-xl border border-[#fde68a] bg-[#fffbeb] px-3 py-2.5 dark:border-transparent dark:bg-(--ui-orange)/8">
+      <p className="text-[13px] text-[#92400e] dark:text-(--ui-text-secondary)">{copy.orgNote(count)}</p>
       {onOpenAdmin ? (
-        <Button className="justify-self-start" onClick={onOpenAdmin} size="inline" variant="textStrong">
+        <Button className="justify-self-start text-[13px] font-semibold text-[#2f5bea]" onClick={onOpenAdmin} size="inline" variant="textStrong">
           {copy.orgLink}
         </Button>
       ) : null}

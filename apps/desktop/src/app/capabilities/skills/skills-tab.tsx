@@ -272,6 +272,7 @@ function ScopedSkillsTab({
           <Switch
             aria-label={skill.name}
             checked={skill.enabled}
+            className="data-[state=checked]:bg-[#7c3aed]"
             disabled={controlsDisabled}
             onCheckedChange={enabled => void applyEnabled([skill], enabled)}
             size="xs"

@@ -1722,7 +1722,9 @@ export const deOverrides = {
         'Wie groß eine lokale Datei sein darf, die Desktop für Vorschauen und Bildanhänge lädt, in MB. Standard ist 16. Remote-Anhänge ohne Bild verwenden ein eigenes Limit von 256 MB. Ein sehr hoher Wert lädt die gesamte Datei in den Speicher, was die App einfrieren oder abstürzen lassen kann.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Maximale Vorschau-/Bildladegröße in Megabyte',
-      showOptions: 'Optionen anzeigen'
+      showOptions: 'Optionen anzeigen',
+      behaviorDesc: 'Standardeinstellungen, die das Verhalten neuer Chats prägen.',
+      attachmentsDesc: 'Limits und Standardwerte für Dateien und Bilder in Chats.'
     },
     hudModifier: {
       title: 'Tippen, um das HUD aufzurufen',
@@ -2110,6 +2112,7 @@ export const deOverrides = {
       moaReferenceToggle: (enabled, index) => `Referenz ${index} ${enabled ? 'deaktivieren' : 'aktivieren'}`,
       moaReferenceTitle: index => `Referenz ${index}`,
       moaAddReference: 'Referenzmodell hinzufügen',
+      moaReferenceModels: 'Referenzmodelle',
       loading: 'Modellkonfiguration wird geladen…',
       appliesDesc:
         'Gilt für neue Sessions. Verwenden Sie die Modellauswahl im Composer, um im aktiven Chat schnell zu wechseln.',
@@ -2138,8 +2141,13 @@ export const deOverrides = {
       autoUseMain: 'automatisch · Hauptmodell verwenden',
       inheritMainEffort: 'übernehmen · Aufwand des Hauptmodells',
       providerDefault: '(Anbietervorgabe)',
+      fallbackTitle: 'Fallback-Modelle',
+      fallbackDesc: 'Backup provider:model-Einträge, falls das Standardmodell fehlschlägt.',
       fallbackAdd: 'Fallback hinzufügen',
       fallbackEmpty: 'Keine Fallback-Modelle — es wird das Standardmodell verwendet, außer es schlägt fehl.',
+      fallbackEmptyTitle: 'Keine Fallback-Modelle',
+      fallbackEmptyDesc:
+        'Das Standardmodell wird verwendet, außer es schlägt fehl. Füge Backups hinzu, damit Sitzungen weiterlaufen, wenn das Hauptmodell nicht verfügbar ist.',
       notInCatalog:
         'ist nicht in der Modellliste dieses Anbieters enthalten — Aufrufe können auf ein Backup ausweichen.',
       moaTitle: 'Mixture of Agents',

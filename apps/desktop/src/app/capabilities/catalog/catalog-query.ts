@@ -14,7 +14,19 @@ export interface CatalogFacets {
 
 export const EMPTY_FACETS: CatalogFacets = { sources: [], categories: [], tags: [], installedOnly: false }
 
-export const catalogSources = (entries: CatalogEntry[]) => [...new Set(entries.map(entry => entry.source))]
+export const catalogSources = (entries: CatalogEntry[]) => {
+  const counts = new Map<string, number>()
+
+  for (const entry of entries) {
+    if (!entry.source) {
+      continue
+    }
+
+    counts.set(entry.source, (counts.get(entry.source) ?? 0) + 1)
+  }
+
+  return [...counts].sort((a, b) => b[1] - a[1]).map(([value, count]) => ({ value, count }))
+}
 
 /** Category facet rows with counts; plugins follow the shared taxonomy order. */
 export function catalogCategories(entries: CatalogEntry[], kind: CatalogKind) {

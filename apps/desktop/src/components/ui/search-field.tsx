@@ -31,6 +31,8 @@ interface SearchFieldProps {
    * affordance, e.g. above a catalog grid.
    */
   variant?: 'underline' | 'box'
+  /** Optional keyboard hint shown when the field is empty (e.g. ⌘K). */
+  shortcutHint?: string
   'aria-label'?: string
 }
 
@@ -53,6 +55,7 @@ export function SearchField({
   inputRef,
   trailingAction,
   variant = 'underline',
+  shortcutHint,
   'aria-label': ariaLabel
 }: SearchFieldProps) {
   const { t } = useI18n()
@@ -73,7 +76,7 @@ export function SearchField({
         // instead of shrinking to fit its context.
         'inline-flex min-w-0 max-w-full items-center gap-1.5 transition-[color,border-color,opacity]',
         boxed
-          ? 'w-full gap-2 rounded-full border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3.5 py-2 hover:border-(--ui-stroke-secondary) focus-within:border-(--ui-stroke-secondary)'
+          ? 'h-11 w-full gap-2 rounded-full border border-[#e2e8f0] bg-white px-4 py-2.5 shadow-none hover:border-[#cbd5e1] focus-within:border-[#cbd5e1] dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-bg-quinary)'
           : cn(
               'border-b border-transparent px-0.5',
               // Recede until the user reaches for it.
@@ -121,6 +124,10 @@ export function SearchField({
             <Codicon name="close" size="0.875rem" />
           </Button>
         </Tip>
+      ) : shortcutHint ? (
+        <kbd className="pointer-events-none hidden shrink-0 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-1.5 py-0.5 font-sans text-[0.65rem] font-medium text-(--ui-text-tertiary) sm:inline-flex">
+          {shortcutHint}
+        </kbd>
       ) : null}
     </div>
   )

@@ -15,6 +15,7 @@ import pytest
 
 from pm import Lockfile, get_package, paths
 from pm.install import _prepare_artifacts
+from pm.packages import _unpack_vc_runtime
 
 _MACHINE = {"x64": 0x8664, "arm64": 0xAA64}
 _CRT = "Contents/VC/Redist/MSVC/14.51.36231/{arch}/Microsoft.VC145.CRT/"
@@ -102,3 +103,18 @@ def test_arm64_whisper_cpp_stages_the_vc_runtime_beside_whisper_cli(tmp_path):
 
     assert cli.is_file()
     assert {"msvcp140.dll", "vcruntime140.dll", "whisper.dll"} <= {p.name for p in cli.parent.iterdir()}
+
+
+def test_vc_runtime_unpack_stages_only_plain_dll_names(tmp_path):
+    """A member name is zip text, not a path: on Windows `..\\x.dll` under the CRT folder would land
+    outside the staged tree, which PM's own extract() refuses for every other archive."""
+    crt = _CRT.format(arch="x64")
+    payload = _zip(tmp_path / "redist.vsix", {
+        crt + "msvcp140.dll": _pe("x64"),
+        crt + "..\\..\\escaped.dll": _pe("x64"),
+    })
+    staged = tmp_path / "out" / "tree"
+
+    _unpack_vc_runtime("llamacpp-cpu", payload, staged, "win32-x64")
+
+    assert sorted(p.name for p in staged.parent.rglob("*") if p.is_file()) == ["msvcp140.dll"]

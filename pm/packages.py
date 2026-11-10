@@ -1248,7 +1248,7 @@ def _unpack_vc_runtime(name: str, archive: Path, staged: Path, target: str) -> N
     shutil.rmtree(staged, ignore_errors=True)
     staged.mkdir(parents=True, exist_ok=True)
     arch = re.escape(target.split("-")[1])
-    member = re.compile(rf"Contents/VC/Redist/MSVC/[^/]+/{arch}/Microsoft\.VC\d+\.CRT/([^/]+\.dll)", re.IGNORECASE)
+    member = re.compile(rf"Contents/VC/Redist/MSVC/[^/]+/{arch}/Microsoft\.VC\d+\.CRT/([^/\\]+\.dll)", re.IGNORECASE)
     with zipfile.ZipFile(archive) as zf:
         for info in zf.infolist():
             match = member.fullmatch(info.filename)

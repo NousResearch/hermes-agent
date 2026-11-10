@@ -86,3 +86,43 @@ def test_git_url_plugin_clone_runs_pm_pinned_git(resolve_git, tmp_path, monkeypa
     _pm_reports_git(monkeypatch, Path(real_git))
 
     assert _clone_plugin_repo(tmp_path / "clone", origin.as_uri(), None) == head
+
+
+@pytest.mark.platforms("posix")
+def test_update_check_never_runs_the_ambient_credential_helper(tmp_path, monkeypatch):
+    """The update check runs on every gateway boot. A remote that asks for credentials must fail
+    there without running the git config's credential helper: PM's PortableGit names a GUI chooser
+    as its helper, and that dialog outlives the call's own timeout."""
+    import http.server
+    import threading
+
+    from hermes_cli import plugins_cmd
+    from hermes_cli.plugins_updates import default_ls_remote
+
+    class AsksForCredentials(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="plugins"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), AsksForCredentials)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    ran = tmp_path / "helper-ran"
+    helper = _stub_executable(tmp_path / "helper", f"#!/bin/sh\ntouch '{ran}'\n")
+    config = tmp_path / "gitconfig"
+    config.write_text(f"[credential]\n\thelper = {helper}\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")  # a run that reaches git's prompt fails, never waits
+    monkeypatch.setattr(plugins_cmd, "_resolve_git_executable", lambda: shutil.which("git"))
+    try:
+        with pytest.raises(RuntimeError):
+            default_ls_remote(f"http://127.0.0.1:{server.server_port}/plugin.git")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert not ran.exists(), "ls-remote ran the ambient credential helper"

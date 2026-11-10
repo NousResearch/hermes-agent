@@ -1395,7 +1395,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             )
         watcher_env = drop_bridged_env(watcher_env)
         watcher_env.pop("_HERMES_GATEWAY", None)
-        return watcher_env
+        from gateway.restart_watcher_env import keep_running_checkout_importable
+        return keep_running_checkout_importable(watcher_env)
 
     @staticmethod
     def _spawn_windows_restart_watcher(hermes_cmd: list, current_pid: int, restart_after_s: float) -> None:
@@ -1461,11 +1462,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             GatewayShutdownMixin._spawn_windows_restart_watcher(hermes_cmd, current_pid, restart_after_s)
             return
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
-        shell_cmd = (
-            f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
-            f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
-        )
+        from gateway.restart_watcher_env import detached_restart_shell
+        shell_cmd = detached_restart_shell(cmd, current_pid, restart_after_s)
         setsid_bin = shutil.which("setsid")
         argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]
         subprocess.Popen(  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object

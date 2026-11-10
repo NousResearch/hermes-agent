@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import current_path
 from scripts import check_config_yaml_readers, check_config_yaml_writers
 from scripts.code_health import cli
 from scripts.code_health.config import ENFORCEMENT
@@ -34,6 +35,7 @@ _GUARD_SCRIPTS = (
 )
 _SUPPORT = ("scripts/ci/profile_scope_patterns.json", "scripts/install_root_lint_baseline.json", "agent/subdirectory_hints.py", *_GUARD_SCRIPTS)
 # The config guards fail when a tree they scan is missing, so the fixture carries an empty stand-in.
+# The fixture's MOVES is empty, so its stand-ins and support files sit at their old paths.
 _SCANNED_TREES = sorted({*check_config_yaml_readers.DEFAULT_TREES, *check_config_yaml_writers.DEFAULT_TREES})
 _LEGACY = "def legacy(x):\n" + "".join(f"    if x == {i}:\n        return {i}\n" for i in range(21))
 _GROWN = _LEGACY + "    if x == 99:\n        return 99\n"
@@ -94,7 +96,7 @@ def _add_engine(repo: Path, checker: bool = True) -> list[str]:
     scripts/check + scripts/code_health themselves; returns the top-level paths to stage."""
     for rel in _SUPPORT:
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(REPO / rel, repo / rel)
+        shutil.copy2(REPO / current_path(rel), repo / rel)
     (repo / "hermes_agent").mkdir(exist_ok=True)
     shutil.copy2(REPO / "hermes_agent/__init__.py", repo / "hermes_agent/__init__.py")
     shutil.copytree(REPO / "hermes_agent/compat", repo / "hermes_agent/compat",

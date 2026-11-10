@@ -410,7 +410,12 @@ existing reservation or starting owner is waited for, not replaced. When absence
 is established, an existing service takes precedence; an unmanaged process is
 requested only when no service is found. This command never installs or rewrites
 service definitions, enables linger, elevates privileges, or clears update fences.
-Ambiguous or inaccessible ownership fails closed.
+One exception: on Windows it re-renders the gateway launcher scripts (the `.vbs` the
+Scheduled Task and the Startup entry run, and the `.cmd` beside it) when they are
+the installer's own for the home whose gateway serves the profile (the multiplexer
+root for a served profile) and the interpreter they name no longer exists, as after
+a Microsoft Store update. The task and the Startup entry themselves
+are left unchanged. Ambiguous or inaccessible ownership fails closed.
 
 Before requesting a service start, `ensure` checks its canonical profile directory
 and execution account, not just its unit/task name. Linux uses the manager's

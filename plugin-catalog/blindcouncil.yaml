@@ -1,0 +1,24 @@
+name: blindcouncil
+repo: https://github.com/sopskistar/blindcouncil
+sha: 2a7ceb4b75bfc24d9fa45349b08764eaeb082e48
+description: Private human decisions in Hermes with authenticated responses, deterministic rules and durable recovery.
+maintainer: sopskistar
+tier: community
+category: automation
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+title: BlindCouncil
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/sopskistar/blindcouncil/2a7ceb4b75bfc24d9fa45349b08764eaeb082e48/docs/media/native-decision-light.png
+  - https://raw.githubusercontent.com/sopskistar/blindcouncil/2a7ceb4b75bfc24d9fa45349b08764eaeb082e48/docs/media/native-decision-dark.png
+platforms: [linux]
+known_issues:
+  - Native Telegram integration runs in process and requires an explicitly allowlisted two-account bot setup.
+  - Aggregate outcomes may permit inference; the trusted host operator can access stored responses.
+  - No action-bound executor or agent-facing tools yet; exactly-once delivery and Hermes-wide enforcement are not claimed.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

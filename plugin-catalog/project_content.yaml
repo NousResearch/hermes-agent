@@ -1,0 +1,31 @@
+name: project_content
+repo: https://github.com/mikemonty/hermes-project-manager
+sha: 45faf2380a70c504d19873db3c07f312de64d6ce
+description: Experimental local-first project content tools and a basic Desktop workspace.
+maintainer: mikemonty
+tier: community
+category: desktop
+version: "2.0.0"
+title: Project Manager (experimental)
+known_issues:
+  - Desktop workspace and agent tools use separate data stores.
+  - Media playback and thumbnails are not implemented; Desktop has no media library.
+  - Desktop UI has not yet been tested in a real Hermes host.
+capabilities:
+  provides_tools:
+    - project_initialize
+    - project_create
+    - project_organize
+    - project_list
+    - project_read
+    - project_edit
+    - project_media_list
+    - project_media_register
+    - project_media_update_metadata
+    - project_blocks_inspect
+    - project_blocks_save
+    - project_blocks_insert
+    - project_blocks_move
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

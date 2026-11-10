@@ -191,6 +191,11 @@ export function getBaseColors(skinName: string, mode: 'light' | 'dark'): Desktop
 }
 
 function paletteFor(seed: DesktopTheme, mode: 'light' | 'dark'): DesktopThemeColors {
+  // Backend skins are single-mode except the Arabic desktop's paired skin.
+  if (seed.name === 'hermes-arabi' && mode === 'light') {
+    return resolveTheme('hermes-arabi-light')?.colors ?? synthLightColors(seed)
+  }
+
   if (mode === 'dark') {
     return seed.darkColors ?? seed.colors
   }

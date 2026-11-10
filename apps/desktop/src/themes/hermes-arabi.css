@@ -1,0 +1,132 @@
+/* Grok-derived treatment, deliberately limited to the Arabic skins. Keep the
+   defaults zero-specificity so a skin's existing customCSS :root block can
+   drive these dedicated tokens without changing dialog/shared surface paint.
+   ThemeProvider keeps the skin name and publishes the rendered mode separately. */
+:where(:root:is([data-hermes-theme='hermes-arabi'], [data-hermes-theme='hermes-arabi-light'])) {
+  --dt-chat-user-background: #f5f5f52e;
+  --dt-chat-user-foreground: #f5f5f5;
+  --dt-chat-assistant-background: #f5f5f50a;
+  --dt-chat-assistant-foreground: var(--dt-foreground);
+  --dt-chat-bubble-radius: 18px;
+  --dt-chat-bubble-padding-block: 7px;
+  --dt-chat-bubble-padding-inline: 12px;
+  --dt-chat-bubble-max-width: min(80%, 560px, 100% - 82px);
+  --dt-chat-composer-background: #1f1f1f;
+  --dt-chat-composer-foreground: #f5f5f5;
+  --dt-chat-composer-border: #f5f5f51a;
+  --dt-chat-composer-border-focus: #f5f5f538;
+  --dt-chat-composer-border-width: 0.5px;
+  --dt-chat-composer-radius: 22px;
+  --dt-chat-composer-expanded-radius: 18px;
+  --dt-chat-composer-shadow: 0 2px 8px -1px #0000000d, 0 1px 2px #00000008, 0 0 0 1px #e4e4e40a;
+  --dt-chat-composer-selection-background: #f5f5f514;
+  --dt-chat-composer-selection-foreground: var(--dt-chat-composer-foreground);
+  --dt-chat-composer-caret: var(--dt-chat-composer-foreground);
+}
+
+:where(
+  :root[data-hermes-theme='hermes-arabi'][data-hermes-mode='light'],
+  :root[data-hermes-theme='hermes-arabi-light']
+) {
+  --dt-chat-user-background: #1c1c1c;
+  --dt-chat-user-foreground: #ffffff;
+  --dt-chat-assistant-background: #1c1c1c0f;
+  --dt-chat-assistant-foreground: #1c1c1c;
+  --dt-chat-composer-background: #ffffff;
+  --dt-chat-composer-foreground: #1c1c1c;
+  --dt-chat-composer-border: #1c1c1c1f;
+  --dt-chat-composer-border-focus: #1c1c1c3d;
+  --dt-chat-composer-selection-background: #1c1c1c14;
+}
+
+:root:is([data-hermes-theme='hermes-arabi'], [data-hermes-theme='hermes-arabi-light']) {
+  :is(.composer-human-message, [data-slot='aui_assistant-message-content']) {
+    max-inline-size: 100%;
+    border-radius: var(--dt-chat-bubble-radius);
+    padding-block: var(--dt-chat-bubble-padding-block);
+    border: 0;
+    box-shadow: none;
+    background-image: none;
+    text-align: start;
+  }
+
+  /* Size the action/reaction anchor with the bubble, not the full transcript.
+     Its existing restore/stop affordance keeps its inline paint and clearance. */
+  /* SIDES ARE PHYSICAL in this opt-in skin (overrides Grok's
+     logical mirroring): the user is always on the right and the assistant on
+     the left, in Arabic as in English. In RTL that is user = inline-start,
+     assistant = inline-end. See DESIGN.md "Chat bubbles". */
+  [data-slot='aui_user-bubble-actions'] {
+    inline-size: fit-content;
+    max-inline-size: var(--dt-chat-bubble-max-width);
+    margin-left: auto;
+    margin-right: 0;
+  }
+
+  .composer-human-message {
+    background-color: var(--dt-chat-user-background);
+    color: var(--dt-chat-user-foreground);
+  }
+
+  [data-slot='aui_edit-composer-root'] {
+    max-inline-size: var(--dt-chat-bubble-max-width);
+    margin-left: auto;
+    margin-right: 0;
+  }
+
+  [data-slot='aui_assistant-message-content'] {
+    inline-size: fit-content;
+    max-inline-size: var(--dt-chat-bubble-max-width);
+    margin-left: 0;
+    margin-right: auto;
+    padding-inline: var(--dt-chat-bubble-padding-inline);
+    background-color: var(--dt-chat-assistant-background);
+    color: var(--dt-chat-assistant-foreground);
+  }
+
+  [data-slot='aui_assistant-message-content'] .aui-md {
+    color: inherit;
+    --tw-prose-body: var(--dt-chat-assistant-foreground);
+    --tw-prose-headings: var(--dt-chat-assistant-foreground);
+    --tw-prose-bold: var(--dt-chat-assistant-foreground);
+  }
+
+  [data-slot='composer-root'] {
+    /* Override the normal rest/scrolled glass ladder once; backing, editor
+       surface and docked status chrome keep sharing the same fill. */
+    --composer-fill: var(--dt-chat-composer-background);
+    --composer-skin-radius: var(--dt-chat-composer-radius);
+    border-radius: var(--composer-skin-radius);
+  }
+
+  [data-slot='composer-root'][data-composer-expanded] {
+    --composer-skin-radius: var(--dt-chat-composer-expanded-radius);
+  }
+
+  [data-slot='composer-surface'] {
+    background-color: var(--dt-chat-composer-background);
+    border: var(--dt-chat-composer-border-width) solid var(--dt-chat-composer-border);
+    /* Base styles intentionally pin border color with !important. */
+    border-color: var(--dt-chat-composer-border) !important;
+    border-radius: var(--composer-skin-radius);
+    box-shadow: var(--dt-chat-composer-shadow);
+  }
+
+  /* q$.frame uses a neutral border lift, not the unrelated blue keyboard ring.
+     Match mouse/editor/toolbar focus; do not change toolbar focus indicators. */
+  [data-slot='composer-surface']:is(:hover, :focus-within) {
+    border-color: var(--dt-chat-composer-border-focus) !important;
+  }
+
+  [data-slot='composer-root'] [data-slot='composer-rich-input'] {
+    background-color: transparent;
+    color: var(--dt-chat-composer-foreground);
+    caret-color: var(--dt-chat-composer-caret);
+  }
+
+  [data-slot='composer-root'] [data-slot='composer-rich-input']::selection,
+  [data-slot='composer-root'] [data-slot='composer-rich-input'] *::selection {
+    background-color: var(--dt-chat-composer-selection-background);
+    color: var(--dt-chat-composer-selection-foreground);
+  }
+}

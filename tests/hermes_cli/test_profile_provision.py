@@ -74,6 +74,25 @@ def test_a_named_launch_profile_copies_its_logins_instead_of_sharing_the_roots(l
     assert "OPENROUTER_API_KEY=sk-or-b" in (result.path / ".env").read_text()
     assert result.mirrored["auth"] is True
     assert "b-only" in (result.path / "auth.json").read_text()
+    assert result.warnings == []
+
+
+def test_a_named_launch_profiles_subscription_login_is_not_copied_and_says_so(launch, monkeypatch):
+    b = launch / "profiles" / "b"
+    b.mkdir(parents=True)
+    (b / "auth.json").write_text('{"version": 1, "providers": {}, "credential_pool": {"anthropic": '
+                                 '[{"id": "x", "auth_type": "oauth", "refresh_token": "rt", "access_token": "at"}]}}')
+    monkeypatch.setenv("HERMES_HOME", str(b))
+    result = provision_profile(ProfileCreateRequest(name="child"))
+    assert "anthropic" not in (result.path / "auth.json").read_text()
+    assert any("subscription logins not carried over (anthropic)" in w for w in result.warnings)
+
+
+def test_shared_logins_with_no_launch_auth_json_still_report_shared(launch):
+    (launch / "auth.json").unlink(missing_ok=True)
+    result = provision_profile(ProfileCreateRequest(name="work", share_auth=False))
+    assert not (result.path / "auth.json").exists()
+    assert result.mirrored["auth"] == "shared"
 
 
 def test_clone_skips_bundled_skills_unless_asked(launch):
@@ -204,7 +223,9 @@ def test_the_cli_does_not_say_no_keys_when_it_copied_them(launch, capsys):
     assert "shared with the default profile" in out
     assert "no API keys yet" not in out
     profile_cmd._profile_create(_cli_args("bare", "--no-alias", "--no-credentials"))
-    assert "no API keys yet" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "no API keys yet" in out
+    assert "--isolated-auth copies" not in out  # the hint only where it would change something
     # --clone-from without --clone clones the source's .env, so it has keys too.
     profile_cmd._profile_create(_cli_args("cf", "--no-alias", "--clone-from", "keys"))
     assert "no API keys yet" not in capsys.readouterr().out

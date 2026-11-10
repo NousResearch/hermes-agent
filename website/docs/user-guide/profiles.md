@@ -65,7 +65,7 @@ hermes profile create mybot
 
 Creates a fresh profile with bundled skills seeded. It gets the current profile's API keys (bot tokens and allowlists left out) and model, and shares the default profile's logins, the same as the Desktop bot page's "Share keys & accounts" default. Run `mybot setup` for its gateway tokens.
 
-- `--isolated-auth` copies the logins (`auth.json`) once instead of sharing them. A profile created from a named profile always gets a copy of that profile's logins.
+- `--isolated-auth` copies the logins (`auth.json`) once instead of sharing them. A profile created from a named profile always gets a copy of that profile's logins; its subscription (single-use OAuth) logins can't be copied, so for those providers the new profile reads the default profile's and `profile create` says so.
 - `--no-credentials` copies no keys, logins or model; run `mybot setup` afterwards.
 
 If you plan to use this profile as a kanban worker (or want the kanban orchestrator to route work to it), pass `--description "<role>"` at create time so the orchestrator knows what it's good at:

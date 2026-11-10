@@ -253,7 +253,7 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
     <Panel contentClassName="agent-management" onClose={props.onClose}>
       <AgentNavigation connectionId={connectionId} profile={owner.profile} />
       <header className="agent-management-header">
-        <FigmaAgentIcon className="agent-management-avatar" color={resolveProfileColor(owner.profile, colors)} />
+        <FigmaAgentIcon className="agent-management-avatar" color={resolveProfileColor(owner.profile, colors)} variant="subtle" />
         <div className="agent-management-identity">
           <h1>{label}</h1>
           <div className="agent-management-meta">

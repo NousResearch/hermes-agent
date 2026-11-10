@@ -194,7 +194,7 @@
 }
 
 .portal-sidebar [data-slot='gateway-group']:has(> [data-slot='gateway-heading'][aria-current='true']) {
-  background: color-mix(in srgb, var(--ui-text-primary) 5%, transparent);
+  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
 }
 
 .portal-sidebar [data-slot='gateway-heading'] {
@@ -207,7 +207,7 @@
 }
 
 .portal-sidebar [data-slot='gateway-heading'][aria-current='true'] {
-  background: color-mix(in srgb, var(--ui-text-primary) 7%, transparent);
+  background: color-mix(in srgb, var(--ui-base) 4%, transparent);
 }
 
 .portal-sidebar [data-slot='gateway-group']:has(> [data-slot='agent-group']) > [data-slot='gateway-heading'] {
@@ -272,7 +272,7 @@
 
 .portal-agent-sessions {
   margin: 0.375rem 0 0 0.625rem;
-  border-left: 1px solid var(--sidebar-edge-border);
+  border-left: 1px solid color-mix(in srgb, var(--ui-base) 20%, transparent);
   padding-left: 1.0625rem;
 }
 

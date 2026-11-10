@@ -18,6 +18,7 @@ import {
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
+import { cn } from '@/lib/utils'
 import { recordIaAction } from '@/store/ia-metrics'
 import type { IA_ACTIONS } from '@/store/ia-metrics-contract'
 import { $interfaceMode, INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
@@ -25,7 +26,12 @@ import { $interfaceMode, INTERFACE_MODES, setInterfaceMode } from '@/store/inter
 import { COMMAND_CENTER_ROUTE, SETTINGS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
-export function SimplifiedSettingsMenu({ onNavigate }: { onNavigate: (item: SidebarNavItem) => void }) {
+interface SimplifiedSettingsMenuProps {
+  active: boolean
+  onNavigate: (item: SidebarNavItem) => void
+}
+
+export function SimplifiedSettingsMenu({ active, onNavigate }: SimplifiedSettingsMenuProps) {
   const { t } = useI18n()
   const portal = usePortalRedesign()
   const mode = useStore($interfaceMode)
@@ -107,7 +113,13 @@ export function SimplifiedSettingsMenu({ onNavigate }: { onNavigate: (item: Side
     >
       <Tip label={t.commandCenter.settings}>
         <DropdownMenuTrigger asChild>
-          <Button aria-label={t.commandCenter.settings} size="icon" variant="ghost">
+          <Button
+            aria-current={active ? 'page' : undefined}
+            aria-label={t.commandCenter.settings}
+            className={cn(active && 'bg-(--chrome-action-hover) text-(--ui-text-primary)')}
+            size="icon"
+            variant="ghost"
+          >
             <Codicon name="settings-gear" />
           </Button>
         </DropdownMenuTrigger>

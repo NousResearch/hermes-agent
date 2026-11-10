@@ -1,6 +1,7 @@
 import '../redesign/portal-artwork.css'
 import '../redesign/portal-typography.css'
 import '../redesign/portal-layout.css'
+import '../redesign/portal-colors.css'
 
 import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'

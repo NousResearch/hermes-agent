@@ -51,7 +51,7 @@ export function AgentNavigation({ profile, connectionId }: AgentNavigationProps)
               navigate(`${SETTINGS_ROUTE}?${params}`)
             }}
           >
-            <FigmaAgentIcon color={resolveProfileColor(agent.profile, colors)} />
+            <FigmaAgentIcon color={resolveProfileColor(agent.profile, colors)} variant="subtle" />
             <span className="min-w-0 flex-1 truncate">{agent.label}</span>
           </RowButton>
         ))}
@@ -95,7 +95,7 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
             {visible.map(agent => (
               <RowButton
                 aria-label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}
-                className="group flex min-w-0 items-center gap-4 rounded-lg border border-border bg-card p-5 text-left hover:bg-accent"
+                className="group flex min-w-0 items-center gap-4 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-card) p-5 text-left hover:bg-(--chrome-action-hover)"
                 key={agent.id}
                 onClick={() => {
                   const params = new URLSearchParams({ agent: agent.profile })
@@ -104,7 +104,7 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
                   navigate(`${SETTINGS_ROUTE}?${params}`)
                 }}
               >
-                <FigmaAgentIcon color={resolveProfileColor(agent.profile, colors)} />
+                <FigmaAgentIcon color={resolveProfileColor(agent.profile, colors)} variant="subtle" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-base font-medium text-foreground">{agent.label}</span>
                   <span className="mt-1 block truncate text-xs text-muted-foreground">{agent.gateway}</span>

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useLocation } from 'react-router'
 
 import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
+import figmaRobot from '@/assets/figma-agent-robot.svg'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -19,7 +20,8 @@ import {
   CRON_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
-  sessionRoute
+  sessionRoute,
+  SETTINGS_ROUTE
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
@@ -30,10 +32,11 @@ import { useSimplifiedPluginPages } from './use-simplified-plugin-pages'
 export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item: SidebarNavItem) => void; footer?: ReactNode }) {
   const portal = usePortalRedesign()
   const { t } = useI18n()
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
   const sessionId = useStore($focusedStoredSessionId)
   const focusedSessionIsTile = useStore($focusedSessionIsTile)
-  const view = focusedSessionIsTile ? 'chat' : appViewForPath(pathname)
+  const routeView = pathname === SETTINGS_ROUTE && new URLSearchParams(search).get('agent') ? 'profiles' : appViewForPath(pathname)
+  const view = focusedSessionIsTile ? 'chat' : routeView
   const pluginPages = useSimplifiedPluginPages()
   useIaNavigationMetrics(view)
 
@@ -73,7 +76,10 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
     ...destinations.map(({ icon, ...item }) => ({
       ...item,
       id: icon,
-      icon: (props: { className?: string }) => <Codicon name={icon} {...props} />
+      icon: (props: { className?: string }) =>
+        portal && icon === 'robot'
+          ? <img alt="" aria-hidden className={cn('size-5 brightness-0 dark:brightness-100', props.className)} src={figmaRobot} />
+          : <Codicon name={icon} {...props} />
     })),
     ...pluginPages.map(page => ({
       ...page,
@@ -86,6 +92,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
     <nav
       aria-label={t.updates.appName}
       className="mt-(--titlebar-height) flex min-h-0 w-(--global-nav-width) shrink-0 flex-col items-center gap-1 border-r border-(--sidebar-edge-border) pb-2 pt-2"
+      data-slot="global-nav"
     >
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
         {items.map(item => {
@@ -131,7 +138,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
         })}
       </div>
       {portal && footer}
-      <SimplifiedSettingsMenu onNavigate={onNavigate} />
+      <SimplifiedSettingsMenu active={view === 'settings'} onNavigate={onNavigate} />
     </nav>
   )
 }

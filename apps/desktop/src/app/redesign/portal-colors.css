@@ -1,0 +1,64 @@
+/* Finished Figma surfaces use neutral 3–8% fills, not accent-tinted greys.
+   Keep the chosen theme's foreground/background and reserve its accent for selection. */
+:root:has([data-portal-redesign='true']) {
+  --theme-fill-primary-accent-mix: 0%;
+  --theme-fill-secondary-accent-mix: 0%;
+  --theme-fill-tertiary-accent-mix: 0%;
+  --theme-fill-quaternary-accent-mix: 0%;
+  --theme-fill-quinary-accent-mix: 0%;
+  --theme-row-hover-accent-mix: 0%;
+  --theme-row-active-accent-mix: 0%;
+  --theme-control-hover-accent-mix: 0%;
+  --theme-control-active-accent-mix: 0%;
+  --ui-bg-card: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  --ui-stroke-primary: color-mix(in srgb, var(--ui-base) 28%, transparent);
+  --ui-stroke-secondary: color-mix(in srgb, var(--ui-base) 14%, transparent);
+  --ui-stroke-tertiary: color-mix(in srgb, var(--ui-base) 10%, transparent);
+  --ui-stroke-quaternary: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  --ui-text-primary: var(--ui-base);
+  --ui-text-secondary: color-mix(in srgb, var(--ui-base) 70%, transparent);
+  /* Light mode needs more ink than the dark reference to keep small copy readable. */
+  --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 62%, transparent);
+  --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 50%, transparent);
+  --sidebar-edge-border: var(--ui-stroke-quaternary);
+  --portal-selection-background: color-mix(in srgb, var(--portal-brand-blue) 10%, transparent);
+}
+
+:root.dark:has([data-portal-redesign='true']) {
+  --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 50%, transparent);
+  --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 40%, transparent);
+  --portal-selection-background: color-mix(in srgb, var(--portal-brand-blue) 25%, transparent);
+}
+
+:root:has([data-portal-redesign='true']) [data-slot='global-nav'] button:not([aria-current]) {
+  background-color: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  color: var(--ui-text-quaternary);
+}
+
+:root:has([data-portal-redesign='true']) [data-slot='global-nav'] button:not([aria-current]):hover {
+  background-color: var(--ui-bg-primary);
+  color: var(--ui-text-secondary);
+}
+
+:root:has([data-portal-redesign='true']) [data-slot='global-nav'] button[aria-current='page'] {
+  background-color: var(--portal-selection-background);
+  color: var(--ui-text-primary);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-blue);
+}
+
+:root:has([data-portal-redesign='true']) [data-slot='switch'] {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:root:has([data-portal-redesign='true']) [data-slot='switch'][data-state='unchecked'] {
+  background: color-mix(in srgb, var(--ui-base) 10%, transparent);
+}
+
+:root:has([data-portal-redesign='true']) [data-slot='switch'][data-state='checked']:not(:disabled) {
+  background: var(--portal-brand-blue);
+}
+
+:root:has([data-portal-redesign='true']) [data-slot='switch-thumb'][data-state='checked'] {
+  background: var(--portal-on-brand);
+}

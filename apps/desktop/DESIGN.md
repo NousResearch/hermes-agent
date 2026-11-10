@@ -112,6 +112,22 @@ deduplicates pinned backfills, and keeps earlier pages reachable past 500 sessio
 Page toolbars occupy the native titlebar band with an opaque surface so open
 chat/tool tabs cannot bleed through; controls remain outside the drag region.
 
+Redesigned surfaces use neutral foreground-derived fills and strokes, not
+accent-tinted greys. Finished Figma settings/agent frames use 3% cards, 10%
+card borders, 4% control rails, and 14% control borders. Selection uses a
+0.5px blue inset stroke with 25% blue fill in dark mode; light mode uses 10%
+fill and stronger secondary copy for readability. Agent-management tiles
+use the translucent treatment; conversation-sidebar tiles remain solid.
+The global rail tracks the owning agent even inside its settings editor.
+Checked switches use the brand-blue track and light thumb across settings
+and the capability catalog; unchecked tracks are neutral 10% fills.
+
+The designer-requested quieter gateway group deliberately reduces the
+older sidebar reference's 5% body plus 7% header to 3% plus 4%, preserving
+the brighter header, primary selected-agent name, and 20% session guide.
+The Hermes Portal theme uses neutral dark greys; custom theme choices and
+classic semantic styling remain available.
+
 ## Surfaces & elevation
 
 Floating panels (base `Dialog`, route overlays, boot/install/update surfaces,

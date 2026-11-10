@@ -46,8 +46,9 @@
 
 .agent-management-nav-row:hover { background: var(--chrome-action-hover); }
 .agent-management-nav-row[aria-current] {
-  border-color: var(--portal-brand-blue);
-  background: color-mix(in srgb, var(--portal-brand-blue) 16%, transparent);
+  border-color: transparent;
+  background: var(--portal-selection-background);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-blue);
   color: var(--ui-text-primary);
 }
 
@@ -174,7 +175,7 @@
   overflow: hidden;
   border: 1px solid var(--ui-stroke-tertiary);
   border-radius: 4px;
-  background: color-mix(in srgb, var(--ui-text-primary) 3%, transparent);
+  background: var(--ui-bg-card);
 }
 
 .agent-overview-row {

@@ -51,6 +51,14 @@ it.each(['skills', 'plugins', 'connectors', 'toolsets'])(
   }
 )
 
+it.each([
+  ['/settings?agent=research&panel=settings&tab=config:model', 'Agent settings'],
+  ['/settings?tab=config:appearance', 'Settings']
+])('marks the owning rail destination on %s', (route, label) => {
+  mount(route)
+  expect(screen.getByRole('button', { current: 'page' }).getAttribute('aria-label')).toBe(label)
+})
+
 it('opens account settings without inventing a global profile or changing the active agent', () => {
   const navigate = mount()
   fireEvent.keyDown(screen.getByRole('button', { name: 'Settings' }), { key: 'Enter' })

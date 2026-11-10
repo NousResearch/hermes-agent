@@ -293,6 +293,32 @@ class TestNewerStamp:
         assert "failed_step" not in results, "no step may even start on a newer file"
         assert any("newer Hermes" in w for w in results["warnings"])
 
+    def test_a_legacy_disabled_server_stays_off_without_v46(self, tmp_path, monkeypatch):
+        """v46 does not run on a newer file, so its `disabled: true` stays on disk; the runtime
+        must still read it as off, or this build spawns a server the user turned off."""
+        from hermes_cli.config import load_config, migrate_config
+        import tools.mcp_tool as core
+        from tools import mcp_tool_discovery as discovery
+        from tools.mcp_tool_common import mcp_server_enabled
+
+        config_path = self._newer(tmp_path, monkeypatch)
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        raw["mcp_servers"]["t"] = {"command": "x"}
+        config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        migrate_config(interactive=False, quiet=True)
+        assert load_config()["mcp_servers"]["s"]["disabled"] is True
+        assert mcp_server_enabled(load_config()["mcp_servers"]["s"]) is False
+
+        spawned = []
+        monkeypatch.setattr(core, "_ensure_mcp_sdk", lambda: True)
+        monkeypatch.setattr(discovery._loop, "_ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr(discovery, "_run_discovery_pass", lambda servers: spawned.extend(sorted(servers)))
+        monkeypatch.setattr(discovery, "_acquire_discovery_lock_with_retry", lambda: None)
+        monkeypatch.setattr(discovery, "_register_lazy_from_cache", lambda s: (s, 0, 0))
+        monkeypatch.setattr(core, "_servers", {})
+        discovery.discover_mcp_tools()
+        assert spawned == ["t"]
+
     def test_whole_file_save_is_refused_and_key_level_write_is_kept(self, tmp_path, monkeypatch):
         import pytest
         from hermes_cli.config import load_config, save_config, set_config_value

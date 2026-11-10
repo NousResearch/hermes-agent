@@ -1,8 +1,8 @@
 name: manyhands
 title: manyhands
 repo: https://github.com/PhiBao/manyhands
-sha: 5976905b9ee2ddb0478f60a355c13c3f94f40c8f
-version: "0.3.1"
+sha: 30fa4f0a2954aedef79ac4aa5ab061f8f57293a7
+version: "0.4.0"
 description: >-
   Identity, memory and permissions for every person who talks to one Hermes bot. A gateway is a
   single-operator agent: the platform already carries sender_id and platform into every turn and
@@ -17,11 +17,14 @@ description: >-
   system prompt and replaced with a card about that person, because "everyone gets their own
   Hermes" has to include not handing a stranger your notes; each person also gets their own facts,
   their own token budget, and `/many pause`. Six tools (whoami, people, remember, recall, share,
-  audit) and `/many` (roster, invite, claim, role, audit, approve, deny, pause). Identity fails
+  audit) and `/many` (roster, invite, claim, role, audit, approve, deny, pause) whose owner-only verbs stay
+  owner-only because a command's identity comes from the platform event too, so a stranger typing in
+  the owner's own chat session is still a stranger. Identity fails
   closed: a session with no human turn on it — a restart, a subagent, a tool driven from the
   gateway socket — gets the guest allowlist, not the owner's. Every turn, tool decision, refusal,
   escalation, approval, spent grant and token count is an audit row you can read back.
-  Disclosure — hooks, one middleware and six tools, no other capability. pre_llm_call resolves the
+  Disclosure — hooks, one middleware, six tools, the `/many` command and the `manyhands` approval
+  transport, no other capability. pre_llm_call resolves the
   sender from the platform event, records the session and turn to person map, redeems `join CODE`
   invites and appends that person's facts to their turn; pre_tool_call applies the role to the tool
   allowlist, parks asks, spends grants and fails closed; post_api_request records token usage per
@@ -38,10 +41,10 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/PhiBao/manyhands#readme
-image: https://raw.githubusercontent.com/PhiBao/manyhands/5976905b9ee2ddb0478f60a355c13c3f94f40c8f/docs/approval.png
+image: https://raw.githubusercontent.com/PhiBao/manyhands/30fa4f0a2954aedef79ac4aa5ab061f8f57293a7/docs/approval.png
 screenshots:
-  - https://raw.githubusercontent.com/PhiBao/manyhands/5976905b9ee2ddb0478f60a355c13c3f94f40c8f/docs/approval.png
-  - https://raw.githubusercontent.com/PhiBao/manyhands/5976905b9ee2ddb0478f60a355c13c3f94f40c8f/docs/roster.png
+  - https://raw.githubusercontent.com/PhiBao/manyhands/30fa4f0a2954aedef79ac4aa5ab061f8f57293a7/docs/approval.png
+  - https://raw.githubusercontent.com/PhiBao/manyhands/30fa4f0a2954aedef79ac4aa5ab061f8f57293a7/docs/roster.png
 platforms: []
 known_issues:
   - "Identity is only as good as the platform event, and a call that carries none fails closed: a session that never had a human turn on it, a subagent, and a tool called from inside `execute_code` (the host passes an empty session id there) all get the guest allowlist rather than the owner's. Set `unknown_session_policy: operator` if every caller on your machine is trusted. Machine-generated turns are recognised by a marker AND the absence of a sender, so a cron prompt is the operator's while a guest who types `[cron]` stays a guest."

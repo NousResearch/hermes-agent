@@ -595,19 +595,24 @@ def published_scopes_signature() -> tuple:
     """
     from agent.runtime_cwd import reset_session_cwd, set_session_cwd
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.skills_tool import root_signature_memo
     with _publish_lock:
         keys = list(_skill_commands_by_key)
     scopes = sorted({(home, project) for _platform, home, project in keys if home})[:_MAX_WATCHED_SCOPES]
-    rows = [("", None, _skill_dirs_signature())]
-    for home, project in scopes:
-        home_token = set_hermes_home_override(home)
-        # No project: an empty session cwd would fall back to the process cwd; "/" resolves no repo.
-        cwd_token = set_session_cwd(project or os.path.sep)
-        try:
-            rows.append((home, project, _skill_dirs_signature()))
-        finally:
-            reset_session_cwd(cwd_token)
-            reset_hermes_home_override(home_token)
+
+    # One memo for the whole pass: scopes of the same profile share that profile's skills root, and
+    # re-walking it per scope cost 27x the walk on a gateway serving many profiles (#146538).
+    with root_signature_memo():
+        rows = [("", None, _skill_dirs_signature())]
+        for home, project in scopes:
+            home_token = set_hermes_home_override(home)
+            # No project: an empty session cwd would fall back to the process cwd; "/" resolves no repo.
+            cwd_token = set_session_cwd(project or os.path.sep)
+            try:
+                rows.append((home, project, _skill_dirs_signature()))
+            finally:
+                reset_session_cwd(cwd_token)
+                reset_hermes_home_override(home_token)
     return tuple(rows)
 
 

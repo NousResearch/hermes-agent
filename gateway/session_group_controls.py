@@ -313,10 +313,27 @@ def _execution_control(service, method, params):
                 'accepted': True, 'driver_started': True}
 
     def attempt_control():
-        if (type(params.get('execution_generation')) is not int
-                or params['execution_generation'] < 1
-                or not params.get('member_id') or not params.get('task_id')):
-            raise RuntimeStoreError('invalid_params')
+        # The exact attempt ``groups.state`` published: a bare ``invalid_params`` left the Retry
+        # card unactionable, since the client could not tell a stale attempt from a malformed one
+        # (#152324). Name the keys this request did not carry, like ``rollback.restore``.
+        task_id = params.get('task_id')
+        generation, member_id = params.get('execution_generation'), params.get('member_id')
+        missing = [key for key, value in (('member_id', member_id),
+                                          ('execution_generation', generation)) if value is None]
+        if not isinstance(task_id, str) or not task_id:
+            raise RuntimeStoreError('invalid_params', field='task_id',
+                                    detail='task_id must name the pending action')
+        if missing:
+            raise RuntimeStoreError('invalid_params', field=missing[0], detail=(
+                'groups.retry and groups.discard need the exact attempt groups.state publishes; '
+                f'missing: {", ".join(missing)}'))
+        if type(generation) is not int or generation < 1:
+            raise RuntimeStoreError('invalid_params', field='execution_generation',
+                                    detail='execution_generation must be the positive integer '
+                                           'groups.state published')
+        if not isinstance(member_id, str) or not member_id:
+            raise RuntimeStoreError('invalid_params', field='member_id',
+                                    detail='member_id must be a non-empty string')
         operation = service.discard_room_task if method == 'groups.discard' else service.retry_room_task
         task = operation(**params)
         identity = task['identity']

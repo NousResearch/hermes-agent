@@ -20891,33 +20891,19 @@
             "type": "string"
           },
           "member_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Member Id"
+            "title": "Member Id",
+            "type": "string"
           },
           "execution_generation": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Execution Generation"
+            "title": "Execution Generation",
+            "type": "integer"
           }
         },
         "required": [
           "room_id",
-          "task_id"
+          "task_id",
+          "member_id",
+          "execution_generation"
         ],
         "title": "GroupsRetryParams",
         "type": "object"

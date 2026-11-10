@@ -423,10 +423,13 @@ method("groups.approve", params=GroupsApproveParams, result=GroupsApproveResult,
 
 
 class GroupsRetryParams(RoomParams):
+    # The pending action's exact attempt, as ``groups.state`` publishes it. Required, like the
+    # canonical ``CanonicalRoomAttemptParams`` this verb is dispatched under: the gateway refuses a
+    # retry it cannot pin to one attempt, and a contract that called the pair optional made that
+    # refusal read as a client bug (#152324).
     task_id: str
-    # The pending action's exact attempt; absent only from clients that predate it.
-    member_id: str | None = None
-    execution_generation: int | None = None
+    member_id: str
+    execution_generation: int
 
 
 class RoomTaskReceipt(Result):

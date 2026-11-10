@@ -605,7 +605,7 @@ def test_second_backend_defers_to_a_live_marker_writer(emits, schedule_env, mark
     really gone the same call does schedule, so the live-writer gate is what
     held B back and not some other switch.
     """
-    repo_root = Path(server.__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     child = subprocess.Popen(
         [sys.executable, "-c", _CHILD_WRITER, str(marker_home)],
         cwd=str(repo_root),

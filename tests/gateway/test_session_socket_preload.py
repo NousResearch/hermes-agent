@@ -18,7 +18,7 @@ def unloaded(monkeypatch):
     real = importlib.import_module
 
     def spy(name, *args, **kwargs):
-        if name == "tui_gateway.ws":
+        if name == "hermes_agent.tui_gateway.ws":
             seen["thread"] = threading.current_thread()
             return SimpleNamespace(handle_ws=None)
         return real(name, *args, **kwargs)

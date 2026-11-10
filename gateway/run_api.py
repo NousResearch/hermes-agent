@@ -317,7 +317,7 @@ def warm_gateway_dashboard(runner) -> None:
         _warm(), name="gateway-dashboard-warmup")
 
 
-_SESSION_SOCKET_MODULE = "tui_gateway.ws"
+_SESSION_SOCKET_MODULE = "hermes_agent.tui_gateway.ws"
 
 
 def preload_session_socket() -> "asyncio.Task | None":

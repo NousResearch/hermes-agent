@@ -10,7 +10,7 @@ import { HermesGateway } from './client'
 // invalid_params, handler never called). Read that closed set from the Python contract so the
 // fixture owner refuses exactly what the real one does.
 function canonicalDeliverKeys(): Set<string> {
-  const source = readFileSync(join(process.cwd(), '..', '..', 'tui_gateway/contracts/canonical_projections.py'), 'utf8')
+  const source = readFileSync(join(process.cwd(), '..', '..', 'hermes_agent/tui_gateway/contracts/canonical_projections.py'), 'utf8')
   const body = source.match(/class CanonicalBotDeliverParams\(Params\):\n((?: {4}\w+:.*\n)+)/)
 
   expect(body, 'CanonicalBotDeliverParams must exist in canonical_projections.py').toBeTruthy()

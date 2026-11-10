@@ -135,6 +135,6 @@ finally:
     provider.shutdown()
     (out / 'events.json').write_text(json.dumps(events, indent=2))
     (out / 'requests.json').write_text(json.dumps(requests, indent=2))
-    receipt = {'sha': subprocess.check_output(['git', '-C', str(a.repo), 'rev-parse', 'HEAD'], stdin=subprocess.DEVNULL, text=True).strip(), 'source_blob': subprocess.check_output(['git', '-C', str(a.repo), 'hash-object', 'tui_gateway/server.py'], stdin=subprocess.DEVNULL, text=True).strip(), 'tool': a.tool, 'process_exit': proc.returncode, 'command': cmd, 'results': results, 'provider_requests': len(requests)}
+    receipt = {'sha': subprocess.check_output(['git', '-C', str(a.repo), 'rev-parse', 'HEAD'], stdin=subprocess.DEVNULL, text=True).strip(), 'source_blob': subprocess.check_output(['git', '-C', str(a.repo), 'hash-object', 'hermes_agent/tui_gateway/server.py'], stdin=subprocess.DEVNULL, text=True).strip(), 'tool': a.tool, 'process_exit': proc.returncode, 'command': cmd, 'results': results, 'provider_requests': len(requests)}
     (out / 'receipt.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt, indent=2))

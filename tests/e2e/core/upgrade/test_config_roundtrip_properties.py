@@ -658,7 +658,7 @@ class _RpcProc:
         self.home = Path(self.env["HERMES_HOME"])
         _write_file(self.home / "config.yaml", "model_catalog:\n  enabled: false\n")
         self.stderr = open(root / "tui_gateway.stderr", "w", encoding="utf-8")
-        self.proc = subprocess.Popen([sys.executable, "-m", "tui_gateway.entry"], cwd=str(WORKTREE), env=self.env,
+        self.proc = subprocess.Popen([sys.executable, "-m", "hermes_agent.tui_gateway.entry"], cwd=str(WORKTREE), env=self.env,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr,
                                      text=True, encoding="utf-8", bufsize=1)
         self.q: queue.Queue = queue.Queue()

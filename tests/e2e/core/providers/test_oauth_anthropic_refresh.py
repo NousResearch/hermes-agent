@@ -130,7 +130,7 @@ def _tui_turn(rig, prompt: str) -> subprocess.CompletedProcess:
     """One turn through a real ``tui_gateway`` session; returncode 0 once ``message.complete`` arrives."""
     from tests.e2e.core.parity._drive_rpc import RpcClient, StreamCapture
 
-    proc = subprocess.Popen([sys.executable, "-m", "tui_gateway.entry"], cwd=str(rig.fh.root),
+    proc = subprocess.Popen([sys.executable, "-m", "hermes_agent.tui_gateway.entry"], cwd=str(rig.fh.root),
                             env=rig.fh.env(rig.child_env), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, bufsize=1)
     cap = StreamCapture().start(proc)

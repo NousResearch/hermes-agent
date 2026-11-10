@@ -58,7 +58,7 @@ def test_cli_gateway_and_dashboard_share_the_remote_config(plane_env):
 
     gateway = _run([sys.executable, "-c", READ_SNIPPET.format(module="gateway.run")], env)
     assert _result(gateway) == "pirate"
-    dashboard = _run([sys.executable, "-c", READ_SNIPPET.format(module="tui_gateway.server")], env)
+    dashboard = _run([sys.executable, "-c", READ_SNIPPET.format(module="hermes_agent.tui_gateway.server")], env)
     assert _result(dashboard) == "pirate"
 
     gets = [r for r in plane.requests if r["method"] == "GET"]

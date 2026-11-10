@@ -100,8 +100,8 @@ def test_broadcast_without_a_gateway_module_is_a_logged_no_op(monkeypatch, caplo
     real_import = builtins.__import__
 
     def _no_gateway(name, *args, **kwargs):
-        if name == "tui_gateway.server":
-            raise ImportError("No module named 'tui_gateway.server'")
+        if name == "hermes_agent.tui_gateway.server":
+            raise ImportError("No module named 'hermes_agent.tui_gateway.server'")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _no_gateway)

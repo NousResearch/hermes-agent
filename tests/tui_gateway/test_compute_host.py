@@ -33,7 +33,7 @@ def test_compute_host_line_json_hello_and_shutdown():
     env = dict(os.environ)
     env["PYTHONPATH"] = str(repo) + os.pathsep + env.get("PYTHONPATH", "")
     proc = subprocess.Popen(
-        [sys.executable, "-m", "tui_gateway.compute_host"],
+        [sys.executable, "-m", "hermes_agent.tui_gateway.compute_host"],
         cwd=str(repo),
         env=env,
         stdin=subprocess.PIPE,

@@ -403,7 +403,7 @@ class TuiGateway:
                        env={**self.env, "PWD": self.cwd}, stdin=subprocess.DEVNULL,
                        capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
         self.proc = self.spawned.add(subprocess.Popen(
-            [sys.executable, "-m", "tui_gateway.entry"], cwd=self.cwd, env={**self.env, "PWD": self.cwd},
+            [sys.executable, "-m", "hermes_agent.tui_gateway.entry"], cwd=self.cwd, env={**self.env, "PWD": self.cwd},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", bufsize=1))
         threading.Thread(target=self._read_stdout, daemon=True).start()

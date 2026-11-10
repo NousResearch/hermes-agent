@@ -60,3 +60,24 @@ def test_other_hosts_keep_the_requested_effort(transport, base_url):
     assert _effort(kw) in (None, "max")
     if base_url.endswith("/v1"):
         assert kw["reasoning_effort"] == "max"
+
+@pytest.mark.parametrize("with_profile", [False, True])
+def test_clamp_does_not_mutate_reused_nested_overrides(transport, with_profile):
+    overrides = {"extra_body": {"reasoning": {"effort": "max"}}}
+    profile = (
+        {"provider_profile": get_provider_profile("custom"), "provider_name": "custom"}
+        if with_profile else {}
+    )
+    google = transport.build_kwargs(
+        model="gemini-3-flash-preview", messages=_MSGS, base_url=GOOGLE_COMPAT,
+        request_overrides=overrides, **profile,
+    )
+    assert google["extra_body"]["reasoning"]["effort"] == "high"
+    assert overrides["extra_body"]["reasoning"]["effort"] == "max"
+
+    # A shared override must not leak Google's narrower effort limit to another host.
+    other = transport.build_kwargs(
+        model="some-model", messages=_MSGS, base_url="https://api.example.com/v1",
+        request_overrides=overrides, **profile,
+    )
+    assert other["extra_body"]["reasoning"]["effort"] == "max"

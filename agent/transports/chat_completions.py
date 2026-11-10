@@ -422,9 +422,13 @@ def _clamp_google_openai_compat_effort(api_kwargs: dict[str, Any], base_url: Any
         return
     if isinstance(api_kwargs.get("reasoning_effort"), str):
         api_kwargs["reasoning_effort"] = clamp_effort(api_kwargs["reasoning_effort"], GOOGLE_OPENAI_COMPAT_EFFORTS)
-    reasoning = (api_kwargs.get("extra_body") or {}).get("reasoning")
+    extra_body = api_kwargs.get("extra_body")
+    reasoning = extra_body.get("reasoning") if isinstance(extra_body, dict) else None
     if isinstance(reasoning, dict) and isinstance(reasoning.get("effort"), str):
-        reasoning["effort"] = clamp_effort(reasoning["effort"], GOOGLE_OPENAI_COMPAT_EFFORTS)
+        effort = clamp_effort(reasoning["effort"], GOOGLE_OPENAI_COMPAT_EFFORTS)
+        if effort != reasoning["effort"]:
+            # Overrides can be reused by later requests to other providers.
+            api_kwargs["extra_body"] = {**extra_body, "reasoning": {**reasoning, "effort": effort}}
 
 
 def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *, supports_prompt_cache_key: bool) -> dict[str, Any]:

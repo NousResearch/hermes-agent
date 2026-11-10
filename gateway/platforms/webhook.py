@@ -273,6 +273,15 @@ class WebhookAdapter(BasePlatformAdapter):
                 raise ValueError(f"[webhook] Route '{name}' sets both deliver_only and cron_job. They are mutually "
                                  f"exclusive: deliver_only pushes the rendered template as a message, cron_job fires "
                                  f"an existing cron job (which handles its own delivery).")
+        if "github_approval" in route:
+            approval = route["github_approval"]
+            if (not isinstance(approval, dict)
+                    or set(approval) != {"authorized_user_id"}
+                    or not isinstance(approval.get("authorized_user_id"), str)
+                    or not approval["authorized_user_id"]):
+                raise ValueError(f"[webhook] Route '{name}' github_approval requires only a non-empty authorized_user_id")
+            if route.get("deliver") != "telegram":
+                raise ValueError(f"[webhook] Route '{name}' github_approval must deliver to telegram")
         validate_coalesce_config(name, route)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -343,6 +352,80 @@ class WebhookAdapter(BasePlatformAdapter):
             return await self._deliver_cross_platform(deliver_type, content, delivery)
         logger.warning("[webhook] Unknown deliver type: %s", deliver_type)
         return SendResult(success=False, error=f"Unknown deliver type: {deliver_type}")
+
+    async def send_clarify(
+        self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
+        session_key: str, metadata: Optional[dict[str, Any]] = None,
+    ) -> SendResult:
+        """Delegate a webhook clarify to its real interactive destination.
+
+        A webhook session is opaque and cannot receive a Telegram text reply.  Preserving the
+        original clarify id/session key on the destination adapter lets its native callback resolve
+        the actual waiter instead of publishing an unanswerable numbered prompt.
+        """
+        delivery = self._delivery_info.get(chat_id, {})
+        deliver_type = delivery.get("deliver", "log")
+        if deliver_type in {"log", "github_comment"}:
+            return SendResult(success=False, error="Webhook clarify has no interactive destination")
+        if not self.gateway_runner or not _is_known_platform(deliver_type):
+            return SendResult(success=False, error=f"Interactive destination unavailable: {deliver_type}")
+        try:
+            target_platform = Platform(deliver_type)
+        except ValueError:
+            return SendResult(success=False, error=f"Unknown platform: {deliver_type}")
+        profile = delivery.get("profile")
+        target = self._find_adapter(target_platform, profile)
+        if target is None:
+            return SendResult(success=False, error=f"Platform {deliver_type} not connected")
+        extra = delivery.get("deliver_extra", {})
+        target_chat_id = extra.get("chat_id", "")
+        with self._profile_scope(profile):
+            if not target_chat_id:
+                home = self._delivery_config(profile).get_home_channel(target_platform)
+                if not home:
+                    return SendResult(success=False, error=f"No chat_id or home channel for {deliver_type}")
+                target_chat_id = home.chat_id
+            target_metadata = dict(metadata or {})
+            thread_id = extra.get("message_thread_id") or extra.get("thread_id")
+            if thread_id:
+                target_metadata["thread_id"] = thread_id
+            target_metadata["is_approval_prompt"] = True
+            result = await target.send_clarify(
+                chat_id=str(target_chat_id), question=question, choices=choices,
+                clarify_id=clarify_id, session_key=session_key,
+                metadata=target_metadata or None,
+            )
+            if result.success:
+                bindings = getattr(self, "_github_approval_targets", None)
+                if not isinstance(bindings, dict):
+                    bindings = self._github_approval_targets = {}
+                bindings[clarify_id] = (target, session_key)
+            return result
+
+    def approval_callback_binding(self, clarify_id: str, session_key: str) -> bool:
+        """Prove the delegated destination, not this webhook shim, owns the callback."""
+        binding = getattr(self, "_github_approval_targets", {}).get(clarify_id)
+        if binding is None or binding[1] != session_key:
+            return False
+        target = binding[0]
+        probe = getattr(target, "approval_callback_binding", None)
+        if callable(probe):
+            return bool(probe(clarify_id, session_key))
+        state = getattr(target, "_clarify_state", None)
+        return isinstance(state, dict) and state.get(clarify_id) == session_key
+
+    def approval_destination_identity(self, clarify_id: Optional[str] = None) -> Optional[str]:
+        binding = getattr(self, "_github_approval_targets", {}).get(clarify_id)
+        target = binding[0] if binding is not None else None
+        identity = getattr(target, "approval_destination_identity", None)
+        value = identity(clarify_id) if callable(identity) else None
+        return value if isinstance(value, str) and value else None
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        binding = getattr(self, "_github_approval_targets", {}).pop(clarify_id, None)
+        retire = getattr(binding[0], "retire_clarify_card", None) if binding is not None else None
+        if callable(retire):
+            await retire(clarify_id, notice)
 
     def _prune_delivery_info(self, now: float) -> None:
         """Drop delivery_info entries older than the idempotency TTL (bounds the dict by ``rate_limit * TTL``
@@ -701,6 +784,9 @@ class WebhookAdapter(BasePlatformAdapter):
         if not self._route_processor.route_filters_match(route_config, payload, event_type, request.headers):
             logger.info("[webhook] filtered event=%s route=%s", event_type, route_name)
             return web.json_response({"status": "ignored", "reason": "filter", "route": route_name})
+        if "github_approval" in route_config:
+            return await self._handle_github_approval_contract(
+                route_config, payload, event_type, route_name, profile, delivery_id)
         # Script, prompt render and skill lookup read the profile's home (skills/, config); the runner
         # only enters the routed profile's scope later around handle_message, so enter it here.
         # See #67277.
@@ -743,6 +829,62 @@ class WebhookAdapter(BasePlatformAdapter):
                                       "delivery_id": delivery_id}, status=202)
         return await self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
                                         delivery_id, now)
+
+    async def _handle_github_approval_contract(
+        self, route_config: dict, payload: Any, event_type: str, route_name: str,
+        profile: Optional[str], delivery_id: str,
+    ) -> web.Response:
+        """Produce one approval card from the exact repository-dispatch contract; never run an agent."""
+        try:
+            if event_type != "repository_dispatch" or not isinstance(payload, dict):
+                raise ValueError("not a repository_dispatch approval")
+            if payload.get("action") != "hermes_contract_approval":
+                raise ValueError("unrecognized repository_dispatch action")
+            repository, contract = payload.get("repository"), payload.get("client_payload")
+            if not isinstance(repository, dict) or not isinstance(contract, dict):
+                raise ValueError("missing repository or client_payload")
+            repo = repository.get("full_name")
+            number = contract.get("pull_request_number")
+            if not isinstance(repo, str) or type(number) is not int:
+                raise ValueError("invalid repository or pull request number")
+            if set(contract) != {"pull_request_number", "head_sha", "contract_digest_sha256", "executor"}:
+                raise ValueError("unexpected GitHub approval contract fields")
+            from gateway.github_approval_broker import ApprovalProposal, default_broker
+            proposal = ApprovalProposal(
+                f"{repo}#{number}", contract.get("head_sha"),
+                contract.get("contract_digest_sha256"), contract.get("executor"))
+            proposal.validate()
+            approval = route_config.get("github_approval")
+            if not isinstance(approval, dict):
+                raise ValueError("github_approval route is malformed")
+            authorized_user_id = approval.get("authorized_user_id")
+            if not isinstance(authorized_user_id, str) or not authorized_user_id:
+                raise ValueError("authorized_user_id is required")
+        except (TypeError, ValueError) as exc:
+            logger.warning("[webhook] Rejected GitHub approval contract on route %s: %s", route_name, exc)
+            return _json_error("Unrecognized or malformed GitHub approval contract", 400)
+
+        session_key = f"github-approval:{profile or 'default'}:{route_name}:{delivery_id}"
+        with self._profile_scope(profile):
+            target = self._find_adapter(Platform.TELEGRAM, profile)
+            if target is None:
+                return _json_error("Telegram approval destination unavailable", 503)
+            extra = route_config.get("deliver_extra") or {}
+            target_chat_id = extra.get("chat_id")
+            if not target_chat_id:
+                home = self._delivery_config(profile).get_home_channel(Platform.TELEGRAM)
+                target_chat_id = home.chat_id if home else None
+            if not target_chat_id:
+                return _json_error("Telegram approval chat is not configured", 503)
+            broker = default_broker(instance_id=f"webhook-producer:{profile or 'default'}:{route_name}")
+            outcome = await broker.request(
+                proposal, adapter=target, chat_id=str(target_chat_id),
+                question=f"Approve {proposal.item_key} at {proposal.head_sha[:12]}?",
+                session_key=session_key, authorized_user_id=authorized_user_id,
+                thread_id=extra.get("message_thread_id") or extra.get("thread_id"))
+        return web.json_response(
+            {"status": "approval_recorded", "action": outcome.action,
+             "proposal_key": outcome.proposal_key, "delivery_id": delivery_id}, status=202)
 
     async def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
                             event_type: str, delivery_id: str, now: float) -> web.Response:

@@ -1,0 +1,74 @@
+{
+  "target": {
+    "repository_base_commit": "3d4dd108cf52e26cf0d7fb218461e53623a8ec2d",
+    "candidate": "durable Telegram-native GitHub approval broker",
+    "owner": "Hermes Gateway",
+    "authorized_task": "build, validate, and publish a code-only feature PR; no deployment, restart, merge, live config, or live ledger mutation"
+  },
+  "capabilities": [
+    {
+      "resource": "$HERMES_HOME/state/github-approval-broker.db",
+      "operation": "read/write SQLite approval state",
+      "required_for_task": true,
+      "scope_expected": "one process-global authority shared by all served profiles",
+      "scope_observed": "process-home path resolved by get_process_hermes_home",
+      "control": "process-global path, SQLite transactions, file mode 0600, Telegram bot destination binding",
+      "control_state": "enforced",
+      "proof": "unit tests use isolated HERMES_HOME and temporary database",
+      "abuse_test": "restart and duplicate callers against the same database",
+      "result": "one active card/decision claim",
+      "residual_risk": "filesystem ACL and service account remain deployment responsibilities",
+      "owner": "Hermes Gateway operator",
+      "rollback_or_revocation": "stop producers/workers; preserve database read-only; revert candidate"
+    },
+    {
+      "resource": "Telegram Bot API",
+      "operation": "publish/retire approval cards and receive callbacks",
+      "required_for_task": true,
+      "scope_expected": "configured Telegram adapter and explicit chat/topic",
+      "scope_observed": "mock adapter only; no live network call",
+      "control": "existing adapter authorization and credential scope",
+      "control_state": "observed",
+      "proof": "native send_clarify and callback integration tests",
+      "abuse_test": "missing message_id, absent callback binding, and transport failure",
+      "result": "explicit rejection is retryable; unknown provider outcome is operator-only and never resent",
+      "residual_risk": "Telegram has no provider-history reconciliation in this candidate; ambiguous sends require operator reconciliation",
+      "owner": "Hermes Gateway operator",
+      "rollback_or_revocation": "retire visible cards and disable broker producers"
+    },
+    {
+      "resource": "GitHub item and contract",
+      "operation": "identity binding only; no GitHub mutation",
+      "required_for_task": true,
+      "scope_expected": "owner/repo#n, live head, canonical digest, executor=hermes",
+      "scope_observed": "strict tuple validation and exact repository_dispatch producer envelope in isolated tests",
+      "control": "strict owner/repo#positive-number, exact producer envelope, live re-read, and automatic supersession",
+      "control_state": "enforced",
+      "proof": "changed digest/head and identical tuple tests",
+      "abuse_test": "stale tuple callback after supersession",
+      "result": "superseded tuple is non-actionable",
+      "residual_risk": "producer must supply values from reviewed live GitHub/validator authorities",
+      "owner": "GitHub approval producer owner",
+      "rollback_or_revocation": "stop producer; preserve rows for reconciliation"
+    },
+    {
+      "resource": "executor continuation",
+      "operation": "claim permission to resume once",
+      "required_for_task": true,
+      "scope_expected": "one claimant per durable Telegram decision",
+      "scope_observed": "SQLite claim and receipt-backed fixture tested; no real executor invoked",
+      "control": "transactional decision row plus mandatory executor idempotency key and durable receipt readback",
+      "control_state": "enforced",
+      "proof": "callback decision and exactly-once resumption tests",
+      "abuse_test": "second concurrent claimant and replay after completion",
+      "result": "generic executor blocked before effect; receipt-backed replay invokes the fixture once",
+      "residual_risk": "no production GitHub reader/executor is composed; continuation remains inert until one proves the receipt contract",
+      "owner": "Continuation executor owner",
+      "rollback_or_revocation": "stop resumption worker; do not infer authorization from pending rows"
+    }
+  ],
+  "secrets": "No secrets read, printed, copied, or introduced.",
+  "decision": "incomplete",
+  "promotion_gate": "Blocked from activation until approved live Telegram acceptance and a production GitHub reader/receipt-backed executor pass independent review.",
+  "next_validation": "Run the exact acceptance test in website/docs/developer-guide/durable-github-approval-broker.md."
+}

@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import copy
 import functools
+import os
 from typing import Any, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
@@ -29,10 +30,19 @@ def _claims(adapter: Any) -> dict[int, tuple[str, MessageEvent, asyncio.Event]]:
     return adapter.__dict__.setdefault("_photo_text_claims", {})
 
 
+# Shared with ``TelegramAdapter._cache_inbound_document`` so pairing and the image download path agree.
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif", ".avif"})
+
+
+def is_image_document(doc: Any) -> bool:
+    """A document the download path caches as an image: an image filename or an ``image/*`` MIME type."""
+    ext = os.path.splitext(getattr(doc, "file_name", None) or "")[1].lower()
+    return ext in IMAGE_EXTENSIONS or (getattr(doc, "mime_type", None) or "").lower().startswith("image/")
+
+
 def _is_image(msg: Any) -> bool:
     doc = getattr(msg, "document", None)
-    return bool(getattr(msg, "photo", None)) or (
-        doc is not None and (getattr(doc, "mime_type", None) or "").lower().startswith("image/"))
+    return bool(getattr(msg, "photo", None)) or (doc is not None and is_image_document(doc))
 
 
 def _claim_pending_text(adapter: Any, msg: Any) -> None:
@@ -41,15 +51,19 @@ def _claim_pending_text(adapter: Any, msg: Any) -> None:
     chat = getattr(getattr(msg, "chat", None), "id", None)
     if not _is_image(msg) or sender is None or chat is None:
         return
-    for key, pending in adapter._pending_text_batches.items():
-        source = pending.source
-        if (source is None or str(source.chat_id) != str(chat) or str(source.user_id) != str(sender)
-                or pending.message_type != MessageType.TEXT or pending.media_urls
-                or getattr(pending, "_photo_claim", None) is not None):
-            continue
+    candidates = [
+        (key, pending) for key, pending in adapter._pending_text_batches.items()
+        if pending.source is not None and str(pending.source.chat_id) == str(chat)
+        and str(pending.sender_id()) == str(sender)  # observed groups keep the sender off the shared source
+        and pending.message_type == MessageType.TEXT and not pending.media_urls
+        and getattr(pending, "_photo_claim", None) is None]
+    thread = str(getattr(msg, "message_thread_id", None) or "")
+    # This topic's text first: claiming another topic's text would leave this one to flush alone.
+    candidates.sort(key=lambda item: str(item[1].source.thread_id or "") != thread)
+    if candidates:
+        key, pending = candidates[0]
         done = pending._photo_claim = asyncio.Event()  # type: ignore[attr-defined]
         _claims(adapter)[id(msg)] = (key, pending, done)
-        return
 
 
 def absorb_claimed_text(adapter: Any, msg: Any, event: MessageEvent) -> None:

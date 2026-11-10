@@ -468,10 +468,25 @@ How it behaves:
 
 - **Your Chrome, not Hermes's.** Hermes never launches or closes it. If Chrome is not running, the call fails with a message asking you to open it and enable the toggle above.
 - **Own tab.** Each session opens a new tab and works only there; your existing tabs are not driven. If Hermes can't open that tab and confirm it is attached to it, the call stops before any of its code runs and is retried only on a later call. (Hermes also turns off the harness's tab-title marker so no existing tab is retitled.)
-- **One connection.** Hermes does not open a second CDP connection for dialog handling, so no second popup. `browser_vault` therefore reports `supervisor_required` while live mode drives the browser.
+- **One connection.** Hermes does not open a second CDP connection for dialog handling, so no second popup. `browser_vault` therefore reports `supervisor_required` while live mode discovers your Chrome (with a fixed endpoint below, the supervisor attaches there normally).
 - **Precedence.** An operator override (`BU_CDP_*`, `/browser connect`, `BROWSER_CDP_URL`, `browser.cdp_url`) wins. Otherwise live mode beats a cloud provider and `browser.use_real_profile` (and serves the `local` argument itself, so no profile snapshot is made). Private/LAN URLs still go to the [hybrid local sidecar](#cloud-browsers) when a cloud provider is configured, never into your signed-in Chrome.
 - **macOS permission.** macOS can block reading `~/Library/Application Support/Google/Chrome` with "Operation not permitted", depending on which app launched Hermes. Hermes then names the folder in its error; grant that app access under **System Settings → Privacy & Security** (Files and Folders or Full Disk Access) and restart it. Hermes does not work around the protection.
 - A harness daemon that is already running keeps the browser it started with; `live_chrome` takes effect when it next starts.
+
+### A dedicated Chrome instead of yours
+
+To give `browser_exec` its own Chrome (separate data folder, nothing of your own sign-ins) rather than discovering the one you use, start a Chrome with `--remote-debugging-port` and point live mode at it:
+
+```yaml
+browser:
+  live_chrome: true
+  live_chrome_cdp_url: http://127.0.0.1:9223
+```
+
+- **Only `browser_exec`, only with `live_chrome` on.** Every other browser tool, and `browser_exec` with live mode off, ignore it. Empty (the default) keeps the discovery route above.
+- **No Allow popup.** Hermes attaches to that endpoint directly, never looks for your own Chrome, and no longer tells the model to ask you to click Allow. It still refuses code that tries to approve a prompt.
+- **Loopback only.** The URL must be `http(s)://` on `localhost`, `127.0.0.1` or `[::1]`; anything else is rejected. If nothing answers there, the call fails asking you to start that Chrome. Hermes does not launch it.
+- **Same limits as live mode:** its own `_live_` daemon, an own tab that fails closed, no cloud fallback. Changing the URL starts a fresh daemon rather than reusing one attached to the old target; turning live mode off stops them all. The operator overrides (`BU_CDP_*`, `/browser connect`, `BROWSER_CDP_URL`, `browser.cdp_url`) still win.
 
 ## Your own browser via CDP (`/browser connect`)
 

@@ -2989,6 +2989,7 @@ browser:
   cdp_url: ""
   use_real_profile: false        # Browse on a managed copy of your real browser profile (opt-in)
   live_chrome: false             # Drive your own running Chrome via chrome://inspect (opt-in, Chrome 144+)
+  live_chrome_cdp_url: ""        # With live_chrome: attach to this loopback DevTools URL instead (e.g. http://127.0.0.1:9223)
   # Dialog supervisor — how native JS dialogs (alert / confirm / prompt / beforeunload) are handled
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)

@@ -9,8 +9,13 @@ module keeps the harness inside four limits:
   and has no switch to stop it, so ``preflight`` refuses before the harness runs.
 * Consent stays with the user: nothing here invokes the harness's ``mac-approve`` (it AXPresses "Allow").
 * A macOS privacy block on the browser's data folder is reported, never worked around.
+* With ``browser.live_chrome_cdp_url`` set, ``browser_exec`` attaches to that fixed loopback DevTools
+  endpoint (a dedicated agents' Chrome) through ``BU_CDP_*`` instead, and never discovers the user's own
+  Chrome; no Allow popup is involved there.
 * The CDP supervisor opens no second connection (a second Allow popup): ``_attach_vault_supervisor`` and
-  ``ensure_cdp_supervisor`` only attach to an exported/override endpoint, and live mode has neither.
+  ``ensure_cdp_supervisor`` only attach to an exported/override endpoint, and discovery live mode has
+  neither. With ``browser.live_chrome_cdp_url`` the endpoint is exported and there is no popup, so the
+  supervisor attaches there normally.
 """
 
 from __future__ import annotations
@@ -18,7 +23,10 @@ from __future__ import annotations
 import os
 import platform
 import re
+import urllib.error
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Optional
 
 from tools.browser_session_cloud import browser_cfg
@@ -108,6 +116,14 @@ _hermes_live_own_tab()
 del _hermes_live_own_tab
 """
 
+ENDPOINT_DESCRIPTION = (
+    "\n\nLIVE CHROME: this tool drives a dedicated, already-running Chrome at {endpoint}, kept apart from "
+    "the user's own browser. Each session works in a tab it opens itself and never touches existing tabs. "
+    "Hermes never launches or closes that Chrome; if it is not reachable, tell the user to start it. Never "
+    "try to approve any remote-debugging prompt yourself: do not run `browser-harness mac-approve` or any "
+    "script that clicks one."
+)
+
 
 def own_tab_preamble(live: bool, shared_preamble: str) -> str:
     """The preamble that keeps a call in its own tab: the fail-closed one on the user's live Chrome."""
@@ -119,6 +135,40 @@ def live_chrome_enabled() -> bool:
     return browser_cfg("live_chrome", False, lambda v: is_truthy_value(v, default=False))
 
 
+def live_chrome_endpoint() -> str:
+    """``browser.live_chrome_cdp_url`` ('' = discover the user's own Chrome). Only used with live mode on."""
+    return browser_cfg("live_chrome_cdp_url", "", lambda v: str(v or "").strip())
+
+
+def endpoint_format_error(url: str) -> Optional[str]:
+    """None when ``url`` is a loopback http(s) URL, else why not (it carries a signed-in browser's debugger)."""
+    try:
+        parsed = urlparse(url)
+        host, scheme, _ = (parsed.hostname or "").lower(), parsed.scheme, parsed.port  # port: ValueError if bad
+    except ValueError:
+        host = scheme = ""
+    if scheme not in ("http", "https") or host not in ("localhost", "127.0.0.1", "::1"):
+        return (f"browser.live_chrome_cdp_url must be a loopback http(s) URL such as http://127.0.0.1:9223; "
+                f"got {url!r}. Hermes only attaches live Chrome to a debugger on this machine.")
+    return None
+
+
+def endpoint_unreachable(url: str) -> Optional[str]:
+    """None when the DevTools endpoint answers ``/json/version``, else the error for the model. Read-only."""
+    try:
+        # loopback: never via a proxy, and no redirect handler so the probe cannot leave the endpoint
+        opener = urllib.request.OpenerDirector()
+        opener.add_handler(urllib.request.HTTPHandler())
+        opener.add_handler(urllib.request.HTTPSHandler())
+        opener.add_handler(urllib.request.HTTPErrorProcessor())
+        opener.add_handler(urllib.request.HTTPDefaultErrorHandler())
+        with opener.open(url.rstrip("/") + "/json/version", timeout=3):
+            return None
+    except (OSError, ValueError, urllib.error.URLError):
+        return (f"Live Chrome: the configured live Chrome endpoint {url} is not reachable, and Hermes never "
+                "launches or closes Chrome. Ask the user to start that Chrome so it listens there, then retry.")
+
+
 def approval_attempt(code: str) -> Optional[str]:
     """In live mode, an error when ``code`` reaches for the harness's Allow-clicking helper, else None."""
     if live_chrome_enabled() and _APPROVE_RE.search(code or ""):
@@ -127,10 +177,11 @@ def approval_attempt(code: str) -> Optional[str]:
     return None
 
 
-def live_chrome_timeout_hint(live: bool) -> str:
-    """A long hang in live mode is usually Chrome's Allow popup waiting for the user (the harness has no deadline)."""
+def live_chrome_timeout_hint(live: bool, endpoint: str = "") -> str:
+    """A long hang in live mode is usually Chrome's Allow popup waiting for the user (the harness has no
+    deadline). A fixed endpoint raises no popup, so there is nothing to say."""
     return (" Chrome may be waiting for the user to click Allow on its \"Allow remote debugging?\" popup; "
-            "ask them.") if live else ""
+            "ask them.") if live and not endpoint else ""
 
 
 def _profile_dirs(system: str) -> list[Path]:

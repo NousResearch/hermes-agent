@@ -441,9 +441,9 @@ DEFAULT_CONFIG = {
         # snapshot dir sidesteps Chrome 136+'s default-profile debugging block and never contends with the running
         # browser. Turning off deletes ~/.hermes/browser-profile/ so credentials don't outlive consent. Chromium-family
         # only; a profile that can't be copied (Firefox default, Windows browser holding its cookies) gives a fresh, signed-out browser plus a note saying why.
-        # Also gates the browser_exec `local` arg (real-profile session under a cloud backend). Desktop Settings -> Browser.
         "use_real_profile": False,
         "live_chrome": False,  # drive your own running Chrome via chrome://inspect (opt-in; Chrome 144+, docs: browser)
+        "live_chrome_cdp_url": "",  # with live_chrome: attach to this loopback http(s) DevTools URL instead (docs: browser)
         # Windows only: a running Chrome/Edge/Brave locks its cookie DB (the last snapshot is reused;
         # with none yet, a fresh browser runs). When on, the agent ASKS first; on approval it runs
         # `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost) so a

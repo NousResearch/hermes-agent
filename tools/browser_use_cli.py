@@ -9,6 +9,7 @@ The harness speaks CDP to whatever ``tools.browser_session`` resolved for the ca
 import contextlib
 import contextvars
 import functools
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -28,8 +29,9 @@ from hermes_cli.process_identity import (
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import (daemon_env, daemon_identity, fit_default_socket_dir, harness_pid_file,
                                         namespace_harness_dirs)
-from tools.browser_use_live_chrome import (DESCRIPTION, LIVE_CHROME_SENTINEL, approval_attempt,
-                                           live_chrome_enabled, live_chrome_timeout_hint, own_tab_preamble)
+from tools.browser_use_live_chrome import (DESCRIPTION, ENDPOINT_DESCRIPTION, LIVE_CHROME_SENTINEL,
+                                           approval_attempt, live_chrome_enabled, live_chrome_endpoint,
+                                           live_chrome_timeout_hint, own_tab_preamble)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -354,12 +356,16 @@ def _sidecar_daemon_name(name: str) -> str:
     return f"_local_{name or 'default'}"[:64]
 
 
-def _live_daemon_name(name: str) -> str:
+def _live_daemon_name(name: str, endpoint: str = "") -> str:
     """BU_NAME of the harness daemon attached to the user's live Chrome (``browser.live_chrome``). A daemon
     latches its browser at spawn and outlives the call, so sharing a name with the packaged/cloud route
     would keep driving the signed-in Chrome after the switch is turned off (and the reverse). User session
-    names cannot start with ``_``."""
-    return f"_live_{name or 'default'}"[:64]
+    names cannot start with ``_``. A fixed ``browser.live_chrome_cdp_url`` is part of the name for the same
+    reason: a changed value must start a new daemon, never reuse one latched on the old target."""
+    base = f"_live_{name or 'default'}"
+    if not endpoint:
+        return base[:64]
+    return f"{base[:55]}_{hashlib.sha256(endpoint.encode()).hexdigest()[:8]}"
 
 
 def _name_route_daemon(env: dict, session: str, local_sidecar: bool, live_chrome: bool) -> None:
@@ -368,7 +374,7 @@ def _name_route_daemon(env: dict, session: str, local_sidecar: bool, live_chrome
     if local_sidecar:
         env["BU_NAME"] = _sidecar_daemon_name(session)
     elif live_chrome:
-        env["BU_NAME"] = _live_daemon_name(session)
+        env["BU_NAME"] = _live_daemon_name(session, env.get("BU_CDP_URL", ""))  # only live routing sets it
 
 
 def _stop_live_daemons_if_off() -> None:
@@ -520,12 +526,17 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
 
 def _resolve_live_chrome(env: dict) -> Optional[str]:
     """Attach to the user's running Chrome (``browser.live_chrome``): export NO ``BU_CDP_*`` so the harness
-    finds it itself (the Chrome >=144 chrome://inspect route). Local, but not private: the own-tab preamble
-    keeps each session in a tab it opened. Error string when Chrome is not reachable (see live_chrome)."""
+    finds it itself (the Chrome >=144 chrome://inspect route), or with ``browser.live_chrome_cdp_url`` export
+    that fixed endpoint instead. Local, but not private: the own-tab preamble keeps each session in a tab it
+    opened. Error string when Chrome is not reachable (see live_chrome)."""
     from tools import browser_use_live_chrome as live
-    err = live.preflight()
+    endpoint = live.live_chrome_endpoint()
+    err = (live.endpoint_format_error(endpoint) or live.endpoint_unreachable(endpoint)) if endpoint \
+        else live.preflight()
     if err:
         return err
+    if endpoint:
+        _set_cdp_env(env, endpoint)
     env[_BOT_DESKTOP_BROWSER_SENTINEL] = "local"
     env[LIVE_CHROME_SENTINEL] = "1"
     env["BH_TAB_MARKER"] = "0"  # the harness would retitle the user's existing tab it attaches to first
@@ -926,7 +937,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:
             return {"error_result": tool_error(
-                f"browser-use exec timed out after {timeout}s.{live_chrome_timeout_hint(live_chrome)} The daemon may "
+                f"browser-use exec timed out after {timeout}s.{live_chrome_timeout_hint(live_chrome, env.get('BU_CDP_URL', ''))} The daemon may "
                 f"still be working; retry with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into "
                 "several calls that append to workspace files — anything already written to the workspace is "
                 "preserved."
@@ -1051,7 +1062,8 @@ def _description_header() -> str:
 def _dynamic_schema_overrides() -> dict:
     overrides: dict = {"description": _description_header() + _HELPERS_DIGEST}
     if live_chrome_enabled():
-        overrides["description"] += DESCRIPTION
+        endpoint = live_chrome_endpoint()
+        overrides["description"] += ENDPOINT_DESCRIPTION.format(endpoint=endpoint) if endpoint else DESCRIPTION
     # ``local`` exists ONLY when the user consented to real-profile browsing — everyone
     # else's schema carries zero extra surface. The caller memoizes on config.yaml mtime,
     # so toggling consent applies next session, not mid-chat.

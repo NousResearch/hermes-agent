@@ -995,8 +995,8 @@ class AuthorityConnection:
         # Deletion may already have evicted a subscribed session; its membership died
         # with it, and one retired ID must not leave the others (or the transport) attached.
         # A sibling's teardown runs under the primary socket's scope: detach as this owner, as dispatch does.
-        from gateway.session_authorities import owner_scope
-        with owner_scope(self.authority):
+        from gateway.session_authorities import async_owner_scope
+        async with async_owner_scope(self.authority):
             for session_id, subscription in list(self.subscriptions.items()):
                 live = self.authority.sessions.get(session_id)
                 if live is not None and subscription in live.subscribers:

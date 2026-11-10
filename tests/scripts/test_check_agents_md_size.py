@@ -1,10 +1,15 @@
 """scripts/ci/check_agents_md_size.py: every AGENTS.md chain an agent can load stays under the cap it is truncated at."""
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "check_agents_md_size.py"
+_SPEC = importlib.util.spec_from_file_location("_check_agents_md_size", SCRIPT)
+_MODULE = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MODULE)
+ROOT_CAP, CHAIN_CAP = _MODULE.ROOT_MAX_CHARS, _MODULE.CHAIN_MAX_CHARS
 
 
 def _repo(tmp_path, files):
@@ -26,12 +31,13 @@ def _check(repo):
 
 def test_budget_is_per_chain_from_the_root_down(tmp_path):
     # Each file alone is small; root + app + app/src together is what an agent working in app/src loads.
-    fits = {"AGENTS.md": 12_000, "app/AGENTS.md": 10_000, "app/src/AGENTS.md": 8_000, "lib/AGENTS.md": 18_000}
+    fits = {"AGENTS.md": ROOT_CAP, "app/AGENTS.md": CHAIN_CAP - ROOT_CAP - 8_000, "app/src/AGENTS.md": 8_000,
+            "lib/AGENTS.md": 18_000}
     ok = _check(_repo(tmp_path / "ok", fits))
     assert ok.returncode == 0, ok.stdout
     nested = _check(_repo(tmp_path / "nested", {**fits, "app/src/AGENTS.md": 8_001}))
     assert nested.returncode == 1
-    assert "AGENTS.md + app/AGENTS.md + app/src/AGENTS.md: 30001 chars > 30000 chain cap" in nested.stdout
+    assert f"AGENTS.md + app/AGENTS.md + app/src/AGENTS.md: {CHAIN_CAP + 1} chars > {CHAIN_CAP} chain cap" in nested.stdout
     assert "lib/" not in nested.stdout and "untracked" not in nested.stdout
-    root = _check(_repo(tmp_path / "root", {"AGENTS.md": 12_001}))
-    assert root.returncode == 1 and "AGENTS.md: 12001 chars > 12000 cap" in root.stdout
+    root = _check(_repo(tmp_path / "root", {"AGENTS.md": ROOT_CAP + 1}))
+    assert root.returncode == 1 and f"AGENTS.md: {ROOT_CAP + 1} chars > {ROOT_CAP} cap" in root.stdout

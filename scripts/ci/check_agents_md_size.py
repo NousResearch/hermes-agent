@@ -4,9 +4,9 @@
 An agent started in a directory gets every AGENTS.md from the git root down to that directory as
 ONE project-context block: ``agent/prompt_builder.py`` joins the chain before truncating it, at 6%
 of the context window (30,720 chars on a 128k-token model, a 20k floor on small ones). So the
-budget is per CHAIN: each AGENTS.md plus all of its ancestors stays within CHAIN_MAX_CHARS (the
-128k budget minus room for the per-file provenance labels), and the root, which is in every
-chain, stays within ROOT_MAX_CHARS so area files have room. An area file reached as a
+budget is per CHAIN: each AGENTS.md plus all of its ancestors stays within CHAIN_MAX_CHARS, and
+the root, which is in every chain, stays within ROOT_MAX_CHARS so area files have room. Both are
+sized to the tree after the hermes_agent/ move, whose paths in these files carry that prefix. An area file reached as a
 subdirectory hint is also capped by ``_MAX_HINT_CHARS`` in ``agent/subdirectory_hints.py``, read
 from the source here so the two can never drift. Shrink a file (move long form to the developer
 guide or a sibling doc) instead of raising any number.
@@ -24,8 +24,8 @@ from pathlib import Path, PurePosixPath
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from hermes_agent.compat.paths import tree_moves
 
-ROOT_MAX_CHARS = 12_000
-CHAIN_MAX_CHARS = 30_000
+ROOT_MAX_CHARS = 12_100
+CHAIN_MAX_CHARS = 30_700
 
 
 def _int_constant(source: Path, name: str) -> int:

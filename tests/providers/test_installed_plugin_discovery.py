@@ -78,55 +78,57 @@ def test_other_plugins_in_the_flat_directory_are_left_to_the_plugin_manager(herm
     assert get_provider_profile("openrouter") is not None  # bundled set still intact
 
 
-# --------------------------------------------------------------------------------------------------
-# The one hosted provenance rule: a hosted process loads provider code only from what its
+# The hosted code fence: a hosted process loads provider code only from what its
 # deployment image ships (the tree bundled with Hermes, or an installed package's entry point)
 
 
-def test_a_home_dir_provider_is_refused_before_import_in_a_hosted_process(hermes_home, monkeypatch, caplog):
+@pytest.fixture
+def hosted(monkeypatch):
+    """A frozen hosted verdict with the process-wide code fence installed."""
+    from hermes_cli import hosted_mode
+    from hermes_cli.hosted_code_fence import install_hosted_code_fence
+
+    monkeypatch.setitem(hosted_mode._VERDICT, "hosted", True)
+    install_hosted_code_fence()
+
+
+def test_a_home_dir_provider_is_refused_before_import_in_a_hosted_process(hermes_home, hosted, caplog):
     """The home's plugin directories are tenant-writable, so a hosted process never imports a
     provider from them: neither a nested model-providers dir nor a flat catalog install. The
-    refusal happens before any plugin code can run (the module never lands in sys.modules)."""
-    from hermes_cli import hosted_mode
+    code fence refuses the import itself; the module never lands in sys.modules and the
+    failure is logged with the reason."""
+    from providers import get_provider_profile
 
-    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
     _write_plugin(hermes_home / "plugins" / "model-providers" / "nested-acp", name="nested-acp",
                   manifest="name: nested-acp\nkind: model-provider\n")
     _write_plugin(hermes_home / "plugins" / "installed-acp", name="installed-acp",
                   manifest='name: installed-acp\nkind: "model-provider"\n')
 
-    from providers import get_provider_profile
-
-    with caplog.at_level("ERROR"):
+    with caplog.at_level("WARNING"):
         assert get_provider_profile("nested-acp") is None
         assert get_provider_profile("installed-acp") is None
 
     assert not [m for m in sys.modules if m.startswith("_hermes_user_provider")]
-    assert "deployment image" in caplog.text
+    assert "deployment image" in caplog.text  # the fence's refusal names the rule
 
 
-def test_bundled_providers_still_load_in_a_hosted_process(hermes_home, monkeypatch):
+def test_bundled_providers_still_load_in_a_hosted_process(hermes_home, hosted):
     """The tree bundled with Hermes is the image's own: hosted or not, its providers register
     exactly as before (the refusal above touches only the home's directories)."""
-    from hermes_cli import hosted_mode
-
-    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
     from providers import get_provider_profile
 
     assert get_provider_profile("openrouter") is not None
 
 
 def test_a_symlink_planted_in_the_bundled_provider_tree_is_refused_in_a_hosted_process(
-        hermes_home, monkeypatch, caplog):
+        hermes_home, monkeypatch, hosted, caplog):
     """The bundled label is not provenance either: a symlink in the tree bundled with Hermes
-    whose realpath leaves that tree — targeting the deployment home — is refused by the same
-    one rule as a home directory, before import, whichever bundled executor reaches it
-    (provider discovery and the descriptive catalog alike). Its code never runs."""
-    from hermes_cli import hosted_mode
+    whose realpath leaves that tree — targeting the deployment home — is refused by the code
+    fence exactly like a home directory, whichever bundled executor reaches it (provider
+    discovery and the descriptive catalog alike). Its code never runs."""
     import hermes_cli.plugins as plugins_mod
     import providers
 
-    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
     home_plugin = hermes_home / "plugins" / "model-providers" / "symlinked-home-provider"
     home_plugin.mkdir(parents=True)
     marker = hermes_home / "executed"
@@ -146,12 +148,12 @@ def test_a_symlink_planted_in_the_bundled_provider_tree_is_refused_in_a_hosted_p
     module_name = f"plugins.model_providers.{link.name.replace('-', '_')}"
     catalog_name = f"_hermes_provider_catalog_{link.name.replace('-', '_')}"
     try:
-        with caplog.at_level("ERROR"):
+        with caplog.at_level("WARNING"):
             providers._import_plugin_dir(link, "bundled")
         assert not marker.exists()  # the home's code never ran
         assert module_name not in sys.modules
-        assert "deployment image" in caplog.text
-        # the descriptive-catalog executor answers the same rule
+        assert "deployment image" in caplog.text  # the fence's refusal names the rule
+        # the descriptive-catalog executor answers the same fence
         assert not [p for p in providers.bundled_profiles() if p.name == "symlinked-home-provider"]
         assert not marker.exists()
         assert catalog_name not in sys.modules

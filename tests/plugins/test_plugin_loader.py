@@ -165,14 +165,23 @@ def test_concurrent_load_waits_for_the_first_load(tmp_path, monkeypatch):
                 sys.modules.pop(name, None)
 
 
-def test_load_named_refuses_a_home_dir_in_a_hosted_process(tmp_path, monkeypatch):
-    """The shared named-provider seam: in a hosted process a provider directory outside the
-    tree bundled with Hermes is refused BEFORE its loader (which would import it) runs — the
-    one rule is that only what the deployment image ships loads in-process."""
+@pytest.fixture
+def hosted(monkeypatch):
+    """A frozen hosted verdict with the process-wide code fence installed: the fence is what
+    refuses a home plugin's import now; the named-loader seam keeps only its clean early
+    refusal message."""
     from hermes_cli import hosted_mode
-    from plugins.plugin_loader import NamedProviderRefused, load_named
+    from hermes_cli.hosted_code_fence import install_hosted_code_fence
 
-    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+    monkeypatch.setitem(hosted_mode._VERDICT, "hosted", True)
+    install_hosted_code_fence()
+
+
+def test_load_named_refuses_a_home_dir_in_a_hosted_process(tmp_path, monkeypatch, hosted):
+    """The shared named-provider seam keeps its clean early refusal: in a hosted process a
+    provider directory outside the tree bundled with Hermes is refused BEFORE its loader (which
+    would import it) runs — only what the deployment image ships loads in-process."""
+    from plugins.plugin_loader import NamedProviderRefused, load_named
 
     def _must_not_load(provider_dir):
         raise AssertionError("a refused provider's loader ran")
@@ -182,14 +191,12 @@ def test_load_named_refuses_a_home_dir_in_a_hosted_process(tmp_path, monkeypatch
                    noun="provider", logger=logging.getLogger(__name__))
 
 
-def test_load_named_loads_a_bundled_dir_in_a_hosted_process(tmp_path, monkeypatch):
+def test_load_named_loads_a_bundled_dir_in_a_hosted_process(tmp_path, monkeypatch, hosted):
     """The same seam, bundled side: a provider inside the tree the image bundles with Hermes
     loads exactly as before when the process is hosted."""
     import hermes_cli.plugins as plugins_mod
-    from hermes_cli import hosted_mode
     from plugins.plugin_loader import load_named
 
-    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
     bundled = tmp_path / "bundled"
     bundled.mkdir()
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
@@ -201,15 +208,14 @@ def test_load_named_loads_a_bundled_dir_in_a_hosted_process(tmp_path, monkeypatc
                       logger=logging.getLogger(__name__)) is not None
 
 
-def test_a_symlink_wearing_the_bundled_label_is_refused(tmp_path, monkeypatch):
+def test_a_symlink_wearing_the_bundled_label_is_refused(tmp_path, monkeypatch, hosted):
     """The bundled tree is resolved from Hermes's own installed code, and a directory that is
     a symlink — or whose realpath leaves that tree — does not get the bundled trust, whatever
     its label says."""
     import hermes_cli.plugins as plugins_mod
-    from hermes_cli import hosted_mode
-    from plugins.plugin_loader import NamedProviderRefused, hosted_inprocess_refusal, load_named
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+    from plugins.plugin_loader import NamedProviderRefused, load_named
 
-    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
     bundled = tmp_path / "bundled"
     bundled.mkdir()
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
@@ -217,8 +223,8 @@ def test_a_symlink_wearing_the_bundled_label_is_refused(tmp_path, monkeypatch):
     elsewhere.mkdir()
     (bundled / "impostor").symlink_to(elsewhere)
 
-    assert "deployment image" in hosted_inprocess_refusal(bundled / "impostor")
-    assert hosted_inprocess_refusal(bundled) == ""  # the genuine tree itself is eligible
+    assert "deployment image" in hosted_code_refusal(bundled / "impostor")
+    assert hosted_code_refusal(bundled) == ""  # the genuine tree itself is eligible
 
     def _must_not_load(provider_dir):
         raise AssertionError("a refused provider's loader ran")
@@ -228,15 +234,15 @@ def test_a_symlink_wearing_the_bundled_label_is_refused(tmp_path, monkeypatch):
                    noun="provider", logger=logging.getLogger(__name__))
 
 
-def test_the_plugin_managers_directory_loader_refuses_a_home_dir_in_a_hosted_process(tmp_path, monkeypatch):
-    """PluginManager's in-process import seam — a directory plugin's ``__init__.py`` — answers
-    the same one hosted rule: a directory outside the tree the image bundles with Hermes never
-    imports in a hosted process, whatever its install record says."""
-    from hermes_cli import hosted_mode
+def test_the_plugin_managers_directory_loader_refuses_a_home_dir_in_a_hosted_process(tmp_path, monkeypatch, hosted):
+    """PluginManager's in-process import seam — a directory plugin's ``__init__.py`` — is
+    enforced by the process-wide code fence, not by a check at the call site: a directory
+    outside the tree the image bundles with Hermes never imports in a hosted process, whatever
+    its install record says, and the refusal names the path."""
+    from hermes_cli.hosted_code_fence import HostedCodeRefused
     from hermes_cli.plugins_manifest import PluginManifest
     from hermes_cli.plugins import PluginManager
 
-    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
     plugin_dir = tmp_path / "home-plugin"
     plugin_dir.mkdir()
     (plugin_dir / "__init__.py").write_text(
@@ -246,7 +252,7 @@ def test_the_plugin_managers_directory_loader_refuses_a_home_dir_in_a_hosted_pro
     )
     manifest = PluginManifest(name="home-plugin", source="user", path=str(plugin_dir))
 
-    with pytest.raises(RuntimeError, match="deployment image"):
+    with pytest.raises(HostedCodeRefused, match="deployment image"):
         PluginManager()._load_directory_module(manifest)
     assert not (tmp_path / "imported").exists()  # the plugin module never ran
 
@@ -283,18 +289,16 @@ def _planted_home_distribution(tmp_path, kind):
 
 
 @pytest.mark.parametrize("kind", ["pth", "editable"])
-def test_an_entry_point_whose_module_resolves_into_the_home_is_refused(tmp_path, monkeypatch, kind):
-    """Distribution metadata is not provenance. A hosted process judges an installed
-    distribution's entry point by where its module's file really is — resolved WITHOUT
-    importing it — so a ``.pth``-discovered home distribution and an image-side editable
-    record pointing into the home are both refused before ``ep.load()`` can import anything:
-    the home's code never runs."""
-    from hermes_cli import hosted_mode
+def test_an_entry_point_whose_module_resolves_into_the_home_is_refused(tmp_path, monkeypatch, hosted, kind):
+    """Distribution metadata is not provenance. A hosted process refuses an installed
+    distribution's entry point when its module's file resolves outside the deployment image —
+    the code fence refuses the import itself — so a ``.pth``-discovered home distribution and an
+    image-side editable record pointing into the home are both refused before the home's code
+    can run."""
+    from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
     from hermes_cli.plugins import PluginManager
     from hermes_cli.plugins_manifest import PluginManifest
-    from plugins.plugin_loader import hosted_inprocess_refusal
 
-    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
     marker, site_dir = _planted_home_distribution(tmp_path, kind)
     before_path = sys.path[:]
     try:
@@ -302,8 +306,8 @@ def test_an_entry_point_whose_module_resolves_into_the_home_is_refused(tmp_path,
         importlib.invalidate_caches()
         manifest = PluginManifest(name="rv3-home-entry", source="entrypoint",
                                   path="rv3_home_entry:register")
-        assert hosted_inprocess_refusal(None, module="rv3_home_entry")
-        with pytest.raises(RuntimeError, match="deployment image"):
+        assert hosted_code_refusal(None, module="rv3_home_entry")
+        with pytest.raises(HostedCodeRefused, match="deployment image"):
             PluginManager()._load_entrypoint_module(manifest)
         assert not marker.exists()  # the home's code never ran
     finally:
@@ -312,18 +316,16 @@ def test_an_entry_point_whose_module_resolves_into_the_home_is_refused(tmp_path,
         importlib.invalidate_caches()
 
 
-def test_an_entry_point_of_a_package_in_the_images_environment_still_loads(tmp_path, monkeypatch):
+def test_an_entry_point_of_a_package_in_the_images_environment_still_loads(tmp_path, monkeypatch, hosted):
     """The same rule, image side: an entry point whose module resolves inside this
     interpreter's own site-packages — where the image's packages are installed — is eligible
     and loads exactly as before in a hosted process."""
     import sysconfig
 
-    from hermes_cli import hosted_mode
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
     from hermes_cli.plugins import PluginManager
     from hermes_cli.plugins_manifest import PluginManifest
-    from plugins.plugin_loader import hosted_inprocess_refusal
 
-    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
     site_dir = tmp_path / "image-site-packages"
     site_dir.mkdir()
     marker = tmp_path / "executed"
@@ -344,7 +346,7 @@ def test_an_entry_point_of_a_package_in_the_images_environment_still_loads(tmp_p
         importlib.invalidate_caches()
         manifest = PluginManifest(name="rv3-image-entry", source="entrypoint",
                                   path="rv3_image_entry:register")
-        assert hosted_inprocess_refusal(None, module="rv3_image_entry") == ""
+        assert hosted_code_refusal(None, module="rv3_image_entry") == ""
         assert PluginManager()._load_entrypoint_module(manifest) is not None
         assert marker.read_text(encoding="utf-8") == "image code ran"
     finally:
@@ -353,14 +355,15 @@ def test_an_entry_point_of_a_package_in_the_images_environment_still_loads(tmp_p
         importlib.invalidate_caches()
 
 
-def test_the_bundled_root_cannot_be_moved_by_the_environment_in_a_hosted_process(tmp_path, monkeypatch):
+def test_the_bundled_root_cannot_be_moved_by_the_environment_in_a_hosted_process(tmp_path, monkeypatch, hosted):
     """``HERMES_BUNDLED_PLUGINS`` keeps its local meaning (a packaged install's read-only store
     path), but a hosted process ignores it: the tree in-process trust resolves from is always
     the one inside the installed Hermes package, so the environment cannot move the root the
     boot judges provenance from."""
     from hermes_cli import hosted_mode
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+    from hermes_cli.plugins_cmd_catalog import bundled_dir_is_genuine
     from hermes_cli.plugins import get_bundled_plugins_dir
-    from plugins.plugin_loader import bundled_dir_is_genuine, hosted_inprocess_refusal
 
     fake_root = tmp_path / "operator-named-root"
     fake_root.mkdir()
@@ -371,4 +374,4 @@ def test_the_bundled_root_cannot_be_moved_by_the_environment_in_a_hosted_process
     monkeypatch.setitem(hosted_mode._VERDICT, "hosted", True)  # the boot froze: hosted
     assert get_bundled_plugins_dir() != fake_root  # a hosted process ignores the environment
     assert not bundled_dir_is_genuine(fake_root)
-    assert hosted_inprocess_refusal(fake_root)  # and its directories are refused
+    assert hosted_code_refusal(fake_root)  # and its directories are refused

@@ -69,9 +69,12 @@ def load_session_storage(name: str) -> Optional[SessionStorageProvider]:
         from hermes_cli.plugin_isolation import in_process_import_refusal
         refusal = in_process_import_refusal(f"session storage provider {name!r}")
         if not refusal:
-            # The one hosted provenance rule: a hosted process resolves named providers only
-            # from what its deployment image ships, and the boot reports the reason.
-            refusal = _loader.hosted_inprocess_refusal(provider_dir)
+            # A hosted process resolves named providers only from what its deployment image
+            # ships, and the boot reports the reason — one shared predicate, and the
+            # process-wide code fence enforces it whatever loads try.
+            from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+            refusal = hosted_code_refusal(provider_dir)
         if refusal:
             logger.error("%s", refusal)
             raise SessionStorageRefused(refusal)

@@ -818,13 +818,6 @@ class PluginLoaderMixin:
         init_file = plugin_dir / "__init__.py"
         if not init_file.exists():
             raise FileNotFoundError(f"No __init__.py in {plugin_dir}")
-        from plugins.plugin_loader import hosted_inprocess_refusal
-        refusal = hosted_inprocess_refusal(plugin_dir)
-        if refusal:
-            # The one hosted provenance rule: a directory outside the tree the image bundles
-            # with Hermes never imports in a hosted process, whatever its install record
-            # says (the boot's preflight reports the same reason before any code can run).
-            raise RuntimeError(refusal)
         if _NS_PARENT not in sys.modules:
             ns_pkg = types.ModuleType(_NS_PARENT)
             ns_pkg.__path__ = []  # type: ignore[attr-defined]
@@ -855,18 +848,12 @@ class PluginLoaderMixin:
 
     def _load_entrypoint_module(self, manifest: PluginManifest) -> types.ModuleType | Callable[..., Any]:
         """Load a pip-installed plugin via its entry-point reference: the module for a bare ``module`` target,
-        the referenced attribute (normally ``register``) for the ``module:function`` form. A hosted
-        process consults the one provenance rule first, on the module the entry point targets —
-        resolved WITHOUT importing it — because distribution metadata is not provenance (a
-        ``.pth``-added path or an editable record can aim the name anywhere): the rule refuses
-        before ``ep.load()`` can import anything."""
+        the referenced attribute (normally ``register``) for the ``module:function`` form. In a hosted
+        process the process-wide code fence the boot installed refuses the import itself when the
+        module's file resolves outside the deployment image (distribution metadata is not
+        provenance: a ``.pth``-added path or an editable record can aim the name anywhere), so
+        the home's code never runs."""
         for ep in _select_entry_point_group(importlib.metadata.entry_points(), ENTRY_POINTS_GROUP):
             if ep.name == manifest.name:
-                from plugins.plugin_loader import hosted_inprocess_refusal
-
-                refusal = hosted_inprocess_refusal(
-                    None, module=str(ep.value).partition(":")[0].strip())
-                if refusal:
-                    raise RuntimeError(refusal)
                 return ep.load()
         raise ImportError(f"Entry point '{manifest.name}' not found in group '{ENTRY_POINTS_GROUP}'")

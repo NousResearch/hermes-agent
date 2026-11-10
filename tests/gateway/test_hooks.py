@@ -54,12 +54,14 @@ class TestDiscoverAndLoad:
         assert len(reg.loaded_hooks) == 0
 
     def test_skips_a_home_hook_in_a_hosted_process(self, tmp_path, monkeypatch):
-        """The one hosted provenance rule: a handler under the deployment home is
-        tenant-writable code, so a hosted process never imports it — a deployment's own
-        hooks ship inside its image, not installed into a tenant-writable home."""
+        """A handler under the deployment home is tenant-writable code, so a hosted process
+        never imports it — the code fence refuses the handler's import — and a deployment's
+        own hooks ship inside its image, not installed into a tenant-writable home."""
         from hermes_cli import hosted_mode
+        from hermes_cli.hosted_code_fence import install_hosted_code_fence
 
-        monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+        monkeypatch.setitem(hosted_mode._VERDICT, "hosted", True)
+        install_hosted_code_fence()
         marker = tmp_path / "handler-imported"
         _create_hook(tmp_path, "home-hook", '["agent:start"]',
                      "from pathlib import Path\n"

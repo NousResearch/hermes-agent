@@ -25,114 +25,6 @@ class NamedProviderRefused(RuntimeError):
     """A named provider that exists but may not load in this process (the reason is the message)."""
 
 
-def bundled_dir_is_genuine(plugin_dir) -> bool:
-    """Whether a manifest that claims the ``bundled`` source really is a directory inside the
-    plugins tree shipped with Hermes: not a symlink, and its realpath stays inside the bundled
-    root (the tree resolved from Hermes's own installed code — never from the deployment home,
-    config or environment; a hosted process ignores ``HERMES_BUNDLED_PLUGINS``). A symlink planted
-    in the bundled dir (or a dir whose realpath leaves the tree) is operator-unreviewed code
-    wearing the bundled label, so every trust decision that consults the bundled source must
-    consult this, not the label alone."""
-    from hermes_cli.plugins import get_bundled_plugins_dir
-
-    if not plugin_dir:
-        return False
-    path = Path(plugin_dir)
-    try:
-        if path.is_symlink():
-            return False
-        resolved = path.resolve()
-        root = get_bundled_plugins_dir().resolve()
-    except OSError:
-        return False
-    return resolved == root or root in resolved.parents
-
-
-def _hosted_allowed_roots() -> tuple[Path, ...]:
-    """The realpath roots whose code a deployment image ships — the only roots a hosted process
-    imports in-process code from: the plugins tree bundled inside the installed Hermes package
-    (resolved from Hermes's own code, never from the deployment home, config or environment)
-    and this interpreter's own site-packages directories, where the image's installed packages
-    live."""
-    import sysconfig
-
-    from hermes_cli.plugins import get_bundled_plugins_dir
-
-    roots: list[Path] = [Path(get_bundled_plugins_dir())]
-    paths = sysconfig.get_paths()
-    roots.extend(Path(paths[key]) for key in ("purelib", "platlib") if paths.get(key))
-    resolved: list[Path] = []
-    for root in roots:
-        try:
-            real = root.resolve()
-        except OSError:
-            continue
-        if real not in resolved:
-            resolved.append(real)
-    return tuple(resolved)
-
-
-def _realpath_inside(path, roots: tuple[Path, ...]) -> bool:
-    """Whether *path*'s realpath stays inside one of *roots* (equal to it, or below it)."""
-    try:
-        resolved = Path(path).resolve()
-    except OSError:
-        return False
-    return any(resolved == root or root in resolved.parents for root in roots)
-
-
-def hosted_inprocess_refusal(code_path, *, module: Optional[str] = None) -> str:
-    """THE hosted provenance rule — the one function every loader that could import Python in
-    a hosted process consults before importing: ``""`` when the code may be imported
-    in-process, else the reason it may not. The check runs before any import, so refused code
-    never executes.
-
-    One realpath rule decides every loader kind alike. A directory loader passes the directory
-    in *code_path*; an installed distribution's entry point passes ``code_path=None`` with
-    *module* naming the module its entry point targets. Either way the code is eligible only
-    when the realpath of what would be imported — the directory, or the file
-    ``importlib.util.find_spec`` resolves *module* to WITHOUT importing it — stays inside an
-    allowed root (:func:`_hosted_allowed_roots`): the plugins tree bundled inside the installed
-    Hermes package, or this interpreter's own site-packages, where the image's packages are
-    installed.
-
-    Everything else is refused before import, whatever the distribution's metadata says — an
-    editable install pointing elsewhere, a ``.pth``-added path, a directory under the
-    deployment home (its records can never vouch for hosted trust: the home is
-    tenant-writable, and a catalog plugin a hosted deployment wants is baked into its image by
-    the operator)."""
-    from hermes_cli.hosted_mode import is_hosted
-
-    if not is_hosted():
-        return ""
-    roots = _hosted_allowed_roots()
-    if code_path is None:
-        # An entry point's eligibility is where its module's file REALLY is, found without
-        # importing it — never the distribution's metadata, which a ``.pth`` file or an
-        # editable record can aim anywhere.
-        origin: Optional[str] = None
-        if module:
-            try:
-                spec = importlib.util.find_spec(module)
-            except (ImportError, ValueError):  # unresolvable or ambiguous: no file to judge
-                spec = None
-            origin = getattr(spec, "origin", None) if spec is not None else None
-        if origin and _realpath_inside(origin, roots):
-            return ""
-        return ("a hosted process loads in-process code only from what its deployment image "
-                "ships (the plugins bundled with Hermes, or a package installed into the "
-                "image's environment); the entry point's module "
-                + (f"{module!r} " if module else "")
-                + "resolves outside that image, so its distribution's metadata is not "
-                "provenance and the entry point is refused")
-    if _realpath_inside(code_path, roots):
-        return ""
-    return ("a hosted process loads in-process code only from what its deployment image ships "
-            "(the plugins bundled with Hermes, or a package installed into the image's "
-            f"environment); {code_path} is in the deployment home's writable directories, and an "
-            "install record is never consulted for hosted trust")
-
-
 _MODULE_LOAD_LOCKS: dict[str, threading.RLock] = {}
 _MODULE_LOAD_LOCKS_GUARD = threading.Lock()
 # Inside bounded_load_wait(), how long a second caller waits for another thread's in-flight load of
@@ -374,10 +266,14 @@ def load_named(name: str, plugin_dir: Path, load_from_dir: Callable[[Path], Opti
                noun: str, logger: logging.Logger) -> Optional[Any]:
     """Shared body of ``load_<kind>(name)``: load from *plugin_dir*, warn + None on failure.
 
-    A provider outside the deployment image's bundled tree is refused in a hosted process
-    BEFORE its module is imported — :func:`hosted_inprocess_refusal` is the one rule, and
-    :exc:`NamedProviderRefused` names its reason."""
-    refusal = hosted_inprocess_refusal(plugin_dir)
+    A provider outside the deployment image is refused in a hosted process BEFORE its module
+    is imported — this is the discovery-layer pre-check that raises :exc:`NamedProviderRefused`
+    with the reason. The shared predicate (:func:`hermes_cli.hosted_code_fence.
+    hosted_code_refusal`) answers it; enforcement is the process-wide code fence the hosted boot
+    installed, which refuses any load this seam missed."""
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    refusal = hosted_code_refusal(plugin_dir)
     if refusal:
         logger.error("%s %s: %s", kind, name, refusal)
         raise NamedProviderRefused(refusal)

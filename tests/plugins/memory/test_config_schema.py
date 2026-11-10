@@ -63,13 +63,15 @@ def test_broken_schema_is_not_cached(monkeypatch, tmp_path):
 
 
 def test_a_home_provider_schema_is_refused_in_a_hosted_process(monkeypatch, tmp_path):
-    """A config schema is the provider plugin's own code, so the one hosted provenance rule
-    covers it: in a hosted process a schema under the deployment home never imports (the
-    panel simply has no schema), and the local behaviour above is unchanged."""
+    """A config schema is the provider plugin's own code, so the hosted code fence covers
+    it: in a hosted process a schema under the deployment home never imports (the panel
+    simply has no schema), and the local behaviour above is unchanged."""
     from hermes_cli import hosted_mode
+    from hermes_cli.hosted_code_fence import install_hosted_code_fence
     from plugins import memory
 
-    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+    monkeypatch.setitem(hosted_mode._VERDICT, "hosted", True)
+    install_hosted_code_fence()
     monkeypatch.setattr(config_schema, "_SCHEMA_CACHE", {})
     provider_dir = tmp_path / "custom"
     provider_dir.mkdir()

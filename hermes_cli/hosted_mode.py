@@ -239,12 +239,18 @@ def _plugins_that_would_load_inprocess() -> list[Any]:
 
 def _refuse_uncurated_inprocess_code(config: Mapping[str, Any]) -> None:
     """Refuse plugin or MCP-server code that is not what the deployment image ships yet would
-    load in this process. The one hosted provenance rule decides (:func:`plugins.plugin_loader.
-    hosted_inprocess_refusal`): bundled inside the installed Hermes package, or an entry point of
+    load in this process. The one shared predicate decides (:func:`hermes_cli.hosted_code_fence.
+    hosted_code_refusal`): bundled inside the installed Hermes package, or an entry point of
     a package installed into the image's environment. Everything under the deployment home is
     refused, whatever its install record says — user-added plugins and MCP servers run in the
     agent's sandbox, and an operator's curated set is baked into the image, not installed into a
-    tenant-writable home."""
+    tenant-writable home.
+
+    This is the discovery-layer pre-check that gives the boot its clean, early refusal message;
+    enforcement does not depend on it; the installed code fence
+    (:func:`hermes_cli.hosted_code_fence.install_hosted_code_fence`) refuses any load the
+    enumeration missed. In particular a dotted entry point's parent package is refused by the
+    fence before its module-level code can run."""
     servers = config.get("mcp_servers") if isinstance(config, Mapping) else None
     if isinstance(servers, Mapping) and servers:
         _refuse(
@@ -252,9 +258,9 @@ def _refuse_uncurated_inprocess_code(config: Mapping[str, Any]) -> None:
             "A hosted process runs no MCP server a user added (they are served through the agent's "
             "sandbox); remove the mcp_servers entries, and install operator MCP servers as "
             "catalog plugins")
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
     from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
     from hermes_cli.plugins_discovery import IN_BOTH_LISTS, _get_disabled_plugins, _get_enabled_plugins, gate_manifest
-    from plugins.plugin_loader import hosted_inprocess_refusal
 
     out_of_process = isolation_mode() == ISOLATION_HOST
     disabled, enabled = _get_disabled_plugins(), _get_enabled_plugins()
@@ -270,13 +276,12 @@ def _refuse_uncurated_inprocess_code(config: Mapping[str, Any]) -> None:
                 or gate.error == IN_BOTH_LISTS):
             continue  # config never runs it
         # The one rule answers entry points and directories alike: an entry point's module is
-        # judged by where its file resolves to, without importing it — never by the
-        # distribution's metadata alone.
+        # judged by where its file resolves to — never by the distribution's metadata alone.
         if manifest.source == "entrypoint":
-            refusal = hosted_inprocess_refusal(
+            refusal = hosted_code_refusal(
                 None, module=str(manifest.path or "").partition(":")[0].strip())
         else:
-            refusal = hosted_inprocess_refusal(manifest.path)
+            refusal = hosted_code_refusal(manifest.path)
         if refusal:
             refusals.append(f"plugin {manifest.name!r} would load in this process: {refusal}")
     if refusals:
@@ -322,6 +327,21 @@ def _require_hosted_backends(config: Mapping[str, Any]) -> None:
             "bypasses row security fails this); use the provider's isolating role")
 
 
+def _prune_sys_path_outside_image() -> None:
+    """Drop every ``sys.path`` entry that resolves outside the deployment image (a ``.pth``-added
+    home directory, an inherited ``PYTHONPATH`` residue) and record what was pruned in the boot
+    log: nothing outside the image stays searchable once the boot serves."""
+    import logging
+
+    from hermes_cli.hosted_code_fence import prune_sys_path_outside_image
+
+    pruned = prune_sys_path_outside_image()
+    if pruned:
+        logging.getLogger(__name__).info(
+            "Hosted boot removed sys.path entries outside the deployment image: %s",
+            ", ".join(pruned))
+
+
 def hosted_boot_preflight(*, profile_homes: tuple[Path, ...] = (),
                           config: Mapping[str, Any] | None = None,
                           env: Mapping[str, str] | None = None) -> None:
@@ -329,18 +349,26 @@ def hosted_boot_preflight(*, profile_homes: tuple[Path, ...] = (),
     loader: a config read discovers and imports plugins, and a plugin this process must refuse
     must be refused before its module-level code can run. No-op when this process is not hosted.
 
-    Passing clears the discovery gate (:func:`plugin_loading_permitted`); a refusal raises before
-    any plugin code loaded. Checks manifests, config and provenance records only — nothing is
-    imported here.
+    The process-wide code fence is installed first
+    (:func:`hermes_cli.hosted_code_fence.install_hosted_code_fence`): from here on NO code
+    whose file resolves outside the deployment image can load in this process, whatever loader
+    tries — including the parent package of a dotted entry point checked below, and any loader
+    a later change forgets to guard. Passing clears the discovery gate
+    (:func:`plugin_loading_permitted`); a refusal raises before any plugin code loaded. Checks
+    manifests, config and provenance records only.
     """
     if not is_hosted():
         return
     if config is None:
         config = _boot_or_effective_config()
     record_boot_config(config)
+    from hermes_cli.hosted_code_fence import install_hosted_code_fence
+
+    install_hosted_code_fence()
     _refuse_credential_environment(env)
     _refuse_profile_secret_files(profile_homes)
     _refuse_uncurated_inprocess_code(config)
+    _prune_sys_path_outside_image()
     _VERDICT["plugins_permitted"] = True
 
 

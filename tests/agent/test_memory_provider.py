@@ -788,13 +788,15 @@ class TestUserInstalledProviderCli:
         assert callable(commands[0]["setup_fn"])
 
     def test_cli_refused_for_a_user_provider_in_a_hosted_process(self, tmp_path, monkeypatch):
-        """The one hosted provenance rule: a cli.py under the deployment home is
-        tenant-writable code, so a hosted process never imports it — the provider's
-        commands are simply absent, and the local discovery above is unchanged."""
+        """A cli.py under the deployment home is tenant-writable code, so a hosted process
+        never imports it — the code fence refuses the import — the provider's commands are
+        simply absent, and the local discovery above is unchanged."""
         from hermes_cli import hosted_mode
+        from hermes_cli.hosted_code_fence import install_hosted_code_fence
         from plugins.memory import discover_plugin_cli_commands
 
-        monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+        monkeypatch.setitem(hosted_mode._VERDICT, "hosted", True)
+        install_hosted_code_fence()
         plugin_dir = tmp_path / "plugins" / "hostedcli"
         plugin_dir.mkdir(parents=True)
         # A memory provider dir: discovery accepts it only when __init__.py speaks the

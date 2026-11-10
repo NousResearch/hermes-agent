@@ -572,11 +572,8 @@ def discover_plugin_cli_commands() -> list[dict]:
         from hermes_cli.plugin_isolation import in_process_import_refusal
         if in_process_import_refusal(f"memory provider {active_provider!r} CLI commands"):
             return []
-        from plugins.plugin_loader import hosted_inprocess_refusal
-        if hosted_inprocess_refusal(plugin_dir):
-            # The one hosted provenance rule: a CLI file under the deployment home is
-            # tenant-writable code, so a hosted process never imports it.
-            return []
+        # A hosted process's code fence refuses a home cli.py at its import; the CLI
+        # surface is simply absent, so nothing more to check here.
     try:
         cli_mod = sys.modules.get(module_name)
         if cli_mod is None:

@@ -445,6 +445,13 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
+- A profile switch never covers the conversation. `ChatSwitchIndicator`
+  escalates by elapsed time: nothing under 2s, a quiet corner pill tinted with
+  the target profile's colour until 10s, then an inline strip above the thread
+  saying sends will wait. A rejected rail switch ends in that strip's terminal
+  failure with Retry; the rail square shows busy/failed, and the composer names
+  where a send will go while the switch is pending. Paint-first sync (#89843)
+  is the same component's quiet pill.
 - Guide startup has a dedicated landing screen with the shared long-operation
   Loader and a localized startup label. It remains active until the guide's
   saved conversation is loaded. No greeting, composer, Skip setup, or statusbar

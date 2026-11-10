@@ -182,13 +182,14 @@ def test_root_container_teardown_hands_every_sandbox_mount_back_before_removal(
         record.parent.mkdir(parents=True)
         record.write_bytes(_HOST_OWNED + b"/workspace/link/escaped\0")
 
-    def _env():
+    def _env(shared_key: str = ""):
         return docker_env.DockerEnvironment(
             image="python:3.12-slim", cwd="/root", timeout=5, task_id="chown-back", persistent_filesystem=True,
             persist_across_processes=scenario.startswith("persist"), run_as_host_user=run_as_host_user,
+            shared_container_key=shared_key,
             volumes=[f"{nested_ro}:/root/.hermes/skills:ro"],
             extra_args=["-v", f"{shared}:/workspace/shared", *user_args])
-    env = _env()
+    env = _env("trusted-profiles" if scenario == "persist-shared" else "")
     if scenario.startswith("reclaim-fails"):
         assert record.exists(), calls
         retry_calls = _fake_docker(monkeypatch, security_options)
@@ -215,7 +216,7 @@ def test_root_container_teardown_hands_every_sandbox_mount_back_before_removal(
             docker_env.reap_orphan_containers(max_age_seconds=0)
             assert not os.path.exists(sandbox)
         else:
-            reattached = _env()
+            reattached = _env("trusted-profiles" if scenario == "persist-shared" else "")
             assert reattached._container_id == "fake-cid"
         if scenario == "persist-reap":
             docker_env.reap_orphan_containers(max_age_seconds=0)

@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -1184,7 +1185,13 @@ class DockerEnvironment(BaseEnvironment):
 
         owners = getattr(self, "_reuse_owners", None)
         if owners is not None:
-            lease = owners.claim(container_id, start)
+            try:
+                lease = owners.claim(container_id, start)
+            except (sqlite3.Error, OSError) as exc:
+                # A busy ownership database reads as no-reuse: the caller continues to
+                # the next candidate instead of aborting the whole attach.
+                logger.warning("Cannot claim reusable container %s: %s", container_id[:12], exc)
+                return False
             if lease is None:
                 return False
             self._reuse_lease = lease
@@ -1384,8 +1391,14 @@ class DockerEnvironment(BaseEnvironment):
         recovery fails so the caller surfaces the original error."""
         logger.warning("Container %s appears to be gone — attempting recovery", (self._container_id or "")[:12])
         lease = getattr(self, "_reuse_lease", None)
+        try:
+            self._release_runtime_owner(lease)
+        except (sqlite3.Error, OSError) as exc:
+            # A busy ownership database must not escape into recovery, and the lease is
+            # kept: the next run retries the release instead of orphans the row.
+            logger.error("Recovery: ownership database busy, deferring recreation: %s", exc)
+            return False
         self._reuse_lease = None
-        self._release_runtime_owner(lease)
         self._container_id = None
 
         try:
@@ -1394,7 +1407,7 @@ class DockerEnvironment(BaseEnvironment):
                 self._labels.get("hermes-task-id", ""),
                 self._labels.get("hermes-profile", ""),
                 self._labels.get(_EGRESS_LABEL_KEY, "off"), self._network)
-        except (RuntimeError, OSError, UnicodeError) as exc:
+        except (RuntimeError, OSError, UnicodeError, sqlite3.Error) as exc:
             logger.error("Recovery: cannot verify the saved Docker configuration: %s", exc)
             return False
 
@@ -1518,7 +1531,7 @@ class DockerEnvironment(BaseEnvironment):
         if environment_label := self._labels.get(_ENVIRONMENT_LABEL_KEY):
             filters.extend(["--filter", f"label={_ENVIRONMENT_LABEL_KEY}={environment_label}"])
         result = _docker_query(
-            [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
+            [self._docker_exe, "ps", "-a", "--no-trunc", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",
             nonzero="docker ps probe returned %d: %s — will start a fresh container")
         if result is None:

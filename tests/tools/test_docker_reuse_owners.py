@@ -3,11 +3,13 @@
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -239,3 +241,137 @@ def test_delayed_cleanup_cannot_release_a_later_recoverys_owner(monkeypatch):
     assert docker_env.reap_orphan_containers(max_age_seconds=0) == 1
     replacement.cleanup()
     assert replacement.wait_for_cleanup()
+
+
+def test_long_ids_are_reused_under_id_list_truncation(monkeypatch):
+    """``docker run`` reports the full 64-hex id while the daemon's id list shows 12
+    unless ``--no-trunc`` is given: the registry must still match them (#84969 review)."""
+    containers, _calls = _stateful_docker(monkeypatch, long_ids=True)
+    first = _make_dummy_env(persistent_filesystem=True, task_id="id-shape")
+    assert len(first._container_id) == 64
+    second = _make_dummy_env(persistent_filesystem=True, task_id="id-shape")
+    assert second._container_id == first._container_id
+    assert containers[first._container_id]["state"] == "running"
+    for env in (first, second):
+        env.cleanup()
+        assert env.wait_for_cleanup()
+
+
+def test_registry_namespace_survives_a_remount(tmp_path, monkeypatch):
+    """The namespace must not hash the mount device: the same store remounted (only
+    ``st_dev`` changed) keeps its identity; a copy on a new inode still differs (#84969 review)."""
+    store = ReuseOwners(tmp_path)
+    namespace = store.namespace
+    store_parent = tmp_path / "runtime"  # the directory whose stat feeds the namespace
+    real_stat = Path.stat
+
+    def remounted(self, *args, **kwargs):
+        result = real_stat(self, *args, **kwargs)
+        if self == store_parent:
+            return SimpleNamespace(st_dev=987654, st_ino=result.st_ino)
+        return result
+
+    monkeypatch.setattr(Path, "stat", remounted)
+    assert ReuseOwners(tmp_path).namespace == namespace
+
+
+def test_busy_ownership_database_defers_recovery_instead_of_raising(monkeypatch):
+    """A held BEGIN IMMEDIATE must fail recovery softly (False, lease kept), never escape
+    as OperationalError, and the retry after the lock frees succeeds (#84969 review)."""
+    containers, _calls = _stateful_docker(monkeypatch)
+    env = _make_dummy_env(persistent_filesystem=True)
+    store = env._reuse_owners
+    assert store is not None and env._reuse_lease is not None
+    containers.clear()  # the container is gone out-of-band
+    lease = env._reuse_lease
+    real_connect = sqlite3.connect
+    monkeypatch.setattr("tools.environments.docker_reuse_owners.sqlite3.connect",
+                        lambda *a, **k: real_connect(*a, timeout=0.2))
+    blocker = real_connect(store.path)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        assert env._recreate_container() is False
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert env._reuse_lease is lease  # kept for the next retry
+    assert env._recreate_container() is True
+    assert env._reuse_lease is not None
+    env.cleanup()
+    assert env.wait_for_cleanup()
+
+
+def test_reap_retires_rows_for_confirmed_missing_containers(tmp_path, monkeypatch):
+    """A superseded row whose container is confirmed gone is retired; a daemon that
+    cannot be reached keeps its row for a later sweep (#84969 review)."""
+    store = ReuseOwners(tmp_path)
+    labels = {"hermes-task-id": "t", "hermes-profile": "p", "hermes-egress": "off"}
+    lease = store.reserve("hermes-box", labels, "fp")
+    store.finish("hermes-box", "cid-1")
+    store.release(lease)
+    store.supersede(labels, "fp-new")
+
+    def absent(argv, **kwargs):
+        raise subprocess.CalledProcessError(1, argv, output="", stderr="Error: No such container: cid-1")
+
+    monkeypatch.setattr("tools.environments.docker_reuse_owners.run_capture", absent)
+    assert store.reap("/usr/bin/docker", 0, None) == 1
+    with store.transaction() as db:
+        assert db.execute("SELECT retired FROM containers WHERE name='hermes-box'").fetchone()[0] == 1
+
+    lease = store.reserve("hermes-box-2", labels, "fp")
+    store.finish("hermes-box-2", "cid-2")
+    store.release(lease)
+    store.supersede(labels, "fp-new")
+
+    def unavailable(argv, **kwargs):
+        raise subprocess.CalledProcessError(
+            1, argv, output="", stderr="Cannot connect to the Docker daemon at unix:///var/run/docker.sock")
+
+    monkeypatch.setattr("tools.environments.docker_reuse_owners.run_capture", unavailable)
+    assert store.reap("/usr/bin/docker", 0, None) == 0
+    with store.transaction() as db:
+        assert db.execute("SELECT retired FROM containers WHERE name='hermes-box-2'").fetchone()[0] == 0
+
+
+def test_reap_removes_without_holding_the_write_lock(tmp_path, monkeypatch):
+    """A slow stop/remove must not starve other registry processes: no write transaction
+    is held while Docker waits (#84969 review)."""
+    store = ReuseOwners(tmp_path)
+    labels = {"hermes-task-id": "t", "hermes-profile": "p", "hermes-egress": "off"}
+    lease = store.reserve("hermes-box", labels, "fp")
+    store.finish("hermes-box", "cid-1")
+    store.release(lease)
+    store.supersede(labels, "fp-new")
+
+    record = {"Id": "cid-1", "Name": "hermes-box",
+              "Config": {"Labels": {OWNER_LABEL: store.namespace, "hermes-runtime-fingerprint": "fp"}},
+              "State": {"Running": True}}
+    stop_entered, stop_release = threading.Event(), threading.Event()
+
+    def fake_run_capture(argv, **kwargs):
+        sub = argv[1]
+        if sub == "inspect":
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(record), stderr="")
+        if sub == "stop":
+            stop_entered.set()
+            assert stop_release.wait(5)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        if sub == "rm":
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        raise AssertionError(sub)
+
+    monkeypatch.setattr("tools.environments.docker_reuse_owners.run_capture", fake_run_capture)
+    monkeypatch.setattr("tools.environments.docker_reuse_owners.strip_sandbox_privileges", lambda *a, **k: None)
+    done: list[int] = []
+    worker = threading.Thread(target=lambda: done.append(store.reap("/usr/bin/docker", 0, None)), daemon=True)
+    worker.start()
+    assert stop_entered.wait(5)
+    probe = sqlite3.connect(store.path, timeout=1)  # would raise if reap held BEGIN IMMEDIATE
+    probe.execute("BEGIN IMMEDIATE")
+    probe.rollback()
+    probe.close()
+    stop_release.set()
+    worker.join(10)
+    assert not worker.is_alive()
+    assert done == [1]

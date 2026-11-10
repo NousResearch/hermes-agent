@@ -5278,10 +5278,13 @@ export interface CanonicalListParams {
   include_hidden?: boolean
   workspace?: string | null
   picker?: boolean
+  query?: string | null
+  cursor?: string | null
 }
 export interface CanonicalListResult {
   sessions: CanonicalSessionListRow[]
   scope: 'stored' | 'live'
+  next_cursor?: string | null
 }
 export interface CanonicalSessionListRow {
   session_id: string

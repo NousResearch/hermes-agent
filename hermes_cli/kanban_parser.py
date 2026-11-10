@@ -149,6 +149,12 @@ _BOARD_SPECS = [
 # Top-level ``hermes kanban <action>`` records, in ``--help`` order.
 _SPECS = [
     _cmd("init", help="Create kanban.db if missing (idempotent)"),
+    _cmd("access-resolution", [
+        _arg("--json-stdin", action="store_true",
+             help="Read one guarded version-1 request from standard input"),
+        _arg("--describe", action="store_true",
+             help="Describe the installed protocol and configured machine identity"),
+    ], help="Atomically audit and optionally resolve an exact capability block"),
     _cmd("boards", children=("boards_action", _BOARD_SPECS),
          help="Manage kanban boards (one board per project / workstream)",
          description=(

@@ -35,6 +35,42 @@ The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
 
+### Guarded access-resolution automation
+
+Trusted cross-host automation can audit or resolve one exact capability block with
+`hermes kanban access-resolution`. Configure a stable logical identity on every
+participating Hermes profile; the command deliberately does not infer a hostname:
+
+```yaml
+kanban:
+  machine_identity: macpro
+```
+
+Use `hermes kanban access-resolution --describe` to discover the installed protocol,
+configured identity, digest domain, and input limit without opening or initializing the
+Kanban database. Submit one version-1 request as a bounded JSON object on standard input:
+
+```bash
+hermes kanban access-resolution --json-stdin < request.json
+```
+
+The request binds its canonical SHA-256 digest to a lowercase UUID request ID, logical
+machine, task, assignee, blocked status, capability block kind, exact blocked event ID and
+timestamp, route/grant mode, category, owner, evidence or next action, author, and audit
+comment. `route` appends the attributed audit comment while preserving the block. `grant`
+appends the same audit and performs the ordinary parent-aware unblock in the same SQLite
+transaction. A grant requires a non-null evidence reference and no next action; a route
+requires the inverse.
+
+Success prints one compact JSON receipt. Reusing the same request ID and digest returns
+the stored receipt with `replayed: true` and creates no duplicate effect. Reusing an ID
+with different content fails with `request_id_conflict`; stale task or block authority
+fails with `authority_mismatch`; an identity mismatch fails with `machine_mismatch`.
+Malformed, oversized, duplicate-key, non-canonical Unicode, or digest-mismatched input is
+rejected before any board mutation. The mutation form is unavailable from fenced
+`delegate_task` child contexts. This command is a local transactional primitive, not a
+network transport or permission grant by itself.
+
 This is the shape that covers the workloads `delegate_task` can't:
 
 - **Research triage** — parallel researchers + analyst + writer, human-in-the-loop.

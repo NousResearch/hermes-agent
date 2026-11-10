@@ -46,16 +46,19 @@ permissions:
   contents: read
   pull-requests: write # needed by lint (PR comment) + supply-chain review_status
 
-# cancel-in-progress only ever applies to PR events. A push, a dispatch, and
-# above all a stable-release workflow_call run are never cancelled by a later
-# commit or a rerun of the same branch — the caller's own concurrency uses
-# github.run_id, so even a parent rerun cannot kill this child mid-flight.
+# cancel-in-progress applies to PR events and to manual dispatches on a non-main
+# branch: a re-dispatch on the same fix/debug branch replaces the stale run
+# instead of queuing behind it (dispatches share the ref's group, and a queued
+# run waited out the old run's slow upgrade/Windows legs). A push to main, a
+# dispatch on main and above all a stable-release workflow_call run are never
+# cancelled — the caller's own concurrency uses github.run_id, so even a parent
+# rerun cannot kill this child mid-flight.
 # Release (workflow_call with inputs.release) never cancels and never gets
 # cancelled: its group is github.run_id. PRs collapse per-PR; pushes use the
 # ref as before.
 concurrency:
   group: ci-${{ inputs.release == true && github.run_id || (github.event_name == 'pull_request' && github.event.pull_request.number || github.ref) }}
-  cancel-in-progress: ${{ inputs.release != true && github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ inputs.release != true && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main')) }}
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────

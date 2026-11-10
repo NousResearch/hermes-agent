@@ -160,8 +160,9 @@ jobs:
           python3 scripts/build_skills_index.py
           validate_index
 
-      - name: Extract skill metadata for dashboard
-        run: python3 website/scripts/extract-skills.py
+      # generate-skill-docs.py reads neither plugin output below, so it runs first with extract-skills.
+      - name: Extract skill metadata and regenerate per-skill docs pages + catalogs
+        run: just docs-generate
 
       # Star counts drive the catalog ranking. Same rule as the skills index: GitHub is only
       # probed by the scheduled skills-index run; deploys reuse its artifact (downloaded above
@@ -173,14 +174,10 @@ jobs:
       - name: Extract plugin catalog for the Plugins page
         run: python3 website/scripts/extract-plugins.py
 
-      - name: Regenerate per-skill docs pages + catalogs
-        run: python3 website/scripts/generate-skill-docs.py
-
       - name: Install dependencies
         uses: ./.github/actions/retry
         with:
-          command: npm ci
-          working-directory: website
+          command: just docs-install
 
       - name: Build Docusaurus
         run: npm run build

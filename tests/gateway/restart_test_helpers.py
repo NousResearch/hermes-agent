@@ -89,7 +89,6 @@ def make_restart_runner(
     runner._session_model_overrides = {}
     runner._session_sources = OrderedDict()
     runner._session_sources_max = 512
-    runner._shutdown_all_gateway_honcho = lambda: None
     runner._update_runtime_status = MagicMock()
     runner._queue_or_replace_pending_event = GatewayRunner._queue_or_replace_pending_event.__get__(
         runner, GatewayRunner

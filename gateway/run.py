@@ -34,9 +34,10 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
-    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
+from gateway.run_status_filter import _status_template_to_regex, hidden_outside_dm
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
@@ -103,7 +104,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
-    rf"|{re.escape(COMPACTION_DONE_STATUS)}"
+    rf"|{re.escape(COMPACTION_DONE_STATUS)}|{re.escape(COMPRESSION_REFUSED_WOULD_GROW_WARNING)}"
     r")",
     re.IGNORECASE | re.DOTALL)
 
@@ -314,14 +315,6 @@ def _record_hygiene_cooldown(
         recorder(session_id, time.time() + cooldown_seconds, error)
     except Exception as exc:
         logger.debug("session hygiene cooldown persist failed: %s", exc)
-
-
-def _status_template_to_regex(template: str) -> str:
-    """Compile a compression status template constant into a regex source.
-
-    Literal text is escaped verbatim (wording drift can't diverge from the matcher); ``{field}`` -> numeric."""
-    parts = re.split(r"\{[^{}]*\}", template)
-    return r"[\d,]+".join(re.escape(part) for part in parts)
 
 
 # ROUTINE compression progress statuses, derived from the SAME template constants the emit sites format.
@@ -593,10 +586,10 @@ def _format_exec_approval_fallback(
     allow_session: bool = True, smart_denied: bool = False) -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
-    steps a surface without buttons needs."""
+    steps a surface without buttons needs. The command is never cut: ``/approve`` must only ever
+    answer a command the user could read in full (#62359)."""
     from gateway.platforms.base_exec_approval import (
         approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
-    cmd_preview = BasePlatformAdapter._truncate_preview(command, BasePlatformAdapter._EA_CMD_BUDGET)  # as on a card
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
@@ -607,7 +600,7 @@ def _format_exec_approval_fallback(
             choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
     return (
-        t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
+        t("gateway.exec_approval.text_body", heading=heading, command=command,  # whole: send() splits it
           reason_label=ea_reason_label_text(), reason=description)
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])
@@ -721,15 +714,18 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _prepare_gateway_status_message(platform: Any, event_type: str, message: str, chat_type: Any = "dm") -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
-    Local/CLI keep the raw diagnostic stream; messaging surfaces drop transient aux/compression noise."""
+    Local/CLI keep the raw diagnostic stream; messaging surfaces drop transient aux/compression noise, and
+    non-DM chats drop DM-only warnings (gateway/run_status_filter.py)."""
     text = str(message or "").strip()
     if not text:
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
+    if hidden_outside_dm(chat_type, str(message or "")):
+        return None
 
     text = _redact_gateway_user_facing_secrets(text)
     # Opt-in `compression.progress_notices` lets ROUTINE (template-derived) progress through; other noise stays.
@@ -1561,8 +1557,6 @@ def _planned_restart_notification_pending() -> bool:
 
 # Gateway marker so a lazily imported cli.py load_cli_config() doesn't clobber TERMINAL_CWD.
 os.environ["_HERMES_GATEWAY"] = "1"
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
 # The PROCESS's own home, never an import-time ContextVar: a multiplexed backend (``hermes serve``)
@@ -3957,6 +3951,7 @@ class GatewayRunner(
             user_id=str(source.user_id) if source.user_id else "",
             user_id_alt=str(source.user_id_alt) if source.user_id_alt else "",
             user_name=str(source.user_name) if source.user_name else "",
+            actor_id=context.actor_user_id, actor_name=context.actor_user_name, turn_event=context.turn_event,  # None: route user
             scope_id=str(getattr(source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(source, "parent_chat_id", "") or ""),
             session_key=context.session_key,
@@ -3965,8 +3960,7 @@ class GatewayRunner(
             session_id=context.session_id or "",
             message_id=str(source.message_id) if source.message_id else "",
             profile=getattr(source, "profile", "") or "",
-            async_delivery=_async_delivery,
-            cron_session="", session_history_delivery=_history_delivery)
+            async_delivery=_async_delivery, cron_session="", session_history_delivery=_history_delivery)
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

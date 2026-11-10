@@ -283,7 +283,7 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     assert result.amount_usd is not None
 
 
-@pytest.mark.parametrize("bare", ["claude-opus-5", "claude-opus-5-5"])
+@pytest.mark.parametrize("bare", ["claude-opus-5", "claude-opus-5-5", "claude-fable-5-2"])
 @pytest.mark.parametrize("scope", ["", "us.", "global."])
 def test_bedrock_claude_opus_5_prices_like_direct_anthropic(bare, scope):
     """Regression for #100848: Bedrock bills Claude at Anthropic's per-token

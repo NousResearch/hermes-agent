@@ -252,12 +252,13 @@ def _inject_session_context_env(env: dict) -> None:
     every name :func:`_scrub_credentials` strips (Tier 1, incl. backend ``strip_env_keys``, and
     Tier 2), so a value never puts back a credential the scrub removed; ``None`` unsets a name."""
     try:
-        from gateway.session_context import _UNSET, _VAR_MAP, session_context_engaged
+        from gateway.session_context import (
+            _UNSET, _VAR_MAP, _bound_session_value, session_context_engaged)
     except Exception:
         return
     _engaged = session_context_engaged()
-    for var_name, var in _VAR_MAP.items():
-        value = var.get()
+    for var_name in _VAR_MAP:
+        value = _bound_session_value(var_name)
         if value is not _UNSET:
             env[var_name] = "" if value is None else str(value)
         elif _engaged:

@@ -227,6 +227,9 @@ def _maybe_title_session_at_turn_start(
     platform = str(getattr(agent, "platform", "") or "").lower()
     if platform in _UNTITLED_PLATFORMS:
         return
+    from agent.oneshot_footprint import agent_is_oneshot
+    if agent_is_oneshot(agent):  # nothing shows a one-shot's title, and the call is a second paid request
+        return
     try:
         from agent.message_content import flatten_message_text
         from agent.title_generator import apply_subagent_title, maybe_auto_title

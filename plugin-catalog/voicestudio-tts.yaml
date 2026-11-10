@@ -6,8 +6,9 @@ description: >-
   auto-spoken, in the user's own voices from the local VoiceStudio app, per profile. Reads saved
   voices from GET /profiles and synthesizes through POST /generate; /voicestudio refresh writes
   those names into the manifest's choices list, which turns the voice setting into a dropdown.
-  Disclosure — sends only reply text to the configured local server (default
-  http://127.0.0.1:3900, plain HTTP); no credentials, no telemetry, no other network calls, and no
+  Disclosure — sends the reply text, the voice id (profile_id) and the engine name when one is
+  configured to the local server (default http://127.0.0.1:3900, plain HTTP), and reads the voice
+  list from that same server; no credentials, no telemetry, no other network calls, and no
   self-update of code. Rewrites only the choices list inside its own plugin.yaml, and only on the
   user's explicit command.
 maintainer: EternalShade3D

@@ -669,6 +669,6 @@ def test_completion_spawn_failure_does_not_spend_retry_budget(
     if prior_attempts is None:
         assert not record.exists(), "an unstarted child consumed a fresh retry budget"
     else:
-        assert record.read_text(encoding="utf-8") == f"{prior_attempts}\n"
+        assert record.read_text(encoding="utf-8-sig") == f"{prior_attempts}\n"
         assert record.stat().st_mtime == 5.0, "a pre-spawn failure restarted the backoff clock"
     assert pending.is_file(), "the unrun tail's pending obligation was lost"

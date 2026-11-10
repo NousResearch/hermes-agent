@@ -2,26 +2,23 @@ name: hermes-room
 repo: https://github.com/adenijiridwan43/hermes-room
 sha: b2f7b250a6fbac84d67942f63a181c9d267e6303
 description: >-
-  Untrusted-content sanitizer for Hermes tool output. A stdlib-only
-  deterministic Layer 1 washes hidden zero-width/bidi/control characters,
-  ANSI escapes, hidden HTML elements/comments and script/style payloads,
-  and masks leaked secrets (AWS/GitHub/GitLab/Slack/OpenAI/Google keys,
-  JWTs, private-key blocks, generic password=/secret= assignments) before
-  anything reaches the model. A Layer 2 host-model reviewer
-  (ctx.llm.complete_structured, your active model, no provider/model
-  override, no extra key) runs only on suspicion — 20s timeout, 800
-  tokens, fails open to Layer 1. Cleaned output carries an [UNTRUSTED]
-  header; every change yields a local JSONL Trust Receipt (SHA-256, rule
-  IDs, counts, reviewer verdict — never raw content) via trust_receipt /
-  trust_report tools. Hook: transform_tool_result.
-  Disclosure — reads only tool-output text; no network beyond the user's
-  own provider call via ctx.llm (Mode 1); no shell, no background
-  processes, no telemetry; no credentials required or read (requires_env
-  is empty); writes solely to <HERMES_HOME>/hermes-room/receipts.jsonl
-  (hashes, rule IDs and counts, no raw content, local only); never throws
-  into the tool loop (fail-open); no auto-approval, no wallet/env access.
-  Any injection-pattern SUBSTRING it flags (e.g. "developer mode",
-  "exfiltrate") is data-washing, not instruction-following.
+  Hermes Room washes untrusted web, email, file and tool output before
+  Hermes reads it: deterministically, with model help for semantic attacks,
+  and with receipts you can audit. Layer 1 (always, local, stdlib-only)
+  strips zero-width/bidi/control characters, ANSI escapes and hidden-HTML
+  payloads, and masks leaked secrets (AWS/GitHub/GitLab/Slack/OpenAI/Google
+  keys, JWTs, private-key blocks, password=/secret= assignments). Layer 2
+  runs only when Layer 1 flags something: a host-model reviewer via
+  ctx.llm.complete_structured, your active Hermes model - no provider/model
+  override, no extra API key - 20s timeout, 800 tokens, fail-open to
+  Layer 1. Every change yields a local JSONL Trust Receipt (SHA-256, rule
+  IDs, counts, reviewer verdict, never raw content): trust_receipt shows
+  what changed, trust_report exports Markdown.
+  Disclosure - reads only tool-output text; no network beyond the user's
+  own provider call via ctx.llm; no shell, no background processes, no
+  telemetry; no credentials required (requires_env is empty); writes solely
+  to <HERMES_HOME>/hermes-room/receipts.jsonl (hashes/counts only, local);
+  fails open, never blocks or breaks the tool loop.
 maintainer: adenijiridwan43
 tier: community
 category: tools

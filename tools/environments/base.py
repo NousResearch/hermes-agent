@@ -357,6 +357,9 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         self._pipe_marker = _pipe_marker(self._session_id)
         self._snapshot_ready = False
         self._snapshot_passthrough_names: set[str] = set()
+        # Names live per-turn values have answered for in this environment (see
+        # _snapshot_excluded_turn_names): never persisted into a resumed session's snapshot.
+        self._snapshot_turn_names: set[str] = set()
         # True when login bash is unusable (e.g. broken Git-for-Windows startup)
         # so execute() must fall back to non-login ``bash -c``, not ``bash -l``.
         self._prefer_nonlogin = False
@@ -440,6 +443,22 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         digest = hashlib.sha256(task_id.encode()).hexdigest()[:16]
         return f"{self._snapshot_path[:-len('.sh')]}-{digest}.sh"
 
+    def _snapshot_excluded_turn_names(self) -> tuple[str, ...]:
+        """The per-turn names (``agent.session_client_env``) this command's process env answers for.
+        They are pinned across the snapshot source and kept out of its dump: a persistent session
+        writes its snapshot once and re-sources it on every later command, so a value captured on
+        an earlier turn would otherwise override the fresh one — a resumed session's second run
+        would read the first run's id and credential instead of its own (a mutation then carries a
+        dead run id, or is attributed to the wrong run). Monotonic for the environment's lifetime:
+        a later turn that sends no value for a name must still unset it, and a turn-scoped value
+        must never leak into the snapshot a later session sources."""
+        try:
+            from agent.session_client_env import bound_turn_env
+            self._snapshot_turn_names.update(bound_turn_env())
+        except Exception:
+            logger.debug("Could not read the turn environment for the session snapshot", exc_info=True)
+        return tuple(sorted(self._snapshot_turn_names))
+
     def _snapshot_script_kwargs(self, cwd: str, snap: str | None = None) -> dict:
         """Quoting inputs shared by the bootstrap and per-command wrapper scripts.
         ``_quote_cwd_for_cd`` / ``_quote_shell_path`` (not bare shlex.quote) let the Windows
@@ -456,7 +475,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         under ``bash -l``. On failure, fall back to ``bash -l`` per command — unless a non-login
         probe shows login bash itself is dead, in which case prefer ``bash -c``."""
         bootstrap = _snapshot_bootstrap_script(
-            excluded_names=self._snapshot_excluded_passthrough_names(), **self._snapshot_script_kwargs(self.cwd))
+            excluded_names=(*self._snapshot_excluded_passthrough_names(), *self._snapshot_excluded_turn_names()),
+            **self._snapshot_script_kwargs(self.cwd))
         try:
             proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
@@ -516,6 +536,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         return _wrap_command_script(
             command,
             passthrough_names=self._snapshot_excluded_passthrough_names(),
+            turn_names=self._snapshot_excluded_turn_names(),
             snapshot_ready=self._snapshot_ready,
             persist_env=self._persist_env,
             pipe_marker=self._pipe_marker,

@@ -1,22 +1,22 @@
 name: model-explainer
 repo: https://github.com/tuancookiez-hub/hermes-model-explainer
-sha: 58157322e0dd955383bf5db7397f0e9da1b923ae
+sha: 643eb0dc4b1acc85bcb47cf37a5bf490572472e1
 title: Model Explainer
-description: "A Models page for Hermes Desktop built around your own model picker: choose a model to see its Hermes Index score, cost per task, context and output limits, price, abilities and your own measured speed and spend, with a score-against-cost frontier chart, and compare up to four side by side. Every value cites a source and date. Disclosure — one GET of a public JSON data file on raw.githubusercontent.com, at most daily and only when the page opens (can be turned off; the bundled copy works offline; the file is validated data, never code); reads model.options and the focused session's model and usage figures; writes plugin storage only. Desktop only: no agent tools, hooks, middleware or env vars."
+description: "A Models page for Hermes Desktop built around your own model picker: choose a model to see its Hermes Index score, cost per task, context and output limits, price, abilities and your own measured speed and spend, with a score-against-cost frontier chart, and compare up to four side by side. Every value cites a source and date. Disclosure — one GET of a public JSON data file on raw.githubusercontent.com, at most daily and only when the page opens (can be turned off; the bundled copy works offline; the file is validated data, never code); reads model.options and the focused session's model and usage figures; writes plugin storage, and switches the chat model only when the user presses Use this model (the same config.set request as the built-in picker, scoped to the open chat). Desktop only: no agent tools, hooks, middleware or env vars."
 maintainer: tuancookiez-hub
 tier: community
 category: models
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/tuancookiez-hub/hermes-model-explainer#readme
-version: "0.1.0"
-image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/58157322e0dd955383bf5db7397f0e9da1b923ae/docs/banner.png
+version: "0.2.0"
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/643eb0dc4b1acc85bcb47cf37a5bf490572472e1/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/58157322e0dd955383bf5db7397f0e9da1b923ae/docs/screenshots/01-details.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/58157322e0dd955383bf5db7397f0e9da1b923ae/docs/screenshots/02-frontier-and-suites.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/58157322e0dd955383bf5db7397f0e9da1b923ae/docs/screenshots/03-sources.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/58157322e0dd955383bf5db7397f0e9da1b923ae/docs/screenshots/04-compare.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/58157322e0dd955383bf5db7397f0e9da1b923ae/docs/screenshots/05-no-data.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/58157322e0dd955383bf5db7397f0e9da1b923ae/docs/screenshots/06-light-theme.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/643eb0dc4b1acc85bcb47cf37a5bf490572472e1/docs/screenshots/01-details.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/643eb0dc4b1acc85bcb47cf37a5bf490572472e1/docs/screenshots/02-frontier-and-suites.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/643eb0dc4b1acc85bcb47cf37a5bf490572472e1/docs/screenshots/03-sources.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/643eb0dc4b1acc85bcb47cf37a5bf490572472e1/docs/screenshots/04-compare.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/643eb0dc4b1acc85bcb47cf37a5bf490572472e1/docs/screenshots/05-no-data.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-model-explainer/643eb0dc4b1acc85bcb47cf37a5bf490572472e1/docs/screenshots/06-light-theme.png
 platforms: []
 capabilities:
   provides_tools: []

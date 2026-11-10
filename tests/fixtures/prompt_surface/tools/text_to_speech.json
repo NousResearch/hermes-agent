@@ -1,5 +1,5 @@
 {
-  "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
+  "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
   "name": "text_to_speech",
   "parameters": {
     "properties": {
@@ -8,7 +8,7 @@
         "type": "string"
       },
       "output_path": {
-        "description": "Optional custom file path to save the audio. Defaults to ~/.hermes/audio_cache/<timestamp>.mp3",
+        "description": "Optional custom file path to save the audio. Defaults to ~/.hermes/cache/audio/<timestamp>.mp3",
         "type": "string"
       },
       "speed": {

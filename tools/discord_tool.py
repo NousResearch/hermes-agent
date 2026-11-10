@@ -202,16 +202,6 @@ def _fetch_capabilities(token: str) -> dict[str, Any]:
     return caps
 
 
-def _detect_capabilities(token: str, *, force: bool = False) -> dict[str, Any]:
-    """Blocking detection via GET /applications/@me, cached per token (the warm-up path;
-    schema builds use the non-blocking variant). ``force`` re-fetches."""
-    if token in _capability_cache and not force:
-        return _capability_cache[token]
-    caps = _fetch_capabilities(token)
-    _capability_cache[token] = caps
-    return caps
-
-
 def _reset_capability_cache() -> None:
     """Test hook: clear the detection cache."""
     global _capability_cache, _capability_bg_started

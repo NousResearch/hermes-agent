@@ -47,7 +47,7 @@ def test_second_install_for_same_profile_is_refused(monkeypatch):
         install.install_packages(ask_password=lambda: "pw", on_line=lambda _l: None)
     gate.set()
     worker.join(5)
-    install.assert_not_running()  # slot released once the run finishes
+    install.release(install.claim())  # slot released once the run finishes
 
 
 def test_claim_is_atomic_and_refuses_a_second_claim():

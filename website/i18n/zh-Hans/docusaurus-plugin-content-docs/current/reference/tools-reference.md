@@ -198,7 +198,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
-| `text_to_speech` | 将文本转换为语音音频。返回平台以语音消息形式传递的 `MEDIA:` 路径。在 Telegram 上以语音气泡播放，在 Discord/WhatsApp 上作为音频附件。在 CLI 模式下保存到 `~/voice-memos/`。语音和提供者… | — |
+| `text_to_speech` | 将文本转换为语音音频。返回平台以语音消息形式传递的 `MEDIA:` 路径。在 Telegram 上以语音气泡播放，在 Discord/WhatsApp 上作为音频附件。语音和提供者… | — |
 
 ## `discord` 工具集
 

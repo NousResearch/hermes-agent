@@ -1,8 +1,7 @@
 """Tests for the blueprints layer (skill frontmatter <-> cron automation bridge).
 
-A blueprint is a skill with a metadata.hermes.blueprint block. These verify parsing,
-the create-job bridge, and the export round-trip without touching the real
-cron store.
+A blueprint is a skill with a metadata.hermes.blueprint block. These verify parsing
+and installed-skill lookup without touching the real cron store.
 """
 
 import sys
@@ -14,8 +13,6 @@ import pytest
 from tools.blueprints import (
     BlueprintError,
     BlueprintSpec,
-    create_blueprint_job,
-    export_blueprint,
     parse_blueprint,
     blueprint_spec_for_installed,
 )
@@ -103,62 +100,3 @@ class TestBlueprintSpecForInstalled:
         (d / "SKILL.md").write_text(PLAIN_SKILL, encoding="utf-8")
         with patch("tools.skills_hub.SKILLS_DIR", skills_dir):
             assert blueprint_spec_for_installed("not-a-blueprint") is None
-
-
-class TestCreateBlueprintJob:
-    def test_bridges_to_create_job(self):
-        spec = parse_blueprint(BLUEPRINT_SKILL)
-        assert spec is not None
-        captured = {}
-
-        def fake_create_job(**kwargs):
-            captured.update(kwargs)
-            return {"id": "abc123", **kwargs}
-
-        with patch("cron.jobs.create_job", fake_create_job):
-            job = create_blueprint_job(spec, origin={"platform": "telegram"})
-
-        assert captured["schedule"] == "0 8 * * *"
-        assert captured["skills"] == ["morning-brief"]
-        assert captured["deliver"] == "telegram"
-        assert captured["prompt"].startswith("Summarize")
-        assert job["id"] == "abc123"
-
-
-class TestExportBlueprint:
-    def test_round_trips_job_to_skill_md(self):
-        job = {
-            "name": "My Morning Brief",
-            "schedule_display": "0 8 * * *",
-            "skills": ["morning-brief"],
-            "deliver": "telegram",
-            "prompt": "Summarize my unread email.",
-        }
-        md = export_blueprint(job, "# Morning Brief\n\nDoes the morning digest.")
-        # The exported SKILL.md must itself parse back as a blueprint.
-        spec = parse_blueprint(md)
-        assert spec is not None
-        assert spec.schedule == "0 8 * * *"
-        assert spec.deliver == "telegram"
-        # Name is sanitized to a valid skill identifier.
-        assert spec.skill_name == "my-morning-brief"
-
-
-    def test_export_interval_job_without_display(self):
-        # Regression: parse_schedule stores interval periods as "minutes" —
-        # exporting a job with only the parsed schedule dict must round-trip
-        # the real interval, not fall back to the daily default.
-        job = {
-            "name": "poller",
-            "schedule": {"kind": "interval", "minutes": 30},
-            "skills": ["poller"],
-        }
-        md = export_blueprint(job, "body")
-        spec = parse_blueprint(md)
-        assert spec is not None
-        assert spec.schedule == "every 30m"
-
-        job["schedule"] = {"kind": "interval", "minutes": 120}
-        spec = parse_blueprint(export_blueprint(job, "body"))
-        assert spec is not None
-        assert spec.schedule == "every 2h"

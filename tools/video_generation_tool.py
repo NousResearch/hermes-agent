@@ -135,7 +135,7 @@ _BOOL_WORDS = {"true": True, "1": True, "yes": True, "on": True,
 
 def _coerce_int(value: Any) -> Optional[int]:
     try:
-        return None if value is None or value == "" else int(value)
+        return None if value is None or value == "" or isinstance(value, bool) else int(value)
     except (TypeError, ValueError):
         return None
 

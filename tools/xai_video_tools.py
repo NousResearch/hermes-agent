@@ -28,7 +28,6 @@ def _clean_string(value: Any) -> Optional[str]:
 
 
 def _coerce_int(value: Any) -> Optional[int]:
-    # bool is rejected (unlike video_generation_tool._coerce_int) so duration=true never becomes 1.
     if value is None or isinstance(value, bool):
         return None
     try:

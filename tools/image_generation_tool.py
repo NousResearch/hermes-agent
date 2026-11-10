@@ -730,14 +730,6 @@ def _dispatch_to_plugin_provider(
     return _provider_result(result, "Provider returned a non-dict result")
 
 
-def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
-    """Return ``model_id`` when it is one of the Krea plugin's model ids, else ``None``."""
-    from plugins.image_gen.krea import KREA_MODEL_IDS
-
-    candidate = model_id.strip() if isinstance(model_id, str) else None
-    return candidate if candidate in KREA_MODEL_IDS else None
-
-
 def _managed_model_plugin() -> Optional[tuple]:
     """``(plugin_name, model_id)`` when the stored selection routes to the Krea or Portal gateway
     (rule: :func:`tools.image_generation_managed.managed_route`), else ``None`` for the FAL path."""

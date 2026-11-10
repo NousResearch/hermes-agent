@@ -1556,6 +1556,7 @@ class TestStreamTtsTempfileFallback:
         import wave
         import tools.tts_tool as tts_mod
         import tools.voice_mode as vm
+        import tools.tts_tool_speaker as speaker_mod
         from tools.tts_tool_speaker import stream_tts_to_speaker
 
         # Fake registry streamer so resolve_streaming_provider yields chunked
@@ -1581,7 +1582,7 @@ class TestStreamTtsTempfileFallback:
         events = []  # ordered log of ("close", name) / ("play", path)
 
         # Spy on NamedTemporaryFile to record when the handle is closed.
-        real_ntf = tts_mod.tempfile.NamedTemporaryFile
+        real_ntf = speaker_mod.tempfile.NamedTemporaryFile
 
         def _spy_ntf(*args, **kwargs):
             f = real_ntf(*args, **kwargs)
@@ -1594,7 +1595,7 @@ class TestStreamTtsTempfileFallback:
             f.close = _tracked_close
             return f
 
-        monkeypatch.setattr(tts_mod.tempfile, "NamedTemporaryFile", _spy_ntf)
+        monkeypatch.setattr(speaker_mod.tempfile, "NamedTemporaryFile", _spy_ntf)
 
         played = []
 

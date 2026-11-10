@@ -578,10 +578,6 @@ class _RecorderBase:
         return self._recording
 
     @property
-    def elapsed_seconds(self) -> float:
-        return time.monotonic() - self._start_time if self._recording else 0.0
-
-    @property
     def current_rms(self) -> int:
         """Current input RMS level (0-32767), updated each audio chunk."""
         return self._current_rms

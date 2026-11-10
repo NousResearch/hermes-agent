@@ -48,10 +48,6 @@ HELD_NOT_SENT = "runtime_coordination_required"
 AUTO_RETRYABLE = frozenset({RUNTIME_OFFLINE, DELIVERY_TIMEOUT, PROVIDER_RATE_LIMIT, PROVIDER_SERVER_ERROR})
 
 
-def is_auto_retryable(reason: str) -> bool:
-    return reason in AUTO_RETRYABLE
-
-
 # Retry session policy: a retried bot turn NEVER mints a fresh session. Transient
 # classes resume as-is; context_overflow runs context compression (the one
 # sanctioned context mutation) on the same session first; everything else

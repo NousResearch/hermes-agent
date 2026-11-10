@@ -88,8 +88,11 @@ class TestUnifiedDispatch:
         assert result["success"] is False
         assert result["error_type"] == "provider_not_registered"
 
-
-
+    def test_boolean_duration_is_not_a_one_second_request(self):
+        provider = _RecordingProvider()
+        video_gen_registry.register_provider(provider)
+        assert self._run({"prompt": "a dog", "duration": True}, configured="fake")["success"] is True
+        assert provider.last_kwargs.get("duration") is None
 
     def test_upscale_in_schema_and_forwarded(self):
         """`upscale` is advertised per-capability by the dynamic builder

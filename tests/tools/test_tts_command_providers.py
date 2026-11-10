@@ -29,7 +29,6 @@ from tools.tts_command_provider import (
     _get_command_tts_timeout,
     _get_named_provider_config,
     _is_command_provider_config,
-    _iter_command_providers,
     render_command_template as _render_command_tts_template,
     run_command_provider as _run_command_tts,
     shell_quote_context as _shell_quote_context,
@@ -183,24 +182,6 @@ class TestIsCommandProviderConfig:
 
     def test_type_mismatch_is_false(self):
         assert _is_command_provider_config({"type": "native", "command": "x"}) is False
-
-
-# ---------------------------------------------------------------------------
-# _iter_command_providers
-# ---------------------------------------------------------------------------
-
-class TestIterCommandProviders:
-    def test_iterates_only_user_command_providers(self):
-        cfg = {
-            "providers": {
-                "openai": {"type": "command", "command": "shouldnt show up"},
-                "piper-cli": {"type": "command", "command": "piper-cli"},
-                "voxcpm": {"type": "command", "command": "voxcpm"},
-                "broken": {"type": "command", "command": ""},
-            },
-        }
-        names = sorted(name for name, _ in _iter_command_providers(cfg))
-        assert names == ["piper-cli", "voxcpm"]
 
 
 # ---------------------------------------------------------------------------

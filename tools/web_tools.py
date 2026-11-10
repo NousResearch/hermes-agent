@@ -211,8 +211,7 @@ def _xai_available() -> bool:
 
 # Built-in backends -> cheap availability probes; any other name is a plugin provider resolved via the
 # registry's ``is_available()``. Lambdas so test patches of module-level helpers (_ddgs_package_importable,
-# check_firecrawl_api_key) are honored at call time. ``xai`` is probed via has_xai_credentials(), not a
-# registered provider, though the registry's _LEGACY_PREFERENCE omits it — drop it if xai ever registers.
+# check_firecrawl_api_key) are honored at call time.
 _BUILTIN_AVAILABILITY = {
     "exa": lambda: _has_env("EXA_API_KEY"),
     "parallel": lambda: _has_env("PARALLEL_API_KEY"),
@@ -235,7 +234,7 @@ def _is_backend_available(backend: str) -> bool:
 
     For plugin-registered backends (any name outside :data:`_LEGACY_WEB_BACKENDS`), availability is
     delegated to the provider's ``is_available()`` via the web_search_registry. This is the single
-    chokepoint through which ``_get_backend``, ``_get_capability_backend``, and ``check_web_api_key`` all
+    chokepoint through which ``_get_backend`` and ``check_web_api_key``
     resolve availability — fixing custom-provider discovery for every caller at once (issues #28651, #31873,
     #32698). Built-in backends keep their cheap hardcoded probes below.
     """

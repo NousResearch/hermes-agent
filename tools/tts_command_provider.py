@@ -313,13 +313,6 @@ _resolve_command_provider_config = partial(_resolve_command_config, reserved=BUI
 _get_command_tts_timeout = partial(_command_timeout, default=DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS)
 
 
-def _iter_command_providers(tts_config: dict[str, Any]):
-    """Yield (name, config) pairs for every declared command-type provider."""
-    for name, cfg in _get_provider_section(tts_config, "providers").items():
-        if isinstance(name, str) and name.lower() not in BUILTIN_TTS_PROVIDERS and _is_command_provider_config(cfg):
-            yield name, cfg
-
-
 def _get_command_tts_output_format(config: dict[str, Any], output_path: Optional[str] = None) -> str:
     """Validated output format: the output path's suffix wins, then ``format``/``output_format``."""
     suffix = Path(output_path).suffix.lower().strip().lstrip(".") if output_path else ""

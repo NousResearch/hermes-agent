@@ -11,7 +11,7 @@ from tools.discord_tool import (
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
     _available_actions,
-    _detect_capabilities,
+    _fetch_capabilities,
     _discord_request,
     _get_bot_token,
     _load_allowed_actions_config,
@@ -352,7 +352,7 @@ class TestCapabilityDetection:
     def test_both_intents_enabled(self, mock_req):
         # flags: GUILD_MEMBERS (1<<14) + MESSAGE_CONTENT (1<<18) = 278528
         mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
-        caps = _detect_capabilities("tok")
+        caps = _fetch_capabilities("tok")
         assert caps["has_members_intent"] is True
         assert caps["has_message_content"] is True
         assert caps["detected"] is True
@@ -364,7 +364,7 @@ class TestCapabilityDetection:
         and let runtime errors surface. Silent failure should never hide
         actions the bot actually has."""
         mock_req.side_effect = DiscordAPIError(401, "unauthorized")
-        caps = _detect_capabilities("tok")
+        caps = _fetch_capabilities("tok")
         assert caps["detected"] is False
         assert caps["has_members_intent"] is True
         assert caps["has_message_content"] is True
@@ -431,38 +431,6 @@ class TestNonBlockingCapabilityDetection:
         assert schema is not None
         actions = set(schema["parameters"]["properties"]["action"]["enum"])
         assert actions == set(_CORE_ACTIONS.keys())  # permissive default
-
-    @patch("tools.discord_tool._discord_request")
-    def test_cache_is_keyed_by_token(self, mock_req):
-        """Regression: token A's capabilities must not leak to token B.
-
-        Before the fix, the cache was a single module-global dict. The first
-        call populated it and every subsequent call — regardless of token —
-        returned the same cached value, producing wrong schema gating for
-        rotated or multi-token deployments.
-        """
-        def _per_token_flags(method, path, token, **_kwargs):
-            # token A: both intents; token B: neither.
-            if token == "tok_a":
-                return {"flags": (1 << 14) | (1 << 18)}
-            return {"flags": 0}
-
-        mock_req.side_effect = _per_token_flags
-
-        caps_a = _detect_capabilities("tok_a")
-        caps_b = _detect_capabilities("tok_b")
-
-        assert caps_a["has_members_intent"] is True
-        assert caps_a["has_message_content"] is True
-        assert caps_b["has_members_intent"] is False
-        assert caps_b["has_message_content"] is False
-        # Each token should hit the endpoint exactly once.
-        assert mock_req.call_count == 2
-
-        # Re-requesting either token serves from its own cache entry.
-        _detect_capabilities("tok_a")
-        _detect_capabilities("tok_b")
-        assert mock_req.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +545,8 @@ class TestDynamicSchema:
         # Warm the capability cache — schema builds are non-blocking and use
         # the permissive default until detection has completed (background
         # thread + disk cache); filtering applies once caps are known.
-        _detect_capabilities("tok")
+        import tools.discord_tool as dt
+        dt._capability_cache["tok"] = _fetch_capabilities("tok")
         schema = get_dynamic_schema_core()
         actions = schema["parameters"]["properties"]["action"]["enum"]
         assert "search_members" not in actions

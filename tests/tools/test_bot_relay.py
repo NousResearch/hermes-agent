@@ -640,7 +640,7 @@ def test_pre_upgrade_claim_settles_unknown_instead_of_stranding_its_waiter(root)
     """A claimed envelope from the old lane (no ``canonical_delivery_v1``) is never replayed into the
     authority, but its waiter must still resolve: once the old drain's re-offer point passes it gets
     a terminal ``unknown`` reply (not auto-retryable) and is never handed out again."""
-    from tools.bot_failure_reasons import UNKNOWN, is_auto_retryable
+    from tools.bot_failure_reasons import AUTO_RETRYABLE, UNKNOWN
 
     base = bot_relay._ensure_dirs(root)
     legacy = {"id": "a" * 32, "created_at": int(_time2.time()) - 60, "from_profile": "default",
@@ -658,7 +658,7 @@ def test_pre_upgrade_claim_settles_unknown_instead_of_stranding_its_waiter(root)
     _os2.utime(path, (claimed_at, claimed_at))
     assert bot_relay.claim_pending_envelopes(root) == []
     reply = json.loads(reply_path.read_text(encoding="utf-8"))
-    assert reply["reason"] == UNKNOWN and not is_auto_retryable(reply["reason"])
+    assert reply["reason"] == UNKNOWN and reply["reason"] not in AUTO_RETRYABLE
     assert reply["error"] and not reply["reply"]
 
 

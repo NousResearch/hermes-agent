@@ -2,13 +2,11 @@
 
 ``tts.provider`` in config.yaml is the only backend selector: the
 model-facing ``text_to_speech`` schema must not advertise a per-call
-``provider`` override, and a per-call value that disagrees with the
-configured provider is ignored (with a warning) instead of rerouting
-speech to another vendor.
+``provider`` override, and the registered handler drops one a model
+sends anyway instead of rerouting speech to another vendor.
 """
 
 import json
-import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -23,11 +21,6 @@ def _fake_key(tag: str) -> str:
 def clean_env(monkeypatch):
     for key in ("OPENAI_API_KEY", "HERMES_SESSION_PLATFORM"):
         monkeypatch.delenv(key, raising=False)
-    # The ignored-override warning is once-per-process per distinct value;
-    # reset it so one test's emission never masks the next test's assertion.
-    from tools import tts_tool as _tts_mod
-
-    _tts_mod._once_warnings.clear()
 
 
 class _OpenaiBackendStub:
@@ -95,68 +88,6 @@ class TestSchema:
 
 
 # ---------------------------------------------------------------------------
-# Tool-level enforcement (text_to_speech_tool)
-# ---------------------------------------------------------------------------
-
-class TestToolLevelProviderAuthority:
-    def test_disagreeing_override_is_ignored(
-        self, tmp_path, monkeypatch, openai_backend
-    ):
-        """A per-call provider that disagrees with config is not honored:
-        the configured openai backend runs and xAI never fires."""
-        from tools.tts_tool import text_to_speech_tool
-
-        result = json.loads(
-            text_to_speech_tool(
-                "Hello world",
-                output_path=str(tmp_path / "out.mp3"),
-                provider="xai",
-            )
-        )
-        assert result.get("success") is True
-        assert result.get("provider") == "openai"
-        openai_backend.create.assert_called_once()
-        openai_backend.xai_generator.assert_not_called()
-
-    def test_disagreeing_override_logs_warning(
-        self, tmp_path, monkeypatch, openai_backend, caplog
-    ):
-        from tools.tts_tool import text_to_speech_tool
-
-        with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
-            text_to_speech_tool(
-                "Hello world",
-                output_path=str(tmp_path / "out.mp3"),
-                provider="xai",
-            )
-        assert any(
-            "Ignoring per-call TTS provider override" in rec.message
-            for rec in caplog.records
-        ), "An ignored provider override must be visible in the logs."
-
-    def test_matching_override_is_accepted(
-        self, tmp_path, monkeypatch, openai_backend, caplog
-    ):
-        """A per-call provider that agrees with config stays a no-op."""
-        from tools.tts_tool import text_to_speech_tool
-
-        with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
-            result = json.loads(
-                text_to_speech_tool(
-                    "Hello world",
-                    output_path=str(tmp_path / "out.mp3"),
-                    provider="openai",
-                )
-            )
-        assert result.get("success") is True
-        assert result.get("provider") == "openai"
-        assert not any(
-            "Ignoring per-call TTS provider override" in rec.message
-            for rec in caplog.records
-        )
-
-
-# ---------------------------------------------------------------------------
 # Registered handler (the model-args path)
 # ---------------------------------------------------------------------------
 
@@ -182,35 +113,3 @@ class TestRegisteredHandler:
         assert result.get("success") is True
         assert result.get("provider") == "openai"
         openai_backend.xai_generator.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Resolver (_apply_call_overrides) — the single provider-resolution point
-# ---------------------------------------------------------------------------
-
-class TestResolverAuthority:
-    def test_resolver_returns_configured_provider_despite_override(self, openai_backend):
-        from tools.tts_tool import _apply_call_overrides
-
-        _tts_config, provider = _apply_call_overrides({"provider": "openai"}, None, "xai")
-        assert provider == "openai"
-
-    def test_resolver_returns_configured_provider_when_unset(self, openai_backend):
-        from tools.tts_tool import _apply_call_overrides
-
-        _tts_config, provider = _apply_call_overrides({"provider": "openai"}, None, None)
-        assert provider == "openai"
-
-    def test_warning_is_emitted_once_per_distinct_value(self, openai_backend, caplog):
-        """A stale session retrying the same override does not spam the log."""
-        from tools.tts_tool import _apply_call_overrides
-
-        with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
-            _apply_call_overrides({"provider": "openai"}, None, "xai")
-            _apply_call_overrides({"provider": "openai"}, None, "xai")
-            _apply_call_overrides({"provider": "openai"}, None, "mistral")
-        warnings = [rec for rec in caplog.records
-                    if "Ignoring per-call TTS provider override" in rec.message]
-        assert len(warnings) == 2, (
-            "The same requested value must warn once; a distinct value warns again."
-        )

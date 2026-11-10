@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import re
-import tempfile
 import uuid
 from pathlib import Path
 from typing import Callable, Any, Optional
@@ -110,23 +109,8 @@ def _get_default_output_dir() -> str:
     return str(get_hermes_dir("cache/audio", "audio_cache"))
 
 
-DEFAULT_OUTPUT_DIR = _DEFAULT_OUTPUT_DIR_AT_IMPORT = _get_default_output_dir()
-
-
 def _default_output_dir() -> str:
-    """The active profile's audio output dir at call time (long-lived runtimes switch profiles
-    after import); a monkeypatched ``DEFAULT_OUTPUT_DIR`` wins.
-
-    Same bug class as skills_tool (f8723c478) and skills_sync (#65828): long-lived multi-profile runtimes
-    (dashboard console, TUI/Desktop backend, cron, kanban workers) import this module once under the launch
-    HERMES_HOME and later scope requests to a different profile via
-    ``hermes_constants.set_hermes_home_override()`` — a frozen module constant keeps writing synthesized
-    audio into the launch profile's cache instead of the active profile's (#98749). Keep the legacy
-    ``DEFAULT_OUTPUT_DIR`` module attribute for tests and external patchers; when it has not been patched,
-    re-resolve from the live profile-scoped HERMES_HOME on every call.
-    """
-    if DEFAULT_OUTPUT_DIR != _DEFAULT_OUTPUT_DIR_AT_IMPORT:
-        return DEFAULT_OUTPUT_DIR
+    """The active profile's audio output dir, resolved per call (profiles switch after import, #98749)."""
     return _get_default_output_dir()
 
 
@@ -267,42 +251,12 @@ def _finalize_voice_delivery(
 
 
 # --- Main tool function ---
-_once_warnings: set = set()
-
-
-def _warn_ignored_tts_provider_override(requested: str, configured: str) -> None:
-    """Once-per-process (per distinct requested value) warning for ignored per-call provider
-    overrides — a stale session whose cached tool schema still advertises the param would
-    otherwise repeat it every call; and callers with no tts config at all are silent (nothing
-    to disagree WITH — default resolution just runs). See #90109."""
-    if not configured:
-        return
-    key = ("tts_provider_override", requested)
-    if key in _once_warnings:
-        return
-    _once_warnings.add(key)
-    logger.warning(
-        "Ignoring per-call TTS provider override %r; tts.provider is %r",
-        requested,
-        configured,
-    )
-
-
-def _apply_call_overrides(tts_config: dict[str, Any], speed: Optional[float], provider: Optional[str]):
+def _apply_call_overrides(tts_config: dict[str, Any], speed: Optional[float]):
     """Apply per-call ``speed`` (clamped, on a shallow copy so the cached config isn't mutated) and
-    resolve the provider name. ``tts.provider`` in config.yaml is the authoritative backend
-    selector (#90109): the per-call argument stays for internal/test callers, but a value that
-    disagrees with the configured provider is ignored — the model-facing schema no longer
-    advertises the override, and a leaked platform hint passing one anyway must not reroute
-    speech to another vendor behind the operator's back."""
+    resolve the provider name; ``tts.provider`` in config.yaml is the only backend selector (#90109)."""
     if speed is not None:
         tts_config = {**tts_config, "speed": max(0.25, min(4.0, float(speed)))}
-    configured_provider = _get_provider(tts_config)
-    if provider:
-        requested = provider.lower().strip()
-        if requested and requested != configured_provider:
-            _warn_ignored_tts_provider_override(requested, configured_provider)
-    return tts_config, configured_provider
+    return tts_config, _get_provider(tts_config)
 
 
 # ElevenLabs voice ids are short alphanumeric tokens; anything else never reaches the URL path.
@@ -501,7 +455,7 @@ def _synthesize_chunks(chunks: list[str], base_path: Path, generated_artifacts: 
 
 def text_to_speech_tool(
     text: str, output_path: Optional[str] = None, speed: Optional[float] = None,
-    instructions: Optional[str] = None, provider: Optional[str] = None,
+    instructions: Optional[str] = None,
     voice_id: Optional[str] = None, find_voices: Optional[dict[str, Any]] = None) -> str:
     """Convert text to speech with long-form chunking; returns the JSON result envelope.
 
@@ -520,7 +474,7 @@ def text_to_speech_tool(
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed)
     tts_config, error = _apply_voice_override(tts_config, provider, voice_id)
     if error:
         return error
@@ -678,7 +632,7 @@ def check_tts_requirements() -> bool:
 from tools.registry import registry, tool_error
 
 def _output_path_description(home: str) -> str:
-    return f"Optional custom file path to save the audio. Defaults to {home}/audio_cache/<timestamp>.mp3"
+    return f"Optional custom file path to save the audio. Defaults to {home}/cache/audio/<timestamp>.mp3"
 
 
 def _tts_schema_overrides() -> dict:
@@ -705,7 +659,7 @@ _ELEVENLABS_VOICE_SENTENCE = "The provider is user-configured (ElevenLabs); pick
 
 TTS_SCHEMA = {
     "name": "text_to_speech",
-    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. " + _CONFIGURED_VOICE_SENTENCE,
+    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. " + _CONFIGURED_VOICE_SENTENCE,
     "parameters": {
         "type": "object",
         "properties": {

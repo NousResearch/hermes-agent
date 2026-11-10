@@ -91,12 +91,3 @@ def test_fixture_no_provider_configured_is_missing_config():
 
 def test_fixture_no_access_token_is_missing_config():
     assert fr.classify_agent_error(FIXTURE_NO_TOKEN) == fr.MISSING_CONFIG
-
-
-def test_auto_retryable_set_and_predicate():
-    for code in fr.AUTO_RETRYABLE:
-        assert fr.is_auto_retryable(code)
-    for code in fr.ALL_REASONS - fr.AUTO_RETRYABLE:
-        assert not fr.is_auto_retryable(code)
-    assert not fr.is_auto_retryable("")
-    assert not fr.is_auto_retryable("nonsense")

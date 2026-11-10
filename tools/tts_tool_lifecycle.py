@@ -46,10 +46,6 @@ def _local_tts_warmers() -> dict[str, Callable[[dict[str, Any]], Any]]:
         "kittentts": lambda cfg: _load_kittentts_model_for_config(cfg)[0]}
 
 
-# pm extra for providers whose SDK installs on first use.
-_LAZY_SDK_FEATURES = {"edge": "edge-tts", "elevenlabs": "tts-premium", "mistral": "mistral"}
-
-
 def _signal_user_tts_provider(name: str, tts_config: dict[str, Any], hook: str) -> Optional[str]:
     """Forward a lease ``hook`` (``"warm"``/``"release"``) to a user-declared provider; returns the action.
     Command providers run their optional ``<hook>_command`` (same template/env/timeout rules as
@@ -117,7 +113,7 @@ def warm_tts_provider(tts_config: Optional[dict[str, Any]] = None, provider: Opt
         ok = signalled != "error"
         result.update(warmed=ok, action="warmed" if ok else "error")
         return result
-    feature = _LAZY_SDK_FEATURES.get(name)
+    feature = _origin()._PM_FEATURE_ALIASES.get(f"tts.{name}")
     if feature is not None:
         try:
             import pm

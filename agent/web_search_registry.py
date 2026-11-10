@@ -9,9 +9,7 @@ provider configured as ``web.extract_backend`` falls through):
 
 1. ``web.search_backend`` / ``web.extract_backend``, then ``web.backend``.
 2. The single capability-eligible provider that is registered AND available.
-3. Legacy preference walk (``_LEGACY_PREFERENCE``) filtered by availability —
-   the historic ``tools.web_tools._get_backend()`` order, so installs that never
-   set a config key keep landing on the same provider.
+3. Legacy preference walk (``_LEGACY_PREFERENCE``) filtered by availability.
 4. Keyless free-tier walk (``_KEYLESS_PREFERENCE``), last resort.
 5. ``None`` — the tool points the user at ``hermes tools``.
 """

@@ -23,16 +23,19 @@ export const RECONNECT_ATTEMPT_TIMEOUT_MS = 20_000
  * selectConnection): the phase-1 open of the target, the OAuth REST probe and
  * the activation (ensureGatewayAgent) each get this whole budget, as does a
  * registry secondary's getConnectionFor in store/gateway. It is sized for the
- * worst of them, the cold dial. Unlike the two above, the cold dial is not one IPC:
- * it is the main process's whole remote bring-up chain — one ssh connect
- * (DEFAULT_CONNECT_TIMEOUT_MS 15 s in electron/ssh-connection.ts), the
- * sequential ssh execs that probe platform, locate the runtime and read its
- * version (DEFAULT_EXEC_TIMEOUT_MS 20 s each), the spawned backend's ready
- * sentinel (DEFAULT_READY_TIMEOUT_MS 45 s in electron/remote-lifecycle.ts) and
- * the port forward (DEFAULT_FORWARD_TIMEOUT_MS 15 s). Their sum is ~135 s, and
- * a *healthy* cold dial lands far inside it — measured 37-64 s against a 2 GB
- * VPS over Windows ssh (no mux: every stage is a fresh ssh process plus a cold
- * `serve` boot).
+ * worst of them, the cold dial of an SSH source. A local profile switch never
+ * takes it: it rides the host gateway on the reconnect-class budget above.
+ * Unlike the two above, the cold dial is not one IPC: it is the main process's
+ * whole remote bring-up chain — one ssh connect (DEFAULT_CONNECT_TIMEOUT_MS
+ * 15 s in electron/ssh-connection.ts), the sequential ssh execs that probe
+ * platform, locate the runtime and read its version (DEFAULT_EXEC_TIMEOUT_MS
+ * 20 s each), the spawned backend's ready sentinel and the port forward
+ * (DEFAULT_FORWARD_TIMEOUT_MS 15 s). The budget was sized when the ready wait
+ * was 45 s (sum ~135 s); electron/remote-lifecycle.ts DEFAULT_READY_TIMEOUT_MS
+ * is now 120 s for busy hosts (#94642), so a worst-case busy-host boot can
+ * outlast this step. A *healthy* SSH cold dial lands far inside it — measured
+ * 37-64 s against a 2 GB VPS over Windows ssh (no mux: every stage is a fresh
+ * ssh process plus a cold `serve` boot).
  *
  * Bounding that chain with RECONNECT_ATTEMPT_TIMEOUT_MS reported
  * "Could not connect to <source>" for switches that were still dialing, and

@@ -1,19 +1,22 @@
 name: jp-corporate
 repo: https://github.com/TakeshiTGAL/hermes-plugin-jp-corporate
-sha: fc0e16c2924d00774957c516f5eb14016228b91d
-description: "Japanese corporate lookup (法人照会): find or verify a company by name or corporate number and read its gBizINFO record (basic info, subsidies, government contracts, awards, certifications, financials, patents, workplace data). Disclosure — sends the company names, corporate numbers and prefectures you look up to api.info.gbiz.go.jp (METI gBizINFO) with your own GBIZINFO_API_TOKEN in a request header; no other host, nothing written to disk."
+sha: f6099b75b983e42a8aa8bcc78698eb9bbadefc99
+description: 'Japanese corporate lookup (法人照会): find or verify a company by name or corporate number and read its gBizINFO record (basic info, subsidies, government contracts, awards, certifications, financials, patents, workplace data). Ask about a Japanese company by name or by its 13-digit corporate number (houjin bangou), for example to check that a business partner is registered and its registration is not closed. Disclosure — sends the company names, corporate numbers and prefectures you look up to api.info.gbiz.go.jp (METI gBizINFO) with your own GBIZINFO_API_TOKEN in a request header; no other host, nothing written to disk. Each call reads GBIZINFO_API_TOKEN for the active profile, and an HTTP proxy set in the environment is not used. The tools are on for every surface, including gateways, so anyone you allow there can call them with your token. Turn a surface off with hermes tools. While the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off, and its pre_llm_call paragraph is added on those surfaces too. A name search reads at most 1000 rows from one response, and a full page that does not contain the name says later rows were not read. finance.headline lists the filing company''s non-consolidated six lines for each published year, each with a unit. On the recorded Toyota file (retrieved 2026-10-02), net sales at years_before_latest 0 are 18259979000000 JPY, and operating income, net income, total assets, net assets, and operating cash flow are found: false rather than 0. A missing token sets next_step to that same message. When the error is token_missing, the visible reply is those free-token steps, the application form https://info.gbiz.go.jp/hojin/various_registration/form and the environment variable GBIZINFO_API_TOKEN, not the user message. pre_llm_call adds its paragraph only on company talk, and adds nothing on other turns. Company talk is a 13-digit corporate number, the word 法人番号, a legal-form word (株式会社, 有限会社, 合同会社, 合名会社, 合資会社, 相互会社, 一般社団法人, 一般財団法人, 公益社団法人, 公益財団法人, 特定非営利活動法人, (株), (有), or (同)), or a recorded registry name (トヨタ自動車, 大栄精工, グローバルプロダクトプランニング, キヤノン, 任天堂, ソニーグループ), or jp_corp_search or jp_corp_profile called in the previous turn. ソニー alone is not in the table. A katakana or kanji name before の together with a field this book returns (資本金, 従業員, 設立, 本社, 代表者, 概要, 事業内容, or 法人番号) is also company talk. パナソニックの資本金は？, ホンダの従業員数はどれくらい？, and 日産自動車の概要を教えて match. トヨタの売上を教えて and パナソニックについて教えて do not. The paragraph says to call jp_corp_search with the company name from the user message, not to pass the word COMPANY as the name, not to say jp_corp_profile confirmed a number or an address when that tool was not called, and not to write successfully retrieved, verified, or obtained using. That ban is the same as 取得しました. It does not forbid tool_search. The same paragraph also tells the model that the parameters of jp_corp_search are known, not to call tool_describe, to use tool_search to find jp_corp_search before web_search when it is not already visible and then tool_call it, to copy its next_step and stop when a tool result is already in the conversation, to copy the next_step field into the reply and stop when the error is token_missing, not to write 取得しました, 確認しました, or 確認できます, and not to write a corporate number, address, industry, capital, employees, or yen that the tool result does not contain on that turn.'
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-jp-corporate#readme
-version: "0.1.1"
+version: 0.1.12
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-jp-corporate/f6099b75b983e42a8aa8bcc78698eb9bbadefc99/assets/catalog-banner.png
 requires_hermes: ">=0.21.4"
 platforms: []
 capabilities:
   provides_tools:
   - jp_corp_search
   - jp_corp_profile
-  provides_hooks: []
-  provides_middleware: []
+  provides_hooks:
+  - pre_llm_call
+  provides_middleware:
+  - llm_execution
   requires_env:
   - GBIZINFO_API_TOKEN

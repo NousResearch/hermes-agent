@@ -1623,6 +1623,7 @@
   "settings.localModels.upToDateTitle": ["ar","ru"],
   "settings.localModels.updateAction": ["ar","ru"],
   "settings.localModels.updateDetail": ["ar","ru"],
+  "settings.localModels.updateSameBuildDetail": ["ar","ru"],
   "settings.localModels.updateTitle": ["ar","ru"],
   "settings.localModels.updating": ["ar","ru"],
   "settings.localModels.useAction": ["ar","ru"],

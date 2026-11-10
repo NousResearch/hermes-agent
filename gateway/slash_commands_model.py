@@ -623,9 +623,11 @@ class GatewayModelCommandsMixin:
         if request.is_reset:
             return await self._handle_model_reset(event, ctx)
         # Turn precedence: session /model > channel_overrides > config.yaml.
-        _channel = self._channel_override_for(source)
-        if _channel is not None and _channel.model:
-            ctx.apply_override({"model": _channel.model, **({"provider": _channel.provider, "base_url": ""} if _channel.provider else {})})
+        # The channel's full route as the turn resolves it, so a config-backed endpoint (custom) survives.
+        from gateway.session_info_route import channel_override_route
+        _ch_model, _ch_route, _ch_forced = await asyncio.to_thread(channel_override_route, getattr(self, "config", None), source)
+        if _ch_model:
+            ctx.apply_override({"model": _ch_model, **(_ch_route or ({"provider": _ch_forced} if _ch_forced else {}))})
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)

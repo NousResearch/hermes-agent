@@ -13,14 +13,21 @@ Text it reads: ``*.md``, ``*.mdx``, ``*.txt`` whole; ``*.yaml``/``*.yml``/``*.ya
    (``tui_gateway/``), a bare stem (``tools/cronjob_tools``), a ``.symbol`` or sentence-final ``.`` after
    either, a glob under a moved directory (``agent/turn_*.py``), a unique root file (``run_agent.py``),
    and the same path behind ``github.com/<org>/hermes-agent/blob/<ref>/``. ``::symbol`` and ``:line`` stay.
-2. Dotted module names (``tui_gateway.entry``), unless the name is a config key or the root is ambiguous.
-3. ``from M import``, ``import M`` and ``-m M``.
+2. Dotted module names (``tui_gateway.entry``). A dotted name is a module reference only when it resolves: a
+   moved module, or a moved module plus an attribute that module defines. A config key (``DEFAULT_CONFIG`` path,
+   ``plugins.enabled``, ``providers.<id>.api_key``), an i18n key and a name whose root is ambiguous stay.
+3. ``from M import ...``, ``import M`` and ``-m M``: the only places a bare top-level word (``providers``,
+   ``tools``, ``agent``) is rewritten, and only as code: inside a code span, a code fence or a ``>>>`` line, or as
+   an import statement that parses as Python and starts its line. ``from providers like Daloopa`` is English:
+   it does not parse, so it stays. A bare word alone (backticked or not) is never rewritten.
 
 Left alone, and counted as ``skip-*``: a path behind any ``/`` (``~/.hermes/cron/``, ``$HERMES_HOME/...``,
 ``./x``); bare directories that also name HERMES_HOME dirs or other projects' dirs (``tools/``, ``cron/``);
 a name whose root is a moved *file* that other projects share (``utils.x``, ``cli.x``); config keys
-(``agent.reasoning_effort``, ``gateway.platforms.*`` outside an import); tree-diagram lines; and the files in
-``EXCLUDED`` (frozen surfaces, generated pages, third-party skill docs, locale values).
+(``agent.reasoning_effort``, ``plugins.enabled``, ``gateway.platforms.*`` outside an import); i18n keys
+(``t("gateway.status.*")``); tree-diagram lines; and the files in
+``EXCLUDED`` (frozen surfaces, generated pages, third-party skill docs, locale values) and the shims
+``generate_shims.py`` wrote (their first line is its ``HEADER``).
 """
 from __future__ import annotations
 
@@ -39,7 +46,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from renames import current_name, git, module_renames, renamed_paths
+from generate_shims import HEADER as SHIM_HEADER
+from renames import config_keys, current_name, git, module_renames, renamed_paths
 
 #: Files and trees the rewrite never touches. Frozen surfaces keep the old names on purpose, generated pages
 #: are regenerated, third-party docs name other projects' modules, locale values are runtime strings
@@ -70,6 +78,14 @@ _TOKEN = re.compile(r"(?<![\w.\-~$@%#])[A-Za-z_][\w.\-]*(?:/[\w.\-*<>{}\[\]]*)*"
 _BLOB = re.compile(r"github\.com/[\w.\-]+/hermes-agent/blob/[\w.\-]+/")
 _DOTTED = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 _IMPORT = re.compile(r"(?:^|(?<=[\s`'\"(]))(from\s+|import\s+|-m\s+|-m[\"'],\s*[\"'])([A-Za-z_][\w.]*)(?![\w/\-])")
+_CODE_SPAN = re.compile(r"(`+)(?!`).+?(?<!`)\1(?!`)")
+_FENCE = re.compile(r"\s*(?:```|~~~)")
+_NAME = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s+as\s+[A-Za-z_]\w*)?"
+_STATEMENT = re.compile(
+    rf"(?:from\s+[A-Za-z_][\w.]*\s+import\s+(?:\*|\(|\.\.\.|{_NAME}(?:\s*,\s*{_NAME})*)"
+    rf"|import\s+{_NAME}(?:\s*,\s*{_NAME})*)")
+_STATEMENT_START = re.compile(r"\s*(?:(?:[-*+]|\d+[.)])\s+)?(?:>>>\s*|\.\.\.\s*|#\s*|\$\s*)?")
+_I18N_CALL = re.compile(r"(?<![\w.])_?(?:g?t|tn)\(\s*f?[\"']?$")
 _TREE_LINE = re.compile(r"[├└│─]")
 
 
@@ -82,9 +98,16 @@ class Plan:
     tree: list[str]
     """Every tracked path before the move."""
     config_keys: frozenset[str] = frozenset()
+    i18n_keys: frozenset[str] = frozenset()
+    """Every leaf key of ``locales/en.yaml``: ``cli.queue.queued`` is a message key, not a module path."""
+    root: Path | None = None
+    """The tree whose moved files are read for the attributes a module defines."""
+    attributes: dict[str, frozenset[str] | None] = field(default_factory=dict, init=False)
     files: dict[str, str] = field(init=False)
     dirs: dict[str, str] = field(init=False)
     modules: set[str] = field(init=False)
+    packages: set[str] = field(init=False)
+    """Every dotted prefix of a module name, so a namespace package without ``__init__.py`` counts too."""
     unique_root: set[str] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -110,12 +133,46 @@ class Plan:
                 if parts[-1] == "__init__":
                     parts.pop()
                 self.modules.add(".".join(parts))
+        self.packages = {".".join(m.split(".")[:k]) for m in self.modules for k in range(1, len(m.split(".")) + 1)}
         names = Counter(PurePosixPath(p).name for p in self.tree)
         self.unique_root = {old for old in self.files
                             if "/" not in old and names[old] == 1 and old not in AMBIGUOUS_FILES}
 
 
+    def module_attributes(self, module: str) -> frozenset[str] | None:
+        """Names the moved module ``module`` (old dotted name) defines at its top level; None when unreadable."""
+        if module not in self.attributes:
+            self.attributes[module] = None
+            base = module.replace(".", "/")
+            for old in (f"{base}.py", f"{base}/__init__.py"):
+                if self.root is not None and old in self.files and (self.root / self.files[old]).is_file():
+                    self.attributes[module] = _defined_names(self.root / self.files[old])
+                    break
+        return self.attributes[module]
+
+
 AMBIGUOUS_FILES = {"cli.py", "utils.py", "config.py", "setup.py", "__init__.py", "conftest.py"}
+
+
+def _defined_names(file: Path) -> frozenset[str] | None:
+    try:
+        body = ast.parse(file.read_text(encoding="utf-8-sig")).body
+    except (SyntaxError, UnicodeDecodeError, OSError):
+        return None
+    names: set[str] = set()
+    pending = list(body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((a.asname or a.name.split(".")[0]) for a in node.names if a.name != "*")
+        elif isinstance(node, (ast.If, ast.Try, ast.With)):
+            pending.extend(ast.iter_child_nodes(node))
+    return frozenset(names)
 
 
 @dataclass
@@ -142,14 +199,17 @@ class Stats:
 def rewrite_text(text: str, plan: Plan, stats: Stats | None = None) -> str:
     """Rewrite one piece of prose, line by line (tree-diagram lines are left as they are)."""
     stats = stats if stats is not None else Stats()
-    out = []
+    out, fenced = [], False
     for line in text.split("\n"):
-        if _TREE_LINE.search(line):
+        if _FENCE.match(line):
+            fenced = not fenced
+            out.append(line)
+        elif _TREE_LINE.search(line):
             if _mentions(line, plan):
                 stats.skips["tree-line"] += 1
             out.append(line)
         else:
-            out.append(_rewrite_line(line, plan, stats))
+            out.append(_rewrite_line(line, plan, stats, fenced or line.lstrip().startswith((">>>", "..."))))
     return "\n".join(out)
 
 
@@ -158,9 +218,9 @@ def _mentions(line: str, plan: Plan) -> bool:
         any(k in line for k in plan.renames)
 
 
-def _rewrite_line(line: str, plan: Plan, stats: Stats) -> str:
+def _rewrite_line(line: str, plan: Plan, stats: Stats, fenced: bool = False) -> str:
     edits: list[tuple[int, int, str]] = []
-    imported = _import_spans(line, plan, stats, edits)
+    imported = _import_spans(line, plan, stats, edits, fenced)
     for match in _TOKEN.finditer(line):
         start, token = match.start(), match.group()
         if any(s <= start < e for s, e in imported):
@@ -177,7 +237,7 @@ def _rewrite_line(line: str, plan: Plan, stats: Stats) -> str:
             continue
         else:
             kind = None
-        found = _path(token, plan, stats) if "/" in token else _bare(token, plan, stats)
+        found = _path(token, plan, stats) if "/" in token else _bare(token, plan, stats, prev)
         if found:
             length, new, rule = found
             edits.append((start, start + length, new))
@@ -234,7 +294,7 @@ def _tail_ok(rest: str) -> bool:
     return bool(symbol) and symbol.group(1).lower() not in FILE_EXT
 
 
-def _bare(token: str, plan: Plan, stats: Stats):
+def _bare(token: str, plan: Plan, stats: Stats, before: str = ""):
     """A token without ``/``: a root file name, or a dotted module name."""
     core = _DOTTED.match(token)
     if not core:
@@ -251,10 +311,10 @@ def _bare(token: str, plan: Plan, stats: Stats):
                 return len(file), plan.files[file], "path-file"
             stats.skips["ambiguous-root-file"] += 1
         return None
-    return _dotted(name, plan, stats, importing=False)
+    return _dotted(name, plan, stats, importing=False, before=before)
 
 
-def _dotted(name: str, plan: Plan, stats: Stats, importing: bool):
+def _dotted(name: str, plan: Plan, stats: Stats, importing: bool, before: str = ""):
     if "." not in name and not importing:
         return None
     new = current_name(name, plan.renames)
@@ -264,13 +324,36 @@ def _dotted(name: str, plan: Plan, stats: Stats, importing: bool):
         if CONFIG_DENY.match(name) or _config_key(name, plan):
             stats.skips["config-key"] += 1
             return None
+        if name in plan.i18n_keys or _I18N_CALL.search(before):
+            stats.skips["i18n-key"] += 1
+            return None
         segments = name.split(".")
-        if segments[0] in AMBIGUOUS_ROOTS and (len(segments) < 2 or ".".join(segments[:2]) not in plan.modules):
+        if segments[0] in AMBIGUOUS_ROOTS and (len(segments) < 2 or ".".join(segments[:2]) not in plan.packages):
             stats.skips["ambiguous-dotted"] += 1
             return None
-        if segments[0] not in plan.modules and not any(m.startswith(segments[0] + ".") for m in plan.modules):
+        if not _resolves(name, plan):
+            stats.skips["unresolved-dotted"] += 1
             return None
     return len(name), new, "import" if importing else "dotted"
+
+
+def _resolves(name: str, plan: Plan) -> bool:
+    """``name`` is a moved module or package, or a path into one.
+
+    ``module.attr`` resolves when the module defines ``attr``. A tail that names nothing the module defines
+    (``gateway.run.X``, a placeholder or an attribute that moved to a sibling) still counts after a module two
+    or more segments deep, whose name cannot be a config key; after a bare package that is also a config
+    section (``plugins.enabled``, ``agent.reasoning_effort``) it does not.
+    """
+    parts = name.split(".")
+    if name in plan.packages:
+        return True
+    for size in range(len(parts) - 1, 0, -1):
+        prefix = ".".join(parts[:size])
+        if prefix in plan.packages:
+            attributes = plan.module_attributes(prefix) if prefix in plan.modules else None
+            return (attributes is not None and parts[size] in attributes) or size > 1 or parts[0] not in AMBIGUOUS_ROOTS
+    return False
 
 
 def _config_key(name: str, plan: Plan) -> bool:
@@ -278,31 +361,59 @@ def _config_key(name: str, plan: Plan) -> bool:
     return any(".".join(parts[:k]) in plan.config_keys for k in range(2, len(parts) + 1))
 
 
-def _import_spans(line: str, plan: Plan, stats: Stats, edits: list) -> list[tuple[int, int]]:
-    """``from M import``, ``import M``, ``-m M``: rewritten without the prose gates of a bare dotted name."""
-    spans = []
+def _code_spans(line: str) -> list[tuple[int, int]]:
+    """Inner ranges of the backtick spans on a line (the backticks themselves excluded)."""
+    return [(m.start() + len(m.group(1)), m.end() - len(m.group(1))) for m in _CODE_SPAN.finditer(line)]
+
+
+def _import_spans(line: str, plan: Plan, stats: Stats, edits: list, fenced: bool = False) -> list[tuple[int, int]]:
+    """``from M import ...``, ``import M``, ``-m M``: the code places a bare top-level word is rewritten."""
+    spans, code = [], _code_spans(line)
     for match in _IMPORT.finditer(line):
-        keyword, name = match.group(1), match.group(2).rstrip(".")
-        if keyword.startswith("import") and not _code_line(line, match.start()):
+        keyword, name = match.group(1).strip(), match.group(2).rstrip(".")
+        site = next((span for span in code if span[0] <= match.start() < span[1]), None)
+        if keyword == "import" and re.search(r"\bfrom\s+[\w.]+\s+$", line[:match.start()]):
             continue
         found = _dotted(name, plan, stats, importing=True)
         if not found:
             continue
+        if not _is_code(line, match, keyword, name, site, fenced):
+            stats.skips["prose-import"] += 1
+            continue
         length, new, _ = found
-        begin = match.start(2)
-        tail = line[begin + length:]
-        if keyword.startswith("import") and "." not in name and not re.match(r"\s+as\b", tail):
-            new = f"{new} as {name}"
-        edits.append((begin, begin + length, new))
+        begin, start = match.start(2), match.start(1)
+        if keyword == "import" and "." not in name and new.endswith("." + name):
+            start, new = match.start(1), f"from {new.rpartition('.')[0]} import {name}"
+        else:
+            start = begin
+        edits.append((start, begin + length, new))
         spans.append((begin, begin + len(match.group(2))))
         stats.rewrites["import"] += 1
     return spans
 
 
-def _code_line(line: str, at: int) -> bool:
-    """``import M`` is a statement only at the start of a line, after ``>>> ``/``;``, or inside ``python -c``."""
-    before = line[:at].strip()
-    return before in ("", ">>>", "...", "#") or before.endswith((";", "`", '"', "'")) or "-c" in before
+def _is_code(line: str, match: re.Match, keyword: str, name: str, site: tuple[int, int] | None, fenced: bool) -> bool:
+    """Whether the match is code: in a code span or fence, or a Python import statement that starts the line."""
+    in_code = fenced or site is not None
+    if keyword.startswith("-m"):
+        return in_code
+    head = _STATEMENT.match(line, match.start())
+    if head is None or not _parses(head.group()):
+        return False
+    rest = line[head.end():site[1] if site else len(line)].strip()
+    if in_code:
+        return not rest or not (rest[0].isalnum() or rest[0] == "_")
+    if not _STATEMENT_START.fullmatch(line[:match.start()]):
+        return False
+    return rest.rstrip(".,;:") == "" or rest[:1] in (";", "#")
+
+
+def _parses(statement: str) -> bool:
+    try:
+        ast.parse(statement.replace("...", "_") + "_)" if statement.endswith("(") else statement.replace("...", "_"))
+    except SyntaxError:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------- per file kind
@@ -396,6 +507,9 @@ def rewrite_file(path: str, source: str, plan: Plan, stats: Stats) -> str:
     if excluded(path):
         stats.skips["excluded-file"] += 1
         return source
+    if source.startswith(SHIM_HEADER):
+        stats.skips["generated-shim"] += 1
+        return source
     if path.endswith(".py"):
         return rewrite_python(source, plan, stats)
     if path.endswith(TEXT_SUFFIXES):
@@ -408,25 +522,25 @@ def rewrite_file(path: str, source: str, plan: Plan, stats: Stats) -> str:
 # ---------------------------------------------------------------- tree driver
 
 
-def default_config_keys(root: Path) -> frozenset[str]:
-    """Dotted key paths of ``DEFAULT_CONFIG``, read by AST (the module is never imported)."""
-    file = root / "hermes_cli" / "config_defaults.py"
-    if not file.exists():
+def locale_keys(root: Path) -> frozenset[str]:
+    """Leaf keys of ``locales/en.yaml``, joined by dots (the file is nested maps of scalars)."""
+    file = root / "locales" / "en.yaml"
+    if not file.is_file():
         return frozenset()
     keys: set[str] = set()
-
-    def walk(node: ast.Dict, prefix: str) -> None:
-        for key, value in zip(node.keys, node.values):
-            if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                path = f"{prefix}{key.value}"
-                keys.add(path)
-                if isinstance(value, ast.Dict):
-                    walk(value, path + ".")
-
-    for node in ast.walk(ast.parse(file.read_text(encoding="utf-8-sig"))):
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "DEFAULT_CONFIG"
-                                                for t in node.targets) and isinstance(node.value, ast.Dict):
-            walk(node.value, "")
+    stack: list[tuple[int, str]] = []
+    for line in file.read_text(encoding="utf-8-sig").splitlines():
+        match = re.fullmatch(r"( *)([\w.\-]+):(?:\s+(\S.*))?", line)
+        if not match:
+            continue
+        indent, key, value = len(match.group(1)), match.group(2), match.group(3)
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        path = ".".join([k for _, k in stack] + [key])
+        if value is None:
+            stack.append((indent, key))
+        else:
+            keys.add(path)
     return frozenset(keys)
 
 
@@ -440,12 +554,13 @@ def synthetic_plan(root: Path, moves: list[str]) -> Plan:
         paths += [(p, f"hermes_agent/{p}") for p in hit]
         module = move.removesuffix(".py")
         renames[module.replace("/", ".")] = "hermes_agent." + module.replace("/", ".")
-    return Plan(renames, paths, tree, default_config_keys(root))
+    return Plan(renames, paths, tree, config_keys(root), locale_keys(root), root)
 
 
 def commit_plan(root: Path, commit: str) -> Plan:
     tree = git(root, "ls-tree", "-r", "--name-only", f"{commit}^").splitlines()
-    return Plan(module_renames(root, commit), renamed_paths(root, commit), tree, default_config_keys(root))
+    return Plan(module_renames(root, commit), renamed_paths(root, commit), tree, config_keys(root),
+                locale_keys(root), root)
 
 
 def run(root: Path, plan: Plan, only: list[str], write: bool) -> Stats:

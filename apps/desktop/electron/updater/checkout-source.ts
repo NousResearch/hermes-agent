@@ -4,7 +4,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 
 import { buildDesktopBackendEnv } from '../backend-env'
-import { resolveInstallationLauncher } from '../updater-process'
+import { resolveInstallationLauncherAsync } from '../updater-process'
 import { hiddenWindowsChildOptions } from '../windows-child-options'
 
 import { updateProxyEnv } from './system-proxy-env'
@@ -84,8 +84,11 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
   // A PATH Python can import this checkout yet lack its selected dependencies.
   const managed = existsSync(path.join(probe.updateRoot, 'pm'))
 
+  // Every window that mounts runs this check, on Electron's main thread: the
+  // historical user-bin rung proves identity with the launcher's `--version`,
+  // so resolve it asynchronously (and once per process), never with spawnSync.
   const launcher = managed
-    ? resolveInstallationLauncher(probe.updateRoot, process.platform === 'win32', probe.hermesHome)
+    ? await resolveInstallationLauncherAsync(probe.updateRoot, process.platform === 'win32', probe.hermesHome)
     : null
 
   if (managed && !launcher) {

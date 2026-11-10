@@ -203,7 +203,8 @@ _CLOUD_TRIM_MIN_INPUT_SECONDS = 12.0
 
 def _probe_audio_duration(file_path: str) -> Optional[float]:
     """Return the audio duration in seconds via ffprobe, or None. Canonical sync probe;
-    ``gateway/run.py._probe_audio_duration`` and the Telegram adapter carry local variants — keep
+    ``gateway/run_inbound_transcription.py._probe_audio_duration`` and the Telegram adapter carry
+    local variants — keep
     the command shape in sync."""
     ffprobe = _find_ffprobe_binary()
     if not ffprobe:

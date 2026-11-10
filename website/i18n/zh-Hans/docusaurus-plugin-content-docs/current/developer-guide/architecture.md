@@ -61,7 +61,8 @@ hermes-agent/
 │   ├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
 │   ├── batch_runner.py           # 批量轨迹生成
 │   │
-│   └── acp_adapter/              # ACP 服务器（VS Code / Zed / JetBrains）
+│   ├── acp_adapter/              # ACP 服务器（VS Code / Zed / JetBrains）
+│   └── cron/                     # 调度器（jobs.py、scheduler.py）
 │
 ├── agent/                    # Agent 内部模块
 │   ├── prompt_builder.py     # 系统 prompt 组装
@@ -125,7 +126,6 @@ hermes-agent/
 ├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、whatsapp、
 │                             #   whatsapp_cloud、signal、weixin、bluebubbles、qqbot、
 │                             #   matrix、feishu 等（元宝：`yuanbao` Hermes Labs 插件）
-├── cron/                     # 调度器（jobs.py、scheduler.py）
 ├── plugins/memory/           # 记忆提供者插件
 ├── plugins/context_engine/   # 上下文引擎插件
 ├── skills/                   # 内置 skill（始终可用）

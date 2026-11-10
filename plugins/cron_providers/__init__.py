@@ -82,7 +82,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional[CronScheduler]:
     host = None if is_bundled else user_plugin_host()
     if host is not None:
         return host.load_instance(provider_dir, module_name=module_name, capture="register_cron_scheduler",
-                                  base_ref="cron.scheduler_provider:CronScheduler")
+                                  base_ref="hermes_agent.cron.scheduler_provider:CronScheduler")
     mod = _loader.load_plugin_module(
         module_name, provider_dir, parents=(__package__.rpartition(".")[0], __package__), logger=logger,
         synthetic_namespace=None if is_bundled else _USER_NAMESPACE)

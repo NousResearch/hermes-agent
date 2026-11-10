@@ -381,7 +381,7 @@ class TestRunJobScript:
         assert success is True, output
         value, constants_file, path0, pythonpath, pickled = output.splitlines()
         assert value == "42"
-        repo = Path(scheduler_script.__file__).resolve().parents[1]
+        repo = Path(scheduler_script.__file__).resolve().parents[2]
         assert Path(constants_file).resolve() == repo / "hermes_constants.py"
         assert Path(path0).resolve() == script.parent.resolve()
         assert pythonpath == "PYTHONPATH="

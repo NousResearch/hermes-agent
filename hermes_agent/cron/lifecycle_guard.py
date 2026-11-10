@@ -97,7 +97,7 @@ _KILL_VERB_RE = re.compile(r"(?i)\b(?:kill|taskkill|stop-process)\b")
 # (`python -m hermes_cli.main gateway run` / `hermes gateway run`) only through its own tokens;
 # an unrelated script that merely contains "hermes" (`hermes-polis/run.sh`, `my_hermes_bot.py`)
 # cannot match it. Same hermes+gateway pairing as Branch D, plus the module path.
-_GATEWAY_CMDLINE_TOKEN_RE = re.compile(r"(?i)hermes_cli|\bhermes\b[^\n]*\bgateway\b|\bgateway\b[^\n]*\bhermes\b")
+_GATEWAY_CMDLINE_TOKEN_RE = re.compile(r"(?i)hermes_cli|hermes_agent|\bhermes\b[^\n]*\bgateway\b|\bgateway\b[^\n]*\bhermes\b")
 # Rejection text for Branch E, shared by every tool surface that runs the guard so the agent is
 # pointed at the ownership-scoped route (proc_* id / explicit PID) rather than the shell.
 HOST_INTERPRETER_KILL_REJECTION = (
@@ -553,7 +553,7 @@ def lifecycle_scan_root_within_budget(text: str) -> bool:
 def _budget_exhausted(budget: _LifecycleScanBudget, what: str, depth: int) -> bool:
     logger.warning(
         "lifecycle guard scan budget exhausted (%s at depth %d); "
-        "failing closed — see _MAX_LIFECYCLE_SCAN_* in cron/lifecycle_guard.py",
+        "failing closed — see _MAX_LIFECYCLE_SCAN_* in hermes_agent/cron/lifecycle_guard.py",
         what, depth,
     )
     budget.refusal = f"the scan budget was exhausted ({what} at depth {depth})"

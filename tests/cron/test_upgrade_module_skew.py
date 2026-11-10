@@ -17,14 +17,14 @@ import pytest
 _SKEW_SCRIPT = """
 import sys, types
 import hermes_cli.sqlite_util as sqlite_util
-import cron.jobs as jobs
+from hermes_agent.cron import jobs
 
 # The pre-upgrade sqlite_util only had add_column_if_missing / write_txn.
 for name in ("open_db", "transaction"):
     delattr(sqlite_util, name)
-sys.modules.pop("cron.{store}", None)
+sys.modules.pop("hermes_agent.cron.{store}", None)
 
-import cron.{store}
+import hermes_agent.cron.{store}
 """
 
 _OCCURRENCES_SKEW_SCRIPT = """

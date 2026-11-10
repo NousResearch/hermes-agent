@@ -58,7 +58,7 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
 
   // One cron job in each profile's own store, for the all-profiles cron list.
   for (const [home, name] of [[sandbox.hermesHome, 'default-job'], [named, 'developer-job']]) {
-    const job = spawnSync(python, ['-c', 'import sys\nfrom cron.jobs import create_job\ncreate_job("e2e", "every 1h", name=sys.argv[1])', name], {
+    const job = spawnSync(python, ['-c', 'import sys\nfrom hermes_agent.cron.jobs import create_job\ncreate_job("e2e", "every 1h", name=sys.argv[1])', name], {
       cwd: root, env: { ...env, HERMES_HOME: home, PYTHONPATH: root }, encoding: 'utf8'
     })
 

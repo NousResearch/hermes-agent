@@ -645,7 +645,7 @@ def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
     spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
 
     assert scheduler._launch_external_cron_worker(job) is True
-    repo_root = Path(scheduler.__file__).resolve().parent.parent
+    repo_root = Path(scheduler.__file__).resolve().parents[2]
     entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
     assert entries[0] == str(repo_root)
     assert str(tmp_path / "user-libs") in entries
@@ -677,7 +677,7 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
                      "PYTHONPATH": str(tmp_path / "kept-by-sanitizer")},
     )
     spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
-    repo_root = Path(scheduler.__file__).resolve().parent.parent
+    repo_root = Path(scheduler.__file__).resolve().parents[2]
 
     assert scheduler._launch_external_cron_worker(job) is True
     entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
@@ -763,7 +763,7 @@ def test_marked_worker_boots_dependencies_before_cron_jobs(marked):
     (the gateway already booted through ``hermes_bootstrap``) is never re-booted."""
     from hermes_agent.cron import worker_bootstrap
 
-    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    repo_root = Path(worker_bootstrap.__file__).resolve().parents[2]
     env = {k: v for k, v in os.environ.items() if k != worker_bootstrap.WORKER_MARKER}
     env["PYTHONPATH"] = str(repo_root)
     if marked:
@@ -820,7 +820,7 @@ def test_relaunch_replays_the_worker_before_its_ack(tmp_path, cause):
     the whole worker: payload unread, no ack, marker set, the same worker re-run."""
     from hermes_agent.cron import worker_bootstrap
 
-    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    repo_root = Path(worker_bootstrap.__file__).resolve().parents[2]
     payload = tmp_path / "exec-1.json"
     payload.write_text(json.dumps({
         "job": {"id": "job-1", "execution_id": "exec-1"},
@@ -839,7 +839,7 @@ def test_relaunch_replays_the_worker_before_its_ack(tmp_path, cause):
     seen = json.loads(record.read_text())
     assert (seen["payload"], seen["ack"], seen["marker"]) == (True, False, "1")
     if cause == "source_update":
-        assert "runpy.run_module('cron.scheduler', run_name='__main__'" in seen["command"][-1]
+        assert "runpy.run_module('hermes_agent.cron.scheduler', run_name='__main__'" in seen["command"][-1]
     else:
         assert str(payload) in seen["command"]
 
@@ -888,7 +888,7 @@ def test_marked_worker_keeps_its_generation_through_a_rotation(tmp_path):
     import pm.environments
     from hermes_cli.runtime_state import collect_generations
 
-    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    repo_root = Path(worker_bootstrap.__file__).resolve().parents[2]
     generation = _commit_generation(repo_root, "g1", with_site_packages=True).parent
     stderr_path = tmp_path / "worker.stderr"
     with stderr_path.open("w") as stderr:
@@ -918,7 +918,7 @@ def test_marked_worker_exits_before_cron_jobs_when_activation_fails():
     exit -- rather than run on an inherited path nothing leases."""
     from hermes_agent.cron import worker_bootstrap
 
-    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    repo_root = Path(worker_bootstrap.__file__).resolve().parents[2]
     _commit_generation(repo_root, "damaged", with_site_packages=False)
     child = _marked_worker(repo_root, subprocess.PIPE)
     out, err = child.communicate(timeout=60)

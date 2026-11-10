@@ -202,13 +202,14 @@ def test_cron_provider_package_does_not_shadow_core_cron_package(monkeypatch):
     monkeypatch.syspath_prepend(str(repo_root))
     monkeypatch.syspath_prepend(str(repo_root / "plugins"))
 
-    cron_spec = PathFinder.find_spec("hermes_agent.cron")
+    package = repo_root / "hermes_agent"
+    cron_spec = PathFinder.find_spec("hermes_agent.cron", [str(package)])
     assert cron_spec is not None
-    assert Path(cron_spec.origin).resolve() == repo_root / "cron" / "__init__.py"
+    assert Path(cron_spec.origin).resolve() == package / "cron" / "__init__.py"
 
-    jobs_spec = PathFinder.find_spec("hermes_agent.cron.jobs", [str(repo_root / "cron")])
+    jobs_spec = PathFinder.find_spec("hermes_agent.cron.jobs", [str(package / "cron")])
     assert jobs_spec is not None
-    assert Path(jobs_spec.origin).resolve() == repo_root / "cron" / "jobs.py"
+    assert Path(jobs_spec.origin).resolve() == package / "cron" / "jobs.py"
 
 
 def test_resolve_defaults_to_builtin(monkeypatch):

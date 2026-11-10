@@ -70,7 +70,7 @@ test('ordinary cron pins an unowned named target under a custom root', async () 
   expect(before.alpha).toBeNull()
   const output = fs.openSync(path.join(evidence, 'producer.log'), 'w')
   const resultPath = path.join(evidence, 'result.json')
-  const script = `import json; from pathlib import Path; from cron.scheduler_delivery import _deliver_to_bot_chat; j={"id":"ordinary-cron","name":"Ordinary cron","execution_id":"never-deferred"}; result=_deliver_to_bot_chat(j,"ORDINARY_CRON_SENTINEL","alpha"); Path(${JSON.stringify(resultPath)}).write_text(json.dumps({"result":result,"job":j}))`
+  const script = `import json; from pathlib import Path; from hermes_agent.cron.scheduler_delivery import _deliver_to_bot_chat; j={"id":"ordinary-cron","name":"Ordinary cron","execution_id":"never-deferred"}; result=_deliver_to_bot_chat(j,"ORDINARY_CRON_SENTINEL","alpha"); Path(${JSON.stringify(resultPath)}).write_text(json.dumps({"result":result,"job":j}))`
   const child = spawn(python, ['-c', script], { env, cwd: repo, stdio: ['ignore', output, output] })
   try {
     await expect.poll(() => fs.existsSync(resultPath) ? 'exited' : fixture.mock.receivedPrompts.some(p => p.includes('ORDINARY_CRON_SENTINEL')) ? 'held' : 'waiting', { timeout: 90_000 }).not.toBe('waiting')
@@ -97,7 +97,7 @@ test('ordinary cron pins an unowned named target under a custom root', async () 
     expect(rows.default.filter((r: string[]) => r[2].includes('ORDINARY_CRON_SENTINEL'))).toHaveLength(0)
     fs.writeFileSync(path.join(evidence, 'rows.json'), JSON.stringify(rows, null, 2))
     await page.screenshot({ path: path.join(evidence, 'ordinary-recipient.png') })
-    const missing = probe('import json,os; from pathlib import Path; from cron.scheduler_delivery import _deliver_to_bot_chat; h=Path(os.environ["HERMES_HOME"]); p=h/"profiles"/"beta"; p.rename(h/"profiles"/"beta-removed"); result=_deliver_to_bot_chat({"id":"removed","execution_id":"missing"},"MUST_NOT_RUN","beta"); print(json.dumps({"result":result,"recreated":p.exists(),"wrong_root":(Path.home()/".hermes").exists()}))')
+    const missing = probe('import json,os; from pathlib import Path; from hermes_agent.cron.scheduler_delivery import _deliver_to_bot_chat; h=Path(os.environ["HERMES_HOME"]); p=h/"profiles"/"beta"; p.rename(h/"profiles"/"beta-removed"); result=_deliver_to_bot_chat({"id":"removed","execution_id":"missing"},"MUST_NOT_RUN","beta"); print(json.dumps({"result":result,"recreated":p.exists(),"wrong_root":(Path.home()/".hermes").exists()}))')
     expect(missing.result).not.toBeNull()
     expect(missing.recreated).toBe(false)
     expect(missing.wrong_root).toBe(false)

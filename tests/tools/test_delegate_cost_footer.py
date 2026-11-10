@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import delegate_task
+from tools.delegate_tool_results import _finalize_child_results
 
 
 def _make_mock_parent(depth=0):
@@ -72,6 +73,19 @@ class TestCostInResultEntry(unittest.TestCase):
             )
         return parent, result
 
+    def _finalize_cost(self, parent, child):
+        task = {"goal": "Test cost provenance"}
+        entry = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "_child_cost_usd": child.session_estimated_cost_usd,
+            "cost_status": child.session_cost_status,
+        }
+        with patch("hermes_cli.plugins.invoke_hook"):
+            _finalize_child_results([entry], [task], [(0, task, child)], parent)
+        return parent
+
     def test_entry_carries_cost_usd_and_status(self):
         child = _make_mock_child(cost=0.1234567, cost_status="estimated")
         _, result = self._run(child)
@@ -102,6 +116,22 @@ class TestCostInResultEntry(unittest.TestCase):
         _, result = self._run(child)
         entry = result["results"][0]
         self.assertEqual(entry["cost_usd"], 0.0)
+
+    def test_estimated_child_downgrades_included_parent_status(self):
+        parent = _make_mock_parent()
+        parent.session_cost_status = "included"
+        parent = self._finalize_cost(parent, _make_mock_child(cost=0.25, cost_status="estimated"))
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.25, places=6)
+        self.assertEqual(parent.session_cost_status, "estimated")
+
+    def test_estimated_child_downgrades_actual_parent_status(self):
+        parent = _make_mock_parent()
+        parent.session_estimated_cost_usd = 0.5
+        parent.session_cost_status = "actual"
+        parent.session_cost_source = "provider"
+        parent = self._finalize_cost(parent, _make_mock_child(cost=0.25, cost_status="estimated"))
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.75, places=6)
+        self.assertEqual(parent.session_cost_status, "estimated")
 
 
 if __name__ == "__main__":

@@ -576,3 +576,23 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
         shutil.copy2(other, cfg)
         os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
         assert _tool_defs_cache_key(None, None, False) != before
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        ("model-a", {"provider": "provider-a", "context_length": 131072}),
+        ("model-b", {"provider": "provider-a", "context_length": 32768}),
+        ("model-a", {"provider": "provider-b", "context_length": 32768}),
+    ],
+)
+def test_tool_defs_cache_key_tracks_tool_search_model_context(monkeypatch, after):
+    """Tool Search tiers must not be reused across routes with different windows."""
+    import model_tools
+
+    before = ("model-a", {"provider": "provider-a", "context_length": 32768})
+    monkeypatch.setattr(model_tools, "_active_model_config", lambda: before)
+    before_key = model_tools._tool_defs_cache_key(None, None, False)
+    monkeypatch.setattr(model_tools, "_active_model_config", lambda: after)
+
+    assert model_tools._tool_defs_cache_key(None, None, False) != before_key

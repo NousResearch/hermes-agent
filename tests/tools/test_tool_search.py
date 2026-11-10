@@ -676,6 +676,22 @@ class TestCatalogListing:
         assert "mcp_x_0" not in search["function"]["description"]
 
 
+class TestBridgeToolCallGuidance:
+    def test_local_batching_guidance_matches_dispatcher_contract(self):
+        """The schema must not invite local batches that validation always rejects."""
+        from tools.tool_search import bridge_tool_schemas
+
+        schemas = bridge_tool_schemas(deferred_count=1)
+        call = next(s for s in schemas if s["function"]["name"] == "tool_call")
+        description = call["function"]["description"].lower()
+        calls_description = call["function"]["parameters"]["properties"]["calls"]["description"].lower()
+
+        assert "one entry for local tools" in description
+        assert "batch independent calls only for connectors__ tools" in description
+        assert "one entry for local tools" in calls_description
+        assert "connectors__" in calls_description
+
+
 class TestDeferredCallSchemaProbe:
     """Blind tool_call invocations missing required arguments must return
     the tool's parameter schema instead of dispatching into an opaque

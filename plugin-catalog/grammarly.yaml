@@ -1,0 +1,18 @@
+name: grammarly
+repo: https://github.com/Icarus-B4/hermes-official-plugins
+sha: efeecf6f08048f6c8aa2fa1af405fd2855c8153f
+subdir: grammarly
+description: "Proofread Hermes Desktop drafts with your configured model and review suggestions before applying."
+maintainer: Icarus-B4
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+version: "0.1.3"
+title: "Grammarly for Hermes"
+known_issues:
+  - "Native live spellchecking is not available; proofreading runs only when explicitly requested."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

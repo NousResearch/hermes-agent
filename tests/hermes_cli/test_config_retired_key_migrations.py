@@ -39,6 +39,49 @@ class TestCuratorFasterPrune:
         assert raw["curator"]["stale_after_days"] == DEFAULT_CONFIG["curator"]["stale_after_days"]
         assert raw["curator"]["archive_after_days"] == 180
 
+    def test_v44_lands_whole_or_not_at_all(self, tmp_path, monkeypatch):
+        """A step that raises is retried whole on the next pass. v44 rewrites two keys: if the
+        first rewrite landed and the second raised, the retry would rewrite the first again, over
+        a value the user may have set back in between."""
+        from hermes_cli import config_migrations
+        from hermes_cli.config import DEFAULT_CONFIG, migrate_config
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "_config_version": 43, "curator": {"stale_after_days": 30, "archive_after_days": 90},
+        }), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        real = config_migrations._persist_migration
+
+        def full_disk_on_archive(config):
+            if (config.get("curator") or {}).get("archive_after_days") == 30:
+                raise OSError("No space left on device")
+            real(config)
+
+        monkeypatch.setattr(config_migrations, "_persist_migration", full_disk_on_archive)
+        assert migrate_config(interactive=False, quiet=True)["failed_step"] == 44
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert raw["_config_version"] == 43
+        assert raw["curator"] == {"stale_after_days": 30, "archive_after_days": 90}, "no half of v44 landed"
+
+        monkeypatch.setattr(config_migrations, "_persist_migration", real)
+        raw["curator"]["stale_after_days"] = 21  # the user's own choice before the retry
+        config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        assert "failed_step" not in migrate_config(interactive=False, quiet=True)
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert raw["curator"] == {"stale_after_days": 21, "archive_after_days": 30}
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+
+
+def test_one_step_per_version():
+    """The stamp records versions, and a failing step is retried whole: two steps under one
+    version would be stamped and retried together, so a later one's failure re-runs the
+    earlier one. Each version has exactly one step, in ascending order."""
+    from hermes_cli.config_migrations import MIGRATIONS
+
+    versions = [version for version, _step in MIGRATIONS]
+    assert versions == sorted(set(versions))
+
 
 class TestRetiredBotChatDeliveryTimeout:
     def test_v51_drops_bot_chat_delivery_timeout_with_a_note(self, tmp_path, monkeypatch):

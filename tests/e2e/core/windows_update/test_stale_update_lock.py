@@ -76,15 +76,23 @@ def _timed(fn):
     return run, time.monotonic() - started
 
 
+def _transcript(proc) -> str:
+    try:  # the pump thread creates the file a moment after the spawn
+        return proc.transcript.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
+
+
 def _kill_once_pause_asked(machine) -> dict:
     proc = machine.spawn_logged([str(machine.hermes_exe), "update", "--yes"], "update-killed")
     try:
-        wait_until(lambda: PAUSE_ASKED in proc.transcript.read_text(encoding="utf-8", errors="replace")
-                   or proc.poll() is not None, 900, "the update to ask the gateway to pause", interval=0.2)
+        wait_until(lambda: PAUSE_ASKED in _transcript(proc) or proc.poll() is not None, 900,
+                   "the update to ask the gateway to pause", interval=0.2)
     finally:
-        asked = PAUSE_ASKED in proc.transcript.read_text(encoding="utf-8", errors="replace")
+        asked = PAUSE_ASKED in _transcript(proc)
         exited = proc.poll()
         killed = taskkill_tree(proc.pid)
+        wait_until(lambda: proc.poll() is not None, 60, "the killed update to exit")
     # The dead update's leftovers as the reporter found them: a 0-byte lock beside its marker.
     sidecar = machine.hermes_home / SIDECAR
     if not sidecar.exists():

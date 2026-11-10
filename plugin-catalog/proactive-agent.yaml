@@ -6,7 +6,7 @@
 # own process, plus a local SQLite ledger in the plugin's Hermes data directory.
 name: proactive-agent
 repo: https://github.com/JerryLiu369/hermes-proactive-agent
-sha: 1474310d149a2640ba9e4863848e06a4f5901720
+sha: 8c6630fbb09920c83199cd73275e27d13437645a
 subdir: proactive-agent
 title: Proactive Agent
 description: >-

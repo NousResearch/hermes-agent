@@ -20,7 +20,7 @@ description: >
 maintainer: am423
 tier: community
 category: tools
-requires_hermes: ">=0.21.0"
+requires_hermes: ">=0.21.6"
 version: "0.4.0"
 capabilities:
   provides_tools:

@@ -95,6 +95,28 @@ def test_reexec_plan_replays_minus_m_argv_under_committed_interpreter(tmp_path):
     assert plan == [str(target), "-m", "hermes_cli.main", "-p", "work", "gateway", "run"]
 
 
+def test_reexec_plan_replays_profile_respawn_source_launcher(monkeypatch, tmp_path):
+    """Profile respawns are ``-I -c`` bootstrap launches (runtime_command), not ``-m``;
+    a profile gateway booted under the wrong interpreter must get the same ABI repair,
+    with the bootstrap code and profile arguments replayed under the committed Python."""
+    from hermes_cli import _launchers
+
+    project = tmp_path / "project"
+    project.mkdir()
+    wrong = tmp_path / "Python314" / "python.exe"
+    target = project / "venv" / "Scripts" / "python.exe"
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: None)
+    monkeypatch.setattr(gateway.sys, "executable", str(wrong))
+
+    command = gateway._gateway_run_args_for_profile("work")
+    assert command[1:3] == ["-I", "-c"]
+    assert command[-5:] == ["--profile", "work", "gateway", "run", "--replace"]
+    assert gateway._gateway_reexec_plan(target, str(wrong), command) == [
+        str(target), *command[1:]
+    ]
+
+
 def test_reexec_plan_noop_when_already_on_target(tmp_path):
     target = tmp_path / "venv" / "Scripts" / "python.exe"
     plan = gateway._gateway_reexec_plan(target, str(target), ["python", "-m", "hermes_cli.main", "gateway", "run"])

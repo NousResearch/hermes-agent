@@ -4581,11 +4581,11 @@ _GATEWAY_PYTHON_REEXEC_ENV = "HERMES_GATEWAY_PYTHON_REEXEC"
 def _gateway_reexec_plan(target: Path, executable: str, orig_argv: list[str]) -> list[str] | None:
     """argv that re-execs this boot under *target*, or ``None`` to continue unchanged.
 
-    ``-m hermes_cli.main`` is the shape every generated launcher (gateway.cmd/.vbs, systemd,
-    respawn specs) boots with, so orig_argv replays it exactly under the new interpreter. A
-    console-script trampoline's orig_argv has no ``-m`` — but that trampoline already embeds
-    the venv/store interpreter, so it never mismatches; rather than guess its shape, leave it
-    alone.
+    Generated gateway.cmd/.vbs launchers boot with ``-m hermes_cli.main``, while the profile
+    respawn path (``_gateway_run_args_for_profile``) uses the isolated ``-I -c`` bootstrap
+    from ``_launchers.runtime_command``. Both shapes replay intact under the committed
+    interpreter, profile arguments and checkout pin included. A console-script trampoline
+    has neither form and already embeds its interpreter, so leave that shape alone.
     """
     try:
         if Path(executable).resolve() == target.resolve():
@@ -4593,7 +4593,7 @@ def _gateway_reexec_plan(target: Path, executable: str, orig_argv: list[str]) ->
     except OSError:
         return None
     orig = list(orig_argv)
-    if "-m" not in orig[1:3]:
+    if "-m" not in orig[1:3] and orig[1:3] != ["-I", "-c"]:
         return None
     return [str(target), *orig[1:]]
 

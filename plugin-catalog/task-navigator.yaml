@@ -3,7 +3,7 @@ repo: https://github.com/Guinevere1991/token-housekeeper-hackathon
 sha: e1b5d954131e3a44faef2ff3422ab6c430e0040e
 subdir: plugin
 title: token家政婦
-description: Source-grounded 5W1H task cards and advisory prompt-preparation workflow for Hermes.
+description: "Source-grounded 5W1H task cards and advisory prompt-preparation workflow for Hermes. Disclosure — registers a `pre_llm_call` hook that adds a fixed reminder to most substantive turns telling the model to call `housekeeper_prepare` first, so most turns gain one extra tool call."
 maintainer: Guinevere1991
 tier: community
 category: tools

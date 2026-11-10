@@ -41,7 +41,7 @@ _TRANSIENT_RUNNING_STATES = frozenset({"draining", "degraded"})
 # Container-namespaced state is garbage post-restart (an equal PID is a different process).
 _STALE_RUNTIME_FILES = ("gateway.pid", "processes.json")
 
-ReconcileActionLabel = Literal["started", "registered", "skipped"]
+ReconcileActionLabel = Literal["started", "registered"]
 
 
 @dataclass(frozen=True)

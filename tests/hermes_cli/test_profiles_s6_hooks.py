@@ -28,9 +28,6 @@ class _HostManager:
     """Mimics a host backend that doesn't support runtime registration."""
     kind = "systemd"
 
-    def supports_runtime_registration(self) -> bool:
-        return False
-
     def register_profile_gateway(self, *args: Any, **kwargs: Any) -> None:
         raise AssertionError("host backend register_profile_gateway should not be called")
 
@@ -47,9 +44,6 @@ class _S6Manager:
         self.unregistered: list[str] = []
         self.raise_on_register: Exception | None = None
         self.raise_on_unregister: Exception | None = None
-
-    def supports_runtime_registration(self) -> bool:
-        return True
 
     def register_profile_gateway(
         self, profile: str, *,

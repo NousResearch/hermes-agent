@@ -1813,7 +1813,7 @@ def _s6_runtime_manager():
         mgr = get_service_manager()
     except Exception:
         return None
-    return mgr if mgr.supports_runtime_registration() else None
+    return mgr
 
 
 def _maybe_register_gateway_service(profile_name: str) -> None:

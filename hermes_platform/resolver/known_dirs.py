@@ -13,24 +13,8 @@ _POSIX = sys.platform != "win32"
 _WIN = sys.platform == "win32"
 
 
-def homebrew_dirs() -> tuple[str, ...]:
-    return ("/opt/homebrew/bin", "/usr/local/bin") if sys.platform == "darwin" else ()
-
-
 def user_local_bin() -> tuple[str, ...]:
     return ("~/.local/bin",) if _POSIX else ("%USERPROFILE%/.local/bin",)
-
-
-def rust_tool_dirs() -> tuple[str, ...]:
-    return ("~/.cargo/bin",) if _POSIX else ("%USERPROFILE%/.cargo/bin",)
-
-
-def node_tool_dirs() -> tuple[str, ...]:
-    return ("~/.npm-global/bin", "~/.bun/bin", "~/.volta/bin") if _POSIX else ("%APPDATA%/npm", "%USERPROFILE%/.bun/bin", "%LOCALAPPDATA%/Volta/bin")
-
-
-def hermes_vendored_dirs() -> tuple[str, ...]:
-    return ("~/.hermes/bin",) if _POSIX else ("%USERPROFILE%/.hermes/bin",)
 
 
 def machine_marker_files() -> tuple[str, ...]:
@@ -73,16 +57,6 @@ def mac_privacy_protected_dirs() -> tuple[str, ...]:
     if sys.platform != "darwin":
         return ()
     return ("~/Documents", "~/Desktop", "~/Downloads", "~/Library/Mobile Documents")  # windows-footgun: ok — macOS only
-
-
-def windows_user_program_dirs() -> tuple[str, ...]:
-    if not _WIN:
-        return ()
-    return (
-        "%LOCALAPPDATA%/Programs",
-        "%USERPROFILE%/scoop/shims",
-        "%LOCALAPPDATA%/Microsoft/WinGet/Links",
-    )
 
 
 def visual_studio_installer_dirs() -> tuple[str, ...]:

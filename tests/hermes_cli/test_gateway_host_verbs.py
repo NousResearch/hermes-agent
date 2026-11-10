@@ -288,7 +288,7 @@ def test_a_supervised_attach_is_retried_not_parked(monkeypatch, capsys):
         "gateway.host_attach.decide",
         lambda home, replace=False: host_attach.HostAttachDecision(
             host_attach.ATTACH, "attached", owner, transient=True))
-    monkeypatch.setattr(gw, "_running_under_gateway_supervisor", lambda: True)
+    monkeypatch.setattr(gw, "is_gateway_supervisor_process", lambda: True)
 
     with pytest.raises(SystemExit) as exc:
         gw._attach_to_host_gateway_or_guard(force=False)

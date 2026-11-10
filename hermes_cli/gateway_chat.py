@@ -1,7 +1,6 @@
 """Normal classic/one-shot launch through the canonical gateway, never AIAgent."""
 from __future__ import annotations
 
-import argparse
 import asyncio
 import contextlib
 import os
@@ -397,7 +396,3 @@ def launch_from_args(args) -> int:
         if emitter is not None:
             return emitter.emit_result({"interrupted": True}, exit_code=130)
         return 130
-
-
-def launch_from_kwargs(options) -> int:
-    return launch_from_args(argparse.Namespace(**options))

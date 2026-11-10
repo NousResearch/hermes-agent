@@ -94,15 +94,6 @@ class ModelProfile:
     def window_compute_bytes(self) -> int:
         return _WINDOW_COMPUTE_BYTES.get(self.architecture, 0)
 
-    @property
-    def per_token_kv_f16(self) -> int:
-        """Uncapped per-token KV cost (full + SWA share)."""
-        return sum(b for kind, b in self.layers if kind != LayerKind.RECURRENT)
-
-    @property
-    def recurrent_layer_count(self) -> int:
-        return sum(1 for kind, _ in self.layers if kind == LayerKind.RECURRENT)
-
 
 @dataclass
 class HardwareBudget:

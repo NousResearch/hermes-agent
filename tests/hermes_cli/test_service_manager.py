@@ -1,10 +1,4 @@
-"""Tests for hermes_cli.service_manager — the abstract ServiceManager
-protocol, the detect_service_manager() entry point, and the host-side
-adapter wrappers (Systemd / Launchd / Windows).
-
-The s6 backend is added in Phase 3; its tests live alongside the
-implementation in this same file once that phase ships.
-"""
+"""Tests for hermes_cli.service_manager's s6 per-profile gateway backend."""
 from __future__ import annotations
 
 import subprocess

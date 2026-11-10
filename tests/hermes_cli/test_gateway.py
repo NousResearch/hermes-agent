@@ -246,7 +246,6 @@ def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
     assert snapshot.manager == "s6 (container supervisor)"
     assert snapshot.service_installed is True
     assert snapshot.service_running is True
-    assert snapshot.service_scope == "s6"
     assert snapshot.gateway_pids == (123,)
 
 

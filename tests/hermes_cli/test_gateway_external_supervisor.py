@@ -17,7 +17,7 @@ def test_external_marker_identifies_supervisor_process(monkeypatch):
     _clear_native_supervisor_markers(monkeypatch)
     monkeypatch.setenv(gateway.EXTERNAL_GATEWAY_SUPERVISOR_ENV, "1")
 
-    assert gateway._running_under_gateway_supervisor() is True
+    assert gateway.is_gateway_supervisor_process() is True
 
 
 def test_gateway_run_external_supervisor_flag_marks_process(monkeypatch):

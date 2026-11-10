@@ -68,9 +68,6 @@ def test_rename_moves_the_s6_slot_to_the_new_name(profile_env, monkeypatch):
         def __init__(self):
             self.slots = {"coder"}
 
-        def supports_runtime_registration(self):
-            return True
-
         def register_profile_gateway(self, name, *, start_now=True):
             self.slots.add(name)
 

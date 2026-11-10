@@ -64,7 +64,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 # Install system dependencies in one layer, clear APT cache.
 # tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
 # subprocesses, git, bun, etc.) that would otherwise accumulate when hermes
-# ran as PID 1. See #15012. Phase 2 of the s6-overlay supervision plan
+# ran as PID 1. See #15012. The image
 # replaces tini with s6-overlay's /init (PID 1 = s6-svscan), which reaps
 # zombies non-blockingly on SIGCHLD and additionally supervises the main
 # hermes process, the dashboard, and per-profile gateways.
@@ -458,11 +458,11 @@ RUN set -eu; \
 # ---------- s6-overlay service wiring ----------
 # Static services declared at build time: main-hermes, dashboard and
 # profile-gateways. Per-profile gateway services are registered
-# dynamically at runtime by the profile create/delete hooks (Phase 4);
+# dynamically at runtime by the profile create/delete hooks;
 # they live under /run/hermes-service/ (tmpfs), supervised by the
 # hermes-owned s6-svscan of the profile-gateways service, never in the
 # root /run/service scandir, and are reconciled on container restart by
-# /etc/cont-init.d/02-reconcile-profiles (Phase 4 Task 4.0).
+# /etc/cont-init.d/02-reconcile-profiles.
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 
 # stage2-hook handles UID/GID remap, volume chown, config seeding,
@@ -472,7 +472,7 @@ COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 #
 # 02-reconcile-profiles re-creates per-profile gateway s6 service
 # slots from $HERMES_HOME/profiles/<name>/ after a container restart
-# (the /run/hermes-service/ scandir is tmpfs and wiped on restart). Phase 4.
+# (the /run/hermes-service/ scandir is tmpfs and wiped on restart).
 RUN mkdir -p /etc/cont-init.d && \
     printf '#!/command/with-contenv sh\nexec /opt/hermes/docker/stage2-hook.sh\n' \
         > /etc/cont-init.d/01-hermes-setup && \
@@ -526,7 +526,7 @@ COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
 COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-dispatch.sh
 
 # Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
-# the venv bin onto PATH; Architecture B's main-wrapper.sh does the
+# the venv bin onto PATH; main-wrapper.sh does the
 # same for the container's main process, but `docker exec` and our
 # cont-init.d scripts don't pass through the wrapper. Expose the venv
 # bin globally so `docker exec <container> hermes ...` and any
@@ -564,7 +564,7 @@ VOLUME [ "/opt/data" ]
 # "main program" with stdin/stdout/stderr inherited (this is what makes
 # interactive --tui work). When the main program exits, /init begins stage 3
 # shutdown and the container exits with the program's exit code. Replaces
-# tini — see Phase 2 of docs/plans/2026-05-07-s6-overlay-dynamic-subagent-gateways.md.
+# tini.
 #
 # We use the ENTRYPOINT+CMD split rather than CMD alone so the
 # wrapper is prepended to user-supplied args automatically:

@@ -53,9 +53,3 @@ def test_query_runs_main_hermes_cli(routed):
     m.cmd_chat(_args(query="hello"))
     assert calls["cli_main"]["query"] == "hello" and "gateway" not in calls
 
-
-def test_cli_main_does_not_hand_off_to_thin_client():
-    import inspect
-
-    import cli
-    assert "launch_from_kwargs" not in inspect.getsource(cli.main)

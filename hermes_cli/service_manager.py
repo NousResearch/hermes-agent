@@ -1,4 +1,4 @@
-"""Abstract service manager interface + systemd/launchd/Windows/s6 backends."""
+"""Service manager detection and the s6 per-profile gateway backend."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal
 
 ServiceManagerKind = Literal["systemd", "launchd", "windows", "s6", "none"]
 
@@ -31,29 +31,6 @@ def validate_profile_name(name: str) -> None:
         raise ValueError(f"profile name must match [a-z0-9][a-z0-9_-]*, got {name!r}")
 
 
-@runtime_checkable
-class ServiceManager(Protocol):
-    """Init-system-specific service operations.
-
-    Lifecycle methods exist on every backend. Runtime registration (register/unregister/
-    list_profile_gateways) is s6-only — check ``supports_runtime_registration()`` first.
-    """
-
-    kind: ServiceManagerKind
-
-    def start(self, name: str) -> None: ...
-    def stop(self, name: str) -> None: ...
-    def restart(self, name: str) -> None: ...
-    def is_running(self, name: str) -> bool: ...
-
-    def supports_runtime_registration(self) -> bool: ...
-    def register_profile_gateway(
-        self, profile: str, *, extra_env: dict[str, str] | None = None, start_now: bool = True
-    ) -> None: ...
-    def unregister_profile_gateway(self, profile: str) -> None: ...
-    def list_profile_gateways(self) -> list[str]: ...
-
-
 def detect_service_manager() -> ServiceManagerKind:
     """Return "s6" (s6-svscan is PID 1), "windows", "launchd", "systemd" (working bus) or "none".
 
@@ -62,7 +39,7 @@ def detect_service_manager() -> ServiceManagerKind:
     agnostic code (profile create/delete hooks, the s6 dispatch path
     in ``hermes gateway start/stop/restart``).
     """
-    # Deferred so importing this module (Protocol type, validate_profile_name) doesn't drag in
+    # Deferred so importing this module (validate_profile_name) doesn't drag in
     # the whole gateway dependency graph.
     from hermes_cli.gateway import is_macos, is_windows, supports_systemd_services
     # Gate on _s6_running() alone, NOT is_container(): the latter only detects Docker/Podman/lxc
@@ -101,121 +78,10 @@ def _s6_running() -> bool:
     return comm == "s6-svscan" and Path("/run/s6/basedir").is_dir()
 
 
-# ---------------------------------------------------------------------------
-# Host backends: thin facades over ``hermes_cli.gateway`` (systemd/launchd) and
-# ``hermes_cli.gateway_windows``. The protocol's ``name`` parameter is unused here — host backends
-# operate on the currently active profile (``hermes -p <profile>``); the shape exists for s6 where
-# each profile maps to a distinct service directory.
-# ---------------------------------------------------------------------------
-
-
-class _HostServiceManager:
-    """``start``/``stop``/``restart`` resolve to ``<_fn_prefix><op>`` on ``hermes_cli.<_backend>``
-    at call time (lazy import; tests monkeypatch the submodule or its functions). Runtime
-    registration is unsupported on every host backend.
-    """
-
-    kind: ServiceManagerKind
-    _backend: str
-    _fn_prefix: str = ""
-
-    def _backend_module(self):
-        import importlib
-        import hermes_cli
-        importlib.import_module(f"hermes_cli.{self._backend}")
-        return getattr(hermes_cli, self._backend)
-
-    def _call(self, op: str) -> None:
-        getattr(self._backend_module(), f"{self._fn_prefix}{op}")()
-
-    def start(self, name: str) -> None:
-        self._call("start")
-
-    def stop(self, name: str) -> None:
-        self._call("stop")
-
-    def restart(self, name: str) -> None:
-        self._call("restart")
-
-    def supports_runtime_registration(self) -> bool:
-        return False
-
-    def _unsupported(self, verb: str) -> NotImplementedError:
-        return NotImplementedError(
-            f"{type(self).__name__} does not support runtime profile gateway {verb} (container-only feature)"
-        )
-
-    def register_profile_gateway(
-        self, profile: str, *, extra_env: dict[str, str] | None = None, start_now: bool = True
-    ) -> None:
-        raise self._unsupported("registration")
-
-    def unregister_profile_gateway(self, profile: str) -> None:
-        raise self._unsupported("unregistration")
-
-    def list_profile_gateways(self) -> list[str]:
-        return []
-
-
-class SystemdServiceManager(_HostServiceManager):
-    """Wraps the ``systemd_*`` functions in hermes_cli.gateway (host call sites still use those
-    directly; this exists for backend-agnostic code such as the profile create/delete hooks)."""
-
-    kind: ServiceManagerKind = "systemd"
-    _backend = "gateway"
-    _fn_prefix = "systemd_"
-
-    def is_running(self, name: str) -> bool:
-        _, running = self._backend_module()._probe_systemd_service_running()
-        return running
-
-
-class LaunchdServiceManager(_HostServiceManager):
-    """Wraps the ``launchd_*`` functions in hermes_cli.gateway."""
-
-    kind: ServiceManagerKind = "launchd"
-    _backend = "gateway"
-    _fn_prefix = "launchd_"
-
-    def is_running(self, name: str) -> bool:
-        return self._backend_module()._probe_launchd_service_running()
-
-
-class WindowsServiceManager(_HostServiceManager):
-    """Wraps ``hermes_cli.gateway_windows`` (Scheduled Task / Startup-folder fallback).
-
-    Not a true init service but the lifecycle protocol is the same. ``install`` takes
-    Windows-specific kwargs passed straight through — non-Windows callers must never call it.
-    """
-
-    kind: ServiceManagerKind = "windows"
-    _backend = "gateway_windows"
-
-    def install(
-        self,
-        *,
-        force: bool = False,
-        start_now: bool | None = None,
-        start_on_login: bool | None = None,
-        elevated_handoff: bool = False,
-    ) -> None:
-        self._backend_module().install(
-            force=force, start_now=start_now, start_on_login=start_on_login, elevated_handoff=elevated_handoff
-        )
-
-    def is_running(self, name: str) -> bool:
-        from hermes_cli.gateway import find_gateway_pids
-        if not self._backend_module().is_installed():
-            return False
-        return bool(find_gateway_pids())
-
-
-def get_service_manager() -> ServiceManager:
-    """Return the ServiceManager instance for the current environment."""
-    cls = _MANAGER_CLASSES.get(detect_service_manager())
-    if cls is None:
+def get_service_manager() -> S6ServiceManager:
+    if detect_service_manager() != "s6":
         raise RuntimeError("no supported service manager detected")
-    return cls()
+    return S6ServiceManager()
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +143,7 @@ def _write_gateway_desired_state(name: str, desired_state: str) -> None:
         return
 
 
-def register_unregistered_profile_gateway(mgr: ServiceManager, profile: str) -> bool:
+def register_unregistered_profile_gateway(mgr: S6ServiceManager, profile: str) -> bool:
     """Register a ``down`` s6 slot for a profile whose directory exists but was never registered.
 
     `hermes profile create` can only register a slot when it runs inside the container; created
@@ -665,9 +531,6 @@ class S6ServiceManager:
 
     # -- runtime registration ---------------------------------------------
 
-    def supports_runtime_registration(self) -> bool:
-        return True
-
     def register_profile_gateway(
         self, profile: str, *, extra_env: dict[str, str] | None = None, start_now: bool = True
     ) -> None:
@@ -685,7 +548,7 @@ class S6ServiceManager:
         # register) cannot supervise the half-built slot. Otherwise s6-supervise would spawn AS
         # ROOT on the ``.tmp`` (it already has ``type``/``run``), mkdir ``supervise/`` root-owned
         # 0700, and our ``_seed_supervise_skeleton`` would EACCES on ``supervise/event`` — the
-        # arm64-only CI flake on test_s6_unregister_removes_service_dir_in_live_container.
+        # arm64-only CI flake.
         #
         # Root never builds inside the hermes-owned scandir: hermes could swap the dot dir for a
         # symlink mid-build and redirect root's writes, chmods and chowns. Root builds in a
@@ -764,10 +627,3 @@ class S6ServiceManager:
             and entry.name.startswith(S6_SERVICE_PREFIX)
         ]
 
-
-_MANAGER_CLASSES: dict[str, type] = {
-    "systemd": SystemdServiceManager,
-    "launchd": LaunchdServiceManager,
-    "windows": WindowsServiceManager,
-    "s6": S6ServiceManager,
-}

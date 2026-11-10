@@ -86,7 +86,6 @@ class GatewayRuntimeSnapshot:
     service_installed: bool = False
     service_running: bool = False
     gateway_pids: tuple[int, ...] = ()
-    service_scope: str | None = None
 
     @property
     def running(self) -> bool:
@@ -1534,9 +1533,7 @@ def _s6_gateway_snapshot(gateway_pids: tuple[int, ...]) -> GatewayRuntimeSnapsho
     mgr = get_service_manager()
     service_installed = service_running = False
     try:
-        service_dir = getattr(mgr, "scandir", None)
-        if service_dir is not None:
-            service_installed = (service_dir / service_name).is_dir()
+        service_installed = (mgr.scandir / service_name).is_dir()
     except Exception:
         service_installed = False
     if service_installed:
@@ -1549,7 +1546,6 @@ def _s6_gateway_snapshot(gateway_pids: tuple[int, ...]) -> GatewayRuntimeSnapsho
         service_installed=service_installed,
         service_running=service_running,
         gateway_pids=gateway_pids,
-        service_scope="s6",
     )
 
 
@@ -1578,7 +1574,6 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
             service_installed=get_systemd_unit_path(system=selected_system).exists(),
             service_running=service_running,
             gateway_pids=gateway_pids,
-            service_scope=scope_label,
         )
 
     if is_macos():
@@ -1587,7 +1582,6 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
             service_installed=get_launchd_plist_path().exists(),
             service_running=_probe_launchd_service_running(),
             gateway_pids=gateway_pids,
-            service_scope="launchd",
         )
 
     return GatewayRuntimeSnapshot(manager="manual process", gateway_pids=gateway_pids)
@@ -4056,13 +4050,6 @@ def _is_official_docker_checkout() -> bool:
     return str(PROJECT_ROOT) == "/opt/hermes" and (PROJECT_ROOT / "docker" / "entrypoint.sh").is_file()
 
 
-def _running_under_gateway_supervisor() -> bool:
-    """True when this process IS the supervisor-launched gateway, so the conflict guard never wedges
-    the service into a respawn/refuse loop. Markers: systemd INVOCATION_ID, launchd XPC_SERVICE_NAME
-    (shells inherit "0"), s6 HERMES_S6_SUPERVISED_CHILD, or ``--external-supervisor``."""
-    return is_gateway_supervisor_process()
-
-
 def host_multiplexer_serving(profile_name: str | None = None):
     """The ONE live host gateway when it serves ``profile_name`` (default: the current profile).
 
@@ -4327,7 +4314,7 @@ def _attach_to_host_gateway_or_guard(force: bool = False, replace: bool = False)
             # WARNING+) are where a parked fleet is diagnosed, so name the verdict and the remedy there.
             logger.warning("gateway run refused (exit %d): %s", code, decision.message)
             sys.exit(code)
-        if _running_under_gateway_supervisor():
+        if is_gateway_supervisor_process():
             sys.exit(_host_decision_exit_code(decision))
         sys.exit(0)
     # No host record (older gateway, unwritable lock dir): the config-derived refusal still applies.
@@ -4341,7 +4328,7 @@ def _guard_supervised_gateway_conflict(force: bool = False) -> None:
 
     See #35240.
     """
-    if force or _running_under_gateway_supervisor():
+    if force or is_gateway_supervisor_process():
         return
     # Every entrypoint now ensures a detached gateway, so this runs on hosts with no service at
     # all (headless runners with no user bus). Without an installed unit/plist/task there is
@@ -4377,7 +4364,7 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
     """Cheap PID-file preflight before the expensive ``gateway.run`` import (the authoritative lock check):
     supervisor loops re-running bare ``gateway run`` burned memory on plugin discovery just to fail
     "already running". Same user-facing contract; never scans other HERMES_HOME roots."""
-    if replace or _running_under_gateway_supervisor():
+    if replace or is_gateway_supervisor_process():
         return
     try:
         from gateway.status import get_running_pid
@@ -4418,8 +4405,8 @@ def _guard_official_docker_root_gateway() -> None:
     print_error("Refusing to run the Hermes gateway as root inside the official Docker image.")
     print(
         "  The image entrypoint normally drops privileges to the 'hermes' user. "
-        "If you override entrypoint in Docker Compose, include "
-        "/opt/hermes/docker/entrypoint.sh before the Hermes command."
+        "If you override entrypoint in Docker Compose, keep "
+        "/opt/hermes/docker/entrypoint-dispatch.sh before the Hermes command."
     )
     print(
         "  Running the gateway as root can leave root-owned files in "
@@ -4780,10 +4767,7 @@ def _is_service_running() -> bool:
     if supports_systemd_services():
         return _systemd_unit_is_active(False) or _systemd_unit_is_active(True)
     if is_macos() and get_launchd_plist_path().exists():
-        try:
-            return _launchd_service_registered(get_launchd_label(), timeout=10)
-        except subprocess.TimeoutExpired:
-            return False
+        return _launchctl_label_supervising_process(get_launchd_label())
     # Windows "installed" doesn't mean "running"; like manual runs, a live gateway process decides.
     return len(find_gateway_pids()) > 0
 

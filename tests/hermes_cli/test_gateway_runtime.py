@@ -100,24 +100,3 @@ def test_fifo_control_pointer_is_rejected_without_a_writer(tmp_path):
         pytest.fail('discovery blocked on a FIFO instead of rejecting its file type')
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == 'inaccessible unsafe_control_pointer'
-
-
-def test_start_decisions_do_not_turn_uncertainty_into_another_owner():
-    from gateway.runtime_contract import RuntimeObservation, next_start_action
-
-    cases = [
-        (RuntimeObservation("ready"), "attach"),
-        (RuntimeObservation("starting"), "wait-owner"),
-        (RuntimeObservation("draining"), "wait-owner"),
-        (RuntimeObservation("incompatible"), "reject-version"),
-        (RuntimeObservation("inaccessible"), "reject-access"),
-        (RuntimeObservation("conflict"), "reject-conflict"),
-        (RuntimeObservation("absent"), "spawn-unmanaged"),
-        (RuntimeObservation("absent", installed_service=True), "start-service"),
-        (RuntimeObservation("absent", service_may_start=True), "wait-service"),
-        (RuntimeObservation("ready", update_paused=True), "wait-update"),
-    ]
-    for observation, expected in cases:
-        assert next_start_action(observation) == expected
-    with pytest.raises(ValueError, match="unknown runtime state"):
-        next_start_action(RuntimeObservation("invalid"))

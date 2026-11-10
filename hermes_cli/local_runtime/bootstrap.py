@@ -189,7 +189,6 @@ def refresh_local_runtime() -> bool:
     """Restart the managed server so it rescans the models directory. The router's model list is
     SPAWN-ONLY: a GGUF added after start is invisible to GET /models and 400s on completion, so
     anything that changes the staged set while the server runs must bounce it."""
-    global _SUPERVISOR
     try:
         from hermes_cli.config import load_config
 

@@ -18,7 +18,7 @@ def test_direct_query_alias_survives_noninteractive_launch(monkeypatch):
     # The alias contract is independent of whether this machine has a provider configured.
     monkeypatch.setattr(gateway_chat_startup, "ensure_launch_provider", lambda args: True)
     monkeypatch.setattr(gateway_chat, "run_gateway_chat", run)
-    assert gateway_chat.launch_from_kwargs({"q": "literal"}) == 0
+    assert gateway_chat.launch_from_args(argparse.Namespace(q="literal")) == 0
     assert seen == ["literal"]
 
 

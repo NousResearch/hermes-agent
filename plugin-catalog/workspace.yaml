@@ -1,0 +1,28 @@
+name: workspace
+title: Hermes Workspace
+repo: https://github.com/kaosjammo/hermes-workspace
+sha: a8c076ea35800a287723d34f14cec4fa17d42178
+description: Local documents and typed databases with passage-linked review and native Hermes conversations.
+maintainer: kaosjammo
+tier: community
+category: desktop
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/kaosjammo/hermes-workspace/blob/a8c076ea35800a287723d34f14cec4fa17d42178/docs/FEATURES.md
+readme: true
+platforms:
+  - linux
+screenshots:
+  - https://raw.githubusercontent.com/kaosjammo/hermes-workspace/a8c076ea35800a287723d34f14cec4fa17d42178/docs/screenshots/database-demo.png
+known_issues:
+  - "Development preview: private host imports and DB read contexts require maintainer review before catalog admission."
+  - "Native provider-positive saved editing and Electron visual acceptance remain unqualified."
+  - "The screenshot is an earlier-build manual demo using synthetic records, not acceptance of this exact pin."
+capabilities:
+  provides_tools:
+    - workspace_apply
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

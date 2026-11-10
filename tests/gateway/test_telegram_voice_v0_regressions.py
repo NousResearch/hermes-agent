@@ -265,6 +265,69 @@ async def test_telegram_video_size_gate_rejects_oversized_media_before_download(
     assert "exceeds" in handled[0].text
 
 
+def test_telegram_media_size_allowed_rejects_unverifiable_size():
+    """Missing or non-positive file_size cannot be validated against _max_doc_bytes;
+    it must be rejected before download rather than treated as unbounded."""
+    adapter = object.__new__(TelegramAdapter)
+    adapter._max_doc_bytes = 1024
+
+    for bad_size in [None, 0, -1]:
+        allowed, note = adapter._telegram_media_size_allowed(
+            SimpleNamespace(file_size=bad_size),
+            "voice message",
+        )
+        assert allowed is False
+        assert "could not be verified" in note
+        assert "voice message" in note
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unverifiable_size", [None, 0, -1])
+async def test_telegram_video_size_gate_rejects_unverifiable_size_before_download(unverifiable_size):
+    adapter = object.__new__(TelegramAdapter)
+    adapter._max_doc_bytes = 1024
+    adapter._should_process_message = lambda _message: True
+    adapter._build_message_event = lambda _message, _type, update_id=None: SimpleNamespace(
+        text="caption",
+        media_urls=[],
+        media_types=[],
+    )
+    adapter._apply_telegram_group_observe_attribution = lambda event: event
+
+    handled = []
+
+    async def handle_message(event):
+        handled.append(event)
+
+    adapter.handle_message = handle_message
+
+    class UnverifiableVideo:
+        file_size = unverifiable_size
+
+        async def get_file(self):  # pragma: no cover - failure path assertion
+            pytest.fail("unverifiable media must not be downloaded")
+
+    msg = SimpleNamespace(
+        caption=None,
+        sticker=None,
+        photo=None,
+        voice=None,
+        audio=None,
+        video=UnverifiableVideo(),
+        document=None,
+        media_group_id=None,
+    )
+    update = SimpleNamespace(message=msg, update_id=1)
+
+    await TelegramAdapter._handle_media_message(adapter, update, SimpleNamespace())
+
+    assert len(handled) == 1
+    assert handled[0].media_urls == []
+    assert handled[0].media_types == []
+    assert "video file" in handled[0].text
+    assert "could not be verified" in handled[0].text
+
+
 def _voice_event(source, urls, text=""):
     return MessageEvent(
         text=text,

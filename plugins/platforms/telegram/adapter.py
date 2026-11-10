@@ -4816,9 +4816,15 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     def _telegram_media_too_large_note(self, label: str, file_size: Any, max_bytes: int) -> str:
         limit_mb = max(1, max_bytes // (1024 * 1024))
         try:
-            size_text = f"{int(file_size or 0) / (1024 * 1024):.1f} MB"
+            size = int(file_size or 0)
         except (TypeError, ValueError):
-            size_text = "unknown size"
+            size = 0
+        if size <= 0:
+            return (
+                f"[Telegram {label} skipped: file size could not be verified. "
+                f"Maximum: {limit_mb} MB. Ask the user to send a smaller file.]"
+            )
+        size_text = f"{size / (1024 * 1024):.1f} MB"
         return f"[Telegram {label} skipped: file size {size_text} exceeds the {limit_mb} MB limit. Ask the user to send a smaller file.]"
 
     @staticmethod
@@ -4832,7 +4838,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Validate Telegram media size before downloading into memory."""
         max_bytes = int(getattr(self, "_max_doc_bytes", 20 * 1024 * 1024) or 20 * 1024 * 1024)
         size = self._int_or_zero(getattr(source, "file_size", None))
-        if size <= 0 or size <= max_bytes:
+        if 0 < size <= max_bytes:
             return True, None
         return False, self._telegram_media_too_large_note(label, size, max_bytes)
 

@@ -29,17 +29,11 @@ act/
 .pip-cache/
 .uv-cache/
 compose.hermes.local.yml
-export*
-__pycache__/model_tools.cpython-310.pyc
-__pycache__/web_tools.cpython-310.pyc
+# Root-anchored: dataset and export dumps land in the checkout root. Unanchored, these patterns
+# also matched source such as hermes_cli/data/ and skills/**/export-*.
+/export*
 logs/
-data/
-# Bundled community plugin index seed (shipped as package data) — the bare
-# `data/` pattern above would otherwise swallow it.
-!hermes_cli/data/
-# The Connectors page's wire layer (apps/desktop/src/app/capabilities/connectors/data/)
-# — same reason: the bare `data/` pattern above would otherwise swallow it.
-!apps/desktop/src/app/capabilities/connectors/data/
+/data/
 .pytest_cache/
 test_durations.json
 .pytest-cache/
@@ -56,8 +50,6 @@ run_datagen_kimik2-thinking.sh
 run_datagen_megascience_glm4-6.sh
 run_datagen_sonnet.sh
 source-data/*
-run_datagen_megascience_glm4-6.sh
-data/*
 MagicMock/
 # No trailing slash: also matches node_modules SYMLINKS (worktrees often
 # symlink node_modules to the main checkout; the dir-only pattern let one
@@ -78,7 +70,6 @@ agent-browser/
 *.pem
 privvy*
 images/
-__pycache__/
 hermes_agent.egg-info/
 wandb/
 testlogs
@@ -117,6 +108,8 @@ apps/desktop/electron/**/*.d.ts
 # e.g. hermes-bots): plugin.js IS the source, not tsc output. No .tsx
 # sibling exists, so the stale-shadow hazard above cannot apply.
 !apps/desktop/src/plugins/*/plugin.js
+!apps/desktop/src/plugins/*/plugin.runtime.js
+!apps/desktop/electron/get-windows.d.ts
 !apps/desktop/src/global.d.ts
 !apps/desktop/src/vite-env.d.ts
 
@@ -134,11 +127,6 @@ apps/desktop/release/
 # a killed build must not leave the checkout dirty
 apps/desktop/.staging-*/
 *.tsbuildinfo
-
-# Web UI assets — synced from @nous-research/ui at build time via
-# `pnpm run sync-assets` (see web/package.json).
-web/public/fonts/
-web/public/ds-assets/
 
 # Release script temp files
 .release_notes.md

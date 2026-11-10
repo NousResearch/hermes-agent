@@ -227,11 +227,18 @@ def test_launchd_verifies_the_osascript_wrapped_command_the_installer_writes(cas
             verify()
 
 
-def _installed_vbs(home, configured):
-    """The current installed launcher grammar; no script is executed."""
+def _loop(run_line):
+    return ['Do', run_line, '  If exit_code = 0 Or exit_code = 78 Then Exit Do', '  WScript.Sleep 60000', 'Loop', 'WScript.Quit 0']
+
+
+def _installed_vbs(home, configured, *, waits=True, run_lines=None):
+    """The installed launcher grammar; no script is executed. ``waits=False`` is the launcher an
+    earlier release wrote, still on disk until the update regenerates it."""
+    command = f'"{sys.executable} -m hermes_cli.main gateway run", 0'
+    run = run_lines or (_loop(f'  exit_code = sh.Run({command}, True)') if waits else [f'sh.Run {command}, False'])
     script = home / 'gateway.vbs'
     script.write_text("\n".join([
-        "' Hermes Agent Gateway", "Option Explicit", "Dim sh, env, existing_pp",
+        "' Hermes Agent Gateway", "Option Explicit", "Dim sh, env, existing_pp, exit_code" if waits else "Dim sh, env, existing_pp",
         'Set sh = CreateObject("WScript.Shell")', 'Set env = sh.Environment("PROCESS")',
         f'env.Item("HERMES_HOME") = "{configured}"',
         'env.Item("HERMES_SUPERVISED_CHILD") = "1"',
@@ -240,9 +247,36 @@ def _installed_vbs(home, configured):
         '  env.Item("PYTHONPATH") = "C:\\Hermes;" & existing_pp', 'Else',
         '  env.Item("PYTHONPATH") = "C:\\Hermes"', 'End If',
         f'sh.CurrentDirectory = "{home}"',
-        f'sh.Run "{sys.executable} -m hermes_cli.main gateway run", 0, False',
+        *run,
     ]) + "\n", encoding='utf-8')
     return script
+
+
+def test_task_identity_accepts_the_launcher_an_earlier_release_wrote(tmp_path):
+    from hermes_cli.gateway_runtime_service_identity import _vbs_identity
+
+    script = _installed_vbs(tmp_path, str(tmp_path), waits=False)
+
+    assert _vbs_identity(script.read_text(encoding='utf-8'))[0] == str(tmp_path)
+
+
+_RUN = f'  exit_code = sh.Run("{sys.executable} -m hermes_cli.main gateway run", 0, True)'
+
+
+@pytest.mark.parametrize("run_lines", [
+    [*_loop(_RUN), 'sh.Run "calc.exe", 0, False'],  # an extra command after the template
+    _loop(_RUN)[:-1],  # truncated
+    _loop(_RUN.replace(", 0, True", ", 1, True")),  # a visible window
+    _loop(_RUN.replace(", True", ", False")),  # does not wait
+    [line.replace("exit_code = 0 Or ", "") if "Exit Do" in line else line for line in _loop(_RUN)],  # revives a clean stop
+])
+def test_task_identity_refuses_a_launcher_outside_the_template(run_lines, tmp_path):
+    from hermes_cli.gateway_runtime_service_identity import _vbs_identity
+
+    script = _installed_vbs(tmp_path, str(tmp_path), run_lines=run_lines)
+
+    with pytest.raises(ValueError, match="service_identity_unverified"):
+        _vbs_identity(script.read_text(encoding='utf-8'))
 
 
 def _as_schtasks_exports(xml):

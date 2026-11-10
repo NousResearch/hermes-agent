@@ -930,6 +930,16 @@ def _gateway_drain_timeout(socket_acks: list[dict]) -> float:
     return drain_timeout
 
 
+def _end_gateway_launchers() -> None:
+    """End this install's supervising launchers before a pause (``gateway_windows.end_launchers``). The
+    resume's ``gateway restart`` starts the task again, and with it a new launcher."""
+    from hermes_cli import gateway_windows
+    from hermes_cli.profiles import profiles_to_serve
+    with _best_effort("Could not end Windows gateway launchers before update: %s"):
+        served = profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)
+        gateway_windows.end_launchers([gateway_windows._hermes_home(), *(home for _name, home in served)])
+
+
 def _pause_windows_gateways_for_update() -> dict | None:
     """Stop running Windows gateways before mutating the checkout or venv.
 
@@ -947,6 +957,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
         adopted, claims = pause_record.adopt_orphans()
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
     if not running_pids:
+        _end_gateway_launchers()  # one in its restart delay has no gateway to pause and would still wake
         return _cold_start_pause_token(adopted, claims)
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
     from gateway.status import get_process_start_time
@@ -985,6 +996,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
         # crash before that leaves it "never asked" (still serving, dropped), after it, draining (owed).
         pause_record.mark_stop_requested(
             intended, running_pids, markers=_planned_stop_markers(running_pids, profile_processes, service_gateway_pids))
+    _end_gateway_launchers()
     profiles = _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids, unmapped_pids, unmapped,
                                       on_request=lambda pid: pause_record.mark_stop_sent(intended, pid), born=born)
     token = {"resume_needed": True, "profiles": profiles, "unmapped_pids": unmapped_pids, "unmapped": unmapped}

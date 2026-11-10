@@ -210,7 +210,6 @@ _ANSWER = {"index": 0, "message": {"role": "assistant", "content": "OK"}, "finis
     # An HTTP-200 relay of an upstream failure is classified like the request error it reports.
     ({"choices": [], "error": {"code": "invalid_api_key", "message": "Incorrect API key provided", "status": 401}},
      "live_auth"),
-    ({"success": False, "data": {"error": {"message": "Unauthorized: invalid api key"}}}, "live_auth"),
     # An always-present error object with empty fields is not a failure.
     ({"choices": [_ANSWER], "error": {"message": None, "code": None}}, "ready"),
     ({"choices": [_ANSWER], "error": {"code": 0, "message": ""}}, "ready"),
@@ -221,19 +220,28 @@ _ANSWER = {"index": 0, "message": {"role": "assistant", "content": "OK"}, "finis
     ({"success": True, "data": {"choices": [_ANSWER], "error": {"code": "invalid_api_key", "message": "x",
                                                                "status": 401}}}, "live_auth"),
     ({"success": False, "data": {"error": {"code": "invalid_api_key", "status": 401, "message": "denied"}}},
-     "live_auth"),
+     "live_auth"),  # classified from the code
+    ({"success": False, "data": {"error": {"message": "Unauthorized: invalid api key"}}}, "live_auth"),  # message
+    # OpenRouter relays an upstream failure on the choice, possibly beside partial text.
+    ({"choices": [{**_ANSWER, "finish_reason": "error", "error": {"code": 502, "message": "upstream died"}}]},
+     "live_response_or_error"),
+    ({"choices": [{**_ANSWER, "finish_reason": "error"}]}, "live_response"),
+    ({"choices": [{**_ANSWER, "error": {"code": 401, "message": "Invalid API key"}}]}, "live_auth"),
     ({"success": False, "data": {"detail": "nope"}}, "live_unknown"),  # no error object: still a failure
     # Responses-style text outside ``choices`` is an answer, as on the aux path.
     ({"choices": [], "object": "response", "status": "completed", "output_text": "OK"}, "ready"),
     ({"choices": [], "object": "response", "status": "failed", "output_text": "OK"}, "live_response"),
-    # A malformed Responses-style body fails this entry (recovery raises inside the per-entry boundary).
-    ({"choices": [], "object": "response", "output": [{"type": "message", "content": 42}]}, "live_unknown"),
+    # A malformed Responses-style body is no answer, not a crash.
+    ({"choices": [], "object": "response", "output": [{"type": "message", "content": 42}]}, "live_response"),
 ])
 def test_live_judges_the_answer_body(monkeypatch, body, status):
     _route_to(monkeypatch, _openai_client(lambda request: httpx.Response(
         200, json={"id": "c", "object": "chat.completion", "created": 0, "model": "m", **body}), []))
     result = fc.check_entry_live({"provider": "local-oai", "model": "m"}, _ready())
-    assert result.status == status, result.error
+    if status == "live_response_or_error":  # a choice-level error is classified, never ready
+        assert result.inference_ready is False and result.status.startswith("live_"), result.status
+    else:
+        assert result.status == status, result.error
 
 
 def test_live_redacts_a_credential_shaped_reported_model(monkeypatch):

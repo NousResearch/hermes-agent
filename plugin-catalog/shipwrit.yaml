@@ -1,7 +1,7 @@
 name: shipwrit
 repo: https://github.com/ShalyX/shipwrit-hermes
 sha: 2f3a38e096feefc9041138852417187b793c0af5
-description: "Outcome-based release verification for Hermes: detect false-green deployments with bounded user journeys and redacted evidence receipts."
+description: "Outcome-based release verification for Hermes: detect false-green deployments with bounded user journeys and redacted evidence receipts. Disclosure — sends the HTTP requests in the project's release-witness.json (GET by default; POST/PUT/PATCH/DELETE steps when writes are allowed) to the hosts that file lists, which may include localhost or LAN addresses; writes receipts and release state under `.release-witness/` in the working directory, and its pre_verify hook can ask the agent to keep working when a detected deploy command has no passing receipt."
 maintainer: ShalyX
 tier: community
 category: automation

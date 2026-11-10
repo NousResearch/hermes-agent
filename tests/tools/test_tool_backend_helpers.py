@@ -23,7 +23,6 @@ from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
     normalize_browser_cloud_provider,
-    prefers_gateway,
     resolve_modal_backend_state,
     resolve_openai_audio_api_key,
 )
@@ -157,27 +156,6 @@ class TestHasDirectModalCredentials:
         monkeypatch.setenv("MODAL_TOKEN_SECRET", "sec-456")
         with patch.object(Path, "home", side_effect=PermissionError("denied")):
             assert has_direct_modal_credentials() is True
-
-
-# ---------------------------------------------------------------------------
-# prefers_gateway
-# ---------------------------------------------------------------------------
-class TestPrefersGateway:
-    """Honor bool-ish config values for tool gateway routing."""
-
-    def test_returns_false_for_quoted_false(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"web": {"use_gateway": "false"}},
-        )
-        assert prefers_gateway("web") is False
-
-    def test_returns_true_for_quoted_true(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"web": {"use_gateway": "true"}},
-        )
-        assert prefers_gateway("web") is True
 
 
 # ---------------------------------------------------------------------------

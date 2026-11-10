@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from contextlib import suppress
 
 _DONE = ("completed", "success")
-_REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
+_REASON_STATUS = {"lost": "marked lost because the process backend disappeared"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,7 +364,7 @@ def process_completion_display_text(events: list) -> str:
     if reason == "killed":
         outcome = "Terminated"
     elif reason in _REASON_STATUS:
-        outcome = "Lost" if reason == "lost" else "Failed to Start"
+        outcome = "Lost"
     else:
         outcome = "Finished" if exit_code == 0 else "Failed"
     cmd = _short_command(evt.get("command"))
@@ -500,7 +500,7 @@ def format_process_notification(evt: dict) -> str | None:
             + _out[-600:])
     elif evt.get("output_cut"):
         # Say so where the output is the payload (a teammate's reply): a silent tail reads as whole.
-        _out = (f"...(first {evt['output_cut']} characters cut — process(action=\"log\", "
+        _out = (f"...(first {evt['output_cut']} characters cut — process_manage(action=\"log\", "
                 f"session_id=\"{_sid}\") has the full output)\n{_out}")
     return (
         f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).\n"

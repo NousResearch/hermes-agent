@@ -129,6 +129,17 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
     assert os.environ["TERMINAL_DOCKER_VOLUMES"] == _LAUNCH_VOLUMES
 
 
+def test_sandbox_dir_follows_the_bound_scope(tmp_path, monkeypatch):
+    from tools.environments.base import get_sandbox_dir
+
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path / "launch-sandboxes"))
+    token = set_terminal_scope({"TERMINAL_SANDBOX_DIR": str(tmp_path / "routed-sandboxes")})
+    try:
+        assert get_sandbox_dir() == tmp_path / "routed-sandboxes"
+    finally:
+        reset_terminal_scope(token)
+
+
 def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):
     """#101132/#95470: a docker profile that does NOT set docker_volumes or
     docker_shared_container_key must not inherit the launch profile's."""

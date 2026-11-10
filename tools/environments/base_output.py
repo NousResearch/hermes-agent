@@ -89,11 +89,6 @@ class _BoundedOutputCollector:
             return str(self._spill_path)
 
     @property
-    def buffered_chars(self) -> int:
-        with self._lock:
-            return self._head_chars + self._tail_chars
-
-    @property
     def total_chars(self) -> int:
         with self._lock:
             return self._total_chars

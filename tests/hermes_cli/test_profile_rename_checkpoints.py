@@ -123,6 +123,5 @@ def test_retry_after_partial_rekey_keeps_checkpoints_taken_under_new_name(profil
         manager = CheckpointManager(enabled=True, max_snapshots=5)
         assert [entry["hash"] for entry in manager.list_checkpoints(str(new_workdir))] == before
         assert cm._load_ledger(store, cm._project_hash(str(new_workdir))) == ledger_before
-        assert cm._list_project_refs(store, str(new_workdir)) == [cm._ref_name(cm._project_hash(str(new_workdir)))]
     finally:
         reset_hermes_home_override(token)

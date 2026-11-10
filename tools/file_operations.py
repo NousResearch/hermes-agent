@@ -277,14 +277,6 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def _head(self, path: str, nbytes: int) -> ExecuteResult:
         return self._exec(f"head -c {nbytes} {self._escape_shell_arg(path)} 2>/dev/null")
 
-    def _run_python_snippet(self, snippet: str) -> ExecuteResult:
-        """Run ``snippet`` via the backend's ``python3``, retrying with ``python``
-        when only that name exists (Windows / older systems)."""
-        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
-        if result.exit_code != 0 and "python3" in (result.stdout or ""):
-            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
-        return result
-
     def _fenced_read(self, body: str, *more: str) -> tuple[Optional[list[str]], Optional[int], ExecuteResult]:
         """Run BODY, then each of MORE, each in its own sentinel-delimited segment; return (those
         segments, BODY's exit status, reply).

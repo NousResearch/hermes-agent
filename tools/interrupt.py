@@ -80,14 +80,6 @@ def request_yield(thread_id: int) -> None:
         _yield_threads.add(thread_id)
 
 
-def is_thread_yield_requested(thread_id: int | None) -> bool:
-    """Whether a yield is pending for *thread_id* (``None`` never is)."""
-    if thread_id is None:
-        return False
-    with _lock:
-        return thread_id in _yield_threads
-
-
 def consume_yield(thread_id: int | None) -> bool:
     """Atomically take the pending yield for *thread_id*; True if one was pending."""
     if thread_id is None:

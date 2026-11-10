@@ -49,7 +49,7 @@ class AcmeBoxEnvironment:
 
     def execute(self, command, timeout=None, **kwargs):
         ...  # run the command in the sandbox
-        return {"output": "...", "exit_code": 0}
+        return {"output": "...", "returncode": 0}
 
     def cleanup(self):
         ...  # tear down / detach
@@ -127,7 +127,7 @@ hermes config set terminal.backend acmebox
 `create_environment()` returns an object satisfying the same duck-typed
 interface as `tools.environments.base.BaseEnvironment`:
 
-- `execute(command, timeout=None, ...)` → `{"output": str, "exit_code": int}`
+- `execute(command, timeout=None, ...)` → `{"output": str, "returncode": int}`
 - `cleanup()` — release resources; called on session teardown / idle reaping
 - Optional: persistence hooks mirroring the built-in cloud backends
 

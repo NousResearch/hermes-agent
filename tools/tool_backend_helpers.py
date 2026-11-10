@@ -180,16 +180,6 @@ def resolve_openai_audio_api_key() -> str:
             or resolve_provider_secret("OPENAI_API_KEY", "openai-api"))
 
 
-def prefers_gateway(config_section: str) -> bool:
-    """True when ``<section>.use_gateway`` is set in config.yaml. Never raises."""
-    try:
-        from hermes_cli.config import load_config
-        section = (load_config() or {}).get(config_section)
-        return isinstance(section, dict) and is_truthy_value(section.get("use_gateway"))
-    except Exception:
-        return False
-
-
 # Provider value the managed "Nous Subscription" picker rows write for every category;
 # any other name = that vendor direct; no key = legacy autodetect.
 NOUS_MANAGED_PROVIDER = "nous"

@@ -478,7 +478,7 @@ def test_child_completion_notification_suppressed_by_default(monkeypatch):
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
-    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    monkeypatch.setattr(_cfg, "read_raw_config_readonly", lambda *a, **k: {})
     reg = ProcessRegistry()
     reg.completion_queue.put(_child_completion_evt())
     results = reg.drain_notifications()
@@ -495,7 +495,7 @@ def test_async_delegation_event_from_child_never_suppressed(monkeypatch):
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
-    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    monkeypatch.setattr(_cfg, "read_raw_config_readonly", lambda *a, **k: {})
     reg = ProcessRegistry()
     reg.completion_queue.put(_child_completion_evt(task_id="sa-9-supp0002"))
     reg.completion_queue.put(
@@ -521,7 +521,7 @@ def test_parent_owned_completion_unaffected_by_suppression(monkeypatch):
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
-    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    monkeypatch.setattr(_cfg, "read_raw_config_readonly", lambda *a, **k: {})
     reg = ProcessRegistry()
     reg.completion_queue.put(
         {
@@ -546,7 +546,7 @@ def test_surface_flag_true_restores_child_notification_delivery(monkeypatch):
 
     monkeypatch.setattr(
         _cfg,
-        "read_raw_config",
+        "read_raw_config_readonly",
         lambda *a, **k: {
             "delegation": {"surface_child_process_notifications": True}
         },
@@ -565,7 +565,7 @@ def test_child_watch_match_suppressed_by_default(monkeypatch):
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
-    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    monkeypatch.setattr(_cfg, "read_raw_config_readonly", lambda *a, **k: {})
     reg = ProcessRegistry()
     reg.completion_queue.put(
         {
@@ -592,7 +592,7 @@ def test_child_completion_with_collapsed_container_task_id_suppressed(monkeypatc
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
-    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    monkeypatch.setattr(_cfg, "read_raw_config_readonly", lambda *a, **k: {})
     reg = ProcessRegistry()
     evt = _child_completion_evt(task_id="default")
     evt["owner_task_id"] = "sa-9-supp0005"
@@ -631,7 +631,7 @@ def test_spawn_local_stamps_owner_task_id_and_event_carries_it(monkeypatch, noti
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
-    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    monkeypatch.setattr(_cfg, "read_raw_config_readonly", lambda *a, **k: {})
     reg = ProcessRegistry()
     command, gate = notification_child
     session = reg.spawn_local(
@@ -656,7 +656,7 @@ def test_spawn_local_without_owner_defaults_to_task_id(monkeypatch, notification
     import hermes_cli.config as _cfg
     from tools.process_registry import ProcessRegistry
 
-    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    monkeypatch.setattr(_cfg, "read_raw_config_readonly", lambda *a, **k: {})
     reg = ProcessRegistry()
     command, gate = notification_child
     session = reg.spawn_local(
@@ -683,7 +683,7 @@ def test_attribution_line_uses_owner_task_id(monkeypatch):
 
     monkeypatch.setattr(
         _cfg,
-        "read_raw_config",
+        "read_raw_config_readonly",
         lambda *a, **k: {
             "delegation": {"surface_child_process_notifications": True}
         },

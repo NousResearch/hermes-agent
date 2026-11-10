@@ -62,24 +62,6 @@ _STOP_POLL_INTERVAL = timedelta(milliseconds=500)
 _SNAPSHOT_STORE_NAME = "vercel_sandbox_snapshots.json"
 
 
-def _exception_chain(exc: BaseException) -> list[BaseException]:
-    chain: list[BaseException] = []
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        chain.append(current)
-        seen.add(id(current))
-        current = current.__cause__ or current.__context__
-    return chain
-
-
-def _extract_status_code(exc: BaseException) -> int | None:
-    response = getattr(exc, "response", None)
-    for value in (getattr(exc, "status_code", None), getattr(response, "status_code", None)):
-        if isinstance(value, int):
-            return value
-    return None
-
 @cache
 def _transport_error_types() -> tuple[type[BaseException], ...]:
     """Network exceptions of every HTTP stack the SDK may raise from.

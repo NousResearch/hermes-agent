@@ -298,9 +298,8 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     cleanup of non-persistent envs) must honor the user's persist-mode
     preference — stopping the container here would break the "ONE long-lived
     container shared across sessions" contract. Pass ``force_remove=True``
-    only for user-initiated teardown. The idle reaper calls ``env.cleanup()``
-    directly, so persist-mode idle envs are likewise no-op'd; only the orphan
-    reaper at next startup reclaims them.
+    only for user-initiated teardown. The idle reaper stops per-workspace containers
+    (``stop_idle``) and removes session-scoped ones; the shared persist-mode container keeps running.
     """
     env = _unregister_env(task_id)
     _clear_file_ops_cache(task_id)

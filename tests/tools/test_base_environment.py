@@ -83,7 +83,6 @@ class TestBoundedOutputCollector:
         rendered = collector.render()
 
         assert collector.total_chars > 8_000_000
-        assert collector.buffered_chars <= 1_000
         assert len(rendered) <= 1_000
         assert rendered.startswith("HEAD-SENTINEL")
         assert rendered.endswith("TAIL-SENTINEL")

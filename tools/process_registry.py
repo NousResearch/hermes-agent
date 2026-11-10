@@ -558,8 +558,8 @@ class ProcessSession:
     exited: bool = False
     exited_at: float = 0.0                      # time.time() of the FIRST move to finished (0 = unknown)
     exit_code: Optional[int] = None             # None while running
-    completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
-    termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
+    completion_reason: str = "exited"           # exited|killed|lost
+    termination_source: str = ""                # process.kill|kill_all|backend_lost|<caller source>
     output_buffer: str = ""                     # Rolling tail (last max_output_chars)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # Recovered from checkpoint (no pipe)
@@ -1065,9 +1065,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """``config.yaml`` value for ``section.key``, else the DEFAULT_CONFIG value.
         Raises if config is unreadable; callers wrap with their own hard fallback so
         registry code paths never crash on a broken config file."""
-        from hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config
+        from hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config_readonly
 
-        val = cfg_get(read_raw_config(), section, key)
+        val = cfg_get(read_raw_config_readonly(), section, key)
         return DEFAULT_CONFIG[section][key] if val is None else val
 
     @staticmethod
@@ -2050,9 +2050,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
         with status exited|timeout|interrupted|not_found|error and an output snapshot."""
         from tools.interrupt import consume_yield as _consume_yield, is_interrupted as _is_interrupted
-
+        from tools.terminal_scope import terminal_env
         try:
-            max_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+            max_timeout = int(terminal_env("TERMINAL_TIMEOUT", "180"))
         except (ValueError, TypeError):
             max_timeout = 180
         # The schema says minimum=1 but not every caller enforces it; timeout=0 is

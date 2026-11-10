@@ -1285,8 +1285,7 @@ class DockerEnvironment(BaseEnvironment):
         """Tear down per persist mode. Persist mode (default) leaves the container RUNNING —
         stopping it on every exit would kill background processes and add a ``docker start``
         delay per session; reclamation is ``reap_orphan_containers()`` at next startup.
-        ``persist_across_processes=False`` or ``force_remove=True`` (explicit-teardown hook,
-        unused so far) does ``docker stop`` + ``docker rm -f`` on a daemon thread that the
+        ``persist_across_processes=False`` or ``force_remove=True`` (the prompt-time backend probe) does ``docker stop`` + ``docker rm -f`` on a daemon thread that the
         atexit hook joins via ``wait_for_cleanup`` so the work completes before exit.
 
         Cleanup runs on a daemon thread with bounded ``subprocess.run`` calls (not the racy ``Popen(... &)``

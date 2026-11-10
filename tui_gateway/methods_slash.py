@@ -23,11 +23,16 @@ _registry = HandlerRegistry()
 # never by a slash command, so its /context answers "(._.) No active agent" for
 # any local session, active or idle (#81251 / #93280). With a live agent we render
 # the full Cursor-style breakdown (the desktop gauge's engine); without one we
-# fall back to the persisted-state view. ``tools``/``help`` also answer from the
-# live session whenever one is available (#128874): the same slash-worker blind
-# spot leaves them answering "No active agent" for normal desktop sessions, and
-# the session-less case keeps each formatter's own no-session reply.
+# fall back to the persisted-state view. The other read-only commands answer from
+# the live session too (#128874): the same slash-worker blind spot leaves /tools
+# and /help answering "No active agent" for normal desktop sessions. /help is
+# static content, so any available session serves it; /tools consults the agent,
+# so an agentless session keeps the old worker routing (_AGENT_BOUND_READ_COMMANDS).
 _CONTEXT_LOCAL_IN_PROCESS = frozenset({"context"})
+
+# /tools consults the session's agent, so it answers from the live session only
+# when a live agent is present; an agentless session keeps the worker routing.
+_AGENT_BOUND_READ_COMMANDS = frozenset({"tools"})
 
 _NO_AGENT_USAGE = "(._.) No active agent -- send a message first."
 _NO_AGENT = "No active agent -- send a message first."
@@ -359,6 +364,8 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
         and not _session_uses_compute_host(session)
     ):
         return _format_live_context_output(sid, session, arg)
+    if name in _AGENT_BOUND_READ_COMMANDS and not (session is not None and session.get("agent") is not None):
+        return None
     entry = _LIVE_SLASH_OUTPUT.get(name)
     if entry is None:
         return None

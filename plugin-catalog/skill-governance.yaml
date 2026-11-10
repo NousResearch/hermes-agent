@@ -1,7 +1,7 @@
 name: skill-governance
-version: "0.2.0"
+version: "0.3.0"
 repo: https://github.com/moonlight-lupin/agent-skills
-sha: ceacc13d2bbc98d9dea5cbabcb4f44e4c7fd14a9
+sha: 8743eae944c0d361339c614f21c258e6851357e8
 subdir: plugins/skill-governance
 description: >-
   Consolidated skill-governance plugin behind one composed hook surface:
@@ -16,20 +16,24 @@ description: >-
   to ~/.hermes/skill-probes/fire-ledger.jsonl. Both legacy state namespaces
   import by copy (destination-wins, sources never modified) and a conservative
   governance.records summary joins them (acknowledged never implies
-  validated). One opt-in clearance cron (cron.*, default off) replaces both
-  legacy schedulers and preserves both clearance procedures verbatim. Stdlib
+  validated). A clearance Automation Blueprint (daily schedule, origin
+  delivery) replaces both legacy schedulers and preserves both clearance
+  procedures verbatim; the user adopts it from the blueprint gallery or
+  /blueprint, and the plugin imports no private cron modules and writes no
+  cron state. Stdlib
   only, no network calls, fail-soft everywhere (malformed state keeps hooks
   inert, never aborts the host turn). Disclosure — reads the profile's skills
   tree (SKILL.md files, fingerprinted read-only) and UPSTREAM_MANIFEST.md,
   writes plugin state under HERMES_HOME/plugin-data/agent-plugin-skill-governance-*/,
-  optionally writes one cron job and the shared fire-ledger.jsonl +
-  plugin-data/skill-manifest/acks.json when the clearance cron is enabled;
-  never deletes, never blocks tool calls.
+  the shared fire-ledger.jsonl on an advisor fire, and plugin-data/skill-manifest/acks.json
+  on a manual acknowledgement; never deletes, never blocks tool calls.
+  The clearance procedure itself writes nothing until the user adopts the
+  blueprint.
 maintainer: moonlight-lupin
 tier: community
 category: tools
 requires_hermes: ">=0.21.1"
-docs_url: https://github.com/moonlight-lupin/agent-skills/tree/ceacc13d2bbc98d9dea5cbabcb4f44e4c7fd14a9/plugins/skill-governance#readme
+docs_url: https://github.com/moonlight-lupin/agent-skills/tree/8743eae944c0d361339c614f21c258e6851357e8/plugins/skill-governance#readme
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: []

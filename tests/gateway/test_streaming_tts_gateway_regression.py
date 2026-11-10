@@ -70,7 +70,6 @@ def _make_runner():
     runner._session_db = None
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
-    runner._session_model_overrides = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(streaming=None, multiplex_profiles=False)
     runner.session_store = SimpleNamespace(

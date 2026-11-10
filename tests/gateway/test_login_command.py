@@ -26,7 +26,6 @@ def _runner(monkeypatch, *, extra=None):
     runner.adapters = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
-    runner._session_model_overrides = {}
     runner.session_store = MagicMock()
     runner._async_session_store = MagicMock(set_model_override=AsyncMock())
     runner._async_session_store._store = runner.session_store
@@ -307,7 +306,7 @@ async def test_a_completion_evicts_welcome_and_clears_its_override(monkeypatch):
     runner = _runner(monkeypatch)
     agent = SimpleNamespace(provider="nous", model=anon_auth.GUEST_MODEL)
     runner._agent_cache = {"k1": (agent, "signature")}
-    runner._session_model_overrides["k1"] = {"model": anon_auth.GUEST_MODEL}
+    runner._session_state("k1").conversation.model_override = {"model": anon_auth.GUEST_MODEL}
 
     await runner._render_login_state(
         SimpleNamespace(source=_source(), attempt_id="attempt"),
@@ -315,7 +314,7 @@ async def test_a_completion_evicts_welcome_and_clears_its_override(monkeypatch):
     )
 
     runner._evict_cached_agent.assert_called_once_with("k1")
-    assert "k1" not in runner._session_model_overrides
+    assert runner._session_model_override("k1") is None
     runner.async_session_store.set_model_override.assert_awaited_once_with("k1", None)
 
 
@@ -333,7 +332,7 @@ def _durable_sweep_runner(monkeypatch, tmp_path):
     store.set_model_override(key, override)
     runner.session_store = store
     runner._async_session_store = AsyncSessionStore(store)
-    runner._session_model_overrides[key] = dict(override)
+    runner._session_state(key).conversation.model_override = dict(override)
     runner._agent_cache[key] = (
         SimpleNamespace(provider="nous", model=anon_auth.GUEST_MODEL), "signature")
     return runner, store, key, override
@@ -347,7 +346,7 @@ async def test_durable_clear_fails_once_then_succeeds_before_eviction(monkeypatc
 
     def fail_once(data):
         writes.append(data)
-        assert runner._session_model_overrides[key] == override
+        assert runner._session_model_override(key) == override
         runner._evict_cached_agent.assert_not_called()
         if len(writes) == 1:
             raise OSError("disk temporarily unavailable")
@@ -360,7 +359,7 @@ async def test_durable_clear_fails_once_then_succeeds_before_eviction(monkeypatc
     await runner._render_login_state(attempt, state)
 
     assert len(writes) == 2
-    assert key not in runner._session_model_overrides
+    assert runner._session_model_override(key) is None
     runner._evict_cached_agent.assert_called_once_with(key)
     reloaded = SessionStore(sessions_dir=tmp_path, config=runner.config)
     assert reloaded.get_model_override(key) is None
@@ -373,7 +372,7 @@ async def test_durable_clear_fails_twice_keeps_override_and_warns(monkeypatch, t
     # Multiple failed sessions still produce exactly one extra completion line.
     second_key = store.get_or_create_session(_source(chat_id="chat-2")).session_key
     store.set_model_override(second_key, override)
-    runner._session_model_overrides[second_key] = dict(override)
+    runner._session_state(second_key).conversation.model_override = dict(override)
     runner._agent_cache[second_key] = runner._agent_cache[key]
     writes = []
 
@@ -392,10 +391,10 @@ async def test_durable_clear_fails_twice_keeps_override_and_warns(monkeypatch, t
     rebuilt = _runner(monkeypatch)
     rebuilt.session_store = reloaded
     for session_key in (key, second_key):
-        assert runner._session_model_overrides[session_key] == override
+        assert runner._session_model_override(session_key) == override
         assert reloaded.get_model_override(session_key) == override
         rebuilt._rehydrate_session_model_override(session_key)
-        assert rebuilt._session_model_overrides[session_key]["model"] == override["model"]
+        assert rebuilt._session_model_override(session_key)["model"] == override["model"]
         assert any(
             record.levelno == logging.WARNING and session_key in record.getMessage()
             and "failed to clear free-tier override" in record.getMessage()
@@ -413,7 +412,7 @@ async def test_the_sweep_leaves_sessions_on_other_models_alone(monkeypatch):
         "k1": (SimpleNamespace(provider="nous", model=anon_auth.GUEST_MODEL), "signature"),
         "k2": (SimpleNamespace(provider="openrouter", model="openrouter/x"), "signature"),
     }
-    runner._session_model_overrides["k2"] = {"model": "openrouter/x"}
+    runner._session_state("k2").conversation.model_override = {"model": "openrouter/x"}
 
     await runner._render_login_state(
         SimpleNamespace(source=_source(), attempt_id="attempt"),
@@ -421,7 +420,7 @@ async def test_the_sweep_leaves_sessions_on_other_models_alone(monkeypatch):
     )
 
     assert runner._evict_cached_agent.call_args_list == [call("k1")]
-    assert runner._session_model_overrides["k2"] == {"model": "openrouter/x"}
+    assert runner._session_model_override("k2") == {"model": "openrouter/x"}
     runner.async_session_store.set_model_override.assert_not_awaited()
 
 

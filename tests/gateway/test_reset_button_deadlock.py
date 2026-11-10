@@ -54,7 +54,6 @@ def _make_runner_with_cached_agent(close_fn):
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
-    runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
 
@@ -75,7 +74,6 @@ def _make_runner_with_cached_agent(close_fn):
     runner.session_store._generate_session_key.return_value = session_key
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._is_user_authorized = lambda _source: True
     runner._format_session_info = lambda: ""

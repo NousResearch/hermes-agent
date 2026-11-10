@@ -12,7 +12,6 @@ def _make_runner() -> GatewayRunner:
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
     )
     runner.adapters = {}
-    runner._session_model_overrides = {}
     return runner
 
 

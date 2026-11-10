@@ -19,7 +19,6 @@ def _make_runner():
     runner.adapters = {Platform.TELEGRAM: _PendingAdapter()}
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._voice_mode = {}
     runner._is_user_authorized = lambda _source: True
     return runner

@@ -17,7 +17,6 @@ class TestGatewayEmptyModelFallback:
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
-        runner._session_model_overrides = {}
 
         # Mock _resolve_gateway_model to return empty string
         # Mock _resolve_runtime_agent_kwargs to return openai-codex provider
@@ -40,7 +39,6 @@ class TestGatewayEmptyModelFallback:
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
-        runner._session_model_overrides = {}
 
         with patch("gateway.run._resolve_gateway_model", return_value="gpt-5.4"), \
              patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
@@ -58,7 +56,6 @@ class TestGatewayEmptyModelFallback:
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
-        runner._session_model_overrides = {}
 
         with patch("gateway.run._resolve_gateway_model", return_value=""), \
              patch("gateway.run._resolve_runtime_agent_kwargs", return_value={

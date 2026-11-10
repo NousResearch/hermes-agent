@@ -15,7 +15,6 @@ def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
-    runner._session_model_overrides = {}
     return runner
 
 

@@ -1,7 +1,7 @@
 """Tests that gateway /model switch persists across messages.
 
 The gateway /model command stores session overrides in
-``_session_model_overrides``.  These must:
+``SessionState.conversation.model_override``.  These must:
 
 1. Be applied in ``run_sync()`` so the next agent uses the switched model.
 2. Not be mistaken for fallback activation (which evicts the cached agent).
@@ -49,12 +49,10 @@ def _make_runner():
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
-    runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._agent_cache = {}
     runner._agent_cache_lock = None
@@ -87,7 +85,7 @@ class TestApplySessionModelOverride:
         runner = _make_runner()
         sk = build_session_key(_make_source())
 
-        runner._session_model_overrides[sk] = {
+        runner._session_state(sk).conversation.model_override = {
             "model": "gpt-5.4-turbo",
             "provider": "openrouter",
             "api_key": "or-key-123",
@@ -134,7 +132,7 @@ class TestIsIntentionalModelSwitch:
         runner = _make_runner()
         sk = build_session_key(_make_source())
 
-        runner._session_model_overrides[sk] = {
+        runner._session_state(sk).conversation.model_override = {
             "model": "gpt-5.4",
             "provider": "openai",
             "api_key": "key",
@@ -180,7 +178,7 @@ class TestFallbackEvictionHonorsChannelOverrides:
         runner = _make_runner()
         runner.config.platforms[Platform.TELEGRAM].channel_overrides = {"c1": ChannelOverride(model=channel_model)}
         if session_model:
-            runner._session_model_overrides[build_session_key(source)] = {
+            runner._session_state(build_session_key(source)).conversation.model_override = {
                 "model": session_model, "provider": session_provider,
             }
         runner._evict_cached_agent = MagicMock()
@@ -279,17 +277,17 @@ class TestOneTurnModelOverrideRestore:
             "base_url": "https://openrouter.ai/api/v1",
             "api_mode": "chat_completions",
         }
-        runner._session_model_overrides[sk] = previous
+        runner._session_state(sk).conversation.model_override = previous
 
         snapshot = runner._snapshot_session_model_override(sk)
-        runner._session_model_overrides[sk] = {
+        runner._session_state(sk).conversation.model_override = {
             "model": "temp/model",
             "provider": "anthropic",
         }
 
         runner._restore_session_model_override(sk, snapshot)
 
-        assert runner._session_model_overrides[sk] == previous
+        assert runner._session_model_override(sk) == previous
 
 
 class TestOneTurnNeverPersisted:
@@ -340,7 +338,6 @@ class TestOneTurnNeverPersisted:
         runner = object.__new__(GatewayRunner)
         runner.adapters = {}
         runner._voice_mode = {}
-        runner._session_model_overrides = {}
         runner._running_agents = {}
         # async_session_store is a property over session_store; install the
         # mock behind the private cache attribute it reads.
@@ -374,8 +371,8 @@ class TestOneTurnNeverPersisted:
 
         assert result is not None and "gpt-5.5" in result
         # In-memory override installed for the next turn + restore queued...
-        assert runner._session_model_overrides[sk]["model"] == "gpt-5.5"
-        assert runner._session_model_overrides[sk]["capabilities"] == {
+        assert runner._session_model_override(sk)["model"] == "gpt-5.5"
+        assert runner._session_model_override(sk)["capabilities"] == {
             "openai_native_compaction": True
         }
         assert runner._session_state(sk).conversation.one_turn_restore is not None
@@ -391,7 +388,7 @@ class TestOneTurnNeverPersisted:
         sk = build_session_key(_make_source())
 
         await runner._handle_model_command(self._event("/model gpt-5.5 --once"))
-        assert runner._session_model_overrides[sk]["model"] == "gpt-5.5"
+        assert runner._session_model_override(sk)["model"] == "gpt-5.5"
         await runner._handle_model_command(self._event("/model gpt-5.5 --once"))
 
         # The second producer call snapshotted the live gpt-5.5 override; the pending restore
@@ -412,4 +409,4 @@ class TestOneTurnNeverPersisted:
 
         assert runner._session_state(sk).conversation.one_turn_restore is None
         runner._restore_pending_one_turn_model_override(sk)  # what the turn finalizer runs
-        assert runner._session_model_overrides[sk]["model"] == "gpt-5.5"
+        assert runner._session_model_override(sk)["model"] == "gpt-5.5"

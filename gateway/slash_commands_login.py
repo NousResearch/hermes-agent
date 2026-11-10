@@ -216,8 +216,7 @@ class GatewayLoginCommandsMixin:
         ]
         failed = 0
         for key in keys:
-            overrides = self._session_model_overrides
-            override = overrides.get(key) or {}
+            override = self._session_model_override(key) or {}
             if str(override.get("model") or "") == anon_auth.GUEST_MODEL:
                 for attempt in range(2):
                     try:
@@ -231,7 +230,8 @@ class GatewayLoginCommandsMixin:
                     # Retain the live route while disk still pins it, including on a rebuild.
                     failed += 1
                     continue
-                overrides.pop(key, None)
+                if (_override_state := self._peek_session_state(key)) is not None:
+                    _override_state.conversation.model_override = None
             try:
                 self._evict_cached_agent(key)
             except Exception:

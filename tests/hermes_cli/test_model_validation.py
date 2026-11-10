@@ -407,7 +407,7 @@ class TestValidateApiFallback:
       2. Provider has no catalog: accept with a generic 'Note:' warning.
 
     In both cases ``accepted`` and ``persist`` must be True so the gateway can
-    write the ``_session_model_overrides`` entry.
+    write the session /model override.
     """
 
 

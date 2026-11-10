@@ -111,7 +111,6 @@ class TestResolveSessionAgentRuntimePriority:
 
     def test_channel_override_beats_global(self):
         runner = object.__new__(GatewayRunner)
-        runner._session_model_overrides = {}
         runner.config = GatewayConfig(
             platforms={
                 Platform.DISCORD: PlatformConfig(

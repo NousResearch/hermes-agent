@@ -9,14 +9,12 @@ from gateway.run import GatewayRunner, _credential_pool_for_provider
 
 def test_fast_session_override_includes_credential_pool(monkeypatch):
     runner = object.__new__(GatewayRunner)
-    runner._session_model_overrides = {
-        "sess-1": {
-            "model": "kimi-k2.7",
-            "provider": "custom:hyper",
-            "api_key": "sk-test",
-            "base_url": "https://hyper.charm.land/v1",
-            "api_mode": "chat_completions",
-        },
+    runner._session_state("sess-1").conversation.model_override = {
+        "model": "kimi-k2.7",
+        "provider": "custom:hyper",
+        "api_key": "sk-test",
+        "base_url": "https://hyper.charm.land/v1",
+        "api_mode": "chat_completions",
     }
     fake_pool = object()
 

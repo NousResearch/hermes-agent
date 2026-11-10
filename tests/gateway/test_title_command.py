@@ -146,7 +146,6 @@ class TestResetCommandWithTitle:
         runner.adapters = {Platform.TELEGRAM: adapter}
         runner._voice_mode = {}
         runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
-        runner._session_model_overrides = {}
         runner._pending_model_notes = {}
         runner._background_tasks = set()
 
@@ -172,7 +171,6 @@ class TestResetCommandWithTitle:
         runner.session_store._generate_session_key.return_value = session_key
         runner._running_agents = {}
         runner._pending_messages = {}
-        runner._pending_approvals = {}
         runner._session_db = AsyncMock()
         runner._session_db.set_session_title.side_effect = ValueError(
             "Title 'Dup' is already in use by session abc-123"

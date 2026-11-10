@@ -25,6 +25,7 @@ import { enNotifications } from './en_notifications'
 import { enOnboarding } from './en_onboarding'
 import { enPluginPreviewAccess } from './en_plugin_preview_access'
 import { enPluginUpdate } from './en_plugin_update'
+import { enPluginUpdateAll } from './en_plugin_update_all'
 import { enPreviewWeb } from './en_preview_web'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
@@ -2021,15 +2022,20 @@ export const en: Translations = {
       browserRealProfile: {
         label: 'Use My Real Browser Profile',
         description:
-          "Copies your default browser's logins and cookies into a managed snapshot the agent browses with. Your live profile is never opened directly. Applies to new sessions.",
+          'Copies your default browser\'s logins and cookies into a managed snapshot the agent browses with, and signs the in-app Browser tab in with them too. Your live profile is never opened directly. Applies to new sessions.',
         enabledTitle: 'Real-profile browsing on',
         enabledMessage: 'New sessions will browse with a snapshot of your default browser profile.',
         disabledTitle: 'Real-profile browsing off',
-        disabledMessage: 'The profile snapshot will be deleted; new sessions use a clean browser.',
+        disabledMessage: 'The profile snapshot will be deleted and the in-app browser signed out of it; new sessions use a clean browser.',
         failedSave: 'Could not save the real-profile setting',
+        reimportSignins: 'Re-import sign-ins',
+        signinsImportedTitle: 'In-app browser sign-ins',
+        signinsImported: count => `Signed the in-app browser in with ${count} cookie${count === 1 ? '' : 's'} from your browser profile.`,
+        signinsRemote: 'This backend runs on another machine, so its browser profile is not imported into the in-app browser.',
+        signinsFailed: 'Could not import sign-ins into the in-app browser',
         prompt: {
           title: 'Stay signed in to your sites',
-          body: 'Let Hermes browse with a snapshot of your default browser profile, so sites open already signed in.',
+          body: 'Let Hermes browse with a snapshot of your default browser profile, so sites open already signed in, both for the agent and in the in-app Browser tab.',
           bulletSnapshot: 'Cookies and logins are copied into a managed snapshot.',
           bulletLiveProfile: 'Your live browser profile is never opened directly.',
           bulletLocal: 'Nothing leaves this computer.',
@@ -2154,6 +2160,7 @@ export const en: Translations = {
         `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
       pinnedBadge: (sha: string) => `pinned @ ${sha}`,
       ...enPluginUpdate,
+      ...enPluginUpdateAll,
       ...enPluginPreviewAccess,
       uninstall: 'Uninstall',
       uninstallTip: (name: string, profile: string) => `Uninstall ${name} from ${profile}`,
@@ -2589,6 +2596,32 @@ export const en: Translations = {
     restartFailedManualDetail: 'Try Restart again; if it still fails, open the logs and send diagnostics.',
     restartAgain: 'Restart again',
     openLogs: 'Open logs',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'No bot token needed',
+      intro: (platform: string) => `${platform} reaches this agent through the shared Hermes bot. Link your ${platform} account to it and message the bot to talk to your agent.`,
+      link: (platform: string) => `Link ${platform}`,
+      linkAnother: (platform: string) => `Link another ${platform} account`,
+      linkedAccounts: 'Linked accounts',
+      unlink: 'Unlink',
+      unlinkFailed: 'Couldn’t unlink that account',
+      stepOpen: (platform: string) => `1. Scan the code with your phone, or open the bot in ${platform}.`,
+      stepSend: '2. Send the bot this message from the account you want to link:',
+      open: (platform: string) => `Open ${platform}`,
+      copy: 'Copy message',
+      copied: 'Copied',
+      copyFailed: (command: string) => `Copy failed. Type ${command} instead.`,
+      waiting: 'Waiting for the bot to see your message. The code works once.',
+      linked: (platform: string) => `${platform} account linked. Message the bot to talk to your agent.`,
+      expired: 'That code expired before it was used. Get a new code and try again.',
+      refused: (platform: string) => `${platform} refused the link. Get a new code and try again.`,
+      qrAlt: (platform: string) => `QR code for the shared ${platform} bot`,
+      managed: 'Managed by Team Gateway',
+      managedNote: (platform: string) => `Team Gateway carries messaging on this deployment, so the gateway turns the direct ${platform} connection off at every start. To run it alongside the relay, set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in the gateway's environment (a direct connection keeps the instance from scaling to zero and can deliver messages twice).`,
+      managedIntro: "This agent's accounts are linked from Nous Portal.",
+      openPortal: 'Link accounts in Nous Portal',
+      noNewAccount: (platform: string) => `The code is no longer active and no new account appeared. If your ${platform} account isn't listed, get a new code and try again.`
+    },
     telegramQr: {
       title: 'Choose how to connect your Telegram bot',
       subtitle: 'Both options connect a bot you control and save its credentials only to this Hermes installation.',
@@ -4062,7 +4095,9 @@ export const en: Translations = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `sends ${level} on this route`,
       updateFailed: 'Model option update failed',
-      fastFailed: 'Fast mode update failed'
+      fastFailed: 'Fast mode update failed',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak update failed'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4179,6 +4214,15 @@ export const en: Translations = {
           subagent_definitions: 'Subagent definitions',
           system_prompt: 'System prompt',
           tool_definitions: 'Tool definitions'
+        },
+        compact: {
+          action: 'Compact conversation',
+          busyHint: 'Finish or stop the current reply first',
+          confirm: 'Compact',
+          hint: 'Summarize older context to make room. Continue in this same conversation.',
+          question: 'Compress this chat into a summary?',
+          questionNamed: title => `Compress “${title}” into a summary?`,
+          working: 'Compacting…'
         },
         empty: 'No context data yet',
         loading: 'Loading breakdown…',
@@ -4441,6 +4485,7 @@ export const en: Translations = {
       react: 'React',
       dismissError: 'Dismiss error',
       responseStopped: 'Response stopped',
+      contentRefusedNotice: "This message was refused by the model's safety filter — try a different query.",
       ...enErrorLayers,
       errorCodes: enErrorCodes,
       errorAuthKinds: {
@@ -4551,6 +4596,10 @@ export const en: Translations = {
       authorized: server => `Authorized ${server}`,
       failed: server => `Setup failed for ${server}`,
       toolCount: count => (count === 1 ? '1 tool' : `${count} tools`),
+      launchCommand: target => `Runs: ${target}`,
+      launchRemote: target => `Connects to: ${target}`,
+      launchEnv: keys => `Env: ${keys}`,
+      launchCwd: dir => `Working dir: ${dir}`,
       envRequired: 'Fill in the required credentials first',
       sendFailed: 'Could not send MCP setup response',
       reloadFailed: 'Server saved, but reloading MCP tools failed — they load next session',

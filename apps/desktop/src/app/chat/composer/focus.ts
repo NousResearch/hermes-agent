@@ -765,10 +765,11 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   }
 
   const retry = () => {
-    // A native media control may take focus after the initial pointer move.
-    // Its newer focus wins over these queued retries; a fresh explicit
-    // composer request still gets the synchronous focus call below.
-    if (document.activeElement instanceof HTMLMediaElement) {
+    // Newer native-control or tab navigation wins over queued retries. A fresh
+    // explicit composer request still gets the synchronous focus call below.
+    const active = document.activeElement
+
+    if (active instanceof HTMLMediaElement || active?.closest('[role="tab"]')) {
       return
     }
 

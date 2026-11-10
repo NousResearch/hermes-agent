@@ -124,6 +124,16 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
 
+    def _is_configured_bot_user(self, user_id: str) -> bool:
+        """Whether an inbound Mattermost sender is an explicitly configured peer bot.
+
+        Mattermost's posted WebSocket event contains only a sender ID, not a bot flag.  Keep the
+        classification opt-in: an unknown account stays a human rather than silently changing its
+        authorization or delivery behavior. ``bot_users`` in config.yaml is read by the base
+        ``build_source``; ``MATTERMOST_BOT_USERS`` is its env spelling.
+        """
+        return str(user_id) in _channel_id_set(_get_scoped_secret("MATTERMOST_BOT_USERS", ""))
+
     # --- HTTP helpers ---
 
     def _headers(self) -> dict[str, str]:
@@ -583,7 +593,10 @@ class MattermostAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=channel_id, chat_type=_CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel"),
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
-            thread_id=thread_id, message_id=post_id)
+            thread_id=thread_id, message_id=post_id,
+            # A bot account's post carries props.from_bot (a string "true" on the wire).
+            is_bot=str((post.get("props") or {}).get("from_bot", "")).lower() == "true"
+            or self._is_configured_bot_user(sender_id))
         from gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
@@ -611,10 +624,10 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
         return send_error("Mattermost standalone send: MATTERMOST_URL and MATTERMOST_TOKEN must both be set")
     upload_headers = {"Authorization": f"Bearer {token}"}
     headers = {**upload_headers, "Content-Type": "application/json"}
-    try:
-        # One ClientSession (with proxy) covers the optional uploads + final post.
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="MATTERMOST_PROXY"))
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    proxy = resolve_proxy_url(platform_env_var="MATTERMOST_PROXY")
+    try:  # one ClientSession (with proxy) covers the optional uploads + final post
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
             file_ids: list[str] = []
             for media in media_files or []:
@@ -643,10 +656,10 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
                     return send_error(f"Mattermost API error ({resp.status}): {body[:400]}")
                 data = await resp.json()
             return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
-    except aiohttp.ClientError as exc:
-        return send_error(f"Mattermost send failed (network): {exc}")
+    except aiohttp.ClientError as exc:  # the text may echo the proxy URL: it reaches the model
+        return send_error(f"Mattermost send failed (network): {describe_proxy_error(exc, proxy) or exc}")
     except Exception as exc:
-        return send_error(f"Mattermost send failed: {exc}")
+        return send_error(f"Mattermost send failed: {describe_proxy_error(exc, proxy) or exc}")
 
 
 # --- Interactive setup wizard ---

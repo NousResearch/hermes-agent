@@ -20,6 +20,7 @@ import { jaNotices } from './ja_notices'
 import { jaNotifications } from './ja_notifications'
 import { jaOnboarding } from './ja_onboarding'
 import { jaPluginPreviewAccess } from './ja_plugin_preview_access'
+import { jaPluginUpdateAll } from './ja_plugin_update_all'
 import { jaPluginSettings, jaPluginsTab } from './ja_plugins'
 import { jaPreviewWeb } from './ja_preview_web'
 import { jaProjects } from './ja_projects'
@@ -28,6 +29,11 @@ import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
+  gatewayGroupOpen: {
+    opening: "グループチャットを開いています…",
+    lookupFailed: "ゲートウェイでこのグループを検索できませんでした。もう一度お試しください。",
+    missing: "このグループチャットはもう存在しません。"
+  },
   catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {
@@ -1298,15 +1304,20 @@ export const jaOverrides = {
       browserRealProfile: {
         label: '実際のブラウザプロファイルを使用',
         description:
-          '既定ブラウザのログイン情報と Cookie を管理されたスナップショットにコピーし、エージェントはそれを使ってブラウジングします。実際のプロファイルが直接開かれることはありません。新しいセッションに適用されます。',
+          '既定ブラウザのログイン情報と Cookie を管理されたスナップショットにコピーし、エージェントはそれを使ってブラウジングします。アプリ内ブラウザにもそれでログインします。実際のプロファイルが直接開かれることはありません。新しいセッションに適用されます。',
         enabledTitle: '実プロファイルブラウジング：オン',
         enabledMessage: '新しいセッションは既定ブラウザプロファイルのスナップショットでブラウジングします。',
         disabledTitle: '実プロファイルブラウジング：オフ',
-        disabledMessage: 'プロファイルのスナップショットは削除され、新しいセッションはクリーンなブラウザを使用します。',
+        disabledMessage: 'プロファイルのスナップショットは削除され、アプリ内ブラウザもそのログインから外れます。新しいセッションはクリーンなブラウザを使用します。',
         failedSave: '実プロファイル設定を保存できませんでした',
+        reimportSignins: 'ログイン情報を再インポート',
+        signinsImportedTitle: 'アプリ内ブラウザのログイン',
+        signinsImported: count => `ブラウザプロファイルの Cookie ${count} 件でアプリ内ブラウザにログインしました。`,
+        signinsRemote: 'このバックエンドは別のマシンで動作しているため、そのブラウザプロファイルはアプリ内ブラウザにインポートされません。',
+        signinsFailed: 'アプリ内ブラウザにログイン情報をインポートできませんでした',
         prompt: {
           title: 'サイトにログインしたまま利用',
-          body: 'Hermes が既定ブラウザプロファイルのスナップショットでブラウジングできるようにすると、サイトはログイン済みの状態で開きます。',
+          body: 'Hermes が既定ブラウザプロファイルのスナップショットでブラウジングできるようにすると、エージェントでもアプリ内ブラウザでも、サイトはログイン済みの状態で開きます。',
           bulletSnapshot: 'Cookie とログイン情報は管理されたスナップショットにコピーされます。',
           bulletLiveProfile: '実際のブラウザプロファイルが直接開かれることはありません。',
           bulletLocal: 'データがこのコンピュータの外に出ることはありません。',
@@ -1320,7 +1331,7 @@ export const jaOverrides = {
 
   skillDeepLink: jaSkillDeepLink,
   skills: {
-    plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab },
+    plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab, ...jaPluginUpdateAll },
     hub: {
       search: '検索',
       searching: '検索中…',
@@ -1616,6 +1627,32 @@ export const jaOverrides = {
     restartNow: '今すぐ再起動',
     restarting: '再起動中…',
     restartFailedManual: 'ゲートウェイの再起動に失敗しました。手動で再起動し、ゲートウェイのログを確認してください。',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'ボットトークン不要',
+      intro: (platform: string) => `${platform} は共有の Hermes ボット経由でこのエージェントに届きます。${platform} アカウントをリンクし、ボットにメッセージを送るとエージェントと話せます。`,
+      link: (platform: string) => `${platform} をリンク`,
+      linkAnother: (platform: string) => `別の ${platform} アカウントをリンク`,
+      linkedAccounts: 'リンク済みアカウント',
+      unlink: 'リンク解除',
+      unlinkFailed: 'アカウントのリンクを解除できませんでした',
+      stepOpen: (platform: string) => `1. スマートフォンでコードを読み取るか、${platform} でボットを開きます。`,
+      stepSend: '2. リンクしたいアカウントから、ボットに次のメッセージを送ります:',
+      open: (platform: string) => `${platform} を開く`,
+      copy: 'メッセージをコピー',
+      copied: 'コピーしました',
+      copyFailed: (command: string) => `コピーできませんでした。${command} と入力してください。`,
+      waiting: 'ボットがメッセージを受け取るのを待っています。コードは1回だけ使えます。',
+      linked: (platform: string) => `${platform} アカウントをリンクしました。ボットにメッセージを送るとエージェントと話せます。`,
+      expired: 'コードは使われる前に期限切れになりました。新しいコードを取得してもう一度お試しください。',
+      refused: (platform: string) => `${platform} がリンクを拒否しました。新しいコードを取得してもう一度お試しください。`,
+      qrAlt: (platform: string) => `共有 ${platform} ボットの QR コード`,
+      managed: 'Team Gateway が管理',
+      managedNote: (platform: string) => `このインスタンスではメッセージを Team Gateway が扱うため、ゲートウェイは起動のたびに ${platform} の直接接続をオフにします。リレーと併用するには、ゲートウェイの環境に GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true を設定してください（直接接続があるとインスタンスがゼロまでスケールダウンできず、メッセージが二重に届くことがあります）。`,
+      managedIntro: 'このエージェントのアカウントは Nous Portal からリンクします。',
+      openPortal: 'Nous Portal でアカウントをリンク',
+      noNewAccount: (platform: string) => `コードは無効になり、新しいアカウントは表示されませんでした。${platform} アカウントが一覧にない場合は、新しいコードを取得してもう一度お試しください。`
+    },
     telegramQr: {
       title: 'Telegram ボットの接続方法を選択',
       subtitle: 'どちらの方法でも、あなたが管理するボットを接続し、資格情報はこの Hermes にのみ保存されます。',
@@ -2924,7 +2961,9 @@ export const jaOverrides = {
       ultra: 'ウルトラ',
       sendsOnRoute: (level: string) => `このルートでは ${level} を送信`,
       updateFailed: 'モデルオプションの更新に失敗しました',
-      fastFailed: '高速モードの更新に失敗しました'
+      fastFailed: '高速モードの更新に失敗しました',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak の更新に失敗しました'
     },
     gatewayMenu: {
       gateway: 'ゲートウェイ',
@@ -3018,6 +3057,15 @@ export const jaOverrides = {
           subagent_definitions: 'サブエージェント定義',
           system_prompt: 'システムプロンプト',
           tool_definitions: 'ツール定義'
+        },
+        compact: {
+          action: '会話を圧縮',
+          busyHint: '先に実行中の応答を終了するか停止してください',
+          confirm: '圧縮',
+          hint: '古いコンテキストを要約して空きを作ります。同じ会話を続けられます。',
+          question: 'この会話を要約に圧縮しますか？',
+          questionNamed: title => `「${title}」を要約に圧縮しますか？`,
+          working: '圧縮中…'
         },
         empty: 'コンテキストデータはまだありません',
         loading: '内訳を読み込み中…',
@@ -3248,6 +3296,12 @@ export const jaOverrides = {
   },
 
   assistant: {
+    mcpSetup: {
+      launchCommand: target => `実行: ${target}`,
+      launchRemote: target => `接続先: ${target}`,
+      launchEnv: keys => `環境変数: ${keys}`,
+      launchCwd: dir => `作業ディレクトリ: ${dir}`
+    },
     catalogInstall: {
       preparing: 'インストールを準備中…',
       install: 'インストール',
@@ -3398,6 +3452,7 @@ export const jaOverrides = {
       readAloud: '読み上げ',
       copyFullResponse: '回答全体をコピー',
       readAloudFullResponseHint: 'Shiftを押しながらクリック: 回答全体を読み上げ',
+      contentRefusedNotice: 'このメッセージはモデルの安全フィルターによって拒否されました。別の内容でお試しください。',
       editMessage: 'メッセージを編集',
       stop: '停止',
       restorePrevious: '前のチェックポイントに戻す',

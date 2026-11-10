@@ -1,0 +1,19 @@
+name: hermesmade
+repo: https://github.com/Noshkoto/hermesmade
+sha: 8a99f1be66b0423d1a2166d70285974c5d39c584
+description: "Community bot shelf for Hermes. Add bots from hermesmade.lol in one click (hermes://open/hermesmade?add=<id>), share your own with /sharebot, and move your Grok Bot bots into Hermes, one Hermes bot each. Added bots are treated as untrusted: a package holding anything a share never includes is refused, its config is rebuilt from an allowlist (no hooks, approvals, terminal, plugins or model settings), schedules arrive paused, MCP servers arrive off, and every skill is scanned first. Each becomes its own profile on your model and login. Sharing and adding from the agent tool go through Hermes' approval prompt. Shares never include .env, auth.json, keys, tokens, memories or chats, and a single secret hit aborts the upload. Disclosure — network calls only to https://hermesmade.lol, when you browse, add, share or unshare (no telemetry, no install counting). Creates profiles under ~/.hermes/profiles. Keeps listing manage tokens in ~/.hermes/hermesmade/shared.json (0600). Reads profile secret values through agent.secret_scope only to block a leaking share (compared in memory, never stored or sent). Grok Bot migration reads grok-bot-export*.json from Downloads, makes no network calls, uses the official agent-importers plugin, and installs it with `hermes plugins install agent-importers` only after the user confirms."
+maintainer: Noshkoto
+tier: community
+category: desktop
+requires_hermes: ">=0.22.1"
+docs_url: https://hermesmade.lol/bots
+version: "1.3.0"
+title: hermesmade bots
+platforms: []
+capabilities:
+  provides_tools:
+    - hermesmade_bots
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

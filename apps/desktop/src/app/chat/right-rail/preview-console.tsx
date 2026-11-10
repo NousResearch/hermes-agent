@@ -108,7 +108,7 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: Console
           </span>
         )}
       </div>
-      <span className="opacity-0 transition-opacity group-hover/row:opacity-100">
+      <span className="opacity-0 transition-opacity focus-within:opacity-100 group-hover/row:opacity-100">
         <CopyButton
           appearance="inline"
           className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"

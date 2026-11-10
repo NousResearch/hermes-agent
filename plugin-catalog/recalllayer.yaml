@@ -1,0 +1,19 @@
+name: recalllayer
+title: RecallLayer
+repo: https://github.com/er-s-an/recalllayer
+sha: e89cc87ef7b2051f2b4dc6cb449b09df4cac36ce
+subdir: recalllayer
+version: "1.0.0"
+description: "Local-first layered agent memory (working / episodic / semantic) with FTS recall and retrieve-after-write tools. Disclosure — no network calls by default; writes only under $HERMES_HOME/recalllayer/ plus optional recalllayer.json; no credentials; no telemetry; background daemon threads only for sync/prefetch."
+maintainer: Caesar
+tier: community
+category: memory
+requires_hermes: ">=0.19.0"
+docs_url: https://github.com/er-s-an/recalllayer/blob/e89cc87ef7b2051f2b4dc6cb449b09df4cac36ce/recalllayer/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

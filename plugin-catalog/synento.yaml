@@ -1,7 +1,7 @@
 name: synento
 repo: https://github.com/Synento/hermes-plugin
 sha: 1ace129e88fa595bd2f6963df6dfcee9218ca0d2
-description: Live video sessions that record themselves. The agent uses a restricted server key, then checks the recording before calling the integration working.
+description: "Live video sessions that record themselves. The agent uses a restricted server key, then checks the recording before calling the integration working. Disclosure — connects to Synento's hosted MCP server (api.synento.com) and needs a Synento account; after sign-in its write tools can create projects and sessions, mint a short-lived connection token and a restricted server key (shown once in chat, then written to your app's env file), and run a synthetic media check, which use plan allowance and can fire your project's webhook. The package marks the server `trust: untrusted` so those calls ask first; sign-in needs a native `mcp_servers.synento` entry with `auth: oauth`, which replaces the package's server settings, so keep `trust: untrusted` in it. The remote tool list can change without a new pin."
 maintainer: Synento
 tier: community
 category: tools

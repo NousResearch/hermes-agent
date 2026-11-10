@@ -1,6 +1,6 @@
 name: herd
 repo: https://github.com/welliv/hermes-herd
-sha: fcb3f56334789c133068cc5a93f5d8510c1e8551
+sha: eddb1fbe40f42b867f2e75b8002691915e45bb80
 requires_hermes: ">=0.23"
 description: >-
   Keep one Hermes across every machine. Settings, skills and memory follow the
@@ -13,16 +13,21 @@ description: >-
   backup and `hermes sync undo` puts it back. Ships a per-device manifest store
   over any folder or git remote, three agent tools (`sync_status`, `sync_diff`,
   `sync_now`), session hooks that sync in the background, and a `hermes sync`
-  CLI. Disclosure — reads the profile's config, memory, SOUL.md and skills and
+  CLI. Pairing is one command that prints a 20-character code, valid once for
+  15 minutes, so a second machine joins without transcribing the recovery code;
+  a disagreement is settled with one key (`hermes sync conflicts`). Disclosure —
+  reads the profile's config, memory, SOUL.md and skills and
   writes the ones that changed; credentials are off by default and, when enabled
   with `hermes sync secrets on`, `.env` values are copied to the chosen store in
   encrypted form; the store is any folder or git remote the user names, and
-  nothing is sent anywhere else. Sessions and cron are not synced by default.
+  nothing is sent anywhere else; `hermes sync pair` writes one sealed
+  `pairing.json` into that store, which the joining machine reads and deletes.
+  Sessions and cron are not synced by default.
 maintainer: welliv
 tier: community
 category: tools
 docs_url: https://github.com/welliv/hermes-herd#readme
-version: "1.0.1"
+version: "1.1.0"
 platforms: []
 capabilities:
   provides_tools:

@@ -13,7 +13,7 @@ import copy
 import functools
 import logging
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from hermes_cli.config_migrations_browser import migrate_to_52
@@ -122,13 +122,14 @@ def _rewrite_stale_default(*, old: Any, **kw: Any) -> Callable[[dict[str, Any], 
     return functools.partial(_rewrite_key, match=lambda cur: cur == old, **kw)
 
 
-def _rewrite_stale_defaults(results: dict[str, Any], quiet: bool, *, section: str, rows: Any) -> None:
+def _rewrite_stale_defaults(results: dict[str, Any], quiet: bool, *, section: str,
+                            rows: Iterable[tuple[str, Any, Any, str, str]]) -> None:
     """Rewrite every ``<section>.<key>`` still equal to its OLD default to its new one (None =
     delete) in ONE write: a failing step is retried whole, so a half-landed one would rewrite
     again a value the user set back since. *rows*: (key, old, new, added, message)."""
     config = read_raw_config()
-    raw = config.get(section)
-    due = [row for row in rows if isinstance(raw, dict) and raw.get(row[0]) == row[1]]
+    raw = _dict_at(config, section)
+    due = [row for row in rows if raw.get(row[0]) == row[1]]
     if not due:
         return
     for key, _old, new, _added, _message in due:
@@ -941,9 +942,9 @@ LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51
 #: Legacy-key steps that run on every migration pass whatever the stamp says, because a stamp at
 #: or past their version does not prove they ran: unreleased builds of the gateway-runtime branch
 #: put their retired-cron-key step at 44, 45, 46, 47 and 50 before it landed at 51, so a home one
-#: of them stamped skipped main's step of that number. Only a step triggered by a key NO runtime
-#: reads qualifies (re-running it is a no-op once the key is gone, and it never overrides a value
-#: something consumes). The value-based steps such a home also skipped (44 curator defaults, 45
+#: of them stamped skipped main's step of that number. Only a step triggered by a key no runtime
+#: reads, or reads exactly as the step resolves it (v46's `disabled`), qualifies: re-running it
+#: changes no behaviour and never overrides a value something consumes. The value-based steps such a home also skipped (44 curator defaults, 45
 #: connections, 47 threshold_tokens) are NOT re-run: past the stamp, their trigger value may be
 #: the user's own choice.
 STAMP_INDEPENDENT_STEPS = frozenset({46, 50})

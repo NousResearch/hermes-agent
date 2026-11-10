@@ -151,8 +151,11 @@ def _parse_boolish(value: Any, default: bool = True) -> bool:
 def mcp_server_enabled(cfg: dict) -> bool:
     """Whether ``mcp_servers.<name>`` is on. The ONE reader of the ``enabled`` key: the MCP client,
     the toolset resolver, the profile editor, and every list/status surface call it, so a value
-    can never be on for one surface and off for another. Absent, ``null`` or unparseable = on."""
-    return _parse_boolish(cfg.get("enabled", True), default=True)
+    can never be on for one surface and off for another. Absent, ``null`` or unparseable = on.
+    A legacy ``disabled: true`` (pre-v46 profile editor) also means off and wins over ``enabled``,
+    as v46 resolves it: a file stamped by a newer build runs no step, so v46 may not have run."""
+    return (_parse_boolish(cfg.get("enabled", True), default=True)
+            and not _parse_boolish(cfg.get("disabled", False), default=False))
 
 
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:

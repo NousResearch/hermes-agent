@@ -1212,7 +1212,7 @@ def _resolve_workspace_key() -> Optional[str]:
 
 @contextlib.contextmanager
 def _session_db():
-    """Yield main's read-only session reads over a storage interface reader on the current home's state.db, or None
+    """Yield main's read-only session reads over a storage interface reader on the current profile's store, or None
     when it cannot open (lazy imports, so test patches on ``persistence_assembly`` intercept). Every caller is a lookup
     (last session, title → id, recorded cwd), so it never opens a writer beside the one the CLI opens a moment later.
     Open failures yield None and any error raised by the ``with`` body is swallowed: callers fall through to their
@@ -1220,7 +1220,7 @@ def _session_db():
     reader, handles = None, contextlib.ExitStack()
     try:
         from persistence_assembly import open_persistence_reader
-        store = handles.enter_context(open_persistence_reader(get_hermes_home() / "state.db"))
+        store = handles.enter_context(open_persistence_reader(get_hermes_home()))
         store.ready()
         # Gateway rows the CLI/TUI created are labelled ``local``; source-scoped lookups read main's labels.
         from hermes_cli.gateway_session_store import SurfaceLabelReader

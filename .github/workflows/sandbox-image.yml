@@ -21,7 +21,7 @@ on:
       - docker/sandbox-desktop-smoke.sh
       - .github/workflows/sandbox-image.yml
   # Not `release: published`: release automation creates releases with
-  # GITHUB_TOKEN, which starts no workflows, so that trigger never fired.
+  # GITHUB_TOKEN, which starts no workflows, so it has not fired since v0.21.7.
   workflow_run:
     workflows: ['Stable Release']
     types: [completed]
@@ -38,7 +38,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: sandbox-image-${{ github.event.pull_request.number || github.ref }}
+  # A failed or cancelled Stable Release still starts a (skipped) run; its own group keeps it
+  # from replacing a green release's run that is pending behind a weekly or dispatch run.
+  group: sandbox-image-${{ github.event.pull_request.number || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' && github.run_id) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -185,7 +187,9 @@ jobs:
             echo "::error::want 2 digests, found ${#args[@]} (a publish leg failed)"
             exit 1
           fi
-          # :desktop is the stable tag docker_image points at; releases also get a pinned tag.
+          # :desktop is the stable tag docker_image points at. A green Stable Release also gets
+          # :v<version>-desktop, built from main's Dockerfile when that run completes, which can be
+          # before the sequencer publishes the GitHub release.
           tags=(-t "${IMAGE_NAME}:desktop")
           if [ "${GITHUB_EVENT_NAME}" = workflow_run ]; then
             if [[ ! "${RUN_TITLE}" =~ rc\.[0-9]+-(v[^[:space:]]+)$ ]]; then

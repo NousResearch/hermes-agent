@@ -2620,33 +2620,6 @@ def _env_line_defines_key(line: str, key: str, *, is_windows: Optional[bool] = N
     ) == _env_var_policy_name(key, is_windows=is_windows)
 
 
-def _publish_env_value(key: str, value: Optional[str]) -> None:
-    """Publish a just-persisted ``.env`` change to the live process.
-    Under a multiplexed gateway a routed profile's write must not land in the SHARED
-    ``os.environ`` where every profile sees it; the installed scope mapping is updated instead so
-    same-turn reads see the change. All other callers keep the legacy ``os.environ`` publish.
-
-    ``save_env_value`` / ``remove_env_value`` already target the right file (``get_env_path()`` honors the
-    profile-home override), but the in-process mirror historically went straight to ``os.environ``. See
-    #77490, #88441.
-    """
-    try:
-        from agent.secret_scope import current_secret_scope, serves_routed_profile
-
-        scope, routed = current_secret_scope(), serves_routed_profile()
-    except Exception:
-        scope, routed = None, False
-    # The launch profile's own body runs under a scope snapshot even single-profile (the TUI /
-    # dashboard launch scope), so a same-request read after the write must see it there too; a
-    # routed profile's value never reaches the shared process env.
-    targets = [scope] if isinstance(scope, dict) else []
-    if not routed and (scope is None or isinstance(scope, dict)):
-        targets.append(os.environ)
-    for target in targets:
-        if value is None:
-            target.pop(key, None)
-        else:
-            target[key] = value
 
 
 def env_write_refusal(key: str, action: str) -> Optional[str]:
@@ -2688,6 +2661,8 @@ def _managed_source(filename: str):
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env (also matching ``export KEY=`` lines, so a save
     never appends a second line that a later delete would resurrect)."""
+    from hermes_cli.config_env_routing import publish_env_value
+
     if _env_write_blocked(key, "set"):
         return
     validate_env_var_name_for_write(key)
@@ -2709,7 +2684,7 @@ def save_env_value(key: str, value: str):
             lines.append(f"{key}={serialized_value}\n")
 
         _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
-    _publish_env_value(key, value)
+    publish_env_value(key, value)
     invalidate_env_cache()
 
 
@@ -2724,13 +2699,15 @@ def custom_endpoint_key_env(identity: str) -> str:
 
 def remove_env_value(key: str) -> bool:
     """Remove a key from ~/.hermes/.env and os.environ; True if it was found and removed."""
+    from hermes_cli.config_env_routing import publish_env_value
+
     if _env_write_blocked(key, "remove"):
         return False
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     env_path = get_env_path()
     if not env_path.exists():
-        _publish_env_value(key, None)
+        publish_env_value(key, None)
         return False
 
     with _env_write_lock(env_path):
@@ -2739,7 +2716,7 @@ def remove_env_value(key: str) -> bool:
         found = len(new_lines) < len(lines)
         if found:
             _write_env_lines(env_path, new_lines, preserve_mode=True)
-    _publish_env_value(key, None)
+    publish_env_value(key, None)
     invalidate_env_cache()
     return found
 

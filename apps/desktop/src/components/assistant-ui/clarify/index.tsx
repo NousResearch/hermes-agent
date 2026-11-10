@@ -11,12 +11,14 @@ import { $settledClarifyResults, type ClarifyRequest, sessionClarifyRequest } fr
 
 import { selectMessageRunning } from '../tool/fallback-model'
 
-import { type ClarifyArgs, readClarifyArgs } from './parse'
+import { type ClarifyArgs, hasClarifyQuestionPreview, readClarifyArgs } from './parse'
 import { ClarifyToolPending } from './pending'
+import { hasEndedClarifyPreview } from './preview-state'
 import { ClarifyToolSettled } from './settled'
 import { useUndeliveredClarify } from './use-undelivered'
 
-type ClarifyToolProps = ToolCallMessagePartProps & Pick<TimelinePartMetadata, 'clarifyRequestId'>
+type ClarifyToolProps = ToolCallMessagePartProps &
+  Pick<TimelinePartMetadata, 'clarifyRequestId'> & { interrupted?: boolean }
 
 export const ClarifyTool = (props: ClarifyToolProps) => {
   // Answered → settled Q&A (ToolFallback collapsed the answer away).
@@ -62,6 +64,7 @@ function ClarifyToolLive(props: ClarifyToolProps) {
   const request = useStore($request)
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
   const messageRunning = useAuiState(selectMessageRunning)
+  const messageInterrupted = useAuiState(s => s.message.metadata?.custom?.interrupted === true)
   const messageId = useAuiState(s => s.message.id)
   const rowKey = `${sessionId ?? ''}:${messageId}:${props.toolCallId}`
   // Answering clears the request a beat before `tool.complete` swaps in the
@@ -95,11 +98,13 @@ function ClarifyToolLive(props: ClarifyToolProps) {
     return <ToolFallback {...props} />
   }
 
-  // Stopped mid-prompt with no result — don't leave a dead interactive panel.
-  // `session.info` reports running=false while clarify is blocking, so the
-  // running flag alone would remount the question as a tool row. Keep the
-  // card while a request is open or this instance already submitted.
-  if (!messageRunning && !request && !answered) {
+  // Settling can beat request hydration; args are display-only until real
+  // request IDs arrive. Persisted interruption lives on message metadata,
+  // not on an unsealed tool part, and must still demote that historical row.
+  const hasQuestionPreview = hasClarifyQuestionPreview(fromArgs)
+  const endedWithoutRequest = hasEndedClarifyPreview(props.interrupted, messageInterrupted, props.status.type)
+
+  if (!messageRunning && !request && !answered && (endedWithoutRequest || !hasQuestionPreview)) {
     return <ToolFallback {...props} />
   }
 

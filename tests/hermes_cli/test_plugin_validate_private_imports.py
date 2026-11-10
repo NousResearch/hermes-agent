@@ -42,6 +42,21 @@ def test_private_core_import_warns_with_file_and_line_but_validate_passes(tmp_pa
     assert "catalog rule 9" in warning
 
 
+def test_terminal_child_env_builder_is_public_without_exposing_private_neighbors(tmp_path):
+    from tools.environments.local import build_subprocess_env
+
+    plugin = _plugin(tmp_path / "terminalenv", {"backend.py": (
+        "from tools.environments.local import build_subprocess_env\n"
+        "from tools.environments.local import _scrub_credentials\n"
+    )})
+    [warning] = _private_warnings(validate_plugin_dir(plugin))
+    assert "local.build_subprocess_env" not in warning
+    assert "local._scrub_credentials" in warning
+    child = build_subprocess_env(base={"EXAMPLE_CALLER": "retained", "BWS_ACCESS_TOKEN": "fixture-internal"})
+    assert child["EXAMPLE_CALLER"] == "retained"
+    assert "BWS_ACCESS_TOKEN" not in child
+
+
 def test_documented_public_stdlib_and_own_package_imports_are_not_flagged(tmp_path):
     plugin = _plugin(tmp_path / "clean", {
         "__init__.py": (

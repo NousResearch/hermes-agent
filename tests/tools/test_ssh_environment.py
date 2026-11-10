@@ -106,7 +106,7 @@ class TestBuildSSHCommand:
         monkeypatch.delenv("NEXTCLOUD_PASS", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-must-not-forward")
         monkeypatch.setattr(env_passthrough, "get_all_passthrough",
-                            lambda: frozenset({"NEXTCLOUD_URL", "NEXTCLOUD_PASS", "OPENAI_API_KEY"}))
+                            lambda **_: frozenset({"NEXTCLOUD_URL", "NEXTCLOUD_PASS", "OPENAI_API_KEY"}))
         monkeypatch.setattr(ssh_env, "_load_hermes_env_vars", lambda: {"NEXTCLOUD_PASS": "from-dotenv"})
 
         captured = self._capture_run_bash(monkeypatch, env)
@@ -122,7 +122,7 @@ class TestBuildSSHCommand:
     def test_run_bash_without_passthrough_inherits_env_unchanged(self, monkeypatch):
         from tools import env_passthrough
 
-        monkeypatch.setattr(env_passthrough, "get_all_passthrough", lambda: frozenset())
+        monkeypatch.setattr(env_passthrough, "get_all_passthrough", lambda **_: frozenset())
         captured = self._capture_run_bash(monkeypatch, SSHEnvironment(host="h", user="u"))
         assert not any(a.startswith("SendEnv=") for a in captured["cmd"])
         assert captured["env"] is None

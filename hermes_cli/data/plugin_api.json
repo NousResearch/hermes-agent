@@ -84,6 +84,7 @@
         "hermes_cli.auth_constants:AuthError",
         "tools.environments.base:BaseEnvironment",
         "tools.environments:BaseEnvironment",
+        "tools.environments.local:build_subprocess_env",
         "utils:atomic_json_write",
         "utils:read_json_or_empty"
       ]

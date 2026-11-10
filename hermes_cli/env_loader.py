@@ -3,20 +3,25 @@
 from __future__ import annotations
 
 import codecs
+import hashlib
+import hmac
 import io
 import itertools
 import logging
 import os
 import sys
 import threading
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 # Kept at module level on purpose: importing this module must fail when the dotenv install is
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
 from hermes_cli.left_core_migration import profile_env_names
-from utils import atomic_replace, mkstemp_beside
+from utils import atomic_replace, fast_safe_load, load_yaml_file_readonly, mkstemp_beside
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +55,21 @@ _LOADED_DOTENV_KEYS: set[str] = set()
 _MANAGED_DOTENV_KEYS: set[str] = set()
 # Immutable per-home snapshots: os.environ is shared across profiles and a later home's apply may overwrite it.
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
+@dataclass(frozen=True)
+class ExternalSecretSnapshot:
+    """Typed state for one profile's external-secret generation."""
+
+    profile_home: Path
+    data: Mapping[str, str]
+    status: str
+    generation: int
+    error_kind: str | None = None
+    source_identity: str = ""
+
+
+_SECRET_SOURCE_SNAPSHOTS_BY_HOME: dict[str, ExternalSecretSnapshot] = {}
+_SECRET_SOURCE_GENERATION_BY_HOME: dict[str, int] = {}
+_SECRET_SOURCE_IDENTITY_KEY = os.urandom(32)
 # Per home: the subset of the snapshot a dotenv reload may re-assert — see ``AppliedVar.authoritative`` (#74265).
 _SECRET_SOURCE_RESTORE_BY_HOME: dict[str, dict[str, str]] = {}
 # Per home: what the process-global path WROTE into ``os.environ`` for an external source — name →
@@ -66,6 +86,118 @@ _SECRET_SOURCE_WRITES_BY_HOME: dict[str, dict[str, tuple[str, str, str | None]]]
 _APPLIED_HOMES: set[str] = set()
 _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 
+def _external_secret_source_identity(home: Path) -> str:
+    """Hash every profile-owned input that can change external hydration."""
+    digest = hashlib.sha256()
+    for name in ("config.yaml", ".env", ".op.env"):
+        path = home.resolve() / name
+        digest.update(name.encode())
+        digest.update(b"\0")
+        try:
+            payload = path.read_bytes()
+        except FileNotFoundError:
+            digest.update(b"absent")
+        except OSError as exc:
+            digest.update(f"error:{type(exc).__name__}".encode())
+        else:
+            digest.update(
+                hmac.new(
+                    _SECRET_SOURCE_IDENTITY_KEY, payload, hashlib.sha256
+                ).digest()
+            )
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _record_external_secret_snapshot(
+    home: Path,
+    *,
+    data: Mapping[str, str],
+    status: str,
+    error_kind: str | None = None,
+    source_identity: str | None = None,
+) -> ExternalSecretSnapshot:
+    home = home.resolve()
+    home_key = str(home)
+    with _SECRET_SOURCE_CACHE_LOCK:
+        current_identity = _external_secret_source_identity(home)
+        if source_identity is not None and source_identity != current_identity:
+            data, status, error_kind = {}, "stale", "source_changed_during_fetch"
+        if status in {"failed", "degraded", "stale"}:
+            _APPLIED_HOMES.discard(home_key)
+        if status not in {"ready", "degraded"}:
+            _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
+        previous = _SECRET_SOURCE_SNAPSHOTS_BY_HOME.get(home_key)
+        # Successful unchanged absence is reusable authority. A second request
+        # must not revoke an in-flight scope merely by observing the same inputs.
+        # Resets remove this snapshot, while real input/status changes and failed
+        # attempts still advance the epoch. Caller-owned ambient revocation runs
+        # before publication and is not skipped by this reuse.
+        if (status in {"absent", "empty"} and previous is not None
+                and previous.status == status and previous.source_identity == current_identity
+                and previous.error_kind == error_kind and dict(previous.data) == dict(data)):
+            return previous
+        generation = _SECRET_SOURCE_GENERATION_BY_HOME.get(home_key, 0) + 1
+        _SECRET_SOURCE_GENERATION_BY_HOME[home_key] = generation
+        snapshot = ExternalSecretSnapshot(
+            profile_home=home,
+            data=MappingProxyType(
+                {str(key): str(value) for key, value in data.items()}
+            ),
+            status=status,
+            generation=generation,
+            error_kind=error_kind,
+            source_identity=current_identity,
+        )
+        _SECRET_SOURCE_SNAPSHOTS_BY_HOME[home_key] = snapshot
+        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = dict(snapshot.data)
+        from agent.secret_scope import record_profile_owned_secret_names
+
+        record_profile_owned_secret_names(home, snapshot.data)
+        return snapshot
+
+
+def get_external_secret_snapshot(
+    hermes_home: str | os.PathLike, *, wait: bool = True,
+) -> ExternalSecretSnapshot:
+    home = Path(hermes_home).resolve()
+    home_key = str(home)
+    if not _SECRET_SOURCE_CACHE_LOCK.acquire(blocking=wait):
+        return ExternalSecretSnapshot(
+            profile_home=home, data=MappingProxyType({}), status="failed",
+            generation=0, error_kind="hydration_in_progress",
+        )
+    try:
+        snapshot = _SECRET_SOURCE_SNAPSHOTS_BY_HOME.get(home_key)
+        if snapshot is not None:
+            current_identity = _external_secret_source_identity(home)
+            if snapshot.source_identity != current_identity:
+                return ExternalSecretSnapshot(
+                    profile_home=home,
+                    data=MappingProxyType({}),
+                    status="stale",
+                    generation=snapshot.generation,
+                    error_kind="source_changed",
+                    source_identity=current_identity,
+                )
+            return snapshot
+        legacy = _SECRET_SOURCE_VALUES_BY_HOME.get(home_key)
+        if legacy is not None:
+            return ExternalSecretSnapshot(
+                profile_home=home,
+                data=MappingProxyType(dict(legacy)),
+                status="degraded",
+                generation=0,
+                error_kind="legacy_unversioned",
+            )
+        return ExternalSecretSnapshot(
+            profile_home=home,
+            data=MappingProxyType({}),
+            status="not_hydrated",
+            generation=0,
+        )
+    finally:
+        _SECRET_SOURCE_CACHE_LOCK.release()
 # What THIS process has published from dotenv files, per variable: (value before our first publish, or
 # None if absent; last value we published; load pass that published it). Reloads run per gateway turn and
 # per cron fire, and a line like ``PATH=/x:${PATH}`` interpolated against an environ that already holds the
@@ -172,7 +304,7 @@ def managed_dotenv_keys() -> frozenset[str]:
 
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Return the external-secret value snapshot for ``hermes_home``."""
-    return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))
+    return dict(get_external_secret_snapshot(hermes_home).data)
 
 
 def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, str]:
@@ -194,41 +326,60 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         return {}
     home_key = str(home.resolve())
     if home_key in _APPLIED_HOMES:
-        return get_secret_source_values(home)
+        snapshot = get_external_secret_snapshot(home)
+        if snapshot.status not in {"stale", "failed", "degraded"}:
+            return dict(snapshot.data)
+        # The profile-owned inputs changed.  Revoke the once-per-home lease and
+        # resolve a fresh generation in this same locked operation.
+        _APPLIED_HOMES.discard(home_key)
+        _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+        _SECRET_SOURCE_SNAPSHOTS_BY_HOME.pop(home_key, None)
+        _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
 
-    # A retry must not keep serving a partial result after the source is removed, disabled, or can no
-    # longer be evaluated. Publish only the snapshot established by this attempt.
+    source_identity = _external_secret_source_identity(home)
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
     _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
-
     try:
-        cfg = _load_secrets_config(home)
-    except Exception:
+        cfg = _load_secrets_config(home, strict=True)
+    except Exception:  # external sources must not block routing
+        _record_external_secret_snapshot(
+            home,
+            data={},
+            status="failed",
+            error_kind="config",
+            source_identity=source_identity,
+        )
         return {}
     if not cfg:
+        _record_external_secret_snapshot(home, data={}, status="absent", source_identity=source_identity)
         return {}
 
     try:
-        from agent.secret_scope import _is_global_env, load_env_file
+        from agent.secret_scope import _is_global_env, load_env_file_snapshot
         from agent.secret_sources.registry import apply_all
 
         local_env = {name: value for name, value in os.environ.items() if _is_global_env(name)}
-        local_env.update(load_env_file(home / ".env"))
-        # Mirror load_hermes_dotenv()'s .op.env bootstrap (1Password token lives in gitignored .op.env)
-        # or cold profiles fail 1Password hydration. .env wins.
-        # Without seeding it here a cold profile configured for the supported .op.env flow fails 1Password
-        # hydration (sweeper review on #74549). .env values win — never override an existing key.
-        op_env = home / ".op.env"
-        if op_env.exists():
-            for _name, _value in load_env_file(op_env).items():
-                local_env.setdefault(_name, _value)
+        # Both bootstrap sources must be readable; .env keeps precedence.
+        for path in (home / ".op.env", home / ".env"):
+            snapshot = load_env_file_snapshot(path)
+            if snapshot.status == "failed":
+                raise RuntimeError("profile bootstrap snapshot unavailable")
+            local_env.update(snapshot.data)
         local_env["HERMES_HOME"] = str(home)
         env_before = dict(local_env)
         report = apply_all(cfg, home, environ=local_env)
-    except Exception:
+    except Exception:  # preserve fail-open startup behavior
+        _record_external_secret_snapshot(
+            home,
+            data={},
+            status="failed",
+            error_kind="source_apply",
+            source_identity=source_identity,
+        )
         return {}
 
     if not report.sources:
+        _record_external_secret_snapshot(home, data={}, status="empty", source_identity=source_identity)
         return {}
     # D32, as on the process-global path: a source must never supply the config backend's own
     # deployment or plane credential, for a routed profile either (this snapshot feeds that
@@ -255,29 +406,34 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             continue
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
-    _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
-    return dict(values)
+    source_errors = any(src.result.error for src in report.sources)
+    status = ("degraded" if values else "failed") if source_errors else (
+        "ready" if values else "empty"
+    )
+    snapshot = _record_external_secret_snapshot(
+        home, data=values, status=status,
+        error_kind="source_report" if source_errors else None,
+        source_identity=source_identity,
+    )
+    return dict(snapshot.data)
 
 
 def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> None:
-    """Forget applied homes so the next load re-pulls (tests, long-running processes after config edits).
-
-    ``hermes_home`` limits the reset to ONE home: a multiplex gateway keeps every profile's snapshot in
-    this process, and a per-fire cron re-pull or a plugin-discovery refresh for one home must not wipe
-    a sibling's hydrated snapshot — the sibling's next scope build would run empty until it re-hydrated
-    (#102041)."""
-    if hermes_home is None:
-        _APPLIED_HOMES.clear()
-        _SECRET_SOURCES.clear()
-        _SOURCE_SUPPLIED_NAMES.clear()
-        _SECRET_SOURCE_VALUES_BY_HOME.clear()
-        _SECRET_SOURCE_RESTORE_BY_HOME.clear()
-        _SECRET_SOURCE_WRITES_BY_HOME.clear()
-        return
-    home_key = str(Path(hermes_home).resolve())
-    _APPLIED_HOMES.discard(home_key)
-    _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
-    _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
+    """Revoke one home's snapshot, or all homes, without resetting generation epochs."""
+    with _SECRET_SOURCE_CACHE_LOCK:
+        if hermes_home is None:
+            _APPLIED_HOMES.clear()
+            _SECRET_SOURCES.clear()
+            _SECRET_SOURCE_VALUES_BY_HOME.clear()
+            _SECRET_SOURCE_SNAPSHOTS_BY_HOME.clear()
+            _SECRET_SOURCE_RESTORE_BY_HOME.clear()
+            return
+        # Cron and plugin refreshes must not revoke another profile's snapshot.
+        home_key = str(Path(hermes_home).resolve())
+        _APPLIED_HOMES.discard(home_key)
+        _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+        _SECRET_SOURCE_SNAPSHOTS_BY_HOME.pop(home_key, None)
+        _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -418,7 +574,12 @@ def resolve_home_dotenv(home: Path) -> dict[str, str]:
 
 
 def _load_dotenv_with_fallback(
-    path: Path, *, override: bool, load_pass: int | None = None, managed: bool = False,
+    path: Path,
+    *,
+    override: bool,
+    load_pass: int | None = None,
+    owner_home: Path | None = None,
+    managed: bool = False,
 ) -> None:
     """Load one dotenv file into ``os.environ`` like ``dotenv.load_dotenv`` — same parser, same
     ``${VAR}`` / ``${VAR:-default}`` / precedence rules — except that ``${VAR}`` resolves against the value
@@ -428,6 +589,14 @@ def _load_dotenv_with_fallback(
     (project, managed) still sees the earlier layer's output, as it always did; only OTHER passes' output
     is peeled. A bare call (``hermes send``'s direct reload) is its own pass."""
     assignments = _parse_dotenv_file(path)
+    if owner_home is not None:
+        from agent.secret_scope import record_profile_owned_secret_names
+
+        # Record names from the exact input loaded, not a later filesystem read
+        # after revocation. Values remain owned by the immutable scope builder.
+        record_profile_owned_secret_names(
+            owner_home, {name for name, value in assignments if value is not None}
+        )
     with _DOTENV_LOCK:
         if load_pass is None:
             load_pass = next(_DOTENV_PASSES)
@@ -630,13 +799,17 @@ def dotenv_unreadable(path: Path) -> bool:
         return False
 
 
-def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
+def _load_user_dotenv(
+    path: Path, *, load_pass: int, owner_home: Path | None = None,
+) -> bool:
     """Load the profile ``.env``; False when it exists but cannot be read and managed scope pins
     ``terminal.backend``. A sandbox launcher withholds the file, passes the keys it allows in as
     environment and pins the backend. Without that pin the ``PermissionError`` propagates: the file may
     be the only place the backend is set, and skipping it would run terminal commands on the host."""
     try:
-        _load_dotenv_with_fallback(path, override=True, load_pass=load_pass)
+        _load_dotenv_with_fallback(
+            path, override=True, load_pass=load_pass, owner_home=owner_home
+        )
     except PermissionError:
         from hermes_cli import managed_scope
 
@@ -678,11 +851,11 @@ def load_hermes_dotenv(
     # External sources still refresh against the profile mapping.
     # (``is_multiplex_active()`` is also true, context-locally, for a routed cron fire in the desktop
     # backend — see ``cron.scheduler_provider.routed_profile_fire``.)
-    from agent.secret_scope import is_multiplex_active
+    from agent.secret_scope import is_multiplex_active, serves_routed_profile
     from hermes_constants import get_hermes_home, get_hermes_home_override
 
     launch_home = _process_hermes_home().resolve()
-    if (is_multiplex_active() and get_hermes_home_override() is not None
+    if ((is_multiplex_active() or serves_routed_profile()) and get_hermes_home_override() is not None
             and (home_path.resolve() != launch_home or get_hermes_home().resolve() != launch_home)):
         home_key = str(home_path.resolve())
         if home_key not in _SCOPED_SKIP_LOGGED:
@@ -713,7 +886,9 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
-    if user_env.exists() and _load_user_dotenv(user_env, load_pass=load_pass):
+    if user_env.exists() and _load_user_dotenv(
+        user_env, load_pass=load_pass, owner_home=home_path
+    ):
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
 
@@ -722,7 +897,9 @@ def load_hermes_dotenv(
     # the committed .env. override=False lets a systemd `EnvironmentFile=-…/.op.env` token win.
     op_env = home_path / ".op.env"
     if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
-        _load_dotenv_with_fallback(op_env, override=False, load_pass=load_pass)
+        _load_dotenv_with_fallback(
+            op_env, override=False, load_pass=load_pass, owner_home=home_path
+        )
 
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not user_env.exists(), load_pass=load_pass)
@@ -733,7 +910,13 @@ def load_hermes_dotenv(
     # once-per-home no-op — so the clobber stuck for the life of the process (#74265). Re-assert only what the
     # source is authoritative for; managed scope, applied last with override=True, still wins on purpose.
     if _SECRET_SOURCE_RESTORE_BY_HOME:
-        for name, value in _SECRET_SOURCE_RESTORE_BY_HOME.get(str(home_path.resolve()), {}).items():
+        home_key = str(home_path.resolve())
+        snapshot = get_external_secret_snapshot(home_path)
+        if snapshot.status not in {"ready", "degraded"}:
+            _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
+        if snapshot.status == "stale":
+            _APPLIED_HOMES.discard(home_key)
+        for name, value in _SECRET_SOURCE_RESTORE_BY_HOME.get(home_key, {}).items():
             if os.environ.get(name) != value:
                 os.environ[name] = value
 
@@ -922,20 +1105,30 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     the ``_SECRET_SOURCES`` map and status lines."""
     home_key = str(Path(home_path).resolve())
     if home_key in _APPLIED_HOMES:
-        return
+        snapshot = get_external_secret_snapshot(home_path)
+        if snapshot.status != "stale":
+            return
+        _APPLIED_HOMES.discard(home_key)
+    source_identity = _external_secret_source_identity(Path(home_path))
 
     # Neither early return marks the home applied: a malformed config.yaml would otherwise permanently
     # disable secret loading for this process, and an unmarked home picks up a config change on the next
     # load (the signature-cached read is cheap).
     try:
-        cfg = _load_secrets_config(home_path)
-    except Exception:
-        # See #40597.
+        cfg = _load_secrets_config(home_path, strict=True)
+    except Exception:  # config errors must not block startup
+        _record_external_secret_snapshot(
+            Path(home_path), data={}, status="failed", error_kind="config",
+            source_identity=source_identity,
+        )
         return
     # No source configured / enabled any more: whatever one wrote earlier is no longer backed (#126982
     # review). A config READ failure above keeps them — fail-open, same as the fetch-failure path below.
     if not cfg:
         _revoke_secret_source_writes(home_path, keep=lambda _name, _source: False)
+        _record_external_secret_snapshot(
+            Path(home_path), data={}, status="absent", source_identity=source_identity
+        )
         return
 
     # Defer the registry import until a source is enabled — bitwarden eagerly loads cryptography._rust.pyd,
@@ -944,11 +1137,18 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     any_enabled = any(isinstance(v, dict) and v.get("enabled") is True for v in cfg.values())
     if not any_enabled:
         _revoke_secret_source_writes(home_path, keep=lambda _name, _source: False)
+        _record_external_secret_snapshot(
+            Path(home_path), data={}, status="empty", source_identity=source_identity
+        )
         return
 
     try:
         from agent.secret_sources.registry import apply_all, enabled_source_names
     except ImportError:
+        _record_external_secret_snapshot(
+            Path(home_path), data={}, status="failed", error_kind="registry_import",
+            source_identity=source_identity,
+        )
         return
 
     # Revoke a removed/disabled source's writes BEFORE the pass: left in place, its stale value would make
@@ -971,42 +1171,68 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     staged = dict(environ_before)
     try:
         report = apply_all(cfg, home_path, environ=staged)
-    except Exception:
+    except Exception:  # belt-and-braces; apply_all shouldn't raise
+        _record_external_secret_snapshot(
+            Path(home_path), data={}, status="failed", error_kind="source_apply",
+            source_identity=source_identity,
+        )
         return
 
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
+        _record_external_secret_snapshot(
+            Path(home_path), data={}, status="empty", source_identity=source_identity
+        )
         return
     _refuse_protected_env_from_sources(report, backend_before, environ_before, env=staged)
     _publish_staged_env(staged, environ_before)
 
-    # A real fetch attempt happened (success OR error): mark the home so the 3-5 import-time calls per
-    # startup don't re-fetch / re-print (error retries are opt-in via reset_secret_source_cache()).
-    # Marking AFTER the attempt keeps the earlier failure paths retryable.
-    _APPLIED_HOMES.add(home_key)
-
     if report.applied_any:
-        _sanitize_loaded_credentials()  # vault values carry the same copy-paste corruption risk as .env
+        _sanitize_loaded_credentials()
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
 
-    # Snapshot EVERY name a source supplied, not just the newly applied ones. A name the source supplied
-    # but the pre-existing process value won (``skipped_existing``) is still this home's effective value
-    # for it — and on the unscoped path os.environ IS this home's environment. Skipping those names
-    # latched an EMPTY snapshot whenever the key was already in the env: after the first cron/plugin
-    # re-pull (the previous apply's own write-back shadows every key) or from boot under systemd
-    # ``EnvironmentFile=``. Under multiplex the scope is the only credential source, so an empty
-    # snapshot failed every default-profile turn for the process lifetime (#102041).
-    values: dict[str, str] = {}
+    # Startup's existing process value may win over a source value. It still
+    # belongs to this home's snapshot, including on a second pull (#102041).
     supplied = _record_supplied_names(report)
-    for name in supplied:
-        if name in os.environ:
-            values[name] = os.environ[name]
     _record_secret_source_writes(home_key, report, supplied, environ_before)
-    if values:
-        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
-    _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
-        n: values[n] for n, a in report.provenance.items() if a.authoritative and n in values}
+    values = {name: os.environ[name] for name in supplied if name in os.environ}
+    from agent.secret_scope import record_profile_owned_secret_names
 
+    # Even a subsequently stale fetch has already affected ambient ownership.
+    record_profile_owned_secret_names(home_path, values)
+    source_errors = [src for src in report.sources if src.result.error]
+    if source_errors and values:
+        snapshot_status = "degraded"
+    elif source_errors:
+        snapshot_status = "failed"
+    elif values:
+        snapshot_status = "ready"
+    else:
+        snapshot_status = "empty"
+    snapshot = _record_external_secret_snapshot(
+        Path(home_path),
+        data=values,
+        status=snapshot_status,
+        error_kind="source_report" if source_errors else None,
+        source_identity=source_identity,
+    )
+    if snapshot.status != "stale":
+        # Preserve startup error suppression; private admission rechecks failed
+        # or degraded authority before a child can use it.
+        _APPLIED_HOMES.add(home_key)
+    # Only values explicitly authorized by the source report may be restored
+    # after a later dotenv pass. Existing process values and skipped sources
+    # remain in the typed snapshot for diagnostics, never as restore authority.
+    _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
+        name: snapshot.data[name]
+        for name, applied in report.provenance.items()
+        if snapshot.status in {"ready", "degraded"} and applied.authoritative and name in snapshot.data
+    }
+
+    _print_external_secret_report(report, cfg, home_key)
+
+
+def _print_external_secret_report(report, cfg, home_key):
     for src in report.sources:
         if src.applied:
             print(f"  {src.label}: applied {len(src.applied)} "
@@ -1062,11 +1288,23 @@ def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope:
         return ""
 
 
-def _load_secrets_config(home_path: Path) -> dict:
+def _load_secrets_config(home_path: Path, *, strict: bool = False) -> dict:
     """Read just the ``secrets:`` section of config.yaml, isolated so a malformed config can't break dotenv."""
     from hermes_cli.config_backend import config_exists, read_config_doc_readonly
 
     config_path = home_path / "config.yaml"
+    if strict:
+        if not config_exists(config_path):
+            return {}
+        data = read_config_doc_readonly(config_path) or {}
+        if not isinstance(data, dict):
+            raise ValueError("profile config must be a mapping")
+        section = data.get("secrets")
+        if section is None:
+            return {}
+        if not isinstance(section, dict):
+            raise ValueError("profile secrets config must be a mapping")
+        return section
     if not config_exists(config_path):
         return {}
     # Prefer the shared raw-config cache: this is the first config.yaml read of a normal startup, so

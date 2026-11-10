@@ -2404,11 +2404,16 @@ def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
     """Re-read .env for this run and publish the auto-deliver target into the session ContextVars."""
     # Reset the secret-source cache FIRST or a Bitwarden/BSM-backed secret is never re-resolved
     # (only the placeholder reloads -> 401s).
+    from agent.secret_scope import current_secret_scope_home, refresh_installed_secret_scope
     from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
     from gateway.session_context import _VAR_MAP
 
-    reset_secret_source_cache(_get_hermes_home())
-    load_hermes_dotenv(hermes_home=_get_hermes_home())
+    home = Path(_get_hermes_home()).resolve()
+    reset_secret_source_cache(home)
+    load_hermes_dotenv(hermes_home=home)
+    installed_home = current_secret_scope_home()
+    if installed_home is not None and Path(installed_home).resolve() == home:
+        refresh_installed_secret_scope(home, fail_closed_external=False)
 
     delivery_target = _resolve_delivery_target(job)
     if delivery_target:
@@ -3630,6 +3635,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
 
     from agent.secret_scope import is_multiplex_active
     from cron.scheduler_provider import routed_profile_fire
+    from hermes_constants import get_routing_process_hermes_home
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
@@ -3687,13 +3693,17 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # Same hydrate -> scope -> (routed) multiplex-context install the in-process fire uses, for exactly
     # the env build; the helper's reset order keeps the context from outliving its scope.
     with _fire_secret_scope():
-        # No restore_managed_env here: the worker re-runs load_hermes_dotenv -> _apply_managed_env at
-        # import, and strip_launch_profile_env leaves managed keys in place.
-        worker_env = strip_launch_profile_env(build_subprocess_env(
+        # The worker re-runs load_hermes_dotenv -> _apply_managed_env at import;
+        # strip_launch_profile_env leaves managed keys in place.
+        worker_env = build_subprocess_env(
+            base=strip_launch_profile_env(dict(os.environ), target_home=profile_home),
             scrub_secrets=multiplex_active,
             inherit_profile_home=True,
+            profile_home=profile_home,
+            source_profile_home=get_routing_process_hermes_home(),
+            enforce_profile_boundary=multiplex_active,
             extra={"HERMES_HOME": str(profile_home)},
-        ))
+        )
     worker_env = systemd_user_bus_env(worker_env)
     # Unattended worker: the gateway sets HERMES_EXEC_ASK at startup (interactive launches set
     # the other two), and an inherited presence var makes every env-fallback consumer in the

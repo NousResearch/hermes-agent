@@ -23,10 +23,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.ci.review_status import action_required, publish
+from scripts.releases.authors import LEGACY_AUTHOR_MAP, _load_contributor_dir, login_for_email
 
 ARTIFACT = "contributor-check"
 GIT_TIMEOUT = 120
-LEGACY_MAP = Path("scripts/releases/authors_legacy.py")
+
 SKIPPED = ("*teknium*", "*noreply@github.com*", "*dependabot*", "*github-actions*",
            "*anthropic.com*", "*cursor.com*")
 # GitHub id+login noreply emails auto-resolve.
@@ -69,14 +70,15 @@ def new_author_emails() -> list[str] | int:
     return emails if "".join(emails) else []
 
 
-def is_mapped(email: str, legacy_map: str) -> bool:
+def is_mapped(email: str) -> bool:
+    # Release attribution owns identity resolution, including casefold conflicts.
+    # Re-read the checked-out directory so mappings added during a fix are visible.
+    author_map = {**LEGACY_AUTHOR_MAP, **_load_contributor_dir(Path("contributors/emails"))}
+    if login_for_email(email, author_map) is not None:
+        return True
     if any(fnmatch.fnmatchcase(email, pattern) for pattern in SKIPPED):
         return True
-    if GITHUB_NOREPLY.search(email):
-        return True
-    if Path("contributors/emails", email).is_file():
-        return True
-    return f'"{email}"' in legacy_map
+    return bool(GITHUB_NOREPLY.search(email))
 
 
 def author_name(email: str) -> str:
@@ -109,10 +111,12 @@ def main() -> int:
         publish([], ARTIFACT)
         return 0
     try:
-        legacy_map = LEGACY_MAP.read_text(encoding="utf-8-sig", errors="replace")
-    except OSError:
-        legacy_map = ""
-    missing = [(email, author_name(email)) for email in emails if not is_mapped(email, legacy_map)]
+        missing = [(email, author_name(email)) for email in emails if not is_mapped(email)]
+    except ValueError as exc:
+        print(f"::error::{exc}")
+        publish(action_required("contributor attribution", "Ambiguous contributor email mapping",
+                                str(exc), HOW_TO_FIX, str(exc)), ARTIFACT, ascii_only=False)
+        return 1
     if not missing:
         print("✅ All contributor emails are mapped.")
         publish([], ARTIFACT)

@@ -110,9 +110,11 @@ def test_unrelated_history_fails_and_publishes_the_history_artifact(repo, step):
 
 
 def test_only_unmapped_human_emails_fail_the_contributor_check(repo, step):
-    commit(repo, {"contributors/emails/mapped@x.org": "alice\n",
-                  "scripts/releases/authors_legacy.py": 'AUTHOR_MAP = {"legacy@y.org": "bob"}\n'})
-    for email in ("mapped@x.org", "legacy@y.org", "12+c@users.noreply.github.com",
+    from scripts.releases.authors import LEGACY_AUTHOR_MAP
+
+    legacy_email = next(iter(LEGACY_AUTHOR_MAP))
+    commit(repo, {"contributors/emails/mapped@x.org": "alice\n"})
+    for email in ("mapped@x.org", legacy_email, "12+c@users.noreply.github.com",
                   "noreply@anthropic.com"):
         commit(repo, {email: "x"}, author=("Known", email))
     assert step.run(repo, "check_contributor_emails.py").returncode == 0
@@ -144,6 +146,35 @@ def test_supply_chain_scan_flags_payload_lines_but_not_lockfiles(repo, step):
     report = (step.runner_temp / "supply-chain-findings.md").read_text(encoding="utf-8")
     assert "base64 decode + exec/eval combo" in report
     assert "subprocess with encoded/obfuscated command" in report
+
+
+def test_contributor_gate_uses_release_casefold_mapping_for_raw_authors(repo, step):
+    commit(repo, {"contributors/emails/j.doe@x.example": "alice\n",
+                  ".mailmap": "Masked <masked@x.example> Raw <J.Doe@x.example>\n"})
+    commit(repo, {"raw": "author"}, author=("Raw", "J.Doe@x.example"))
+    assert step.run(repo, "check_contributor_emails.py").returncode == 0
+    assert step.artifact("contributor-check") == []
+
+
+def test_empty_contributor_file_is_not_a_release_mapping(repo, step):
+    commit(repo, {"contributors/emails/empty@x.example": "# no login\n"},
+           author=("Empty", "empty@x.example"))
+    refused = step.run(repo, "check_contributor_emails.py")
+    assert refused.returncode == 1
+    assert "empty@x.example" in refused.stdout
+
+
+def test_contributor_gate_reports_ambiguous_owners_without_a_traceback(repo, step):
+    from scripts.releases.authors import LEGACY_AUTHOR_MAP
+
+    email = next(key for key in LEGACY_AUTHOR_MAP if key.swapcase() != key)
+    commit(repo, {f"contributors/emails/{email.swapcase()}": "fixture-conflicting-owner\n"},
+           author=("Conflict", email))
+    refused = step.run(repo, "check_contributor_emails.py")
+    assert refused.returncode == 1
+    assert "ambiguous contributor identity" in refused.stdout
+    assert "Traceback" not in refused.stderr
+    assert step.artifact("contributor-check")[0]["results"][0]["title"] == "Ambiguous contributor email mapping"
 
 
 def test_dependency_bounds_report_lists_only_floor_only_specs(repo, step):

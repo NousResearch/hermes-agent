@@ -82,6 +82,7 @@ with a name allows that one name only.
 | `hermes_cli.auth_constants` | `AuthError` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `tools.environments.base` | `BaseEnvironment` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `tools.environments` | `BaseEnvironment` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
+| `tools.environments.local` | `build_subprocess_env` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `utils` | `atomic_json_write` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `utils` | `read_json_or_empty` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `gateway.platforms.access_policy_mixin` | `OwnAccessPolicyMixin` | adding-platform-adapters.md § Public helpers for platform plugins |

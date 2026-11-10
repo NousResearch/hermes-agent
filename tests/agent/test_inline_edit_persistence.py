@@ -50,7 +50,9 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
     for visit, tag in enumerate(("alpha", "beta", "alpha")):
         home = homes[tag]
         scope = contextlib.ExitStack()
-        scope.enter_context(progress._session_profile_runtime_scope({"profile_home": str(home)}, hydrate_secrets=False))
+        # File-tool execution needs a current authoritative secret generation;
+        # the no-hydration scope is reserved for persistence-only teardown.
+        scope.enter_context(progress._session_profile_runtime_scope({"profile_home": str(home)}))
         work = home / f"work-{visit}"
         work.mkdir()
         env = LocalEnvironment(cwd=str(work), timeout=15)

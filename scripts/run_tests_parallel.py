@@ -88,6 +88,20 @@ def _rmtree_force(path: str) -> None:
             pass
     shutil.rmtree(path, onerror=_chmod_retry)
 
+def _scratch_root_arg(value: str) -> str:
+    """Validate an explicit container-owned scratch grant without creating it."""
+    path = Path(value)
+    if not path.is_absolute():
+        raise argparse.ArgumentTypeError("scratch root must be an absolute directory")
+    try:
+        root = path.resolve(strict=True)
+    except OSError as exc:
+        raise argparse.ArgumentTypeError(f"scratch root is unavailable: {exc}") from exc
+    if not root.is_dir():
+        raise argparse.ArgumentTypeError("scratch root must be an existing directory")
+    return str(root)
+
+
 def _runner_scratch_root() -> str:
     """Per-run temp roots live on DISK, never the system temp dir: a full-suite run writes
     gigabytes of tmp_path fixtures and /tmp is RAM-backed tmpfs on many Linux hosts. /var/tmp is
@@ -560,6 +574,7 @@ def _run_one_file(
     repo_root: Path,
     file_timeout: float,
     retries: int = 0,
+    scratch_root: str | None = None,
 ) -> tuple[Path, int, str, dict[str, int], float]:
     """Run ``python -m pytest <file> <pytest_args>`` in a fresh subprocess.
 
@@ -594,7 +609,7 @@ def _run_one_file(
     bound a pathologically slow or hung file as a whole.
     """
     file, rc, output, summary, subproc_wall = _run_one_file_once(
-        file, pytest_args, repo_root, file_timeout
+        file, pytest_args, repo_root, file_timeout, scratch_root
     )
     attempt = 0
     # A worker killed by signal (OOM, SIGKILL) or the file timeout is a runaway, not a flake:
@@ -605,7 +620,7 @@ def _run_one_file(
         attempt += 1
         first_output = output
         file, rc, output, summary, subproc_wall2 = _run_one_file_once(
-            file, pytest_args, repo_root, file_timeout
+            file, pytest_args, repo_root, file_timeout, scratch_root
         )
         subproc_wall += subproc_wall2
         if rc == 0:
@@ -633,6 +648,7 @@ def _run_one_file_once(
     pytest_args: list[str],
     repo_root: Path,
     file_timeout: float,
+    scratch_root: str | None = None,
 ) -> tuple[Path, int, str, dict[str, int], float]:
     """Single attempt of a per-file pytest subprocess (see _run_one_file)."""
 
@@ -653,14 +669,15 @@ def _run_one_file_once(
     # One root for each subprocess removes the shared directory that the race
     # needs. The parent deletes the root after the attempt.
     env = os.environ.copy()
-    temproot = tempfile.mkdtemp(prefix="r-", dir=_runner_scratch_root())
+    scratch = scratch_root if scratch_root is not None else _runner_scratch_root()
+    temproot = tempfile.mkdtemp(prefix="r-", dir=scratch)
     env["PYTEST_DEBUG_TEMPROOT"] = temproot
     # Every tempfile.* call inside the test process lands in the same per-run root, so the
     # parent's cleanup of ``temproot`` removes them too instead of leaving them in /tmp.
     env["TMPDIR"] = temproot
 
     subproc_start = time.monotonic()
-    proc, pgid = start_pytest(file, pytest_args, repo_root, env, _runner_scratch_root())
+    proc, pgid = start_pytest(file, pytest_args, repo_root, env, scratch)
 
     try:
         output, _ = proc.communicate(timeout=file_timeout)
@@ -904,14 +921,19 @@ def _print_inline_failure(
     print(flush=True)
 
 
-def _load_durations(repo_root: Path) -> dict[str, float]:
-    """Read the duration cache from the repo root.
+def _durations_path(repo_root: Path, scratch_root: str | None = None) -> Path:
+    """An explicit scratch grant owns derived runner state as well as temp roots."""
+    return (Path(scratch_root) if scratch_root is not None else repo_root) / _DURATIONS_FILE
+
+
+def _load_durations(repo_root: Path, scratch_root: str | None = None) -> dict[str, float]:
+    """Read the duration cache from the selected run-state owner.
 
     Returns a dict mapping relative file paths (e.g.
     ``tests/tools/test_code_execution.py``) to wall-clock seconds from
     the last run. Missing or corrupt file → empty dict (safe fallback).
     """
-    path = repo_root / _DURATIONS_FILE
+    path = _durations_path(repo_root, scratch_root)
     if not path.is_file():
         return {}
     try:
@@ -924,6 +946,7 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
 def _save_durations(
     file_times: list[tuple[Path, float]],
     repo_root: Path,
+    scratch_root: str | None = None,
 ) -> None:
     """Write the duration cache so future ``--slice`` runs can use it.
 
@@ -932,11 +955,11 @@ def _save_durations(
     repo-relative paths so the cache is portable across checkouts
     and CI runners.
     """
-    data: dict[str, float] = _load_durations(repo_root)
+    data: dict[str, float] = _load_durations(repo_root, scratch_root)
     for f, t in file_times:
         key = _format_file(f, repo_root)
         data[key] = round(t, 3)
-    path = repo_root / _DURATIONS_FILE
+    path = _durations_path(repo_root, scratch_root)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -1245,6 +1268,30 @@ def _summary_notes(
     return notes
 
 
+def _add_worker_options(parser: argparse.ArgumentParser) -> None:
+    """Execution policy for each isolated per-file worker."""
+    parser.add_argument(
+        "--scratch-root",
+        type=_scratch_root_arg,
+        help="Existing absolute scratch directory explicitly granted by a container; "
+             "also owns the derived duration cache. Per-file isolation/cleanup remain unchanged.",
+    )
+    parser.add_argument(
+        "--file-timeout",
+        type=float,
+        default=float(os.environ.get("HERMES_TEST_FILE_TIMEOUT", _DEFAULT_FILE_TIMEOUT_SECONDS)),
+        help="Per-file wall-clock cap; on timeout the pytest process tree is killed. "
+             f"Default: {_DEFAULT_FILE_TIMEOUT_SECONDS}s; env: HERMES_TEST_FILE_TIMEOUT.",
+    )
+    parser.add_argument(
+        "--file-retries",
+        type=int,
+        default=int(os.environ.get("HERMES_TEST_FILE_RETRIES", _DEFAULT_FILE_RETRIES)),
+        help="Retry failing files in a fresh subprocess; pass-on-retry is reported FLAKY. "
+             f"0 disables; default: {_DEFAULT_FILE_RETRIES}; env: HERMES_TEST_FILE_RETRIES.",
+    )
+
+
 def main() -> int:
     _make_stdio_glyph_safe()
     parser = argparse.ArgumentParser(
@@ -1268,31 +1315,7 @@ def main() -> int:
         action="store_true",
         help="Don't skip integration/ e2e/ during discovery",
     )
-    parser.add_argument(
-        "--file-timeout",
-        type=float,
-        default=float(
-            os.environ.get("HERMES_TEST_FILE_TIMEOUT", _DEFAULT_FILE_TIMEOUT_SECONDS)
-        ),
-        help=(
-            "Per-file wall-clock cap in seconds. On timeout, the pytest "
-            "subprocess and its full process tree are SIGKILL'd. "
-            f"Default: {_DEFAULT_FILE_TIMEOUT_SECONDS}s ({round(_DEFAULT_FILE_TIMEOUT_SECONDS/60)} min), env: HERMES_TEST_FILE_TIMEOUT."
-        ),
-    )
-    parser.add_argument(
-        "--file-retries",
-        type=int,
-        default=int(
-            os.environ.get("HERMES_TEST_FILE_RETRIES", _DEFAULT_FILE_RETRIES)
-        ),
-        help=(
-            "Re-run a failing test FILE this many times in a fresh subprocess "
-            "before declaring it failed. A pass-on-retry counts as passed but "
-            "is reported as FLAKY in the summary. 0 disables. "
-            f"Default: {_DEFAULT_FILE_RETRIES}, env: HERMES_TEST_FILE_RETRIES."
-        ),
-    )
+    _add_worker_options(parser)
     parser.add_argument(
         "--slice",
         metavar="I/N",
@@ -1378,7 +1401,7 @@ def main() -> int:
     OUR_FLAGS = {
         "-h", "--help", "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
-        "--files-from", "--fail-on-skip", "--require-paths",
+        "--files-from", "--fail-on-skip", "--scratch-root", "--require-paths",
     }
     # pytest short flags that consume the NEXT token as their value.
     PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}
@@ -1506,7 +1529,7 @@ def main() -> int:
 
     # --generate-slices: compute LPT distribution and emit JSON, then exit.
     if args.generate_slices is not None:
-        durations = _load_durations(repo_root)
+        durations = _load_durations(repo_root, args.scratch_root)
         slices = _compute_lpt_slices(
             files, args.generate_slices, durations, repo_root
         )
@@ -1529,7 +1552,7 @@ def main() -> int:
 
     # Apply slicing if requested (partition from the checkout alone; see _slice_files).
     if slice_index is not None:
-        durations = _load_durations(repo_root)
+        durations = _load_durations(repo_root, args.scratch_root)
         files = _slice_files(files, slice_index, slice_count, durations, repo_root)
         # Recount after slicing.
         test_counts = {f: test_counts[f] for f in files if f in test_counts}
@@ -1634,7 +1657,7 @@ def main() -> int:
         # Duration cache for the timeout scaler: known-slow files get
         # proportional headroom instead of a false timeout-kill under
         # CI load (see _effective_file_timeout).
-        timeout_durations = _load_durations(repo_root)
+        timeout_durations = _load_durations(repo_root, args.scratch_root)
         futures: list[Future] = []
         for file in _longest_first(files, timeout_durations, repo_root):
             t0 = time.monotonic()
@@ -1644,6 +1667,7 @@ def main() -> int:
                     file, repo_root, args.file_timeout, timeout_durations
                 ),
                 args.file_retries,
+                args.scratch_root,
             )
             fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
             futures.append(fut)
@@ -1710,7 +1734,7 @@ def main() -> int:
         file_times, failures, _FLAKY_RESULTS,
     )
     if clean_times:
-        _save_durations(clean_times, repo_root)
+        _save_durations(clean_times, repo_root, args.scratch_root)
         print(f"  Durations cached to {_DURATIONS_FILE} ({len(clean_times)} files)")
 
     # Per-file time distribution (throwaway diagnostic — shows how

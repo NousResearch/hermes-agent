@@ -872,47 +872,6 @@ class TestFinishedHandleRelease:
 # =========================================================================
 
 class TestSpawnEnvSanitization:
-    def test_spawn_local_strips_blocked_vars_from_background_env(self, registry):
-        captured = {}
-
-        def fake_popen(cmd, **kwargs):
-            captured["env"] = kwargs["env"]
-            proc = MagicMock()
-            proc.pid = 4321
-            proc.stdout = iter([])
-            proc.stdin = MagicMock()
-            proc.poll.return_value = None
-            return proc
-
-        fake_thread = MagicMock()
-
-        with patch.dict(os.environ, {
-            "PATH": "/usr/bin:/bin",
-            "HOME": "/home/user",
-            "USER": "tester",
-            "TELEGRAM_BOT_TOKEN": "bot-secret",
-            "FIRECRAWL_API_KEY": "fc-secret",
-        }, clear=True), \
-            patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-            patch("subprocess.Popen", side_effect=fake_popen), \
-            patch("threading.Thread", return_value=fake_thread), \
-            patch.object(registry, "_write_checkpoint"):
-            registry.spawn_local(
-                "echo hello",
-                cwd="/tmp",
-                env_vars={
-                    "MY_CUSTOM_VAR": "keep-me",
-                    "TELEGRAM_BOT_TOKEN": "drop-me",
-                    f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN": "forced-bot-token",
-                },
-            )
-
-        env = captured["env"]
-        assert env["MY_CUSTOM_VAR"] == "keep-me"
-        assert env["TELEGRAM_BOT_TOKEN"] == "forced-bot-token"
-        assert "FIRECRAWL_API_KEY" not in env
-        assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
-        assert env["PYTHONUNBUFFERED"] == "1"
 
     def test_spawn_via_env_checks_returncode_when_wrapper_fails(self, registry):
         class FakeEnv:

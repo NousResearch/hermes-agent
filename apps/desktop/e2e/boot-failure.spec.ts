@@ -9,13 +9,12 @@
  * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
-import { allowErrorBanners, test } from './test'
-
 import {
   type DeadBackendFixture,
   setupDeadBackend,
   waitForBootFailure,
 } from './fixtures'
+import { allowErrorBanners, test } from './test'
 import { expectVisualSnapshot } from './visual-snapshot'
 
 let fixture: DeadBackendFixture | null = null

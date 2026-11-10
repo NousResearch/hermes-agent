@@ -32,6 +32,10 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.releases.authors import _load_contributor_dir, login_for_email
+from scripts.releases.authors_legacy import LEGACY_AUTHOR_MAP
 
 SKIP_SUBSTRINGS = (
     "teknium",
@@ -63,19 +67,14 @@ def new_emails() -> list[str]:
 
 
 def is_mapped(email: str) -> bool:
-    if any(s in email for s in SKIP_SUBSTRINGS):
+    # Re-read the directory each call: ``--fix`` adds files mid-run. Explicit
+    # mappings are checked before exemptions, so noreply/bot shortcuts cannot
+    # hide conflicting raw identities from the release resolver.
+    author_map = {**LEGACY_AUTHOR_MAP,
+                  **_load_contributor_dir(REPO_ROOT / "contributors" / "emails")}
+    if login_for_email(email, author_map) is not None:
         return True
-    if ID_NOREPLY_RE.search(email):
-        return True
-    if (REPO_ROOT / "contributors" / "emails" / email).is_file():
-        return True
-    authors_py = REPO_ROOT / "scripts" / "releases" / "authors_legacy.py"
-    try:
-        if f'"{email}"' in authors_py.read_text(encoding="utf-8-sig", errors="replace"):
-            return True
-    except OSError:
-        pass
-    return False
+    return any(s in email for s in SKIP_SUBSTRINGS) or bool(ID_NOREPLY_RE.search(email))
 
 
 def gh_json(*args: str):
@@ -104,9 +103,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fix", action="store_true",
                         help="auto-create contributors/emails/ mapping files")
+    parser.add_argument("--list-unmapped", action="store_true",
+                        help="print unmapped RAW author emails, one per line, for CI")
     args = parser.parse_args()
 
     unmapped = [e for e in new_emails() if not is_mapped(e)]
+    if args.list_unmapped:
+        for email in unmapped:
+            print(email)
+        return 0
     if not unmapped:
         print("✅ All contributor emails on this branch are mapped.")
         return 0

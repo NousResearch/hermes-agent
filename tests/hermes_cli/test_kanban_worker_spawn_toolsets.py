@@ -4,6 +4,7 @@ import pytest
 import subprocess
 
 
+
 def _make_task(kb, *, assignee: str):
     return kb.Task(
         id="t_spawn_tools",
@@ -30,6 +31,8 @@ def test_default_spawn_pins_assignee_profile_cli_toolsets(monkeypatch, tmp_path)
     root = tmp_path / ".hermes"
     profile = root / "profiles" / "elias"
     profile.mkdir(parents=True)
+    profile_home = profile / "home"
+    profile_home.mkdir()
     profile.joinpath("config.yaml").write_text(
         """
 platform_toolsets:
@@ -52,6 +55,7 @@ agent:
     )
     root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
 
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
@@ -77,6 +81,7 @@ agent:
 
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
+    assert captured["env"]["HOME"] == str(profile_home)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
     assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
     assert captured["env"]["HERMES_KANBAN_RUN_ID"] == "7"
@@ -87,6 +92,7 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
     """Owner policy reads overrides from the claimed card, not executable argv."""
     root = tmp_path / ".hermes"
     (root / "profiles" / "elias").mkdir(parents=True)
+    (root / "profiles" / "elias" / "config.yaml").write_text("{}\n", encoding="utf-8")
     root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
 
@@ -125,7 +131,9 @@ def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp
     profile.mkdir(parents=True)
     root.joinpath("config.yaml").write_text(
         "terminal:\n  env_passthrough:\n    - MY_PASSTHROUGH_VAR\n", encoding="utf-8")
-    profile.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    # Forwarding authority belongs to the assignee, not the dispatcher's config.
+    profile.joinpath("config.yaml").write_text(
+        "terminal:\n  env_passthrough:\n    - MY_PASSTHROUGH_VAR\n", encoding="utf-8")
     profile.joinpath(".env").write_text("MY_PASSTHROUGH_VAR=elias-value\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("MY_PASSTHROUGH_VAR", "dispatcher-value")

@@ -6,6 +6,10 @@ export interface ClarifyArgs {
   questions?: { question: string; choices?: string[] | null; multiSelect?: boolean }[]
 }
 
+export function hasClarifyQuestionPreview(args: ClarifyArgs): boolean {
+  return Boolean(args.questions?.some(entry => entry.question.trim()))
+}
+
 function stringField(row: Record<string, unknown>, key: string): string | undefined {
   const value = row[key]
 

@@ -14,7 +14,7 @@ import re
 from types import SimpleNamespace
 
 from agent.redact import redact_sensitive_text
-from plugins.platforms.telegram.telegram_markdown import _MD_CODE_RE
+from plugins.platforms.telegram.rich_code_regions import strip_code
 from plugins.platforms.telegram.telegram_send_errors import SAME_REQUEST_ATTEMPTS, is_entity_parse_error
 from pm import install_hint
 
@@ -307,7 +307,7 @@ def _telegram_format(message):
     ``format_message``."""
     from telegram.constants import ParseMode
     # A tag shown as Markdown code (any backtick width, as the MarkdownV2 path reads it) is an example.
-    if _TELEGRAM_HTML_TAG_RE.search(_MD_CODE_RE.sub("", message)):
+    if _TELEGRAM_HTML_TAG_RE.search(strip_code(message)):
         return _escape_non_telegram_markup(message), ParseMode.HTML, True
     mdv2 = _telegram_mdv2(message)
     return (message if mdv2 is None else mdv2), ParseMode.MARKDOWN_V2, False  # None: send as-is

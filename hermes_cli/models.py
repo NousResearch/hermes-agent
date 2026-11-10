@@ -853,6 +853,14 @@ def parse_model_input(
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
+        if provider_part and model_part and provider_part not in _KNOWN_PROVIDER_NAMES:
+            # A bare user-declared provider key (``providers.myrouter`` / ``custom_providers`` name),
+            # e.g. an ACP picker id ``myrouter:gpt``, routes to its ``custom:<name>`` id instead of
+            # leaking the unsplit string to the current provider as a model name.
+            from hermes_cli.providers import custom_provider_slug
+            slug = custom_provider_slug(provider_part)
+            if slug in (_configured_custom_provider_ids() if custom_ids is None else custom_ids):
+                return slug, model_part
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
             if provider_part == "custom":
                 configured = _configured_custom_provider_ids() if custom_ids is None else custom_ids

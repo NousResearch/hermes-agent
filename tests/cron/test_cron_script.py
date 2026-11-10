@@ -407,11 +407,35 @@ class TestRunJobScript:
             "pm.environments.selected_venv",
             _broken if broken == "selection_raises" else (lambda repo: tmp_path / "gone-venv"),
         )
+        # The bare store Python has no packages of its own (prefix == base_prefix), even when
+        # the test runner itself is a venv.
+        monkeypatch.setattr(sys, "prefix", sys.base_prefix)
         (cron_env / "scripts" / "probe.py").write_text('print("ok")\n', encoding="utf-8")
 
         success, output = _run_job_script("probe.py")
         assert success is False
         assert "dependency environment" in output
+
+    @pytest.mark.platforms("posix")
+    def test_posix_unrecorded_environment_runs_on_own_venv_interpreter(
+        self, cron_env, tmp_path, monkeypatch
+    ):
+        """#134073/#123547: a store ``python`` package exists but PM never recorded a dependency
+        environment (externally built release): a process that already runs on its own venv
+        keeps its interpreter instead of failing with "interpreter is missing"."""
+        from cron import scheduler_script
+
+        monkeypatch.setattr(
+            "hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable)
+        )
+        monkeypatch.setattr("pm.environments.selected_venv", lambda repo: tmp_path / "gone-venv")
+        monkeypatch.setattr(sys, "prefix", str(tmp_path / "own-venv"))
+        monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "base"))
+        script = cron_env / "scripts" / "probe.py"
+
+        argv, env = scheduler_script._posix_cron_script_argv(script)
+        assert argv == [sys.executable, str(script)]
+        assert env == {"HERMES_DISABLE_LAZY_INSTALLS": "1"}
 
     def test_emoji_stdout_round_trips_through_script_capture(self, cron_env):
         """Emoji in script stdout must reach the caller intact (#42384).

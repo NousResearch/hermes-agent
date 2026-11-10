@@ -230,23 +230,54 @@ class TestOneDefaultTableAndOneBypass:
         assert env["TERMINAL_TIMEOUT"] == "55"
         assert C.read_raw_config()["model"]["base_url"] == "https://user-only.example"
 
-    def test_a_save_under_the_flag_keeps_the_user_file(self, tmp_path, monkeypatch):
-        """load_config() served defaults, so a read-modify-write must land only its own edit: the
-        user's sections stay on disk instead of being replaced by the defaults."""
-        from hermes_cli import config as C
-        from hermes_cli.config_backend import read_config_doc
+    _USER_FILE = (
+        "model:\n  default: test-vendor/user-only\n  provider: custom\n"
+        "  base_url: https://user-only.example\n  api_key: test-key-not-real\n"
+        "agent:\n  max_turns: 12\ndelegation:\n  max_iterations: 30\n"
+        "mcp_servers:\n  a:\n    command: test-a\n")
 
-        home = self._home(tmp_path, monkeypatch, (
-            "model:\n  default: test-vendor/user-only\napprovals:\n  deny:\n  - rm -rf /\n"
-            "custom_providers:\n- name: mine\n  base_url: https://mine.example\n"))
+    def test_a_whole_file_save_under_the_flag_is_refused(self, tmp_path, monkeypatch):
+        """load_config() served defaults, not the file, so writing it back would replace the user's
+        file: the save is refused with a coded error and the file is byte-identical."""
+        from hermes_cli import config as C
+        from hermes_cli.config_backend import ConfigWriteError
+        from hermes_cli.web_routers._common import config_refusal_http
+
+        home = self._home(tmp_path, monkeypatch, self._USER_FILE)
+        before = (home / "config.yaml").read_bytes()
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
 
         cfg = C.load_config()
-        cfg.setdefault("display", {})["skin"] = "mono"
-        C.save_config(cfg)
+        cfg["model"] = {"default": "picked/model"}
+        with pytest.raises(ConfigWriteError) as err:
+            C.save_config(cfg)
 
-        on_disk = read_config_doc(home / "config.yaml")
+        assert err.value.code == "config_user_ignored"
+        assert config_refusal_http(err.value).status_code == 409
+        assert (home / "config.yaml").read_bytes() == before
+        # A single-key write edits the raw file and still saves.
+        C.set_config_value("display.skin", "mono")
+        on_disk = C.read_raw_config()
         assert on_disk["display"]["skin"] == "mono"
-        assert on_disk["model"]["default"] == "test-vendor/user-only"
-        assert on_disk["approvals"]["deny"] == ["rm -rf /"]
-        assert on_disk["custom_providers"][0]["name"] == "mine"
+        assert on_disk["model"]["api_key"] == "test-key-not-real"
+
+    def test_a_partial_save_under_the_flag_merges_onto_the_file(self, tmp_path, monkeypatch):
+        """A ``merge_existing`` save lands on the live file as it does without the flag: siblings
+        stay, and an edit equal to the default is written, not dropped."""
+        from hermes_cli import config as C
+
+        home = self._home(tmp_path, monkeypatch, self._USER_FILE)
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+
+        C.save_config({"model": {"default": "picked/model"}}, merge_existing=True)
+        C.save_config({"agent": {"max_turns": None}}, merge_existing=True)
+        C.save_config({"delegation": {"max_iterations": 250}}, merge_existing=True)
+
+        monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG")
+        on_disk = C.read_raw_config()
+        assert on_disk["model"] == {"default": "picked/model", "provider": "custom",
+                                    "base_url": "https://user-only.example", "api_key": "test-key-not-real"}
+        assert on_disk["mcp_servers"] == {"a": {"command": "test-a"}}
+        assert on_disk["agent"]["max_turns"] is None
+        assert on_disk["delegation"]["max_iterations"] == 250
+        assert (home / "config.yaml").exists()

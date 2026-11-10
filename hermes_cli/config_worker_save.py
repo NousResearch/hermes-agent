@@ -4,7 +4,9 @@ A managed worker binds its session's creation-time config (``agent.safe_worker_p
 ``load_config()`` is that snapshot, not the profile file. A read-modify-write in such a worker
 (an ``always`` approval, a connector enable) must land only what it changed on the LIVE file:
 writing the whole snapshot back would revert every profile edit made since the session was
-created. Outside a frozen worker this is ``save_config``'s ordinary ``merge_existing`` handling.
+created. Outside a frozen worker this is ``save_config``'s ordinary ``merge_existing`` handling,
+except that under ``--ignore-user-config`` a whole-file save is refused: it would write defaults
+over the file.
 """
 
 from __future__ import annotations
@@ -19,12 +21,18 @@ def rebase_for_save(config: dict[str, Any], live_raw: dict[str, Any], merge_exis
     snapshot = _config._worker_config_snapshot()
     if snapshot is not None:
         return _three_way(live_raw or {}, config, _config.load_config(), _frozen_for_deletion(snapshot))
-    if _config.user_config_ignored():
-        # load_config() served defaults, not the file: land only the caller's edits on the live file.
-        return _three_way(live_raw or {}, config, _config.load_config(), {})
+    if not merge_existing and _config.user_config_ignored():
+        # load_config() served defaults, not the file: a whole-file save would replace the user's file.
+        from hermes_cli.config_backend import ConfigWriteError
+        raise ConfigWriteError(USER_CONFIG_IGNORED_MESSAGE, code="config_user_ignored")
     if merge_existing and live_raw:
         return _config._merge_partial_save(live_raw, config)
     return config
+
+
+USER_CONFIG_IGNORED_MESSAGE = (
+    "This change was not saved: --ignore-user-config is set, so the loaded config is defaults, "
+    "not your file. Single settings (`hermes config set`) still save.")
 
 
 def _frozen_for_deletion(snapshot: dict[str, Any]) -> Any:

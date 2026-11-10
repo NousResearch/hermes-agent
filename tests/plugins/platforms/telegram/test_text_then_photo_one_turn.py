@@ -210,3 +210,27 @@ async def test_two_question_photo_pairs_in_one_burst_keep_their_own_topics(tmp_p
     finally:
         db.close()
     assert sorted(routed) == [("first-q", "10", ["/tmp/post.jpg"]), ("second-q", "20", ["/tmp/post.jpg"])]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("album", [None, "album-1"], ids=["burst", "album"])
+async def test_burst_across_the_first_topic_binding_is_one_turn(tmp_path, album):
+    """Topic-mode DM before the user has any topic binding: photo 1 finds no topic. The first topic
+    turn then binds topic 10 and photo 2 recovers into it. Dispatch would move photo 1 into topic 10
+    anyway, so the burst (or album) is one turn there, not two turns in the same topic."""
+    adapter, db, bind, routed = _topic_mode_rig(tmp_path)
+    adapter._media_batch_delay_seconds = 0.8  # production burst window
+    try:
+        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
+                   new=AsyncMock(side_effect=lambda data, **_kw: f"/cache/{data.decode()}.jpg")):
+            for name in ("p1", "p2"):
+                msg = _make_message(photo=[_make_photo(_make_file_obj(name.encode()))], media_group_id=album)
+                msg.from_user.id = 1
+                await adapter._handle_media_message(_update(msg), MagicMock())
+                if name == "p1":
+                    bind("10")  # the user's first topic turn records its binding while the burst debounces
+            await async_wait_until(lambda: sum(len(media) for *_, media in routed) >= 2, timeout=5)
+            await async_wait_until(lambda: not (adapter._pending_photo_batches or adapter._media_group_events), timeout=5)
+    finally:
+        db.close()
+    assert routed == [("", "10", ["/cache/p1.jpg", "/cache/p2.jpg"])]

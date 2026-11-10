@@ -430,6 +430,35 @@ class SecretPinningConformance:
             for level in sorted(LEVELS - backend.levels):
                 refused_without_the_value(lambda level=level: store.set(NEW_NAME, marker, level=level))
 
+    def test_a_refused_auth_write_never_keeps_the_record_whatever_the_provider_id_names(self, backend):
+        """The auth provider id is a key name — the id the record is filed under — exempt
+        from the alias guarantee exactly like the secret's own name: a caller whose provider
+        id is its own text may see it bound in the store's frames, and that is not a leak.
+        The record is the secret material, and the exemption never reaches it: through every
+        refusal of its write, the record is bound in no frame the refusal's traceback passes
+        through below this suite, and none of any exception chained to it, as context or
+        cause, recursively, or of an exception group's members."""
+        marker = 'zAliased\nProvider "Record" 6f2b'
+        store = _seed(backend)
+        record = {"token": marker, "refresh": marker}
+
+        def refused_without_the_record(call):
+            with pytest.raises(PermissionError) as refused:
+                call()
+            for form in _plaintext_forms(marker):
+                assert form not in str(refused.value)
+            assert_no_frame_holds(refused.value, marker)
+
+        # The provider id is caller text distinct from the record's own text: what the key
+        # name exemption covers, and the record it must not carry with it.
+        for bind in _foreign_pins(backend):
+            with bind():
+                refused_without_the_record(
+                    lambda: store.set_auth("zProviderIdAliasingAValue", record))
+        with backend.bind_member("a"):
+            refused_without_the_record(
+                lambda: store.set_auth("zProviderIdAliasingAValue", record))
+
     @pytest.mark.parametrize("kind", WRITE_FAILURES)
     def test_no_failure_traceback_frame_holds_the_value_or_record(self, backend, kind):
         """Through every failure of a credential write that is not the store's refusal — a

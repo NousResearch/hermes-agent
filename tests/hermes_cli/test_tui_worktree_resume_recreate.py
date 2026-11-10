@@ -30,7 +30,7 @@ def _branches(repo):
 
 def _quit_clean_session_with_history(tmp_path, monkeypatch):
     """``hermes --tui -w``, one user + assistant exchange, ``/quit`` (row ended ``tui_shutdown``)."""
-    from hermes_cli import main_tui_launch
+    from hermes_cli import main_tui_launch, session_worktree
     from hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
     from hermes_state import SessionDB
@@ -39,7 +39,7 @@ def _quit_clean_session_with_history(tmp_path, monkeypatch):
     monkeypatch.chdir(repo)
     monkeypatch.setenv('HERMES_PYTHON', sys.executable)
     wt_info = _setup_worktree(str(repo), sync_base=False, retain_db=get_hermes_home() / 'state.db')
-    monkeypatch.setattr(main_tui_launch, '_setup_tui_worktree', lambda: wt_info)
+    monkeypatch.setattr(session_worktree, 'create', lambda: wt_info)
     monkeypatch.setattr(main_tui_launch, '_make_tui_argv', lambda *_: (['node'], Path('.')))
     monkeypatch.setattr(main_tui_launch, '_print_tui_exit_summary', lambda *_: None)
 

@@ -177,7 +177,8 @@
       "entries": [
         "hermes_cli.chat_launch:hermes_command",
         "hermes_cli.chat_launch:print_exit_summary",
-        "hermes_cli.gateway_chat:shell_client_env"
+        "hermes_cli.gateway_chat:shell_client_env",
+        "hermes_cli.session_worktree"
       ]
     }
   ]

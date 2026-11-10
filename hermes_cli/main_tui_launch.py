@@ -313,64 +313,6 @@ def _apply_tui_python_env(env: dict) -> None:
         env["HERMES_CWD"] = _safe_tui_cwd(env)
 
 
-def _setup_tui_worktree() -> dict:
-    """Create the ``--worktree`` checkout for a TUI launch (prune + async pack maintenance); exits on failure."""
-    wt_info = None
-    try:
-        from cli import _git_repo_root, _maintain_pack_health, _prune_stale_worktrees, _setup_worktree
-        repo = _git_repo_root()
-        if repo:
-            _prune_stale_worktrees(repo)
-            # Repack on pack sprawl so `worktree add` never crawls on a
-            # multi-agent box; on a thread so it can't block launch.
-            import threading as _threading
-
-            _threading.Thread(
-                target=_maintain_pack_health, args=(repo,), name="pack-maintenance", daemon=True).start()
-        from hermes_cli.config import get_hermes_home
-        # The session's frozen cwd keeps this checkout; name the store from creation so a
-        # launcher killed with its terminal still leaves the tree to its sessions.
-        wt_info = _setup_worktree(retain_db=get_hermes_home() / "state.db")
-    except Exception as exc:
-        print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
-    if not wt_info:
-        sys.exit(1)
-    return wt_info
-
-
-def _remove_idle_clean_tui_worktree(wt_info: dict) -> bool:
-    """Remove the ``--tui -w`` checkout on quit when nothing still needs it (N8) -> True if gone.
-
-    Kept when the gateway has queued or started work for a session inside it (quitting only
-    detaches the viewer), still schedules work for one (an active loop, heartbeat or goal
-    continuation, or a cron job bound to it), another viewer still holds one, or another process
-    still works in it; and by ``_cleanup_worktree`` when it is dirty, holds unpushed commits or
-    something no branch keeps.
-    """
-    from hermes_cli.config import get_hermes_home
-    from hermes_cli.worktree_exit import _still_in_use
-    from hermes_cli.worktree_ops import _retained_tree_is_live, _tree_still_served
-
-    path = wt_info.get("path")
-    if not path or not Path(path).is_dir():
-        return False
-    try:
-        db_path = str(get_hermes_home() / "state.db")
-        if _retained_tree_is_live(db_path, path, pending_only=True):
-            return False
-        if _still_in_use(path):
-            return False
-        # After the grace above: a legacy sidecar stamps its rows ``tui_shutdown`` as it exits.
-        if _tree_still_served(db_path, path):
-            return False
-        from cli import _cleanup_worktree
-        _cleanup_worktree(wt_info)
-    except Exception:
-        logger.debug("TUI worktree cleanup failed; keeping %s", path, exc_info=True)
-        return False
-    return not Path(path).exists()
-
-
 def _require_bypass_model(env: dict, model: Optional[str], resume_session_id: Optional[str]) -> None:
     """A --safe-mode / --ignore-user-config session reads no profile default model, so the owner
     refuses its session.create without one (bare invalid_params). Say so before the TUI starts,
@@ -507,7 +449,10 @@ def _launch_tui(
 
     wt_info = None
     if worktree:
-        wt_info = _setup_tui_worktree()
+        from hermes_cli.session_worktree import create
+        wt_info = create()
+        if not wt_info:
+            sys.exit(1)
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
 
@@ -572,25 +517,9 @@ def _launch_tui(
         attached_session = _read_tui_active_session_file(active_session_file) or resume_session_id
         with contextlib.suppress(OSError):
             os.unlink(active_session_file)
-        if wt_info and code in {0, 130}:
-            from hermes_cli.worktree_exit import ask_exit_choice
-            ask_exit_choice(wt_info)
-        from hermes_cli.worktree_exit import apply_exit_choice
-        if wt_info and apply_exit_choice(wt_info, print):
-            wt_info = None  # archived or discarded at the user's request
-        if wt_info and _remove_idle_clean_tui_worktree(wt_info):
-            wt_info = None  # clean and idle: removed with its branch, as before the shared gateway
         if wt_info:
-            # Quitting detaches a viewer; the gateway may still be executing in
-            # this checkout and future resumes retain its frozen cwd.
-            if attached_session:
-                # The launch lock names this (exiting) pid; hand it to the session so a later
-                # launch's stale prune keeps the tree while the session is resumable.
-                from hermes_cli.config import get_hermes_home
-                from hermes_cli.worktree_ops import _retain_worktree_for_session
-                _retain_worktree_for_session(wt_info["repo_root"], wt_info["path"], attached_session,
-                                             get_hermes_home() / "state.db")
-            print(f"Worktree retained for this session: {wt_info['path']}", file=sys.stderr)
+            from hermes_cli.session_worktree import finish
+            finish(wt_info, attached_session, ask=code in {0, 130})
 
     # Exit code 42 = TUI requested an update. Relaunch as `hermes update`;
     # preserve_inherited=False keeps --tui and other flags out of the subcommand.

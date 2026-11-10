@@ -46,8 +46,8 @@ from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
-    strip_opaque_replay_items,
 )
+from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
 from agent.context_default_record import last_defaulted_context_length
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
@@ -1301,9 +1301,9 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     text_tokens = estimate_tokens_rough(content) if isinstance(content, str) else _content_length_for_budget(content) // _CHARS_PER_TOKEN
     tokens = text_tokens + 10  # +10 for role/key overhead
     tokens += sum(estimate_tokens_rough(str(tc)) for tc in msg.get("tool_calls") or [] if isinstance(tc, dict))
-    for key in _ALWAYS_REPLAYED_BUDGET_KEYS:
-        # Opaque ciphertext is priced only by real usage (same rule as the preflight estimator).
+    for key in _ALWAYS_REPLAYED_BUDGET_KEYS:  # ciphertext priced by provider count, never bytes (#125920)
         tokens += _serialized_length_for_budget(strip_opaque_replay_items(msg.get(key))) // _CHARS_PER_TOKEN
+    tokens += codex_reasoning_replay_tokens(msg)
     if not charge_stale_thinking:
         return tokens
     # Wire ships at most ONE generic thinking key (reasoning_content wins);
@@ -4965,8 +4965,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             request_copy = dict(msg)
             if rejected:
                 strip_rejected_thinking(request_copy, rejected)
-            (projected,), readable = native_anthropic_accounting_projection([request_copy])
-            return _estimate_msg_budget_tokens(projected) + sum(estimate_tokens_rough(text) for text in readable)
+            (projected,), thinking = native_anthropic_accounting_projection([request_copy])
+            return _estimate_msg_budget_tokens(projected) + sum(thinking)
 
         return budget
 

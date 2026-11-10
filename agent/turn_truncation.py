@@ -629,6 +629,9 @@ def continue_codex_incomplete(
                 if _key == "codex_reasoning_items":
                     from agent.native_compaction import merge_interim_reasoning_items
                     last_msg[_key] = merge_interim_reasoning_items(last_msg.get(_key), interim_msg[_key])
+                    # The refreshed items are this response's: so is their replay price.
+                    from agent.message_metadata import stamp_reasoning_tokens, stamped_reasoning_tokens
+                    stamp_reasoning_tokens(last_msg, stamped_reasoning_tokens(interim_msg))
                 else:
                     last_msg[_key] = interim_msg[_key]
         else:

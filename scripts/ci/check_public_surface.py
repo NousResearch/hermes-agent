@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from hermes_agent.compat.paths import original_path
 
-SRC_DIRS = ("agent", "gateway", "hermes_cli", "tools", "tui_gateway", "cron", "acp_adapter", "plugins")
+SRC_DIRS = ("agent", "gateway", "hermes_cli", "tools", "tui_gateway", "cron", "acp_adapter", "plugins", "hermes_agent")
 _TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def test_", re.MULTILINE)
 
 
@@ -116,7 +116,7 @@ def public_methods(src: str) -> set[str]:
 
 
 def _is_source(path: str) -> bool:
-    path = original_path(path.removeprefix("src/hermes_agent/"))
+    path = original_path(path)
     return "/" not in path or path.split("/", 1)[0] in SRC_DIRS
 
 

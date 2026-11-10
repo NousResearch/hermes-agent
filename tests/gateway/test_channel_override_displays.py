@@ -57,3 +57,22 @@ async def test_model_header_reports_channel_override(home, monkeypatch, thread_i
 async def test_footer_preview_reports_channel_override(home, thread_id, expected, absent):
     reply = await _runner()._handle_footer_command(_event("/footer on", thread_id))
     assert expected in reply and absent not in reply
+
+
+@pytest.mark.asyncio
+async def test_model_switch_keeps_config_backed_custom_endpoint(home, monkeypatch):
+    """A channel pinned to ``provider: custom`` hands switch_model the endpoint config.yaml defines."""
+    (home / "config.yaml").write_text(yaml.safe_dump({"model": {
+        "default": "local-model", "provider": "custom", "base_url": "http://127.0.0.1:8999/v1"}}), encoding="utf-8")
+    runner = _runner()
+    runner.config.platforms[Platform.TELEGRAM].channel_overrides = {
+        "777": ChannelOverride(model="pinned/lane-model", provider="custom")}
+    seen = {}
+
+    async def _capture(ctx, raw_input, explicit_provider, source):
+        seen.update(provider=ctx.current_provider, base_url=ctx.current_base_url, model=ctx.current_model)
+        return None, "stop"
+    monkeypatch.setattr(runner, "_perform_model_switch", _capture)
+    await runner._handle_model_command(_event("/model other-model --provider custom", "777"))
+    assert seen["model"] == "pinned/lane-model"
+    assert seen["base_url"].rstrip("/") == "http://127.0.0.1:8999/v1"

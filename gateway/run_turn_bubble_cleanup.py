@@ -1,11 +1,28 @@
 """Deletion of a turn's temporary progress bubbles (``display.platforms.<p>.cleanup_progress``)."""
 
+import asyncio
+import contextlib
 import logging
 from typing import Any
 
 from gateway.turn_context import TurnContext
 
 logger = logging.getLogger("gateway.run")
+
+# Per-delete bound: the callback runs under the post-delivery timeout (30 s), so one slow delete must
+# not use it up and leave the remaining bubbles undeleted.
+DELETE_TIMEOUT_SECONDS = 10.0
+
+
+async def settle_turn_senders(*tasks: Any) -> None:
+    """Stop the turn's bubble senders (progress, heartbeat) and wait for them, as the turn's
+    ``finally`` does, so every bubble id they mint is tracked before a queued follow-up takes over."""
+    live = [task for task in tasks if task is not None]
+    for task in live:
+        task.cancel()
+    for task in live:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
 
 
 def register_bubble_cleanup(response: Any, turn_ctx: TurnContext) -> None:
@@ -23,15 +40,15 @@ def register_bubble_cleanup(response: Any, turn_ctx: TurnContext) -> None:
         return
     ids_snapshot, chat_id = list(ids), turn_ctx.source.chat_id
 
+    async def _delete(mid: str) -> bool:
+        try:
+            return await asyncio.wait_for(adapter.delete_message(chat_id, mid), DELETE_TIMEOUT_SECONDS) is not False
+        except Exception:  # health: allow BLE001 -- one bad or slow delete must not stop the rest; logged below
+            logger.debug("Temp bubble delete failed for %s", mid, exc_info=True)
+            return False
+
     async def _cleanup_temp_bubbles() -> None:
-        failed = 0
-        for mid in ids_snapshot:
-            try:
-                if await adapter.delete_message(chat_id, mid) is False:
-                    failed += 1
-            except Exception:  # health: allow BLE001 -- one bad delete must not stop the rest; logged below
-                logger.debug("Temp bubble delete failed for %s", mid, exc_info=True)
-                failed += 1
+        failed = sum(not ok for ok in await asyncio.gather(*(_delete(mid) for mid in ids_snapshot)))
         if failed:
             logger.info("Temp bubble cleanup for session %s: %d of %d deletes failed",
                         session_key, failed, len(ids_snapshot))

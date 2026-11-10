@@ -1225,6 +1225,29 @@ def register(ctx):
     ctx.register_cli_command("my-client", "Chat in my client", _arguments, _run_chat)
 ```
 
+### `-w`: run the session in a fresh worktree
+
+The same launcher can offer `-w` the way `hermes --tui -w` does. It calls three functions from `hermes_cli.session_worktree`:
+
+- `create()` before the client starts. It makes a new git worktree of the repository the user is in, under `<repo>/.worktrees/`, on its own `hermes/` branch. It returns `{"path", "branch", "repo_root", "base"}`, or `None` when no tree could be made (it has already printed why). Send `path` as the `cwd` of `session.create`.
+- `restore(session_id)` before the client attaches to a resumed session. When that session ran in a `-w` tree that an earlier quit removed, it makes the tree again at the same path and returns the path. Otherwise it returns `None`. Without it, the gateway refuses every turn of that session with `workspace_unavailable`.
+- `finish(info, session_id, ask=...)` after the client exits. Pass `ask=True` after a clean exit: a tree with uncommitted or unpushed work then gets a keep / archive / discard question on the terminal. Call it only after your client has given the terminal back. A clean tree that nothing still uses is removed with its branch. A kept tree is handed to `session_id`, so Hermes keeps it while that session can be resumed.
+
+Do not make the tree yourself with `git worktree add`. Hermes regularly removes old idle trees under `.worktrees/`. It keeps a locked tree only when the lock reason is one Hermes wrote, so it can remove your tree while a stored session still runs in it.
+
+```python
+from hermes_cli import session_worktree
+
+info = session_worktree.create() if args.worktree else None
+if args.worktree and info is None:
+    raise SystemExit(1)
+if args.resume and not args.worktree:
+    session_worktree.restore(args.resume)
+code, session_id = run_my_client(cwd=info["path"] if info else os.getcwd(), resume=args.resume)
+if info:
+    session_worktree.finish(info, session_id, ask=code == 0)
+```
+
 ## Calling MCP servers from plugins
 
 `ctx.call_mcp()` lets a plugin call a tool on one of the user's configured MCP servers — synchronously, from any hook or tool handler — routing through Hermes' existing native MCP client (same connections, trust-tier gates, circuit breaker, and reconnect logic as model-invoked MCP tools; never a parallel client).

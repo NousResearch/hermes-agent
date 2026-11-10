@@ -1,7 +1,7 @@
 name: concord-for-hermes
 title: Concord for Hermes
 repo: https://github.com/Null007Void/concord-for-hermes
-sha: 7f43f84e423b9db143f4ae68d88b517483a5513e
+sha: d0b0e4c1ca46d09952dc76f217b00efb4853ccc2
 subdir: plugin
 description: Coordinates allowlisted GitHub existing-file writes with revision checks, verified receipts and exact-operation replay.
 maintainer: Null007Void
@@ -9,7 +9,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.3"
 version: "0.1.0"
-docs_url: https://github.com/Null007Void/concord-for-hermes/blob/7f43f84e423b9db143f4ae68d88b517483a5513e/README.md
+docs_url: https://github.com/Null007Void/concord-for-hermes/blob/d0b0e4c1ca46d09952dc76f217b00efb4853ccc2/README.md
 readme: false
 known_issues:
   - Requires the GitHub CLI and operator-configured authentication; credential delegation is disclosed for maintainer review.

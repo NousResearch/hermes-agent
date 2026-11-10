@@ -665,11 +665,16 @@ class InMemoryRoutingRepository:
         session_id: str,
         managed_mode: str = "auto",
         profile_name: str = "default",
-    ) -> None:
+        expected_session_id: str | None = None,
+    ) -> bool:
         self.prepare_topic_storage()
         _modes, bindings = self._topic_tables()  # type: ignore[misc]
         now = time.time()
         key = (normalize_topic_profile_name(profile_name), str(chat_id), str(thread_id))
+        if expected_session_id is not None:
+            current = bindings.get(key)
+            if current is None or str(current.session_id) != str(expected_session_id):
+                return False
         sid = str(session_id)
         linked = [binding for binding in bindings.values() if binding.session_id == sid]
         if linked and (linked[0].profile_name, linked[0].chat_id, linked[0].thread_id) != key:
@@ -683,6 +688,7 @@ class InMemoryRoutingRepository:
             if existing is not None
             else TopicBinding(profile_name=key[0], chat_id=key[1], thread_id=key[2], linked_at=now, **fields)
         )
+        return True
 
 
 register_repository("routing", InMemoryRoutingRepository)

@@ -1,0 +1,40 @@
+name: docs-drift
+title: Docs Drift
+repo: https://github.com/vigohan95/hermes-docs-drift
+sha: ce657cd8671fe76e0b3950e6f9fb82ffe74d5b3f
+description: "Checks that the README and Markdown docs still match the code after the agent edits files. When a write_file or patch call leaves the docs naming a command-line flag, environment variable, default value, npm script, make target or file that the code no longer has, the tool result gets a docs_drift block with file:line on both sides, in the same turn. When an edit adds a flag or environment variable that no doc mentions while the docs document its siblings, the result says so and says where the siblings are documented. Fixing the doc reports the finding as resolved, and the agent is reminded once before it finishes if drift from this session is still open. Also adds a docs_drift_scan tool (whole repository or changed files only), docs_drift_explain (the evidence behind one finding), a /drift command and a python -m docsdrift command line for CI. Deterministic and offline: Python standard library only, no model call, no network, no API key. Markdown and MDX docs only. Disclosure — to do its job the plugin runs git (ls-files, status, show, diff --name-only, check-ignore; read-only, with GIT_OPTIONAL_LOCKS=0) in the repository being edited and reads that repository's text files and .git/config. It does not open .env or key files (templates such as .env.example are read), writes nothing to disk, makes no network request and sends no telemetry."
+maintainer: vigohan95
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/vigohan95/hermes-docs-drift#readme
+version: "0.1.0"
+readme: true
+image: https://raw.githubusercontent.com/vigohan95/hermes-docs-drift/ce657cd8671fe76e0b3950e6f9fb82ffe74d5b3f/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/vigohan95/hermes-docs-drift/ce657cd8671fe76e0b3950e6f9fb82ffe74d5b3f/media/session-without-plugin.png
+  - https://raw.githubusercontent.com/vigohan95/hermes-docs-drift/ce657cd8671fe76e0b3950e6f9fb82ffe74d5b3f/media/session-with-plugin-note.png
+  - https://raw.githubusercontent.com/vigohan95/hermes-docs-drift/ce657cd8671fe76e0b3950e6f9fb82ffe74d5b3f/media/session-with-plugin-end.png
+  - https://raw.githubusercontent.com/vigohan95/hermes-docs-drift/ce657cd8671fe76e0b3950e6f9fb82ffe74d5b3f/media/twenty-sessions.png
+  - https://raw.githubusercontent.com/vigohan95/hermes-docs-drift/ce657cd8671fe76e0b3950e6f9fb82ffe74d5b3f/media/command-line.png
+  - https://raw.githubusercontent.com/vigohan95/hermes-docs-drift/ce657cd8671fe76e0b3950e6f9fb82ffe74d5b3f/media/reminder-scripted.png
+platforms: []
+known_issues:
+  - "Reads Markdown and MDX docs only; reStructuredText, AsciiDoc and docstrings are not checked."
+  - "The hooks watch write_file and patch. A file changed by a terminal command is seen at the next watched edit or by an explicit docs_drift_scan, not when the command runs."
+  - "The first scan of a very large repository can take longer than the 8 second hook budget (measured: 52 s for the first scan of the Hermes Agent repository). That edit is then not checked and the agent is told so once per session and repository; run docs_drift_scan or /drift for the full result."
+  - "A repository that ships docs for other tools (vendored skills, exported documentation sites) gets false reports from whole-repository scans; set ignore_paths for those directories. The edit hooks report only findings that an edit introduced."
+  - "Whole-repository scans of repositories the rules were not tuned on were mostly wrong in the author's measurement: with the shipped checks, 15 findings from the default checks, 2 of them true, and 48 from the opt-in checks, 2 true, on 12 repositories scanned once and not tuned on afterwards. The README has the numbers per round and the causes."
+  - "In 106 recorded sessions with two real models (glm-5.3 and qwen3.8-27b) the plugin changed the outcome for one model and one kind of request only: glm-5.3 asked to add a flag. There the docs ended up consistent in 10 of 10 sessions with the plugin and 2 of 10 without on the author's own example project, and in 5 of 5 against 1 of 5 on encode/uvicorn. For renames, removals and changed defaults, and for qwen3.8-27b on both of its requests (an added flag included), the docs ended up consistent with and without the plugin: those models search for the name and update the docs by themselves. The reminder before the end of a turn was never triggered by a real model; it is exercised by a scripted session and unit tests."
+  - "A rename done over several edits is reported only when no non-doc file contains the old name any more. A whole-repository scan does not treat a variable whose name starts with an underscore, or one that click or typer binds with envvar=, as an environment variable of the program; the edit hooks, --since and /drift --changed report such a name when an edit removes it, a change covered by unit tests and two manual checks only, not by the real-model sessions."
+  - "The tests run in the repository's CI on Linux, macOS and Windows with Python 3.11, 3.12 and 3.14, and the plugin is validated, installed and run through two scripted sessions on Linux in two pinned Hermes checkouts (the commit the recorded sessions used, and upstream main as of 2026-11-10 17:13 UTC). The real-model sessions and the precision measurements were run on one Windows 11 machine only."
+capabilities:
+  provides_tools:
+    - docs_drift_scan
+    - docs_drift_explain
+  provides_hooks:
+    - pre_tool_call
+    - transform_tool_result
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

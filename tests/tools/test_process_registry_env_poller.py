@@ -1,5 +1,6 @@
 """Sandbox (non-local backend) log poller: incremental reads and exit detection."""
 
+import os
 import shlex
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from tools.process_registry import ProcessRegistry, ProcessSession
+from tools.process_registry_env_log import parse_log_delta_reply
 
 
 @pytest.fixture()
@@ -62,20 +64,25 @@ class TestEnvPollerIncrementalRead:
         yield replacement characters in the transcript (and break watch
         patterns at the seam). Every prefix of a mixed ASCII/2/3/4-byte
         string must come back decodable, with at most 3 bytes held back and
-        nothing held back once the trailing character is complete.
+        nothing held back once the trailing character is complete. The pid
+        file names this test process, so the command sees a running process.
         """
         full = "hé😀中a\n€bz🚀".encode()
-        log = tmp_path / "bg.log"
-        quoted = shlex.quote(str(log))
+        log, pid = tmp_path / "bg.log", tmp_path / "bg.pid"
+        pid.write_text(f"{os.getpid()}\n")
+        q = lambda p: shlex.quote(str(p))
+        command = ProcessRegistry._log_delta_command(q(log), 0, q(pid), q(tmp_path / "bg.exit"))
         for n in range(1, len(full) + 1):
             log.write_bytes(full[:n])
             out = subprocess.run(
-                ["sh", "-c", ProcessRegistry._log_delta_command(quoted, 0)],
+                ["sh", "-c", command],
                 capture_output=True, timeout=30,
                 check=False,
             ).stdout
             header, _, delta = out.partition(b"\n")
-            size, _offset = map(int, header.split())
+            size, _offset, status = header.split()
+            assert status == b"run"
+            size = int(size)
             delta.decode("utf-8")  # must not raise
             assert delta == full[:size]
             complete = full[:n].decode("utf-8", "ignore").encode() == full[:n]
@@ -192,6 +199,16 @@ class TestEnvPollerIncrementalRead:
         assert session.output_buffer == spoof
         assert session.exit_code == 5
 
+    def test_fallback_without_a_recorded_code_reports_minus_one(self, registry):
+        session = _make_session(sid="proc_fallback_no_code")
+        session.exited = False
+        self._run_poller(registry, session, [{"output": "garbage"}, {"output": "1\n"}, {"output": ""}])
+        assert session.exit_code == -1
+
+    @pytest.mark.parametrize("header", ["3 0 done", "3 0 exit:x1", "3 0", "3 0 run extra"])
+    def test_unknown_status_is_an_unreadable_reply(self, header):
+        assert parse_log_delta_reply(f"{header}\nabc") is None
+
     def test_missing_exit_code_falls_back_to_minus_one(self, registry):
         session = _make_session(sid="proc_no_code")
         session.exited = False
@@ -228,6 +245,7 @@ class TestEnvPollerIncrementalRead:
 
         return ShellEnv()
 
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a FIFO")
     @pytest.mark.parametrize("shell", [["dash", "-c"], ["busybox", "sh", "-c"], ["sh", "-c"]])
     def test_real_shell_final_output_and_exit_code(self, registry, tmp_path, shell):
         """Against a real shell: one exec per tick, the output written just before
@@ -235,11 +253,13 @@ class TestEnvPollerIncrementalRead:
         and the wrapper's exit code is read from the same reply."""
         if not shutil.which(shell[0]):
             pytest.skip(f"needs {shell[0]}")
-        log, pid, exit_ = (tmp_path / f"bg.{ext}" for ext in ("log", "pid", "exit"))
+        log, pid, exit_, gate = (tmp_path / f"bg.{ext}" for ext in ("log", "pid", "exit", "gate"))
+        os.mkfifo(gate)
         q = shlex.quote
         # Same shape as spawn_via_env's wrapper: a backgrounded subshell writes the
-        # log, then the exit file, then exits; the outer shell returns at once.
-        body = "printf 'first\\n'; sleep 1; printf '7 0 exit:0\\ntail \\303\\251'; exit 3"
+        # log, then the exit file, then exits; the outer shell returns at once. The
+        # job holds on the FIFO until the poller has read it running once.
+        body = f"printf 'first\\n'; read _ < {q(str(gate))}; printf '7 0 exit:0\\ntail \\303\\251'; exit 3"
         subprocess.run(
             ["sh", "-c", f"( sh -c {q(body)} > {q(str(log))} 2>&1; rc=$?; "
                          f"printf '%s\\n' \"$rc\" > {q(str(exit_))} ) >/dev/null 2>&1 & "
@@ -248,8 +268,17 @@ class TestEnvPollerIncrementalRead:
         session = _make_session(sid="proc_real_shell")
         session.exited = False
         env = self._shell_env(shell)
-        real_sleep = time.sleep
-        with patch("tools.process_registry.time.sleep", lambda _s: real_sleep(0.2)), \
+
+        def tick(_seconds):
+            if len(env.commands) == 1:  # the first poll ran while the job was held
+                # Opening a FIFO for writing blocks until the job opens it to read.
+                with open(gate, "w") as release:
+                    release.write("\n")
+            # Each tick costs one real shell exec. A wrapper that is never reaped
+            # (no init in a container) would read as running forever: fail, don't hang.
+            assert len(env.commands) < 1000, "wrapper never read as exited"
+
+        with patch("tools.process_registry.time.sleep", tick), \
             patch.object(registry, "_move_to_finished"):
             registry._env_poller_loop(session, env, str(log), str(pid), str(exit_))
         assert all("kill -0" in c and "wc -c" in c for c in env.commands)
@@ -294,7 +323,6 @@ class TestEnvPollerIncrementalRead:
         (tmp_path / "bg.exit").write_text("0\n")
         (tmp_path / "bg.pid").write_text("")  # no pid: reads as exited
         q = lambda p: shlex.quote(str(p))
-        cmd = ProcessRegistry._log_delta_command(
-            q(log), 0, quoted_pid_path=q(tmp_path / "bg.pid"), quoted_exit_path=q(tmp_path / "bg.exit"))
+        cmd = ProcessRegistry._log_delta_command(q(log), 0, q(tmp_path / "bg.pid"), q(tmp_path / "bg.exit"))
         out = subprocess.run(["sh", "-c", cmd], capture_output=True, timeout=30, check=False).stdout
         assert out == b"3 0 exit:0\nok\xc3"

@@ -39,8 +39,7 @@ from tools.process_registry_output_log import ProcessOutputLogMixin, open_output
 from tools.process_registry_ownership import ProcessOwnershipMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
-from tools.process_registry_env_log import (
-    exit_code_from_status, fallback_exit_status, log_delta_command, parse_log_delta_reply)
+from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
 from tools.process_registry_wsl import _is_wsl_launcher_command
 
 logger = logging.getLogger(__name__)
@@ -1419,10 +1418,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
         """Background thread: poll a sandbox log file for non-local backends.
 
-        One ``execute()`` per tick: the read command reports the process status
-        (taken before the log size, so the delta it returns alongside an exit is
-        the final output) in its header line, ahead of any log bytes. Sandboxes
-        rate-limit exec starts, so a poll must not cost more than one."""
+        One ``execute()`` per tick: the read command also reports the process
+        status (see ``log_delta_command``). Sandboxes rate-limit exec starts."""
         q = shlex.quote
         # Byte offset already read from the log (bytes, not chars: the shell counts bytes).
         prev_output_bytes = 0
@@ -1431,18 +1428,18 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             try:
                 # Read only the bytes written since the last poll, plus the process status.
                 raw = env.execute(
-                    self._log_delta_command(q(log_path), prev_output_bytes,
-                                            quoted_pid_path=q(pid_path), quoted_exit_path=q(exit_path)),
+                    self._log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
                     timeout=10).get("output", "")
-                new_size, used_offset, status, delta = parse_log_delta_reply(raw)
-                if new_size is not None:
-                    if used_offset < prev_output_bytes:
+                reply = parse_log_delta_reply(raw)
+                delta = reply.delta if reply else ""
+                if reply:
+                    if reply.offset < prev_output_bytes:
                         # Log rotated/truncated: what we hold no longer lines up. Restart.
                         with session._lock:
                             if session.exited:
                                 return
                             session.output_buffer = ""
-                    prev_output_bytes = new_size
+                    prev_output_bytes = reply.size
                 if delta:
                     # A kill that landed after this fetch already published its output
                     # snapshot: leave the output as the kill reported it (as the PTY reader does).
@@ -1455,13 +1452,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     self._check_watch_patterns(session, delta)
                     self._emit_output(session, delta)
 
-                if status is None:
-                    # Unreadable reply: separate liveness and exit-code reads (None = still running).
-                    status = fallback_exit_status(env, q(pid_path), q(exit_path))
-                    if status is None:
-                        continue
-                if status != "run":
-                    self._finish_exited(session, exit_code_from_status(status))
+                # Unreadable reply: separate liveness and exit-code reads, as before the combined read.
+                exit_code = reply.exit_code if reply else fallback_exit_code(env, q(pid_path), q(exit_path))
+                if exit_code is not None:
+                    self._finish_exited(session, exit_code)
                     return
             except Exception:
                 # Environment might be gone (sandbox reaped, etc.). A kill that already

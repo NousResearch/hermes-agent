@@ -141,6 +141,7 @@ def test_load_review_credentials_cfg_missing_section(monkeypatch):
 def _fake_parent():
     parent = MagicMock()
     parent._delegate_depth = 0
+    parent.valid_tool_names = {"delegate_task"}
     parent.session_id = "review-parent-sess"
     parent._interrupt_requested = False
     parent._active_children = []
@@ -247,6 +248,22 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
 def test_start_review_rejects_empty_conversation():
     with pytest.raises(ValueError, match="empty"):
         start_review(_fake_parent(), [], "")
+
+
+def test_start_review_requires_parent_delegation_capability(monkeypatch):
+    import tools.delegate_tool as dt
+
+    parent = _fake_parent()
+    parent.valid_tool_names = {"read_file"}
+    monkeypatch.setattr(
+        dt,
+        "_build_child_agent",
+        lambda **_kwargs: pytest.fail("review must not construct a child without delegation authority"),
+    )
+
+    with pytest.raises(ValueError, match="not available"):
+        start_review(parent, [{"role": "user", "content": "review this"}])
+
 
 def test_start_review_requires_agent():
     with pytest.raises(ValueError, match="No active agent"):

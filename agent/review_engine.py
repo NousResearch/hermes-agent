@@ -1,7 +1,7 @@
 """Shared engine for the /review command — every surface calls this.
 
-/review spawns an independent, full-privilege background subagent (the same async rail as
-``delegate_task(background=true)``) to review whatever the recent conversation presented;
+/review uses the same parent-authorized delegation rail as ``delegate_task(background=true)``
+to spawn an independent background reviewer for whatever the recent conversation presented;
 its result re-enters the spawning session as a normal async-delegation completion.
 Model routing: ``auxiliary.review`` when configured, else the parent agent's credentials,
 passed as ``credentials_cfg`` to ``delegate_task`` so native-SDK providers, api_mode

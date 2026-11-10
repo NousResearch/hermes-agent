@@ -503,16 +503,10 @@ def activate_dependencies(project_root: Path) -> None:
         built_for = venv_python_version(environment)
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
-    # ABI guard: never activate an environment built for a different interpreter.
-    # Adopting one puts a foreign site-packages ahead of the running interpreter's
-    # own, so an import of any C-extension package (pydantic_core._pydantic_core)
-    # resolves to a .so whose filename encodes the other ABI and dies with
-    # ModuleNotFoundError. Skipping leaves the caller on its own environment, which
-    # is what a differently-versioned interpreter needs (e.g. hermes-webui pinned
-    # via HERMES_WEBUI_PYTHON to the 3.11 agent venv).
-    # The version is read from the env itself (pyvenv.cfg, then lib/python3.*), not
-    # from the site-packages path: the Windows layout has no version component, and
-    # the path cannot distinguish a build interpreter from the running one.
+    # A foreign site-packages tree can only offer native extensions tagged for its
+    # own ABI. Keep the caller's launch environment rather than letting pure Python
+    # wrappers resolve beside unloadable extensions (#122555, #152211). Read the
+    # environment's metadata because Windows site-packages paths carry no version.
     if built_for is not None and built_for != sys.version_info[:2]:
         return
     import site

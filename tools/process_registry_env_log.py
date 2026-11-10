@@ -57,3 +57,42 @@ def log_delta_command(quoted_log_path: str, offset: int, *, quoted_pid_path: str
         f'if [ "$S" -gt "$O" ]; then '
         f"tail -c +$((O+1)) {quoted_log_path} 2>/dev/null | head -c $((S-O)); fi"
     )
+
+
+def parse_log_delta_reply(raw: str):
+    """Split a ``log_delta_command`` reply (with status) into
+    ``(new_size, used_offset, status, delta)``. No usable header (command failed,
+    shell missing a tool) yields ``(None, None, None, "")``: the caller skips the
+    poll rather than act on a half-read value."""
+    header, _, delta = raw.partition("\n")
+    try:
+        size_str, offset_str, status = header.split()
+        new_size = int(size_str)
+        used_offset = int(offset_str)
+        if status != "run" and not status.startswith("exit:"):
+            raise ValueError(status)
+    except ValueError:
+        return None, None, None, ""
+    return new_size, used_offset, status, delta
+
+
+def fallback_exit_status(env, quoted_pid_path: str, quoted_exit_path: str):
+    """Separate liveness and exit-code reads for a reply the combined command
+    could not deliver, so a backend that mangles it still sees the exit. Returns
+    ``None`` while the process looks alive, else ``"exit:<code>"``."""
+    check = env.execute(
+        f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
+    check_output = check.get("output", "").strip()
+    if not check_output or check_output.splitlines()[-1].strip() == "0":
+        return None
+    exit_str = env.execute(f"cat {quoted_exit_path} 2>/dev/null", timeout=5).get("output", "").strip()
+    return "exit:" + (exit_str.splitlines()[-1].strip() if exit_str else "")
+
+
+def exit_code_from_status(status: str) -> int:
+    """Exit code from an ``exit:<code>`` status: the wrapper shell recorded the
+    code; a missing one is -1."""
+    try:
+        return int(status[len("exit:"):])
+    except ValueError:
+        return -1

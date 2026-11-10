@@ -357,6 +357,17 @@ def test_unopenable_stdio_log_is_not_a_breakaway_refusal(tmp_path, monkeypatch):
     assert result.detail and not spawned
 
 
+def test_detached_restart_reports_a_spent_budget(monkeypatch, capsys, tmp_path):
+    """`gateway restart --detach` prints the deadline verdict, not a TimeoutError traceback, when its
+    budget runs out mid-start (spawn_unmanaged_gateway lets TimeoutError through for ensure)."""
+    from hermes_cli import gateway_runtime_start as start
+    def spent(*args, **kwargs):
+        raise TimeoutError
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", spent)
+    assert start.start_detached_replacement(tmp_path) == 1
+    assert "Could not start the gateway in the background: deadline" in capsys.readouterr().err
+
+
 @pytest.mark.platforms("macos")
 def test_native_launchd_ambiguous_domains_cannot_start(tmp_path, monkeypatch):
     from hermes_cli.gateway_runtime_service import discover_existing_gateway_service, RuntimeStartError

@@ -122,6 +122,9 @@ def start_detached_replacement(profile_home: Path, *, force: bool = False) -> in
     except RuntimeStartError as exc:
         print(f"✗ Could not start the gateway in the background: {exc}", file=sys.stderr)
         return 1
+    except TimeoutError:  # spawn_unmanaged_gateway leaves a spent budget to its caller (ensure's "deadline")
+        print("✗ Could not start the gateway in the background: deadline", file=sys.stderr)
+        return 1
     print("✓ Started the gateway in the background")
     return 0
 

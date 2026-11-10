@@ -106,6 +106,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "alias_rerouted": [
+                {"task_id": tid, "from": frm, "assignee": to}
+                for (tid, frm, to) in res.alias_rerouted
+            ],
             "respawn_guarded": [
                 {"task_id": tid, "reason": reason}
                 for (tid, reason) in res.respawn_guarded
@@ -137,6 +141,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "
             f"{', '.join(res.auto_assigned_default)}"
         )
+    for tid, frm, to in res.alias_rerouted:
+        print(f"Rerouted ({frm} -> {to} via kanban.assignee_aliases): {tid}")
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:

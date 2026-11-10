@@ -332,6 +332,15 @@ kanban:
                                    # claims. Fail-closed: an empty list, `null`
                                    # or a bare `dispatch_profiles:` claims
                                    # nothing, and so does an unreadable config.
+
+  # assignee_aliases: {chief: default}  # map board/persona names onto claimable
+                                   # profiles, read per dispatch pass: a ready
+                                   # card whose assignee names no profile is
+                                   # rerouted (ownership + `assigned` event) and
+                                   # spawned under the mapped profile in the
+                                   # same tick. Fail-open: unreadable/malformed
+                                   # mapping or a missing target behaves as if
+                                   # the key were unset (`skipped_nonspawnable`).
 ```
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
@@ -1013,6 +1022,7 @@ All commands are also available as a slash command in the interactive CLI and in
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
 | `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When the key is present, this home's dispatcher only claims cards whose assignee is listed — fail-closed: an empty list, `null` or a bare `dispatch_profiles:` claims nothing, and a config read that fails logs a warning and claims nothing; other assignees land in `skipped_nonspawnable`. Only omitting the key means "any existing profile". `hermes kanban diagnostics` prints the resolved value for this home (`any`, the listed names, or `none (fail-closed: …)`). See [Shared boards across homes](#shared-boards-across-homes). |
+| `kanban.assignee_aliases` | unset (no aliasing) | Maps board assignee names onto claimable profile names, read per dispatch pass. A ready card whose assignee has no on-disk profile resolves here: on a hit with an existing target, ownership is mutated (an `assigned` event records `from` and `source: kanban.assignee_aliases`) and the mapped profile is spawned in the same tick — a card addressed to a board persona (e.g. `chief`, a board persona of `default`) is work, not a permanent skip. Fail-open: unreadable or malformed values, or a target without a profile, behave exactly as if the key were unset. Surfaces as `alias_rerouted` in the dispatch summary and `Rerouted (old -> new via kanban.assignee_aliases): <id>` on the CLI pass. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 

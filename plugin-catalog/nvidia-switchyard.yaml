@@ -5,7 +5,7 @@
 # python_dependency, installed by Hermes at plugin install time.
 name: nvidia-switchyard
 repo: https://github.com/NVIDIA/switchyard-local-first-routing
-sha: "05df104cb3d7d33b896e0d238fc46b7e7229c7ca"
+sha: "114c3e12c1931d86cf75affc6c6ec5754865d107"
 subdir: switchyard
 title: Switchyard Local-first Routing (Beta)
 description: >-
@@ -29,8 +29,8 @@ category: models
 version: "0.1.0"
 platforms: [linux, macos, windows]
 screenshots:
-  - https://raw.githubusercontent.com/NVIDIA/switchyard-local-first-routing/05df104cb3d7d33b896e0d238fc46b7e7229c7ca/docs/screenshots/desktop-page.jpg
-  - https://raw.githubusercontent.com/NVIDIA/switchyard-local-first-routing/05df104cb3d7d33b896e0d238fc46b7e7229c7ca/docs/screenshots/monitor-dashboard.jpg
+  - https://raw.githubusercontent.com/NVIDIA/switchyard-local-first-routing/114c3e12c1931d86cf75affc6c6ec5754865d107/docs/screenshots/desktop-page.jpg
+  - https://raw.githubusercontent.com/NVIDIA/switchyard-local-first-routing/114c3e12c1931d86cf75affc6c6ec5754865d107/docs/screenshots/monitor-dashboard.jpg
 capabilities:
   provides_tools: []
   provides_hooks:

@@ -654,14 +654,14 @@ def _migrate_to_46(results: dict[str, Any], quiet: bool) -> None:
     # false` (the key every reader uses) and drop `disabled`, so the editor and runtime agree.
     # `disabled: true` wins over an explicit `enabled: true`: `hermes mcp add` writes that, and the
     # old editor only added `disabled`, so letting `enabled` win would skip nearly every server.
-    from hermes_cli.tools_config import _parse_enabled_flag
+    from tools.mcp_tool_common import _parse_boolish
 
     config = read_raw_config()
     servers = config.get("mcp_servers")
     if not isinstance(servers, dict):
         return
     legacy = {n: e for n, e in servers.items() if isinstance(e, dict) and "disabled" in e}
-    turned_off = sorted((n for n, e in legacy.items() if _parse_enabled_flag(e["disabled"], default=False)), key=str)
+    turned_off = sorted((n for n, e in legacy.items() if _parse_boolish(e["disabled"], default=False)), key=str)
     if not turned_off:
         return  # a falsy `disabled` is inert; the runtime never read it
     for name in turned_off:

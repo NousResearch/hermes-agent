@@ -100,3 +100,21 @@ def test_enable_clears_a_legacy_disabled_so_the_server_spawns(enable, tmp_path, 
     assert "disabled" not in entry and entry["enabled"] is True
     assert mcp_server_enabled(load_config()["mcp_servers"]["s"]) is True
     assert _spawned(monkeypatch) == ["s"]
+
+
+@pytest.mark.parametrize("case", [c for c in CASES if set(c) == {"disabled", "on"}], ids=lambda c: repr(c["disabled"]))
+def test_v46_turns_off_exactly_what_the_reader_reads_as_off(case, tmp_path, monkeypatch):
+    """v46 runs on every pass (stamp-independent) because it resolves `disabled` as the reader
+    does; a value the two parse differently (a float) would flip a server on a re-run."""
+    import hermes_yaml as yaml
+    from hermes_cli.config_migrations import run_migrations
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "_config_version": 45, "mcp_servers": {"s": {"command": "x", "disabled": case["disabled"]}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    run_migrations(45, {"env_added": [], "config_added": [], "warnings": []}, quiet=True)
+    entry = yaml.safe_load(config_path.read_text(encoding="utf-8"))["mcp_servers"]["s"]
+
+    assert (entry.get("enabled") is False) is (not case["on"])

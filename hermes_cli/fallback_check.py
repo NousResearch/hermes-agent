@@ -203,8 +203,8 @@ def check_entry_live(entry: dict[str, Any], result: EntryCheck) -> EntryCheck:
         raw = _create_with_progress_once(client, kwargs, None, provider=provider,
                                          force_stream=_provider_requires_stream(provider, base_url))
         result.latency_ms = _elapsed_ms(started)
-        # Inside the boundary: a {"success": false} envelope raises and is classified like a request
-        # error, and a malformed body fails this entry instead of the whole command.
+        # Inside the boundary: an error envelope without an error object raises and is classified
+        # here, and nothing in an odd body can fail the whole command.
         _judge_answer(result, raw, model, client, secrets)
     except Exception as exc:  # health: allow BLE001 -- the probe reports every provider failure as its verdict
         if started is not None and result.latency_ms is None:  # none for an entry that sent no request
@@ -224,6 +224,9 @@ def _body_failure(raw: Any) -> tuple[Optional[dict[str, Any]], bool]:
     from agent.auxiliary_client import _field
     data = _field(raw, "data")
     layers = [raw, data] if isinstance(data, dict) else [raw]
+    choices = _field(raw, "choices")
+    if isinstance(choices, list) and choices:  # OpenRouter puts an upstream failure on the choice
+        layers.append(choices[0])
     # Some providers always send an ``error`` object; one whose fields are all empty is not a failure.
     embedded = next((e for e in map(outcome.embedded_provider_error, layers) if e and any(e.values())), None)
     failed = any(str(_field(layer, "status") or "").lower() in _FAILED_STATUSES for layer in layers)
@@ -239,12 +242,15 @@ def _judge_answer(result: EntryCheck, raw: Any, model: str, client: Any, secrets
     from agent.transports.chat_completions import is_router_timeout_shim
     provider = result.provider  # already lowercased by check_entry_static
     embedded, failed = _body_failure(raw)
-    response = None  # with a failure in the body there is no answer to judge
+    response = None
     if embedded is None and not failed:
         response = _unwrap_data_envelope(raw)
         # Responses-style text (``output_text`` / ``output[]``) outside ``choices``, as the aux path accepts.
         if not getattr(response, "choices", None):
-            response = _recover_aux_response_message(response) or response
+            try:
+                response = _recover_aux_response_message(response) or response
+            except (TypeError, ValueError, AttributeError):  # a malformed output[] is no answer
+                response = None
     returned = str(getattr(response, "model", "") or "") if _reported_model_is_evidence(provider, model, client) else ""
     result.model_returned = _redacted(returned, secrets)
     choices = getattr(response, "choices", None)
@@ -254,10 +260,12 @@ def _judge_answer(result: EntryCheck, raw: Any, model: str, client: Any, secrets
         result.inference_ready = False
         result.error_class = f"live_{outcome.error_class(error, provider=provider, model=result.model)}"
         result.error = _redacted(error, secrets, max_chars=300)
-    # An empty stream is re-aggregated into a choice with an empty message: content (or reasoning)
-    # is the evidence a model ran, not the shape. Partial text under a failed status is not an answer.
-    elif (not choices or getattr(choices[0], "message", None) is None or is_router_timeout_shim(response)
-            or not extract_content_or_reasoning(response)):
+    # Partial text under a failed status, or beside a choice-level error (OpenRouter's
+    # ``finish_reason: "error"``), is not an answer. An empty stream is re-aggregated into a choice
+    # with an empty message: content (or reasoning) is the evidence a model ran, not the shape.
+    elif (failed or not choices or getattr(choices[0], "message", None) is None
+            or str(getattr(choices[0], "finish_reason", "") or "").lower() == "error"
+            or is_router_timeout_shim(response) or not extract_content_or_reasoning(response)):
         result.inference_ready, result.error_class = False, "live_response"
         result.error = "the provider answered without a usable completion"
     elif not answered_by_requested_model(model, returned):

@@ -150,17 +150,29 @@ def missing_startup_files(files: dict[str, bytes]) -> list[str]:
             and current_name(_old_module(rel, "by-path"), MOVES) is not None]
 
 
+def hand_written() -> list[str]:
+    """Old paths that keep a hand-written file (kind ``hand``) once their name has moved."""
+    return [Path(*name.split(".")).with_suffix(".py").as_posix() for name, kind in REQUIRED_NAMES.items()
+            if kind == "hand" and current_name(name, MOVES) is not None]
+
+
 def hand_written_problems() -> list[str]:
-    """Kind ``hand`` files of moved names that are missing or are generated shims."""
+    """Kind ``hand`` files of moved names that are missing, are generated shims, or that updaters do not check.
+
+    A hand-written file runs before ``hermes_agent`` can be imported, so an update must refuse a tree where it
+    does not compile: ``[tool.hermes] update-startup-files`` has to list it.
+    """
+    tables = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    listed = tables.get("tool", {}).get("hermes", {}).get("update-startup-files")
     problems = []
-    for name, kind in REQUIRED_NAMES.items():
-        if kind != "hand" or current_name(name, MOVES) is None:
-            continue
-        rel = Path(*name.split(".")).with_suffix(".py").as_posix()
+    for rel in hand_written():
         if not (ROOT / rel).is_file():
             problems.append(f"{rel}: hand-written file (required_names kind 'hand') is missing")
         elif _is_shim(ROOT / rel):
             problems.append(f"{rel}: must be hand-written (required_names kind 'hand'), not a generated shim")
+        elif listed is not None and rel not in listed:
+            problems.append(f"{rel}: hand-written file is not in [tool.hermes] update-startup-files, so an update "
+                            "would accept a tree where it does not compile")
     return problems
 
 

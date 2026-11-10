@@ -1,0 +1,29 @@
+name: sabbath
+repo: https://github.com/ponzgpt/sabbath
+sha: 96bcf243b0a31d2381fe2b9e12eba896b593e5a1
+description: >-
+  Your agent never rests. Now it rests with you. Once a week (say Saturday 18:00, for 24 hours) Hermes keeps a
+  day of rest with you: it says goodnight on your phone, pauses its own scheduled jobs (except the ones you
+  exempt), keeps you company in anything but work and offers to set aside what can wait, then sends one gentle
+  digest when the rest ends while the jobs catch up. /sabbath ox lifts it for an hour when something truly can't
+  wait. Desktop page with your week at a glance; /sabbath on every chat surface; try a two-minute Sabbath.
+  Disclosure: pauses and resumes your Hermes cron jobs (only the ones it paused are resumed); sends a goodnight
+  and a digest to the chat you set; adds rest context to each turn while you rest; imports Hermes' cron.jobs
+  and tools.send_message_tool (no public API yet); stores its state in plain text under
+  $HERMES_HOME/plugin-data/sabbath.
+maintainer: ponzgpt
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ponzgpt/sabbath
+version: "0.1.0"
+image: https://raw.githubusercontent.com/ponzgpt/sabbath/96bcf243b0a31d2381fe2b9e12eba896b593e5a1/docs/screenshots/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ponzgpt/sabbath/96bcf243b0a31d2381fe2b9e12eba896b593e5a1/docs/screenshots/page.png
+  - https://raw.githubusercontent.com/ponzgpt/sabbath/96bcf243b0a31d2381fe2b9e12eba896b593e5a1/docs/screenshots/resting.png
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [sabbath_set_aside, sabbath_status]
+  provides_hooks: [pre_llm_call, pre_gateway_dispatch]
+  provides_middleware: []
+  requires_env: []

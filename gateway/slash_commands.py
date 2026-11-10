@@ -345,7 +345,7 @@ class GatewaySlashCommandsMixin(
             return head + t("gateway.whoami.tier_admin")
         # Non-admin: floor first (mirrors slash_access._ALWAYS_ALLOWED_FOR_USERS), then operator
         # additions, deduped in order.
-        runnable = list(dict.fromkeys(["help", "whoami"] + sorted(policy.user_allowed_commands)))
+        runnable = list(dict.fromkeys(["help", "whoami"] + sorted(policy.user_runnable_commands)))
         runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else t("gateway.shared.none_marker")
         return head + t("gateway.whoami.tier_user", commands=runnable_str)
 
@@ -623,7 +623,7 @@ class GatewaySlashCommandsMixin(
         # policy_for_source treats None as ungated.
         policy = policy_for_runner_source(self, source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
-            return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
+            return {"allowed_commands": {"help", "whoami", *policy.user_runnable_commands}}
         return {}
 
     async def _handle_help_command(self, event: MessageEvent) -> str:

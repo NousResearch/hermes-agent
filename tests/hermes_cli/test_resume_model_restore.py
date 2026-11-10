@@ -243,8 +243,16 @@ def test_persist_model_switch_swallows_db_errors():
     stub._persist_model_switch_to_session(_Result())  # must not raise
 
 
-def test_persist_model_switch_heals_bare_custom(monkeypatch):
-    """Bare 'custom' is not routable — heal to custom:<name> or drop (C1)."""
+def test_persist_model_switch_heals_bare_custom(tmp_path, monkeypatch):
+    """Name an endpoint's configured owner; preserve an explicit unmatched endpoint."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "model:\n  default: ambient-model\n  provider: openai\n"
+        "providers:\n  myendpoint:\n    base_url: https://my-endpoint/v1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint", lambda: None)
     written = {}
 
     class _DB:
@@ -258,16 +266,12 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
         base_url = "https://my-endpoint/v1"
         api_mode = ""
 
-    import hermes_cli.runtime_provider as rp
-    monkeypatch.setattr(rp, "canonical_custom_identity",
-                        lambda base_url=None, model=None: "custom:myendpoint")
     stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_BareResult())
     assert written["route"]["provider"] == "custom:myendpoint"
 
     # An explicit unmatched endpoint remains a resumable bare custom route.
-    monkeypatch.setattr(rp, "canonical_custom_identity",
-                        lambda base_url=None, model=None: None)
+    config.write_text("model:\n  default: ambient-model\n  provider: openai\n", encoding="utf-8")
     written.clear()
     stub._persist_model_switch_to_session(_BareResult())
     assert written["route"]["provider"] == "custom"

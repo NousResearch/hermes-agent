@@ -120,6 +120,10 @@ def _heal_bare_custom_provider(provider, *, base_url, model, allow_unmatched_end
             return None
         from hermes_cli.runtime_provider_custom import empty_provider_identity
         return empty_provider_identity(base_url, model)
+    if allow_unmatched_endpoint and isinstance(base_url, str) and base_url.strip():
+        # Explicit routes may acquire an endpoint's identity, never a same-model entry elsewhere.
+        from hermes_cli.runtime_provider_custom import session_provider_identity
+        return session_provider_identity("custom", None, base_url)
     try:
         # Heal bare "custom" persisted by older builds / gateway turns: it's the resolved billing class, not
         # a routable identity. (Stricter than the TUI gateway's recovery, which keeps bare "custom" when a

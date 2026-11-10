@@ -204,7 +204,7 @@ async def test_model_picker_delivery_does_not_block_turn_admission(tmp_path, mon
     from gateway.session import SessionSource
     from gateway.session_authorities import active_authority
     import gateway.run as gateway_run
-    import hermes_cli.model_switch_providers as model_switch_providers
+    from hermes_cli import model_switch_providers
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

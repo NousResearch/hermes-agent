@@ -10,6 +10,13 @@ there by ``bounded_probe_run`` (#68609, #66037, #87134); #144964 is the version-
 The shim below is the smallest faithful stand-in for a two-level launcher: a native launcher process
 that starts a descendant which sleeps while inheriting the captured pipes. Without the bound, the
 call returns only when that descendant exits.
+
+On Windows the launcher is ``cmd.exe``, not the git install's own ``bash.exe``: a Hermes-managed git
+lives under the real ``HERMES_HOME`` (``tools/git-*``), and ``tests/home_io_guard.py`` refuses every
+Python read there by design, so probing for or copying that bash is either a ``TEST BUG`` failure or
+a weakened guard. ``cmd.exe`` ships with every Windows host, needs no msys runtime beside it, and
+has the shape this shim needs — it execs the command named by ``argv[1]``, whose blocking child
+inherits the captured stdout/stderr handles.
 """
 
 from __future__ import annotations
@@ -31,18 +38,31 @@ _BLOCK_SECONDS = 12
 _BOUND_CEILING_S = 6.0  # timeout=3 + the bounded kill/drain budget; well under _BLOCK_SECONDS
 
 
-def _find_msys_bash() -> tuple[Path, Path] | None:
-    """``bash.exe`` + its msys runtime belonging to the git on PATH, if this git ships one."""
-    git = shutil.which("git")
-    if git is None:
-        return None
-    git_dir = Path(git).resolve().parent
-    for root in (git_dir, *git_dir.parents[:3]):
-        bash = root / "usr" / "bin" / "bash.exe"
-        msys = root / "usr" / "bin" / "msys-2.0.dll"
-        if bash.is_file() and msys.is_file():
-            return bash, msys
-    return None
+def _cmd_exe() -> Path:
+    """The native Windows launcher used for the shim (never the git install's own binaries)."""
+    comspec = os.environ.get("COMSPEC")
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    for candidate in (Path(comspec) if comspec else None, Path(system_root) / "System32" / "cmd.exe"):
+        if candidate is not None and candidate.is_file():
+            return candidate
+    pytest.fail("no cmd.exe on this Windows host to build a launcher shim from")
+
+
+# cmd.exe runs a command only behind its own switch; the POSIX sh shim execs argv[1] directly.
+# The bound does not depend on which arguments the probe carries, only on the shape of the tree.
+_LAUNCH = ("/c",) if sys.platform == "win32" else ()
+
+
+def _install_cmd_launcher(shim: Path, script: str) -> None:
+    """``git.exe`` = a copy of ``cmd.exe``, plus the ``rev-parse`` batch it runs (``shim`` is on PATH).
+
+    Copying ``cmd.exe`` reads only ``System32``: unlike git's ``usr/bin/bash.exe``, nothing here
+    touches the Hermes home the guard protects, so the shim is buildable on every Windows host
+    (including one whose only git is the Hermes-bundled, ``tools/git-*`` install).
+    """
+    shutil.copy2(_cmd_exe(), shim / "git.exe")
+    # cmd mis-parses a batch file whose lines end in a bare LF, so write CRLF explicitly.
+    (shim / "rev-parse.cmd").write_bytes(script.replace("\n", "\r\n").encode("utf-8"))
 
 
 def _write_sh_launcher(path: Path, body: str) -> None:
@@ -63,16 +83,15 @@ def _install_blocking_shim(tmp_path: Path, monkeypatch) -> Path:
     repo.mkdir()
 
     if sys.platform == "win32":
-        fixture = _find_msys_bash()
-        if fixture is None:
-            pytest.skip("this git install ships no usr/bin/bash.exe to build a launcher shim from")
-        bash, msys = fixture
-        # A copy of bash.exe is a real native launcher: it execs the cwd script named by argv[1]
-        # (``rev-parse``) and that script's ``sleep`` child inherits our stdout/stderr handles.
-        shutil.copy2(bash, shim / "git.exe")
-        shutil.copy2(msys, shim / "msys-2.0.dll")
-        (repo / "rev-parse").write_text(
-            f"echo shim-launcher-ran\nsleep {_BLOCK_SECONDS}\n", encoding="utf-8")
+        # A copy of cmd.exe is a real native launcher: it runs ``rev-parse`` (the argv[1] command,
+        # resolved on PATH from the shim dir) and that script's ``ping`` child inherits our
+        # stdout/stderr handles.
+        ping = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "ping.exe"
+        _install_cmd_launcher(
+            shim,
+            f"@echo off\necho shim-launcher-ran\n"
+            f'"{ping}" -n {_BLOCK_SECONDS + 1} 127.0.0.1\n',
+        )
     else:
         _write_sh_launcher(
             shim / "git",
@@ -91,13 +110,7 @@ def _install_fast_shim(tmp_path: Path, monkeypatch) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     if sys.platform == "win32":
-        fixture = _find_msys_bash()
-        if fixture is None:
-            pytest.skip("this git install ships no usr/bin/bash.exe to build a launcher shim from")
-        bash, msys = fixture
-        shutil.copy2(bash, shim / "git.exe")
-        shutil.copy2(msys, shim / "msys-2.0.dll")
-        (repo / "rev-parse").write_text("echo shim-was-used\n", encoding="utf-8")
+        _install_cmd_launcher(shim, "@echo off\necho shim-was-used\n")
     else:
         _write_sh_launcher(shim / "git", "echo shim-was-used\n")
     _prepend_to_path(monkeypatch, shim)
@@ -138,14 +151,14 @@ def _reap(cwd: Path) -> None:
 def test_shim_on_path_is_the_git_that_runs(tmp_path, monkeypatch):
     """Control: without this, a silently-ignored shim would make the bound test pass for nothing."""
     repo = _install_fast_shim(tmp_path, monkeypatch)
-    assert _run_git(repo, "rev-parse", "HEAD") == "shim-was-used"
+    assert _run_git(repo, *_LAUNCH, "rev-parse", "HEAD") == "shim-was-used"
 
 
 def test_run_git_bounds_the_call_when_a_descendant_holds_the_pipes(tmp_path, monkeypatch):
     repo = _install_blocking_shim(tmp_path, monkeypatch)
     started = time.monotonic()
     try:
-        value = _run_git(repo, "rev-parse", "HEAD")
+        value = _run_git(repo, *_LAUNCH, "rev-parse", "HEAD")
         elapsed = time.monotonic() - started
         assert value is None
         assert elapsed < _BOUND_CEILING_S, (
@@ -195,8 +208,9 @@ def test_status_probe_goes_through_the_bounded_runner(tmp_path, monkeypatch):
 def test_status_probe_bounds_the_call_when_a_descendant_holds_the_pipes(tmp_path, monkeypatch):
     """POSIX twin of the ``_run_git`` bound: a shim that blocks only for the status probe.
 
-    Windows cannot drive this path from a test: the status probe's first argument is a flag, which
-    a ``bash.exe`` launcher shim parses as its own option, so that shim cannot block there.
+    Windows drives the status probe through the routing/contract test above instead: this shim keys
+    on ``"--no-optional-locks"`` inside the argv, and that path is pinned there by argv and by the
+    timeout-means-not-dirty contract.
     """
     real_git = shutil.which("git")
     if real_git is None:

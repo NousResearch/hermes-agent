@@ -283,3 +283,64 @@ class TestOneDefaultTableAndOneBypass:
         assert on_disk["agent"]["max_turns"] is None
         assert on_disk["delegation"]["max_iterations"] == 250
         assert (home / "config.yaml").exists()
+
+
+class TestRefusalReachesTheUserCleanly:
+    """A whole-file save under the flag is refused; the dashboard and the CLI report the refusal
+    (409 / message + rc 1) instead of a 500 or a traceback, and the file is byte-identical."""
+
+    _FILE = "model:\n  default: test-vendor/user-only\n  api_key: test-key-not-real\n"
+
+    def _home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(self._FILE)
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+        return tmp_path / "config.yaml"
+
+    def _client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli import web_server
+        client = TestClient(web_server.app, raise_server_exceptions=False)
+        client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+        return client
+
+    @pytest.mark.parametrize("method_path_body", [
+        ("/api/config/raw", {"yaml_text": "display:\n  skin: mono\n"}),
+        ("/api/skills/toggle", {"name": "some-skill", "enabled": False}),
+    ])
+    def test_a_dashboard_whole_file_save_is_a_409(self, tmp_path, monkeypatch, method_path_body):
+        from hermes_cli.config_worker_save import USER_CONFIG_IGNORED_MESSAGE
+        path = self._home(tmp_path, monkeypatch)
+        before = path.read_bytes()
+        url, body = method_path_body
+
+        resp = self._client().put(url, json=body)
+
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["detail"] == USER_CONFIG_IGNORED_MESSAGE
+        assert path.read_bytes() == before
+
+    def test_a_cli_save_refusal_is_a_message_and_rc_1(self, tmp_path, monkeypatch, capsys):
+        import sys
+        import hermes_cli.main as main_mod
+        from hermes_cli.config_worker_save import USER_CONFIG_IGNORED_MESSAGE
+        path = self._home(tmp_path, monkeypatch)
+        before = path.read_bytes()
+
+        def whole_save(args):  # what `tools disable`, `mcp add` and `skills config` do
+            from hermes_cli.config import load_config, save_config
+            save_config(load_config())
+
+        monkeypatch.setattr(main_mod, "cmd_tools", whole_save)
+        monkeypatch.setattr(sys, "argv", ["hermes", "tools", "disable", "web"])
+        with pytest.raises(SystemExit) as exit_:
+            main_mod.main()
+
+        assert exit_.value.code == 1
+        err = capsys.readouterr().err
+        assert USER_CONFIG_IGNORED_MESSAGE in err
+        assert "Traceback" not in err
+        assert path.read_bytes() == before

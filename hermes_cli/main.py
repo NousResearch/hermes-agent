@@ -3438,13 +3438,8 @@ def main():
         _default_to_chat(args)
         return
 
-    # A handler's int return code becomes the exit code (None = success).
-    if hasattr(args, "func"):
-        rc = args.func(args)
-        if isinstance(rc, int) and rc != 0:
-            sys.exit(rc)
-    else:
-        parser.print_help()
+    from hermes_cli.main_dispatch import run_subcommand
+    run_subcommand(args, parser)
 
 
 if __name__ == "__main__":

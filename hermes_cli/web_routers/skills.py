@@ -444,7 +444,8 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
                 disabled.discard(body.name)
             else:
                 disabled.add(body.name)
-            save_disabled_skills(config, disabled)
+            with http_failure("skills toggle failed", 500, "Could not save"):
+                save_disabled_skills(config, disabled)
         return {"ok": True, "name": body.name, "enabled": body.enabled}
 
     return await asyncio.to_thread(_run)

@@ -37,7 +37,7 @@ from libcst.metadata import GlobalScope, MetadataWrapper, ParentNodeProvider, Po
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from exclusions import BY_HAND, EXCLUDED, IDENTITY, KEPT_NAMES, anchor_spans
-from renames import current_name, git, module_renames, moved_modules, renamed_paths
+from renames import config_keys, current_name, git, module_renames, moved_modules, renamed_paths
 from pieces import respell, text_of
 from rewrite_toml import rewrite_pyproject
 from sinks import ARGV, CODE, COMMAND, LOGGER, MODULE, STRINGS, SYS_MODULES, TARGET, Findings, Sink, \
@@ -871,22 +871,6 @@ def _moves_table(root: Path) -> dict[str, str]:
     return ast.literal_eval(node.value) if node is not None else {}
 
 
-def _config_keys(root: Path) -> frozenset[str]:
-    """Every dotted key path of ``DEFAULT_CONFIG`` (``agent``, ``agent.reasoning_effort``, ...)."""
-    keys: set[str] = set()
-    for path in git(root, "ls-files", "*hermes_cli/config_defaults.py").split():
-        body = ast.parse((root / path).read_text(encoding="utf-8-sig")).body
-        pending = [("", node.value) for node in body if isinstance(node, ast.Assign)
-                   and any(getattr(target, "id", None) == "DEFAULT_CONFIG" for target in node.targets)]
-        while pending:
-            prefix, value = pending.pop()
-            for key, item in zip(getattr(value, "keys", ()), getattr(value, "values", ())):
-                if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                    keys.add(prefix + key.value)
-                    pending.append((f"{prefix}{key.value}.", item))
-    return frozenset(keys)
-
-
 def _moved_names(root: Path, commit: str, renames: dict[str, str]) -> dict[str, tuple[set[str], set[str]]]:
     """Old dotted name -> (defined, imported) names of every moved module, by its import name and by its path from
     the repository root, so a module under a folder without ``__init__.py`` (``plugins.platforms.x``) is known, and
@@ -945,7 +929,7 @@ def build_plan(root: Path, commit: str, files: list[str] | None = None) -> Plan:
     names = {old: defined | imported for old, (defined, imported) in found.items()}
     defined = {old: names_defined for old, (names_defined, _) in found.items()}
     listed = files if files is not None else git(root, "ls-files", "*.py").split()
-    plan = Plan(renames, renamed_paths(root, commit), names, _moves_table(root), config_keys=_config_keys(root),
+    plan = Plan(renames, renamed_paths(root, commit), names, _moves_table(root), config_keys=config_keys(root),
                 defined=defined, helpers=_helpers(root, listed))
     plan.kept_names = _kept_names(root, plan)
     return plan

@@ -42,6 +42,6 @@ async def test_boot_refuses_while_the_stores_handle_cannot_open(tmp_path, monkey
     try:
         with pytest.raises(StoreUnavailable):
             await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='boot')
-        assert 'cannot open' in runner.session_store._db_handle_cache.last_error(tmp_path / 'state.db')
+        assert 'cannot open' in runner.session_store._db_handle_cache.last_error(tmp_path)
     finally:
         runner.session_store.close_all_db_handles()

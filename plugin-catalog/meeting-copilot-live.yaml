@@ -1,16 +1,16 @@
 name: meeting-copilot-live
 title: Meeting Copilot
 repo: https://github.com/adam4788/meeting-copilot
-sha: 0cb8cfeaa03115c7738007ce39c345a120efc834
+sha: 867a3ae3996b865fc7f0b6ac990b6b1bd9239f45
 version: "0.1.0"
 requires_hermes: ">=0.22.7"
 description: "Read-only meeting answers with cited project evidence. Disclosure — explicit answers send bounded transcript/context to selected OpenAI/OpenRouter APIs; optional Meta ASR sends audio off-device; optional web queries leave the profile through host search; reads selected project files and opt-in session SQLite; consented capture launches native/worker children; separate macOS setup installs SHA-256-pinned PyPI wheels and compiles/signs native helpers; local transcription may download model weights; clipboard exports may contain confidential context."
 maintainer: adam4788
 tier: community
 category: desktop
-docs_url: https://github.com/adam4788/meeting-copilot/blob/0cb8cfeaa03115c7738007ce39c345a120efc834/docs/getting-started.md
+docs_url: https://github.com/adam4788/meeting-copilot/blob/867a3ae3996b865fc7f0b6ac990b6b1bd9239f45/docs/getting-started.md
 screenshots:
-  - https://raw.githubusercontent.com/adam4788/meeting-copilot/0cb8cfeaa03115c7738007ce39c345a120efc834/docs/assets/overlay-controls.png
+  - https://raw.githubusercontent.com/adam4788/meeting-copilot/867a3ae3996b865fc7f0b6ac990b6b1bd9239f45/docs/assets/overlay-controls.png
 readme: true
 platforms:
   - macos

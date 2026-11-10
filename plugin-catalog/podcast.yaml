@@ -1,0 +1,25 @@
+name: podcast
+title: Podcast Studio
+repo: https://github.com/suhas-svg/hermes_podcast
+sha: 1c0c4ed9fd4c04e341ef094f5b18d7ebcfceefc6
+version: "1.0.0"
+description: "Turn any article, PDF, paper, notes or the day's news into a mastered two-host podcast episode: neural voices per host, speaker-aware pauses, intro chime, -16 LUFS loudness, embedded chapters and a timestamped transcript in one MP3. Includes an audio-overview skill and a daily news-briefing blueprint. Script text is sent to Microsoft's online Edge text-to-speech service via edge-tts (no account or key); episodes stay local. No telemetry. Disclosure — episode script text (every spoken line), voice names and rate/pitch are sent to Microsoft's online Edge text-to-speech service via edge-tts (no account or key); the voice list is fetched from the same service and cached for 7 days; audio, transcripts and metadata stay in the plugin data directory; uses ffmpeg from PATH or the user's ffmpeg_path setting."
+maintainer: suhas-svg
+tier: community
+category: voice
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/suhas-svg/hermes_podcast#readme
+readme: true
+platforms: []
+known_issues:
+  - "Needs an internet connection: voices are synthesized by Microsoft's online Edge text-to-speech service."
+  - "Mastering (chime, pauses, loudness, chapters) needs ffmpeg; without it clips are joined unmastered."
+  - "The model must include the returned MEDIA: line in its reply for the MP3 to be attached on messaging platforms."
+capabilities:
+  provides_tools:
+    - podcast_produce
+    - podcast_voices
+    - podcast_episodes
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

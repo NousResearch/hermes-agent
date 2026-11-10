@@ -9,7 +9,7 @@ from typing import IO
 
 
 class DesktopBuildLock:
-    """Advisory lock held while npm installs and packages Hermes Desktop.
+    """Advisory lock held while pnpm installs and packages Hermes Desktop.
 
     ``node_modules`` and ``apps/desktop/release`` are checkout-scoped even
     when two commands use different Hermes profiles.  The lock therefore
@@ -22,7 +22,7 @@ class DesktopBuildLock:
     checkout lock every updater holds (``update_lock``; review C5), then its own: one lock
     order (checkout, then desktop build) for a direct ``hermes desktop`` build and for the
     update's build (which already holds the checkout lock and only joins it again), and no
-    gap in which an updater could take the checkout while npm still writes.  Holding the
+    gap in which an updater could take the checkout while pnpm still writes.  Holding the
     checkout lock also puts the build in the update custody (``update_custody``): its
     descendants hold the checkout until they exit.
     """

@@ -487,8 +487,6 @@ gateway:
     root_new: "Per avviare una nuova chat Hermes parallela, apri il topic Tutti i messaggi in alto nell'interfaccia del bot e invia lì un messaggio qualsiasi. Telegram creerà un nuovo topic per quel messaggio.\n\nOgni topic è una sessione Hermes indipendente. Usa /new dentro un topic esistente solo se vuoi sostituire la sessione attuale di quel topic."
     new_header: "Avviata una nuova sessione Hermes in questo topic.\n\nSuggerimento: per lavorare in parallelo, apri Tutti i messaggi e invia lì un messaggio per creare un topic separato, invece di usare /new qui. /new sostituisce la sessione collegata al topic attuale."
     help: "/topic — attiva la modalità DM multi-sessione (un bot, tante chat parallele)\n\nUtilizzo:\n  /topic             Attiva la modalità topic, o mostra lo stato se è già attiva\n  /topic help        Mostra questo messaggio\n  /topic off         Disattiva la modalità topic e rimuove i collegamenti ai topic\n  /topic <id>        Dentro un topic: ripristina una sessione precedente tramite ID\n\nCome funziona:\n1. Esegui /topic una volta in questa DM — Hermes verifica che i Threads\n   Settings di BotFather siano attivi e abilita la modalità multi-sessione.\n2. Tocca Tutti i messaggi in alto nel bot e invia un messaggio qualsiasi.\n   Telegram crea un nuovo topic per quel messaggio; ogni topic è una\n   sessione Hermes indipendente (cronologia e contesto nuovi).\n3. La DM principale diventa una lobby di sistema — invia lì /topic, /status,\n   /help, /usage. I prompt normali vanno in un topic.\n4. /new dentro un topic reimposta solo la sessione di quel topic.\n5. /topic <id> dentro un topic vi ripristina una sessione precedente."
-    system_topic_name: "Sistema"
-    system_topic_intro: "Topic di sistema per comandi e stato di Hermes."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Impossibile determinare l'ID della chat."
     mode_not_enabled: "La modalità topic multi-sessione non è attualmente attiva per questa chat."
@@ -625,6 +623,8 @@ gateway:
     action_always: "Consenti sempre"
     action_deny: "Nega"
     deadline: "Se non rispondi entro {window} NON verrà eseguito."
+    not_requester: "Solo {requester} può rispondere a questa approvazione."
+    not_requester_admins_only: "Solo un amministratore o un approvatore elencato può rispondere a questa approvazione."
     text_choice_once: "Rispondi `{prefix}approve` per eseguirlo una volta"
     text_choice_session: "`{prefix}approve session` per consentire questo pattern per il resto della sessione"
     text_choice_always: "`{prefix}approve always` per consentirlo in modo permanente"
@@ -632,6 +632,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", oppure {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Anteprima abbreviata: il comando completo ({total} caratteri) è nel messaggio qui sopra."
+    truncated_deny_only: "Anteprima abbreviata ({total} caratteri) e il comando completo non è stato mostrato qui, quindi è disponibile solo Nega. Controllalo nella CLI o nell'app Desktop."
+    text_prompt_deny_only: "La richiesta di approvazione completa è troppo lunga per questa piattaforma, quindi è disponibile solo Nega. Controllala nella CLI o nell'app Desktop."
   notify:
     media_kind:
       audio: "audio"
@@ -974,9 +977,6 @@ platform:
     approved: "✅ Approvato."
     denied: "❌ Negato."
     approval_expired: "⌛ Approvazione scaduta — il comando non è stato eseguito (timeout già scattato o risolto altrove)."
-  yuanbao:
-    slow_response_notice: "Questa attività è un po' impegnativa — ci sto ancora lavorando, attendi un attimo..."
-    owner_command_denied: "⚠️ {command} è disponibile solo per il creatore in modalità chat privata"
   shared:
     truncated_suffix: "\n...(troncato)"
     unknown: "sconosciuto"
@@ -1710,10 +1710,10 @@ slash:
     description: "Esci dalla CLI (usa --delete per eliminare anche la cronologia della sessione)"
 cli:
   backtrack:
-    title: "↺ Riavvolgi — scegli un prompt precedente"
-    keys_hint: "↑/↓ scegli · Enter modifica e reinvia · f dirama da qui · Esc chiudi"
-    preview_label: "Prompt {number} di {total}:"
-    more_lines: "… (altre {count} righe)"
+    title: "↺ Trascrizione — scegli un prompt da modificare"
+    keys_hint: "Navigazione trascrizione · ↑↓/jk scorri · ←→/hl prompt · ↵ modifica · f dirama · esc indietro"
+    prime_hint: "esc di nuovo per modificare il messaggio precedente"
+    no_previous: "Nessun messaggio precedente da modificare."
     editing_hint: "↺ Modifica del prompt {number} — Enter riavvolge fin qui e invia · Esc Esc annulla"
     edit_cancelled: "↺ Riavvolgimento annullato; non è stato rimosso nulla."
     rewound: "↺ Riavvolto al prompt {number} ({count} messaggio/i archiviato/i); invio della modifica."
@@ -3981,3 +3981,8 @@ plan_usage:
   large_notice_limit: "Modello grande: hai raggiunto il limite {name} ({resets})."
   large_notice_limit_stops: "Modello grande: hai raggiunto il limite {name} ({resets}), quindi non funzionerà fino ad allora."
   large_notice_percent: "Modello grande: usa più utilizzo del tuo piano per messaggio. Limite mensile dei modelli grandi: {percent} usato."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ File modificati nei turni annullati: {files}. Esegui /rollback per elencare i checkpoint e ripristinarne uno."
+    more: "+{count} altri"

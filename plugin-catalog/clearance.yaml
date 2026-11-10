@@ -1,0 +1,20 @@
+name: clearance
+repo: https://github.com/yuzuru99/hermes-clearance
+sha: "40adfd6db365d1279733ca541e8c25383302d74e"
+title: Clearance
+description: "Per-user tool permissions for Hermes on messaging platforms and webhooks (#527, #3897): give each sender a tier (owner, admin, user, guest, blocked or your own) and every tool call is checked in code against the sender's tier before it runs, so a prompt cannot talk its way to terminal access. Deny-by-default for tools a tier does not name (new MCP servers included), per-tier hourly rate limits, a /clearance command to inspect and assign tiers from chat, and a local audit log of refused actions. Disclosure — pre_tool_call may block a tool call (never modifies arguments, never approves, never touches the approval system) and pre_llm_call may block a turn for the blocked tier or a rate limit and appends one line of context naming the sender's current tier (gateway senders only); with the default settings every messaging and webhook sender, the bot owner included, is the `guest` tier (chat only, no tools) until assigned a tier in the plugin settings or with /clearance set from a local session; registers /clearance; reads only its own settings and the per-message session identity; writes its own settings on /clearance set|unset (owner only) and an audit log (tool and argument names, never values) in its plugin data directory; no network calls, no shell commands, no background processes, no telemetry, no credential reads, no self-update. Not a sandbox: an allowed tool keeps its normal reach."
+maintainer: yuzuru99
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/yuzuru99/hermes-clearance#readme
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

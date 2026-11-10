@@ -136,3 +136,9 @@ def test_an_unopenable_profile_store_is_named_by_the_file_that_holds_it(tmp_path
     (profile / "store-elsewhere.db").mkdir(parents=True)  # sqlite cannot open a directory
     with pytest.raises(RuntimeError, match="store-elsewhere.db"):
         server._open_profile_session_db(str(profile))
+
+
+def test_the_clis_session_lookups_read_the_current_profiles_store(store_elsewhere):
+    from hermes_cli import main
+    _seed(_home(), "s", "cli")
+    assert main._resolve_last_session(source="cli") == "s"

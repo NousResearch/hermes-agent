@@ -4,10 +4,13 @@ import json
 import os
 import sqlite3
 import stat
+import zipfile
 from pathlib import Path
 
 import pytest
 
+from hermes_cli import backup as backup_mod
+from hermes_cli import backup_zip as backup_zip_mod
 from hermes_cli.backup import (
     BackupInProgressError,
     _atomic_output_path,
@@ -139,3 +142,57 @@ def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatc
     assert _write_full_zip_backup(archive, home) is None
     assert archive.read_bytes() == b"previous-valid-backup"
     assert list(tmp_path.glob(".*.partial")) == []
+
+
+def test_automatic_backup_tolerates_a_file_vanishing_between_scan_and_read(
+        tmp_path, monkeypatch) -> None:
+    """A rotated log that disappears mid-archive must not demote the whole backup.
+
+    The tree is still coherent: everything that exists was archived. Demoting on a single
+    FileNotFoundError published a multi-GB salvage and froze the last complete backup.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    for name in ("alpha.txt", "beta.txt", "gamma.txt", "delta.txt"):
+        (home / name).write_text(name, encoding="utf-8")
+    (home / "rotated.log").write_text("rotated", encoding="utf-8")
+    archive = tmp_path / "automatic.zip"
+
+    real_write = backup_zip_mod._write_zip_file
+
+    def vanish_rotated_log(zf, path, arcname):
+        if Path(path).name == "rotated.log":
+            Path(path).unlink()
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        return real_write(zf, path, arcname)
+
+    monkeypatch.setattr(backup_zip_mod, "_write_zip_file", vanish_rotated_log)
+
+    assert backup_mod._write_full_zip_backup(archive, home) == archive
+    names = zipfile.ZipFile(archive).namelist()
+    assert len([name for name in names if name.endswith(".txt")]) == 4
+    assert not (tmp_path / "automatic.incomplete.zip").exists()
+
+
+def test_automatic_backup_salvages_when_too_many_files_vanish(tmp_path, monkeypatch) -> None:
+    """The allowance is bounded: a flood of missing entries still demotes the archive."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    for i in range(20):
+        (home / f"gone-{i}.txt").write_text("x", encoding="utf-8")
+    for i in range(10):
+        (home / f"keep-{i}.txt").write_text("y", encoding="utf-8")
+    archive = tmp_path / "automatic.zip"
+
+    real_write = backup_zip_mod._write_zip_file
+
+    def vanish_doomed(zf, path, arcname):
+        if Path(path).name.startswith("gone-"):
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        return real_write(zf, path, arcname)
+
+    monkeypatch.setattr(backup_zip_mod, "_write_zip_file", vanish_doomed)
+
+    assert backup_mod._write_full_zip_backup(archive, home) is None
+    assert not archive.exists()
+    assert (tmp_path / "automatic.incomplete.zip").exists()

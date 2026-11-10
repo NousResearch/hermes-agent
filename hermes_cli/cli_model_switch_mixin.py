@@ -55,6 +55,8 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     canonical row reader is ``SessionDB.session_gateway_runtime`` (``model_config.gateway_runtime``,
     else the TUI's top-level keys). Bare ``custom`` is healed because the CLI resolve path
     hard-fails on it (the TUI gateway keeps it when a base_url exists)."""
+    from agent.fallback_session_route import fallback_restored_row
+    session_meta = fallback_restored_row(session_meta)
     stored_model = str((session_meta or {}).get("model") or "").strip()
     if not stored_model:
         return None

@@ -83,6 +83,8 @@ def legacy_launch_params(row):
     their workspace only there. ``api_mode`` is no create field, so it is
     returned apart.
     """
+    from agent.fallback_session_route import fallback_restored_row
+    row = fallback_restored_row(row)  # a fallback's model is not the session's route (#152333)
     params = {key: row[key] for key in ('cwd', 'model') if row.get(key)}
     from hermes_state_sessions import _parse_model_config
     saved = _parse_model_config(row.get('model_config'))

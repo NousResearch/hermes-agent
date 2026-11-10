@@ -418,10 +418,8 @@ hook. Hook return values cannot transform context, and callback errors are
 isolated by the host-owned observer dispatcher. Hermes provides no telemetry,
 network delivery, or storage for this event. Delivery uses one bounded FIFO of
 `1024` pending events per callback; enqueue never waits, and a full queue drops
-the oldest pending event. Callback exceptions are logged and isolated. During
-shutdown Hermes places a stop sentinel and waits at most the dispatcher's
-bounded drain timeout (one second by default); a stuck callback is left on its
-daemon worker rather than delaying process teardown. Consumers must therefore
+the oldest pending event. Callback exceptions are logged and isolated. Observer
+workers are daemons and process shutdown does not drain them. Consumers must therefore
 treat this observer as best-effort and tolerate delay or drop. The shared
 dispatcher also drops any event whose estimated retained payload graph exceeds
 128 KiB or contains unsupported values; it drops the whole event and never

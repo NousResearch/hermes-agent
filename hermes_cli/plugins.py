@@ -123,7 +123,7 @@ VALID_HOOKS: set[str] = {
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
-    # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
+    # pre_verify: bounded verify gate after code edits; may recur after continuation. Return
     # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep
     # going; anything else finishes. Bounded by agent.max_verify_nudges.
     "pre_verify", "pre_api_request", "post_api_request", "api_request_error",

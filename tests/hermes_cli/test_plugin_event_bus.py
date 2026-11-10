@@ -318,6 +318,63 @@ def test_owner_removal_cancels_callback_already_snapshotted_in_queue():
     assert observed == []
 
 
+def test_retirement_stops_event_worker_and_preserves_other_profile(tmp_path, monkeypatch):
+    from hermes_cli import plugins
+    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
+
+    home = (tmp_path / "retired").resolve()
+    manager = PluginManager(scope_key=str(home))
+    sibling = _fresh_manager()
+    ctx = _make_ctx(manager, "a", key="a")
+    other = _make_ctx(sibling, "a", key="a")
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    seen = []
+
+    def blocking(**payload):
+        entered.set()
+        release.wait(10)
+        finished.set()
+
+    ctx.subscribe("a:ping", blocking)
+    ctx.subscribe("a:ping", lambda **payload: seen.append("stale"))
+    other.subscribe("a:ping", lambda **payload: seen.append("sibling"))
+    monkeypatch.setattr(plugins, "_plugin_managers_by_home", {home: manager})
+    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+    worker = None
+    try:
+        assert ctx.emit("ping") == 2
+        assert entered.wait(2)
+        assert ctx.emit("ping") == 2
+        worker = manager._event_worker
+        assert worker is not None
+        assert unload_plugin_manager_for_home(home)
+        assert not finished.is_set()
+        ctx.subscribe("a:ping", lambda **payload: seen.append("late"))
+        assert ctx.emit("ping") == 0
+        assert other.emit("ping") == 1
+        _drain(sibling)
+    finally:
+        release.set()
+        if worker is not None:
+            worker.join(2)
+    assert finished.is_set()
+    assert worker is not None and not worker.is_alive()
+    assert seen == ["sibling"]
+
+
+def test_unload_all_cancels_event_generation_and_allows_reuse():
+    manager = _fresh_manager()
+    ctx = _make_ctx(manager, "a", key="a")
+    seen = []
+    ctx.subscribe("a:ping", lambda **payload: seen.append("old"))
+    manager.unload()
+    assert ctx.emit("ping") == 0
+    ctx.subscribe("a:ping", lambda **payload: seen.append("new"))
+    assert ctx.emit("ping") == 1
+    _drain(manager)
+    assert seen == ["new"]
+
+
 # ── 5. Recursion cap ─────────────────────────────────────────────────────────
 
 

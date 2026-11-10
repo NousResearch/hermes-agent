@@ -65,7 +65,7 @@ class SessionStructuredProvider(FakeMemoryProvider):
 
 
 class GuardedObservationTuple(tuple):
-    """Tuple fixture that fails if the manager traverses past a bounded prefix."""
+    """Detect use of the overridden iterator; the manager reads tuple storage directly."""
 
     max_index: int
     accessed_indices: list[int]

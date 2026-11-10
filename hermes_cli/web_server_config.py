@@ -280,6 +280,8 @@ def _build_schema_from_config(config: dict[str, Any], prefix: str = "") -> dict[
             "description": full_key.replace(".", " → ").replace("_", " ").title(),
             "category": prefix.split(".")[0] if prefix else "general",
         }
+        if value is None and full_key in _NULL_NUMERIC_KEYS:
+            entry["nullable"] = True  # clearing this numeric field restores the automatic default
         entry.update(_SCHEMA_OVERRIDES.get(full_key, {}))
         entry["category"] = _CATEGORY_MERGE.get(entry["category"], entry["category"])
         schema[full_key] = entry

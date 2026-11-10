@@ -86,3 +86,12 @@ def test_turn_cap_stays_free_text() -> None:
     (``config.resolve_turn_limit``), so a number-only field would drop that spelling."""
     assert CONFIG_SCHEMA["agent.max_turns"]["type"] == "string"
 
+
+def test_null_numeric_fields_can_be_cleared_back_to_auto() -> None:
+    """Clearing the input of a listed knob must restore the automatic default, not pin 0.
+
+    AutoField emits ``null`` on an empty input only for entries carrying this flag, so a
+    missing flag turns "clear the override" into "set the count to zero".
+    """
+    for key in sorted(NULL_NUMERIC_KEYS):
+        assert CONFIG_SCHEMA[key].get("nullable") is True, key

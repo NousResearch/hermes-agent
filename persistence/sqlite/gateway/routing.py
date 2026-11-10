@@ -359,8 +359,8 @@ class SQLiteRoutingRepository:
 
     def bind_topic(
         self, *, chat_id: str, thread_id: str, user_id: str, session_key: str, session_id: str,
-        managed_mode: str = "auto", profile_name: str = "default",
-    ) -> None:
+        managed_mode: str = "auto", profile_name: str = "default", expected_session_id: str | None = None,
+    ) -> bool:
         with translated():
             holder = self._store.holder()
             apply_telegram_topic_migration(holder)
@@ -370,6 +370,14 @@ class SQLiteRoutingRepository:
             profile_name = normalize_topic_profile_name(profile_name)
 
             def _do(conn):
+                if expected_session_id is not None:
+                    current = conn.execute(
+                        "SELECT session_id FROM telegram_dm_topic_bindings "
+                        "WHERE profile_name = ? AND chat_id = ? AND thread_id = ?",
+                        (profile_name, chat_id, thread_id),
+                    ).fetchone()
+                    if current is None or str(current[0]) != str(expected_session_id):
+                        return False
                 existing_session = conn.execute("""
                     SELECT profile_name, chat_id, thread_id
                     FROM telegram_dm_topic_bindings
@@ -392,8 +400,9 @@ class SQLiteRoutingRepository:
                         managed_mode = excluded.managed_mode,
                         updated_at = excluded.updated_at
                     """, (profile_name, chat_id, thread_id, user_id, session_key, session_id, managed_mode, now, now))
+                return True
             try:
-                holder._execute_write(_do)
+                return holder._execute_write(_do)
             except sqlite3.IntegrityError as exc:
                 # The binding's session_id references sessions(id): a missing row fails the foreign key.
                 if "FOREIGN KEY" not in str(exc):

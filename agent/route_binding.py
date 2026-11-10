@@ -21,7 +21,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap."""
     from agent.auxiliary_client import resolve_provider_client
     from agent.chat_completion_helpers import (
-        _fallback_api_mode_hint, _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
+        _rebind_fallback_credential_pool,
         _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
     )
     from hermes_cli.fallback_config import resolve_entry_api_key
@@ -29,6 +29,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     # of falling through to OpenRouter defaults.
     base_url_hint = (entry.get("base_url") or "").strip() or None
     api_key_hint = resolve_entry_api_key(entry)
+    from agent.chat_completion_helpers_fallback_wire import _fallback_api_mode_hint, _fallback_api_mode_resolved
+
     api_mode_explicit, api_mode = _fallback_api_mode_hint(entry, provider, base_url_hint)
     # Ollama Cloud: OLLAMA_API_KEY from env when the entry has no key. Host match, not
     # substring — GHSA-76xc-57q6-vm5m.

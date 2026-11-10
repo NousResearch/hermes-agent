@@ -39,6 +39,14 @@ async def test_stop_inbound_stops_polling_and_fences_the_restart_ladder():
     await adapter.stop_inbound()  # already fenced: no second stop
     assert stops == ["stop"]
 
+    # Shutdown during conflict recovery (updater stopped, restart pending): still fenced.
+    recovering, stops = _adapter()
+    recovering._app.updater.running = False
+    await recovering.stop_inbound()
+    assert stops == [] and recovering._teardown_started
+    with pytest.raises(_PollingLifecycleAbort):
+        await recovering._start_polling_once(recovering._app, drop_pending_updates=False, error_callback=None)
+
     webhook, stops = _adapter(webhook_mode=True)  # server-pushed: nothing to stop
     await webhook.stop_inbound()
     assert stops == [] and webhook._polling_teardown_started is False

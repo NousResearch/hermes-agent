@@ -163,6 +163,21 @@ async def test_drain_stops_adapter_inbound_before_withdrawing_handlers(tmp_path)
         assert tertiary.calls == ['stop_inbound', 'set_message_handler=False']
         assert primary.calls == ['stop_inbound', 'set_message_handler=False']
         assert secondary.calls == ['stop_inbound', 'set_message_handler=False']
+        # Wedged fetchers share one bound and stop together, leaving the settle its leash.
+        import asyncio
+        import time
+        from unittest.mock import patch
+
+        tertiary.stop_inbound_error = None
+        never = asyncio.Event()
+        for adapter in (primary, secondary, tertiary):
+            adapter.stop_inbound = never.wait
+        started = time.monotonic()
+        with patch('gateway.run_runtime.INBOUND_STOP_SECONDS', 0.2):
+            await drain_gateway_runtime(runner)
+        assert time.monotonic() - started < 2.0
+        for adapter in (primary, secondary, tertiary):
+            del adapter.stop_inbound
     finally:
         await runner.stop()
         process_ownership.close()

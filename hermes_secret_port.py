@@ -38,22 +38,29 @@ but it never excuses the value (or record) itself, which no frame an error's tra
 passes through may hold. The design is structural, not a cleanup
 pass — an implementation never mutates any frame it does not own. Every load and validation
 that can fail — the pin, the level, the write lock, the store a record's write merges into —
-runs BEFORE the value (or record) is bound in any frame below the port's own write method, and
-the write itself, the only code that binds the value, calls nothing that logs with the live
-exception (``exc_info``): another component's log handler may keep the record and render its
-traceback frames later. The port's own refusals keep the messages the port wrote for them, and
-any other failure of the write — whatever the backend or its writers raised, refusal-typed or
-not — becomes one fixed :class:`SecretWriteFailed` the port itself builds
-(:func:`write_failure`), naming only the operation and the key the write targeted. The write
-path never inspects the writer's exception — no attribute, no type check, no message, no
-errno, every one of them text the failing code chose and a channel a hostile writer can carry
-the value through: it records only that the write failed, and after its except block has
-exited, dropping the failure and its traceback with it, it deletes its own value (or record)
-binding and any other local holding it, then raises the fixed error with ``from None`` — no
-cause, no context. The fresh error's traceback holds only the raising method's frame and the
-caller's frames above it, every frame below that held the value is gone with the original
-failure, and the caller's own frames — a caller retrying the write from inside an ``except``
-handler included — are never touched. The failure's kind is not reported: a caller who needs
+runs BEFORE the value (or record) is bound in any frame below the port's own write method,
+and the write itself — the only code that binds the value — runs through the backend's one
+writer boundary, the private helper that calls every writer: its ``try`` sits inside any
+lock the write holds, so a writer's failure is caught before a context manager's ``__exit__``
+is handed it (an ``__exit__`` assigns the exception's ``__traceback__``, and a hostile
+writer's attribute hook would otherwise run while the record is still bound in the frames
+being unwound), and the boundary calls nothing that logs with the live exception
+(``exc_info``): another component's log handler may keep the record and render its
+traceback frames later. The port's own refusals keep the messages the port wrote for them,
+and any other failure of the write — whatever the backend or its writers raised,
+refusal-typed or not — becomes one fixed :class:`SecretWriteFailed` the port itself builds
+(:func:`write_failure`), naming only the operation and the key the write targeted. The
+write path never inspects the writer's exception — no attribute, no type check, no message,
+no errno, every one of them text the failing code chose and a channel a hostile writer can
+carry the value through: it records only that the write failed, and after its except block
+has exited, dropping the failure and its traceback with it, the boundary drops its own
+bindings of the writer and what it carried and raises the fixed error with ``from None`` —
+no cause, no context — while the write method's own value (or record) binding and any other
+local holding it leave its frame as the error unwinds it. The fresh error's traceback holds
+only the backend's own frames — the boundary's, the write method's — and the caller's frames
+above it, every frame below that held the value is gone with the original failure, and the
+caller's own frames — a caller retrying the write from inside an ``except`` handler included
+— are never touched. The failure's kind is not reported: a caller who needs
 it can watch the writer's own logs; the port's error says the write failed, and nothing more.
 
 Every operation reads its pin (tenant, agent, owner, actor) from ``hermes_scope.current_scope()``
@@ -160,23 +167,34 @@ class SecretStore(ABC):
         through, and none of any exception chained to it, because some error reporters render
         traceback frame locals. The implementation is structural about it, never a cleanup
         pass over frames it does not own: every load and validation that can fail runs before
-        *value* is bound in any frame below this method, the write itself — the only code that
-        binds *value* — calls nothing that logs with the live exception (a log handler may keep
-        the record and render its frames later), and on any failure the write path records
-        only that the write failed — never reading the writer's exception, its message, type
-        or errno, all of them channels the failing code controls — then, once its except
-        block has dropped the failure and its traceback, deletes the method's own *value*
-        binding and any other local holding it and raises OUTSIDE the except block: the port's
-        own refusal as it raised it, and everything a backend or writer raised — refusal-typed
-        or not — as the fixed :class:`SecretWriteFailed` :func:`write_failure` built, with
-        ``from None``. The fresh error's traceback then holds only the ``set`` frame upward —
-        no lower frame that held the value survives, and the caller's own frames (a caller
-        retrying from inside an ``except`` handler included) are never touched."""
+        *value* is bound in any frame below this method, and the write itself — the only code
+        that binds *value* — runs through the backend's one writer boundary, the private helper
+        that calls every writer, its ``try`` inside any lock the write holds, so a writer's
+        failure is caught before a context manager's ``__exit__`` is handed it (an ``__exit__``
+        assigns the exception's ``__traceback__``, and a hostile writer's attribute hook would
+        otherwise run while the value is still bound in the frames being unwound) and nothing
+        on the write path logs with the live exception (a log handler may keep the record and
+        render its frames later). On any failure the write path records only that the write
+        failed — never reading the writer's exception, its message, type or errno, all of them
+        channels the failing code controls — then, once its except block has dropped the
+        failure and its traceback, the boundary drops its own bindings of the writer and the
+        value it carried and raises OUTSIDE the except block: the port's own refusal as it
+        raised it, and everything a backend or writer raised — refusal-typed or not — as the
+        fixed :class:`SecretWriteFailed` :func:`write_failure` built, with ``from None``. The
+        fresh error's traceback then holds only the backend's own frames — the boundary's, this
+        method's — and the caller's above, no frame that held the value survives, and the
+        caller's own frames (a caller retrying from inside an ``except`` handler included) are
+        never touched."""
 
     @abstractmethod
     def delete(self, name: str, *, level: str) -> bool:
         """Delete *name* at *level*; ``True`` when the view had it. Refused exactly like
-        :meth:`set`; a refusal says nothing about whether *name* exists."""
+        :meth:`set`; a refusal says nothing about whether *name* exists. A delete is a
+        credential write with a read-modify-write tail of its own, and its failures are
+        :meth:`set`'s exactly: whatever the backend's writer raised, the caller reads the
+        fixed :class:`SecretWriteFailed` :func:`write_failure` built, and no frame the
+        error's traceback passes through — the writer's own frames included, which held the
+        stored secrets it was rewriting — binds any of them."""
 
     @abstractmethod
     def get_auth(self, provider: str) -> Optional[dict[str, Any]]:
@@ -195,13 +213,18 @@ class SecretStore(ABC):
         raises propagates with *record* bound in no frame the error's traceback passes
         through, none of any exception chained to it: the same structural rule (the store
         the write merges into loads and parses before *record* is bound in any frame below
-        this method, the merge and the atomic replace are the only code that binds *record*
-        and call nothing that logs with the live exception, and on any failure the write
-        path records only that the write failed — never reading the writer's exception —
-        then, once its except block has dropped the failure and its traceback, deletes the
-        method's own *record* binding and any other local holding it and raises the port's
-        own refusal as it raised it and everything else as :func:`write_failure`'s fixed
-        result outside the except block with ``from None``), and never a frame the store
+        this method, and the record's copy, the merge into the loaded store and the atomic
+        replace are the only code that binds *record*, each running through the backend's
+        one writer boundary — the private helper that calls every writer, its ``try``
+        inside the store lock the write holds, so a writer's failure is caught before the
+        lock's context managers unwind it and nothing on the write path logs with the live
+        exception — and on any failure the write path records only that the write failed
+        — never reading the writer's exception — then, once its except block has dropped
+        the failure and its traceback, the boundary drops its own bindings of the writer
+        and what it carried and the write method's own *record* binding and any other
+        local holding it leave its frame as the error unwinds it, the port's own refusal
+        raised as it raised it and everything else as :func:`write_failure`'s fixed result
+        raised outside the except block with ``from None``), and never a frame the store
         does not own touched."""
 
 

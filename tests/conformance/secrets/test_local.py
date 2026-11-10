@@ -319,8 +319,16 @@ def _planted_here(exc: BaseException) -> BaseException:
     return exc
 
 
+#: Each credential write's writer seam: the attribute today's writer sits on, monkeypatched by
+#: the hostile-writer tests (the delete's writer included: a delete is a write the same way
+#: a set is).
+_WRITE_SEAMS = {"set": "hermes_cli.config.save_env_value",
+                "delete": "hermes_cli.config.remove_env_value",
+                "set_auth": "hermes_cli.auth._save_auth_store"}
+
+
 @pytest.mark.parametrize("kind", _HOSTILE_CHANNELS)
-@pytest.mark.parametrize("operation", ["set", "set_auth"])
+@pytest.mark.parametrize("operation", ["set", "set_auth", "delete"])
 def test_whatever_the_writer_raises_the_failed_writes_error_is_the_ports_own(tmp_path, monkeypatch, operation, kind):
     """A writer (or a backend plugin) that fails can carry the value it saw anywhere an
     exception can carry text — its message, an OSError's strerror or filename, a refusal
@@ -328,10 +336,10 @@ def test_whatever_the_writer_raises_the_failed_writes_error_is_the_ports_own(tmp
     its notes, its very class name, an exception group's members — or in a channel whose
     reading itself is hostile: an errno too large an int for Python to format, an errno
     property that raises with the value. The write path reads none of it: whatever the
-    writer raises, the error the caller reads is exactly the port's own fixed failure — a
-    message naming only the operation and the key it targeted, no cause, no context, no
-    notes, none of the failing code's text — and no frame the error's traceback passes
-    through holds the value (or record)."""
+    writer raises — the env writer behind a set or a delete alike — the error the caller
+    reads is exactly the port's own fixed failure — a message naming only the operation and
+    the key it targeted, no cause, no context, no notes, none of the failing code's text —
+    and no frame the error's traceback passes through holds the value (or record)."""
     from tests.conformance.secrets.mutants import apply_mutant
     apply_mutant(monkeypatch)  # only under test_mutants.py, which names a broken backend
     backend, _homes, _provider = local_backend(tmp_path, monkeypatch)
@@ -342,26 +350,120 @@ def test_whatever_the_writer_raises_the_failed_writes_error_is_the_ports_own(tmp
         raise _hostile_failure(kind, _HOSTILE_MARKER)
 
     with backend.bind("a"):
-        if operation == "set":
-            monkeypatch.setattr("hermes_cli.config.save_env_value", writer)
-            with pytest.raises(SecretWriteFailed) as failed:
+        if operation == "delete":  # the delete's writer is handed a stored secret to remove
+            store.set(NEW_NAME, _HOSTILE_MARKER, level="agent")
+        monkeypatch.setattr(_WRITE_SEAMS[operation], writer)
+        with pytest.raises(SecretWriteFailed) as failed:
+            if operation == "set":
                 store.set(NEW_NAME, _HOSTILE_MARKER, level="agent")
-        else:
-            monkeypatch.setattr("hermes_cli.auth._save_auth_store", writer)
-            with pytest.raises(SecretWriteFailed) as failed:
+            elif operation == "delete":
+                store.delete(NEW_NAME, level="agent")
+            else:
                 store.set_auth(SEED_PROVIDER, record)
     raised = failed.value
     # This test planted the value (and record): its own bindings must not read as leaks.
     del record, writer
     assert raised.__context__ is None and raised.__cause__ is None
     assert not getattr(raised, "__notes__", [])
-    expected = (f"the credential write failed: set {NEW_NAME!r}" if operation == "set"
-                else f"the credential write failed: set_auth {SEED_PROVIDER!r}")
+    expected = {"set": f"the credential write failed: set {NEW_NAME!r}",
+                "delete": f"the credential write failed: delete {NEW_NAME!r}",
+                "set_auth": f"the credential write failed: set_auth {SEED_PROVIDER!r}"}[operation]
     assert str(raised) == expected, f"the failed write's error is not the port's fixed one: {raised!r}"
     text = str(raised) + repr(raised) + repr(raised.args) + "".join(str(arg) for arg in raised.args)
     for form in _plaintext_forms(_HOSTILE_MARKER):
         assert form not in text, f"the fresh error carries the writer's own text: {raised!r}"
     assert_no_frame_holds(_planted_here(raised), _HOSTILE_MARKER)
+
+
+@pytest.mark.parametrize("operation", ["set", "set_auth", "delete"])
+def test_a_writers_exception_never_reaches_a_context_managers_exit(tmp_path, monkeypatch, operation):
+    """A context manager the store holds across a write — today's auth store lock — unwinds a
+    failed write by handing the writer's exception to the generator it wraps: ``__exit__``
+    throws it in and then assigns its ``__traceback__``, and a hostile exception's attribute
+    hook runs right there, while the value (or record) is still bound in the frames being
+    unwound — an observer's log handler it reaches keeps the live exception, and the
+    plaintext is in the traceback it kept, before the store's own error boundary has seen
+    the failure. The write path catches the writer's failure inside any lock it holds, before
+    that machinery unwinds: no attribute of a writer's exception is ever assigned or otherwise
+    evaluated, and the error the caller reads is the port's own fixed one, holding no value
+    (or record) in any frame its traceback passes through."""
+    from tests.conformance.secrets.mutants import apply_mutant
+    apply_mutant(monkeypatch)  # only under test_mutants.py, which names a broken backend
+    backend, _homes, _provider = local_backend(tmp_path, monkeypatch)
+    store = backend.open("a")
+    marker = 'zUnwound\nHook "Attribute" 5b23'
+    calls: list[str] = []
+    kept = _KeepingHandler()
+    logger = logging.getLogger("tests.conformance.secrets.attribute_hook")
+    logger.addHandler(kept)
+
+    class Hooked(OSError):
+        """The writer's failure, with an attribute hook that runs wherever some wrapper
+        assigns one of its attributes — the store's write path never does."""
+        def __setattr__(self, name, value):
+            if name == "__traceback__":
+                calls.append(name)
+                # The writer itself never logs: this runs only when a wrapper hands the
+                # writer-controlled exception to machinery that assigns its attributes.
+                logger.warning("a writer's exception attribute hook ran", exc_info=True)
+            return super().__setattr__(name, value)
+
+    def writer(*args, **kwargs):
+        raise Hooked(5, "the writer failed")
+
+    try:
+        with backend.bind("a"):
+            if operation == "delete":  # the delete's writer is handed a stored secret to remove
+                store.set(NEW_NAME, marker, level="agent")
+            monkeypatch.setattr(_WRITE_SEAMS[operation], writer)
+            with pytest.raises(SecretWriteFailed) as failed:
+                if operation == "set":
+                    store.set(NEW_NAME, marker, level="agent")
+                elif operation == "delete":
+                    store.delete(NEW_NAME, level="agent")
+                else:
+                    store.set_auth(SEED_PROVIDER, {"token": marker})
+        raised = failed.value
+        for kept_exc in kept.exceptions:
+            assert_no_frame_holds(_planted_here(kept_exc), marker)
+        assert not calls, (f"the store's unwind evaluated the writer's exception: {calls!r}")
+        assert_no_frame_holds(_planted_here(raised), marker)
+    finally:
+        logger.removeHandler(kept)
+
+
+def test_a_failed_delete_is_the_ports_own_error_and_holds_no_stored_value(tmp_path, monkeypatch):
+    """A delete is a credential write with a read-modify-write tail of its own: today's writer
+    reads the file, drops the key from the lines it holds and replaces the file atomically, so
+    a failure at the replace — a disk that fills — propagates with every stored line, the
+    deleted secret and the file's other secrets alike, still bound in the writer's own frames.
+    The delete runs its writer through the same boundary as every other write: the caller
+    reads the port's own fixed error, no frame it passes through holds any stored value, and
+    the stored file is left exactly as it was."""
+    from tests.conformance.secrets.mutants import apply_mutant
+    apply_mutant(monkeypatch)  # only under test_mutants.py, which names a broken backend
+    from hermes_cli import config
+    backend, homes, _provider = local_backend(tmp_path, monkeypatch)
+    store = backend.open("a")
+    marker = 'zDeleted Stored "Value" 4c19'
+    with backend.bind("a"):
+        store.set(NEW_NAME, marker, level="agent")
+
+        def full_disk(tmp_path, target):
+            raise OSError(28, "disk full")
+
+        monkeypatch.setattr(config, "atomic_replace", full_disk)
+        with pytest.raises(SecretWriteFailed) as failed:
+            store.delete(NEW_NAME, level="agent")
+    raised = failed.value
+    assert str(raised) == f"the credential write failed: delete {NEW_NAME!r}", (
+        f"the failed delete's error is not the port's fixed one: {raised!r}")
+    assert_no_frame_holds(_planted_here(raised), marker)
+    # The failed delete removed nothing: today's writer replaced no file, so the stored value
+    # is exactly what it was.
+    with backend.bind("a"):
+        assert store.get(NEW_NAME) == marker
+    assert load_env_file(homes["a"] / ".env")[NEW_NAME] == marker
 
 
 @pytest.mark.parametrize("signal_kind", [KeyboardInterrupt, SystemExit])

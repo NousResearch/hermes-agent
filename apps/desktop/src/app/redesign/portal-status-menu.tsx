@@ -8,7 +8,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 
 /** Popover mounts the existing status surface only while open, including its polling. */
-export function PortalStatusMenu({ children }: { children: ReactNode }) {
+export function PortalStatusMenu({ children }: { children: (close: () => void) => ReactNode }) {
   const { t } = useI18n()
   const { pathname, search } = useLocation()
   const [open, setOpen] = useState(false)
@@ -24,9 +24,13 @@ export function PortalStatusMenu({ children }: { children: ReactNode }) {
           </Button>
         </PopoverTrigger>
       </Tip>
-      <PopoverContent align="end" aria-label={label} className="w-80 max-w-[calc(100vw-1rem)]" side="right">
-        <h2 className="px-2 py-1 text-sm font-semibold">{label}</h2>
-        {children}
+      <PopoverContent
+        align="end"
+        aria-label={label}
+        className="w-[300px] max-w-[calc(100vw-1rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto p-0"
+        side="right"
+      >
+        {children(() => setOpen(false))}
       </PopoverContent>
     </Popover>
   )

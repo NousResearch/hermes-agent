@@ -8,14 +8,16 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo } from 'react'
+import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useCallback, useMemo } from 'react'
 import { Navigate, Route, Routes, useParams } from 'react-router'
 
 import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { useI18n } from '@/i18n'
 import { $activeConnectionId } from '@/store/connections'
-import { $gateway } from '@/store/gateway'
+import { $gateway, requestGatewayForAgent } from '@/store/gateway'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
@@ -23,6 +25,7 @@ import { $freshDraftReady, $gatewayState } from '@/store/session'
 import { ChatView } from '../chat'
 import { ChatSidebar } from '../chat/sidebar'
 import { PortalSidebar } from '../chat/sidebar/portal/portal-sidebar'
+import { PortalGatewayMenuPanel } from '../redesign/portal-gateway-menu-panel'
 import { TerminalPaneChrome } from '../right-sidebar/terminal/chrome'
 import { contributedRoutes, NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../routes'
 import { useStatusSnapshot } from '../shell/hooks/use-status-snapshot'
@@ -78,21 +81,33 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   actions,
   agentsOpen,
   chatOpen,
-  commandCenterOpen
+  commandCenterOpen,
+  onClose
 }: {
   actions: WiringActions
   agentsOpen: boolean
   chatOpen: boolean
   commandCenterOpen: boolean
+  onClose?: () => void
 }) {
   const portal = usePortalRedesign()
+  const { t } = useI18n()
+  const advanced = useStore($showsAdvancedChrome)
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const gatewayState = useStore($gatewayState)
   const demoLayout = useStore($chatOnboardingSolo)
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
-  const { inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, actions.requestGateway, gatewayScope)
+
+  // Status describes the selected gateway/profile, not a focused chat on another owner.
+  const requestStatus = useCallback(
+    <T,>(method: string, params?: Record<string, unknown>) =>
+      requestGatewayForAgent<T>(activeConnectionId, activeGatewayProfile, method, params),
+    [activeConnectionId, activeGatewayProfile]
+  )
+
+  const { inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, requestStatus, gatewayScope)
   const extraLeftItems = useStatusbarContributions('left')
   const extraRightItems = useStatusbarContributions('right')
 
@@ -113,8 +128,38 @@ export const StatusbarSurface = memo(function StatusbarSurface({
     toggleCommandCenter: actions.toggleCommandCenter
   })
 
-  // The demo layout (first-run intro) has no status bar.
-  return demoLayout ? null : <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} sidebar={portal} />
+  if (!portal && demoLayout) {
+    return null
+  }
+
+  if (onClose) {
+    return (
+      <>
+        <PortalGatewayMenuPanel
+          gatewayState={gatewayState}
+          inferenceStatus={inferenceStatus}
+          key={gatewayScope}
+          onClose={onClose}
+          onOpenSystem={() => actions.openCommandCenterSection('system')}
+          statusSnapshot={statusSnapshot}
+        />
+        {advanced && (
+          <details className="px-3 pb-3">
+            <summary className="cursor-pointer text-xs text-muted-foreground">
+              {t.commandCenter.sections.system}
+            </summary>
+            <StatusbarControls
+              items={statusbarItems.filter(item => item.id !== 'gateway-health')}
+              leftItems={leftStatusbarItems}
+              sidebar
+            />
+          </details>
+        )}
+      </>
+    )
+  }
+
+  return <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} sidebar={portal} />
 })
 
 /** The workspace pane: the real route table (chat + full-page views + plugin

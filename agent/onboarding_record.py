@@ -65,7 +65,8 @@ def _transition(db, session_id: str, event: Event) -> Step | None:
     # Told before the flag write, which can fail: the record already says the run ended.
     if step is not None and holder["was_active"] and not is_active(step.record):
         _announce(step.record.get("run_id"), session_id, step.record["ended_by"])
-    if step is not None and not is_active(step.record) and active_session_id(db) is None:
+    if (step is not None and not step.record.get("sessionless")
+            and not is_active(step.record) and active_session_id(db) is None):
         _close_install_flag()
     return step
 
@@ -85,9 +86,8 @@ def _close_install_flag() -> None:
 
 
 def start(db, session_id: str, facts: Facts) -> dict:
-    """Write a fresh run record (the row must exist) and mark the install as mid-onboarding, so a
-    crash or a quit before the end runs onboarding again on the next launch (which starts over:
-    ``onboarding.start`` with ``fresh_launch``)."""
+    """Write a classic conversational run record and mark the install mid-onboarding.
+    The redesigned guide never creates these records."""
     from hermes_cli.onboarding_run import set_run
 
     record = new_record(facts, now=time.time(), run_id=uuid.uuid4().hex)

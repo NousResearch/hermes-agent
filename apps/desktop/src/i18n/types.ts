@@ -775,6 +775,13 @@ export interface Translations extends NoticeTranslations {
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
     appearance: {
+      redesign: {
+        toolViewTitle: string
+        toolViewDesc: string
+        product: string
+        introSplashTitle: string
+        embedsTitle: string
+      }
       title: string
       intro: string
       colorMode: string
@@ -1854,6 +1861,13 @@ export interface Translations extends NoticeTranslations {
 
   skillDeepLink: SkillDeepLinkCopy
   skills: {
+    inventoryScopeHint: string
+    agentScopeHint: string
+    toolSecretsHint: string
+    openAgentSettings: string
+    openToolLibrary: string
+    remotePluginHint: string
+    showAllToolsets: (count: number) => string
     tabSkills: string
     tabToolsets: string
     configuringProfile: string
@@ -3566,6 +3580,8 @@ export interface Translations extends NoticeTranslations {
       daybreakFailed: string
     }
     gatewayMenu: {
+      connectionLabel: string
+      inferenceLabel: string
       gateway: string
       connected: string
       connecting: string

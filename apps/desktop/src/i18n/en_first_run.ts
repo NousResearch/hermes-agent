@@ -1,6 +1,23 @@
 import type { FirstRunCopy } from './types_first_run'
 
 export const enFirstRun: FirstRunCopy = {
+  guide: {
+    title: 'Set up Hermes',
+    intro: 'A few optional preferences, then your normal chat. Setup never creates a conversation.',
+    appearance: 'Appearance',
+    model: 'Choose a model',
+    ready: 'Your model is ready.',
+    providerNeeded: 'Connect a provider or use the free model before sending a message.',
+    freeModel: 'Use free model',
+    freeUnavailable: 'The free model is not available here. Connect a provider or choose one later.',
+    providers: 'Connect a provider',
+    finish: 'Finish setup',
+    skip: 'Skip setup',
+    back: 'Back',
+    check: 'Check readiness',
+    checking: 'Checking…',
+    privacy: 'Sharing usage metrics is optional.'
+  },
   beats: {
     name: 'Name',
     theme: 'Accent color',

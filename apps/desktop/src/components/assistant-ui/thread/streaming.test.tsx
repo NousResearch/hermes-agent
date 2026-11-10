@@ -13,6 +13,7 @@ import { $onboardingPhase } from '@/store/onboarding-phase'
 import { $onboardingSession } from '@/store/onboarding-session'
 import { $reasoningCollapsedByDefault, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import { $activeSessionId } from '@/store/session'
+import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
 
@@ -441,6 +442,7 @@ describe('assistant-ui streaming renderer', () => {
     $activeSessionId.set(null)
     $onboardingSession.set(null)
     $onboardingPhase.set('idle')
+    $agentSidebarChoice.set(null)
   })
 
   it.each([true, false])('honors reasoning visibility %j for grouped and standalone parts', async enabled => {
@@ -704,7 +706,8 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
   })
 
-  it('keeps streaming reasoning collapsed in the onboarding chat', () => {
+  it.each([false, true])('scopes onboarding reasoning collapse to classic mode (redesign: %j)', redesign => {
+    $agentSidebarChoice.set(redesign)
     $activeSessionId.set('onboarding-chat')
     $onboardingSession.set({
       connectionId: null,
@@ -720,8 +723,8 @@ describe('assistant-ui streaming renderer', () => {
       within(container)
         .getByRole('button', { name: /thinking/i })
         .getAttribute('aria-expanded')
-    ).toBe('false')
-    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+    ).toBe(String(redesign))
+    expect(Boolean(container.querySelector('[data-slot="aui_reasoning-text"]'))).toBe(redesign)
   })
 
   it('renders reasoning text without a leading token space', () => {

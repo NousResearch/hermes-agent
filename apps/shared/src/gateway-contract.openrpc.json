@@ -25778,6 +25778,20 @@
             ],
             "default": null,
             "title": "Run Id"
+          },
+          "step": {
+            "default": "preferences",
+            "enum": [
+              "preferences",
+              "model"
+            ],
+            "title": "Step",
+            "type": "string"
+          },
+          "started": {
+            "default": false,
+            "title": "Started",
+            "type": "boolean"
           }
         },
         "required": [
@@ -25791,6 +25805,18 @@
         "additionalProperties": false,
         "description": "``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config,\nso the first chat after onboarding gets the plain intro instead of the profile offer.",
         "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
           "run": {
             "title": "Run",
             "type": "boolean"
@@ -25798,6 +25824,32 @@
           "mark_profile_offered": {
             "default": false,
             "title": "Mark Profile Offered",
+            "type": "boolean"
+          },
+          "sessionless": {
+            "default": false,
+            "title": "Sessionless",
+            "type": "boolean"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "enum": [
+                  "preferences",
+                  "model"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Step"
+          },
+          "restart": {
+            "default": false,
+            "title": "Restart",
             "type": "boolean"
           }
         },
@@ -25920,9 +25972,26 @@
         "additionalProperties": false,
         "description": "``assume_fresh``: the unpackaged desktop's ``--fresh-install`` launch; the backend treats this\nmachine as one that never used Hermes. Packaged builds never send it.",
         "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
           "assume_fresh": {
             "default": false,
             "title": "Assume Fresh",
+            "type": "boolean"
+          },
+          "sessionless": {
+            "default": false,
+            "title": "Sessionless",
             "type": "boolean"
           }
         },

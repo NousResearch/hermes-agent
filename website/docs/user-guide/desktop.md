@@ -32,6 +32,19 @@ hermes desktop
 
 That uses your current config, keys, sessions, and skills.
 
+## Setup guide
+
+With **Redesigned interface** enabled, first-run setup is a guide, not a chat:
+choose appearance and optional metrics, then check your model connection.
+A working provider is retained. Where available, you can choose the free model
+without starting a trial conversation, or connect your own provider.
+
+The guide resumes after reload. Finish opens an ordinary chat draft; the first
+message creates the conversation. Skip leaves your current workspace intact.
+Use **Settings → Advanced → Run again** to revisit setup, unless your installation
+administrator has disabled it. Turning off **Redesigned interface** restores the
+classic conversational setup flow.
+
 ## Agent workspace
 
 The redesigned workspace is the default for both new and existing installations, with a global
@@ -48,7 +61,8 @@ use that space, and returning to Chats preserves your sidebar visibility prefere
 Enabled plugins that contribute pages appear beneath Routines in the rail.
 Select a page to open it; use the Plugins tab in Capabilities to manage plugin settings. Pinned chats also remain under their agents.
 Pinned rows show the profile name; rows under an agent show age and a pin marker when applicable.
-Agents are grouped by gateway; clicking an agent opens its settings. New session lets you choose
+Agents are grouped by gateway; clicking an agent's name or avatar opens its Bot Chat.
+Use its separate settings action to configure it. New session lets you choose
 an agent when there is more than one; Start blank uses the current gateway's default agent.
 
 The sidebar replaces the Bots tab and gateway/profile selectors with gateway-grouped agents.
@@ -56,6 +70,17 @@ Each agent includes its canonical **Bot Chat**. Changing the layout does not mig
 delete profiles, conversations or pins. For recovery, turn off **Settings → Appearance →
 Window layout → Redesigned interface** to return to the classic shell; turn it on to restore
 the redesigned workspace. The earlier experimental sidebar is no longer a separate layout.
+
+Global **Capabilities** browses available and installed capabilities; agent
+settings controls which ones an agent can use. Agent **Tools** separates On and
+Off, with credentials and endpoints under **Advanced**. Installation and account
+actions still target the profile and gateway shown on the page; they do not
+silently share credentials across agents. Existing conversations keep their tools.
+
+The redesigned composer places model and reasoning controls above the input and
+attachments, microphone, and Send below. The gateway status menu reports connection
+and inference readiness separately. Simple mode keeps reconnect and recent
+activity; Advanced adds system details, restart, and logs.
 
 ### Dogfood the public redesign against your gateway
 
@@ -531,13 +556,16 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 - **VS Code Marketplace themes** — beyond the built-in theme presets, the appearance settings include a live VS Code Marketplace search: pick any color theme and the app downloads, converts, and installs it as a desktop theme. The same importer is available from the command palette (*Install theme*), and imported themes can be removed again from the appearance settings.
 - **Keep computer awake** — **Settings → Advanced → Keep computer awake** stops the machine from sleeping so long or overnight agent runs keep going (the display can still dim). **While working** holds the machine awake only while a turn is in flight and lets it sleep normally once the run finishes or fails; **Always** holds it whenever Hermes is open. **While working** is the default on a computer where nobody has picked a mode. If you turned it **Off** and a timed sleep interrupts a turn, Hermes offers **Keep awake while working** once on wake. Closing the lid or choosing Sleep still sleeps the machine, and on battery Windows may still sleep after its own timeout. This is a per-computer setting.
 
-First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
+The [setup guide](#setup-guide) can be skipped and resumed without creating a chat. With **Redesigned interface** off, the classic conversational setup remains available.
 
 #### Where your display preferences live
 
-Display preferences (theme and light/dark mode, session-list density and sidebar layout, status-bar readouts, transcript and tool display, sounds, keybinds, saved layouts, model-picker favourites, and which tips, tours and first-run onboarding you already saw or skipped) are stored once per computer, in `ui-preferences.json` in the root Hermes home (`~/.hermes/ui-preferences.json` by default; with a custom `HERMES_HOME`, the root of that home, never a profile folder). The desktop app on that computer and every browser that opens the [Webapp](#use-the-desktop-workspace-from-a-browser) it serves read and write the same file. A change in one reaches the others: the desktop app's windows get it within a couple of seconds and Webapp tabs when they regain focus or within about ten seconds. Theme, mode, density and the other settings an open window already follows across windows repaint at once; the rest apply the next time a window or tab loads. This includes another device, a private window, and another address for the same Webapp (`127.0.0.1`, the LAN address, `webapp.public_url`).
+Display preferences (theme and light/dark mode, session-list density and sidebar layout, status-bar readouts, transcript and tool display, sounds, keybinds, saved layouts, model-picker favourites, and which tips and tours you already saw or skipped) are stored once per computer, in `ui-preferences.json` in the root Hermes home (`~/.hermes/ui-preferences.json` by default; with a custom `HERMES_HOME`, the root of that home, never a profile folder). The desktop app on that computer and every browser that opens the [Webapp](#use-the-desktop-workspace-from-a-browser) it serves read and write the same file. A change in one reaches the others: the desktop app's windows get it within a couple of seconds and Webapp tabs when they regain focus or within about ten seconds. Theme, mode, density and the other settings an open window already follows across windows repaint at once; the rest apply the next time a window or tab loads. This includes another device, a private window, and another address for the same Webapp (`127.0.0.1`, the LAN address, `webapp.public_url`).
 
 The file belongs to the computer, not to a gateway connection or a profile. A desktop app connected to a remote gateway, or to several gateways, keeps its own computer's preferences. Settings that are already per profile, such as the theme picked for one profile, stay per profile inside the file. Credentials, sign-ins, permission grants, drafts and per-window state (open tabs, pane layout, scroll position, zoom) are never written to it and stay in each window or browser. The first time an app or browser meets the file (or finds none), it copies in the settings it has that the file lacks, and adopts the values already there; it never overwrites them, and nothing it has is removed just because the file lacks it. A default an app or browser filled in for itself (for example read-aloud carried over from `voice.auto_tts`) is never copied in, so it cannot replace a setting you chose elsewhere. If the file is ever damaged, it is kept beside the new one as `ui-preferences.json.corrupt-<timestamp>`, and every open window and tab copies its settings back into the new file. If the file exists but cannot be read (for example, its permissions changed), changes wait in each window and are saved once it is readable again.
+
+First-run setup progress is separate: `onboarding.run` and `onboarding.step` live
+in the root/default profile's `config.yaml`, not `ui-preferences.json`.
 
 #### Per-profile settings: the "Applies to" scope
 

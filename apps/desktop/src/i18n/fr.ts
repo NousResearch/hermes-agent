@@ -32,9 +32,9 @@ import { simplifiedAgentsCopy } from './simplified-agents'
 export const frOverrides = {
   simplifiedAgents: simplifiedAgentsCopy['fr'],
   gatewayGroupOpen: {
-    opening: "Ouverture de la discussion de groupe…",
-    lookupFailed: "Impossible de retrouver ce groupe sur la passerelle. Réessayez.",
-    missing: "Cette discussion de groupe n’existe plus."
+    opening: 'Ouverture de la discussion de groupe…',
+    lookupFailed: 'Impossible de retrouver ce groupe sur la passerelle. Réessayez.',
+    missing: 'Cette discussion de groupe n’existe plus.'
   },
   sharedMetrics: frSharedMetrics,
   firstRun: frFirstRun,
@@ -988,6 +988,14 @@ export const frOverrides = {
       }
     },
     appearance: {
+      redesign: {
+        toolViewTitle: "Appels d'outils",
+        toolViewDesc:
+          'Le mode Simple masque les charges utiles brutes des outils ; le mode Technique affiche les entrées/sorties complètes.',
+        product: 'Simple',
+        introSplashTitle: "Écran d'accueil",
+        embedsTitle: 'Aperçus des liens'
+      },
       chatTextScaleTitle: 'Taille du texte du chat',
       chatTextScaleDesc:
         'Ajuste le texte des conversations et de la saisie par rapport à l’échelle de l’interface. Les barres latérales et les contrôles gardent leur taille.',
@@ -2399,21 +2407,23 @@ export const frOverrides = {
       browserRealProfile: {
         label: 'Utiliser mon profil de navigateur réel',
         description:
-          'Copie les identifiants de connexion et les cookies de votre navigateur par défaut dans un instantané géré que l\'agent utilise pour naviguer, et connecte aussi le navigateur intégré avec eux. Votre profil actif n\'est jamais ouvert directement. S\'applique aux nouvelles sessions.',
+          "Copie les identifiants de connexion et les cookies de votre navigateur par défaut dans un instantané géré que l'agent utilise pour naviguer, et connecte aussi le navigateur intégré avec eux. Votre profil actif n'est jamais ouvert directement. S'applique aux nouvelles sessions.",
         enabledTitle: 'Navigation avec le profil réel activée',
         enabledMessage: 'Les nouvelles sessions utiliseront un instantané de votre profil de navigateur par défaut.',
         disabledTitle: 'Navigation avec le profil réel désactivée',
         disabledMessage:
-          'L\'instantané du profil sera supprimé et le navigateur intégré en sera déconnecté ; les nouvelles sessions utiliseront un navigateur vierge.',
+          "L'instantané du profil sera supprimé et le navigateur intégré en sera déconnecté ; les nouvelles sessions utiliseront un navigateur vierge.",
         failedSave: "Impossible d'enregistrer le paramètre du profil réel",
         reimportSignins: 'Réimporter les connexions',
         signinsImportedTitle: 'Connexions du navigateur intégré',
-        signinsImported: count => `Navigateur intégré connecté avec ${count} cookie${count === 1 ? '' : 's'} de votre profil de navigateur.`,
-        signinsRemote: 'Ce backend s\'exécute sur une autre machine, son profil de navigateur n\'est donc pas importé dans le navigateur intégré.',
-        signinsFailed: 'Impossible d\'importer les connexions dans le navigateur intégré',
+        signinsImported: count =>
+          `Navigateur intégré connecté avec ${count} cookie${count === 1 ? '' : 's'} de votre profil de navigateur.`,
+        signinsRemote:
+          "Ce backend s'exécute sur une autre machine, son profil de navigateur n'est donc pas importé dans le navigateur intégré.",
+        signinsFailed: "Impossible d'importer les connexions dans le navigateur intégré",
         prompt: {
           title: 'Restez connecté à vos sites',
-          body: 'Autorisez Hermes à naviguer avec un instantané de votre profil de navigateur par défaut afin que les sites s\'ouvrent avec vos sessions déjà connectées, pour l\'agent et dans le navigateur intégré.',
+          body: "Autorisez Hermes à naviguer avec un instantané de votre profil de navigateur par défaut afin que les sites s'ouvrent avec vos sessions déjà connectées, pour l'agent et dans le navigateur intégré.",
           bulletSnapshot: 'Les cookies et identifiants de connexion sont copiés dans un instantané géré.',
           bulletLiveProfile: "Votre profil de navigateur actif n'est jamais ouvert directement.",
           bulletLocal: 'Rien ne quitte cet ordinateur.',
@@ -2425,6 +2435,17 @@ export const frOverrides = {
     }
   },
   skills: {
+    inventoryScopeHint:
+      'Les installations et les comptes ci-dessous appartiennent à l’agent et au gateway sélectionnés, pas à tous les agents. L’activation et les réglages spécifiques se trouvent dans les paramètres de l’agent.',
+    agentScopeHint:
+      'Les modifications s’appliquent uniquement à cet agent. Les conversations existantes conservent leurs outils actuels.',
+    toolSecretsHint:
+      'Clés API, points de terminaison et fournisseurs pour cet agent. Les identifiants ne sont pas partagés avec les autres profils.',
+    openAgentSettings: 'Paramètres de l’agent',
+    openToolLibrary: 'Parcourir la bibliothèque d’outils',
+    remotePluginHint:
+      'Ouvrez cet agent sur son gateway pour gérer ses plugins. L’installation des plugins utilise le gateway connecté.',
+    showAllToolsets: (count: number) => `Afficher les ${count}`,
     tabSkills: 'Skills',
     tabToolsets: 'Outils',
     configuringProfile: 'Configuration de :',
@@ -3009,7 +3030,8 @@ export const frOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Aucun jeton de bot requis',
-      intro: (platform: string) => `${platform} atteint cet agent via le bot Hermes partagé. Associez votre compte ${platform} et écrivez au bot pour parler à votre agent.`,
+      intro: (platform: string) =>
+        `${platform} atteint cet agent via le bot Hermes partagé. Associez votre compte ${platform} et écrivez au bot pour parler à votre agent.`,
       link: (platform: string) => `Associer ${platform}`,
       linkAnother: (platform: string) => `Associer un autre compte ${platform}`,
       linkedAccounts: 'Comptes associés',
@@ -3027,10 +3049,12 @@ export const frOverrides = {
       refused: (platform: string) => `${platform} a refusé l’association. Demandez un nouveau code et réessayez.`,
       qrAlt: (platform: string) => `Code QR du bot ${platform} partagé`,
       managed: 'Géré par Team Gateway',
-      managedNote: (platform: string) => `Team Gateway assure la messagerie sur cette instance : le gateway désactive donc la connexion directe ${platform} à chaque démarrage. Pour l’utiliser en plus du relais, définissez GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true dans l’environnement du gateway (une connexion directe empêche l’instance de descendre à zéro et peut livrer les messages deux fois).`,
+      managedNote: (platform: string) =>
+        `Team Gateway assure la messagerie sur cette instance : le gateway désactive donc la connexion directe ${platform} à chaque démarrage. Pour l’utiliser en plus du relais, définissez GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true dans l’environnement du gateway (une connexion directe empêche l’instance de descendre à zéro et peut livrer les messages deux fois).`,
       managedIntro: 'Les comptes de cet agent se lient depuis Nous Portal.',
       openPortal: 'Lier des comptes dans Nous Portal',
-      noNewAccount: (platform: string) => `Le code n’est plus actif et aucun nouveau compte n’est apparu. Si votre compte ${platform} n’est pas listé, obtenez un nouveau code et réessayez.`
+      noNewAccount: (platform: string) =>
+        `Le code n’est plus actif et aucun nouveau compte n’est apparu. Si votre compte ${platform} n’est pas listé, obtenez un nouveau code et réessayez.`
     },
     telegramQr: {
       title: 'Choisissez comment connecter votre bot Telegram',
@@ -4557,6 +4581,8 @@ export const frOverrides = {
       daybreakFailed: 'Échec de la mise à jour de Daybreak'
     },
     gatewayMenu: {
+      connectionLabel: 'Connexion',
+      inferenceLabel: 'Inférence',
       gateway: 'Gateway',
       connected: 'Connecté',
       connecting: 'Connexion',

@@ -1,7 +1,7 @@
 import './agent-settings.css'
 
 import { useStore } from '@nanostores/react'
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router'
@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { RowButton } from '@/components/ui/row-button'
-import { type CronJob, getProfileSoul } from '@/hermes'
+import { type CronJob, getProfileSoul, type MessagingPlatformsResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { resolveProfileColor } from '@/lib/profile-color'
@@ -23,6 +23,7 @@ import { $activeConnectionId, selectConnection } from '@/store/connections'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { $activeGatewayProfile, $profileColors, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { setSettingsScope } from '@/store/settings-scope'
+import type { HermesConfigRecord, ProfileInfo } from '@/types/hermes'
 
 import { CapabilitiesView } from '../capabilities'
 import { useSkillsQuery } from '../capabilities/skills/skills-data'
@@ -51,6 +52,7 @@ import { RoutineDialog } from './routine-dialog'
 
 interface AgentSettingsViewProps extends SettingsPageProps {
   owner: AgentSettingsOwner
+  classic?: boolean
 }
 
 /** Existing editors use the active gateway. Gate them before rendering, never silently retarget. */
@@ -60,6 +62,7 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
   const apiScope = useStore($apiRequestScope)
   const active = useStore($activeConnectionId)
   const profile = useStore($activeGatewayProfile)
+  const { search } = useLocation()
   const registry = useStore($connectionsRegistry)
   const [error, setError] = useState('')
   const [opening, setOpening] = useState(false)
@@ -70,7 +73,10 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
     profile === props.owner.profile
 
   useEffect(() => {
-    if (matches) {setSettingsScope(props.owner.profile)}
+    if (matches) {
+      setSettingsScope(props.owner.profile)
+    }
+
     setScopeReady(matches)
   }, [matches, props.owner.profile])
 
@@ -93,8 +99,8 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
     }
   }
 
-  if (!matches)
-    {return (
+  if (!matches) {
+    return (
       <Panel onClose={props.onClose}>
         <PanelHeader subtitle={props.owner.profile} title={t.simplifiedAgents.settings} />
         <Button disabled={opening} onClick={() => void activate()}>
@@ -102,9 +108,24 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
         </Button>
         {error && <p role="alert">{error}</p>}
       </Panel>
-    )}
+    )
+  }
 
-  return scopeReady ? <AgentSettingsContent {...props} /> : <PageLoader />
+  if (!scopeReady) {
+    return <PageLoader />
+  }
+
+  if (props.classic) {
+    return new URLSearchParams(search).get('panel') === 'capabilities' ? (
+      <Panel onClose={props.onClose}>
+        <CapabilitiesView fixedConnection={props.owner.connectionId} fixedProfile={props.owner.profile} />
+      </Panel>
+    ) : (
+      <ClassicSettingsView {...props} />
+    )
+  }
+
+  return <AgentSettingsContent {...props} />
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -116,12 +137,19 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   )
 }
 
-function SettingRow({ title, detail, subtitle, onClick }: { title: string; detail?: ReactNode; subtitle?: string; onClick: () => void }) {
+function SettingRow({
+  title,
+  detail,
+  subtitle,
+  onClick
+}: {
+  title: string
+  detail?: ReactNode
+  subtitle?: string
+  onClick: () => void
+}) {
   return (
-    <RowButton
-      className="agent-overview-row"
-      onClick={onClick}
-    >
+    <RowButton className="agent-overview-row" onClick={onClick}>
       <span className="min-w-0 flex-1">
         <span className="block truncate">{title}</span>
         {subtitle && <span className="mt-1 block truncate text-xs text-(--ui-text-tertiary)">{subtitle}</span>}
@@ -129,6 +157,45 @@ function SettingRow({ title, detail, subtitle, onClick }: { title: string; detai
       <span className="max-w-[50%] truncate text-(--ui-text-tertiary)">{detail}</span>
       <Codicon name="chevron-right" />
     </RowButton>
+  )
+}
+
+interface AgentManagementHeaderProps {
+  gateway: string
+  onOpenChat: () => void
+  owner: AgentSettingsOwner
+  profile?: ProfileInfo
+}
+
+function AgentManagementHeader({ gateway, onOpenChat, owner, profile }: AgentManagementHeaderProps) {
+  const { t } = useI18n()
+  const c = useAgentSettingsCopy()
+  const navigate = useNavigate()
+  const colors = useStore($profileColors)
+  const label = profile ? settingsScopeLabel(profile) : owner.profile
+
+  return (
+    <header className="agent-management-header">
+      <FigmaAgentIcon
+        className="agent-management-avatar"
+        color={resolveProfileColor(owner.profile, colors)}
+        variant="subtle"
+      />
+      <div className="agent-management-identity">
+        <h1>{label}</h1>
+        <div className="agent-management-meta">
+          <span>{gateway}</span>
+          {profile?.path && <span className="truncate">{profile.path}</span>}
+          {profile?.is_default && <span className="agent-management-default">{t.profiles.defaultBadge}</span>}
+        </div>
+      </div>
+      <div className="agent-management-actions">
+        <Button onClick={() => navigate(`${PROFILES_ROUTE}?manage=true`)} variant="outline">
+          {t.profiles.manageProfiles}
+        </Button>
+        <Button onClick={onOpenChat}>{c.openChat}</Button>
+      </div>
+    </header>
   )
 }
 
@@ -140,11 +207,9 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
   const params = new URLSearchParams(search)
   const panel = params.get('panel')
   const profiles = useStore($profiles)
-  const colors = useStore($profileColors)
+  const profile = profiles.find(item => item.name === owner.profile)
   const roster = useStore($fleetRoster)
   const registry = useStore($connectionsRegistry)
-  const profile = profiles.find(item => item.name === owner.profile)
-  const label = profile ? settingsScopeLabel(profile) : owner.profile
 
   const gateway =
     roster?.sources.find(source => source.connectionId === owner.connectionId)?.label ??
@@ -167,9 +232,7 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
     initialPageParam: 0,
     queryFn: ({ pageParam }) => getAgentRecentSessions(owner, history ? 25 : 5, pageParam),
     getNextPageParam: page =>
-      page.sessions.length >= page.limit && page.offset + page.limit < page.total
-        ? page.offset + page.limit
-        : undefined
+      page.sessions.length >= page.limit && page.offset + page.limit < page.total ? page.offset + page.limit : undefined
   })
 
   const soul = useQuery({
@@ -190,13 +253,22 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
     setSettingsScope(owner.profile)
     const query = new URLSearchParams({ agent: owner.profile })
 
-    if (owner.connectionId) {query.set('connection', owner.connectionId)}
+    if (owner.connectionId) {
+      query.set('connection', owner.connectionId)
+    }
 
-    if (next) {query.set('panel', next)}
+    if (next) {
+      query.set('panel', next)
+    }
 
-    if (tab) {query.set('tab', tab)}
+    if (tab) {
+      query.set('tab', tab)
+    }
 
-    if (page) {query.set('page', page)}
+    if (page) {
+      query.set('page', page)
+    }
+
     navigate(`${SETTINGS_ROUTE}?${query}`)
   }
 
@@ -204,7 +276,6 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
   const back = () => openPanel(null)
 
   const connectionId = owner.connectionId ?? apiScope.connectionId ?? activeConnectionId ?? 'local'
-  const fallbacks = getNested(config.data ?? {}, 'fallback_providers')
   const failed = [config, skills, tools, jobs, messaging, recent, soul].some(query => query.isError)
 
   // The endpoint backfills pinned sessions on each page; render each session once.
@@ -223,9 +294,9 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
       name: owner.profile,
       connectionId,
       connectionLabel: gateway,
-      targetProfile: roster?.agents.find(agent =>
-        agent.connectionId === connectionId && agent.profile === owner.profile
-      )?.targetProfile || owner.profile,
+      targetProfile:
+        roster?.agents.find(agent => agent.connectionId === connectionId && agent.profile === owner.profile)
+          ?.targetProfile || owner.profile,
       sourceScoped: true
     })
   }
@@ -240,7 +311,11 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
           ownerRoute: { connectionId, profile: owner.profile }
         })
       }}
-      subtitle={session.last_active ? new Date(session.last_active * 1000).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' }) : undefined}
+      subtitle={
+        session.last_active
+          ? new Date(session.last_active * 1000).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })
+          : undefined
+      }
       title={sessionTitle(session)}
     />
   ))
@@ -252,31 +327,15 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
   return (
     <Panel contentClassName="agent-management" onClose={props.onClose}>
       <AgentNavigation connectionId={connectionId} profile={owner.profile} />
-      <header className="agent-management-header">
-        <FigmaAgentIcon className="agent-management-avatar" color={resolveProfileColor(owner.profile, colors)} variant="subtle" />
-        <div className="agent-management-identity">
-          <h1>{label}</h1>
-          <div className="agent-management-meta">
-            <span>{gateway}</span>
-            {profile?.path && <span className="truncate">{profile.path}</span>}
-            {profile?.is_default && <span className="agent-management-default">{t.profiles.defaultBadge}</span>}
-          </div>
-        </div>
-        <div className="agent-management-actions">
-          <Button onClick={() => navigate(`${PROFILES_ROUTE}?manage=true`)} variant="outline">
-            {t.profiles.manageProfiles}
-          </Button>
-          <Button onClick={openChat}>
-            {c.openChat}
-          </Button>
-        </div>
-      </header>
+      <AgentManagementHeader gateway={gateway} onOpenChat={openChat} owner={owner} profile={profile} />
       <nav aria-label={t.simplifiedAgents.settings} className="agent-management-tabs">
-        {([
-          ['overview', c.overview, () => openPanel(null)],
-          ['history', c.history, () => openPanel('history')],
-          ['settings', t.commandCenter.settings, () => settings('model', 'main')]
-        ] as const).map(([id, title, onClick]) => (
+        {(
+          [
+            ['overview', c.overview, () => openPanel(null)],
+            ['history', c.history, () => openPanel('history')],
+            ['settings', t.commandCenter.settings, () => settings('model', 'main')]
+          ] as const
+        ).map(([id, title, onClick]) => (
           <button aria-current={selectedTab === id ? 'page' : undefined} key={id} onClick={onClick} type="button">
             {title}
           </button>
@@ -290,7 +349,9 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
         <div className="agent-management-editor">
           {panel === 'capabilities' ? (
             <CapabilitiesView fixedConnection={owner.connectionId} fixedProfile={owner.profile} />
-          ) : <MessagingView />}
+          ) : (
+            <MessagingView />
+          )}
         </div>
       ) : (
         <div className="agent-management-scroll">
@@ -300,8 +361,13 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
               <Button
                 onClick={() => {
                   void Promise.all([
-                    config.refetch(), skills.refetch(), tools.refetch(), jobs.refetch(),
-                    messaging.refetch(), recent.refetch(), soul.refetch()
+                    config.refetch(),
+                    skills.refetch(),
+                    tools.refetch(),
+                    jobs.refetch(),
+                    messaging.refetch(),
+                    recent.refetch(),
+                    soul.refetch()
                   ])
                 }}
                 variant="secondary"
@@ -315,7 +381,11 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
               {sessionRows.length ? sessionRows : emptySessions}
               {recent.hasNextPage && (
                 <div className="agent-overview-footer">
-                  <Button disabled={recent.isFetchingNextPage} onClick={() => void recent.fetchNextPage()} variant="textStrong">
+                  <Button
+                    disabled={recent.isFetchingNextPage}
+                    onClick={() => void recent.fetchNextPage()}
+                    variant="textStrong"
+                  >
                     {t.sidebar.loadMore}
                   </Button>
                 </div>
@@ -324,30 +394,15 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
           ) : (
             <div className="agent-overview-grid">
               <div className="agent-overview-column">
-                {soul.data?.content && (
-                  <Section title={c.instructions}>
-                    <div className="agent-instructions-preview">
-                      <p>{soul.data.content}</p>
-                      <span>SOUL.md{profile?.path ? ` · ${profile.path}` : ''}</span>
-                    </div>
-                  </Section>
-                )}
-                <Section title={c.behavior}>
-                  <SettingRow
-                    detail={value('model.default') === '—' ? value('model') : value('model.default')}
-                    onClick={() => settings('model', 'main')}
-                    title={c.model}
-                  />
-                  <SettingRow
-                    detail={config.isError ? c.unavailable : Array.isArray(fallbacks) ? fallbacks.length : '—'}
-                    onClick={() => settings('model', 'fallbacks')}
-                    title={c.fallbacks}
-                  />
-                  <SettingRow detail={value('memory.provider')} onClick={() => settings('memory')} title={c.memory} />
-                </Section>
+                <AgentInstructions content={soul.data?.content} path={profile?.path} />
+                <AgentBehavior config={config} onSettings={settings} value={value} />
                 <Section title={c.capabilities}>
                   <SettingRow
-                    detail={pending(tools.isError, tools.isPending, new Set(tools.data?.filter(tool => tool.enabled).flatMap(toolNames)).size)}
+                    detail={pending(
+                      tools.isError,
+                      tools.isPending,
+                      new Set(tools.data?.filter(tool => tool.enabled).flatMap(toolNames)).size
+                    )}
                     onClick={() => openPanel('capabilities', 'toolsets')}
                     title={c.tools}
                   />
@@ -364,57 +419,26 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
                     title={c.routines}
                   />
                 </Section>
-                <div id="agent-routines">
-                  <Section title={c.routines}>
-                    {jobs.data?.map(job => (
-                      <SettingRow
-                        detail={job.schedule_display || job.schedule?.display || job.schedule?.expr}
-                        key={job.id}
-                        onClick={() => setRoutine(job)}
-                        title={job.name || job.id}
-                      />
-                    ))}
-                    {!jobs.data?.length && (
-                      <p className="agent-overview-empty">{pending(jobs.isError, jobs.isPending, c.noRoutines)}</p>
-                    )}
-                    <div className="agent-overview-footer">
-                      <Button onClick={() => setRoutine('new')} variant="textStrong">
-                        <Codicon name="add" />
-                        {c.addRoutine}
-                      </Button>
-                    </div>
-                  </Section>
-                </div>
+                <AgentRoutines jobs={jobs} onEdit={setRoutine} />
               </div>
               <div className="agent-overview-column">
-                <Section title={c.channels}>
-                  {(messaging.data?.platforms ?? [])
-                    .filter(platform => platform.id === 'telegram' || platform.id === 'discord' || platform.configured)
-                    .map(platform => (
-                      <SettingRow
-                        detail={platform.state === 'connected' ? c.connected : platform.configured ? c.configured : c.disconnected}
-                        key={platform.id}
-                        onClick={() => openPanel('messaging')}
-                        title={platform.name}
-                      />
-                    ))}
-                  {!messaging.data && (
-                    <SettingRow
-                      detail={pending(messaging.isError, messaging.isPending, '—')}
-                      onClick={() => openPanel('messaging')}
-                      title={c.connections}
-                    />
-                  )}
+                <AgentChannels messaging={messaging} onOpen={() => openPanel('messaging')}>
                   <SettingRow detail={value('tts.provider')} onClick={() => settings('voice')} title={c.voice} />
-                </Section>
+                </AgentChannels>
                 <Section title={c.approvals}>
-                  <SettingRow detail={value('approvals.mode')} onClick={() => settings('safety', 'approvals')} title={c.approvalMode} />
+                  <SettingRow
+                    detail={value('approvals.mode')}
+                    onClick={() => settings('safety', 'approvals')}
+                    title={c.approvalMode}
+                  />
                   <SettingRow onClick={() => openPanel('settings', 'web-access')} title={c.access} />
                 </Section>
                 <Section title={c.recent}>
                   {sessionRows.length ? sessionRows : emptySessions}
                   <div className="agent-overview-footer">
-                    <Button onClick={() => openPanel('history')} variant="textStrong">{c.viewHistory}</Button>
+                    <Button onClick={() => openPanel('history')} variant="textStrong">
+                      {c.viewHistory}
+                    </Button>
                   </div>
                 </Section>
               </div>
@@ -433,5 +457,122 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
         />
       )}
     </Panel>
+  )
+}
+
+interface AgentInstructionsProps {
+  content?: string
+  path?: string
+}
+
+function AgentInstructions({ content, path }: AgentInstructionsProps) {
+  const c = useAgentSettingsCopy()
+
+  return content ? (
+    <Section title={c.instructions}>
+      <div className="agent-instructions-preview">
+        <p>{content}</p>
+        <span>SOUL.md{path ? ` · ${path}` : ''}</span>
+      </div>
+    </Section>
+  ) : null
+}
+
+interface AgentRoutinesProps {
+  jobs: UseQueryResult<CronJob[]>
+  onEdit: (job: CronJob | 'new') => void
+}
+
+/** The overview owns fetching and the dialog; this section only selects a routine to edit. */
+function AgentRoutines({ jobs, onEdit }: AgentRoutinesProps) {
+  const { t } = useI18n()
+  const c = useAgentSettingsCopy()
+
+  return (
+    <div id="agent-routines">
+      <Section title={c.routines}>
+        {jobs.data?.map(job => (
+          <SettingRow
+            detail={job.schedule_display || job.schedule?.display || job.schedule?.expr}
+            key={job.id}
+            onClick={() => onEdit(job)}
+            title={job.name || job.id}
+          />
+        ))}
+        {!jobs.data?.length && (
+          <p className="agent-overview-empty">
+            {jobs.isError ? c.unavailable : jobs.isPending ? t.sidebar.loading : c.noRoutines}
+          </p>
+        )}
+        <div className="agent-overview-footer">
+          <Button onClick={() => onEdit('new')} variant="textStrong">
+            <Codicon name="add" />
+            {c.addRoutine}
+          </Button>
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+interface AgentChannelsProps {
+  messaging: UseQueryResult<MessagingPlatformsResponse>
+  onOpen: () => void
+  children: ReactNode
+}
+
+/** Messaging status stays owner-scoped; the caller supplies the separate voice setting. */
+function AgentChannels({ messaging, onOpen, children }: AgentChannelsProps) {
+  const { t } = useI18n()
+  const c = useAgentSettingsCopy()
+
+  return (
+    <Section title={c.channels}>
+      {(messaging.data?.platforms ?? [])
+        .filter(platform => platform.id === 'telegram' || platform.id === 'discord' || platform.configured)
+        .map(platform => (
+          <SettingRow
+            detail={platform.state === 'connected' ? c.connected : platform.configured ? c.configured : c.disconnected}
+            key={platform.id}
+            onClick={onOpen}
+            title={platform.name}
+          />
+        ))}
+      {!messaging.data && (
+        <SettingRow
+          detail={messaging.isError ? c.unavailable : messaging.isPending ? t.sidebar.loading : '—'}
+          onClick={onOpen}
+          title={c.connections}
+        />
+      )}
+      {children}
+    </Section>
+  )
+}
+
+interface AgentBehaviorProps {
+  config: UseQueryResult<HermesConfigRecord>
+  value: (path: string) => string
+  onSettings: (tab: string, page?: string) => void
+}
+
+function AgentBehavior({ config, value, onSettings }: AgentBehaviorProps) {
+  const c = useAgentSettingsCopy()
+  const fallbacks = getNested(config.data ?? {}, 'fallback_providers')
+
+  return (
+    <Section title={c.behavior}>
+      <SettingRow
+        detail={value('model.default') === '—' ? value('model') : value('model.default')}
+        onClick={() => onSettings('model', 'main')}
+        title={c.model}
+      />
+      <SettingRow
+        detail={config.isError ? c.unavailable : Array.isArray(fallbacks) ? fallbacks.length : '—'}
+        onClick={() => onSettings('model', 'fallbacks')}
+        title={c.fallbacks}
+      />
+      <SettingRow detail={value('memory.provider')} onClick={() => onSettings('memory')} title={c.memory} />
+    </Section>
   )
 }

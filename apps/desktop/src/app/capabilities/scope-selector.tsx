@@ -120,7 +120,7 @@ export function useCapabilityScope({
           agent.connectionId === activeId
             ? `${agent.profile} — ${agent.connectionLabel} (current)`
             : `${agent.profile} — ${agent.connectionLabel}`,
-        value: `${agent.connectionId}::${agent.profile}`
+        value: `${agent.connectionId}::${agent.targetProfile || agent.profile}`
       }))
     }
 

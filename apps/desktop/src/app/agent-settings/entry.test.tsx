@@ -8,9 +8,9 @@ import { SettingsView } from './entry'
 
 vi.mock('../settings', () => ({ SettingsView: () => <div>Original settings</div> }))
 vi.mock('./index', () => ({
-  AgentSettingsView: ({ owner }: { owner: { connectionId?: string; profile: string } }) => (
+  AgentSettingsView: ({ owner, classic }: { owner: { connectionId?: string; profile: string }; classic: boolean }) => (
     <div>
-      {owner.connectionId}:{owner.profile}
+      {owner.connectionId}:{owner.profile}:{classic ? 'classic' : 'redesigned'}
     </div>
   )
 }))
@@ -19,17 +19,17 @@ afterEach(() => {
   $agentSidebarChoice.set(false)
 })
 
-it('keeps the original screen when v2 is off and gates an existing agent URL immediately', async () => {
+it('keeps an explicit owner pinned across presentation changes', async () => {
   $agentSidebarChoice.set(false)
   render(
     <MemoryRouter initialEntries={['/settings?agent=research&connection=beta']}>
       <SettingsView onClose={() => {}} />
     </MemoryRouter>
   )
-  expect(screen.getByText('Original settings')).toBeTruthy()
+  expect(await screen.findByText('beta:research:classic')).toBeTruthy()
   act(() => $agentSidebarChoice.set(true))
-  expect(await screen.findByText('beta:research')).toBeTruthy()
+  expect(await screen.findByText('beta:research:redesigned')).toBeTruthy()
   act(() => $agentSidebarChoice.set(false))
-  expect(screen.getByText('Original settings')).toBeTruthy()
-  expect(screen.queryByText('beta:research')).toBeNull()
+  expect(screen.getByText('beta:research:classic')).toBeTruthy()
+  expect(screen.queryByText('Original settings')).toBeNull()
 })

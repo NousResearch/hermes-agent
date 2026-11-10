@@ -32,9 +32,9 @@ import { simplifiedAgentsCopy } from './simplified-agents'
 export const esOverrides = {
   simplifiedAgents: simplifiedAgentsCopy['es'],
   gatewayGroupOpen: {
-    opening: "Abriendo el chat de grupo…",
-    lookupFailed: "No se pudo encontrar este grupo en la pasarela. Inténtalo de nuevo.",
-    missing: "Este chat de grupo ya no existe."
+    opening: 'Abriendo el chat de grupo…',
+    lookupFailed: 'No se pudo encontrar este grupo en la pasarela. Inténtalo de nuevo.',
+    missing: 'Este chat de grupo ya no existe.'
   },
   sharedMetrics: esSharedMetrics,
   firstRun: esFirstRun,
@@ -989,6 +989,14 @@ export const esOverrides = {
       }
     },
     appearance: {
+      redesign: {
+        toolViewTitle: 'Llamadas a herramientas',
+        toolViewDesc:
+          'Simple oculta los datos sin procesar de las herramientas; Técnico muestra la entrada y salida completas.',
+        product: 'Simple',
+        introSplashTitle: 'Pantalla de bienvenida',
+        embedsTitle: 'Vistas previas de enlaces'
+      },
       chatTextScaleTitle: 'Tamaño del texto del chat',
       chatTextScaleDesc:
         'Ajusta el texto de la conversación y del editor respecto a la escala de la interfaz. Las barras laterales y los controles mantienen su tamaño.',
@@ -2386,12 +2394,15 @@ export const esOverrides = {
         enabledTitle: 'Navegación con perfil real activada',
         enabledMessage: 'Las sesiones nuevas navegarán con una instantánea de tu perfil predeterminado del navegador.',
         disabledTitle: 'Navegación con perfil real desactivada',
-        disabledMessage: 'Se eliminará la instantánea del perfil y se cerrará su sesión en el navegador integrado; las sesiones nuevas usan un navegador limpio.',
+        disabledMessage:
+          'Se eliminará la instantánea del perfil y se cerrará su sesión en el navegador integrado; las sesiones nuevas usan un navegador limpio.',
         failedSave: 'No se pudo guardar el ajuste del perfil real',
         reimportSignins: 'Volver a importar inicios de sesión',
         signinsImportedTitle: 'Inicios de sesión del navegador integrado',
-        signinsImported: count => `Se inició sesión en el navegador integrado con ${count} cookie${count === 1 ? '' : 's'} de tu perfil del navegador.`,
-        signinsRemote: 'Este backend se ejecuta en otro equipo, así que su perfil del navegador no se importa al navegador integrado.',
+        signinsImported: count =>
+          `Se inició sesión en el navegador integrado con ${count} cookie${count === 1 ? '' : 's'} de tu perfil del navegador.`,
+        signinsRemote:
+          'Este backend se ejecuta en otro equipo, así que su perfil del navegador no se importa al navegador integrado.',
         signinsFailed: 'No se pudieron importar los inicios de sesión al navegador integrado',
         prompt: {
           title: 'Mantén la sesión iniciada en tus sitios',
@@ -2407,6 +2418,17 @@ export const esOverrides = {
     }
   },
   skills: {
+    inventoryScopeHint:
+      'Las instalaciones y cuentas de abajo pertenecen al agente y gateway seleccionados, no a todos los agentes. La activación y las personalizaciones se gestionan en los ajustes del agente.',
+    agentScopeHint:
+      'Los cambios solo se aplican a este agente. Las conversaciones existentes conservan sus herramientas actuales.',
+    toolSecretsHint:
+      'Claves API, endpoints y proveedores de este agente. Las credenciales no se comparten con otros perfiles.',
+    openAgentSettings: 'Ajustes del agente',
+    openToolLibrary: 'Explorar la biblioteca de herramientas',
+    remotePluginHint:
+      'Abre este agente en su gateway para gestionar sus plugins. La instalación de plugins usa el gateway conectado.',
+    showAllToolsets: (count: number) => `Mostrar los ${count}`,
     tabSkills: 'Skills',
     tabToolsets: 'Conjuntos de herramientas',
     configuringProfile: 'Configurando:',
@@ -2990,7 +3012,8 @@ export const esOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Sin token de bot',
-      intro: (platform: string) => `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
+      intro: (platform: string) =>
+        `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
       link: (platform: string) => `Vincular ${platform}`,
       linkAnother: (platform: string) => `Vincular otra cuenta de ${platform}`,
       linkedAccounts: 'Cuentas vinculadas',
@@ -3008,10 +3031,12 @@ export const esOverrides = {
       refused: (platform: string) => `${platform} rechazó la vinculación. Pide un código nuevo e inténtalo otra vez.`,
       qrAlt: (platform: string) => `Código QR del bot compartido de ${platform}`,
       managed: 'Gestionado por Team Gateway',
-      managedNote: (platform: string) => `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
+      managedNote: (platform: string) =>
+        `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
       managedIntro: 'Las cuentas de este agente se vinculan desde Nous Portal.',
       openPortal: 'Vincular cuentas en Nous Portal',
-      noNewAccount: (platform: string) => `El código ya no está activo y no apareció ninguna cuenta nueva. Si tu cuenta de ${platform} no aparece, obtén un código nuevo e inténtalo otra vez.`
+      noNewAccount: (platform: string) =>
+        `El código ya no está activo y no apareció ninguna cuenta nueva. Si tu cuenta de ${platform} no aparece, obtén un código nuevo e inténtalo otra vez.`
     },
     telegramQr: {
       title: 'Elige cómo conectar tu bot de Telegram',
@@ -4532,6 +4557,8 @@ export const esOverrides = {
       daybreakFailed: 'No se pudo actualizar Daybreak'
     },
     gatewayMenu: {
+      connectionLabel: 'Conexión',
+      inferenceLabel: 'Inferencia',
       gateway: 'Gateway',
       connected: 'Conectado',
       connecting: 'Conectando',

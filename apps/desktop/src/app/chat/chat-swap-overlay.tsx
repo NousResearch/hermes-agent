@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { useOnboardingChatActive } from '@/components/onboarding/first-run/assembly'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
@@ -10,6 +11,7 @@ import { cn } from '@/lib/utils'
 // the label doesn't blank. Purely visual — pointer-events-none.
 export function ChatSwapOverlay({ profile }: { profile: string | null }) {
   const { t } = useI18n()
+  const redesign = usePortalRedesign()
   const onboarding = useOnboardingChatActive()
   const [label, setLabel] = useState<null | string>(profile)
 
@@ -19,9 +21,8 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
     }
   }, [profile])
 
-  // The first run may swap into the default profile, which the user did not ask for.
-  // "Waking up default…" over the greeting reads as a stall in the moment that has to feel instant.
-  if (onboarding) {
+  // Classic setup owns its greeting while the default profile wakes.
+  if (!redesign && onboarding) {
     return null
   }
 

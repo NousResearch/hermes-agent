@@ -1,0 +1,112 @@
+"""Sessionless setup retires legacy chat records without rewriting chat history."""
+
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+
+import pytest
+
+from agent import onboarding_record
+from agent.onboarding_flow import End, Facts, new_record
+from hermes_cli.onboarding_run import set_run
+from tests.waiting import wait_until
+from tui_gateway import server, server_requests
+
+
+@pytest.fixture
+def db(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(server, "_hermes_home", str(home))
+    monkeypatch.setattr(server, "_db", None)
+    db = server._get_db()
+    db.create_session("onb", "desktop")
+    db.patch_session_model_config("onb", {
+        onboarding_record.KEY: new_record(Facts(os="macos"), run_id="legacy"),
+    })
+    set_run(True)
+    return db
+
+
+def _call(method: str, params: dict | None = None) -> dict:
+    response = server.handle_request({"jsonrpc": "2.0", "id": 3, "method": method, "params": {"sessionless": True, **(params or {})}})
+    assert "result" in response, response
+    return response["result"]
+
+
+def test_state_retires_legacy_records_without_rewriting_compressed_history(db):
+    db.append_message("onb", "user", "Keep my conversation")
+    db.patch_session_model_config("onb", {"codex_thread_id": "segment-only"})
+    db.publish_compression_child(
+        parent_session_id="onb", child_session_id="child", source="desktop",
+        messages=[{"role": "user", "content": "summary"}], require_compression_lease=False,
+    )
+    assert onboarding_record.load(db, "child") == onboarding_record.load(db, "onb")
+    assert db.get_session_model_config_value("child", "codex_thread_id") is None
+    history = {sid: db.get_messages(sid) for sid in ("onb", "child")}
+
+    classic = server.handle_request({"jsonrpc": "2.0", "id": 4, "method": "onboarding.state", "params": {}})
+    assert "result" in classic, classic
+    assert onboarding_record.active_session_id(db) == "child"
+    assert {sid: db.get_messages(sid) for sid in history} == history
+
+    assert _call("onboarding.state")["run"] is True
+    assert onboarding_record.active_session_id(db) is None
+    assert {sid: db.get_messages(sid) for sid in history} == history
+    assert all(db.get_session(sid) is not None for sid in history)
+
+    # Repeated reads and a late legacy agent completion cannot finish the new guide.
+    onboarding_record.advance(db, "child", End())
+    assert _call("onboarding.state")["run"] is True
+    assert {sid: db.get_messages(sid) for sid in history} == history
+
+
+def test_state_withdraws_a_waiting_legacy_card(db, monkeypatch):
+    sid, frames, events = "ui-onb", [], []
+    monkeypatch.setitem(server._sessions, sid, {"session_key": "onb", "source": "desktop"})
+    monkeypatch.setattr(server_requests, "_answerable", lambda _sid: True)
+    monkeypatch.setattr(server_requests, "_write", frames.append)
+    monkeypatch.setattr(server_requests, "_emit", lambda kind, _sid, payload: events.append((kind, payload)))
+    reply = []
+    waiter = threading.Thread(target=lambda: reply.append(server._setup_beat_request(
+        sid, {"beat": "theme", "card": {"picker": "accent"}})), daemon=True)
+    waiter.start()
+    try:
+        wait_until(lambda: server_requests.pending_kind(sid) == "setup_beat")
+        assert _call("onboarding.state")["run"] is True
+        waiter.join(timeout=5)
+        assert reply == [None]
+        assert events == [("request.cancel", {"id": frames[0]["id"], "method": "setup_beat", "reason": "resolved"})]
+        assert onboarding_record.active_session_id(db) is None
+    finally:
+        server._cancel_session_requests(sid, "resolved", method="setup_beat")
+        waiter.join(timeout=5)
+
+
+def test_state_withdraws_a_legacy_card_waiting_in_a_compute_host_child(db, monkeypatch):
+    forwarded = []
+
+    class Supervisor:
+        def respond(self, sid, params, *, timeout=15.0):
+            forwarded.append((sid, dict(params)))
+            return {"type": "respond.ack", "response": {"result": {"cancelled": 1}}}
+
+    sid = "ui-onb"
+    monkeypatch.setitem(server._sessions, sid, {
+        "session_key": "onb", "agent": None, "source": "desktop",
+        "agent_ready": threading.Event(), "_compute_host_active": True, "history_lock": threading.Lock(),
+    })
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: Supervisor())
+    monkeypatch.setattr(server, "write_json", lambda _message: True)
+    server._relay_compute_host_rpc({
+        "jsonrpc": "2.0", "id": "srq-host", "method": "setup_beat",
+        "params": {"session_id": sid, "beat": "theme", "card": {"picker": "accent"}},
+    })
+
+    assert _call("onboarding.state")["run"] is True
+    assert forwarded == [(sid, {"cancel": {"method": "setup_beat", "reason": "resolved"}})]
+    assert onboarding_record.active_session_id(db) is None

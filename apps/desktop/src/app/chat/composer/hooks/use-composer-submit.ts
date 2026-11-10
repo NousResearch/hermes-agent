@@ -24,6 +24,7 @@ import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -413,7 +414,11 @@ export function useComposerSubmit({
     // no parked card. With attachments the draft isn't routed as a slash
     // command, so it falls back to the ordinary-message behavior.
     const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
-    const routable = payloadPresent && !queueEdit && !isSideQuestion
+
+    if (!payloadPresent || queueEdit || isSideQuestion) {
+      return null
+    }
+
     const slashCommand = !attachments.length && SLASH_COMMAND_RE.test(text.trim())
 
     // Like dispatchSubmit's restore: an answer that never reached the backend gives the words back.
@@ -427,7 +432,7 @@ export function useComposerSubmit({
       }
     }
 
-    if (routable && !attachments.length && !slashCommand && answerParkedCard(sessionId ?? '', text.trim(), restore)) {
+    if (!attachments.length && !slashCommand && answerParkedCard(sessionId ?? '', text.trim(), restore)) {
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
@@ -435,19 +440,20 @@ export function useComposerSubmit({
       return 'answered'
     }
 
-    const yielded = routable && !slashCommand && yieldParkedCardsToMessage(sessionId ?? '')
+    const classicSetup = !$simplifiedAgentMode.get()
+    const yielded = classicSetup && !slashCommand && yieldParkedCardsToMessage(sessionId ?? '')
 
-    if (routable && hasClarifyRequest(sessionId)) {
+    if (hasClarifyRequest(sessionId)) {
       void skipClarifyRequest(sessionId)
     }
 
     // Same for a pending connection card: ordinary typing continues the operation.
-    if (routable && hasConnectionRequest(sessionId)) {
+    if (hasConnectionRequest(sessionId)) {
       void skipConnectionRequest(sessionId)
     }
 
     // And for the onboarding chat's setup and theme cards.
-    if (routable) {
+    if (classicSetup) {
       skipParkedCards(sessionId ?? '')
     }
 
@@ -457,7 +463,7 @@ export function useComposerSubmit({
   // Slash commands come after setup. Every send action asks here first, so the words stay put and one
   // note (re-shown, never stacked) says why.
   const refusedDuringSetup = (text: string): boolean => {
-    if (!isSlashCommandText(text) || !isOnboardingChat(sessionId)) {
+    if ($simplifiedAgentMode.get() || !isSlashCommandText(text) || !isOnboardingChat(sessionId)) {
       return false
     }
 

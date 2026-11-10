@@ -4,6 +4,13 @@ import { zhHantPluginUpdateAll } from './zh-hant_plugin_update_all'
 
 export const zhHantCapabilities = {
   skills: {
+    inventoryScopeHint: '下方的安裝項目和帳戶屬於所選代理及閘道，並非所有代理。啟用狀態和覆寫設定在代理設定中管理。',
+    agentScopeHint: '變更僅適用於此代理。現有對話會保留目前的工具。',
+    toolSecretsHint: '此代理的 API 金鑰、端點和供應商。憑證不會與其他設定檔共用。',
+    openAgentSettings: '代理設定',
+    openToolLibrary: '瀏覽工具庫',
+    remotePluginHint: '在此代理所屬的閘道上開啟它以管理外掛。外掛安裝使用已連線的閘道。',
+    showAllToolsets: (count: number) => `顯示全部 ${count} 項`,
     plugins: {
       ...zhHantPluginPreviewAccess,
       ...zhHantPluginUpdateAll,

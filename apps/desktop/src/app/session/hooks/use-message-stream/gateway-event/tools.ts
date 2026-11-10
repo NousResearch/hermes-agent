@@ -10,6 +10,7 @@ import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { setupBeatResult } from '@/store/setup-beat'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import { isTerminalSubagentCompletion, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -48,7 +49,7 @@ function noteToolOutcome(ctx: GatewayEventContext, sessionId: string, cwd: strin
     recordToolPreview(ctx, sessionId, cwd, pendingProduction)
   }
 
-  if (!ctx.event.replayed && appliedLayout(ctx.payload?.name, ctx.payload?.result)) {
+  if (!$simplifiedAgentMode.get() && !ctx.event.replayed && appliedLayout(ctx.payload?.name, ctx.payload?.result)) {
     leaveIntroOnLayout()
   }
 }

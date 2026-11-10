@@ -45,45 +45,33 @@ const A = (n: number) => `A${n}-${nonce}`
 test('onboarding (custom endpoint) then first chat renders exactly once', async () => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('onboard')
-  // A fresh desktop install starts the first-run onboarding chat on the free trial, and once a
-  // provider is configured it starts it on that provider at the next launch (#137522, #137807). This
-  // spec covers the provider setup a user without the trial gets, then plain chats: no guest trial,
-  // onboarding recorded as done.
-  fs.writeFileSync(path.join(sandbox.hermesHome, 'config.yaml'), 'nous:\n  guest: false\nonboarding:\n  run: false\n')
+  // The deterministic guide renders without any provider or free-model allocation.
+  fs.writeFileSync(path.join(sandbox.hermesHome, 'config.yaml'), 'nous:\n  guest: false\nonboarding:\n  run: true\n')
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
   const ws = recordWebSockets(page)
 
   try {
     await installDuplicateSampler(page)
 
-    await test.step('first-run onboarding: custom endpoint', async () => {
-      // The onboarding surface masks the whole app until it finishes.
-      const openKeyForm = page
-        .locator('[data-glass-opaque]')
-        .filter({ visible: true })
-        .getByRole('button', { name: /api key/i })
-
-      await expect(openKeyForm).toHaveCount(1, { timeout: 180_000 })
-      await openKeyForm.click()
-      await page
-        .locator('[data-glass-opaque]')
-        .filter({ visible: true })
-        .getByRole('button', { name: /custom endpoint/i })
-        .click()
-
-      // The endpoint URL is the form's only plain-text input (API keys are password inputs).
-      const form = page
-        .locator('[data-glass-opaque]')
-        .filter({ visible: true })
-        .filter({ has: page.locator('input[type="text"]') })
-
-      await expect(form).toHaveCount(1)
-      await form.locator('input[type="text"]').fill(provider.url)
-      await form.getByRole('button', { name: /connect/i }).click()
-      // The overlay unmounts only after the backend probed the endpoint, saved
-      // the assignment and confirmed the runtime is ready; waitForInteractive
-      // fails while any full-viewport fixed layer still covers the composer.
+    await test.step('sessionless setup resumes and connects a custom endpoint', async () => {
+      const guide = page.getByRole('dialog', { name: 'Set up Hermes' })
+      await expect(guide).toBeVisible({ timeout: 180_000 })
+      await guide.getByRole('button', { name: 'Continue', exact: true }).click()
+      await expect(guide.getByRole('heading', { name: 'Choose a model' })).toBeVisible()
+      await page.reload()
+      await expect(guide.getByRole('heading', { name: 'Choose a model' })).toBeVisible({ timeout: 180_000 })
+      expect(provider.completions).toHaveLength(0)
+      expect(ws.sent.filter(frame => ['session.create', 'prompt.submit'].includes(frame.method))).toHaveLength(0)
+      await guide.getByRole('button', { name: 'Connect a provider', exact: true }).click()
+      await page.getByRole('button', { name: /api key/i }).click()
+      await page.getByRole('button', { name: /custom endpoint/i }).click()
+      await page.getByPlaceholder('http://127.0.0.1:8000/v1').fill(provider.url)
+      await page.getByRole('button', { name: /^connect$/i }).click()
+      await page.getByRole('button', { name: 'Begin', exact: true }).click()
+      await expect(guide.getByRole('button', { name: 'Finish setup' })).toBeEnabled()
+      await guide.getByRole('button', { name: 'Finish setup' }).click()
       await waitForInteractive(app, page)
+      expect(provider.completions).toHaveLength(0)
     })
 
     await test.step('the persisted assignment is what the user entered', async () => {

@@ -3,6 +3,7 @@ import './ui/page.css'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -10,7 +11,7 @@ import { useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
-import { $gateway } from '@/store/gateway'
+import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
@@ -18,15 +19,17 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PanelEmpty } from '../overlays/panel'
 import { PageSearchShell } from '../page-search-shell'
+import { SETTINGS_ROUTE } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { syncCatalogArcs } from './catalog/catalog-arc'
 import { prefetchCatalogWhenIdle } from './catalog/catalog-data'
 import { ConnectorsTab } from './connectors/connectors-tab'
 import { PluginsTab } from './plugins/plugins-tab'
-import { CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
+import { type CapabilityScope, CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
 import { SKILLS_QUERY_KEY, useSkillsQuery } from './skills/skills-data'
 import { SkillsTab } from './skills/skills-tab'
+import { AgentToolsets } from './toolsets/agent-toolsets'
 import { refreshToolCalls } from './toolsets/tool-calls'
 import { TOOLSETS_QUERY_KEY, toolsetSearchTerms, useToolsetsQuery, visibleToolsetCount } from './toolsets/toolsets-data'
 import { ToolsetsTab } from './toolsets/toolsets-tab'
@@ -68,7 +71,10 @@ export function CapabilitiesView({
   ...props
 }: CapabilitiesViewProps) {
   const { t } = useI18n()
-  const redesigned = useStore($simplifiedAgentMode) && !embedded
+  const redesignEnabled = useStore($simplifiedAgentMode)
+  const agentRedesign = redesignEnabled && Boolean(fixedProfile)
+  const agentControls = !redesignEnabled || Boolean(fixedProfile)
+  const redesigned = redesignEnabled && !embedded
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
   const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
@@ -79,6 +85,8 @@ export function CapabilitiesView({
   const [query, setQuery] = useState('')
 
   const scope = useCapabilityScope({ fixedConnection, fixedProfile })
+
+  const { ownerProfile, ownerConnection, openAgentSettings } = useCapabilityAgentSettings(scope, mode)
 
   // The two installed lists the tab pills count. They are fetched here, as a
   // pair, because the counts stay live for the tab the user is NOT on.
@@ -136,24 +144,33 @@ export function CapabilitiesView({
     // (config edits still apply on that backend's next session).
     connectors: () => (
       <ConnectorsTab
+        agentControls={agentControls}
         gateway={scope.crossBackend ? null : gateway}
         key={`connectors-${scope.key}`}
         profile={scope.profile}
       />
     ),
     // Agent plugins for the scoped profile and app-level desktop plugins.
-    plugins: () => (
-      <PluginsTab
-        key={`plugins-${scope.key}`}
-        onQueryChange={setQuery}
-        profile={scope.profile}
-        query={query}
-        scopeLabel={scope.label}
-        scopeSelector={scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined}
-      />
-    ),
+    plugins: () =>
+      scope.crossBackend ? (
+        <div className="grid justify-items-start gap-3 p-5">
+          <p>{t.skills.remotePluginHint}</p>
+          <Button onClick={openAgentSettings}>{t.skills.openAgentSettings}</Button>
+        </div>
+      ) : (
+        <PluginsTab
+          agentControls={agentControls}
+          key={`plugins-${scope.key}`}
+          onQueryChange={setQuery}
+          profile={scope.profile}
+          query={query}
+          scopeLabel={scope.label}
+          scopeSelector={scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined}
+        />
+      ),
     skills: () => (
       <SkillsTab
+        agentControls={agentControls}
         installedError={skillsError}
         installedPending={!skills || skillsFailed}
         key={`skills-${scope.key}`}
@@ -164,9 +181,25 @@ export function CapabilitiesView({
         skills={skills ?? []}
       />
     ),
-    toolsets: () => (
-      <ToolsetsTab hints={toolsetHints} key={`toolsets-${scope.key}`} onQueryChange={setQuery} profile={scope.profile} query={query} toolsets={toolsets ?? []} />
-    )
+    toolsets: () =>
+      agentRedesign ? (
+        <AgentToolsets
+          key={`toolsets-${scope.key}`}
+          onQueryChange={setQuery}
+          profile={scope.profile}
+          query={query}
+          toolsets={toolsets ?? []}
+        />
+      ) : (
+        <ToolsetsTab
+          hints={toolsetHints}
+          key={`toolsets-${scope.key}`}
+          onQueryChange={setQuery}
+          profile={scope.profile}
+          query={query}
+          toolsets={toolsets ?? []}
+        />
+      )
   } satisfies Record<CapabilityMode, () => React.ReactNode>
 
   return (
@@ -175,12 +208,9 @@ export function CapabilitiesView({
       activeTab={mode}
       data-capabilities-v2={redesigned || undefined}
       onTabChange={id => setMode(id as CapabilityMode)}
-      pageTitle={embedded ? undefined : t.sidebar.nav.capabilities}
+      pageTitle={embedded || agentRedesign ? undefined : t.sidebar.nav.capabilities}
       // Every tab renders the shared CapabilitySearch beside its own results.
       searchHidden
-      searchTrailingAction={redesigned && mode !== 'plugins' && scope.options.length > 1
-        ? <CapabilityScopeSelector compact scope={scope} />
-        : undefined}
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'plugins', label: t.skills.tabPlugins },
@@ -190,7 +220,15 @@ export function CapabilitiesView({
       tabsAlign="start"
     >
       <div className="flex h-full flex-col">
-        {!redesigned && mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
+        {!redesignEnabled && mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
+        {!agentControls && (
+          <CapabilityInventoryScope
+            onOpenAgentSettings={openAgentSettings}
+            ownerConnection={ownerConnection}
+            ownerProfile={ownerProfile}
+            scope={scope}
+          />
+        )}
         <div className="flex min-h-0 flex-1 flex-col">{loadGate ?? tabContent[mode]()}</div>
       </div>
     </PageSearchShell>
@@ -204,3 +242,61 @@ export function CapabilitiesView({
 // which is exactly the wrong-machine bug the prop exists to prevent. A static
 // property is probe-able without rendering.
 CapabilitiesView.supportsFixedConnection = true as const
+
+/** Keep the inventory's hand-off pinned to the same owner as its queries. */
+function useCapabilityAgentSettings(scope: CapabilityScope, mode: CapabilityMode) {
+  const navigate = useNavigate()
+
+  const ownerProfile =
+    typeof scope.profile === 'object' ? (scope.profile?.profile ?? 'default') : (scope.profile ?? 'default')
+
+  const ownerConnection =
+    (typeof scope.profile === 'object' ? scope.profile?.connectionId : undefined) ??
+    activeGatewayConnectionId() ??
+    'local'
+
+  const ownerQuery = new URLSearchParams({ agent: ownerProfile, panel: 'capabilities', tab: mode })
+
+  if (ownerConnection) {
+    ownerQuery.set('connection', ownerConnection)
+  }
+
+  return {
+    ownerProfile,
+    ownerConnection,
+    openAgentSettings: () => navigate(`${SETTINGS_ROUTE}?${ownerQuery}`)
+  }
+}
+
+interface CapabilityInventoryScopeProps {
+  scope: CapabilityScope
+  ownerProfile: string
+  ownerConnection: string
+  onOpenAgentSettings: () => void
+}
+
+/** Inventory browsing explains its owner without exposing agent enablement switches. */
+function CapabilityInventoryScope({
+  scope,
+  ownerProfile,
+  ownerConnection,
+  onOpenAgentSettings
+}: CapabilityInventoryScopeProps) {
+  const { t } = useI18n()
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-b border-(--ui-stroke-tertiary) px-5 py-3">
+      <div className="min-w-0 flex-1 text-xs text-(--ui-text-tertiary)">
+        <p>{t.skills.inventoryScopeHint}</p>
+        <p className="mt-1">
+          {t.skills.configuringProfile} {scope.label ?? ownerProfile}
+          {ownerConnection ? ` · ${ownerConnection}` : ''}
+        </p>
+      </div>
+      <CapabilityScopeSelector compact scope={scope} />
+      <Button onClick={onOpenAgentSettings} size="sm" variant="outline">
+        {t.skills.openAgentSettings}
+      </Button>
+    </div>
+  )
+}

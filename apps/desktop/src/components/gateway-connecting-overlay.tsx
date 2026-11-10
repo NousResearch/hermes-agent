@@ -2,6 +2,7 @@ import type { ConnectionState } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { Button } from '@/components/ui/button'
 import { DecodeText } from '@/components/ui/decode-text'
 import { prefersReducedMotion } from '@/hooks/use-media-query'
@@ -12,6 +13,7 @@ import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $decideExit, $introStartExit, $introView } from '@/store/onboarding-intro'
 import { $onboardingDecided } from '@/store/onboarding-presence'
 import { $gatewayState } from '@/store/session'
+import { $decideExit as $guideDecideExit } from '@/store/setup-guide'
 import { isMainWindow } from '@/store/windows'
 
 // Decode mechanics live in the shared <DecodeText> primitive
@@ -121,19 +123,21 @@ function ConnectingOverlayView({ decoding, onExit, phase }: ConnectingOverlayVie
  * brings that screen back after boot.
  */
 function useOnboardingHold(previewing: boolean) {
+  const redesign = usePortalRedesign()
   const onboardingDecided = useStore($onboardingDecided)
   const introView = useStore($introView)
   const introStartExit = useStore($introStartExit)
   const decideExit = useStore($decideExit)
+  const guideDecideExit = useStore($guideDecideExit)
 
   const watching = !previewing && isMainWindow()
-  const introStarting = watching && introView === 'starting'
+  const introStarting = watching && !redesign && introView === 'starting'
   const deciding = watching && !onboardingDecided
 
   return {
     holds: introStarting || deciding,
     introStarting,
-    onExit: introStarting ? introStartExit : deciding ? decideExit : null
+    onExit: introStarting ? introStartExit : deciding ? (redesign ? guideDecideExit : decideExit) : null
   }
 }
 

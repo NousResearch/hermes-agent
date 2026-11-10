@@ -5,8 +5,8 @@ start creates it here, writes the run record (``agent.onboarding_record``) befor
 attaches the asking connection and admits the hidden opening turn through the same durable FIFO as a
 typed message. The record is what makes it an onboarding chat for every later turn: the ``onboarding``
 toolset fold-in (``run_turn``), the scripted greeting and name card and the per-turn note
-(``run_turn_runner``), all from ``agent.onboarding_session``. ``onboarding.state`` and
-``onboarding.set_run`` read and write only config and stay on the sidecar handler.
+(``run_turn_runner``), all from ``agent.onboarding_session``. The state/progress handlers
+delegate opt-in sessionless setup to ``session_setup`` and preserve classic sidecar behavior.
 """
 from __future__ import annotations
 
@@ -37,7 +37,9 @@ class _NoModelForTheRun(Exception):
 
 
 def handlers(connection):
-    return {'onboarding.start': partial(start, connection), 'onboarding.skip': partial(skip, connection)}
+    from gateway.session_setup import handlers as setup_handlers
+    return {**setup_handlers(connection),
+            'onboarding.start': partial(start, connection), 'onboarding.skip': partial(skip, connection)}
 
 
 def _onboarding_connection(connection):
@@ -65,6 +67,7 @@ async def start(connection, ref, params):
         lock = authority._onboarding_start_lock = asyncio.Lock()
     # Held through the opening's admission: two windows pressing start at once get one chat and one opening.
     async with lock:
+        authority._sessionless_setup_migrated = False
         plan = await asyncio.to_thread(_choose_run, authority, request)
         stored = plan['stored'] or await _create_chat(connection)
         from gateway.session_mutations import retire_live_sessions

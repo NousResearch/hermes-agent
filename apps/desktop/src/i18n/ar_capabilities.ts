@@ -15,6 +15,14 @@ export const arCapabilities = {
     source: 'المصدر'
   },
   skills: {
+    inventoryScopeHint:
+      'عمليات التثبيت والحسابات أدناه تخص الوكيل والبوابة المحددين، وليس جميع الوكلاء. تُدار خيارات التفعيل والتجاوز في إعدادات الوكيل.',
+    agentScopeHint: 'تنطبق التغييرات على هذا الوكيل فقط. تحتفظ المحادثات الحالية بأدواتها الحالية.',
+    toolSecretsHint: 'مفاتيح API ونقاط الاتصال والمزودون لهذا الوكيل. لا تُشارك بيانات الاعتماد مع ملفات تعريف أخرى.',
+    openAgentSettings: 'إعدادات الوكيل',
+    openToolLibrary: 'تصفح مكتبة الأدوات',
+    remotePluginHint: 'افتح هذا الوكيل على بوابته لإدارة إضافاته. يستخدم تثبيت الإضافات البوابة المتصلة.',
+    showAllToolsets: (count: number) => `عرض الكل (${count})`,
     plugins: {
       ...arPluginPreviewAccess,
       ...arPluginUpdateAll,

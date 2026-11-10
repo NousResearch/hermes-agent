@@ -7,6 +7,7 @@ import { $desktopOnboarding } from '@/store/onboarding'
 import { $introView } from '@/store/onboarding-intro'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { setGatewayState } from '@/store/session'
+import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
 import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
@@ -25,6 +26,7 @@ import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
 // reconnects, leaving chat/settings usable while the reconnect loop runs.
 
 function resetStores() {
+  $agentSidebarChoice.set(false)
   setGatewayState('idle')
   $gatewaySwitching.set(false)
   $desktopBoot.set({

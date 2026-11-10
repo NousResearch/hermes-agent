@@ -19,12 +19,14 @@ export function SkillDetail({
   onArchive,
   onEdit,
   profile,
-  skill
+  skill,
+  agentControls = true
 }: {
   onArchive: () => void
   onEdit: () => void
   profile?: ProfileScope
   skill: SkillInfo
+  agentControls?: boolean
 }) {
   const { t } = useI18n()
   // Origin only, never mutability: external mounts stay editable in place —
@@ -91,20 +93,24 @@ export function SkillDetail({
               </Button>
             </>
           )}
-          <Button
-            aria-pressed={locked}
-            className={cn(locked && 'text-foreground')}
-            data-slot="skill-lock-toggle"
-            disabled={lockPending}
-            onClick={() => void toggleLock()}
-            size="xs"
-            variant="text"
-          >
-            {locked ? <Lock /> : <LockOpen />}
-            {locked ? t.skills.locked : t.skills.lock}
-          </Button>
+          {agentControls && (
+            <Button
+              aria-pressed={locked}
+              className={cn(locked && 'text-foreground')}
+              data-slot="skill-lock-toggle"
+              disabled={lockPending}
+              onClick={() => void toggleLock()}
+              size="xs"
+              variant="text"
+            >
+              {locked ? <Lock /> : <LockOpen />}
+              {locked ? t.skills.locked : t.skills.lock}
+            </Button>
+          )}
         </div>
-        <p className="text-xs text-(--ui-text-tertiary)">{locked ? t.skills.lockHint : t.skills.unlockedHint}</p>
+        {agentControls && (
+          <p className="text-xs text-(--ui-text-tertiary)">{locked ? t.skills.lockHint : t.skills.unlockedHint}</p>
+        )}
       </div>
       {contentQuery.isLoading ? (
         <PageLoader className="h-40" label={t.skills.loading} />

@@ -132,6 +132,26 @@ the brighter header, primary selected-agent name, and 20% session guide.
 The Hermes Portal theme uses neutral dark greys; custom theme choices and
 classic semantic styling remain available.
 
+The **Redesigned interface** preference gates the setup guide, catalog/agent
+controls, composer layout, and gateway menu as well as the shell. Turning it
+off restores classic onboarding and controls without migrating conversations.
+
+Redesigned setup is a sessionless preferences/model guide. It resumes from
+root `onboarding.run` / `onboarding.step`, retains a working provider, and offers
+the free model only when the backend reports eligibility. Finishing opens an
+ordinary draft; no setup transcript is created. Explicit sessionless migration
+retires legacy setup metadata/cards without deleting conversation history.
+
+Global Capabilities is the inventory/catalog entry; agent settings owns
+enablement. Agent Tools groups On/Off switches and puts credentials/endpoints
+under Advanced. Installation and account APIs retain their actual
+profile/gateway ownership rather than implying machine-wide sharing.
+
+The redesigned composer follows the 480 × 148 reference with model/effort above
+the input and attachment, microphone, and labeled Send controls below.
+Gateway menus distinguish connection from inference readiness. Simple mode
+keeps reconnect and lazy recent activity; Advanced adds system/restart/logs.
+
 ## Surfaces & elevation
 
 Floating panels (base `Dialog`, route overlays, boot/install/update surfaces,

@@ -20,6 +20,7 @@ import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dial
 import { FindBar } from '@/components/find-bar'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
+import { leaveIntro } from '@/components/onboarding/first-run/intro'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
@@ -85,6 +86,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { decideOnboarding as decideSetupGuide } from '@/store/setup-guide'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
@@ -219,27 +221,68 @@ function useRouteRequestNavigation(navigate: ReturnType<typeof useNavigate>): vo
   }, [navigate, routeRequest])
 }
 
-// The main window asks the backend whether first-run onboarding is due and opens it with main's
-// intro around it; every other window never runs it, so its first-run surfaces are free at once.
-// Settings' Run onboarding again opens its chat through the same opener.
+// Both modes own their decision promise; a live toggle re-reads without deleting a classic chat.
 function useFirstRunOnboarding(request: OnboardingRequest, open: OnboardingResume, gatewayOpen: boolean): void {
+  const redesign = usePortalRedesign()
+  const lastMode = useRef<boolean | null>(null)
+  // eslint-disable-next-line no-restricted-syntax -- previous processed mode detects transitions; never read as current state
   useEffect(() => {
     if (!isMainWindow()) {
       markOnboardingDecided()
     } else if (gatewayOpen) {
-      void decideOnboarding(request, open, { intro: firstRunIntro() })
+      const switched = lastMode.current !== null && lastMode.current !== redesign
+      lastMode.current = redesign
+
+      if (redesign) {
+        leaveIntro()
+        void decideSetupGuide(request, switched)
+      } else {
+        void decideOnboarding(request, open, { intro: firstRunIntro(), freshLaunch: !switched }, switched)
+      }
     }
-  }, [gatewayOpen, open, request])
+  }, [gatewayOpen, open, request, redesign])
 
   useEffect(() => {
     if (!isMainWindow()) {
       return
     }
-
     $onboardingChatOpener.set(open)
 
     return () => $onboardingChatOpener.set(null)
   }, [open])
+}
+
+function useStatusbarSurfaces(
+  actions: WiringActions,
+  agentsOpen: boolean,
+  chatOpen: boolean,
+  commandCenterOpen: boolean
+) {
+  const renderStatusbar = useCallback(
+    (onClose?: () => void) => (
+      <StatusbarSurface
+        actions={actions}
+        agentsOpen={agentsOpen}
+        chatOpen={chatOpen}
+        commandCenterOpen={commandCenterOpen}
+        onClose={onClose}
+      />
+    ),
+    [actions, agentsOpen, chatOpen, commandCenterOpen]
+  )
+
+  return useMemo(
+    () => ({
+      statusbarNode: renderStatusbar(),
+      globalNavNode: (
+        <SimplifiedNavigationSurface
+          footer={<PortalStatusMenu>{renderStatusbar}</PortalStatusMenu>}
+          onNavigate={item => actions.onNavigate(item)}
+        />
+      )
+    }),
+    [actions, renderStatusbar]
+  )
 }
 
 // Recovery actions raised by toast buttons (Restart Hermes, Open Billing, cron
@@ -1174,22 +1217,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const terminalNode = useMemo(() => <TerminalSurface />, [])
 
-  const statusbarNode = useMemo(
-    () => (
-      <StatusbarSurface
-        actions={actions}
-        agentsOpen={agentsOpen}
-        chatOpen={chatOpen}
-        commandCenterOpen={commandCenterOpen}
-      />
-    ),
-    [actions, agentsOpen, chatOpen, commandCenterOpen]
-  )
-
-  const globalNavNode = useMemo(
-    () => <SimplifiedNavigationSurface footer={<PortalStatusMenu>{statusbarNode}</PortalStatusMenu>} onNavigate={item => actions.onNavigate(item)} />,
-    [actions, statusbarNode]
-  )
+  const { statusbarNode, globalNavNode } = useStatusbarSurfaces(actions, agentsOpen, chatOpen, commandCenterOpen)
 
   // The voice cap changes only on config load; the gateway instance + all
   // chat reactivity are subscribed inside ChatRoutesSurface / ChatView.
@@ -1238,7 +1266,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const shownTool = shownInMode(interfaceMode)
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
-  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0, interfaceMode, usePortalRedesign())
+
+  const clusters = titlebarAppActionsClusterCounts(
+    appActionsSide,
+    leftExtraCount,
+    0,
+    interfaceMode,
+    usePortalRedesign()
+  )
+
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
 
   const titlebarToolsWidth =
@@ -1403,7 +1439,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <NotificationStack />
 
       {/* Backs confirm() from @/store/confirm — renders only while one is open. */}
-      <ConfirmHost /><PreviewSigninsBoot />
+      <ConfirmHost />
+      <PreviewSigninsBoot />
 
       {/* Send Diagnostics consent/upload dialog — driven by $sendDiagnostics
           (error card action); renders nothing until requested. */}

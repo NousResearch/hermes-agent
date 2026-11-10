@@ -1,6 +1,23 @@
 import type { FirstRunCopy } from './types_first_run'
 
 export const arFirstRun: FirstRunCopy = {
+  guide: {
+    title: 'إعداد Hermes',
+    intro: 'بعض التفضيلات الاختيارية، ثم محادثتك المعتادة. لا يؤدي الإعداد إلى إنشاء محادثة.',
+    appearance: 'المظهر',
+    model: 'اختر نموذجًا',
+    ready: 'نموذجك جاهز.',
+    providerNeeded: 'اربط مزودًا أو استخدم النموذج المجاني قبل إرسال رسالة.',
+    freeModel: 'استخدام النموذج المجاني',
+    freeUnavailable: 'النموذج المجاني غير متاح هنا. اربط مزودًا أو اختر واحدًا لاحقًا.',
+    providers: 'ربط مزود',
+    finish: 'إنهاء الإعداد',
+    skip: 'تخطي الإعداد',
+    back: 'رجوع',
+    check: 'التحقق من الجاهزية',
+    checking: 'جارٍ التحقق…',
+    privacy: 'مشاركة مقاييس الاستخدام اختيارية.'
+  },
   beats: {
     name: 'الاسم',
     theme: 'لون التمييز',

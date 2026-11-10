@@ -6,6 +6,7 @@ import { $onboardingPhase } from '@/store/onboarding-phase'
 import { noteOnboardingEnded, startOnboarding } from '@/store/onboarding-run'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
+import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 
 import { OnboardingSkip } from './skip-setup'
 
@@ -25,12 +26,16 @@ async function onboardingChatOnScreen() {
 }
 
 beforeEach(() => {
+  $agentSidebarChoice.set(false)
   // SAFETY: factsSource reads only `mode`.
   $connection.set({ mode: 'local' } as never)
   $onboardingPhase.set('idle')
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $agentSidebarChoice.set(true)
+})
 
 describe('Skip setup', () => {
   it('goes away when the backend ends the run', async () => {

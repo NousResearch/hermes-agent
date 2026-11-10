@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { appIsQuiet, SETTLE_MIN_MS, SETTLE_SPREAD_MS, TICK_MS } from '@/components/tips/use-tip-rotation'
 import { Button } from '@/components/ui/button'
@@ -19,6 +20,7 @@ import { $localModelOfferPending, LOCAL_MODEL_OFFERED_KEY, LOCAL_MODEL_PENDING_K
 import { readConnectedLocalSetupEligibility, readLocalSetupEligibility } from '@/store/local-setup-offer'
 import { $onboardingSettleFrom } from '@/store/onboarding-run'
 import { requestRoute } from '@/store/recovery-requests'
+import { $onboardingSettleFrom as $guideSettleFrom } from '@/store/setup-guide'
 import type { LocalCatalogModel } from '@/types/hermes'
 
 function settleStart(settleFrom: null | number): null | number {
@@ -37,7 +39,10 @@ function settleStart(settleFrom: null | number): null | number {
  */
 export function OnboardingEnd() {
   const { t } = useI18n()
-  const settleFrom = useStore($onboardingSettleFrom)
+  const redesign = usePortalRedesign()
+  const classicSettle = useStore($onboardingSettleFrom)
+  const guideSettle = useStore($guideSettleFrom)
+  const settleFrom = redesign ? guideSettle : classicSettle
   const [offer, setOffer] = useState<LocalCatalogModel | null>(null)
 
   useEffect(() => {

@@ -44,9 +44,10 @@ const toolsListKey = (card: ConnectorCardModel) => (card.residency === 'local' ?
 export interface ConnectorsTabProps {
   gateway: HermesGateway | null
   profile: ProfileScope
+  agentControls?: boolean
 }
 
-export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
+export function ConnectorsTab({ gateway, profile, agentControls = true }: ConnectorsTabProps) {
   const { t } = useI18n()
   const copy = t.connectorsPage
 
@@ -150,6 +151,12 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   }
 
   const runVerb = (card: ConnectorCardModel) => {
+    if (!agentControls && card.verb === 'turnBackOn') {
+      setOpenKey(cardKey(card))
+
+      return
+    }
+
     if (hostedActions.runHostedVerb(card)) {
       return
     }
@@ -197,17 +204,22 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         onOpen={card => setOpenKey(cardKey(card))}
         onPrefetch={card => prefetchConnectorTools(profile, card)}
         onRetryHosted={hosted.refetch}
-        onServerToggle={(card, next) => {
-          if (card.plugin === undefined) {
-            void mcp.setServerEnabled(localServerName(card), next)
-          }
-        }}
+        onServerToggle={
+          agentControls
+            ? (card, next) => {
+                if (card.plugin === undefined) {
+                  void mcp.setServerEnabled(localServerName(card), next)
+                }
+              }
+            : undefined
+        }
         onVerb={runVerb}
         selectedKey={openKey}
       />
 
       {openCard && openCard.ways.hosted === null ? (
         <LocalConnectorDialog
+          agentControls={agentControls}
           card={openCard}
           controller={mcp}
           installFields={bundledEntry(openCard)?.required_env}
@@ -237,6 +249,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
             rename: renamer.rename,
             renameOpened
           }}
+          agentControls={agentControls}
           card={openCard}
           controller={mcp}
           hosted={hosted}
@@ -252,7 +265,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
           onInstall={env => void startInstall(openCard, env)}
           onReconnect={() => void startConnect(openCard, true)}
           onRemoveServer={() => setRemoveServer(openCard)}
-          onToggleForMe={next => void write(switcher.setEnabled(openCard.slug, next))}
+          onToggleForMe={agentControls ? next => void write(switcher.setEnabled(openCard.slug, next)) : undefined}
           onVerb={() => runVerb(openCard)}
           profile={profile}
           togglePending={switcher.pending === openCard.slug}

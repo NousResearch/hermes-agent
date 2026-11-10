@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ConfirmHost } from '@/components/confirm-host'
 import { $confirmRequest } from '@/store/confirm'
-import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
+import type { EnvVarInfo, OAuthProvider, ProfileInfo } from '@/types/hermes'
 
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
@@ -16,22 +16,22 @@ const startManualProviderOAuth = vi.fn()
 const startManualLocalEndpoint = vi.fn()
 const onboarding = atom({ manual: false })
 
-vi.mock('@/store/profile', () => ({
+vi.mock(import('@/store/profile'), async importOriginal => ({
+  ...(await importOriginal()),
   $activeGatewayProfile: atom('alpha'),
-  $profiles: atom([]),
-  refreshProfiles: async () => {},
-  normalizeProfileKey: (p: string | null) => p || 'default',
-  profileLabel: (p: { display_name?: string; name: string }) => p.display_name || p.name
+  $profiles: atom<ProfileInfo[]>([]),
+  refreshProfiles: async () => []
 }))
 
-vi.mock('@/hermes', () => ({
+vi.mock(import('@/hermes'), async importOriginal => ({
+  ...(await importOriginal()),
   setApiRequestProfile: vi.fn(),
   getProfiles: async () => ({ profiles: (await import('@/store/profile')).$profiles.get() }),
   disconnectOAuthProvider: (...args: unknown[]) => disconnectOAuthProvider(...args),
   getEnvVars: (...args: unknown[]) => getEnvVars(...args),
   listOAuthProviders: (...args: unknown[]) => listOAuthProviders(...args),
-  revealEnvVar: (key: string, profile?: string) => revealEnvVar(key, profile),
-  setEnvVar: (key: string, value: string, profile?: string) => setEnvVar(key, value, profile)
+  revealEnvVar: (...args: unknown[]) => revealEnvVar(...args),
+  setEnvVar: (...args: unknown[]) => setEnvVar(...args)
 }))
 
 vi.mock('@/store/onboarding', () => ({

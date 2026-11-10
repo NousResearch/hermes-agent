@@ -51,9 +51,11 @@ def latch_first_install() -> bool:
     return True
 
 
-def set_run(value: bool, *, mark_profile_offered: bool = False) -> None:
-    """Persist ``onboarding.run`` (and, with *mark_profile_offered*, ``onboarding.seen.profile_build_offered``)
-    in the root ``config.yaml`` as one write, keeping every other key and comment. A failed write raises."""
+def set_run(value: bool, *, mark_profile_offered: bool = False, step: str | None = None,
+            restart: bool = False) -> None:
+    """Persist the guide's due flag and optional step together, preserving unrelated settings."""
+    if step is not None and step not in ("preferences", "model"):
+        raise ValueError("Unknown setup step")
     from agent.onboarding import PROFILE_BUILD_FLAG
     from hermes_cli import config as config_mod
 
@@ -61,10 +63,46 @@ def set_run(value: bool, *, mark_profile_offered: bool = False) -> None:
     with config_mod._CONFIG_LOCK:
         config = config_mod.read_user_config_raw(path)
         section = config_mod._ensure_dict(config, "onboarding")
+        # A late Next/Back from another window must not reopen a completed guide.
+        if value and step is not None and section.get("run") is False and not restart:
+            return
         section["run"] = value
+        if step is not None:
+            section["step"] = step
         if mark_profile_offered:
             config_mod._ensure_dict(section, "seen")[PROFILE_BUILD_FLAG] = True
         config_mod.atomic_config_write(path, config)
     from hermes_cli import onboarding_due
-
     onboarding_due.invalidate()
+
+
+def guide_progress() -> dict:
+    from hermes_cli.config_effective import load_user_config_effective
+
+    section = load_user_config_effective(_root_config()).get("onboarding")
+    step = section.get("step") if isinstance(section, dict) else None
+    return {"step": step if step in ("preferences", "model") else "preferences",
+            "started": step in ("preferences", "model")}
+
+
+def retire_conversational_runs(db) -> list[str]:
+    """Retire only setup metadata; never change conversation messages or their cached context."""
+    from agent.onboarding_flow import End, Facts, apply, is_active
+    from agent.onboarding_record import KEY, load, open_session_ids
+    import time
+
+    retired = open_session_ids(db)
+    tips = {db.resolve_resume_session_id(sid) or sid for sid in db.session_ids_with_model_config_key(KEY)}
+    for session_id in tips:
+        if (load(db, session_id) or {}).get("sessionless"):
+            continue
+
+        def retire(record):
+            if not isinstance(record, dict):
+                return record
+            ended = (apply(record, End("replaced"), Facts.from_stored(record["facts"]), now=time.time()).record
+                     if is_active(record) else dict(record))
+            ended["sessionless"] = True
+            return ended
+        db.update_conversation_model_config_value(session_id, KEY, retire)
+    return retired

@@ -103,6 +103,62 @@ const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: st
   notifications: NotificationsSettings
 }
 
+function SettingsSearchPill() {
+  const { t } = useI18n()
+
+  // Type-to-search: printable keystrokes on the Settings surface (outside any
+  // field) open the settings-scoped palette, seeded with the character — same
+  // reflex as the chat surface's type-to-focus, pointed at search instead.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ($commandPaletteOpen.get() || isEditableTarget(event.target)) {
+        return
+      }
+
+      const char = typeToFocusChar(event)
+
+      if (char === null || char === ' ') {
+        return
+      }
+
+      event.preventDefault()
+      openCommandPalettePage('settings', char)
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  // Fake search pill riding the card's top edge, dead-center and half off it.
+  // Clicking (or just typing) opens the ⌘K palette scoped to settings; while
+  // the palette is up the pill hands over to it — grows slightly and fades,
+  // then fades back when the palette closes. It sits outside the raised card,
+  // so it needs its own opaque glass surface to mask the content underneath.
+  const searchCombo = bindingsFor('nav.commandPalette')[0]
+  const paletteOpen = useStore($commandPaletteOpen)
+
+  return (
+    <button
+      className={cn(
+        'flex h-(--titlebar-control-height) items-center gap-1.5 rounded-full border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) px-2.5 text-(--ui-text-tertiary) shadow-sm transition-all duration-200 ease-out hover:text-foreground motion-reduce:transition-none',
+        paletteOpen && 'pointer-events-none scale-110 opacity-0'
+      )}
+      data-glass-opaque=""
+      onClick={() => {
+        triggerHaptic('open')
+        openCommandPalettePage('settings')
+      }}
+      tabIndex={paletteOpen ? -1 : undefined}
+      type="button"
+    >
+      <Search className="size-3" />
+      <span className="text-xs">{t.settings.search.pill}</span>
+      {searchCombo && <KbdCombo combo={searchCombo} size="sm" variant="ghost" />}
+    </button>
+  )
+}
+
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const simplified = useStore($simplifiedAgentMode)
   const scopeProfile = useStore($settingsScopeProfile)
@@ -487,58 +543,6 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       )
     : navGroups
 
-  // Type-to-search: printable keystrokes on the Settings surface (outside any
-  // field) open the settings-scoped palette, seeded with the character — same
-  // reflex as the chat surface's type-to-focus, pointed at search instead.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ($commandPaletteOpen.get() || isEditableTarget(event.target)) {
-        return
-      }
-
-      const char = typeToFocusChar(event)
-
-      if (char === null || char === ' ') {
-        return
-      }
-
-      event.preventDefault()
-      openCommandPalettePage('settings', char)
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
-
-  // Fake search pill riding the card's top edge, dead-center and half off it.
-  // Clicking (or just typing) opens the ⌘K palette scoped to settings; while
-  // the palette is up the pill hands over to it — grows slightly and fades,
-  // then fades back when the palette closes. It sits outside the raised card,
-  // so it needs its own opaque glass surface to mask the content underneath.
-  const searchCombo = bindingsFor('nav.commandPalette')[0]
-  const paletteOpen = useStore($commandPaletteOpen)
-
-  const searchPill = (
-    <button
-      className={cn(
-        'flex h-(--titlebar-control-height) items-center gap-1.5 rounded-full border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) px-2.5 text-(--ui-text-tertiary) shadow-sm transition-all duration-200 ease-out hover:text-foreground motion-reduce:transition-none',
-        paletteOpen && 'pointer-events-none scale-110 opacity-0'
-      )}
-      data-glass-opaque=""
-      onClick={() => {
-        triggerHaptic('open')
-        openCommandPalettePage('settings')
-      }}
-      tabIndex={paletteOpen ? -1 : undefined}
-      type="button"
-    >
-      <Search className="size-3" />
-      <span className="text-xs">{t.settings.search.pill}</span>
-      {searchCombo && <KbdCombo combo={searchCombo} size="sm" variant="ghost" />}
-    </button>
-  )
-
   const navFooter = (
     <>
       <Tip label={t.settings.exportConfig}>
@@ -612,13 +616,19 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   )
 
   return (
-    <OverlayView closeLabel={t.settings.closeSettings} edgeBadge={searchPill} onClose={onClose}>
+    <OverlayView closeLabel={t.settings.closeSettings} edgeBadge={<SettingsSearchPill />} onClose={onClose}>
       <OverlaySplitLayout>
-        <OverlayNav footer={navFooter} groups={displayedGroups} title={simplified ? t.commandCenter.settings : undefined} />
+        <OverlayNav
+          footer={navFooter}
+          groups={displayedGroups}
+          title={simplified ? t.commandCenter.settings : undefined}
+        />
 
         <OverlayMain className="px-0 pb-0">
           <SettingsBreadcrumbContext.Provider value>
-            {activeGroup && <SettingsSubpageHeader child={appearanceLanding ? undefined : activeChild} group={activeGroup} />}
+            {activeGroup && (
+              <SettingsSubpageHeader child={appearanceLanding ? undefined : activeChild} group={activeGroup} />
+            )}
             {needsSubpageRedirect ? (
               <Navigate replace to={{ hash, pathname, search: `?${subpageSearch}` }} />
             ) : (

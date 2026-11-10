@@ -79,10 +79,9 @@ import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession
 import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import { runGatewayRestart } from '@/store/system-actions'
-import {
-  requestActiveUpdate
-} from '@/store/updates'
+import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
@@ -1556,8 +1555,10 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
     completeFlow('command_palette')
     recordAction(item.action ?? 'other', 'palette')
-    // A Cmd-K command or layout is a way out of the first-run intro.
-    leaveIntro()
+
+    if (!$simplifiedAgentMode.get()) {
+      leaveIntro()
+    }
 
     if (item.runWithEvent) {
       item.runWithEvent(lastSelectMods.current)

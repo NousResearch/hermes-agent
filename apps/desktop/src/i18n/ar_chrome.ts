@@ -407,6 +407,8 @@ export const arChrome = {
       daybreakFailed: 'فشل تحديث Daybreak'
     },
     gatewayMenu: {
+      connectionLabel: 'الاتصال',
+      inferenceLabel: 'الاستدلال',
       gateway: 'البوابة',
       connected: 'متصل',
       connecting: 'جار الاتصال',
@@ -534,8 +536,7 @@ export const arChrome = {
       'حُذفت البوابة التي كانت تعمل عليها هذه الطرفية، لذا لا يمكن إعادة فتحها. أغلق علامة التبويب هذه.',
     terminalGatewayNoShellBody:
       'لا توفر هذه البوابة وصولاً إلى الصدفة، لذا لا يمكن إعادة فتح هذه الطرفية. أغلق علامة التبويب هذه.',
-    terminalDisconnectedBody:
-      'انقطع اتصال الطرفية. اضغط Enter لبدء صدفة جديدة؛ يُحفظ سجل التمرير.',
+    terminalDisconnectedBody: 'انقطع اتصال الطرفية. اضغط Enter لبدء صدفة جديدة؛ يُحفظ سجل التمرير.',
     addToChat: 'إضافة للمحادثة'
   },
   zones: {

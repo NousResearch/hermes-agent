@@ -23,6 +23,9 @@ async function freshStores() {
     import('./session')
   ])
 
+  const { $agentSidebarChoice } = await import('./simplified-agent-mode')
+  $agentSidebarChoice.set(false)
+
   // SAFETY: factsSource reads only `mode`; a local connection skips the machine comparison.
   session.$connection.set({ mode: 'local' } as never)
 

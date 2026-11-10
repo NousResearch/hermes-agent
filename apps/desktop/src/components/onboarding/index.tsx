@@ -35,6 +35,7 @@ import {
   startManualOnboarding,
   startProviderOAuth
 } from '@/store/onboarding'
+import { $setupGuidePhase } from '@/store/onboarding-phase'
 import { $onboardingSurfaces, onboardingSurfaceActive } from '@/store/onboarding-presence'
 import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import type { OAuthProvider } from '@/types/hermes'
@@ -42,6 +43,7 @@ import type { OAuthProvider } from '@/types/hermes'
 import { DocsLink, FlowPanel, Status } from './flow'
 import { FreeTierSetupNotice } from './free-tier-setup-notice'
 import { DecodedLabel } from './glyph'
+import { SetupGuide } from './guide'
 import {
   FeaturedProviderRow,
   FireworksProviderRow,
@@ -208,6 +210,8 @@ export function DesktopOnboardingOverlay({
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
   useStore($onboardingSurfaces)
+  const guidePhase = useStore($setupGuidePhase)
+  const redesign = useStore($simplifiedAgentMode)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
   useStore($gateway)
@@ -357,6 +361,10 @@ export function DesktopOnboardingOverlay({
       clearPendingProviderOAuth()
     }
   }, [ctx, onboarding.flow.status, onboarding.manual, onboarding.providers])
+
+  if (redesign && guidePhase === 'shown' && !onboarding.manual) {
+    return <SetupGuide ctx={ctx} />
+  }
 
   if (!onboarding.manual && onboardingSurfaceActive()) {
     return null

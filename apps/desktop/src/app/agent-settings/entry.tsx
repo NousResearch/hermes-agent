@@ -10,21 +10,26 @@ import type { SettingsPageProps } from '../settings/types'
 
 const AgentSettingsView = lazy(async () => ({ default: (await import('./index')).AgentSettingsView }))
 
-/** The existing settings route stays unchanged unless v2 explicitly names an agent. */
+/** An explicit agent route always opens the owner-pinned settings surface. */
 export function SettingsView(props: SettingsPageProps) {
-  const enabled = useStore($simplifiedAgentMode)
+  const redesigned = useStore($simplifiedAgentMode)
   const { search } = useLocation()
   const params = new URLSearchParams(search)
   const profile = params.get('agent')
   const connectionId = params.get('connection') || undefined
 
-  if (!enabled || !profile) {
+  if (!profile) {
     return <ClassicSettingsView {...props} />
   }
 
   return (
     <Suspense fallback={<PageLoader />}>
-      <AgentSettingsView {...props} key={JSON.stringify([connectionId, profile])} owner={{ connectionId, profile }} />
+      <AgentSettingsView
+        classic={!redesigned}
+        {...props}
+        key={JSON.stringify([connectionId, profile])}
+        owner={{ connectionId, profile }}
+      />
     </Suspense>
   )
 }

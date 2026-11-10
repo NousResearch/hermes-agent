@@ -7,7 +7,13 @@ import { $apiRequestScope } from '@/api/client'
 import { $workspaceIsPage } from '@/app/routes'
 import { StatusbarControls } from '@/app/shell/statusbar-controls'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
-import { $cronSessions, $messagingSessions, $selectedStoredSessionId, $sessions, $unlistedSessionOwnerRows } from '@/store/session'
+import {
+  $cronSessions,
+  $messagingSessions,
+  $selectedStoredSessionId,
+  $sessions,
+  $unlistedSessionOwnerRows
+} from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
@@ -47,7 +53,12 @@ function Location() {
 
 it('opens the viewed tile’s agent settings, never the ambient agent', () => {
   $sessions.set([makeSessionInfo({ id: 'remote-chat', connection_id: 'remote', profile: 'research' })])
-  render(<MemoryRouter><PortalConversationHeader paneId="session-tile:remote-chat" title="Research notes" /><Location /></MemoryRouter>)
+  render(
+    <MemoryRouter>
+      <PortalConversationHeader paneId="session-tile:remote-chat" title="Research notes" />
+      <Location />
+    </MemoryRouter>
+  )
   expect(screen.getByRole('heading', { name: 'Research notes' })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
   expect(screen.getByRole('status').textContent).toBe('?agent=research&connection=remote')
@@ -55,7 +66,12 @@ it('opens the viewed tile’s agent settings, never the ambient agent', () => {
 
 it('fails closed for unknown session owners, and resolves cron owners after loading', () => {
   $selectedStoredSessionId.set('scheduled-chat')
-  render(<MemoryRouter><PortalConversationHeader paneId="workspace" title="Scheduled report" /><Location /></MemoryRouter>)
+  render(
+    <MemoryRouter>
+      <PortalConversationHeader paneId="workspace" title="Scheduled report" />
+      <Location />
+    </MemoryRouter>
+  )
   expect(screen.getByRole('button', { name: 'Agent settings' }).hasAttribute('disabled')).toBe(true)
   act(() => $cronSessions.set([makeSessionInfo({ id: 'scheduled-chat', connection_id: 'jobs', profile: 'reports' })]))
   fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
@@ -63,7 +79,10 @@ it('fails closed for unknown session owners, and resolves cron owners after load
 })
 
 it('only replaces conversation chrome in Portal, leaving settings and tools alone', () => {
-  function Gate({ pane }: { pane: string }) {return <output>{String(usePortalConversation(pane))}</output>}
+  function Gate({ pane }: { pane: string }) {
+    return <output>{String(usePortalConversation(pane))}</output>
+  }
+
   const view = render(<Gate pane="workspace" />)
   expect(screen.getByRole('status').textContent).toBe('true')
   act(() => $workspaceIsPage.set(true))
@@ -89,16 +108,30 @@ it('mounts status polling on demand and retains plugin, menu and action controls
       return dispose
     }, [])
 
-    return <StatusbarControls items={[
-      { id: 'command-center', title: 'Command Center', onSelect: run },
-      { id: 'nav', label: 'Diagnostics', to: '/diagnostics' },
-      { id: 'plugin', render: () => <button type="button">Plugin status</button> },
-      { id: 'gateway', label: 'Gateway', variant: 'menu', menuItems: [{ id: 'logs', label: 'Logs', onSelect: run }] }
-    ]} sidebar />
+    return (
+      <StatusbarControls
+        items={[
+          { id: 'command-center', title: 'Command Center', onSelect: run },
+          { id: 'nav', label: 'Diagnostics', to: '/diagnostics' },
+          { id: 'plugin', render: () => <button type="button">Plugin status</button> },
+          {
+            id: 'gateway',
+            label: 'Gateway',
+            variant: 'menu',
+            menuItems: [{ id: 'logs', label: 'Logs', onSelect: run }]
+          }
+        ]}
+        sidebar
+      />
+    )
   }
 
   $statusbarHiddenIds.set(['command-center'])
-  render(<MemoryRouter><PortalStatusMenu><Status /></PortalStatusMenu></MemoryRouter>)
+  render(
+    <MemoryRouter>
+      <PortalStatusMenu>{() => <Status />}</PortalStatusMenu>
+    </MemoryRouter>
+  )
   expect(effect).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'System' }))
   expect(effect).toHaveBeenCalledTimes(1)
@@ -116,8 +149,18 @@ it('mounts status polling on demand and retains plugin, menu and action controls
 })
 
 it('keeps an unlisted tile’s explicit owner alias when opening its settings', () => {
-  $sessionTiles.set([{ storedSessionId: 'hidden-chat', ownerRoute: { connectionId: 'remote', profile: 'research', targetProfile: 'default' } }])
-  render(<MemoryRouter><PortalConversationHeader paneId="session-tile:hidden-chat" title="Unlisted" /><Location /></MemoryRouter>)
+  $sessionTiles.set([
+    {
+      storedSessionId: 'hidden-chat',
+      ownerRoute: { connectionId: 'remote', profile: 'research', targetProfile: 'default' }
+    }
+  ])
+  render(
+    <MemoryRouter>
+      <PortalConversationHeader paneId="session-tile:hidden-chat" title="Unlisted" />
+      <Location />
+    </MemoryRouter>
+  )
   fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
   expect(screen.getByRole('status').textContent).toBe('?agent=research&connection=remote')
 })

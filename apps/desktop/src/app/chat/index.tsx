@@ -5,6 +5,7 @@ import type * as React from 'react'
 import { memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
@@ -525,8 +526,13 @@ const ChatViewContent = memo(function ChatViewContent({
   const composerScope = useComposerScope()
   const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
-  const introHoldsThread = useStore($introHoldsThread) && isPrimary && isMainWindow()
-  const guideStarted = useStoreSelector($introView, introView => introView === 'intro' || introView === 'ended')
+  const redesign = usePortalRedesign()
+  const classicPrimary = !redesign && isPrimary && isMainWindow()
+  const introHoldsThread = useStore($introHoldsThread) && classicPrimary
+
+  const guideStarted =
+    useStoreSelector($introView, introView => introView === 'intro' || introView === 'ended') && !redesign
+
   const activeSessionId = useStore(view.$runtimeId)
 
   const transcriptStoredSessionId = useStoreSelector($sessionStates, states =>
@@ -811,7 +817,7 @@ const ChatViewContent = memo(function ChatViewContent({
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />
-          {isPrimary && isMainWindow() && <IntroCopy />}
+          {classicPrimary && <IntroCopy />}
           {resumeExhausted && routedSessionId && (
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}

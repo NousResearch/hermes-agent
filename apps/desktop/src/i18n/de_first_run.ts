@@ -1,6 +1,26 @@
 import type { FirstRunCopy } from './types_first_run'
 
 export const deFirstRun: FirstRunCopy = {
+  guide: {
+    title: 'Hermes einrichten',
+    intro:
+      'Ein paar optionale Einstellungen, dann Ihr normaler Chat. Die Einrichtung erstellt niemals eine Unterhaltung.',
+    appearance: 'Darstellung',
+    model: 'Modell auswählen',
+    ready: 'Ihr Modell ist bereit.',
+    providerNeeded:
+      'Verbinden Sie einen Anbieter oder nutzen Sie das kostenlose Modell, bevor Sie eine Nachricht senden.',
+    freeModel: 'Kostenloses Modell nutzen',
+    freeUnavailable:
+      'Das kostenlose Modell ist hier nicht verfügbar. Verbinden Sie einen Anbieter oder wählen Sie später einen aus.',
+    providers: 'Anbieter verbinden',
+    finish: 'Einrichtung abschließen',
+    skip: 'Einrichtung überspringen',
+    back: 'Zurück',
+    check: 'Bereitschaft prüfen',
+    checking: 'Wird geprüft…',
+    privacy: 'Das Teilen von Nutzungsmetriken ist optional.'
+  },
   beats: {
     name: 'Name',
     theme: 'Akzentfarbe',

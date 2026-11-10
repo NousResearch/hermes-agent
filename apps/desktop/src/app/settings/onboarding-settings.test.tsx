@@ -17,6 +17,7 @@ import {
   skipOnboarding
 } from '@/store/onboarding-run'
 import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
+import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 
 import { OnboardingSettings } from './onboarding-settings'
 
@@ -48,6 +49,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  $agentSidebarChoice.set(false)
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: { chatOnboarding: { size }, guestOnboardingEnabled: true }

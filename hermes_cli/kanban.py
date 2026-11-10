@@ -485,6 +485,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         events = kb.list_events(conn, args.task_id)
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
+        subtasks = kb.decomposed_children(conn, args.task_id)
         runs = kb.list_runs(conn, args.task_id, **rsk)
         # Workers hand off via task_runs.summary; tasks.result stays NULL unless set.
         latest_summary = kb.latest_summary(conn, args.task_id)
@@ -494,6 +495,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if want_json:
         _print_json({
             "task": _task_to_dict(task), "latest_summary": latest_summary, "parents": parents, "children": children,
+            "subtasks": subtasks,
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
             "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
@@ -541,6 +543,16 @@ def _cmd_show(args: argparse.Namespace) -> int:
         field("parents", ", ".join(parents))
     if children:
         field("children", ", ".join(children))
+    if subtasks:
+        done_n = sum(1 for s in subtasks if s["status"] in ("done", "archived"))
+        field("subtasks", f"{len(subtasks)} from the decompose ({done_n} done)")
+        for s in subtasks:
+            tail = s.get("summary") or ""
+            if len(tail) > 120:
+                tail = tail[:120].rstrip() + "…"
+            print(f"    {s['id']}  {s['status']:<9} {s['title']}")
+            if tail:
+                print(f"      → {tail}")
     if task.body:
         _print_section("Body:", [task.body])
     if task.result:

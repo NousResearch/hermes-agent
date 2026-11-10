@@ -19,6 +19,9 @@ RICH_EMAIL_TOKEN_RE = re.compile(
 # Literal code/math regions: a block fence (opened only at a line start, after any quote/list
 # prefixes, and unfinished in a streaming draft), an inline code span (which also owns inline
 # ```x```), or display math. Both transforms below consume these first so their contents survive.
+# Code wins over math: ``$$`` opens math only when its closing ``$$`` comes before the next
+# backtick, blank line or fence opener (a shell answer's ``PID is $$`` must not swallow the fence
+# below it and end at ``echo $$`` inside the code); otherwise it is literal text.
 # A fence closes as CommonMark closes it: on a line of its own holding the opener's character at
 # least as many times and then only whitespace (so ``text ``` trailing`` inside it is code), or
 # where the quote/list item that holds it ends. An inline span is a backtick run (an escaped first
@@ -32,7 +35,7 @@ _FENCE_OPEN = r"(?P<fence>`{3,}(?=[^`\n]*$)|~{3,})"
 _RICH_LITERAL_REGION = (
     r"^(?P<fence_prefix>" + _BLOCK_PREFIX + r")" + _FENCE_OPEN + r"[^\n]*"
     r"|(?P<tick>`)"
-    r"|\$\$.*?(?:\$\$|\Z)"
+    r"|(?P<math>\$\$)"
 )
 _RICH_LITERAL_REGION_RE = re.compile(_RICH_LITERAL_REGION, re.MULTILINE | re.DOTALL)
 _LITERAL_HASH_RE = re.compile(
@@ -40,6 +43,11 @@ _LITERAL_HASH_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 _BACKTICK_RUN_RE = re.compile(r"`+")
+_MATH_DELIM_RE = re.compile(r"\$\$")
+# Line ends display math cannot cross: a blank line (also inside a quote) or a tilde fence opener
+# (a backtick fence already stops it at its first backtick).
+_MATH_BREAK_RE = re.compile(
+    r"\n(?=[ \t]*(?:>[ \t]*)*(?:\n|$)| {0,3}(?:(?:>[ \t]*|[-+*][ \t]+|\d+[.)][ \t]+))*~{3,})", re.MULTILINE)
 # Line ends a code span cannot cross: a blank line, a one-line ATX heading, a list item or a fence
 # opener ends the paragraph first (an ordered item interrupts only at 1).
 _PARAGRAPH_BREAK_RE = re.compile(
@@ -85,6 +93,9 @@ def _fence_layout(text: str, match: re.Match[str]) -> tuple[list[int], int] | No
     line = _previous_line(text, match.start())
     item = _LIST_ITEM_RE.match(line) if line is not None else None
     width = (len(item.group(0)) if item.end() < len(line) else len(item.group(0).rstrip()) + 1) if item else 0
+    above = text[text.rfind("\n", 0, max(match.start() - 1, 0)) + 1:max(match.start() - 1, 0)]
+    if item and item.end() == len(line) and not above.strip():
+        item = None  # an empty item followed by a blank line has ended: the fence is top-level
     if item and width <= indent:
         indent -= width
         containers = [width]
@@ -122,6 +133,17 @@ def _fence_end(text: str, match: re.Match[str], layout: tuple[list[int], int]) -
     return len(text)
 
 
+def _math_end(after: int, delims: list[int], breaks: list[int], ticks: list[int], size: int) -> int:
+    """End of the display math whose ``$$`` ends at *after*, or *after* when that ``$$`` is literal:
+    its closer must precede the next backtick and blank line/fence opener. With neither a closer
+    nor anything after it (a streaming draft mid-formula) the math runs to the end."""
+    i, b, t = bisect_left(delims, after), bisect_left(breaks, after), bisect_left(ticks, after)
+    limit = min(breaks[b] if b < len(breaks) else size, ticks[t] if t < len(ticks) else size)
+    if i < len(delims) and delims[i] + 2 <= limit:
+        return delims[i] + 2
+    return size if i == len(delims) and limit == size else after
+
+
 def _iter_literal_tokens(pattern: re.Pattern[str], text: str):
     """Yield ``(start, end, match)`` for each *pattern* token in order; ``match`` is ``None`` for
     an inline code span."""
@@ -133,6 +155,8 @@ def _iter_literal_tokens(pattern: re.Pattern[str], text: str):
         run_ends.append(run.end())
         starts_by_len.setdefault(run.end() - run.start(), []).append(run.start())
     breaks = [brk.end() if brk.group(0) else brk.start() for brk in _PARAGRAPH_BREAK_RE.finditer(text)]
+    math_delims = [d.start() for d in _MATH_DELIM_RE.finditer(text)]
+    math_breaks = [brk.start() for brk in _MATH_BREAK_RE.finditer(text)]
     pos = 0
     while (m := pattern.search(text, pos)) is not None:
         if m.group("fence") is not None:
@@ -142,6 +166,11 @@ def _iter_literal_tokens(pattern: re.Pattern[str], text: str):
                 continue
             pos = _fence_end(text, m, layout)
             yield m.start(), pos, m
+            continue
+        if m.group("math") is not None:
+            pos = _math_end(m.end(), math_delims, math_breaks, run_starts, len(text))
+            if pos > m.end():
+                yield m.start(), pos, m
             continue
         if m.group("tick") is None:
             yield m.start(), m.end(), m

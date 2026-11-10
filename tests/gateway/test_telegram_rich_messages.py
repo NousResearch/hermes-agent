@@ -144,6 +144,13 @@ def test_literal_hash_normalization_preserves_markdown_regions(content):
     ("> ```\n> #inside\n#outside", "> ```\n> #inside\n\\#outside"),
     # A code span never pairs across a blank line.
     ("`open\n\n#89\nclose`", "`open\n\n\\#89\nclose`"),
+    # A prose $$ is not math reaching into the fence below it, and math never crosses a paragraph.
+    ("Your shell PID is $$ here.\n\n```bash\necho $$\n#!/usr/bin/env bash\n```\n#89",
+     "Your shell PID is $$ here.\n\n```bash\necho $$\n#!/usr/bin/env bash\n```\n\\#89"),
+    ("> Use $$ x\n> ```\n> $$\n> #not math\n> ```", "> Use $$ x\n> ```\n> $$\n> #not math\n> ```"),
+    ("$$x\n\n#89\n$$", "$$x\n\n\\#89\n$$"),
+    # An empty list item ends at the blank line, so a 3-space fence after it is a top-level fence.
+    ("- \n\n   ```\n#89\n```\n#90", "- \n\n   ```\n#89\n```\n\\#90"),
 ])
 def test_literal_hash_fences_close_like_commonmark(content, expected):
     from plugins.platforms.telegram.rich_markdown import escape_literal_hash_prefixes

@@ -122,3 +122,45 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     assert re.search(r"Memory tool:\s+enabled", captured)
     assert re.search(r"Memory injection:\s+enabled", captured)
     assert re.search(r"User profile:\s+disabled", captured)
+
+
+# ---------------------------------------------------------------------------
+# re-run setup must offer the provider's SAVED config (#123571)
+# ---------------------------------------------------------------------------
+
+
+def test_saved_provider_config_falls_back_to_memory_block_when_reader_raises():
+    class Broken:
+        def load_saved_config(self):
+            raise RuntimeError("boom")
+
+    config = {"memory": {"x": {"a": "1"}}}
+    assert memory_setup._saved_provider_config(Broken(), "x", config) == {"a": "1"}
+
+
+def test_saved_provider_config_reader_is_authoritative():
+    """#123571: a provider that overrides ``save_config`` keeps its values outside
+    ``memory.<name>``, so its ``load_saved_config`` read must win over the block."""
+    class Reader:
+        def load_saved_config(self):
+            return {"db_path": "/data/facts.db"}
+
+    config = {"memory": {"x": {"a": "1"}}}
+    assert memory_setup._saved_provider_config(Reader(), "x", config) == {"db_path": "/data/facts.db"}
+
+
+def test_saved_provider_config_ignores_non_dict_reader_result():
+    class Weird:
+        def load_saved_config(self):
+            return "not-a-dict"
+
+    config = {"memory": {"x": {"a": "1"}}}
+    assert memory_setup._saved_provider_config(Weird(), "x", config) == {"a": "1"}
+
+
+def test_saved_provider_config_falls_back_without_reader():
+    class Plain:
+        pass
+
+    config = {"memory": {"x": {"a": "1"}}}
+    assert memory_setup._saved_provider_config(Plain(), "x", config) == {"a": "1"}

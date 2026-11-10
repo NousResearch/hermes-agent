@@ -1,5 +1,6 @@
 """Tests for tools/skills_guard.py - security scanner for skills."""
 
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -488,7 +489,8 @@ class TestScanSkill:
             'load_dotenv("./project.env")  # independent of HERMES_HOME\n'
             'load_dotenv("./project.env"); home = get_hermes_home()\n'
             # A paren inside a string argument does not end the call's arguments early.
-            'load_dotenv("./project(.env")  # independent of HERMES_HOME\n', encoding="utf-8")
+            'load_dotenv("./project(.env")  # independent of HERMES_HOME\n'
+            'load_dotenv("./project(.env"); home = get_hermes_home()\n', encoding="utf-8")
         result = scan_skill(skill_dir, source="community")
         hits = {(fi.file, fi.line, fi.severity) for fi in result.findings if fi.pattern_id == "hermes_env_dotenv"}
         # Prose that quotes the call is flagged too: a caution the user confirms, not a hard block.
@@ -518,7 +520,8 @@ class TestScanSkill:
             # An f-string's replacement field is code, so the usual auth-header form is a read; the same
             # text in a plain string is not.
             'header = f"Bearer {os.getenv(\'OPENAI_API_KEY\')}"\n'
-            'j, doc = os.getenv("TENOR_API_KEY"), "Bearer {os.getenv(\'OPENAI_API_KEY\')}"\n', encoding="utf-8")
+            'j, doc = os.getenv("TENOR_API_KEY"), "Bearer {os.getenv(\'OPENAI_API_KEY\')}"\n'
+            'k, doc = os.getenv("TENOR_API_KEY"), f"see os.getenv(\'OPENAI_API_KEY\') in {doc}"\n', encoding="utf-8")
         # A script that does not tokenize falls back to the whole line.
         (skill_dir / "broken.py").write_text('k = os.getenv("OPENROUTER_API_KEY")\nx = (\n', encoding="utf-8")
         # Outside .py files the whole line counts: Python run from a shell string is still a read.
@@ -532,6 +535,10 @@ class TestScanSkill:
         assert by_line[4] == by_line[5] == ("python_getenv_secret", "medium")
         assert by_line[6] == ("python_environ_get_secret", "medium")
         assert by_line[7] == by_line[8] == by_line[9] == by_line[11] == ("python_getenv_secret", "medium")
+        # Call text in an f-string's literal part is string text from 3.12 (FSTRING_MIDDLE). Before 3.12 the
+        # f-string is one token, kept as code so its fields count, which also raises this line.
+        assert by_line[12] == (("python_getenv_secret", "medium") if sys.version_info >= (3, 12)
+                               else ("provider_key_env_read", "high"))
         assert by_line[10] == ("provider_key_env_read", "high")
         assert {(fi.line, fi.pattern_id, fi.severity) for fi in result.findings if fi.file == "run.sh"} == {
             (1, "provider_key_env_read", "high")}
@@ -543,7 +550,7 @@ class TestScanSkill:
         assert plain == {1: "python_getenv_secret", 2: "python_environ_get_secret", 3: "python_getenv_secret",
                          4: "python_getenv_secret", 5: "python_getenv_secret", 6: "python_environ_get_secret",
                          7: "python_getenv_secret", 8: "python_getenv_secret", 9: "python_getenv_secret",
-                         10: "python_getenv_secret", 11: "python_getenv_secret"}
+                         10: "python_getenv_secret", 11: "python_getenv_secret", 12: "python_getenv_secret"}
 
     def test_provider_key_scan_is_linear_in_line_length(self, tmp_path):
         """A script is tokenized once, so a long line of reads (under the 256 KB file cap) scans fast

@@ -131,3 +131,97 @@ def test_teardown_settles_a_running_process_and_stops_its_poller(registry, env, 
         True, -1, "lost", "env_closed")
     assert session.id in registry._finished
     assert session._completion_event.is_set()
+
+
+def test_reaper_keeps_a_sandbox_whose_process_matches_only_by_key(registry, env):
+    """A process recovered from a checkpoint has no env object, only the env key it ran under."""
+    _background(registry, None)
+
+    _cleanup_inactive_envs(lifetime_seconds=300)
+
+    assert tt._active_environments.get(ENV_KEY) is env
+    assert not env.closed
+
+
+def _completions(registry):
+    events = []
+    while not registry.completion_queue.empty():
+        events.append(registry.completion_queue.get_nowait())
+    return [(e["exit_code"], e["completion_reason"], e["termination_source"]) for e in events
+            if e.get("type") == "completion"]
+
+
+def _receipt(session):
+    import json
+
+    from hermes_constants import get_hermes_home
+
+    record = json.loads((get_hermes_home() / "logs" / "process-results" / f"{session.id}.json").read_text())
+    return record["exit_code"], record["completion_reason"], record["termination_source"]
+
+
+def test_poller_seeing_exit_after_teardown_settled_the_process_keeps_the_settled_result(registry, env):
+    """Teardown lands while the poller's liveness check is in flight; the check then reports the
+    exit. The settled result was already published, so the poller must not change it."""
+    session = _background(registry, env)
+    real_execute = env.execute
+    closed = []
+
+    def execute(command, **kwargs):
+        if command.startswith("kill -0") and not closed:
+            cleanup_vm(ENV_KEY)  # teardown settles the session mid-RPC
+            closed.append(True)
+            return {"output": "1\n"}  # ...and the RPC that was already running reports the exit
+        if command.startswith("cat ") and closed:
+            return {"output": "0\n"}
+        return real_execute(command, **kwargs)
+
+    env.execute = execute
+    registry._env_poller_loop(session, env, "/tmp/bg.log", "/tmp/bg.pid", "/tmp/bg.exit")
+
+    lost = (-1, "lost", "env_closed")
+    assert (session.exit_code, session.completion_reason, session.termination_source) == lost
+    assert _completions(registry) == [lost]
+    assert _receipt(session) == lost
+
+
+class _ReleaseHook:
+    """Wraps a lock; runs ``hook`` once, right after the next release."""
+
+    def __init__(self, lock, hook):
+        self._inner, self._hook = lock, hook
+
+    def __enter__(self):
+        return self._inner.__enter__()
+
+    def __exit__(self, *exc):
+        result = self._inner.__exit__(*exc)
+        hook, self._hook = self._hook, None
+        if hook is not None:
+            hook()
+        return result
+
+
+def test_settlement_keeps_a_success_published_after_its_snapshot(registry, env):
+    """The process exits on its own between settlement's snapshot of running sessions and its
+    finish call. The success is published and durable; settlement must not turn it into lost."""
+    session = _background(registry, env)
+    lock = registry._lock
+    natural = []
+
+    def natural_exit():
+        registry._lock = lock
+        registry._finish_exited(session, 0)
+        natural.append(session.id in registry._finished)
+
+    from tools.process_registry_env_scope import settle_env_closed
+
+    registry._lock = _ReleaseHook(lock, natural_exit)
+    settled = settle_env_closed(registry, env)
+
+    success = (0, "exited", "")
+    assert natural == [True]  # the success was published before settlement's finish call
+    assert (session.exit_code, session.completion_reason, session.termination_source) == success
+    assert _completions(registry) == [success]
+    assert _receipt(session) == success
+    assert settled == 0

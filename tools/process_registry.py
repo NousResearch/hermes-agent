@@ -639,15 +639,23 @@ class ProcessSession:
         if len(self.output_buffer) > self.max_output_chars:
             self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
-    def mark_exited(self, exit_code, reason: str = "exited", source: str = "") -> None:
-        """Record an exit. A kill that raced the observer already recorded its own
+    def mark_exited(self, exit_code, reason: str = "exited", source: str = "") -> bool:
+        """Record an exit unless one is already recorded; returns whether this call recorded it.
+
+        Callers hold ``_lock``. The first terminal result wins: two observers (the poller and an
+        environment teardown, a reader and a reconcile) can both see the end, and the first one
+        may already have published its result and written the durable receipt, so a later
+        observer must not change it. A kill that raced the observer already recorded its own
         exit_code/reason; never overwrite it."""
+        if self.exited or self.completion_reason == "killed":
+            self.exited = True
+            return False
         self.exited = True
-        if self.completion_reason != "killed":
-            self.exit_code = exit_code
-            self.completion_reason = reason
-            if source:
-                self.termination_source = source
+        self.exit_code = exit_code
+        self.completion_reason = reason
+        if source:
+            self.termination_source = source
+        return True
 
 
 # Watcher routing fields, in event-dict key order (``watcher_<key>`` on the session).
@@ -1539,13 +1547,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self._check_watch_patterns(session, text)
         self._emit_output(session, text)
 
-    def _finish_exited(self, session: ProcessSession, exit_code, reason: str = "exited", source: str = "") -> None:
-        """Mark a reader-observed exit (a raced kill keeps its own code/reason) and finish.
-        Under the session lock, like kill_process's commit: otherwise the kill can land between
-        mark_exited's ``killed`` check and its writes, and the reader overwrites the kill."""
+    def _finish_exited(self, session: ProcessSession, exit_code, reason: str = "exited", source: str = "") -> bool:
+        """Mark an observed exit and finish; returns whether this call recorded the result.
+        A result already recorded (a raced kill, or another observer's exit) is kept. Under the
+        session lock, like kill_process's commit: otherwise another finisher can land between
+        mark_exited's check and its writes and the two results mix."""
         with session._lock:
-            session.mark_exited(exit_code, reason, source)
+            recorded = session.mark_exited(exit_code, reason, source)
         self._move_to_finished(session)
+        return recorded
 
     def _move_to_finished(self, session: ProcessSession) -> bool:
         """Move a session from running to finished.

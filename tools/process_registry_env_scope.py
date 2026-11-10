@@ -26,11 +26,10 @@ def settle_env_closed(registry, env: Any) -> int:
     object is closed the poller can no longer read its output or exit code, and some backends
     report the failure as output rather than raising, so the poller would retry forever.
     Marking the session exited stops the poller at its next check and publishes the result.
-    Returns the number of sessions settled."""
+    A process that exits between the snapshot and its settlement keeps its own result.
+    Returns the number of sessions settled as lost."""
     if env is None:
         return 0
     with registry._lock:
         sessions = [s for s in registry._running.values() if s.env_ref is env and not s.exited]
-    for session in sessions:
-        registry._finish_exited(session, -1, reason="lost", source="env_closed")
-    return len(sessions)
+    return sum(registry._finish_exited(s, -1, reason="lost", source="env_closed") for s in sessions)

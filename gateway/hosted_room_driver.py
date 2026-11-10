@@ -197,11 +197,18 @@ def start_task(
 
 def settle_task(
     store, attempt: TaskAttempt, *, placement: HostedPlacement, settlement_id: Any, status: TerminalStatus,
-    result: Any, clock: Clock) -> dict[str, Any]:
-    """Commit one terminal result if every lease and task fence still matches."""
+    result: Any, clock: Clock, allow_expired_lease: bool = False) -> dict[str, Any]:
+    """Commit one terminal result if every lease and task fence still matches.
+
+    ``allow_expired_lease`` serves the live in-process terminal callback only: plain expiry of our
+    own unreleased, un-reclaimed lease must not discard an already-completed first-party result, so
+    the post-replay check drops only its ``expires_at > now`` term. Reclaim, release and authority
+    transfer still fence; historical harvest paths keep the strict check.
+    """
     settlement_id, now = _settlement(settlement_id, status, result, clock)
     return store.hosted_room_driver.settle_task(
-        attempt, placement=placement, settlement_id=settlement_id, status=status, result=result, now=now)
+        attempt, placement=placement, settlement_id=settlement_id, status=status, result=result, now=now,
+        allow_expired_lease=allow_expired_lease)
 
 
 def settle_stopping_task(

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import current_path
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -26,7 +28,7 @@ def _load(name: str):
 @pytest.mark.parametrize("name", ["check_config_yaml_writers", "check_config_yaml_readers"])
 def test_config_guard_fails_when_a_default_tree_is_missing(name, tmp_path, monkeypatch, capsys):
     guard = _load(name)
-    for tree in guard.DEFAULT_TREES[1:]:
+    for tree in map(current_path, guard.DEFAULT_TREES[1:]):
         source = REPO_ROOT / tree
         (tmp_path / tree).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / tree).mkdir() if source.is_dir() else shutil.copy(source, tmp_path / tree)

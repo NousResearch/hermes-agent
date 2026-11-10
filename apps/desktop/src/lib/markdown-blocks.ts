@@ -11,13 +11,14 @@ import { parseMarkdownIntoBlocks } from '@assistant-ui/react-streamdown'
  *
  * 1. Exact-string cache — the same text always yields the SAME ARRAY. This is
  *    identity, not just cost: `parseMarkdownIntoBlocks` builds a fresh array
- *    every call, and Streamdown mirrors the block list into `useState`, so a
+ *    every call, and Streamdown keys its per-block memos on the array, so a
  *    new array identity for unchanged text makes every Streamdown re-render
  *    itself and re-render every Block under it. Short messages used to skip
  *    the cache on the theory that re-lexing them was cheap — the lex is, but
  *    the churn it caused was not (measured: ~105 self-renders of Streamdown
  *    across five idle tiles in six seconds, cascading into 800 Block renders
- *    with nothing streaming). Every length is cached now.
+ *    with nothing streaming). Every length is cached now; a streamed prefix
+ *    leaves it once its lineage grows past it (see rememberAppend).
  * 2. Streaming-append cache — when the new text starts with a recently parsed
  *    text (the token-append case), the previous parse's blocks are reused up
  *    to a settled boundary and only the suffix is lexed. The boundary drops
@@ -54,6 +55,11 @@ function rememberAppend(text: string, blocks: string[]): void {
   const index = appendCache.findIndex(entry => text.startsWith(entry.text))
 
   if (index !== -1) {
+    // The superseded tip is a streamed prefix nobody renders again (a rewind
+    // is an edit, which re-lexes anyway). Keeping it in the exact cache too
+    // held up to EXACT_CACHE_MAX full-length prefixes per stream: ~12 MB
+    // retained after one 50 KB reply, ~40 MB after 200 KB.
+    exactCache.delete(appendCache[index].text)
     appendCache.splice(index, 1)
   }
 

@@ -1,6 +1,6 @@
 name: forgebox
 repo: https://github.com/nosliwhtes/forgebox
-sha: 1731a776c9dde15ce7d51493447b6657330217e5
+sha: 98adbcaf8d2afcaa59626a13ae4d814fdf484724
 description: >-
   Try-then-commit Git worktree workflow for Hermes Agent. Snapshots dirty
   repositories and journals tool calls. Best-effort hooks redirect known file

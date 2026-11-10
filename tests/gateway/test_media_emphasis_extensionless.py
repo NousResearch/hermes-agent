@@ -78,6 +78,14 @@ class TestEmphasisWrappedUnknownExtensionTags:
         assert [os.path.realpath(x) for x, _ in media] == [os.path.realpath(str(p))]
         assert "MEDIA:" not in cleaned
 
+    def test_streamed_display_strips_bold_unknown_extension(self, tmp_path):
+        """Display cleanup must agree with attachment delivery for a bold .lua tag."""
+        p = tmp_path / "script.lua"
+        p.write_text("-- delivered\n")
+        text = f"See **MEDIA:{p}**; done"
+        assert BasePlatformAdapter.strip_media_directives_for_display(text) == "See ; done"
+
+
 
 class TestEmphasisWrappedKnownExtensionTagsStillDeliver:
     """The extensionless-pass change must not regress the known-ext path."""

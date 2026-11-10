@@ -185,12 +185,13 @@ def _print_channel_clone_notice(name: str, source_label: str, clone_channels: bo
         print(shared_credential_warning(name, shared, source_label))
 
 
-def _print_mirrored(mirrored: dict, launch: str) -> None:
+def _print_mirrored(mirrored: dict, launch: str, *, isolate_hint: bool) -> None:
     """What the new profile took from the launch profile (the bot page's "Share keys & accounts")."""
     if mirrored.get("env"):
         print(f"Copied API keys from '{launch}' (bot tokens and allowlists left out).")
     if mirrored.get("auth") == "shared":
-        print("Logins and subscriptions are shared with the default profile (--isolated-auth copies them).")
+        hint = " (--isolated-auth copies them)" if isolate_hint else ""
+        print(f"Logins and subscriptions are shared with the default profile{hint}.")
     elif mirrored.get("auth"):
         print(f"Copied logins from '{launch}' (single-use OAuth logins are still read from the default profile).")
     if mirrored.get("model_inherited"):
@@ -209,7 +210,8 @@ def _profile_create(args):
     sync_imports = getattr(args, "sync_imports", False)
     clone_config = clone or clone_from is not None
     cloned = clone_config or clone_all
-    source_label = clone_from or get_active_profile_name()
+    launch_label = get_active_profile_name()
+    source_label = clone_from or launch_label
     request = ProfileCreateRequest(
         name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
         no_skills=getattr(args, "no_skills", False), description=getattr(args, "description", None),
@@ -260,7 +262,8 @@ def _profile_create(args):
                 print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
                 print("  Add to your shell config (~/.bashrc or ~/.zshrc):")
                 print('    export PATH="$HOME/.local/bin:$PATH"')
-    _print_mirrored(result.mirrored, get_active_profile_name() or "default")
+    _print_mirrored(result.mirrored, launch_label,
+                    isolate_hint=not getattr(args, "isolated_auth", False) and not getattr(args, "no_credentials", False))
     for warning in result.warnings:
         print(f"⚠ {warning}")
     try:

@@ -2367,7 +2367,8 @@ def save_config(
         from hermes_cli.config_backend import keeping_read_base
         _raw_for_paths = keeping_read_base(lambda: require_readable_config_before_write(config_path))
         if (newer := newer_stamp(_raw_for_paths)) is not None and supports_file_tooling():
-            raise RuntimeError(f"This change was not saved. {newer_stamp_message(newer)}")
+            raise ConfigWriteError(f"This change was not saved. {newer_stamp_message(newer)}",
+                                   code="config_newer_stamp")
         from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
         config = rebase_for_save(config, _raw_for_paths, merge_existing)
 

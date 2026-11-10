@@ -222,3 +222,25 @@ class TestNewerStamp:
         assert raw["_config_version"] == yaml.safe_load(before)["_config_version"]
         assert raw["zz_newer_section"] == {"k": 1}
         assert raw["mcp_servers"]["s"]["disabled"] is True
+
+    def test_dashboard_save_is_a_409_with_the_reason(self, tmp_path, monkeypatch):
+        """The refusal is an expected config refusal: the dashboard says why (409), not 500."""
+        from starlette.testclient import TestClient
+        from hermes_cli.config_backend import ConfigWriteError
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+
+        config_path = self._newer(tmp_path, monkeypatch)
+        before = config_path.read_bytes()
+        import pytest
+        with pytest.raises(ConfigWriteError) as refused:
+            save_config(load_config())
+        assert refused.value.code == "config_newer_stamp"
+        client = TestClient(app, raise_server_exceptions=False)
+        headers = {_SESSION_HEADER_NAME: _SESSION_TOKEN}
+        for path, body in (("/api/config", {"config": {"display": {"skin": "ares"}}}),
+                           ("/api/config/raw", {"yaml_text": "display:\n  skin: ares\n"})):
+            r = client.put(path, json=body, headers=headers)
+            assert r.status_code == 409, (path, r.status_code, r.text)
+            assert "newer Hermes" in r.json()["detail"]
+        assert config_path.read_bytes() == before

@@ -14,7 +14,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.config import get_config_path, read_raw_config
 from hermes_cli.web_deps import late
-from hermes_cli.web_routers._common import corrupt_store_as_status
+from hermes_cli.config_backend import ConfigWriteError
+from hermes_cli.web_routers._common import config_refusal_http, corrupt_store_as_status
 from hermes_cli.web_server_profiles import (
     _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
 )
@@ -75,6 +76,10 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         return await asyncio.to_thread(_run)
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+    except ConfigWriteError as exc:  # an expected refusal (a newer build's stamp) says why
+        if (refusal := config_refusal_http(exc)) is None:
+            raise
+        raise refusal from exc
 
 
 def _rows(db, sql: str, cutoff: float) -> list[dict[str, Any]]:

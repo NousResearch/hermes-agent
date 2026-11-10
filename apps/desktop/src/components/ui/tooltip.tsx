@@ -3,7 +3,7 @@ import './tooltip.css'
 import { Tooltip as TooltipPrimitive } from 'radix-ui'
 import * as React from 'react'
 
-import { useI18n } from '@/i18n'
+import { isRtlLocale, useI18n } from '@/i18n'
 import { type InputModality, lastInputModality } from '@/lib/input-modality'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
@@ -177,6 +177,7 @@ function PaneClippedContent({
   sideOffset = 5,
   ...props
 }: TooltipContentProps) {
+  const { locale } = useI18n()
   const preferred = TOOLTIP_PLACEMENTS[placement]
   const anchor = React.useContext(TooltipAnchor)
   const [pane, setPane] = React.useState<Element | null>(null)
@@ -224,7 +225,7 @@ function PaneClippedContent({
       // ticks unmount when scrolled away, so the middleware has nothing to hide
       // there; leave it to triggers that stay put inside scrolling lists.
       hideWhenDetached={hideWhenDetached ?? (placement !== 'left-rail' && placement !== 'right-rail')}
-      side={side ?? preferred.side}
+      side={side ?? (placement === 'row' && isRtlLocale(locale) ? 'left' : preferred.side)}
       sideOffset={sideOffset}
       {...props}
     >

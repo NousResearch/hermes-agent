@@ -1,14 +1,8 @@
 import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
-import {
-  DEFAULT_REASONING_EFFORT,
-  planBlocks,
-  sectionAt,
-  splitRecommended,
-  usageLevel,
-  usageTag
-} from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, planBlocks, sectionAt, splitRecommended, usageLevel, usageTag } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
+import { Direction } from 'radix-ui'
 import {
   createContext,
   Fragment,
@@ -256,6 +250,7 @@ export function ModelCatalogMenu({
   sessionId = null
 }: ModelCatalogMenuProps): ReactElement {
   const { t } = useI18n()
+  const submenuOpenKey = Direction.useDirection() === 'rtl' ? 'ArrowLeft' : 'ArrowRight'
   const copy = t.shell.modelMenu
   const copyPicker = t.modelPicker
   const closeMenu = useContext(ModelMenuCloseContext)
@@ -599,20 +594,15 @@ export function ModelCatalogMenu({
 
   // ── Keyboard path into a row's edit submenu (#86966) ─────────────────────
   // Rows are HIGHLIGHTED, not DOM-focused (focus stays in the search input so
-  // typing keeps working), which is why Radix's own ArrowRight-on-the-trigger
-  // never fires. ArrowRight therefore hands focus to the highlighted trigger
+  // typing keeps working), which is why Radix's own inline-end arrow handler
+  // never fires. That arrow therefore hands focus to the highlighted trigger
   // and replays the key there: from that point Radix owns everything — opening
   // the sub, focusing its first item, and returning focus to the trigger when
-  // ArrowLeft closes it. `handleSubOpenChange` below finishes that round trip
+  // the opposite arrow closes it. `handleSubOpenChange` finishes that round trip
   // by putting focus back in the search field. (Escape is not part of it:
   // inside a sub, Radix dismisses the WHOLE menu rather than just the sub.)
   //
-  // ArrowRight is hard-coded rather than direction-aware because Radix's own
-  // binding is: the app installs no `DirectionProvider` and passes no `dir`,
-  // so `useDirection` resolves to `ltr` and Radix opens subs on ArrowRight in
-  // every locale, RTL included. Matching that keeps the two in step; whoever
-  // wires up a `DirectionProvider` has to teach this handler the same
-  // direction Radix reads, or the sub goes unreachable again in Arabic.
+  // Read the same direction context as Radix so Arabic opens with ArrowLeft.
   // WHICH row we opened from the keyboard, not merely THAT we opened one: a
   // bare flag is still set when a keyboard-opened sub closes because the mouse
   // moved on to another row, and refocusing search there pulls focus out from
@@ -628,7 +618,7 @@ export function ModelCatalogMenu({
 
     keyboardSubRef.current = { key: kbActiveKey, trigger }
     trigger.focus()
-    trigger.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: submenuOpenKey }))
 
     // Highlight also lands on rows that are plain items rather than submenu
     // triggers (the MoA presets), which swallow the key; an open can also be
@@ -665,7 +655,7 @@ export function ModelCatalogMenu({
 
     // Deferred one frame because Radix restores focus to the trigger straight
     // AFTER this callback — and that restore is the signal we need. Radix does
-    // it only for a keyboard close (ArrowLeft); a sub closed because the
+    // it only for a keyboard close; a sub closed because the
     // pointer moved to another row leaves focus where it fell, and grabbing it
     // then would fight the mouse. So finish the round trip only if the trigger
     // really is holding focus.
@@ -718,9 +708,9 @@ export function ModelCatalogMenu({
             event.preventDefault()
             event.stopPropagation()
             commitKbRow()
-          } else if (event.key === 'ArrowRight' && caretAtEnd(event.currentTarget)) {
+          } else if (event.key === submenuOpenKey && caretAtEnd(event.currentTarget)) {
             // Claimed only with the caret parked at the end of the query, where
-            // ArrowRight has nothing left to do as a text cursor.
+            // the inline-end arrow has nothing left to do as a text cursor.
             if (openActiveSubmenu()) {
               event.preventDefault()
               event.stopPropagation()
@@ -1222,7 +1212,7 @@ function ModelFamilyRow({
 }
 
 /** True when the text cursor sits at the very end with nothing selected — the
- *  only state where ArrowRight is free for the menu to claim. */
+ *  only state where the inline-end arrow is free for the menu to claim. */
 function caretAtEnd(input: HTMLInputElement): boolean {
   const { selectionEnd, selectionStart, value } = input
 
@@ -1458,7 +1448,10 @@ function nousPricingPoll(data: ModelOptionsResult | undefined, updates: number):
 // current-model pin above, so a pinned custom model lands under "Other models" instead of taking the
 // first pick's "Recommended" heading.
 function recommendedFirst(provider: ModelOptionProvider, families: ModelFamily[]): ModelFamily[] {
-  const split = splitRecommended(provider, families.map(family => family.id))
+  const split = splitRecommended(
+    provider,
+    families.map(family => family.id)
+  )
 
   if (!split) {
     return families

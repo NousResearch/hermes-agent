@@ -88,7 +88,7 @@ function SidebarSectionHeader({
           // min-w-0 lets the label truncate at narrow sidebar widths instead of
           // pushing the header's trailing action icons out of view.
           className={cn(
-            'group/section-label flex w-fit min-w-0 items-center gap-1 rounded-sm bg-transparent text-left leading-none',
+            'group/section-label flex w-fit min-w-0 items-center gap-1 rounded-sm bg-transparent text-start leading-none',
             SIDEBAR_FOCUS_VISIBLE
           )}
           onClick={onToggle}

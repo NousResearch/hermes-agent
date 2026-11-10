@@ -283,7 +283,7 @@ function ConnectedProviderRow({
   return (
     <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
       <RowButton
-        className="min-w-0 px-3 py-2.5 text-left"
+        className="min-w-0 px-3 py-2.5 text-start"
         onClick={() => (terminalDisconnect ? onTerminalDisconnect(provider) : onSelect(provider))}
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -300,7 +300,7 @@ function ConnectedProviderRow({
           </p>
         )}
       </RowButton>
-      <div className="flex items-center gap-1 pr-2">
+      <div className="flex items-center gap-1 pe-2">
         {terminalDisconnect ? (
           <Button
             aria-label={`${copy.disconnect} ${title} in terminal`}
@@ -312,7 +312,7 @@ function ConnectedProviderRow({
             <Terminal className="size-4" />
           </Button>
         ) : (
-          <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+          <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground rtl:-scale-x-100" />
         )}
         {canDisconnect && (
           <Button
@@ -370,7 +370,7 @@ function LocalEndpointRow({ onOpen }: { onOpen: (reason: null | string) => void 
 
   return (
     <RowButton
-      className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
+      className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] px-3 py-2.5 text-start transition-colors hover:bg-(--ui-control-hover-background)"
       onClick={() => onOpen(null)}
     >
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -379,7 +379,7 @@ function LocalEndpointRow({ onOpen }: { onOpen: (reason: null | string) => void 
           {copy.description}
         </span>
       </div>
-      <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+      <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground rtl:-scale-x-100" />
     </RowButton>
   )
 }

@@ -197,7 +197,6 @@ export function ImageLightbox({
           openerRef.current = opener instanceof HTMLElement ? opener : null
         }}
         overlayClassName="bg-black/60"
-        showCloseButton={false}
       >
         <div className="group/lightbox relative inline-block">
           <img

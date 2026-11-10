@@ -212,7 +212,7 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
 function CategoryHeader({ label, onToggle, open }: { label: string; onToggle: () => void; open: boolean }) {
   return (
     <button
-      className="group/kbd-cat flex w-fit min-w-0 items-center gap-1 px-2.5 pb-1 pt-3 text-left leading-none"
+      className="group/kbd-cat flex w-fit min-w-0 items-center gap-1 px-2.5 pb-1 pt-3 text-start leading-none"
       onClick={onToggle}
       type="button"
     >

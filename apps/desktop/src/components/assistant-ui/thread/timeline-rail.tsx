@@ -23,6 +23,7 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
   const focused = useRef(false)
   const pendingFocus = useRef<number | null>(null)
   const [pitch, setPitch] = useState(7)
+  const [tooltipSide, setTooltipSide] = useState<'left' | 'right'>('left')
 
   const virtualizer = useVirtualizer({
     count: entries.length,
@@ -33,6 +34,10 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
     overscan: 4
   })
 
+  // The button is a 3rem hit target; its hovered bar is 1rem wide and inset
+  // 0.375rem from the outer edge. Pull the tooltip back to that bar, leaving
+  // room for its 5px arrow and a 2px gap.
+  const previewOffset = 7 - Math.round((pitch / 0.4375) * (3 - 0.375 - 1))
   const items = virtualizer.getVirtualItems()
   const visibleKey = `${items[0]?.index}:${items.at(-1)?.index}`
 
@@ -49,6 +54,10 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
       if (Number.isFinite(rem) && rem > 0) {
         setPitch(rem * 0.4375)
       }
+
+      // Physical Radix side, chosen from inline direction: open toward the
+      // transcript, never past the window edge where the rail lives.
+      setTooltipSide(getComputedStyle(element).direction === 'rtl' ? 'right' : 'left')
     }
 
     const observer = new ResizeObserver(measure)
@@ -164,11 +173,13 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
 
           return (
             <Tip
+              className="timeline-preview-tooltip"
               key={entry.id}
               label={entry.preview}
               placement="right-rail"
-              sideOffset={8}
-              style={{ textAlign: 'right' }}
+              side={tooltipSide}
+              sideOffset={previewOffset}
+              style={{ textAlign: 'start' }}
             >
               <button
                 aria-busy={loadingId === entry.id || undefined}

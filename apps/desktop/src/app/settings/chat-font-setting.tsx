@@ -148,7 +148,7 @@ export function ChatFontSetting() {
             aria-label={copy.chatFontPreview}
             className="overflow-hidden px-1 py-2 text-sm text-(--ui-text-secondary)"
           >
-            <span className="mr-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            <span className="me-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
               {copy.chatFontPreview}
             </span>
             <span>{copy.chatFontSample}</span>

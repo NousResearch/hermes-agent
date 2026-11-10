@@ -219,7 +219,7 @@ function RetiredFold({
     <details className="group py-1.5" data-slot="connector-accounts-retired">
       <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[0.72rem] text-(--ui-text-tertiary)">
         <Codicon
-          className="shrink-0 transition-transform duration-100 group-open:rotate-90"
+          className="shrink-0 transition-transform duration-100 group-open:rotate-90 rtl:-scale-x-100 rtl:group-open:scale-x-100"
           name="chevron-right"
           size="0.75rem"
         />

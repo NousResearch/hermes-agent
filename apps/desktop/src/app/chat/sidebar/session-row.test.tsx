@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import type { SessionInfo } from '@/hermes'
+import type * as I18n from '@/i18n'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'
@@ -24,8 +25,10 @@ import { SidebarSessionRow } from './session-row'
 
 afterEach(cleanup)
 
-vi.mock('@/i18n', () => ({
+vi.mock('@/i18n', async importOriginal => ({
+  ...(await importOriginal<typeof I18n>()),
   useI18n: () => ({
+    locale: 'en',
     t: {
       sidebar: {
         messageCount: (count: number) => `${count} messages`,

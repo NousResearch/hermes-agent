@@ -265,7 +265,7 @@ function PluginSettingsOverview({
           <Button asChild className="gap-1.5" size="sm" variant="outline">
             <a href={MANAGE_PLUGINS_HREF}>
               {copy.manage}
-              <Codicon name="arrow-right" size="0.75rem" />
+              <Codicon className="rtl:-scale-x-100" name="arrow-right" size="0.75rem" />
             </a>
           </Button>
         }
@@ -293,7 +293,7 @@ function PluginSettingsOverview({
 
             return (
               <button
-                className="flex min-h-11 items-center gap-3 border-b border-(--ui-stroke-tertiary) px-3 text-left transition-colors last:border-b-0 hover:bg-(--chrome-action-hover)"
+                className="flex min-h-11 items-center gap-3 border-b border-(--ui-stroke-tertiary) px-3 text-start transition-colors last:border-b-0 hover:bg-(--chrome-action-hover)"
                 data-testid={`plugin-settings-row-${entry.uid}`}
                 key={entry.uid}
                 onClick={() => onOpen(pluginSettingsRouteOf(entry))}
@@ -308,7 +308,7 @@ function PluginSettingsOverview({
                     {copy.pageCount(pages)}
                   </span>
                 )}
-                <Codicon className="text-(--ui-text-tertiary)" name="chevron-right" size="0.8rem" />
+                <Codicon className="text-(--ui-text-tertiary) rtl:-scale-x-100" name="chevron-right" size="0.8rem" />
               </button>
             )
           })}

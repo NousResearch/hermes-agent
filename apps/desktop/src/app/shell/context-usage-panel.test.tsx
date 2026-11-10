@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import type { ContextBreakdown, UsageStats } from '@/types/hermes'
 
 import { ContextMeterDetail, ContextUsagePanel } from './context-usage-panel'
@@ -87,6 +88,18 @@ describe('useContextBreakdown', () => {
 })
 
 describe('ContextUsagePanel', () => {
+  it('isolates RTL summaries and keeps category values after labels', () => {
+    const { container } = render(
+      <I18nProvider configClient={null} initialLocale="ar">
+        <ContextUsagePanel breakdown={breakdown} loading={false} usage={usage} />
+      </I18nProvider>
+    )
+
+    expect(container.querySelector('[data-slot="context-usage-panel"] bdi')?.getAttribute('dir')).toBe('auto')
+    const row = container.querySelector('li')!
+    expect(row.lastElementChild?.tagName).toBe('BDI')
+    expect(row.lastElementChild?.getAttribute('dir')).toBe('ltr')
+  })
   it('marks estimates but preserves the provider-usage header', () => {
     for (const estimated of [true, false]) {
       const { container, unmount } = render(

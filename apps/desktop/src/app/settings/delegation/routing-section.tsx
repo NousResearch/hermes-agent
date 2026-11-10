@@ -176,7 +176,7 @@ function ModeOption({ routing, mode, selected, blocked, available, onChoose }: M
     >
       <button
         aria-checked={selected}
-        className="flex w-full items-start gap-3 px-3 py-2.5 text-left disabled:cursor-default"
+        className="flex w-full items-start gap-3 px-3 py-2.5 text-start disabled:cursor-default"
         disabled={!available || selected}
         onClick={onChoose}
         role="radio"

@@ -97,7 +97,7 @@ export function ToolRow({ expanded, on, onExpand, onToggle, preview = false, rea
         {expandable ? (
           <button
             aria-expanded={expanded}
-            className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-center gap-2.5 text-left focus-visible:outline-hidden focus-visible:ring-[0.1875rem] focus-visible:ring-ring/50"
+            className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-center gap-2.5 text-start focus-visible:outline-hidden focus-visible:ring-[0.1875rem] focus-visible:ring-ring/50"
             onClick={onExpand}
             type="button"
           >
@@ -134,7 +134,7 @@ function ToolDetail({ hints, tool }: { hints: ReturnType<typeof hintTags>; tool:
   const { t } = useI18n()
 
   return (
-    <div className="grid gap-1 pb-2.5 pl-[3.625rem] pr-3.5">
+    <div className="grid gap-1 pb-2.5 ps-[3.625rem] pe-3.5">
       <p className="max-w-[60ch] text-[0.7rem] leading-relaxed text-(--ui-text-secondary)">{tool.description}</p>
       {hints.length > MAX_ROW_HINTS ? (
         <p className="text-[0.65rem] text-(--ui-text-quaternary)">

@@ -12,6 +12,7 @@ vi.mock('@/store/session', async (): Promise<object> => {
 import type { QueryClient } from '@tanstack/react-query'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { Direction } from 'radix-ui'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
@@ -332,7 +333,11 @@ describe('the Daybreak switch', () => {
 
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu(current: Partial<ModelMenuController['current']> = {}, host: Partial<ModelMenuController> = {}) {
+function renderMenu(
+  current: Partial<ModelMenuController['current']> = {},
+  host: Partial<ModelMenuController> = {},
+  dir: 'ltr' | 'rtl' = 'ltr'
+) {
   const select = vi.fn()
 
   const controller: ModelMenuController = {
@@ -348,13 +353,15 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}, host:
 
   render(
     <QueryClientProvider client={client}>
-      <ModelMenuCloseContext.Provider value={closeMenu}>
-        <DropdownMenu open>
-          <DropdownMenuContent>
-            <ModelCatalogMenu controller={controller} />
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </ModelMenuCloseContext.Provider>
+      <Direction.Provider dir={dir}>
+        <ModelMenuCloseContext.Provider value={closeMenu}>
+          <DropdownMenu open>
+            <DropdownMenuContent>
+              <ModelCatalogMenu controller={controller} />
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </ModelMenuCloseContext.Provider>
+      </Direction.Provider>
     </QueryClientProvider>
   )
 
@@ -644,6 +651,17 @@ describe('in-flight local downloads', () => {
 // editable behind it. The caret is that advertisement, and ArrowRight is the
 // way in for anyone not driving the menu with a mouse (#86966).
 describe('the per-row options submenu is discoverable', () => {
+  it('opens with ArrowLeft in RTL and returns to search with ArrowRight', async () => {
+    renderMenu({}, {}, 'rtl')
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowLeft' })
+    const effort = await screen.findByText('Effort')
+    fireEvent.keyDown(effort, { key: 'ArrowRight' })
+    await waitFor(() => expect(input.ownerDocument.activeElement).toBe(input))
+  })
+
   it('marks each model row as opening a submenu', async () => {
     renderMenu()
 

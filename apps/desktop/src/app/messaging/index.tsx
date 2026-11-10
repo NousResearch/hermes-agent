@@ -28,7 +28,7 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
-import { platformStatusTone } from '@/lib/platform-status'
+import { platformStatusLabel, platformStatusTone } from '@/lib/platform-status'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $activeConnectionId } from '@/store/connections'
@@ -64,9 +64,6 @@ const PILL_TONE: Record<StatusTone, string> = {
   warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
   bad: 'bg-destructive/10 text-destructive'
 }
-
-const stateLabel = (state: null | string | undefined, m: Translations['messaging']) =>
-  state ? m.states[state] || state.replace(/_/g, ' ') : m.unknown
 
 // Filter order: what needs you first, then what's fine, then what's off.
 const STATUS_FILTER_ORDER: StatusTone[] = ['bad', 'warn', 'good', 'muted']
@@ -758,7 +755,7 @@ function PlatformDetail({
             {viaRelay ? (
               <SetupPill active>{m.relayLink.title}</SetupPill>
             ) : (
-              <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+              <StatePill tone={platformStatusTone(platform)}>{platformStatusLabel(platform.state, m)}</StatePill>
             )}
             {/* Resting states earn no pill — only actionable ones. */}
             {!platform.configured && !viaRelay && <SetupPill active={false}>{m.needsSetup}</SetupPill>}

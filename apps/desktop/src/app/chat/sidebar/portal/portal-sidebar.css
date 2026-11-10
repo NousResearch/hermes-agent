@@ -227,7 +227,12 @@
   position: relative;
   display: flex;
   min-height: 2rem;
-  padding: 0;
+  margin-inline: -0.625rem;
+  padding-inline: 0.625rem;
+}
+
+.portal-sidebar [data-slot='agent-heading']:is(:hover, :focus-within) {
+  background: var(--chrome-action-hover);
 }
 
 .portal-sidebar [data-slot='agent-heading'] > .portal-agent-chat {
@@ -246,11 +251,12 @@
 .portal-sidebar [data-slot='agent-heading'] > button:not(.portal-agent-chat) {
   position: absolute;
   opacity: 0;
+  background: transparent;
 }
 
-.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(1) { right: 0; }
-.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(2) { right: 1.5rem; }
-.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(3) { right: 3rem; }
+.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(1) { right: 0.625rem; }
+.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(2) { right: 2.125rem; }
+.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(3) { right: 3.625rem; }
 
 .portal-sidebar [data-slot='agent-heading']:is(:hover, :focus-within) > button,
 .portal-sidebar [data-slot='agent-heading'] > button[aria-expanded='false'] {

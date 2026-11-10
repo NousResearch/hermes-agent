@@ -301,13 +301,19 @@ providers:
 ```
 
 On that route Hermes keeps reasoning-tag text in the stored message, in the
-final response every platform receives, and in streamed gateway previews.
-Tool-call XML is still scrubbed. Reasoning that arrives in its own field stays
-hidden as before. Like `answer_in_reasoning`, the flag can sit in a
-provider-level `capabilities:` block, and it is re-read on the active route
-every turn, so a fallback provider keeps the default stripping. Leave it off
-for servers that put reasoning inline in `content`: their reasoning would show
-up as the reply.
+final response every platform receives, and in streamed gateway previews, and
+it no longer copies tagged answer text into the message's reasoning. Tool-call
+XML is still scrubbed, and reasoning that arrives in its own field stays hidden
+as before. The interactive CLI's own display filter is not covered: its live
+stream can still hide a reasoning block that starts a line, although the stored
+reply keeps it.
+
+Like `answer_in_reasoning`, the flag can sit in a provider-level `capabilities:`
+block, and it is re-read on the active route every turn. Only the provider you
+selected decides: another provider entry on the same endpoint does not lend it
+its flag, and an explicit `false` wins. A fallback provider keeps the default
+stripping. Leave it off for servers that put reasoning inline in `content`:
+their reasoning would show up as the reply.
 
 :::note Legacy format
 Older configs used a top-level `custom_providers:` list (with `base_url` instead of `api`). It still works and is auto-migrated to the `providers:` dict on `hermes update` (config v12).

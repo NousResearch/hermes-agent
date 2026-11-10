@@ -1481,7 +1481,8 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
                 # deliver the thinking value as a JSON array, not a string (#106006);
                 # flatten first so .strip() never sees a list.
                 _add(flatten_message_text(block.get("thinking") or block.get("text") or "", sep="").strip())
-    if not parts and isinstance(content, str) and content:
+    # A ``literal_think_tags`` route's think tags are answer text, never reasoning to extract.
+    if not parts and isinstance(content, str) and content and not literal_think_tags_capability(agent):
         for pattern in _INLINE_REASONING_PATTERNS:
             for block in pattern.findall(content):
                 _add(block.strip())

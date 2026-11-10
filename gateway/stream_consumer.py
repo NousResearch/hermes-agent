@@ -54,6 +54,7 @@ _FINAL_TEXT = object()
 _FLUSH = object()
 _APPROVAL_BOUNDARY = object()
 _REOPEN_SEED = object()
+_KEPT_THINK_TEXT = object()  # a delta whose producing response kept think tags as answer text
 _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
 
 # Boundary finalize text when nothing has accumulated yet (overridable per boundary).
@@ -140,8 +141,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # ``_run_agent_mark_streamed_delivery`` must not fire for it (#105341). Default True: every
         # other construction site (incl. the proxy path) creates consumers only when streaming is on.
         self.stream_deltas_enabled = True
-        # The agent's per-response ``literal_think_tags`` decision (wired by the turn runner): such a
-        # route keeps think tags as answer text, so the preview filter must not hide them.
+        # The agent's per-response ``literal_think_tags`` decision (wired by the turn runner), read when a
+        # delta is queued: such a route keeps think tags as answer text, so the preview must show them.
         self.keeps_think_tags: Callable[[], bool] = lambda: False
         # Only platforms needing an explicit finalize call (DingTalk AI Cards) force a
         # redundant final edit; ``is True`` keeps MagicMock adapters out.
@@ -556,7 +557,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         boundary: the current message is finalized and subsequent text goes out as a new
         message below any tool-progress messages."""
         if text:
-            self._queue.put(text)
+            # Decided here, on the producing thread, so a later response's route never re-filters it.
+            self._queue.put((_KEPT_THINK_TEXT, text) if self.keeps_think_tags() is True else text)
         elif text is None:
             self.on_segment_break()
 
@@ -715,6 +717,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             elif kind is _COMMENTARY:
                 tick.commentary_text = item[1]
                 return tick
+            elif kind is _KEPT_THINK_TEXT:
+                self._filter_and_accumulate(item[1], keep_think_tags=True)
             elif kind is _FLUSH:
                 # Barrier: finalize like a tool boundary, signal at the end of the tick.
                 tick.got_flush = tick.got_segment_break = True

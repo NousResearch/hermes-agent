@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 
 from agent.provider_projection import splice_provider_projection
 from agent.think_scrubber import THINK_TAG_NAMES
+from agent.route_capabilities import literal_think_tags_capability
 from agent.trajectory import has_incomplete_scratchpad
 from agent.turn_truncation import (
     CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete, normalize_response_for_agent, partial_result,
@@ -124,7 +125,7 @@ def _reasoning_preview(agent: Any, content: str, assistant_message: Any = None) 
         extracted = extractor(assistant_message)
         if isinstance(extracted, str) and extracted.strip():
             return extracted.strip()
-    if not content:
+    if not content or literal_think_tags_capability(agent):  # its think tags are answer text
         return ""
     return "\n\n".join(
         block.strip() for block in _INLINE_REASONING_RE.findall(content) if block and block.strip()
@@ -207,9 +208,10 @@ def normalize_model_response(
     if agent.tool_progress_callback:
         _relay_thinking(agent, content, assistant_message)
 
-    # Incomplete <REASONING_SCRATCHPAD> (opened, never closed): the model ran out of
-    # output tokens mid-reasoning — retry up to 2 times, then save as partial.
-    if has_incomplete_scratchpad(content or ""):
+    # Incomplete <REASONING_SCRATCHPAD> (opened, never closed): the model ran out of output tokens
+    # mid-reasoning — retry up to 2 times, then save as partial. A ``literal_think_tags`` route
+    # returns reasoning out of band, so a scratchpad tag in its content is answer text.
+    if has_incomplete_scratchpad(content or "") and not literal_think_tags_capability(agent):
         agent._incomplete_scratchpad_retries += 1
         agent._buffer_vprint("⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
         if agent._incomplete_scratchpad_retries <= 2:

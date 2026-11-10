@@ -27,7 +27,8 @@ _DELTAS = ["<thi", "nk>\nan example block\n</think>\n", "Close it with </th", "i
 
 def _preview(consumer: GatewayStreamConsumer) -> str:
     for delta in _DELTAS:
-        consumer._filter_and_accumulate(delta)
+        consumer.on_delta(delta)
+    consumer._drain_queue()
     consumer._flush_think_buffer()
     return consumer._accumulated
 

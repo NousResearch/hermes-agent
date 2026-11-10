@@ -5,10 +5,13 @@ moved (``moves.MOVES``). Supported: release-channel releases from v0.21.6 to the
 their canaries. Kinds:
 
 - ``package``: ``<name>/__init__.py``; a fresh process imports the old package name.
-- ``module``: the old updater imports it lazily under a package it loaded before the swap, so Python
-  looks it up on the old package's ``__path__`` and the finder is not consulted.
-- ``by-path``: a release runs the file by path.
+- ``module``: a release imports the name where the finder is not installed: lazily, after the swap,
+  under a package its updater loaded before (Python looks on the old package's ``__path__``), or
+  first thing in a fresh process (a launcher's ``import hermes_bootstrap``).
+- ``by-path``: a release runs or loads the file by path.
 - ``exists``: a release checks that the file exists.
+- ``copy``: a release runs the file without the application on the path (``python -I -S``, or the
+  file copied out alone); the old path holds a byte copy of the moved file.
 
 Comments: the releases that reach the name, and one caller. Plain literals, importable on Python 3.11.
 """
@@ -100,6 +103,8 @@ REQUIRED_NAMES: dict[str, str] = {
     "hermes_cli.update_serve_obligations": "module",  # v0.21.6..v0.23.0: hermes_cli/update_receipt.py:660@v0.22.6
     "hermes_cli.update_stage": "module",  # v0.22.7..v0.23.0: hermes_cli/update_cmd_fleet.py:1695@v0.23.0
     "hermes_cli.version_info": "module",  # v0.22.7..v0.23.0: hermes_cli/update_cmd_fleet.py:144@v0.23.0
+    "hermes_bootstrap": "module",  # v0.21.6..v0.23.0: every launcher script and inline launch command, -I, no finder: hermes_cli/_launchers.py:68,499@v0.23.0
+    "hermes_constants": "module",  # v0.21.6..v0.23.0: launcher --print-runtime-command, before hermes_bootstrap: hermes_cli/_launchers.py:61,492,504@v0.23.0
     "model_tools": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "run_agent": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "tools.env_passthrough": "module",  # v0.22.7..v0.23.0: tools/environments/local.py:322@v0.23.0
@@ -108,8 +113,8 @@ REQUIRED_NAMES: dict[str, str] = {
     "toolsets": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "hermes_cli/_launchers.py": "by-path",  # v0.21.6..v0.23.0: scripts/install.ps1:1393
     "hermes_cli/_update_takeover.py": "by-path",  # v0.21.6..v0.23.0: hermes_cli/_old_updater.py:137@v0.23.0
-    "hermes_cli/backup_sqlite.py": "by-path",  # v0.21.6..v0.23.0: apps/desktop/electron/main.ts:3645
-    "hermes_cli/linux_desktop_entry.py": "by-path",  # v0.21.6..v0.23.0: nix/desktop.nix:204
+    "hermes_cli/backup_sqlite.py": "copy",  # v0.21.6..v0.23.0: -I -S, apps/desktop/electron/updater/state-db-preflight.ts:60
+    "hermes_cli/linux_desktop_entry.py": "copy",  # v0.21.6..v0.23.0: nix/desktop.nix:204 copies it alone onto PYTHONPATH
     "hermes_cli/main.py": "by-path",  # v0.21.6..v0.23.0: hermes_cli/update_receipt.py:1063@v0.23.0
     "hermes_cli/source_check.py": "by-path",  # v0.21.6..v0.23.0: apps/desktop/electron/updater/checkout-source.ts:106@v0.23.0
     "hermes_cli/source_completion.py": "by-path",  # v0.21.6..v0.23.0: scripts/install.sh:1120

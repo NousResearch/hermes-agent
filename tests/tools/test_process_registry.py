@@ -22,8 +22,9 @@ from tools.process_registry import (
 
 
 @pytest.fixture()
-def registry():
-    """Create a fresh ProcessRegistry."""
+def registry(monkeypatch):
+    """A fresh ProcessRegistry. Fake Popen pids never reach the owner-death supervisor: a live pgid would start it."""
+    monkeypatch.setattr("hermes_cli.process_identity._update_supervised_pgids", lambda verb, pgids: None)
     return ProcessRegistry()
 
 
@@ -1185,7 +1186,6 @@ class TestSpawnRewriteCompoundBackground:
         shell_cmd = captured_cmd[0]
         # The command passed to Popen should be the REWRITTEN version
         assert "&& { node server.js &>/tmp/srv.log & }" in shell_cmd[2]
-
 
     def test_pty_path_uses_rewritten_command(self, registry):
         """PTY spawn path must also use the rewritten command (issue #68915)."""

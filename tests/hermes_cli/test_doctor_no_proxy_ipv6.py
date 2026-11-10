@@ -56,3 +56,13 @@ def test_run_probes_leaves_a_clean_environment_untouched(clash_env, monkeypatch)
     import os
 
     assert os.environ["NO_PROXY"] == "example.com,10.0.0.0/8"
+
+
+def test_run_probes_keeps_aws_instance_metadata_only_when_asked(monkeypatch):
+    import os
+    from hermes_cli import doctor_connectivity as dc
+    monkeypatch.delenv("AWS_EC2_METADATA_DISABLED", raising=False)
+    read = [("p", lambda: os.environ.get("AWS_EC2_METADATA_DISABLED"))]
+    assert dc.run_probes(read) == ["true"]  # doctor: no 2 s IMDS lookup per Bedrock probe
+    assert dc.run_probes(read, aws_imds=True) == [None]  # inference probe: an EC2 role is a credential
+    assert "AWS_EC2_METADATA_DISABLED" not in os.environ

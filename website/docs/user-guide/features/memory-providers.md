@@ -175,7 +175,7 @@ The mapping:
 hermes profile create coder --clone
 ```
 
-`--clone` creates a `hermes.coder` host block in `honcho.json` with `aiPeer: "coder"`, shared `workspace`, inherited `peerName`, `recallMode`, `writeFrequency`, `observation`, etc. The AI peer is eagerly created in Honcho so it exists before the first message.
+`--clone` (which carries `memory.provider: honcho`) lets the Honcho plugin create a `hermes_coder` host block in `honcho.json` with `aiPeer: "coder"`, shared `workspace`, inherited `peerName`, `recallMode`, `writeFrequency`, `observation`, etc. The AI peer is eagerly created in Honcho so it exists before the first message. `hermes profile rename` lets the plugin re-key that host block, keeping its peers. Both need a Honcho plugin version with the profile hooks.
 
 ### Existing profiles, backfill Honcho peers
 
@@ -183,7 +183,7 @@ hermes profile create coder --clone
 hermes honcho sync
 ```
 
-Scans every Hermes profile, creates host blocks for any profile without one, inherits settings from the default `hermes` block, and creates the new AI peers eagerly. Idempotent — skips profiles that already have a host block.
+Scans every Hermes profile, creates host blocks for any profile without one, inherits settings from the default `hermes` block, and creates the new AI peers eagerly. Idempotent — skips profiles that already have a host block. `hermes update` no longer does this for you: run it once for profiles created before Honcho was set up.
 
 ### Per-profile observation
 

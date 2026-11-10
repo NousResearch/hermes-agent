@@ -1082,7 +1082,8 @@ def _(rid, params: dict) -> dict:
                     worker = _SlashWorker(
                         session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
                         profile_home=session.get("profile_home"),
-                        provider=getattr(session.get("agent"), "provider", None) or None)
+                        provider=getattr(session.get("agent"), "provider", None) or None,
+                        base_url=getattr(session.get("agent"), "base_url", None) or None)
                     _attach_worker(sid, session, worker)
                 except Exception as e:
                     return _err(rid, 5030, f"slash worker start failed: {e}")

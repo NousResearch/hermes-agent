@@ -67,8 +67,11 @@ class _SessionModelSettingsMixin:
             "provider": model_cfg.get("provider") or "openrouter",
             "base_url": model_cfg.get("base_url") or "",
         }
-        if channel is not None and channel.model:
-            defaults.update(model=channel.model, provider=channel.provider or defaults["provider"])
+        if channel is not None:
+            defaults.update(
+                model=channel.model or defaults["model"],
+                provider=channel.provider or defaults["provider"],
+            )
         result = {field: str(override.get(field) or default).strip() for field, default in defaults.items()}
         return SessionModelSettings(
             session_key=key, model=result["model"], provider=result["provider"],

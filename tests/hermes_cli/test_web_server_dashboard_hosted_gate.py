@@ -1,10 +1,10 @@
 """A hosted process never imports a home plugin's dashboard api file.
 
 ``_mount_one_plugin_api`` is the seam the web server's import sweep and the hot-mount
-fallback share; the one hosted provenance rule
-(:func:`plugins.plugin_loader.hosted_inprocess_refusal`) answers it before the api
-module can run — a hosted deployment's dashboard serves only the plugins its image
-bundles, and a local install mounts exactly as before.
+fallback share; the process-wide code fence the hosted boot installs refuses the api
+module's import when its file resolves outside the deployment image — a hosted
+deployment's dashboard serves only the plugins its image bundles, and a local install
+mounts exactly as before.
 """
 
 from __future__ import annotations
@@ -16,11 +16,18 @@ import pytest
 fastapi = pytest.importorskip("fastapi")
 
 
-def test_a_home_plugin_api_is_refused_in_a_hosted_process(tmp_path, monkeypatch):
+@pytest.fixture
+def hosted(monkeypatch):
+    """A frozen hosted verdict with the process-wide code fence installed."""
     from hermes_cli import hosted_mode
-    from hermes_cli import web_server_dashboard as dashboard
+    from hermes_cli.hosted_code_fence import install_hosted_code_fence
 
-    monkeypatch.setattr(hosted_mode, "is_hosted", lambda: True)
+    monkeypatch.setitem(hosted_mode._VERDICT, "hosted", True)
+    install_hosted_code_fence()
+
+
+def test_a_home_plugin_api_is_refused_in_a_hosted_process(tmp_path, monkeypatch, hosted):
+    from hermes_cli import web_server_dashboard as dashboard
     marker = tmp_path / "api-imported"
     plugin_dir = tmp_path / "probe-plugin"
     plugin_dir.mkdir()

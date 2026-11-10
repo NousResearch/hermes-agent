@@ -24,6 +24,28 @@ def profile_env(tmp_path, monkeypatch):
     return home
 
 
+def test_unload_keeps_plugin_module_available_to_callbacks(monkeypatch):
+    import importlib
+    import sys
+    from types import ModuleType, SimpleNamespace
+    from hermes_cli.plugins_lifecycle import _dispose_manager
+
+    name = "hermes_plugins.retirement_test"
+    module = ModuleType(name)
+    monkeypatch.setitem(sys.modules, name, module)
+    seen = []
+    manager = SimpleNamespace(scope_key="test", _plugins={"test": SimpleNamespace(module=module)})
+
+    def unload():
+        seen.append(importlib.import_module(name))
+        manager._plugins.clear()
+
+    manager.unload = unload
+    _dispose_manager(plugins, manager)
+    assert seen == [module]
+    assert name not in sys.modules
+
+
 def test_delete_evicts_cached_plugin_manager(profile_env):
     create_profile("gone", no_alias=True, no_skills=True)
     profile_dir = get_profile_dir("gone")

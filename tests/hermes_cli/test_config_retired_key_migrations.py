@@ -83,6 +83,93 @@ def test_one_step_per_version():
     assert versions == sorted(set(versions))
 
 
+_LEGACY_IMAGE = "nikolaik/python-nodejs:python3.11-nodejs20"
+#: One config that triggers (nearly) every registered step, each run alone at ``version - 1``.
+_TRIGGER_EVERYTHING = {
+    "custom_providers": [{"name": "a", "base_url": "http://h/v1"}, {"name": "b", "base_url": "http://i/v1"}],
+    "stt": {"model": "base"},
+    "display": {"tool_progress_overrides": {"telegram": "off"}, "personality": "pirate",
+                "background_process_notifications": "all"},
+    "compression": {"summary_model": "m", "threshold_tokens": 256000},
+    "plugins": {"enabled": ["observability/nemo_relay"]},
+    "memory": {"write_mode": "approve"}, "skills": {"write_mode": "off"}, "model_catalog": {"ttl_hours": 24},
+    "agent": {"verify_on_stop": True, "clarify_timeout": 3600},
+    "delegation": {"max_async_children": 7, "max_iterations": 50, "max_concurrent_children": 3},
+    "platform_toolsets": {"cli": ["terminal", "bfl", "web"]}, "known_builtin_toolsets": {"cli": ["bfl"]},
+    "cron": {"model_drift_guard": True, "bot_chat_delivery_timeout_seconds": 30},
+    "gateway": {"multiplex_profile_allowlist": ["a"]},
+    "curator": {"stale_after_days": 30, "archive_after_days": 90},
+    "mcp_servers": {"s": {"command": "x", "disabled": True}, "t": {"command": "y", "disabled": True}},
+    "terminal": {"docker_image": _LEGACY_IMAGE, "modal_image": _LEGACY_IMAGE, "daytona_image": _LEGACY_IMAGE,
+                 "singularity_image": f"docker://{_LEGACY_IMAGE}", "vercel_runtime": "node24"},
+    "security": {"tirith_enabled": True, "tirith_path": "x"},
+    "browser": {"backend": "x", "extension_control": True},
+}
+
+
+def test_every_step_writes_config_yaml_at_most_once(tmp_path, monkeypatch):
+    """A failing step is retried whole. A step that writes config.yaml twice can land its first
+    write, raise on the second, and on the retry write the first part again over a value the
+    user set back in between. So every step builds one document and saves it once."""
+    import copy
+    from hermes_cli import config_migrations
+
+    real = config_migrations._persist_migration
+    writes = {}
+    for version, step in config_migrations.MIGRATIONS:
+        home = tmp_path / f"v{version}"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        doc = {**copy.deepcopy(_TRIGGER_EVERYTHING), "_config_version": version - 1}
+        (home / "config.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+        (home / ".env").write_text("LLM_MODEL=x\nOPENAI_MODEL=y\nTERMINAL_VERCEL_RUNTIME=node24\n", encoding="utf-8")
+        count = [0]
+
+        def counting(config, _count=count):
+            _count[0] += 1
+            real(config)
+
+        monkeypatch.setattr(config_migrations, "_persist_migration", counting)
+        step({"env_added": [], "config_added": [], "warnings": []}, True)
+        monkeypatch.setattr(config_migrations, "_persist_migration", real)
+        writes[version] = count[0]
+    assert {v: n for v, n in writes.items() if n > 1} == {}
+    assert writes[44] == writes[48] == 1, "the multi-key steps were triggered"
+
+
+def test_v48_lands_whole_so_the_retry_keeps_a_pin_the_user_restored(tmp_path, monkeypatch):
+    """v48 drops several old-default sandbox images. If it raised half way, the retry would drop
+    again an image the user pinned back on purpose in between."""
+    from hermes_cli import config_migrations
+    from hermes_cli.config import DEFAULT_CONFIG, migrate_config
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "_config_version": 47, "terminal": {"docker_image": _LEGACY_IMAGE, "modal_image": _LEGACY_IMAGE},
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    real = config_migrations._persist_migration
+
+    def full_disk_without_modal(config):
+        if "modal_image" not in (config.get("terminal") or {}):
+            raise OSError("No space left on device")
+        real(config)
+
+    monkeypatch.setattr(config_migrations, "_persist_migration", full_disk_without_modal)
+    assert migrate_config(interactive=False, quiet=True)["failed_step"] == 48
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert raw["_config_version"] == 47
+    assert raw["terminal"] == {"docker_image": _LEGACY_IMAGE, "modal_image": _LEGACY_IMAGE}, "no half of v48 landed"
+
+    monkeypatch.setattr(config_migrations, "_persist_migration", real)
+    raw["terminal"]["docker_image"] = "mine:1"  # the user's own pin before the retry
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert "failed_step" not in migrate_config(interactive=False, quiet=True)
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert raw["terminal"] == {"docker_image": "mine:1"}
+    assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+
+
 class TestRetiredBotChatDeliveryTimeout:
     def test_v51_drops_bot_chat_delivery_timeout_with_a_note(self, tmp_path, monkeypatch):
         """The removed cron knob is dropped from existing configs with a one-time note;

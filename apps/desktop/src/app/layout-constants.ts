@@ -6,11 +6,12 @@
 //
 // NOTE: these must stay literal strings — Tailwind's scanner only picks up
 // complete class names, so do not build them via template interpolation.
-export const PAGE_INSET_X = 'px-[clamp(1.25rem,4vw,4rem)]'
+// Figma settings content gutter is ~28px; keep a soft floor on narrow panes.
+export const PAGE_INSET_X = 'px-[clamp(1rem,2vw,1.75rem)]'
 
 // Matching negative inline-margin to bleed an element (e.g. a sticky header bar)
 // out to the gutter edges before re-applying PAGE_INSET_X.
-export const PAGE_INSET_NEG_X = '-mx-[clamp(1.25rem,4vw,4rem)]'
+export const PAGE_INSET_NEG_X = '-mx-[clamp(1rem,2vw,1.75rem)]'
 
 // Readable cap for overlay "inner page" bodies (settings, command center). Wide
 // enough to breathe, tight enough that content doesn't sprawl on ultrawide

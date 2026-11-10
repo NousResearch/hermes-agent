@@ -32,6 +32,9 @@ interface OverlayViewProps {
   /** Controls rendered on the close button's row, to its left. They ride the
    *  titlebar strip, so keep them titlebar-sized and quiet. */
   titlebarActions?: ReactNode
+  /** Hide the absolute titlebar search/close strip when the surface owns those
+   *  controls itself (e.g. Settings breadcrumb row). Esc + backdrop still close. */
+  hideTitlebarTools?: boolean
 }
 
 export function OverlayView({
@@ -41,6 +44,7 @@ export function OverlayView({
   contentClassName,
   edgeBadge,
   headerContent,
+  hideTitlebarTools = false,
   rootClassName,
   titlebarActions
 }: OverlayViewProps) {
@@ -123,20 +127,22 @@ export function OverlayView({
               </div>
             )}
 
-            <div className="pointer-events-auto absolute right-[var(--titlebar-tools-right,0.75rem)] top-[calc(0.1875rem+var(--titlebar-height)/2)] flex -translate-y-1/2 items-center gap-1.5 [-webkit-app-region:no-drag]">
-              {titlebarActions}
+            {!hideTitlebarTools && (
+              <div className="pointer-events-auto absolute right-[var(--titlebar-tools-right,0.75rem)] top-[calc(0.1875rem+var(--titlebar-height)/2)] flex -translate-y-1/2 items-center gap-1.5 [-webkit-app-region:no-drag]">
+                {titlebarActions}
 
-              <Button
-                aria-label={closeLabel}
-                className="size-9 rounded-full border border-[#e2e8f0] bg-white text-(--ui-text-tertiary) shadow-none hover:bg-[#f8fafc] hover:text-foreground dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-chat-bubble-background)"
-                data-overlay-close=""
-                onClick={closeOverlay}
-                size="icon-titlebar"
-                variant="ghost"
-              >
-                <TitlebarIcon name="close" />
-              </Button>
-            </div>
+                <Button
+                  aria-label={closeLabel}
+                  className="size-9 rounded-full border border-[#e2e8f0] bg-white text-(--ui-text-tertiary) shadow-none hover:bg-[#f8fafc] hover:text-foreground dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-chat-bubble-background)"
+                  data-overlay-close=""
+                  onClick={closeOverlay}
+                  size="icon-titlebar"
+                  variant="ghost"
+                >
+                  <TitlebarIcon name="close" />
+                </Button>
+              </div>
+            )}
           </div>
 
           {/* No top padding here: the split-layout columns own their own

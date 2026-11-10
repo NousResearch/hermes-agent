@@ -100,7 +100,7 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
         // top clearance, the bottom gutter, and the horizontal clamp gutter
         // (inlined from PAGE_INSET_X so only overlay panes tighten, not the
         // shared page gutter). Narrow top drops toward the OverlayNav bar.
-        'mx-auto flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-transparent pb-2 pt-[calc((var(--titlebar-height)/2+1rem)*2/3)] max-[47.5rem]:pt-[calc(0.5rem*2/3)] px-[clamp(0.8333rem,2.6667vw,2.6667rem)]',
+        'mx-auto flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-transparent pb-2 pt-[calc((var(--titlebar-height)/2+1rem)*2/3)] max-[47.5rem]:pt-[calc(0.5rem*2/3)] px-[clamp(0.6667rem,1.333vw,1.1667rem)]',
         PAGE_MAX_W,
         className
       )}
@@ -181,10 +181,12 @@ export interface OverlayNavGroup extends OverlayNavLink {
 // same way instead of stacking its whole sidebar. Drop it in as the first
 // child of an OverlaySplitLayout, before OverlayMain.
 export function OverlayNav({
+  className,
   footer,
   groups,
   title
 }: {
+  className?: string
   footer?: ReactNode
   groups: OverlayNavGroup[]
   /** Optional rail heading (e.g. Settings). */
@@ -218,7 +220,7 @@ export function OverlayNav({
 
   return (
     <>
-      <OverlaySidebar className={RAIL_HIDDEN}>
+      <OverlaySidebar className={cn(RAIL_HIDDEN, className)}>
         {title ? (
           <div className="mb-2.5 flex items-center justify-between px-2.5 pb-0.5 pt-0.5" data-overlay-nav-title="">
             <span className="text-[15px] font-bold tracking-[-0.01em] text-[#0f172a] dark:text-foreground">

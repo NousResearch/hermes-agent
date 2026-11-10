@@ -1081,6 +1081,10 @@ export interface Translations {
     appearance: {
       title: string
       intro: string
+      generalDesc: string
+      typographyDesc: string
+      windowLayoutDesc: string
+      chatDisplayDesc: string
       colorMode: string
       colorModeDesc: string
       toolViewTitle: string

@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router'
 
+import { TitlebarIcon } from '@/app/shell/titlebar-icon'
+import { Button } from '@/components/ui/button'
 import { codiconIcon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
@@ -40,6 +42,7 @@ import { notifyError } from '@/store/notifications'
 import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { PAGE_INSET_X } from '../layout-constants'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
@@ -458,29 +461,45 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  // Search pill rides the OverlayView titlebar row beside the close button so
-  // both share the same vertical center. Clicking (or typing) opens the ⌘K
+  // Search + close sit on the breadcrumb row (Figma) so they share a baseline
+  // with "Settings / Appearance / General". Clicking (or typing) opens the ⌘K
   // palette scoped to settings; while the palette is up the pill fades.
   const searchCombo = bindingsFor('nav.commandPalette')[0]
   const paletteOpen = useStore($commandPaletteOpen)
 
-  const searchPill = (
-    <button
-      className={cn(
-        'flex h-9 min-w-[13.5rem] items-center gap-2 rounded-full border border-[#e2e8f0] bg-white px-3.5 text-[#94a3b8] shadow-none transition-all duration-200 ease-out hover:border-[#cbd5e1] hover:text-[#64748b] dark:border-(--ui-stroke-secondary) dark:bg-(--ui-chat-bubble-background) dark:text-(--ui-text-tertiary) motion-reduce:transition-none',
-        paletteOpen && 'pointer-events-none scale-[1.02] opacity-0'
-      )}
-      onClick={() => {
-        triggerHaptic('open')
-        openCommandPalettePage('settings')
-      }}
-      tabIndex={paletteOpen ? -1 : undefined}
-      type="button"
-    >
-      <Search className="size-3.5 shrink-0" />
-      <span className="min-w-0 flex-1 truncate text-left text-[13px]">{t.settings.search.pill}</span>
-      {searchCombo && <KbdCombo combo={searchCombo} size="sm" variant="ghost" />}
-    </button>
+  const headerTools = (
+    <div className="flex items-center gap-1.5">
+      <button
+        className={cn(
+          'flex h-9 min-w-[13.5rem] items-center gap-2 rounded-full border border-[#e2e8f0] bg-white px-3.5 text-[#94a3b8] shadow-none transition-all duration-200 ease-out hover:border-[#cbd5e1] hover:text-[#64748b] dark:border-(--ui-stroke-secondary) dark:bg-(--ui-chat-bubble-background) dark:text-(--ui-text-tertiary) motion-reduce:transition-none',
+          paletteOpen && 'pointer-events-none scale-[1.02] opacity-0'
+        )}
+        onClick={() => {
+          triggerHaptic('open')
+          openCommandPalettePage('settings')
+        }}
+        tabIndex={paletteOpen ? -1 : undefined}
+        type="button"
+      >
+        <Search className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate text-left text-[13px]">{t.settings.search.pill}</span>
+        {searchCombo && <KbdCombo combo={searchCombo} size="sm" variant="ghost" />}
+      </button>
+
+      <Button
+        aria-label={t.settings.closeSettings}
+        className="size-9 rounded-full border border-[#e2e8f0] bg-white text-(--ui-text-tertiary) shadow-none hover:bg-[#f8fafc] hover:text-foreground dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-chat-bubble-background)"
+        data-overlay-close=""
+        onClick={() => {
+          triggerHaptic('close')
+          onClose()
+        }}
+        size="icon-titlebar"
+        variant="ghost"
+      >
+        <TitlebarIcon name="close" />
+      </Button>
+    </div>
   )
 
   const navFooter = (
@@ -557,17 +576,22 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     )
 
   return (
-    <OverlayView
-      closeLabel={t.settings.closeSettings}
-      onClose={onClose}
-      titlebarActions={searchPill}
-    >
+    <OverlayView closeLabel={t.settings.closeSettings} hideTitlebarTools onClose={onClose}>
       <OverlaySplitLayout>
-        <OverlayNav footer={navFooter} groups={navGroups} title={t.commandCenter.settings} />
+        <OverlayNav
+          className="pt-7 max-[47.5rem]:pt-4"
+          footer={navFooter}
+          groups={navGroups}
+          title={t.commandCenter.settings}
+        />
 
-        <OverlayMain className="px-0 pb-0">
+        <OverlayMain className="px-0 pb-0 pt-7 max-[47.5rem]:pt-4">
           <SettingsBreadcrumbContext.Provider value>
-            {activeGroup && <SettingsSubpageHeader child={activeChild} group={activeGroup} />}
+            {activeGroup ? (
+              <SettingsSubpageHeader child={activeChild} group={activeGroup} trailing={headerTools} />
+            ) : (
+              <div className={cn('mb-3 flex justify-end', PAGE_INSET_X)}>{headerTools}</div>
+            )}
             {needsSubpageRedirect ? (
               <Navigate replace to={{ hash, pathname, search: `?${subpageSearch}` }} />
             ) : (

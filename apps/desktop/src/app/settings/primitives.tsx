@@ -16,10 +16,24 @@ export const SettingsBreadcrumbContext = createContext(false)
 
 // `bare` drops the page gutters + tall bottom pad for embedding in a tighter
 // surface (e.g. the boot-failure recovery card owns its own padding).
-export function SettingsContent({ children, bare = false }: { children: ReactNode; bare?: boolean }) {
+export function SettingsContent({
+  bare = false,
+  children,
+  className
+}: {
+  bare?: boolean
+  children: ReactNode
+  className?: string
+}) {
   return (
     <section className="min-h-0 overflow-hidden">
-      <div className={cn('h-full min-h-0 overflow-y-auto', bare ? 'px-5 pb-6' : cn('pb-20', PAGE_INSET_X))}>
+      <div
+        className={cn(
+          'h-full min-h-0 overflow-y-auto',
+          bare ? 'px-5 pb-6' : cn('pb-20', PAGE_INSET_X),
+          className
+        )}
+      >
         {children}
       </div>
     </section>

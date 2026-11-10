@@ -1,7 +1,111 @@
-/* Settings → Chat → Behavior / Attachments — Figma 411:10281, 411:11955 */
+/* Settings cards — Chat Behavior/Attachments + Appearance General
+   Figma 411:10281, 411:11955, 411:12633
+   Appearance Theme — Figma 426:13480
+   Appearance Typography — Figma 426:14599
+   Appearance Window & layout — Figma 426:15445
+   Appearance Chat display — Figma 426:16274
+   Appearance Pet — Figma 426:17109 */
+
+/* Theme page: mode toggle (Light filled blue), search, selected cards */
+[data-appearance-theme-mode] > div {
+  gap: 0;
+  border-radius: 12px;
+  background: #f1f5f9;
+  padding: 5px;
+}
+
+:root.dark [data-appearance-theme-mode] > div {
+  background: var(--ui-bg-tertiary);
+}
+
+[data-appearance-theme-mode] button {
+  min-height: 2.125rem;
+  border-radius: 8px;
+  padding-inline: 0.875rem;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+[data-appearance-theme-mode] button[aria-pressed='true'] {
+  background: #2f5bea;
+  color: #fff;
+  box-shadow: none;
+}
+
+[data-appearance-theme-mode] button[aria-pressed='false'] {
+  background: transparent;
+  color: #64748b;
+}
+
+:root.dark [data-appearance-theme-mode] button[aria-pressed='false'] {
+  color: var(--ui-text-tertiary);
+}
+
+[data-appearance-theme] .appearance-theme-search {
+  height: 2.5rem;
+  gap: 0.625rem;
+  border-radius: 0.75rem;
+  border-color: #e2e8f0;
+  background: #f7f9fc;
+  padding-inline: 0.875rem;
+  box-shadow: none;
+}
+
+:root.dark [data-appearance-theme] .appearance-theme-search {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-bg-quinary);
+}
+
+[data-appearance-theme] .appearance-theme-search input {
+  font-size: 14px;
+}
+
+[data-appearance-theme-card] {
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: #fff;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+[data-appearance-theme-card]:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+[data-appearance-theme-card][data-active='true'] {
+  border-color: #9db7f0;
+  background: #e3ecfd;
+  box-shadow: 0 0 0 1px #9db7f0;
+}
+
+:root.dark [data-appearance-theme-card] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-bubble-background);
+}
+
+:root.dark [data-appearance-theme-card]:hover {
+  border-color: var(--ui-stroke-secondary);
+  background: var(--ui-bg-quinary);
+}
+
+:root.dark [data-appearance-theme-card][data-active='true'] {
+  border-color: #2f5bea;
+  background: color-mix(in srgb, #2f5bea 18%, transparent);
+  box-shadow: 0 0 0 1px #2f5bea;
+}
 
 [data-chat-behavior-card],
-[data-chat-attachments-card] {
+[data-chat-attachments-card],
+[data-appearance-general-card],
+[data-appearance-typography-card],
+[data-appearance-window-layout-card],
+[data-appearance-chat-display-card],
+[data-appearance-pet-card] {
   overflow: hidden;
   border: 1px solid #e2e8f0;
   border-radius: 20px;
@@ -10,53 +114,262 @@
 }
 
 :root.dark [data-chat-behavior-card],
-:root.dark [data-chat-attachments-card] {
+:root.dark [data-chat-attachments-card],
+:root.dark [data-appearance-general-card],
+:root.dark [data-appearance-typography-card],
+:root.dark [data-appearance-window-layout-card],
+:root.dark [data-appearance-chat-display-card],
+:root.dark [data-appearance-pet-card] {
   border-color: var(--ui-stroke-tertiary);
   background: var(--ui-chat-bubble-background);
   box-shadow: none;
 }
 
 [data-chat-behavior-card] > [data-chat-settings-row] + [data-chat-settings-row],
-[data-chat-attachments-card] > [data-chat-settings-row] + [data-chat-settings-row] {
+[data-chat-attachments-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-appearance-general-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-appearance-typography-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-appearance-window-layout-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-appearance-chat-display-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-appearance-pet-card] > [data-chat-settings-row] + [data-chat-settings-row] {
   border-top: 1px solid #e2e8f0;
 }
 
 :root.dark [data-chat-behavior-card] > [data-chat-settings-row] + [data-chat-settings-row],
-:root.dark [data-chat-attachments-card] > [data-chat-settings-row] + [data-chat-settings-row] {
+:root.dark [data-chat-attachments-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-appearance-general-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-appearance-typography-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-appearance-window-layout-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-appearance-chat-display-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-appearance-pet-card] > [data-chat-settings-row] + [data-chat-settings-row] {
   border-top-color: var(--ui-stroke-tertiary);
 }
 
 [data-chat-behavior-card] [data-chat-settings-row] > * > div,
-[data-chat-attachments-card] [data-chat-settings-row] > * > div {
+[data-chat-attachments-card] [data-chat-settings-row] > * > div,
+[data-appearance-general-card] [data-chat-settings-row] > * > div,
+[data-appearance-typography-card] [data-chat-settings-row] > * > div,
+[data-appearance-window-layout-card] [data-chat-settings-row] > * > div,
+[data-appearance-chat-display-card] [data-chat-settings-row] > * > div,
+[data-appearance-pet-card] [data-chat-settings-row] > * > div {
   padding-block: 1.125rem;
   padding-inline: 1.25rem;
 }
 
 [data-chat-behavior-card] [data-chat-settings-row] [class*='font-medium'],
-[data-chat-attachments-card] [data-chat-settings-row] [class*='font-medium'] {
+[data-chat-attachments-card] [data-chat-settings-row] [class*='font-medium'],
+[data-appearance-general-card] [data-chat-settings-row] [class*='font-medium'],
+[data-appearance-typography-card] [data-chat-settings-row] [class*='font-medium'],
+[data-appearance-window-layout-card] [data-chat-settings-row] [class*='font-medium'],
+[data-appearance-chat-display-card] [data-chat-settings-row] [class*='font-medium'],
+[data-appearance-pet-card] [data-chat-settings-row] [class*='font-medium'] {
   font-size: 15px;
   font-weight: 600;
   color: #0f172a;
 }
 
 :root.dark [data-chat-behavior-card] [data-chat-settings-row] [class*='font-medium'],
-:root.dark [data-chat-attachments-card] [data-chat-settings-row] [class*='font-medium'] {
+:root.dark [data-chat-attachments-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-appearance-general-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-appearance-typography-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-appearance-window-layout-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-appearance-chat-display-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-appearance-pet-card] [data-chat-settings-row] [class*='font-medium'] {
   color: var(--ui-text-primary);
 }
 
 [data-chat-behavior-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
-[data-chat-attachments-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'] {
+[data-chat-attachments-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-appearance-general-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-appearance-typography-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-appearance-window-layout-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-appearance-chat-display-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-appearance-pet-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'] {
   margin-top: 0.25rem;
   font-size: 13px;
   line-height: 1.35;
   color: #64748b;
 }
 
+/* Bottom inset inside Choose-a-pet so "Showing N of M" clears the card
+   edge, plus outer gap so the card doesn't kiss the settings pane border. */
+[data-appearance-pet] {
+  padding-bottom: 1.5rem;
+}
+
+[data-appearance-pet-card] {
+  margin-bottom: 0.5rem;
+}
+
+[data-appearance-pet-card] > [data-chat-settings-row]:last-child > * > div {
+  padding-bottom: 1.75rem;
+}
+
+[data-appearance-pet-card] > [data-chat-settings-row]:first-child:last-child > * > div {
+  padding-bottom: 2.5rem;
+}
+
+/* Hide the page scroller on Pet — the gallery expands in-flow instead of
+   nesting a second scrollbar against the settings chrome. */
+.appearance-pet-scroll {
+  scrollbar-width: none;
+}
+
+.appearance-pet-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+[data-appearance-pet] .appearance-pet-search {
+  height: 2.5rem;
+  gap: 0.625rem;
+  border-radius: 0.75rem;
+  border-color: #e2e8f0;
+  background: #f7f9fc;
+  padding-inline: 0.875rem;
+  box-shadow: none;
+}
+
+:root.dark [data-appearance-pet] .appearance-pet-search {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-bg-quinary);
+}
+
+[data-appearance-pet] .appearance-pet-search input {
+  font-size: 14px;
+}
+
+[data-appearance-pet-item] {
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: #fff;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+[data-appearance-pet-item]:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+[data-appearance-pet-item][data-active='true'] {
+  border-color: #9db7f0;
+  background: #e3ecfd;
+  box-shadow: 0 0 0 1px #9db7f0;
+}
+
+:root.dark [data-appearance-pet-item] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-bubble-background);
+}
+
+:root.dark [data-appearance-pet-item]:hover {
+  border-color: var(--ui-stroke-secondary);
+  background: var(--ui-bg-quinary);
+}
+
+:root.dark [data-appearance-pet-item][data-active='true'] {
+  border-color: #2f5bea;
+  background: color-mix(in srgb, #2f5bea 18%, transparent);
+  box-shadow: 0 0 0 1px #2f5bea;
+}
+
+/* Soft-blue segment pills — Typography scales + Window & layout (Figma) */
+[data-appearance-typography-scale] > div,
+[data-appearance-segment] > div {
+  gap: 0;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 12px;
+  background: #f1f5f9;
+  padding: 5px;
+}
+
+:root.dark [data-appearance-typography-scale] > div,
+:root.dark [data-appearance-segment] > div {
+  background: var(--ui-bg-tertiary);
+}
+
+[data-appearance-typography-scale] button,
+[data-appearance-segment] button {
+  min-height: 2.125rem;
+  border-radius: 8px;
+  padding-inline: 0.75rem;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+[data-appearance-typography-scale] button[aria-pressed='true'],
+[data-appearance-segment] button[aria-pressed='true'] {
+  border: 1px solid #9db7f0;
+  background: #e3ecfd;
+  color: #2f5bea;
+  box-shadow: 0 0 0 1px #9db7f0;
+}
+
+[data-appearance-typography-scale] button[aria-pressed='false'],
+[data-appearance-segment] button[aria-pressed='false'] {
+  border: 1px solid transparent;
+  background: transparent;
+  color: #64748b;
+}
+
+:root.dark [data-appearance-typography-scale] button[aria-pressed='true'],
+:root.dark [data-appearance-segment] button[aria-pressed='true'] {
+  border-color: #2f5bea;
+  background: color-mix(in srgb, #2f5bea 22%, transparent);
+  color: color-mix(in srgb, #2f5bea 85%, white);
+  box-shadow: 0 0 0 1px #2f5bea;
+}
+
+:root.dark [data-appearance-typography-scale] button[aria-pressed='false'],
+:root.dark [data-appearance-segment] button[aria-pressed='false'] {
+  color: var(--ui-text-tertiary);
+}
+
+[data-appearance-glass-options] {
+  border-radius: 14px;
+  background: #f7f9fc;
+  padding: 0.875rem 1rem;
+}
+
+:root.dark [data-appearance-glass-options] {
+  background: var(--ui-bg-quinary);
+}
+
+[data-appearance-window-layout-card] [data-slot='slider'],
+[data-appearance-chat-display-card] [data-slot='slider'],
+[data-appearance-pet-card] [data-slot='slider'] {
+  accent-color: #2f5bea;
+}
+
+[data-appearance-typography-card] input {
+  height: 2.5rem;
+  border-radius: 0.75rem;
+  border-color: #e2e8f0;
+  background: #f7f9fc;
+  font-size: 14px;
+  box-shadow: none;
+}
+
+:root.dark [data-appearance-typography-card] input {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-bg-quinary);
+}
+
 [data-chat-behavior-card] [data-slot='select-trigger'],
 [data-chat-behavior-card] [data-slot='searchable-select-trigger'],
 [data-chat-attachments-card] [data-slot='select-trigger'],
 [data-chat-attachments-card] [data-slot='searchable-select-trigger'],
-[data-chat-attachments-card] [data-chat-settings-row] input {
+[data-chat-attachments-card] [data-chat-settings-row] input,
+[data-appearance-general-card] [data-slot='select-trigger'],
+[data-appearance-general-card] button[aria-haspopup],
+[data-appearance-general-card] button[aria-expanded] {
   height: 2.5rem;
   border-radius: 0.75rem;
   border-color: #e2e8f0;
@@ -71,7 +384,9 @@
 [data-chat-behavior-card] [data-slot='select-trigger'],
 [data-chat-behavior-card] [data-slot='searchable-select-trigger'],
 [data-chat-attachments-card] [data-slot='select-trigger'],
-[data-chat-attachments-card] [data-slot='searchable-select-trigger'] {
+[data-chat-attachments-card] [data-slot='searchable-select-trigger'],
+[data-appearance-general-card] button[aria-haspopup],
+[data-appearance-general-card] button[aria-expanded] {
   min-width: 8.75rem;
 }
 
@@ -85,7 +400,10 @@
 :root.dark [data-chat-behavior-card] [data-slot='searchable-select-trigger'],
 :root.dark [data-chat-attachments-card] [data-slot='select-trigger'],
 :root.dark [data-chat-attachments-card] [data-slot='searchable-select-trigger'],
-:root.dark [data-chat-attachments-card] [data-chat-settings-row] input {
+:root.dark [data-chat-attachments-card] [data-chat-settings-row] input,
+:root.dark [data-appearance-general-card] [data-slot='select-trigger'],
+:root.dark [data-appearance-general-card] button[aria-haspopup],
+:root.dark [data-appearance-general-card] button[aria-expanded] {
   border-color: var(--ui-stroke-tertiary);
   background: var(--ui-bg-quinary);
   color: var(--ui-text-primary);
@@ -93,7 +411,22 @@
 
 /* Purple checked fill only — never override switch/thumb geometry. */
 [data-chat-behavior-card] [data-slot='switch'][data-state='checked'],
-[data-chat-attachments-card] [data-slot='switch'][data-state='checked'] {
+[data-chat-attachments-card] [data-slot='switch'][data-state='checked'],
+[data-appearance-general-card] [data-slot='switch'][data-state='checked'],
+[data-appearance-window-layout-card] [data-slot='switch'][data-state='checked'],
+[data-appearance-chat-display-card] [data-slot='switch'][data-state='checked'],
+[data-appearance-pet-card] [data-slot='switch'][data-state='checked'] {
   border-color: transparent;
   background: #7c3aed;
+}
+
+[data-appearance-chat-display-card] button[data-slot='button'].variant-text,
+[data-appearance-chat-display-card] button.variant-text {
+  color: #2f5bea;
+}
+
+[data-appearance-general-card] button[data-slot='button'].variant-text,
+[data-appearance-general-card] [class*='textStrong'],
+[data-appearance-general-card] button.variant-text {
+  color: #2f5bea;
 }

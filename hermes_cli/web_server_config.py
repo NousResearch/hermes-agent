@@ -232,10 +232,36 @@ _CATEGORY_MERGE: dict[str, str] = {
 
 _UI_TYPES = ((bool, "boolean"), (int, "number"), (float, "number"), (list, "list"), (dict, "object"))
 
+# Count/duration knobs whose DEFAULT_CONFIG default is null (= "off", "auto", "derive it" or
+# "SQLite default"). `_infer_type` reads the default VALUE, so a null one can only answer
+# "string": the dashboard then rendered a free-text input and saved the edit back as a quoted
+# string (``no_progress_timeout: '120'``, #152302), which readers that require a number instead
+# of coercing one (``_get_context_file_max_chars``'s ``isinstance(val, (int, float))``) ignore.
+# List only keys whose documented value is a number; the regression test pins that each still
+# defaults to null, so a key that gains a real default can be dropped again.
+_NULL_NUMERIC_KEYS = frozenset({
+    # Database sizing pragmas (pages / bytes).
+    "database.wal_autocheckpoint", "database.journal_size_limit",
+    # Caps and budgets (sessions, chars, tokens, seconds, calls, jobs, workers).
+    # `agent.max_turns` is deliberately absent: it also accepts the "none"/"unlimited"/"inf"
+    # spellings (config.resolve_turn_limit), so its dashboard field has to stay free text.
+    "max_concurrent_sessions", "agent.budget_warning_ratio", "agent.run_budget_seconds",
+    "context_file_max_chars", "compression.threshold_tokens",
+    "compression.codex_responses_compact_threshold",
+    "auxiliary.compression.no_progress_timeout", "vision.max_calls_per_image",
+    "cron.max_parallel_jobs", "kanban.max_in_progress", "kanban.max_in_progress_per_profile",
+})
+
 
 def _infer_type(value: Any) -> str:
     """Infer a UI field type from a Python value."""
     return next((ui for py, ui in _UI_TYPES if isinstance(value, py)), "string")
+
+
+def _schema_type(full_key: str, value: Any) -> str:
+    """UI field type for one DEFAULT_CONFIG leaf: the default's own type, except for the
+    count/duration knobs that default to null (``_NULL_NUMERIC_KEYS``)."""
+    return "number" if value is None and full_key in _NULL_NUMERIC_KEYS else _infer_type(value)
 
 
 def _build_schema_from_config(config: dict[str, Any], prefix: str = "") -> dict[str, dict[str, Any]]:
@@ -250,7 +276,7 @@ def _build_schema_from_config(config: dict[str, Any], prefix: str = "") -> dict[
             continue
         # Category: first path component for nested keys, "general" for top-level scalars.
         entry: dict[str, Any] = {
-            "type": _infer_type(value),
+            "type": _schema_type(full_key, value),
             "description": full_key.replace(".", " → ").replace("_", " ").title(),
             "category": prefix.split(".")[0] if prefix else "general",
         }

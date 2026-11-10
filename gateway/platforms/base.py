@@ -23,6 +23,7 @@ from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_fo
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
+from gateway.platforms.base_text_merge import _append_text, merge_text_burst
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -1531,11 +1532,6 @@ class TextDebounceState:
             self.task.cancel()
 
 
-def _append_text(existing: Optional[str], new: Optional[str]) -> str:
-    """``existing\\nnew`` when both non-empty; the non-empty one otherwise."""
-    return f"{existing}\n{new}" if existing else new
-
-
 @dataclass
 class _ExtractedResponse:
     """Deliverable parts of a handler response (see ``_extract_response_content``)."""
@@ -1730,18 +1726,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
             return
         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
         if merge_text and both_text:
-            if event.text:
-                existing.text = _append_text(existing.text, event.text)
-            existing.absorb_turn_input(event)
-            # The merged event represents the latest inbound message for
-            # reply-anchor purposes; otherwise the bot's reply quotes an
-            # earlier message in the burst (issue #59582).
-            latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
-            if latest_message_id is not None:
-                existing.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(existing, "reply_to_message_id"):
-                existing.reply_to_message_id = str(latest_anchor)
+            merge_text_burst(existing, event)
             return
     pending_messages[session_key] = event
 

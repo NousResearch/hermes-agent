@@ -1,6 +1,6 @@
 name: hermes-stage
 repo: https://github.com/davidpgil/hermes-stage
-sha: 15c185a8a6c073f8ff3283689f1634df0bffd9e3
+sha: 7623d18acf62895213e2e673a1a7a0e0d6d8d671
 description: >-
   A multi-profile terminal bot room for Hermes with one shared transcript,
   profile lens tabs, public @name/@everyone routing, and Stage-specific status,
@@ -9,7 +9,7 @@ maintainer: David Philipe Gil
 tier: community
 category: automation
 requires_hermes: ">=0.22.0"
-version: "0.50.34"
+version: "0.50.35"
 readme: true
 platforms:
   - linux

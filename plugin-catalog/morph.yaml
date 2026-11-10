@@ -39,7 +39,7 @@ description: >-
 maintainer: timioni001
 tier: community
 category: tools
-requires_hermes: ">=0.19"
+requires_hermes: ">=0.19.0"
 version: "1.0.0"
 docs_url: https://github.com/timioni001/morph-hermes#readme
 readme: true

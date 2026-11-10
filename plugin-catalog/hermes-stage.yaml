@@ -9,7 +9,7 @@ maintainer: David Philipe Gil
 tier: community
 category: automation
 requires_hermes: ">=0.22.0"
-version: "0.50.35"
+version: "0.50.37"
 readme: true
 platforms:
   - linux

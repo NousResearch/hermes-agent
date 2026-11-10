@@ -1039,6 +1039,7 @@ export interface Translations {
         title: string
         blurb: string
         toggleFailed: string
+        refresh: string
         notInstalled: (name: string) => string
         disabledDesc: string
         lockedDesc: string
@@ -1337,6 +1338,19 @@ export interface Translations {
       showOptions: string
       behaviorDesc: string
       attachmentsDesc: string
+      projectsDesc: string
+      shellDesc: string
+      filesDesc: string
+      approvalsDesc: string
+      privacyDesc: string
+      checkpointsDesc: string
+      browserProfileDesc: string
+      browserNetworkDesc: string
+      memoryPersistentDesc: string
+      memoryContextDesc: string
+      voiceConversationDesc: string
+      voiceTranscriptionDesc: string
+      voiceSpeechDesc: string
     }
     hudModifier: {
       title: string

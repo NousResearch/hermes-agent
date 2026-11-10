@@ -309,7 +309,20 @@ function ConfigSettingsInner({
   const showAttachments = activeSectionId === 'chat' && (subpage === undefined || subpage === 'attachments')
   const showChatBehavior = activeSectionId === 'chat' && subpage === 'behavior'
   const showChatAttachments = activeSectionId === 'chat' && subpage === 'attachments'
-  const showSharedMetrics = activeSectionId === 'safety' && subpage === 'privacy'
+  const showWorkspaceProjects = activeSectionId === 'workspace' && subpage === 'projects'
+  const showWorkspaceShell = activeSectionId === 'workspace' && subpage === 'shell'
+  const showWorkspaceFiles = activeSectionId === 'workspace' && subpage === 'files'
+  const showSafetyApprovals = activeSectionId === 'safety' && subpage === 'approvals'
+  const showSafetyPrivacy = activeSectionId === 'safety' && subpage === 'privacy'
+  const showSafetyCheckpoints = activeSectionId === 'safety' && subpage === 'checkpoints'
+  const showBrowserProfile = activeSectionId === 'browser' && subpage === 'profile'
+  const showBrowserNetwork = activeSectionId === 'browser' && subpage === 'network'
+  const showMemoryPersistent = activeSectionId === 'memory' && subpage === 'persistent'
+  const showMemoryContext = activeSectionId === 'memory' && subpage === 'context'
+  const showVoiceConversation = activeSectionId === 'voice' && subpage === 'conversation'
+  const showVoiceTranscription = activeSectionId === 'voice' && subpage === 'transcription'
+  const showVoiceSpeech = activeSectionId === 'voice' && subpage === 'speech'
+  const showSharedMetrics = showSafetyPrivacy
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.
@@ -490,12 +503,8 @@ function ConfigSettingsInner({
       {/* Device-local attach/preview byte cap (main-process IPC guard). On the
           Attachments subpage it lives inside the Figma card with image mode. */}
       {showAttachments && !showChatAttachments ? <AttachmentSizeSetting /> : null}
-      {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
-          go through their own RPC rather than the generic field autosave. */}
-      {showSharedMetrics ? <SharedMetricsSettings /> : null}
-      {activeSectionId === 'voice' ? (
-        <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
-      ) : null}
+      {/* Shared metrics render inside the Privacy & network Figma card below. */}
+      {/* Voice recording shortcut lives inside each Voice Figma card below. */}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : showChatAttachments ? (
@@ -524,6 +533,34 @@ function ConfigSettingsInner({
             ))}
           </div>
         </section>
+      ) : showSafetyPrivacy ? (
+        <section className="grid gap-3.5" data-safety-privacy="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.safetyPrivacy}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#64748b] dark:text-(--ui-text-tertiary)">
+              {c.privacyDesc}
+            </p>
+          </header>
+
+          <div data-safety-privacy-card="">
+            {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
+                go through their own RPC rather than the generic field autosave. */}
+            <SharedMetricsSettings />
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
       ) : visibleFields.length === 0 ? null : showChatBehavior ? (
         <section className="grid gap-3.5" data-chat-behavior="">
           <header className="space-y-1.5">
@@ -539,6 +576,334 @@ function ConfigSettingsInner({
                 <ConfigField
                   enumOptions={enumOptionsFor(key, getNested(config, key), config)}
                   onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showWorkspaceProjects ? (
+        <section className="grid gap-3.5" data-workspace-projects="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.workspaceProjects}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#475569] dark:text-(--ui-text-tertiary)">
+              {c.projectsDesc}
+            </p>
+          </header>
+
+          <div data-workspace-projects-card="">
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showWorkspaceShell ? (
+        <section className="grid gap-3.5" data-workspace-shell="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.workspaceShell}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#475569] dark:text-(--ui-text-tertiary)">
+              {c.shellDesc}
+            </p>
+          </header>
+
+          <div data-workspace-shell-card="">
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showWorkspaceFiles ? (
+        <section className="grid gap-3.5" data-workspace-files="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.workspaceFiles}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#475569] dark:text-(--ui-text-tertiary)">
+              {c.filesDesc}
+            </p>
+          </header>
+
+          <div data-workspace-files-card="">
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showSafetyApprovals ? (
+        <section className="grid gap-3.5" data-safety-approvals="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.safetyApprovals}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#64748b] dark:text-(--ui-text-tertiary)">
+              {c.approvalsDesc}
+            </p>
+          </header>
+
+          <div data-safety-approvals-card="">
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showSafetyCheckpoints ? (
+        <section className="grid gap-3.5" data-safety-checkpoints="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.safetyCheckpoints}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#64748b] dark:text-(--ui-text-tertiary)">
+              {c.checkpointsDesc}
+            </p>
+          </header>
+
+          <div data-safety-checkpoints-card="">
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showBrowserProfile ? (
+        <section className="grid gap-3.5" data-browser-profile="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.browserProfile}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#475569] dark:text-(--ui-text-tertiary)">
+              {c.browserProfileDesc}
+            </p>
+          </header>
+
+          <div data-browser-profile-card="">
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showBrowserNetwork ? (
+        <section className="grid gap-3.5" data-browser-network="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.browserNetwork}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#475569] dark:text-(--ui-text-tertiary)">
+              {c.browserNetworkDesc}
+            </p>
+          </header>
+
+          <div data-browser-network-card="">
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showMemoryPersistent ? (
+        <section className="grid gap-3.5" data-memory-persistent="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.memoryPersistent}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#64748b] dark:text-(--ui-text-tertiary)">
+              {c.memoryPersistentDesc}
+            </p>
+          </header>
+
+          <div data-memory-persistent-card="">
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  descriptionExtra={
+                    key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
+                      <MemoryConnect profile={scopeProfile} provider={String(getNested(config, key))} />
+                    ) : undefined
+                  }
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+                {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
+                  <div className="px-5 pb-4">
+                    <ProviderConfigPanel
+                      key={String(getNested(config, key))}
+                      profile={scopeProfile}
+                      provider={String(getNested(config, key))}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showMemoryContext ? (
+        <section className="grid gap-3.5" data-memory-context="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.memoryContext}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#64748b] dark:text-(--ui-text-tertiary)">
+              {c.memoryContextDesc}
+            </p>
+          </header>
+
+          <div data-memory-context-card="">
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showVoiceConversation ? (
+        <section className="grid gap-3.5" data-voice-conversation="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.voiceConversation}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#64748b] dark:text-(--ui-text-tertiary)">
+              {c.voiceConversationDesc}
+            </p>
+          </header>
+
+          <div data-voice-conversation-card="">
+            <div className="scroll-mt-6" data-chat-settings-row="" id="setting-voice-shortcut-hint">
+              <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
+            </div>
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showVoiceTranscription ? (
+        <section className="grid gap-3.5" data-voice-transcription="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.voiceTranscription}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#64748b] dark:text-(--ui-text-tertiary)">
+              {c.voiceTranscriptionDesc}
+            </p>
+          </header>
+
+          <div data-voice-transcription-card="">
+            <div className="scroll-mt-6" data-chat-settings-row="" id="setting-voice-shortcut-hint">
+              <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
+            </div>
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={enumOptionsFor(key, getNested(config, key), config)}
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : showVoiceSpeech ? (
+        <section className="grid gap-3.5" data-voice-speech="">
+          <header className="space-y-1.5">
+            <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+              {t.settings.subpages.voiceSpeech}
+            </h1>
+            <p className="max-w-3xl text-[14px] text-[#64748b] dark:text-(--ui-text-tertiary)">
+              {c.voiceSpeechDesc}
+            </p>
+          </header>
+
+          <div data-voice-speech-card="">
+            <div className="scroll-mt-6" data-chat-settings-row="" id="setting-voice-shortcut-hint">
+              <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
+            </div>
+            {visibleFields.map(([key, field]) => (
+              <div className="scroll-mt-6" data-chat-settings-row="" id={`setting-field-${key}`} key={key}>
+                <ConfigField
+                  enumOptions={
+                    key === 'tts.elevenlabs.voice_id'
+                      ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
+                      : enumOptionsFor(key, getNested(config, key), config)
+                  }
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                   schema={field}
                   schemaKey={key}
                   value={getNested(config, key)}

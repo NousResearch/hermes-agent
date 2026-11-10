@@ -88,23 +88,27 @@ export function SharedMetricsSettings() {
   const send = consent?.send ?? false
 
   return (
-    <div className="grid gap-1" id="setting-shared-metrics">
-      <ToggleRow
-        checked={enabled}
-        description={copy.collectDesc}
-        disabled={!consent || busy}
-        hint={unavailable ? copy.unavailable : undefined}
-        label={copy.collectLabel}
-        onChange={on => void save({ enabled: on, send: on && send })}
-      />
-      <ToggleRow
-        below={<DocsLink href={SHARED_METRICS_DOCS_URL}>{copy.whatIsCollected}</DocsLink>}
-        checked={send}
-        description={copy.sendDesc}
-        disabled={!consent || busy || !enabled}
-        label={copy.sendLabel}
-        onChange={on => void save({ enabled, send: on })}
-      />
-    </div>
+    <>
+      <div className="scroll-mt-6" data-chat-settings-row="" id="setting-shared-metrics">
+        <ToggleRow
+          checked={enabled}
+          description={copy.collectDesc}
+          disabled={!consent || busy}
+          hint={unavailable ? copy.unavailable : undefined}
+          label={copy.collectLabel}
+          onChange={on => void save({ enabled: on, send: on && send })}
+        />
+      </div>
+      <div className="scroll-mt-6" data-chat-settings-row="" id="setting-shared-metrics-send">
+        <ToggleRow
+          below={<DocsLink href={SHARED_METRICS_DOCS_URL}>{copy.whatIsCollected}</DocsLink>}
+          checked={send}
+          description={copy.sendDesc}
+          disabled={!consent || busy || !enabled}
+          label={copy.sendLabel}
+          onChange={on => void save({ enabled, send: on })}
+        />
+      </div>
+    </>
   )
 }

@@ -4,7 +4,14 @@
    Appearance Typography — Figma 426:14599
    Appearance Window & layout — Figma 426:15445
    Appearance Chat display — Figma 426:16274
-   Appearance Pet — Figma 426:17109 */
+   Appearance Pet — Figma 426:17109
+   Workspace Projects & discovery — Figma 426:17911
+   Workspace Shell environment — Figma 426:18801
+   Workspace Files & execution — same Workspace card theme
+   Safety Approvals / Privacy & network / Checkpoints — match Figma screenshots
+   Browser profile / Local & private URLs — same card theme
+   Memory Persistent / Context & compression — same card theme
+   Voice conversation / Speech to text / Text to speech — same card theme */
 
 /* Theme page: mode toggle (Light filled blue), search, selected cards */
 [data-appearance-theme-mode] > div {
@@ -105,7 +112,20 @@
 [data-appearance-typography-card],
 [data-appearance-window-layout-card],
 [data-appearance-chat-display-card],
-[data-appearance-pet-card] {
+[data-appearance-pet-card],
+[data-workspace-projects-card],
+[data-workspace-shell-card],
+[data-workspace-files-card],
+[data-safety-approvals-card],
+[data-safety-privacy-card],
+[data-safety-checkpoints-card],
+[data-browser-profile-card],
+[data-browser-network-card] ,
+[data-memory-persistent-card] ,
+[data-memory-context-card] ,
+[data-voice-conversation-card] ,
+[data-voice-transcription-card] ,
+[data-voice-speech-card] {
   overflow: hidden;
   border: 1px solid #e2e8f0;
   border-radius: 20px;
@@ -119,7 +139,20 @@
 :root.dark [data-appearance-typography-card],
 :root.dark [data-appearance-window-layout-card],
 :root.dark [data-appearance-chat-display-card],
-:root.dark [data-appearance-pet-card] {
+:root.dark [data-appearance-pet-card],
+:root.dark [data-workspace-projects-card],
+:root.dark [data-workspace-shell-card],
+:root.dark [data-workspace-files-card],
+:root.dark [data-safety-approvals-card],
+:root.dark [data-safety-privacy-card],
+:root.dark [data-safety-checkpoints-card],
+:root.dark [data-browser-profile-card],
+:root.dark [data-browser-network-card] ,
+:root.dark [data-memory-persistent-card] ,
+:root.dark [data-memory-context-card] ,
+:root.dark [data-voice-conversation-card] ,
+:root.dark [data-voice-transcription-card] ,
+:root.dark [data-voice-speech-card] {
   border-color: var(--ui-stroke-tertiary);
   background: var(--ui-chat-bubble-background);
   box-shadow: none;
@@ -131,7 +164,20 @@
 [data-appearance-typography-card] > [data-chat-settings-row] + [data-chat-settings-row],
 [data-appearance-window-layout-card] > [data-chat-settings-row] + [data-chat-settings-row],
 [data-appearance-chat-display-card] > [data-chat-settings-row] + [data-chat-settings-row],
-[data-appearance-pet-card] > [data-chat-settings-row] + [data-chat-settings-row] {
+[data-appearance-pet-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-workspace-projects-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-workspace-shell-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-workspace-files-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-safety-approvals-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-safety-privacy-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-safety-checkpoints-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-browser-profile-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-browser-network-card] > [data-chat-settings-row] + [data-chat-settings-row]   ,
+[data-memory-persistent-card] > [data-chat-settings-row] + [data-chat-settings-row]   ,
+[data-memory-context-card] > [data-chat-settings-row] + [data-chat-settings-row]   ,
+[data-voice-conversation-card] > [data-chat-settings-row] + [data-chat-settings-row]   ,
+[data-voice-transcription-card] > [data-chat-settings-row] + [data-chat-settings-row]   ,
+[data-voice-speech-card] > [data-chat-settings-row] + [data-chat-settings-row]   {
   border-top: 1px solid #e2e8f0;
 }
 
@@ -141,7 +187,20 @@
 :root.dark [data-appearance-typography-card] > [data-chat-settings-row] + [data-chat-settings-row],
 :root.dark [data-appearance-window-layout-card] > [data-chat-settings-row] + [data-chat-settings-row],
 :root.dark [data-appearance-chat-display-card] > [data-chat-settings-row] + [data-chat-settings-row],
-:root.dark [data-appearance-pet-card] > [data-chat-settings-row] + [data-chat-settings-row] {
+:root.dark [data-appearance-pet-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-workspace-projects-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-workspace-shell-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-workspace-files-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-safety-approvals-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-safety-privacy-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-safety-checkpoints-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-browser-profile-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-browser-network-card] > [data-chat-settings-row] + [data-chat-settings-row]   ,
+:root.dark [data-memory-persistent-card] > [data-chat-settings-row] + [data-chat-settings-row]   ,
+:root.dark [data-memory-context-card] > [data-chat-settings-row] + [data-chat-settings-row]   ,
+:root.dark [data-voice-conversation-card] > [data-chat-settings-row] + [data-chat-settings-row]   ,
+:root.dark [data-voice-transcription-card] > [data-chat-settings-row] + [data-chat-settings-row]   ,
+:root.dark [data-voice-speech-card] > [data-chat-settings-row] + [data-chat-settings-row]   {
   border-top-color: var(--ui-stroke-tertiary);
 }
 
@@ -151,7 +210,20 @@
 [data-appearance-typography-card] [data-chat-settings-row] > * > div,
 [data-appearance-window-layout-card] [data-chat-settings-row] > * > div,
 [data-appearance-chat-display-card] [data-chat-settings-row] > * > div,
-[data-appearance-pet-card] [data-chat-settings-row] > * > div {
+[data-appearance-pet-card] [data-chat-settings-row] > * > div,
+[data-workspace-projects-card] [data-chat-settings-row] > * > div,
+[data-workspace-shell-card] [data-chat-settings-row] > * > div,
+[data-workspace-files-card] [data-chat-settings-row] > * > div ,
+[data-safety-approvals-card] [data-chat-settings-row] > * > div ,
+[data-safety-privacy-card] [data-chat-settings-row] > * > div ,
+[data-safety-checkpoints-card] [data-chat-settings-row] > * > div  ,
+[data-browser-profile-card] [data-chat-settings-row] > * > div  ,
+[data-browser-network-card] [data-chat-settings-row] > * > div   ,
+[data-memory-persistent-card] [data-chat-settings-row] > * > div   ,
+[data-memory-context-card] [data-chat-settings-row] > * > div   ,
+[data-voice-conversation-card] [data-chat-settings-row] > * > div   ,
+[data-voice-transcription-card] [data-chat-settings-row] > * > div   ,
+[data-voice-speech-card] [data-chat-settings-row] > * > div   {
   padding-block: 1.125rem;
   padding-inline: 1.25rem;
 }
@@ -162,7 +234,20 @@
 [data-appearance-typography-card] [data-chat-settings-row] [class*='font-medium'],
 [data-appearance-window-layout-card] [data-chat-settings-row] [class*='font-medium'],
 [data-appearance-chat-display-card] [data-chat-settings-row] [class*='font-medium'],
-[data-appearance-pet-card] [data-chat-settings-row] [class*='font-medium'] {
+[data-appearance-pet-card] [data-chat-settings-row] [class*='font-medium'],
+[data-workspace-projects-card] [data-chat-settings-row] [class*='font-medium'],
+[data-workspace-shell-card] [data-chat-settings-row] [class*='font-medium'],
+[data-workspace-files-card] [data-chat-settings-row] [class*='font-medium'],
+[data-safety-approvals-card] [data-chat-settings-row] [class*='font-medium'],
+[data-safety-privacy-card] [data-chat-settings-row] [class*='font-medium'],
+[data-safety-checkpoints-card] [data-chat-settings-row] [class*='font-medium'],
+[data-browser-profile-card] [data-chat-settings-row] [class*='font-medium'],
+[data-browser-network-card] [data-chat-settings-row] [class*='font-medium']   ,
+[data-memory-persistent-card] [data-chat-settings-row] [class*='font-medium']   ,
+[data-memory-context-card] [data-chat-settings-row] [class*='font-medium']   ,
+[data-voice-conversation-card] [data-chat-settings-row] [class*='font-medium']   ,
+[data-voice-transcription-card] [data-chat-settings-row] [class*='font-medium']   ,
+[data-voice-speech-card] [data-chat-settings-row] [class*='font-medium']   {
   font-size: 15px;
   font-weight: 600;
   color: #0f172a;
@@ -174,7 +259,20 @@
 :root.dark [data-appearance-typography-card] [data-chat-settings-row] [class*='font-medium'],
 :root.dark [data-appearance-window-layout-card] [data-chat-settings-row] [class*='font-medium'],
 :root.dark [data-appearance-chat-display-card] [data-chat-settings-row] [class*='font-medium'],
-:root.dark [data-appearance-pet-card] [data-chat-settings-row] [class*='font-medium'] {
+:root.dark [data-appearance-pet-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-workspace-projects-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-workspace-shell-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-workspace-files-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-safety-approvals-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-safety-privacy-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-safety-checkpoints-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-browser-profile-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-browser-network-card] [data-chat-settings-row] [class*='font-medium']   ,
+:root.dark [data-memory-persistent-card] [data-chat-settings-row] [class*='font-medium']   ,
+:root.dark [data-memory-context-card] [data-chat-settings-row] [class*='font-medium']   ,
+:root.dark [data-voice-conversation-card] [data-chat-settings-row] [class*='font-medium']   ,
+:root.dark [data-voice-transcription-card] [data-chat-settings-row] [class*='font-medium']   ,
+:root.dark [data-voice-speech-card] [data-chat-settings-row] [class*='font-medium']   {
   color: var(--ui-text-primary);
 }
 
@@ -184,7 +282,20 @@
 [data-appearance-typography-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
 [data-appearance-window-layout-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
 [data-appearance-chat-display-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
-[data-appearance-pet-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'] {
+[data-appearance-pet-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-workspace-projects-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-workspace-shell-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-workspace-files-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-safety-approvals-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-safety-privacy-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-safety-checkpoints-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-browser-profile-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-browser-network-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)']   ,
+[data-memory-persistent-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)']   ,
+[data-memory-context-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)']   ,
+[data-voice-conversation-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)']   ,
+[data-voice-transcription-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)']   ,
+[data-voice-speech-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)']   {
   margin-top: 0.25rem;
   font-size: 13px;
   line-height: 1.35;
@@ -415,9 +526,116 @@
 [data-appearance-general-card] [data-slot='switch'][data-state='checked'],
 [data-appearance-window-layout-card] [data-slot='switch'][data-state='checked'],
 [data-appearance-chat-display-card] [data-slot='switch'][data-state='checked'],
-[data-appearance-pet-card] [data-slot='switch'][data-state='checked'] {
+[data-appearance-pet-card] [data-slot='switch'][data-state='checked'],
+[data-workspace-projects-card] [data-slot='switch'][data-state='checked'],
+[data-workspace-shell-card] [data-slot='switch'][data-state='checked'],
+[data-workspace-files-card] [data-slot='switch'][data-state='checked'],
+[data-safety-approvals-card] [data-slot='switch'][data-state='checked'],
+[data-safety-privacy-card] [data-slot='switch'][data-state='checked'],
+[data-safety-checkpoints-card] [data-slot='switch'][data-state='checked'],
+[data-browser-profile-card] [data-slot='switch'][data-state='checked'],
+[data-browser-network-card] [data-slot='switch'][data-state='checked']   ,
+[data-memory-persistent-card] [data-slot='switch'][data-state='checked']   ,
+[data-memory-context-card] [data-slot='switch'][data-state='checked']   ,
+[data-voice-conversation-card] [data-slot='switch'][data-state='checked']   ,
+[data-voice-transcription-card] [data-slot='switch'][data-state='checked']   ,
+[data-voice-speech-card] [data-slot='switch'][data-state='checked']   {
   border-color: transparent;
   background: #7c3aed;
+}
+
+[data-workspace-projects-card] [data-slot='select-trigger'],
+[data-workspace-projects-card] [data-slot='searchable-select-trigger'],
+[data-workspace-projects-card] input,
+[data-workspace-shell-card] [data-slot='select-trigger'],
+[data-workspace-shell-card] [data-slot='searchable-select-trigger'],
+[data-workspace-shell-card] input,
+[data-workspace-files-card] [data-slot='select-trigger'],
+[data-safety-approvals-card] [data-slot='select-trigger'],
+[data-safety-privacy-card] [data-slot='select-trigger'],
+[data-safety-checkpoints-card] [data-slot='select-trigger'],
+[data-browser-profile-card] [data-slot='select-trigger'],
+[data-browser-network-card] [data-slot='select-trigger'],
+[data-memory-persistent-card] [data-slot='select-trigger'],
+[data-memory-context-card] [data-slot='select-trigger'],
+[data-voice-conversation-card] [data-slot='select-trigger'],
+[data-voice-transcription-card] [data-slot='select-trigger'],
+[data-voice-speech-card] [data-slot='select-trigger'],
+[data-workspace-files-card] [data-slot='searchable-select-trigger'],
+[data-safety-approvals-card] [data-slot='searchable-select-trigger'],
+[data-safety-privacy-card] [data-slot='searchable-select-trigger'],
+[data-safety-checkpoints-card] [data-slot='searchable-select-trigger'],
+[data-browser-profile-card] [data-slot='searchable-select-trigger'],
+[data-browser-network-card] [data-slot='searchable-select-trigger'],
+[data-memory-persistent-card] [data-slot='searchable-select-trigger'],
+[data-memory-context-card] [data-slot='searchable-select-trigger'],
+[data-voice-conversation-card] [data-slot='searchable-select-trigger'],
+[data-voice-transcription-card] [data-slot='searchable-select-trigger'],
+[data-voice-speech-card] [data-slot='searchable-select-trigger'],
+[data-workspace-files-card] input ,
+[data-safety-approvals-card] input ,
+[data-safety-privacy-card] input ,
+[data-safety-checkpoints-card] input  ,
+[data-browser-profile-card] input  ,
+[data-browser-network-card] input   ,
+[data-memory-persistent-card] input   ,
+[data-memory-context-card] input   ,
+[data-voice-conversation-card] input   ,
+[data-voice-transcription-card] input   ,
+[data-voice-speech-card] input   {
+  height: 2.5rem;
+  border-radius: 0.75rem;
+  border-color: #e2e8f0;
+  background: #f7f9fc;
+  padding-inline: 0.875rem;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  box-shadow: none;
+}
+
+:root.dark [data-workspace-projects-card] [data-slot='select-trigger'],
+:root.dark [data-workspace-projects-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-workspace-projects-card] input,
+:root.dark [data-workspace-shell-card] [data-slot='select-trigger'],
+:root.dark [data-workspace-shell-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-workspace-shell-card] input,
+:root.dark [data-workspace-files-card] [data-slot='select-trigger'],
+:root.dark [data-safety-approvals-card] [data-slot='select-trigger'],
+:root.dark [data-safety-privacy-card] [data-slot='select-trigger'],
+:root.dark [data-safety-checkpoints-card] [data-slot='select-trigger'],
+:root.dark [data-browser-profile-card] [data-slot='select-trigger'],
+:root.dark [data-browser-network-card] [data-slot='select-trigger'],
+:root.dark [data-memory-persistent-card] [data-slot='select-trigger'],
+:root.dark [data-memory-context-card] [data-slot='select-trigger'],
+:root.dark [data-voice-conversation-card] [data-slot='select-trigger'],
+:root.dark [data-voice-transcription-card] [data-slot='select-trigger'],
+:root.dark [data-voice-speech-card] [data-slot='select-trigger'],
+:root.dark [data-workspace-files-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-safety-approvals-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-safety-privacy-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-safety-checkpoints-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-browser-profile-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-browser-network-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-memory-persistent-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-memory-context-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-voice-conversation-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-voice-transcription-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-voice-speech-card] [data-slot='searchable-select-trigger'],
+:root.dark [data-workspace-files-card] input ,
+:root.dark [data-safety-approvals-card] input ,
+:root.dark [data-safety-privacy-card] input ,
+:root.dark [data-safety-checkpoints-card] input  ,
+:root.dark [data-browser-profile-card] input  ,
+:root.dark [data-browser-network-card] input   ,
+:root.dark [data-memory-persistent-card] input   ,
+:root.dark [data-memory-context-card] input   ,
+:root.dark [data-voice-conversation-card] input   ,
+:root.dark [data-voice-transcription-card] input   ,
+:root.dark [data-voice-speech-card] input   {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-bg-quinary);
+  color: var(--ui-text-primary);
 }
 
 [data-appearance-chat-display-card] button[data-slot='button'].variant-text,
@@ -429,4 +647,233 @@
 [data-appearance-general-card] [class*='textStrong'],
 [data-appearance-general-card] button.variant-text {
   color: #2f5bea;
+}
+
+
+/* Safety controls — Approvals / Privacy / Checkpoints (screenshot match) */
+[data-safety-approvals-card] [data-slot='select-trigger'],
+[data-safety-approvals-card] [data-slot='searchable-select-trigger'] {
+  width: 8.75rem;
+  min-width: 8.75rem;
+}
+
+[data-safety-approvals-card] [id='setting-field-approvals.timeout'] input {
+  width: 3.5rem;
+  min-width: 3.5rem;
+  padding-inline: 0.5rem;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+[data-safety-approvals-card] [id='setting-field-approvals.timeout'] input::-webkit-outer-spin-button,
+[data-safety-approvals-card] [id='setting-field-approvals.timeout'] input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+[data-safety-approvals-card] [id='setting-field-command_allowlist'] input {
+  width: 15rem;
+  min-width: 12rem;
+  max-width: 15rem;
+}
+
+[data-safety-approvals-card] [id='setting-field-command_allowlist'] input::placeholder {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+[data-safety-privacy-card] a,
+[data-safety-privacy-card] [data-slot='button'].variant-text,
+[data-safety-privacy-card] button.variant-text {
+  color: #2f5bea;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+:root.dark [data-safety-privacy-card] a,
+:root.dark [data-safety-privacy-card] [data-slot='button'].variant-text,
+:root.dark [data-safety-privacy-card] button.variant-text {
+  color: #7c9cff;
+}
+
+/* Vault — Saved credentials / Password managers */
+[data-vault-credentials-card],
+[data-vault-sources-card] {
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(38, 64, 140, 0.06);
+}
+
+:root.dark [data-vault-credentials-card],
+:root.dark [data-vault-sources-card] {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-chat-bubble-background);
+  box-shadow: none;
+}
+
+[data-vault-credentials-card] > [data-chat-settings-row] + [data-chat-settings-row],
+[data-vault-sources-card] > [data-chat-settings-row] + [data-chat-settings-row] {
+  border-top: 1px solid #e2e8f0;
+}
+
+:root.dark [data-vault-credentials-card] > [data-chat-settings-row] + [data-chat-settings-row],
+:root.dark [data-vault-sources-card] > [data-chat-settings-row] + [data-chat-settings-row] {
+  border-top-color: var(--ui-stroke-tertiary);
+}
+
+[data-vault-credentials-card] [data-chat-settings-row] > * > div,
+[data-vault-sources-card] [data-chat-settings-row] > * > div {
+  padding-block: 1.125rem;
+  padding-inline: 1.25rem;
+}
+
+[data-vault-credentials-card] [data-chat-settings-row] [class*='font-medium'],
+[data-vault-sources-card] [data-chat-settings-row] [class*='font-medium'] {
+  font-size: 15px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+:root.dark [data-vault-credentials-card] [data-chat-settings-row] [class*='font-medium'],
+:root.dark [data-vault-sources-card] [data-chat-settings-row] [class*='font-medium'] {
+  color: var(--ui-text-primary);
+}
+
+[data-vault-credentials-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'],
+[data-vault-sources-card] [data-chat-settings-row] [class*='text-(--ui-text-tertiary)'] {
+  margin-top: 0.25rem;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #64748b;
+}
+
+[data-vault-sources-card] [data-slot='switch'][data-state='checked'] {
+  border-color: transparent;
+  background: #7c3aed;
+}
+
+[data-vault-credentials] [data-vault-add] {
+  height: 2.25rem;
+  border: none;
+  border-radius: 0.625rem;
+  background: linear-gradient(90deg, #8b5cf6 0%, #3b82f6 100%);
+  padding-inline: 0.875rem;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.25);
+}
+
+[data-vault-credentials] [data-vault-add]:hover {
+  filter: brightness(1.05);
+}
+
+[data-vault-empty-icon] {
+  display: grid;
+  width: 3rem;
+  height: 3rem;
+  place-items: center;
+  border-radius: 9999px;
+  background: #e3ecfd;
+  color: #2f5bea;
+}
+
+[data-vault-status='not-detected'] [data-slot='badge'],
+[data-vault-status='not-detected'] > * {
+  border-color: transparent;
+  background: #e3ecfd;
+  color: #2f5bea;
+}
+
+[data-vault-sources-card] button[data-slot='button'][class*='outline'],
+[data-vault-sources-card] button.variant-outline {
+  height: 2.25rem;
+  border-color: #e2e8f0;
+  border-radius: 0.625rem;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  box-shadow: none;
+}
+
+:root.dark [data-vault-sources-card] button[data-slot='button'][class*='outline'],
+:root.dark [data-vault-sources-card] button.variant-outline {
+  border-color: var(--ui-stroke-tertiary);
+  background: var(--ui-bg-quinary);
+  color: var(--ui-text-primary);
+}
+
+
+/* Memory — Persistent / Context number + select sizing */
+[data-memory-persistent-card] input[type='number'],
+[data-memory-context-card] input[type='number'] ,
+[data-voice-conversation-card] input[type='number'] ,
+[data-voice-transcription-card] input[type='number'] ,
+[data-voice-speech-card] input[type='number'] {
+  width: 4.5rem;
+  min-width: 4.5rem;
+  padding-inline: 0.5rem;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+[data-memory-persistent-card] input[type='number']::-webkit-outer-spin-button,
+[data-memory-persistent-card] input[type='number']::-webkit-inner-spin-button,
+[data-memory-context-card] input[type='number']::-webkit-outer-spin-button,
+[data-voice-conversation-card] input[type='number']::-webkit-outer-spin-button,
+[data-voice-transcription-card] input[type='number']::-webkit-outer-spin-button,
+[data-voice-speech-card] input[type='number']::-webkit-outer-spin-button,
+[data-memory-context-card] input[type='number']::-webkit-inner-spin-button ,
+[data-voice-conversation-card] input[type='number']::-webkit-inner-spin-button ,
+[data-voice-transcription-card] input[type='number']::-webkit-inner-spin-button ,
+[data-voice-speech-card] input[type='number']::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+[data-memory-persistent-card] [data-slot='select-trigger'],
+[data-memory-persistent-card] [data-slot='searchable-select-trigger'],
+[data-memory-context-card] [data-slot='select-trigger'],
+[data-voice-conversation-card] [data-slot='select-trigger'],
+[data-voice-transcription-card] [data-slot='select-trigger'],
+[data-voice-speech-card] [data-slot='select-trigger'],
+[data-memory-context-card] [data-slot='searchable-select-trigger'] ,
+[data-voice-conversation-card] [data-slot='searchable-select-trigger'] ,
+[data-voice-transcription-card] [data-slot='searchable-select-trigger'] ,
+[data-voice-speech-card] [data-slot='searchable-select-trigger'] {
+  min-width: 9.5rem;
+}
+
+
+/* Voice — compact number controls */
+[data-voice-conversation-card] input[type='number'],
+[data-voice-transcription-card] input[type='number'],
+[data-voice-speech-card] input[type='number'] {
+  width: 4.5rem;
+  min-width: 4.5rem;
+  padding-inline: 0.5rem;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+[data-voice-conversation-card] input[type='number']::-webkit-outer-spin-button,
+[data-voice-conversation-card] input[type='number']::-webkit-inner-spin-button,
+[data-voice-transcription-card] input[type='number']::-webkit-outer-spin-button,
+[data-voice-transcription-card] input[type='number']::-webkit-inner-spin-button,
+[data-voice-speech-card] input[type='number']::-webkit-outer-spin-button,
+[data-voice-speech-card] input[type='number']::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+[data-voice-conversation-card] [data-slot='select-trigger'],
+[data-voice-conversation-card] [data-slot='searchable-select-trigger'],
+[data-voice-transcription-card] [data-slot='select-trigger'],
+[data-voice-transcription-card] [data-slot='searchable-select-trigger'],
+[data-voice-speech-card] [data-slot='select-trigger'],
+[data-voice-speech-card] [data-slot='searchable-select-trigger'] {
+  min-width: 9.5rem;
 }

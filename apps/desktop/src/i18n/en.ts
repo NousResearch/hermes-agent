@@ -1193,10 +1193,11 @@ export const en: Translations = {
       sources: {
         title: 'Password managers',
         blurb:
-          'Installed password managers are picked up automatically. The agent asks you to unlock one the first time it needs a login from it (once per session); only a session token stays in memory, and the agent never sees your master password or any login.',
+          'Installed password managers are picked up automatically. The agent needs an initial unlock from you, then only a session token stays in memory.',
         toggleFailed: 'Could not update password manager',
+        refresh: 'Refresh',
         notInstalled: name =>
-          `Not detected. Install the ${name} command-line tool and sign in to it; IVX-Agency picks it up automatically.`,
+          `Install the ${name} command-line tool and sign in to it; IVX-Agency picks it up automatically.`,
         disabledDesc: 'Detected but turned off for IVX-Agency.',
         lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
         unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when IVX-Agency closes.',
@@ -1576,7 +1577,24 @@ export const en: Translations = {
         'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop voice conversation"). The voice.record_key config value only applies to the CLI and TUI.',
       showOptions: 'Show options',
       behaviorDesc: 'Defaults that shape how new chat sessions behave.',
-      attachmentsDesc: 'Limits and defaults for files and images attached to chat.'
+      attachmentsDesc: 'Limits and defaults for files and images attached to chat.',
+      projectsDesc: 'Default folders and how Desktop finds local Git repositories.',
+      shellDesc: 'How shell state and environment variables are handled for tools.',
+      filesDesc: 'How tools read workspace files and how code execution is sandboxed.',
+      approvalsDesc: 'When and how Hermes asks before running risky commands.',
+      privacyDesc: 'Telemetry, secret redaction, and network access controls.',
+      checkpointsDesc: 'Rollback snapshots taken before Hermes edits project files.',
+      browserProfileDesc: 'Whether the agent browses with a snapshot of your default browser profile.',
+      browserNetworkDesc: 'How the browser tool reaches localhost and private-network URLs.',
+      memoryPersistentDesc:
+        'Save durable memories that can help future sessions. Tune budgets and choose which provider stores them.',
+      memoryContextDesc:
+        'Strategy for managing long conversations near the context limit. Compress older turns while protecting recent messages.',
+      voiceConversationDesc:
+        'Talk hands-free with chained STT → Hermes → TTS, or full-duplex GPT-Live. Recording shortcuts live under Keyboard Shortcuts.',
+      voiceTranscriptionDesc:
+        'Enable local or provider-backed transcription. Echo raw transcripts to chat and pick a Whisper model size.',
+      voiceSpeechDesc: 'Choose a TTS provider and voice. Optionally read assistant responses aloud automatically.'
     },
     hudModifier: {
       title: 'Tap to summon HUD',

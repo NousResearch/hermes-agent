@@ -1,6 +1,6 @@
 name: shipwrit
 repo: https://github.com/ShalyX/shipwrit-hermes
-sha: 12cb58dadb27a3963510ad681bee62aaa5d970c9
+sha: 2f3a38e096feefc9041138852417187b793c0af5
 description: "Outcome-based release verification for Hermes: detect false-green deployments with bounded user journeys and redacted evidence receipts."
 maintainer: ShalyX
 tier: community

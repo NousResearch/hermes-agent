@@ -26,7 +26,7 @@ def test_application_gate_rechecks_snapshot_without_losing_description(tmp_path,
     pb.clear_skills_system_prompt_cache(clear_snapshot=True)
     try:
         def build():
-            return pb._build_skills_system_prompt_inner(skills, [], None, None, None)
+            return pb._build_skills_system_prompt_inner(skills, [], None, None, None)[0]
 
         assert "app-guide" not in build()
         snapshot = pb._load_skills_snapshot(skills)

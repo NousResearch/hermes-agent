@@ -1445,8 +1445,8 @@ DEFAULT_CONFIG = {
         # Resolved once when the agent's prompt is first built; missing/disabled names warn and
         # skip; HERMES_IGNORE_RULES suppresses the list like the other auto-injected context.
         "auto_load": [],
-        # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
-        "template_vars": True,
+        "index_budget_percent": 0,  # % of the context window the index may fill before least-used skills go names-only; 0 = off
+        "template_vars": True,  # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:
         # host-unapproved skill-author code; community hub installs never auto-execute (#63307).
         "inline_shell": False,

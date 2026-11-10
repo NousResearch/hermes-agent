@@ -1075,7 +1075,7 @@ def drain_truncation_warnings() -> list:
 # per profile × platform), so the old cap of 8 could thrash on a gateway multiplexing default + several bots
 # (each miss = full os.walk manifest rebuild). ~32 costs low single-digit MB worst case.
 _SKILLS_PROMPT_CACHE_MAX = 32
-_SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
+_SKILLS_PROMPT_CACHE: OrderedDict[tuple, tuple[str, tuple]] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); v4 adds ``rel`` (SKILL.md path relative to its root) for
 # duplicate-name resolution; v5 stores descriptions clipped at a word boundary. Older snapshots are rebuilt.
@@ -1233,6 +1233,7 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: set[str] | None = None, available_toolsets: set[str] | None = None,
     compact_categories: frozenset[str] | None = None, skills_dir_override: Path | None = None,
+    index_budget_tokens: int | None = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
@@ -1241,6 +1242,8 @@ def build_skills_system_prompt(
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
+    ``index_budget_tokens`` (``skills.index_budget_percent``) lets the least-used skills go names-only
+    when the full index is larger than that; see ``agent.skills_index_budget``.
     """
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -1258,8 +1261,11 @@ def build_skills_system_prompt(
         extra_roots = [(t, d) for t, d in get_skill_search_roots(skills_dir) if t != TIER_LOCAL]
         if not skills_dir.exists() and not extra_roots:
             return ""
-        return _build_skills_system_prompt_inner(
+        full, catalog = _build_skills_system_prompt_inner(
             skills_dir, extra_roots, available_tools, available_toolsets, compact_categories)
+        if not index_budget_tokens or not full:
+            return full
+        return _fit_skills_index(full, catalog, index_budget_tokens, compact_categories, available_tools)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1281,7 +1287,51 @@ def _scan_extra_root(root: Path, skill_files, tier: int, log_fmt: str) -> list[t
     return rows
 
 
-def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict[str, list[tuple[str, str]]]) -> None:
+def _fit_skills_index(full: str, catalog: tuple, budget_tokens: int, compact_categories: frozenset[str] | None,
+                      available_tools: set[str] | None) -> str:
+    """*full* when it fits the budget, else the index with its least-used skills listed by name only."""
+    from agent.skills_index_budget import select_scrubbed
+    from tools.skill_usage import load_usage
+
+    skills_by_category, unloadable, skill_files = catalog
+    demoted = _demoted_categories(skills_by_category, compact_categories)
+    rows: dict[str, str] = {}
+    for category, entries in skills_by_category.items():
+        if category not in demoted:  # already names-only: nothing left to drop
+            for name, desc in sorted(entries, key=lambda x: x[0]):
+                rows.setdefault(name, desc)
+    names_only = select_scrubbed(full, rows, skill_files, budget_tokens, load_usage())
+    if not names_only:
+        return full
+    return _render_skills_index(skills_by_category, compact_categories, available_tools, unloadable, names_only)
+
+
+def _demoted_categories(skills_by_category: dict, compact_categories: frozenset[str] | None) -> frozenset[str]:
+    """Categories collapsed to one names-only line; nested categories follow their parent."""
+    return frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+
+
+def _category_index_lines(category: str, entries: list[tuple[str, str]], names_only: frozenset[str]) -> list[str]:
+    """Index lines for one described category; *names_only* members share one trailing names-only line."""
+    rows: dict[str, str] = {}
+    for name, desc in sorted(entries, key=lambda x: x[0]):  # stable: first entry per name wins
+        rows.setdefault(name, desc)
+    # A one-skill category is a single top-level row: its header would only repeat what the row
+    # says (a skill at the top of the tree is its own category, so the name printed twice).
+    if len(rows) == 1:
+        return [f"  - {name}: {desc}" if desc and name not in names_only else f"  - {name}" for name, desc in rows.items()]
+    bare = [name for name in rows if name in names_only]
+    if len(bare) == len(rows):
+        return [f"  {category} [names only]: {', '.join(bare)}"]
+    lines = [f"  {category}:"]
+    lines.extend(f"    - {name}: {desc}" if desc else f"    - {name}" for name, desc in rows.items() if name not in names_only)
+    if bare:
+        lines.append(f"    [names only]: {', '.join(bare)}")
+    return lines
+
+
+def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict[str, list[tuple[str, str]]],
+                           skill_files: dict[str, str]) -> None:
     """Index rows under each entry's ``load_name`` (what skill_view accepts)."""
     from agent.skill_utils import TIER_PROJECT
     for entry in (e for e in visible_entries if e["load_name"]):
@@ -1290,11 +1340,13 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
             desc = f"[project] {desc}".strip()
         category = entry.get("category") or "general"
         skills_by_category.setdefault(category, []).append((entry["load_name"], desc))
+        skill_files.setdefault(entry["load_name"], str(entry["path"]))
 
 
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]],
     compact_categories: frozenset[str] | None, available_tools: set[str] | None, unloadable: list[str] = (),
+    names_only: frozenset[str] = frozenset(),
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list. *unloadable* names (different skills
     sharing a name AND relative path within one tier — one root or several) get a rename note instead of a row skill_view would refuse."""
@@ -1302,12 +1354,16 @@ def _render_skills_index(
         return ""
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
-    demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+    demoted = _demoted_categories(skills_by_category, compact_categories)
     hidden_note = (
         "\n(Categories marked [names only] are outside the current coding "
         "context, so their descriptions are omitted — the skills work "
         "normally and load with skill_view(name) as usual.)"
     ) if demoted else ""
+    if names_only:
+        hidden_note += (
+            "\n(Skills listed by name only have had little or no recent use, so their descriptions are omitted "
+            "to save context — they work normally: when a name looks relevant, load it with skill_view(name).)")
     if unloadable:
         hidden_note += (f"\n(A copy of {', '.join(unloadable)} is not listed: it shares both its name and its path "
                         "with a different skill in the same skills directory tier (e.g. another external_dirs entry), "
@@ -1320,15 +1376,7 @@ def _render_skills_index(
         if category in demoted:
             index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
             continue
-        rows: dict[str, str] = {}
-        for name, desc in sorted(entries, key=lambda x: x[0]):  # stable: first entry per name wins
-            rows.setdefault(name, desc)
-        # A one-skill category is a single top-level row: its header would only repeat what the row
-        # says (a skill at the top of the tree is its own category, so the name printed twice).
-        indent = "  " if len(rows) == 1 else "    "
-        if len(rows) > 1:
-            index_lines.append(f"  {category}:")
-        index_lines.extend(f"{indent}- {name}: {desc}" if desc else f"{indent}- {name}" for name, desc in rows.items())
+        index_lines.extend(_category_index_lines(category, entries, names_only))
     from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
     if is_single_query_session():
         return (
@@ -1367,7 +1415,9 @@ def _oneshot_prompt_variant() -> bool:
 def _build_skills_system_prompt_inner(
     skills_dir: Path, extra_roots: list[tuple[int, Path]], available_tools: set[str] | None,
     available_toolsets: set[str] | None, compact_categories: frozenset[str] | None,
-) -> str:
+) -> tuple[str, tuple]:
+    """``(full index, catalog)``; the catalog is what a budgeted re-render needs (rows by category,
+    unloadable names, SKILL.md path per listed name) and is cached with the text."""
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
@@ -1403,6 +1453,7 @@ def _build_skills_system_prompt_inner(
                 or not _skill_should_show(conditions, available_tools, available_toolsets, _platform_hint or None))
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
+    skill_files: dict[str, str] = {}
     # Disk snapshot (fast path) vs. full scan: both yield (entry, is_compatible) pairs so labeling runs identically.
     if snapshot is not None:
         # Platforms and app presence are host facts that change without SKILL.md changing: re-evaluate both.
@@ -1431,7 +1482,7 @@ def _build_skills_system_prompt_inner(
         for entry, ok in rows])
     visible_entries = [e for e in resolved
                        if e["visible"] and e["status"] != "shadowed" and not is_disabled_entry(e, disabled)]
-    _label_visible_entries(visible_entries, skills_by_category)
+    _label_visible_entries(visible_entries, skills_by_category, skill_files)
     if plugin_rows:
         # Same category label skills_list gives registry skills; qualified names are already
         # namespaced (plugin:skill) so they cannot collide with on-disk load_names.
@@ -1450,7 +1501,8 @@ def _build_skills_system_prompt_inner(
             logger.debug("Could not write skills prompt snapshot: %s", e)
 
     unloadable = sorted({e["name"] for e in visible_entries if not e["load_name"]})
-    result = _render_skills_index(skills_by_category, compact_categories, available_tools, unloadable)
+    result = (_render_skills_index(skills_by_category, compact_categories, available_tools, unloadable),
+              (skills_by_category, unloadable, skill_files))
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

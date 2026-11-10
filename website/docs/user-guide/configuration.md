@@ -886,6 +886,19 @@ skills:
 
 Resolved once per session when the system prompt is first built (so the prompt stays cache-stable; edits apply to the next session). Missing or disabled skills warn and are skipped; `--ignore-rules` / `HERMES_IGNORE_RULES=1` suppresses the list. Profile-scoped. See [CLI — persistent auto-load](./cli.md#persistent-auto-load-via-config).
 
+### Budgeting the skills index
+
+Every session's system prompt lists each skill with a one-line description. With a large library that list grows, so you can cap it as a share of the model's context window:
+
+```yaml
+skills:
+  index_budget_percent: 1   # 0 (default) = always the full list
+```
+
+While the list fits the budget nothing changes. Once it is larger, the least-used skills keep their name in the list and lose their description, fewest uses first, until it fits. Three limits apply: a skill used, created or edited in the last 14 days always keeps its description, a newly installed skill keeps it for its first 14 days, and at most half of your skills are ever listed by name only. Every skill stays listed and loads normally. Usage comes from the same per-skill counters the [Curator](./features/curator.md) reads.
+
+The size is checked with Hermes's built-in token estimate, which runs low for some models (about 0.63 of the real count for a mostly-English list on Claude), so pick the percent with that in mind. The list is decided when a conversation starts and does not change during it.
+
 ### Guard on agent-created skill writes
 
 When the agent uses `skill_manage` to create, edit, patch, or delete a skill, Hermes can optionally scan the new/updated content for dangerous keyword patterns (credential harvesting, obvious prompt injection, exfil instructions). The scanner is **off by default** — real agent workflows that legitimately touch `~/.ssh/` or mention `$OPENAI_API_KEY` were tripping the heuristic too often. Turn it back on if you want the scanner to prompt you before the agent's skill writes land:

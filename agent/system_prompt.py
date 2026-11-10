@@ -317,7 +317,22 @@ def _skills_prompt(agent: Any) -> str:
     except Exception:
         _compact_cats = frozenset()
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
-                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent),
+                                         index_budget_tokens=_skills_index_budget_tokens(agent))
+
+
+def _skills_index_budget_tokens(agent: Any) -> Optional[int]:
+    """``skills.index_budget_percent`` of the model's context window in tokens; None (the full
+    index, the default) when the key is 0/unset or the window is unknown."""
+    from hermes_cli.config import load_config_readonly
+    try:
+        percent = float((load_config_readonly().get("skills") or {}).get("index_budget_percent") or 0)
+    except (AttributeError, TypeError, ValueError):  # a hand-edited non-number or non-mapping: full index
+        return None
+    window = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+    if percent <= 0 or not isinstance(window, int) or window <= 0:
+        return None
+    return max(1, int(window * percent / 100))
 
 
 def _auto_load_parts(agent: Any) -> list[str]:

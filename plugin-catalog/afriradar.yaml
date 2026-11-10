@@ -3,7 +3,7 @@ version: "1.0.0"
 repo: https://github.com/Risingtell/hermes-afriradar
 sha: 425fadf6e5dd5696e03a9876727b619a722c8176
 title: AfriRadar
-description: "Nigerian and Kenyan fund data from the regulators (SEC Nigeria weekly, CMA Kenya quarterly): rank, compare and project funds, keep a watchlist, and get a weekly report of what moved. Eight tools, a zero-token /afriradar command, two automation blueprints and one switchable routing hook; stdlib only, no API key, no telemetry. Disclosure: reads public CSVs from www.afriradar.com only; stores your watchlist in Hermes plugin state."
+description: "Nigerian and Kenyan fund data from the regulators (SEC Nigeria weekly, CMA Kenya quarterly): rank, compare and project funds, keep a watchlist, and get a weekly report of what moved. Eight tools, a zero-token /afriradar command, two automation blueprints and one switchable routing hook; stdlib only, no API key, no telemetry. Disclosure — fetches public fund CSVs from www.afriradar.com (the author's site; the Data URL setting can point at a mirror) and caches them under the plugin's data directory; sends no prompts, files or keys; stores your watchlist (fund names, amounts, notes) in Hermes plugin state; its pre_llm_call hook adds a one-line note steering fund questions to its tools (on by default, `routing` setting); the two automation blueprints run weekly only if you install them."
 maintainer: Risingtell
 tier: community
 category: tools

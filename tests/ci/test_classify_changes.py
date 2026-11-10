@@ -11,6 +11,7 @@ import importlib.util
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -590,6 +591,23 @@ def test_every_lane_reaches_the_composite_action():
     lanes = set(classify(["run_agent.py"]))
     action_outputs = set(_yaml(".github/actions/detect-changes/action.yml")["outputs"])
     assert lanes - action_outputs == set(), "lane(s) missing from the composite action's outputs"
+
+
+def test_classifier_runs_in_the_detect_jobs_sparse_checkout(tmp_path):
+    """The detect job checks out only its sparse list; an import outside it fails CI on every PR."""
+    steps = _yaml(".github/workflows/ci.yaml")["jobs"]["detect"]["steps"]
+    sparse = next(s["with"]["sparse-checkout"] for s in steps if "sparse-checkout" in s.get("with", {}))
+    for rel in sparse.split():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        if (_REPO / rel).is_dir():
+            shutil.copytree(_REPO / rel, tmp_path / rel, ignore=shutil.ignore_patterns("__pycache__"))
+        else:
+            shutil.copy2(_REPO / rel, tmp_path / rel)
+    # -I -S: only the sparse tree, never the repo or an installed copy, as on the runner.
+    run = subprocess.run([sys.executable, "-I", "-S", "scripts/ci/classify_changes.py"], cwd=tmp_path,
+                         input="gateway/__init__.py\n", capture_output=True, text=True, timeout=60, check=False)
+    assert run.returncode == 0, run.stderr
+    assert "python=true" in run.stdout.splitlines()
 
 
 def test_ci_jobs_only_gate_on_detect_outputs_that_detect_actually_declares():

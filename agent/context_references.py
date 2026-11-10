@@ -286,6 +286,10 @@ async def _expand_reference(
 ) -> Expansion:
     try:
         if ref.kind in ("file", "folder"):
+            from agent.context_reference_audio import expand_audio_reference
+            audio = await expand_audio_reference(ref, cwd, allowed_root=allowed_root)
+            if audio is not None:
+                return audio
             return _expand_path_reference(ref, cwd, allowed_root=allowed_root, max_inline_tokens=max_inline_tokens)
         if ref.kind in _GIT_REFERENCE_ARGS:
             git_args = _GIT_REFERENCE_ARGS[ref.kind](ref)

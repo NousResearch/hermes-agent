@@ -95,7 +95,13 @@ class FakeIdP:
 
             host, port = self.server.server_address[:2]
             ca = make_test_ca(Path(tls_dir), [name or host])
-            context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            # A server-side context must not come from truststore: another test may have
+            # injected it process-wide, and its wrap_socket verifies peers even server-side.
+            try:
+                from truststore._ssl_constants import _original_SSLContext as tls_context
+            except ImportError:  # truststore absent or its layout changed
+                tls_context = ssl.SSLContext
+            context = tls_context(ssl.PROTOCOL_TLS_SERVER)
             context.load_cert_chain(ca.leaf_pem, ca.leaf_key)
             self.server.socket = context.wrap_socket(self.server.socket, server_side=True)
             self.base = f"https://{name or host}" + ("" if port == 443 else f":{port}")

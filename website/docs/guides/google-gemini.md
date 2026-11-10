@@ -183,6 +183,7 @@ The `hermes model` picker shows Gemini models maintained in Hermes' provider reg
 
 | Model | ID | Notes |
 |-------|----|-------|
+| Gemini 4 Carbon | `gemini-4-carbon` | Strongest reasoning model; spends more thinking per turn than Argon, with the same window, long decode and price. Paid tier only |
 | Gemini 4 Argon | `gemini-4-argon` | Flagship reasoning model; shared 1M input+output window, long decode up to 1M output tokens |
 | Gemini 3.8 Flash | `gemini-3.8-flash` | Most capable Flash model for long-horizon agentic and coding work |
 | Gemini 3.7 Flash | `gemini-3.7-flash` | Recommended default balance of speed, capability, and multimodal understanding |
@@ -199,7 +200,7 @@ Use Gemini's native model IDs such as `gemini-3.7-flash`, not OpenRouter-style I
 
 ### Gemini 4 Argon: Reasoning Effort and Long Decode
 
-Gemini 4 Argon always thinks; Hermes maps the reasoning effort (`/reasoning`,
+Gemini 4 Carbon works the same way as Argon in everything below. Gemini 4 Argon always thinks; Hermes maps the reasoning effort (`/reasoning`,
 `agent.reasoning_effort`) onto its `thinkingLevel`:
 
 | Hermes effort | `thinkingLevel` | Total output budget |

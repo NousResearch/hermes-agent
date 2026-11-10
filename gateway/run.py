@@ -37,7 +37,7 @@ from agent.conversation_compression import (
     COMPRESSION_REFUSED_WOULD_GROW_WARNING, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
-from gateway.run_status_filter import _status_template_to_regex, hidden_outside_dm
+from gateway.run_status_filter import _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
@@ -724,7 +724,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
-    if hidden_outside_dm(chat_type, str(message or "")):
+    if hidden_outside_dm(chat_type, str(message or "")) or is_terminal_failure_status(message):
         return None
 
     text = _redact_gateway_user_facing_secrets(text)

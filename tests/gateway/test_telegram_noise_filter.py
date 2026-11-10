@@ -378,3 +378,58 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+
+
+def _terminal_failure_statuses(status, text, *, nonretryable, body=True):
+    """Statuses the real terminal-failure producers emit for one SDK error, plus the final reply."""
+    import httpx
+    import openai
+
+    import agent.turn_recovery as recovery
+    from agent.api_error_summary import ApiErrorSummaryMixin
+    from agent.error_classifier import classify_api_error
+    from agent.status_output import StatusOutputMixin
+
+    class _Agent(StatusOutputMixin, ApiErrorSummaryMixin):
+        log_prefix, verbose, verbose_logging, suppress_status_output = "", False, False, True
+        provider, model, base_url = "openrouter", "m", "https://openrouter.ai/api/v1"
+        _fallback_chain, _fallback_index, _notification_config = (), 0, {}
+
+        def _persist_session(self, *args): pass
+        def _vprint(self, *args, **kwargs): pass
+        def _dump_api_request_debug(self, *args, **kwargs): pass
+
+    agent, sent = _Agent(), []
+    agent.status_callback = lambda kind, message: sent.append((kind, message))
+    request = httpx.Request("POST", agent.base_url + "/chat/completions")
+    payload = {"error": {"message": text}}
+    response = httpx.Response(status, json=payload, request=request) if body else httpx.Response(status, request=request)
+    error = openai.APIStatusError(text, response=response, body=payload if body else None)
+    classified = classify_api_error(error, provider=agent.provider, model=agent.model)
+    args = dict(api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=1,
+                approx_tokens=10, provider=agent.provider, base_url=agent.base_url, model=agent.model)
+    if nonretryable:
+        result = recovery.nonretryable_client_error_result(agent, error, classified, status_code=status, **args)
+    else:
+        result = recovery.max_retries_exhausted_result(agent, error, classified, attempts=1,
+                                                      is_rate_limited=status == 429, error_msg=text.lower(), **args)
+    return sent, result["final_response"]
+
+
+@pytest.mark.parametrize(("status", "text", "nonretryable", "body"), [
+    (401, "Invalid API key", True, True),
+    (404, "The model m does not exist", True, True),
+    (400, "Unsupported parameter: temperature", True, True),
+    (402, "Insufficient credits", True, True),
+    (503, "Upstream unavailable. " + "upstream diagnostic " * 25, False, False),
+    (429, "Rate limit exceeded\nline2\nline3\nline4\nline5\nline6", False, True),
+])
+def test_terminal_provider_failure_status_never_doubles_the_final_reply(status, text, nonretryable, body):
+    """Every terminal provider failure posts one chat message, the final reply: the producer's status
+    copy is dropped on chat surfaces whatever its label, length or line count; local keeps it (#72131)."""
+    sent, final = _terminal_failure_statuses(status, text, nonretryable=nonretryable, body=body)
+    terminal = [(kind, message) for kind, message in sent if str(message).startswith("❌")]
+    assert terminal and final
+    for kind, message in terminal:
+        assert _prepare_gateway_status_message(Platform.TELEGRAM, kind, message) is None
+        assert _prepare_gateway_status_message("local", kind, message) == str(message).strip()

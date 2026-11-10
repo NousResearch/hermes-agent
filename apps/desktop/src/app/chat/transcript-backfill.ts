@@ -75,6 +75,149 @@ export function unhideOpeningUserRows(messages: SessionMessage[]): SessionMessag
   })
 }
 
+/**
+ * In-place compaction re-inserts the carried tail as fresh rows (byte-exact
+ * clones: same role, content, timestamp and message_uid) and retires the
+ * originals, so one message's durable row id changes with every compaction
+ * that carries it, and display reads return the newest copy. A transcript read
+ * before the compaction and one read after hold the same message under two row
+ * ids, and every merge below keys on row ids, so both copies were kept.
+ *
+ * The key that does not move is the message_uid (REST pages): row ids sharing
+ * a uid are one message. A row without one (the gateway projection) falls
+ * back to the backend's display identity of a copy, role, timestamp and text,
+ * under two limits. The uid decides wherever it can: a text key that two
+ * different uids share names two messages, so nothing is matched through it.
+ * And only a row that is nothing but text (and reasoning) has a text key: the
+ * backend's key also carries tool_call_id, tool_calls and tool_name, so a
+ * tool-bearing row and a plain row with the same text and timestamp are two
+ * stored rows (the guard of PR #126834's logicalRowKey; reasoning is
+ * let through because that key has none in it).
+ *
+ * Each row id in a matched group is rewritten to the newest (highest) of
+ * them, the copy a display read returns now. Untouched lists come back as the
+ * same arrays.
+ */
+type RowAliases = Map<number, number>
+
+/** Row ids under one text key, each with the uid of its row when it has one. */
+type TextKeyRows = Map<number, string | undefined>
+
+function hasOnlyText(message: ChatMessage): boolean {
+  return message.parts.every(part => part.type === 'text' || part.type === 'reasoning')
+}
+
+function collectDurableKeys(
+  message: ChatMessage,
+  rowsByUid: Map<string, Set<number>>,
+  rowsByText: Map<string, TextKeyRows>
+): void {
+  if (message.rowId !== undefined && message.messageUid) {
+    const rows = rowsByUid.get(message.messageUid) ?? new Set<number>()
+    rows.add(message.rowId)
+    rowsByUid.set(message.messageUid, rows)
+  }
+
+  if (!hasOnlyText(message)) {
+    return
+  }
+
+  for (const part of message.parts) {
+    if (part.type === 'text' && part.sourceRowId !== undefined && part.timestamp !== undefined && part.text) {
+      const key = `${message.role}:${part.timestamp}:${part.text}`
+      const rows = rowsByText.get(key) ?? (new Map() as TextKeyRows)
+      const uid = part.sourceRowId === message.rowId ? message.messageUid : undefined
+      rows.set(part.sourceRowId, rows.get(part.sourceRowId) ?? uid)
+      rowsByText.set(key, rows)
+    }
+  }
+}
+
+function compactionRowAliases(...lists: ChatMessage[][]): RowAliases {
+  const rowsByUid = new Map<string, Set<number>>()
+  const rowsByText = new Map<string, TextKeyRows>()
+
+  for (const list of lists) {
+    for (const message of list) {
+      collectDurableKeys(message, rowsByUid, rowsByText)
+    }
+  }
+
+  const groups: Array<Iterable<number>> = [...rowsByUid.values()]
+
+  for (const rows of rowsByText.values()) {
+    const uids = new Set([...rows.values()].filter(uid => uid !== undefined))
+
+    // Two uids under one text key are two messages; a row without a uid
+    // beside them could be either, so it is left alone too.
+    if (uids.size < 2) {
+      groups.push(rows.keys())
+    }
+  }
+
+  const aliases: RowAliases = new Map()
+
+  for (const group of groups) {
+    const rows = new Set(group)
+
+    if (rows.size < 2) {
+      continue
+    }
+
+    const newest = Math.max(...rows)
+
+    for (const rowId of rows) {
+      if (rowId !== newest) {
+        aliases.set(rowId, Math.max(newest, aliases.get(rowId) ?? newest))
+      }
+    }
+  }
+
+  return aliases
+}
+
+function applyRowAliases(messages: ChatMessage[], aliases: RowAliases): ChatMessage[] {
+  if (!aliases.size) {
+    return messages
+  }
+
+  let changed = false
+
+  const next = messages.map(message => {
+    const rowId = message.rowId === undefined ? undefined : aliases.get(message.rowId)
+    const parts = message.parts.some(part => part.sourceRowId !== undefined && aliases.has(part.sourceRowId))
+
+    if (rowId === undefined && !parts) {
+      return message
+    }
+
+    changed = true
+
+    return {
+      ...message,
+      ...(rowId !== undefined ? { rowId } : {}),
+      ...(parts
+        ? {
+            parts: message.parts.map(part =>
+              part.sourceRowId !== undefined && aliases.has(part.sourceRowId)
+                ? { ...part, sourceRowId: aliases.get(part.sourceRowId) }
+                : part
+            )
+          }
+        : {})
+    }
+  })
+
+  return changed ? next : messages
+}
+
+/** Rewrite compaction copies in both lists to one row id per message (see above). */
+export function unifyCompactionCopies(a: ChatMessage[], b: ChatMessage[]): [ChatMessage[], ChatMessage[]] {
+  const aliases = compactionRowAliases(a, b)
+
+  return [applyRowAliases(a, aliases), applyRowAliases(b, aliases)]
+}
+
 /** Older rows likely exist beyond what the in-memory store holds. */
 export function transcriptBackfillAvailable(
   storedSessionId: null | string | undefined,
@@ -91,13 +234,17 @@ export function transcriptBackfillAvailable(
  * Preserves reference identity when nothing changes: handing React a fresh
  * array of the same messages re-renders the runtime for nothing.
  */
-export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: ChatMessage[]): ChatMessage[] {
+export function mergeOlderTranscriptPage(held: ChatMessage[], fetched: ChatMessage[]): ChatMessage[] {
   // Backfill only makes sense under an already-hydrated tail. An empty store
   // here means the session was swapped or wiped mid-fetch; prepending would
   // paint the older page as the whole conversation.
-  if (existing.length === 0 || olderPage.length === 0) {
-    return existing
+  if (held.length === 0 || fetched.length === 0) {
+    return held
   }
+
+  // A page read across a compaction holds copies of rows the store already has
+  // under their earlier row ids: one row id per message before anchoring.
+  const [existing, olderPage] = unifyCompactionCopies(held, fetched)
 
   const existingRowIndices = new Map<number, number>()
   const existingIdIndices = new Map<string, number>()
@@ -418,10 +565,14 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   return [...stored, ...refreshedTrailing, ...previousTrailing, ...unplaced]
 }
 
-export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
-  if (refreshedTail.length === 0 || previous.length === 0) {
-    return refreshedTail
+export function graftRefreshedTailOntoBackfill(refreshed: ChatMessage[], held: ChatMessage[]): ChatMessage[] {
+  if (refreshed.length === 0 || held.length === 0) {
+    return refreshed
   }
+
+  // The held window can predate a compaction the page already reflects: its
+  // carried rows are the same messages under older row ids.
+  const [refreshedTail, previous] = unifyCompactionCopies(refreshed, held)
 
   // The first rendered message can be a page-local tool fold whose id is not
   // durable. Anchor on the first shared persisted row anywhere in the page.

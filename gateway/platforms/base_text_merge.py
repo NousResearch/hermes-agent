@@ -9,7 +9,7 @@ from gateway.platforms.event import MessageEvent
 
 def _append_text(existing: Optional[str], new: Optional[str]) -> str:
     """Join two text parts with a newline when both are non-empty."""
-    return f"{existing}\n{new}" if existing else new
+    return f"{existing}\n{new}" if existing else (new or "")
 
 
 def absorb_burst_reply_anchor(existing: MessageEvent, event: MessageEvent) -> None:

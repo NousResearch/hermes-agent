@@ -117,6 +117,12 @@
       ]
     },
     {
+      "source": "adding-platform-adapters.md § Read a conversation's model settings (BasePlatformAdapter.get_session_model_settings)",
+      "entries": [
+        "gateway.platforms.session_model:SessionModelSettings"
+      ]
+    },
+    {
       "source": "plugins/index.md § Read the skill catalog",
       "entries": [
         "tools.skills_tool:find_all_skills",

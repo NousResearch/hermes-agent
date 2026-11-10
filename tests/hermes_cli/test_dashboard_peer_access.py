@@ -499,3 +499,21 @@ def test_the_default_profiles_key_is_the_one_the_gateway_loads(tmp_path, monkeyp
         "platforms": {"api_server": {"extra": {"port": 8700, "key": "config-key-0123456789abcdef"}}}})
     monkeypatch.setattr(_web_server_cron, "_cron_default_profile", lambda: "default")
     assert _web_server_cron._gateway_api_target("default", tmp_path) == ("http://127.0.0.1:8700", expected)
+
+
+@pytest.mark.parametrize(("env_key", "env_port", "expected"), [
+    # A usable API_SERVER_KEY makes the gateway load API_SERVER_PORT over the configured port
+    # (gateway/config_env.py ``_api_server``).
+    ("env-key-0123456789abcdef", "8700", "http://127.0.0.1:8700"),
+    # An unusable key: the gateway ignores both env values and binds the configured port.
+    ("short", "8700", "http://127.0.0.1:8650"),
+    ("env-key-0123456789abcdef", "", "http://127.0.0.1:8650"),
+])
+def test_the_listener_port_is_the_one_the_gateway_binds(tmp_path, monkeypatch, env_key, env_port, expected):
+    monkeypatch.setenv("API_SERVER_KEY", env_key)
+    monkeypatch.setenv("API_SERVER_PORT", env_port)
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr(_cfg_mod, "load_config", lambda: {
+        "platforms": {"api_server": {"extra": {"port": 8650, "key": "config-key-0123456789abcdef"}}}})
+    monkeypatch.setattr(_web_server_cron, "_cron_default_profile", lambda: "default")
+    assert _web_server_cron._gateway_api_target("default", tmp_path)[0] == expected

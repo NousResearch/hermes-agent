@@ -13,10 +13,11 @@ prefix in ``hermes_agent/compat/moves.py``), write a file at the old path:
 - a byte copy of the moved file (kind ``copy``), for a file a release runs without the application
   on the path.
 
-``.gitattributes`` marks every written file as generated. ``--check`` also fails when a moved file
-is listed in ``[tool.hermes] update-startup-files`` at a path the tree lacks, because an updater
-refuses an update to a tree that lacks one. Git-ignored files (build output such as ``hermes_cli/web_dist``)
-are never strays.
+``.gitattributes`` marks every written file as generated. A moved file listed in
+``[tool.hermes] update-startup-files`` at a path the tree lacks is reported in both modes, because an
+updater refuses an update to a tree that lacks one; only ``--check`` fails on it, since the codemod
+that fixes the list runs after this script writes. Git-ignored files (build output such as
+``hermes_cli/web_dist``) are never strays.
 
     python scripts/move/generate_shims.py          # write files, delete stale shims
     python scripts/move/generate_shims.py --check  # exit 1 when the tree differs from what it would write
@@ -176,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             kept.append(rel)
             print(f"{rel}: in a moved folder but not generated; move or delete it")
-    return 1 if kept or missing else 0
+    return 1 if kept else 0
 
 
 if __name__ == "__main__":

@@ -103,12 +103,12 @@ BY_HAND: tuple[tuple[str, str], ...] = (
     ("gateway/status.py", "def _gateway_command_subcommand("),
     ("gateway/status.py", 'entry = sys.modules.get("hermes_cli.main")'),
     ("gateway/status_inline_source.py", 'r"\\s*from\\s+(?P<target>hermes_cli\\.main)\\s+import\\s+main\\s*;\\s*sys\\.exit\\(\\s*main\\(\\)\\s*\\)")),'),
-    ("hermes_cli/gateway_runtime_service_identity.py", 'module = next((name for name in ("hermes_cli.stderr_timestamp", "hermes_cli.main")'),
-    ("hermes_cli/profiles.py", '_HERMES_ARGV_MARKERS = ("hermes_cli.main", "hermes-gateway", "tui_gateway")'),
+    ("hermes_cli/gateway_runtime_service_identity.py", "module = next((name for name in ("),
+    ("hermes_cli/profiles.py", "_HERMES_ARGV_MARKERS = ("),
     ("hermes_cli/update_cmd_windows.py", "def _is_entry("),
     ("hermes_cli/update_receipt.py", 'if (parent / "hermes_cli" / "main.py").is_file():'),
     ("hermes_cli/windows_ssh_runtime.py", 'launches_module = logical_argv[1:3] == ["-m", "hermes_cli.main"]'),
-    ("hermes_state_holders.py", '_HERMES_PYTHON_MODULES = frozenset({"acp_adapter", "hermes_cli.main"})'),
+    ("hermes_state_holders.py", "_HERMES_PYTHON_MODULES = frozenset({"),
     ("tools/skill_lock.py", 'if verb == "hermes" or (verb.startswith("python") and "hermes_cli.main" in args):'),
 )
 

@@ -791,8 +791,9 @@ export const host = {
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
    *  analogue of warmProfile. Fire-and-forget, same semantics, same guarded
-   *  resolver (prewarmProfileBackend): a pointer sweep across a
-   *  multi-source roster must not spawn past the pool cap either.
+   *  resolver (prewarmProfileBackend): its throttle covers a pointer sweep
+   *  across a multi-source roster, and an SSH source is never warmed
+   *  (connect-on-demand, #89756).
    *  `undefined` is accepted alongside `null` because a roster row's
    *  `connectionId` is optional; both mean "no explicit source". */
   warmAgent: (connectionId: null | string | undefined, profile: string): void => {

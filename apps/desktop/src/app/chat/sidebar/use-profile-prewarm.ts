@@ -3,13 +3,13 @@ import { useCallback, useEffect, useRef } from 'react'
 import { prewarmProfileBackend } from '@/store/profile'
 
 // Dwell before firing: long enough that sweeping the pointer across the rail
-// or a mixed-profile session list doesn't spawn a backend for every element
+// or a mixed-profile session list doesn't dial a route for every element
 // passed through, short enough to beat the click by hundreds of ms.
 export const PREWARM_DWELL_MS = 120
 
 /**
  * pointerenter/pointerleave/pointermove handlers that pre-warm `profile`'s
- * pool backend after a short hover dwell (see prewarmProfileBackend). Rows
+ * route after a short hover dwell (see prewarmProfileBackend). Rows
  * that pick a profile on the current source pass prewarmProfilePick, so the
  * warm follows the same route as the click.
  *

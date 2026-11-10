@@ -123,6 +123,18 @@ export function reconcileCronRunVerdicts(runs: readonly CronRunRow[]): void {
 }
 
 /**
+ * Thrown by a gate fetcher to say its read was never sent because the scope it
+ * resolved against changed. Not an unreadable row: refreshCronRunWriteGate
+ * records no verdict and rethrows it so the caller can drop the send.
+ */
+export class CronRunGateSupersededError extends Error {
+  constructor() {
+    super('cron run write gate superseded by a scope change')
+    this.name = 'CronRunGateSupersededError'
+  }
+}
+
+/**
  * Re-evaluate a cron run's write gate against its AUTHORITATIVE row right
  * before a send, then report whether the send must be refused.
  *
@@ -153,7 +165,11 @@ export async function refreshCronRunWriteGate(
     } else {
       recordRunVerdict({ ...row, id })
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof CronRunGateSupersededError) {
+      throw error
+    }
+
     if (!hasCronRunVerdict(id)) {
       recordCronRunVerdict(id, true)
     }

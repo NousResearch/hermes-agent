@@ -1,6 +1,7 @@
 import { type PromptSubmitResult, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
+import { getApiRequestConnection, getApiRequestProfile } from '@/api/client'
 import { getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { translateNow, type Translations } from '@/i18n'
 import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
@@ -43,7 +44,7 @@ import { profileScopeForSessionOwner } from '@/store/session-request-router'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
-import { cronRunWriteGateApplies, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
+import { CronRunGateSupersededError, cronRunWriteGateApplies, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
 import type { ClientSessionState } from '../../../types'
 import { routeTargetFromToken, sessionContextDrift } from '../session-context-drift'
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
@@ -371,9 +372,31 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       if (cronRunWriteGateApplies(targetStoredSessionId)) {
         const viewBeforeGate = selectedStoredSessionIdRef.current
 
-        await refreshCronRunWriteGate(targetStoredSessionId, id =>
-          resolveSessionOwner(id).then(owner => getSession(id, profileScopeForSessionOwner(owner)))
-        )
+        // The owner is resolved asynchronously (cross-profile probe). A read
+        // that names no connection rides the AMBIENT one, so if the ambient
+        // scope changed while the owner was pending the read would be sent to
+        // the wrong backend. Refuse it before it is sent: the send is dropped,
+        // no verdict is recorded and the draft stays. A read that carries its
+        // own connection pin does not depend on the ambient scope.
+        try {
+          await refreshCronRunWriteGate(targetStoredSessionId, async id => {
+            const ambientBefore = [getApiRequestConnection(), getApiRequestProfile()]
+            const scope = profileScopeForSessionOwner(await resolveSessionOwner(id))
+            const pinned = typeof scope === 'object' && scope !== null && Boolean(scope.connectionId?.trim())
+
+            if (!pinned && [getApiRequestConnection(), getApiRequestProfile()].some((v, i) => v !== ambientBefore[i])) {
+              throw new CronRunGateSupersededError()
+            }
+
+            return getSession(id, scope)
+          })
+        } catch (error) {
+          if (error instanceof CronRunGateSupersededError) {
+            return false
+          }
+
+          throw error
+        }
 
         if (selectedStoredSessionIdRef.current !== viewBeforeGate) {
           return false

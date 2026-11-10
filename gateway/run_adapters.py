@@ -850,6 +850,11 @@ class GatewayAdapterLifecycleMixin:
             success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
             if self._failed_platforms.get(platform) is not info:
                 await _dispose_unused_adapter(adapter)
+                # The candidate may hold already-acked Telegram updates; pass them to the
+                # current outage owner, not to the predecessor of the retired attempt.
+                current = self._failed_platforms.get(platform)
+                recipient = (current or {}).get("predecessor") or self.adapters.get(platform) or info.get("predecessor")
+                hand_over_held_inbound(adapter, recipient)
                 return  # The attempt belongs to a retired outage, not a newly queued one.
             if success:
                 await self._install_reconnected_adapter(platform, adapter)

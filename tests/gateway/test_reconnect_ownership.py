@@ -190,6 +190,54 @@ async def test_retired_attempt_cannot_consume_a_new_outage(reconnect_attempt, su
 
 
 @pytest.mark.asyncio
+async def test_retired_reconnect_preserves_acked_telegram_inbound_on_current_owner(reconnect_attempt):
+    """An obsolete candidate must not strand Telegram updates already acked during connect."""
+    from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
+
+    class HeldTelegram(TelegramHeldInboundMixin):
+        def __init__(self):
+            self._held_inbound_events = []
+            self._held_inbound_successor = None
+
+        def _is_permanent_fatal(self):
+            return False
+
+        def _should_drop_delayed_delivery(self):
+            return True
+
+        def _accept_update(self):
+            return None
+
+    runner, info, _, dispose = reconnect_attempt
+    runner._failed_platforms = {Platform.TELEGRAM: info}
+    old_predecessor = HeldTelegram()
+    current_predecessor = HeldTelegram()
+    candidate = HeldTelegram()
+    event = SimpleNamespace(text="already acknowledged", source=None)
+    candidate._held_inbound_events.append(event)
+    info["predecessor"] = old_predecessor
+    runner._create_adapter.return_value = candidate
+    newer = {
+        "config": info["config"], "attempts": 0, "next_retry": 0,
+        "predecessor": current_predecessor,
+    }
+
+    async def connect(*args, **kwargs):
+        runner._failed_platforms[Platform.TELEGRAM] = newer
+        return True
+
+    runner._connect_adapter_with_timeout.side_effect = connect
+    await runner._reconnect_failed_platform(Platform.TELEGRAM, 1)
+
+    assert runner._failed_platforms[Platform.TELEGRAM] is newer
+    assert not runner.adapters
+    dispose.assert_awaited_once_with(candidate)
+    assert current_predecessor._held_inbound_events == [event]
+    assert not old_predecessor._held_inbound_events
+    assert not candidate._held_inbound_events
+
+
+@pytest.mark.asyncio
 async def test_registry_lookup_cannot_drop_a_replacement_outage(reconnect_attempt):
     runner, info, candidate, dispose = reconnect_attempt
     new_info = {"config": info["config"], "attempts": 0, "next_retry": 0}

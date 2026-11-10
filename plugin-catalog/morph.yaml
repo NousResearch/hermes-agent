@@ -6,7 +6,7 @@
 # is checked against the code at that commit by `hermes plugins validate`.
 name: morph
 repo: https://github.com/timioni001/morph-hermes
-sha: "1870be826423cb4789821400a56bdcbdfbca296c"
+sha: "1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c"
 title: "MORPH"
 description: >-
   One adaptive workspace across the applications you use, with human-approved,
@@ -44,12 +44,12 @@ version: "1.0.0"
 docs_url: https://github.com/timioni001/morph-hermes#readme
 readme: true
 platforms: []
-image: https://raw.githubusercontent.com/timioni001/morph-hermes/1870be826423cb4789821400a56bdcbdfbca296c/docs/assets/catalog-card.png
+image: https://raw.githubusercontent.com/timioni001/morph-hermes/1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c/docs/assets/catalog-card.png
 screenshots:
-  - https://raw.githubusercontent.com/timioni001/morph-hermes/1870be826423cb4789821400a56bdcbdfbca296c/docs/assets/workspace.png
-  - https://raw.githubusercontent.com/timioni001/morph-hermes/1870be826423cb4789821400a56bdcbdfbca296c/docs/assets/approvals.png
-  - https://raw.githubusercontent.com/timioni001/morph-hermes/1870be826423cb4789821400a56bdcbdfbca296c/docs/assets/connections.png
-  - https://raw.githubusercontent.com/timioni001/morph-hermes/1870be826423cb4789821400a56bdcbdfbca296c/docs/assets/context.png
+  - https://raw.githubusercontent.com/timioni001/morph-hermes/1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c/docs/assets/workspace.png
+  - https://raw.githubusercontent.com/timioni001/morph-hermes/1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c/docs/assets/approvals.png
+  - https://raw.githubusercontent.com/timioni001/morph-hermes/1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c/docs/assets/connections.png
+  - https://raw.githubusercontent.com/timioni001/morph-hermes/1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c/docs/assets/context.png
 capabilities:
   provides_tools:
     - morph_discover

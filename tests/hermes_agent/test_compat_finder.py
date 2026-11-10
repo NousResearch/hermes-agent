@@ -115,6 +115,30 @@ def test_missing_current_module_keeps_its_import_error(tree, monkeypatch):
     assert raised.value.name == "compat_probe_tree.cli.missing"
 
 
+def test_a_module_back_at_its_old_path_loads_from_there(tmp_path, monkeypatch):
+    """A process that started on the old layout, picked up the finder from a newer tree, and then saw
+    the tree put back: its old names must load from their old files again."""
+    old = tmp_path / "compat_probe_old"
+    old.mkdir()
+    (old / "__init__.py").write_text("", encoding="utf-8")
+    (old / "back.py").write_text("WHERE = 'old path'\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        importlib.import_module("compat_probe_old")
+        monkeypatch.setattr(sys, "meta_path", [Finder(MOVES), *sys.meta_path])
+
+        module = importlib.import_module("compat_probe_old.back")
+
+        assert module.WHERE == "old path"
+        assert module.__file__ == str(old / "back.py")
+        with pytest.raises(ModuleNotFoundError) as raised:
+            importlib.import_module("compat_probe_old.nowhere")
+        assert raised.value.name == "compat_probe_tree.cli.nowhere"
+    finally:
+        for name in [n for n in sys.modules if n.partition(".")[0] in {"compat_probe_old", "compat_probe_tree"}]:
+            del sys.modules[name]
+
+
 @pytest.mark.parametrize("conflict", [
     {"compat_probe_old.a": "compat_probe_tree.cli.b", "compat_probe_old.b": "compat_probe_tree.cli.a"},
     {"compat_probe_old.a": "compat_probe_tree.cli.a.impl"},

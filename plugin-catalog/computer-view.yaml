@@ -8,6 +8,14 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.6"
 version: "0.1.0"
+title: Computer View
+screenshots:
+  - https://github.com/bhoot1234567890/computer-view/releases/download/demo-2026-11-10/demo-watch.png
+  - https://github.com/bhoot1234567890/computer-view/releases/download/demo-2026-11-10/demo-control.png
+  - https://github.com/bhoot1234567890/computer-view/releases/download/demo-2026-11-10/demo-handback.png
+  - https://github.com/bhoot1234567890/computer-view/releases/download/demo-2026-11-10/demo-revoked.png
+known_issues:
+  - Requires explicitly selected in_process isolation and a separately provisioned Linux desktop and HTTPS proxy.
 platforms:
   - linux
 capabilities:

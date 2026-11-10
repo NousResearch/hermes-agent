@@ -1,15 +1,17 @@
 """A holder-less ``SessionDB`` collected unclosed returns its registry reference without deadlocking.
 
-The cyclic GC runs a finalizer on whatever thread allocates, including one inside the registry's own lock or a
-path's lifecycle lock. The finalizer therefore only queues the reference, and the next ``SessionDB`` open or close
-returns it. The cases that could hang run in a child process under a faulthandler deadline, which dumps every
-thread's stack and ends the child when a lock is never released.
+The cyclic GC runs a finalizer on whatever thread allocates, including one inside a lock the release takes: the
+registry's, a path's lifecycle lock, the file's read budget, the WAL guard. The finalizer therefore only hands the
+reference to the reaper thread, which returns it once that lock is free. The cases that could hang run in a child
+process under a faulthandler deadline, which dumps every thread's stack and ends the child when a lock is never
+released.
 """
 
 import gc
 import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,7 @@ import pytest
 import hermes_state_registry as registry
 from hermes_state import SessionDB
 from persistence.sqlite import _registry as holders
+from tests.waiting import wait_until
 
 DEADLINE_S = 5
 _ROOT = Path(__file__).resolve().parents[2]
@@ -24,8 +27,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 _PRELUDE = f"""
 import faulthandler, gc, os, shutil, sys, threading, time
 from pathlib import Path
+import hermes_state_lockguard as lockguard
 from hermes_state import SessionDB
 from persistence.sqlite import _registry as holders
+from tests.waiting import wait_until
 
 faulthandler.dump_traceback_later({DEADLINE_S * 4}, exit=True)
 path = Path(sys.argv[1]) / "state.db"
@@ -50,6 +55,10 @@ def within_deadline(target):
         print("worker blocked: a finalizer re-entered a lock its thread holds", file=sys.stderr)
         faulthandler.dump_traceback(all_threads=True)
         os._exit(3)
+
+
+def returned(predicate):
+    wait_until(predicate, timeout={DEADLINE_S}, what="the reaper returning the collected reference")
 """
 
 
@@ -72,27 +81,28 @@ def _run_bounded(tmp_path, scenario: str) -> str:
     return child.stdout.strip()
 
 
-def test_a_collection_inside_the_registry_lock_queues_the_reference(tmp_path):
-    out = _run_bounded(tmp_path, """
-        anchor = SessionDB(path)
+@pytest.mark.parametrize("lock", ["holders._lock", "budget._lock", "lockguard._LOCK"],
+                         ids=["registry", "read-budget", "wal-guard"])
+def test_a_collection_under_a_lock_the_release_takes_returns_the_reference_once_it_is_free(tmp_path, lock):
+    out = _run_bounded(tmp_path, f"""
         gc.disable()
-        Owner(SessionDB(path))
+        owner = Owner(SessionDB(path))  # the generation's last reference: its release closes the holder
+        budget = owner.db._holder._read_budget
+        del owner
         before = refcount()
 
-        def collect_under_the_registry_lock():
-            with holders._lock:
+        def collect_under_the_lock():
+            with {lock}:
                 gc.collect()
 
-        within_deadline(collect_under_the_registry_lock)
-        SessionDB(path).close()  # the next open returns the queued reference
-        after = refcount()
-        anchor.close()
-        print(before, after, refcount())
+        within_deadline(collect_under_the_lock)
+        returned(lambda: refcount() is None)
+        print(before, refcount())
     """)
-    assert out == "2 1 None"
+    assert out == "1 None"
 
 
-def test_a_collection_inside_the_replacement_open_queues_the_retired_reference(tmp_path):
+def test_a_collection_inside_the_replacement_open_returns_the_retired_reference(tmp_path):
     out = _run_bounded(tmp_path, """
         gc.disable()
         Owner(SessionDB(path))  # the generation's last reference
@@ -108,11 +118,10 @@ def test_a_collection_inside_the_replacement_open_queues_the_retired_reference(t
         holders._open_holder = open_with_a_collection
         within_deadline(lambda: holders.release(holders.acquire(path)))
         holders._open_holder = open_holder
-        queued = len(holders._retired)
-        SessionDB(path).close()
-        print(queued, len(holders._retired))
+        returned(lambda: not holders._retired)
+        print(len(holders._retired), refcount())
     """)
-    assert out == "1 0"
+    assert out == "0 None"
 
 
 def test_handles_collected_at_default_thresholds_never_stall_registry_readers(tmp_path):
@@ -136,24 +145,53 @@ def test_handles_collected_at_default_thresholds_never_stall_registry_readers(tm
         within_deadline(read_registry)
         within_deadline(churner.join)
         gc.collect()
-        SessionDB(path).close()
+        returned(lambda: refcount() == 1)
         print(churned[0] > 0, refcount())
     """)
     assert out == "True 1"
 
 
-def test_shutdown_closes_a_generation_whose_collected_reference_is_still_queued(tmp_path):
+def test_a_handle_collected_unclosed_returns_its_reference_without_a_later_open_or_close(tmp_path):
+    path = tmp_path / "state.db"
+    anchor = SessionDB(path)
+    try:
+        db = SessionDB(path)
+        assert holders._generations[path.resolve()].refcount == 2
+        del db  # refcount collection: nothing opens or closes a SessionDB afterwards
+        wait_until(lambda: holders._generations[path.resolve()].refcount == 1, timeout=DEADLINE_S)
+    finally:
+        anchor.close()
+        registry.close_all()
+
+
+def test_shutdown_closes_a_generation_whose_collected_reference_is_still_queued(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
     anchor = SessionDB(path)
     holder = anchor._holder
+    reaping, resume, done = threading.Event(), threading.Event(), threading.Event()
+    close_quietly = holders._close_quietly
+
+    def reaper_stalls_before_returning(db, message):
+        if threading.current_thread().name != "sessiondb-reaper":
+            return close_quietly(db, message)
+        reaping.set()
+        resume.wait(DEADLINE_S)
+        close_quietly(db, message)
+        done.set()
+
+    monkeypatch.setattr(holders, "_close_quietly", reaper_stalls_before_returning)
     _Owner(SessionDB(path))
     gc.collect()
     try:
+        assert reaping.wait(DEADLINE_S)
+        assert holders._generations[path.resolve()].refcount == 2  # the collected reference is not returned yet
         assert registry.close_all() == 1
         assert holder._conn is None
-        SessionDB(path).close()  # a reference drained after the shutdown releases nothing it does not own
+        resume.set()
+        assert done.wait(DEADLINE_S)  # a reference returned after the shutdown releases nothing it does not own
         assert holders.stats()["live_generations"] == 0
     finally:
+        resume.set()
         anchor.close()
         registry.close_all()
 

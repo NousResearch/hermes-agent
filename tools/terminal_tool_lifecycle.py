@@ -144,11 +144,8 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     try:
         from tools.process_registry import process_registry
         for task_id in list(_last_activity.keys()):
-            # A workspace container is keyed by its digest, not the spawning task id: also keep it
-            # while any process it hosts is still running (stopping it would kill that process).
-            if process_registry.has_active_processes(task_id) or (
-                    _is_workspace_key(task_id)
-                    and process_registry._any_running(lambda s, key=task_id: s.task_id == key)):
+            # A session's task_id is the env key it was spawned into; owner_task_id is the raw spawner.
+            if process_registry._any_running(lambda s, key=task_id: key in (s.task_id, s.owner_task_id)):
                 _last_activity[task_id] = current_time
     except ImportError:
         pass

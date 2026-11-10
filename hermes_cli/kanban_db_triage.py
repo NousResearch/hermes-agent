@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Optional, Protocol
 
@@ -136,6 +137,63 @@ class _ReadOnlyConnection:
         raise RuntimeError("Triage release guard connection is read-only")
 
 
+_GUARD_DENIED_ACTIONS = frozenset(
+    getattr(sqlite3, name)
+    for name in (
+        "SQLITE_ALTER_TABLE",
+        "SQLITE_ANALYZE",
+        "SQLITE_ATTACH",
+        "SQLITE_CREATE_INDEX",
+        "SQLITE_CREATE_TABLE",
+        "SQLITE_CREATE_TEMP_INDEX",
+        "SQLITE_CREATE_TEMP_TABLE",
+        "SQLITE_CREATE_TEMP_TRIGGER",
+        "SQLITE_CREATE_TEMP_VIEW",
+        "SQLITE_CREATE_TRIGGER",
+        "SQLITE_CREATE_VIEW",
+        "SQLITE_CREATE_VTABLE",
+        "SQLITE_DELETE",
+        "SQLITE_DETACH",
+        "SQLITE_DROP_INDEX",
+        "SQLITE_DROP_TABLE",
+        "SQLITE_DROP_TEMP_INDEX",
+        "SQLITE_DROP_TEMP_TABLE",
+        "SQLITE_DROP_TEMP_TRIGGER",
+        "SQLITE_DROP_TEMP_VIEW",
+        "SQLITE_DROP_TRIGGER",
+        "SQLITE_DROP_VIEW",
+        "SQLITE_DROP_VTABLE",
+        "SQLITE_INSERT",
+        "SQLITE_PRAGMA",
+        "SQLITE_REINDEX",
+        "SQLITE_SAVEPOINT",
+        "SQLITE_TRANSACTION",
+        "SQLITE_UPDATE",
+    )
+)
+
+
+@contextmanager
+def _guard_authorizer(conn: sqlite3.Connection) -> Iterator[None]:
+    """Deny recursive writes/txn control during a guard, then restore policy."""
+    previous = getattr(conn, "_hermes_authorizer_callback", None)
+
+    def authorize(action, arg1, arg2, database, source):
+        if previous is not None:
+            previous_result = previous(action, arg1, arg2, database, source)
+            if previous_result != sqlite3.SQLITE_OK:
+                return previous_result
+        if action in _GUARD_DENIED_ACTIONS:
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    conn.set_authorizer(authorize)
+    try:
+        yield
+    finally:
+        conn.set_authorizer(previous)
+
+
 def guarded_specify_triage_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -168,7 +226,8 @@ def guarded_specify_triage_task(
                 return TriageReleaseReceipt(False, "not_in_triage", status)
 
             changes_before_guard = conn.total_changes
-            decision = guard(_ReadOnlyConnection(conn), task_id)
+            with _guard_authorizer(conn):
+                decision = guard(_ReadOnlyConnection(conn), task_id)
             if not conn.in_transaction:
                 raise RuntimeError("Triage release guard ended its transaction")
             if conn.total_changes != changes_before_guard:

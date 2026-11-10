@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -251,6 +252,55 @@ def test_guard_cannot_commit_or_release_transaction_lock(kanban_home):
         assert kb.list_comments(conn, task_id) == []
         assert kb.get_task(conn, task_id).status == "triage"
         assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+
+def test_select_function_cannot_escape_guard_transaction(kanban_home):
+    with kbc.connect() as conn:
+        task_id = _create_triage(conn)
+
+        def side_effect():
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+                (task_id, "guard", "escaped", 1),
+            )
+            conn.commit()
+            return 1
+
+        conn.create_function("guard_side_effect", 0, side_effect)
+
+        def function_guard(guard_conn, _guarded_task_id):
+            guard_conn.execute("SELECT guard_side_effect()").fetchone()
+            return kb.TriageReleaseGuardResult(True)
+
+        with pytest.raises(sqlite3.DatabaseError):
+            kb.guarded_specify_triage_task(conn, task_id, guard=function_guard)
+        assert kb.list_comments(conn, task_id) == []
+        assert kb.get_task(conn, task_id).status == "triage"
+        assert [event.kind for event in kb.list_events(conn, task_id)] == ["created"]
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+
+def test_guard_restores_existing_connection_authorizer(kanban_home):
+    with kbc.connect() as conn:
+        task_id = _create_triage(conn)
+        observed = []
+
+        def existing_authorizer(action, _arg1, _arg2, _database, _source):
+            observed.append(action)
+            return sqlite3.SQLITE_OK
+
+        conn.set_authorizer(existing_authorizer)
+
+        def denied_guard(guard_conn, _task_id):
+            guard_conn.execute("SELECT 1").fetchone()
+            return kb.TriageReleaseGuardResult(False, "hold")
+
+        receipt = kb.guarded_specify_triage_task(conn, task_id, guard=denied_guard)
+        observed.clear()
+        conn.execute("SELECT 2").fetchone()
+
+    assert receipt.outcome == "precondition_failed"
+    assert sqlite3.SQLITE_SELECT in observed
 
 
 def test_not_in_triage_does_not_invoke_guard(kanban_home):

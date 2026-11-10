@@ -1,10 +1,6 @@
 name: provider-endpoint-healer
 title: Provider Endpoint Healer
-description: >-
-  Status and health listing for configured model endpoints. Probes them on session
-  start and via /peh, and recommends the best candidate by health, latency, cost
-  and capability. Reports only; it does not switch Hermes providers.
-  Disclosure: makes outbound HTTP requests to configured endpoints; reads config only.
+description: "Status and health listing for configured model endpoints. Probes them on session start and via /peh, and recommends the best candidate by health, latency, cost and capability. Reports only; it does not switch Hermes providers. Disclosure — at session start and on `/peh` it sends an unauthenticated `GET <base_url>/models` to every endpoint listed in its settings (http/https only, no credentials sent, response body not read); it reports health and a recommendation only and does not change the provider Hermes uses."
 maintainer: Alvinagustus
 tier: community
 category: tools

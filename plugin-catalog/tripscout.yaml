@@ -1,0 +1,34 @@
+name: tripscout
+repo: https://github.com/marcofailli/tripscout
+sha: f498856db0af982d9a75dc2db56be3514f230e43
+subdir: ""
+description: >-
+  Cheap city-break finder: prices flights AND hotels together across a date window, adds the
+  ground cost of reaching each departure airport, and ranks whole trips by total cost, with
+  lodging-type filters (hotel/hostel/apartment) and optional food and attraction estimates.
+  Disclosure — no API key and no account: searches read the Google Flights results page and
+  Google Hotels' public batchexecute RPC from your own IP address with a browser TLS
+  fingerprint, so the cities, airports, dates, traveller count and currency you search are
+  sent to Google and nothing else about you is. Prices, hotel names and cache keys are stored
+  locally in SQLite under Hermes' plugin data directory. A consent cookie declaring
+  essential-only cookies is sent, because from the EU Google otherwise answers with its
+  "Before you continue" interstitial instead of results; no tracking-consent value is ever
+  sent. Python dependencies (fast-flights, primp, typing_extensions) are prepared in the
+  shared plugin environment at install time with the user's consent. Nothing is booked, no
+  card or passport data is taken, and no credentials are stored.
+maintainer: marcofailli
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/marcofailli/tripscout/tree/f498856db0af982d9a75dc2db56be3514f230e43
+version: "0.2.0"
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - tripscout_search
+    - tripscout_price_trip
+    - tripscout_history
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import enum
 import os
+import posixpath
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
@@ -238,6 +239,9 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     ]
     for candidate in filter(None, candidates):
         with _quiet(None):
+            # A relative or tilde cwd belongs to the SSH peer, not this host's HOME or process cwd.
+            if env_type.strip().lower() == "ssh" and not posixpath.isabs(str(candidate)):
+                continue
             text = os.path.abspath(os.path.expanduser(str(candidate)))
             if coerce_ssh_remote_cwd(text, env_type) != text:
                 continue

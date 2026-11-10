@@ -1,8 +1,8 @@
 name: hermes-manas-aegis
 title: Manas Aegis
 repo: https://github.com/elianjuan-g/hermes-manas-aegis
-sha: cc18295839e296280072d6aecb18f4433db4ec77
-version: "2.6.2"
+sha: 7c5ab9132140c6ce34c5357cb213d739cd525246
+version: "2.6.3"
 description: >-
   [ALPHA] Experimental Hermes guardrail (prototype, not standalone security):
   pattern-based pre-tool checks that can block or rewrite some risky tool
@@ -42,7 +42,22 @@ description: >-
   (no audio exists), the intel-refresh button shows a loading state, and
   five doc contradictions are fixed. Tests: 83/83 unit + contract
   (61 in v2.6.0 + 22 new).
-  Serves a loopback-only HUD (http://127.0.0.1:18777) shown as an iframe in
+  v2.6.3 addresses the catalog maintainer's review of the v2.6.2 pin
+  (teknium1, CHANGES_REQUESTED): the plugin root shim uses a relative
+  import; the RCE pattern has no unbounded lazy segments and the scan
+  is capped at 8 KB (a 40 KB near-miss input now checks in ~0.09 s);
+  credential-file contents are never read (os.stat fingerprints;
+  .env / auth.json / config.yaml skipped by the filesystem scan);
+  the HUD rejects non-loopback Host headers and no longer embeds the
+  CSRF token in an unauthenticated GET (login always on, auto-generated
+  token); the Desktop HUD renders via SandboxedFrame with the port
+  read from config; all state lives under plugin-data/
+  (get_hermes_home()); detection patterns are plain raw strings.
+  Detection/test vectors (arena scenarios, python -c dangerous tokens,
+  two test payloads) moved from code literals to fixtures/vectors.json,
+  loaded at import. Tests: 94/94 unit + contract; e2e HTTP 17/17;
+  hermes plugins validate fully green (14/14 checks, security scan safe).
+  Serves a loopback-only HUD (http://127.0.0.1:18777) shown via a SandboxedFrame in
   the Desktop Manas Aegis tab; writes redacted interception telemetry
   (manas_telemetry.json, live file + append-only archive, unlimited) and a
   local STIX 2.1 feed (stix21_taxii_feed.json) under the plugin data folder.

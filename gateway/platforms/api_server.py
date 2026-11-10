@@ -1368,7 +1368,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "real_ip": self._clean_log_value(request.headers.get("X-Real-IP", "")),
             "method": self._clean_log_value(request.method, max_len=16),
             "path": self._clean_log_value(request.path_qs, max_len=500),
-            "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300)}
+            "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300),
+            # The Portal user a peer pass holder signed in as; set by the dashboard's /api/peer route.
+            "peer_principal": self._clean_log_value(request.headers.get("X-Hermes-Peer-Principal", ""), max_len=128)}
 
     def _request_audit_log_suffix(self, request: web.Request) -> str:
         ctx = self._request_audit_context(request)
@@ -1379,11 +1381,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """Persist safe API source metadata on cron jobs created over HTTP."""
         ctx = self._request_audit_context(request)
         origin = {"platform": "api_server", "chat_id": "api"}
-        for ctx_key, origin_key in (("remote", "source_ip"), ("peer_ip", "peer_ip"),
-                                    ("forwarded_for", "forwarded_for"), ("real_ip", "real_ip"),
-                                    ("user_agent", "user_agent")):
-            if ctx.get(ctx_key):
-                origin[origin_key] = ctx[ctx_key]
+        for key in ("remote", "peer_ip", "forwarded_for", "real_ip", "user_agent", "peer_principal"):
+            if ctx.get(key):
+                origin["source_ip" if key == "remote" else key] = ctx[key]
         return origin
 
     def _expected_api_key(self) -> str:

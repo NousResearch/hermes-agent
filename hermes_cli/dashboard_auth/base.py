@@ -113,6 +113,7 @@ class DashboardAuthProvider(ABC):
     Subclasses MUST set ``name`` (stable lowercase id) and ``display_name``. Capability flags:
     ``supports_password`` (credential form + ``complete_password_login``; OAuth methods may be
     ``NotImplementedError`` stubs), ``supports_token`` (``verify_token`` for the token-auth seam),
+    ``supports_peer_pass`` (``verify_peer_pass`` for the ``/api/peer`` route),
     ``supports_session`` (False for token-only credentials such as drain, never offered a login),
     ``interactive_login`` (False for a provider that verifies credentials but has no browser
     sign-in flow — kept out of the login page, ``/api/auth/providers`` and the auto-SSO redirect
@@ -123,6 +124,7 @@ class DashboardAuthProvider(ABC):
     display_name: str = ""
     supports_password: bool = False
     supports_token: bool = False
+    supports_peer_pass: bool = False
     supports_session: bool = True
     interactive_login: bool = True
 
@@ -159,6 +161,16 @@ class DashboardAuthProvider(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not support token auth "
             "(set supports_token = True and override verify_token)")
+
+    def verify_peer_pass(self, *, token: str) -> Optional[TokenPrincipal]:
+        """Verify a pass minted for this agent, for the ``/api/peer`` route; return its holder and
+        every scope it carries (the route decides which permit what). Kept apart from
+        ``verify_token`` so a pass never authorises another provider's token routes. Return
+        ``None`` for a token that is not a pass for this agent; raise ``ProviderError`` only for an
+        outage. The default raises so a mis-flagged provider fails loudly."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support peer passes "
+            "(set supports_peer_pass = True and override verify_peer_pass)")
 
 
 def assert_protocol_compliance(cls: type) -> None:

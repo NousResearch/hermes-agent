@@ -1,0 +1,27 @@
+name: time-machine
+repo: https://github.com/Prasad-PingFederate/hermes-time-machine
+sha: 9e02342fd088075395e6252699460e73b44b425a
+description: "Visual timeline scrubber, split diff inspector, surgical per-file rollback, and failure diagnosis for Hermes Agent and Desktop. Captures pre-mutation snapshots in an isolated store, diagnoses broken edits in dry-run mode, and restores files upon user approval via /tm restore or the Desktop UI. Disclosure — snapshots the session working directory (everything `git add -A` picks up there, including untracked files such as a workspace `.env`) into its own git store under HERMES_HOME/plugin-data/time-machine/ before file-mutating and command tool calls; model-called restores are preview-only, and workspace files are overwritten or deleted only when the user runs /tm restore or clicks restore in the dashboard/Desktop pane; no network, no telemetry."
+maintainer: Prasad-PingFederate
+tier: community
+category: desktop
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/Prasad-PingFederate/hermes-time-machine#readme
+version: "0.3.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - time_machine_list_snapshots
+    - time_machine_diff
+    - time_machine_restore
+    - time_machine_recover
+    - time_machine_search
+  provides_hooks:
+    - on_session_start
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+  provides_commands:
+    - tm
+  provides_middleware: []
+  requires_env: []

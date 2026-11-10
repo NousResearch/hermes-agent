@@ -1,6 +1,6 @@
 name: looprunner
 repo: https://github.com/itxLikhith/looprunner
-sha: 08ab80c942f54813cf8a1e99ecc76aab5f1fb607
+sha: 40505495fb8b04ca9d1d1522e1e78ec4ab89dc2f
 description: >-
   Set-and-forget autonomous QA loop runner for any repository. Runs your verify
   command each round, diagnoses failures with the host LLM, applies a minimal fix

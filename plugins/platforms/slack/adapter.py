@@ -66,12 +66,14 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_slash_payload import slash_command_text, slash_thread_id
     from .adapter_reactions_context import slack_reactions_marker
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
+    from .adapter_image_batch import collect_image_uploads
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
     from adapter_reactions_context import slack_reactions_marker  # type: ignore
     from adapter_socket_lifecycle import SlackSocketLifecycleMixin  # type: ignore
+    from adapter_image_batch import collect_image_uploads  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -942,9 +944,6 @@ def _is_slack_voice_clip(file_obj: dict[str, Any]) -> bool:
     return (file_obj.get("subtype") or "").strip().lower() == "slack_audio" or (
         file_obj.get("name") or "").strip().lower().startswith("audio_message")
 
-
-# content-type substring → upload filename extension (first match wins; default png).
-_IMAGE_CT_EXTS = (("jpeg", "jpg"), ("jpg", "jpg"), ("gif", "gif"), ("webp", "webp"))
 
 _TRANSIENT_UPLOAD_MARKERS = (
     "rate_limited", "ratelimited", "429", "connection reset", "service unavailable",
@@ -2972,8 +2971,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
             try:
-                file_uploads, initial_comment_parts = await self._collect_image_uploads(
+                file_uploads, initial_comment_parts, refused = await collect_image_uploads(
                     chunk, _unquote, _is_safe_url, create_ssrf_safe_async_client)
+                for image_url, alt_text in refused:  # already left the reply text: keep the link
+                    sent = await self.send(chat_id, f"{alt_text}\n{image_url}" if alt_text else image_url,
+                                           metadata=metadata)
+                    delivered = delivered or sent.success
                 if not file_uploads:
                     continue
                 initial_comment = "\n".join(initial_comment_parts) if initial_comment_parts else ""
@@ -2993,46 +2996,6 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                     chat_id, chunk, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
-
-    @staticmethod
-    async def _collect_image_uploads(
-        chunk: list[tuple[str, str]], unquote_fn, is_safe_url_fn, client_factory
-    ) -> tuple[list[dict[str, Any]], list[str]]:
-        """``files_upload_v2`` entries for one batch: ``file://`` by path, remote via the SSRF-safe
-        client (unsafe/failed skipped). Returns ``(file_uploads, alt_texts)``."""
-        from gateway.platforms.base import read_httpx_body_with_limit
-        file_uploads: list[dict[str, Any]] = []
-        initial_comment_parts: list[str] = []
-        async with client_factory(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]}
-        ) as http_client:
-            for image_url, alt_text in chunk:
-                if alt_text:
-                    initial_comment_parts.append(alt_text)
-                if image_url.startswith("file://"):
-                    local_path = unquote_fn(image_url[7:])
-                    if not os.path.exists(local_path):
-                        logger.warning("[Slack] Skipping missing image: %s", local_path)
-                        continue
-                    file_uploads.append(
-                        {"file": local_path, "filename": os.path.basename(local_path)})
-                    continue
-                if not is_safe_url_fn(image_url):
-                    logger.warning("[Slack] Blocked unsafe image URL in batch")
-                    continue
-                try:
-                    async with http_client.stream("GET", image_url) as response:
-                        response.raise_for_status()
-                        ct = response.headers.get("content-type", "")
-                        content = await read_httpx_body_with_limit(response, media_type="image")
-                    ext = next((e for k, e in _IMAGE_CT_EXTS if k in ct), "png")
-                    file_uploads.append({
-                        "content": content, "filename": f"image_{len(file_uploads)}.{ext}"
-                    })
-                except Exception as dl_err:
-                    logger.warning(
-                        "[Slack] Download failed for %s: %s", safe_url_for_log(image_url), dl_err)
-        return file_uploads, initial_comment_parts
 
     def _record_uploaded_file_thread(
         self, chat_id: str, thread_ts: Optional[str], metadata: Optional[dict[str, Any]] = None
